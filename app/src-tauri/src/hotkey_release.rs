@@ -37,7 +37,10 @@ impl HotkeyRelease {
     pub fn release_to_stop(&self) -> StageTimingV1 {
         StageTimingV1::measured(
             PerformanceStageV1::ReleaseToStop,
-            millis(self.stop_entered_at.saturating_duration_since(self.released_at)),
+            millis(
+                self.stop_entered_at
+                    .saturating_duration_since(self.released_at),
+            ),
         )
     }
 
