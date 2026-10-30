@@ -1,5 +1,5 @@
 import { ConfirmDialog } from '../ui/ConfirmDialog';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   armNextTransformCapture,
   deleteTransformCapture,
@@ -29,6 +29,7 @@ function textPanel(label: string, value: string | null) {
 }
 
 export function TransformDiagnosticsView() {
+  const listHeadingRef = useRef<HTMLHeadingElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<DiagnosticCaptureSummaryV1 | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [attempts, setAttempts] = useState<TransformAttemptV1[]>([]);
@@ -100,7 +101,7 @@ export function TransformDiagnosticsView() {
     }
   };
 
-  const deletionDialog = deleteTarget && <ConfirmDialog title="Delete this local content capture?" confirmLabel="Delete capture…" dangerous disabled={deleting}
+  const deletionDialog = deleteTarget && <ConfirmDialog title="Delete this local content capture?" confirmLabel="Delete capture…" dangerous disabled={deleting} restoreFocus={() => listHeadingRef.current}
     onCancel={() => setDeleteTarget(null)} onConfirm={() => void deleteCapture(deleteTarget)}>
     This permanently removes the local content capture for pass {deleteTarget.transformPassId}. This cannot be undone.
   </ConfirmDialog>;
@@ -151,7 +152,7 @@ export function TransformDiagnosticsView() {
       {deletionDialog}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-on-surface">Transform diagnostics</h2>
+          <h2 ref={listHeadingRef} tabIndex={-1} className="text-sm font-semibold text-on-surface">Transform diagnostics</h2>
           <p className="text-[11px] text-on-surface-variant">
             Every attempt is recorded without text. Exact content capture is explicit, one-shot, local, and expiring.
           </p>

@@ -1,5 +1,5 @@
 import { ConfirmDialog } from '../ui/ConfirmDialog';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   armNextDictationCapture,
   deleteDictationCapture,
@@ -88,6 +88,7 @@ export function DictationDiagnosticsView({
 }: DictationDiagnosticsViewProps) {
   const [status, setStatus] = useState<DictationCaptureArmStatusV1>({ state: 'unarmed' });
   const [captures, setCaptures] = useState<DictationCaptureSummaryV1[]>([]);
+  const listHeadingRef = useRef<HTMLHeadingElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<Pick<DictationCaptureSummaryV1, 'captureId' | 'recordingId'> | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [selected, setSelected] = useState<DictationCaptureV1 | null>(null);
@@ -183,7 +184,7 @@ export function DictationDiagnosticsView({
     }
   };
 
-  const deletionDialog = deleteTarget && <ConfirmDialog title="Delete this private local capture?" confirmLabel="Delete local copy…" dangerous disabled={deleting}
+  const deletionDialog = deleteTarget && <ConfirmDialog title="Delete this private local capture?" confirmLabel="Delete local copy…" dangerous disabled={deleting} restoreFocus={() => listHeadingRef.current}
     onCancel={() => setDeleteTarget(null)} onConfirm={() => void remove(deleteTarget.captureId)}>
     This permanently removes the private local capture for recording {deleteTarget.recordingId}. This cannot be undone.
   </ConfirmDialog>;
@@ -236,7 +237,7 @@ export function DictationDiagnosticsView({
       {deletionDialog}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-on-surface">Private dictation capture</h2>
+          <h2 ref={listHeadingRef} tabIndex={-1} className="text-sm font-semibold text-on-surface">Private dictation capture</h2>
           <p className="text-[11px] text-on-surface-variant">Normal diagnostics never contain transcript text. Arm exactly one live recording only when text is needed to diagnose it.</p>
         </div>
         <div className="flex items-center gap-2">

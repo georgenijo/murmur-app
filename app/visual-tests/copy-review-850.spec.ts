@@ -60,8 +60,32 @@ for (const appearance of ['light', 'dark']) {
       await page.keyboard.press('Space');
       await expect(dialog).toHaveCount(0);
       await expect(page.locator('html')).toHaveAttribute(attribute, panel === 'runs' ? 'true' : 'capture-one');
+      if (panel !== 'runs') await expect(page.getByRole('heading', { name: panel === 'transform' ? 'Transform diagnostics' : 'Private dictation capture', exact: true })).toBeFocused();
     });
   }
+
+  test(`C6: ${appearance} cancelling after a capture row disappears restores the list heading`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=copy-diagnostics&panel=transform&appearance=${appearance}`);
+    await page.getByRole('button', { name: 'Delete…', exact: true }).click();
+    await page.evaluate(() => document.documentElement.setAttribute('data-copy-replace-captures', 'true'));
+    await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.getByText('Pass 52', { exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Transform diagnostics', exact: true })).toBeFocused();
+    await expect(page.locator('html')).not.toHaveAttribute('data-copy-deleted-capture');
+  });
+
+  test(`C6: ${appearance} deleting from transform review returns focus to the resulting list`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=copy-diagnostics&panel=transform&appearance=${appearance}`);
+    await page.getByRole('button', { name: 'Review', exact: true }).click();
+    await page.getByRole('button', { name: 'Delete capture…', exact: true }).click();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Space');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Transform diagnostics', exact: true })).toBeFocused();
+    await expect(page.locator('html')).toHaveAttribute('data-copy-deleted-capture', 'capture-one');
+  });
 
   test(`C3: ${appearance} invalid color Return and Done preserve the editor; valid Return commits`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: appearance as 'light' | 'dark' });

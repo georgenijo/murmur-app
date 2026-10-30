@@ -206,3 +206,11 @@ Use the integrated build with isolated test data, in light and dark:
     Verify recording/cancellation stays secondary and does not acquire delete
     styling. Native startup/capture checks and Retina captures are run serially
     by the lead after integration.
+
+### C6 focus fallback after capture removal
+
+The Transform and Dictation capture lists expose a programmatically focusable
+heading as the confirmation dialog's restore fallback. A surviving opener
+still receives focus; if refresh or deletion removes it, focus returns to the
+resulting list heading. Browser tests cover cancellation after row replacement
+and confirmation from Review, in both color schemes.
