@@ -1,3 +1,4 @@
+import { SettingsCard } from './SettingsRow';
 import { useState, useId, useCallback } from 'react';
 
 interface SettingsSectionProps {
@@ -38,19 +39,17 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   if (pageId !== undefined) {
     if (activePage !== undefined && activePage !== pageId) return null;
     return (
-      <section className={plain ? "mb-7 last:mb-0" : "mb-9 last:mb-0"}>
-        <div className={plain ? undefined : "settings-page-head"}>
-          <h1 className={plain ? "text-base font-semibold text-on-surface" : "settings-page-title"}>{title}</h1>
+      <section className="settings-section">
+        <div className="settings-page-head">
+          <h2 className="settings-section-title">{title}</h2>
           {subtitle && (
             <p className={plain ? "mt-2 text-[13px] leading-[1.45] text-on-surface-variant" : "settings-page-subtitle"}>{subtitle}</p>
           )}
         </div>
-        <div className={plain
-          ? "mt-3"
-          : card
-            ? "settings-card settings-card-body settings-rows"
-            : "mt-5 [&>*]:py-3 [&>*+*]:border-t [&>*+*]:border-outline-variant/20"}
-        >{children}</div>
+        {plain ? <div className="settings-group-plain">{children}</div> : card
+          ? <SettingsCard>{children}</SettingsCard>
+          : <div className="settings-rows">{children}</div>}
+
       </section>
     );
   }

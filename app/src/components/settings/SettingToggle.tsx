@@ -1,3 +1,4 @@
+import { SettingsRow } from './SettingsRow';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 
 /** Shared toggle switch used by every settings page. */
@@ -18,9 +19,8 @@ export function Toggle({ label, checked, onChange, disabled = false }: {
   );
 }
 
-/** Title + description row paired with a `Toggle`, with the shared
- *  settings-target flash treatment used by search/palette navigation. */
-export function SettingToggle({ title, description, label = title, checked, onChange, disabled = false, targetId }: {
+/** A shared settings row with an optional reset to its declared default. */
+export function SettingToggle({ title, description, label = title, checked, onChange, disabled = false, targetId, defaultChecked }: {
   title: string;
   description: string;
   label?: string;
@@ -28,17 +28,9 @@ export function SettingToggle({ title, description, label = title, checked, onCh
   onChange: () => void;
   disabled?: boolean;
   targetId?: string;
+  defaultChecked?: boolean;
 }) {
-  return (
-    <div
-      data-setting-target={targetId}
-      className="settings-setting-row flex items-center justify-between gap-6 rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40"
-    >
-      <div className="settings-title-description">
-        <p className="text-sm font-medium text-on-surface">{title}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">{description}</p>
-      </div>
-      <Toggle label={label} checked={checked} onChange={onChange} disabled={disabled} />
-    </div>
-  );
+  return <SettingsRow title={title} description={description} targetId={targetId} disabled={disabled}
+    onReset={defaultChecked !== undefined && checked !== defaultChecked ? onChange : undefined}
+    control={<Toggle label={label} checked={checked} onChange={onChange} disabled={disabled} />} />;
 }

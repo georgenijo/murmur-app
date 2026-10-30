@@ -446,10 +446,15 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## T3 Code middle truncation
+## T3 Code middle truncation and settings geometry
 
 `app/src/components/ui/middle-truncate.tsx` is adapted from T3 Code
 (`cba30591f9`, `apps/web/src/components/ui/middle-truncate.tsx`).
+The settings geometry in `app/src/styles/settings.css`, `SettingsRow.tsx`,
+`FormControls.tsx`, and the shared switch/select also follows the settings and
+UI primitives at that pinned revision (`settingsLayout.tsx`, `SettingsGroup.tsx`,
+`SettingsSidebarNav.tsx`, and `ui/{switch,select,input,button}.tsx`).
+
 Source: https://github.com/pingdotgg/t3code
 
 MIT License

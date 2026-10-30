@@ -376,17 +376,17 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const fixture = page.locator('[data-visual-ready="true"]');
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice Commands' });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize Murmur', level: 1 })).toBeVisible();
   await expect(customizationList.getByRole('button')).toHaveCount(5);
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub.png');
 
   await voiceCommands.click();
-  await expect(page.getByRole('heading', { name: 'Voice Commands', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Voice Commands', exact: true, level: 1 })).toBeVisible();
   await page.getByRole('button', { name: 'Back to Customize' }).click();
   await expect(voiceCommands).toBeFocused();
 
   await page.setViewportSize({ width: 720, height: 560 });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize Murmur', level: 1 })).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
 });
 
@@ -410,12 +410,12 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
   await expect(page.getByRole('navigation', { name: 'Settings pages' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Text & Vocabulary', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Aliases', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Aliases', exact: true, level: 1 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Back to Text settings' })).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-aliases.png');
 
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Text & Vocabulary', level: 1 })).toBeVisible();
 });
 
 test('recording settings make the live automatic microphone choice explicit', async ({ page }) => {

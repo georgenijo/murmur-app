@@ -1,3 +1,4 @@
+import { SettingsRow } from './SettingsRow';
 import { useEffect, useState } from 'react';
 import {
   downloadSmartTurnModel,
@@ -67,23 +68,13 @@ export function SmartAutoStopSettings({
 
   return (
     <div data-setting-target="smart-auto-stop" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <div className="flex items-center justify-between gap-6">
-        <div className="settings-title-description">
-          <p className="text-sm font-medium text-on-surface">Smart Auto-Stop (Experimental)</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
-            At each pause, a small local model listens to how you stopped speaking and finishes the
-            recording early when you sound done. Stop on Silence stays the longest it will wait, so
-            this needs Stop on Silence on. Without the model it changes nothing.
-          </p>
-        </div>
-        <AnimatedSwitch
+      <SettingsRow title="Smart Auto-Stop (Experimental)" description="At each pause, a small local model listens to how you stopped speaking and finishes the recording early when you sound done. Stop on Silence stays the longest it will wait, so this needs Stop on Silence on. Without the model it changes nothing." disabled={isRecording || (!enabled && !silenceAutoStopOn)} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={isRecording || (!enabled && !silenceAutoStopOn)}
           aria-label="Smart Auto-Stop"
           onCheckedChange={() => onEnabledChange(!enabled)}
-        />
-      </div>
+        />} />
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-outline-variant/30 px-3 py-2.5">
         <div>

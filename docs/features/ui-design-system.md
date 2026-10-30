@@ -75,9 +75,9 @@ Use these before creating a feature-local control or surface.
 | Native chrome | Traffic lights, status, updates, and Settings share one row; recording actions live in the dashboard |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
 | Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
-| Sidebar | Home and Settings share 200px normally and 184px at widths of 760px or less. Labels remain visible; switching surfaces changes the destinations, not the column boundary. Home contains Home, Notetaker, Assistant, and Insights; selection is a surface state, never elevation |
+| Sidebar | Home uses 200px normally and 184px at widths of 760px or less. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, Assistant, and Insights; selection is a surface state, never elevation |
 | Customize | The gear and `⌘,` open one ordered five-row hub; detail pages expose Back to Customize and restore the originating row's focus |
-| Content | Uses the whole window with 24px desktop and 16px compact insets; no centered max-width shell |
+| Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses the 896px shell documented below |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | 5px list gap; cards use an 8px vertical inset |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
@@ -201,3 +201,56 @@ On Linux, run `npm ci`, `npx playwright install chromium`, then
 `app/`. The dedicated `*-linux.png` baselines live beside their Darwin
 counterparts. This focused Linux gate complements the existing full macOS
 suite; it does not claim that macOS-only native behavior was tested on Linux.
+
+## T3 Code settings geometry (#848)
+
+Settings uses the pinned T3 Code `cba30591f9` geometry by default. The tokens
+in `styles/settings.css` map onto the active `--murmur-*` colors; Sonic,
+OpenCode, imported themes, library ownership, and appearance persistence remain
+owned by the appearance engine. No T3 palette is installed over a saved theme.
+The search-match colors below are the explicit highlight exception. Settings
+scopes the existing header paint-boundary token to its own 240/56px navigation;
+Home and native window lifecycle remain separate.
+
+| Tokens / component | Contract |
+|---|---|
+| `--settings-nav-width`, `--settings-nav-rail` | 240px; 56px below a 768px viewport; 1px end border |
+| `--settings-nav-group-pad`, `--settings-nav-group-gap`, `--settings-nav-item-gap` | 8px group inset, 16px between groups, 4px between items |
+| Navigation labels | 12px/500 group headings; muted role at 80%; 14/20/500 items, 32px tall, 8px radius, 10px horizontal inset, 8px icon gap, 16px icons; selected uses the card/foreground roles |
+| `--settings-search-radius` | Search is 32px tall with 6px corners; a labelled search button opens it from the narrow rail |
+| `--settings-content-max`, `--settings-content-x`, `--settings-content-top`, `--settings-content-bottom` | 896px maximum including padding; 24px horizontal (20px below 640px), 24px top, 48px bottom |
+| `--settings-section-gap`, `--settings-heading-gap`, `--settings-heading-height` | 32px between sections; 10px heading-to-card; heading 16/24/600, minimum 28px, horizontal inset 16px |
+| Page title | One H1 in the content top bar; section headings are H2. The existing #853 page-title contract remains 20/26/600 |
+| `--settings-card-border`, `--settings-card-bg`, `--settings-card-shadow` | 12px radius; 1px border at 60%; card role at 40%; `0 1px 2px rgb(0 0 0 / 5%)`; no card-body padding; plain groups have a 4px gap |
+| `--settings-row-pad`, `--settings-row-x`, `--settings-divider` | 12px vertical / 16px horizontal (12px below 640px); square row corners; subsequent rows have a 1px top divider at 50%, across the full interior card width |
+| `--settings-copy-gap`, `--settings-description-max` | Title 14/20/500; description 12/18/400, 4px below, max 672px, balanced wrapping, no clamp |
+| `--settings-control-gap`, `--settings-control-min` | Grid `minmax(0,1fr) minmax(160px,auto)`, 32px gap; controls align right with 8px between them |
+| `--settings-control-max` | Picker content is bounded at 320px so long option labels and microphone disclosures cannot consume the copy column |
+| Narrow row | Named inline-size container query below 512px of row content; one column, 12px gap, full-width control area. This follows T3's padded container measurement rather than a viewport breakpoint |
+| `--settings-reset-size`, `--settings-reset-icon` | Reserved 20×20px slot; changed values show a 12px Undo in a 4px-radius ghost button with “Reset to default” tooltip. Resets call the existing owner handler, including shortcut/provider validation |
+| `--ui-disabled-opacity`, `--settings-unavailable-bg` | Disabled rows 64% with muted copy; unavailable group uses muted surface at 20%, 12/18 notice and 14px warning icon; opacity applies once |
+| `--ui-switch-*` | Standard 30×18px / 14px knob / 2px inset / 12px travel; small 26×16 / 12 / 2 / 10. Primary when on, input when off, background knob; 200ms track and 150ms slide, pressed knob stretches to 110% |
+| `--ui-control-standard`, `--ui-control-compact`, `--ui-control-xs`, `--ui-select-min` | Select and button sizes 32/28/24px; select minimum 144px, 14px text/chevron (chevron 70%) |
+| `--ui-input-height`, `--ui-control-inset`, `--ui-control-border`, `--ui-control-bg` | Input 30px; inputs/selects use 11px horizontal inset, 8px radius, 1px input-role border; background role in light, input role at 32% in dark |
+| `--ui-control-shadow`, `--ui-control-focus` | 5% shadow-xs plus inner `0 1px` at black 4% (dark: `0 -1px` white 6%); focus border uses primary/ring and a 3px ring at 24% |
+| Buttons | 8px radius, 1px border, 14/20/500; standard/small/xs horizontal padding `calc(12px - 1px)` / `calc(10px - 1px)` / `calc(8px - 1px)`; pressed scale 0.97 |
+| `--ui-segment-*` | Segmented control 32px / 8px radius; selected background role and shadow-xs 10%, dark input role at 72% |
+| `--settings-search-pulse-*` | Destination pulses twice, 650ms ease-in-out, inset 2px primary ring at 70%; reduced motion suppresses the pulse |
+| `--settings-search-match-*` | Light `oklch(.915 .11 85)` / `oklch(.216 .028 77.4)`; dark `oklch(.55 .1 85)` / `oklch(.970 0 0)` |
+
+`SettingsRow`, `SettingsCard`, and `SettingsUnavailableGroup` own row/card
+presentation. `SettingToggle` uses that row and reserves reset space even for
+unchanged values. `FormControls` wraps Base UI Button/Input; the existing Select
+and Base UI AnimatedSwitch consume the same control tokens. Legacy action and
+input elements receive the shared geometry through workspace-scoped CSS;
+feature behavior and folding are not restructured by this change.
+
+`settings-measurements.spec.ts` asserts the computed styles of these production
+components, including both sides of the container-query boundary, reset/disabled
+states, input focus, active buttons, semantic colors, and search motion/highlights.
+`settings-rhythm.spec.ts` measures real cards across ten default/expanded panes.
+`settings-geometry.spec.ts` navigates the real SettingsPanel for 22 destinations
+in both modes. It complements the existing imported-theme contrast matrix and
+all-pane overflow audit. Goldens are kept separately for Darwin and Linux;
+Linux CI uses `mcr.microsoft.com/playwright:v1.62.1-noble`. These browser checks
+do not replace the lead's serial native WKWebView all-pane and Retina checks.

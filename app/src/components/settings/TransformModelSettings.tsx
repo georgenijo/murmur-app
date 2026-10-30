@@ -1,3 +1,5 @@
+import { SettingsRow } from './SettingsRow';
+import { DEFAULT_SETTINGS } from '../../lib/settings';
 import { TRANSFORM_KEY_OPTIONS, type Settings, type TransformKey } from '../../lib/settings';
 import { TRANSFORM_MODEL_SIZE_LABEL } from '../../lib/transformSettings';
 import type { useTransformModelSettings } from '../../lib/hooks/useTransformModelSettings';
@@ -42,7 +44,7 @@ export function TransformModelSettings({
         targetId="correction-shortcut"
         title="Correct last dictation shortcut"
         description="Press ⌘⇧E to speak a correction to your latest dictation. Press again to finish, then review and copy or replace a matching selection. Uses the local model below."
-        checked={settings.correctionShortcutEnabled}
+        checked={settings.correctionShortcutEnabled} defaultChecked={DEFAULT_SETTINGS.correctionShortcutEnabled}
         onChange={() => onUpdateSettings({ correctionShortcutEnabled: !settings.correctionShortcutEnabled })}
       />
       {settings.correctionShortcutEnabled && accessibilityGranted === false && (
@@ -60,28 +62,24 @@ export function TransformModelSettings({
         }}
       />
       <SettingsBranch open={settings.transformHoldKey !== null}>
-        <div className="settings-field">
-          <label className="block text-sm font-medium text-on-surface">Hold key</label>
-          <Select
+        <SettingsRow title={<>Hold key</>} onReset={settings.transformHoldKey !== DEFAULT_SETTINGS.transformHoldKey ? () => { void vm.updateTransformHoldKey(DEFAULT_SETTINGS.transformHoldKey); } : undefined} control={<Select
             value={settings.transformHoldKey ?? 'alt_r'}
             onChange={(value) => {
               void vm.updateTransformHoldKey(value as TransformKey);
             }}
             items={TRANSFORM_KEY_OPTIONS}
-          />
-          <p className="text-xs text-on-surface-variant">
+          />}><p className="text-xs text-on-surface-variant">
             Dictation hold keys are rejected. Right Option / Left Control / Right Shift only.
           </p>
-          {vm.transformKeyError && (
+{vm.transformKeyError && (
             <p className="text-xs text-error">{vm.transformKeyError}</p>
           )}
-          {accessibilityGranted === false && (
+{accessibilityGranted === false && (
             <div className="settings-callout flex items-center gap-2 text-xs text-on-surface" data-tone="accent">
               <span>Accessibility permission is required for transform capture and apply.</span>
               <button type="button" onClick={onRequestAccessibility} className="ml-auto underline">Grant</button>
             </div>
-          )}
-        </div>
+          )}</SettingsRow>
       </SettingsBranch>
       <TransformPractice
         transformHoldKey={settings.transformHoldKey}

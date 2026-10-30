@@ -51,9 +51,9 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
       <p className="settings-eyebrow">
         Make it yours
       </p>
-      <h1 id="customization-title" className="settings-page-title mt-2">
+      <h2 id="customization-title" className="settings-page-title mt-2">
         Customize Murmur
-      </h1>
+      </h2>
       <p className="mt-1 max-w-2xl text-sm leading-relaxed text-on-surface-variant">
         Shape what Murmur writes, how spoken shortcuts behave, and how results adapt to your apps.
       </p>

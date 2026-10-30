@@ -958,7 +958,7 @@ textarea {
   padding: var(--ui-space-4);
 }
 
-.settings-sidebar { width: var(--ui-sidebar-width); }
+/* Settings navigation has its own responsive geometry in styles/settings.css. */
 
 .home-nav,
 .home-dashboard,
