@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-29
+
+### Changed
+
+- Redesign Home as a single prompt-style recording bar with this month's usage in its footer, a flatter setup checklist with a progress meter, and a consistent corner radius, colour, and monospace metadata (#824).
+
 ## [0.53.0] - 2026-10-28
 
 ### Added
