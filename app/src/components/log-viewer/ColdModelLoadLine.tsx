@@ -21,7 +21,7 @@ export function ColdModelLoadLine({ runs }: { runs: readonly PerformanceRunV1[] 
       </div>
       <p className="mt-0.5 text-[11px] text-on-surface-variant">
         {summary.medianColdLoadMs !== null && `Median cold load ${formatMilliseconds(summary.medianColdLoadMs)}. `}
-        A cold load follows an idle model release; Speech-to-Text → Release Model After Inactivity controls it.
+        Idle model release can cause cold loads; Speech-to-Text → Release Model After Inactivity controls idle release.
       </p>
     </div>
   );
