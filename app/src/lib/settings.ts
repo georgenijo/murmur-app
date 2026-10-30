@@ -572,9 +572,13 @@ export const AUTO_STOP_SILENCE_OPTIONS: { value: number; label: string }[] = [
   { value: 4000, label: '4s' },
 ];
 
+/** Keeps the model loaded on adapter or desktop power; 5 minutes on battery. */
+export const IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER = -1;
+
 export const IDLE_TIMEOUT_OPTIONS: { value: number; label: string }[] = [
   { value: 5, label: '5 minutes' },
   { value: 15, label: '15 minutes' },
+  { value: IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER, label: 'Never on power adapter' },
   { value: 0, label: 'Never' },
 ];
 

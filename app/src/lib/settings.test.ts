@@ -21,6 +21,8 @@ import {
   DICTATION_KEY_OPTION_GROUPS,
   DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
+  IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER,
+  IDLE_TIMEOUT_OPTIONS,
   LEGACY_OVERLAY_OFFSET_KEY,
   microphoneDeviceNameArg,
   MODEL_OPTIONS,
@@ -162,6 +164,13 @@ describe('loadSettings', () => {
 
     expect(Object.keys(loaded).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
     expect(loaded).toEqual(stored);
+  });
+
+  it('keeps the five-minute idle default and persists the power-adapter idle choice', () => {
+    expect(DEFAULT_SETTINGS.idleTimeoutMinutes).toBe(5);
+    expect(IDLE_TIMEOUT_OPTIONS.map(option => option.value)).toEqual([5, 15, IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER, 0]);
+    saveSettings({ ...DEFAULT_SETTINGS, idleTimeoutMinutes: IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER });
+    expect(loadSettings().idleTimeoutMinutes).toBe(-1);
   });
 
   it('returns defaults when localStorage is empty', () => {

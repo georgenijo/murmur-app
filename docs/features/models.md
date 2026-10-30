@@ -117,6 +117,29 @@ Events contain only bounded catalog metadata, state enums, a failure-present
 boolean, and transition reason; they do not contain transcripts, paths, or raw
 backend errors.
 
+## Idle release
+
+The heartbeat checks once a minute whether the idle dictation model should be
+released. Settings → Speech-to-Text → **Release Model After Inactivity**
+(`idleTimeoutMinutes`) offers 5 minutes (default), 15 minutes, **Never on
+power adapter**, and Never. Never on power adapter keeps the model loaded while
+IOKit reports adapter or desktop (`AC Power`) supply. On battery, UPS, or an
+unreadable power source it falls back to the 5-minute window, so a laptop that
+unplugs releases an already-idle model on the next check. Release never runs
+while recording, processing, benchmarking, or meeting inference is active.
+
+Issue #831 measured Parakeet v3 Core ML on an Apple M4 with synthetic speech:
+an in-process reload after release took 90–263 ms, and the first decode after
+it ran about 45 ms slower than a warm decode of the same 2.4-second clip.
+Keeping the model loaded held about 35 MB more RSS, most of it clean
+file-backed pages, and 5–6 MB more physical footprint; the `aned` daemon's RSS
+did not change. The first load from a newly linked app binary took 49 s for
+one-time ANE specialization, which startup warming absorbs. Recording-start
+preparation overlaps a reload with speech, so it delays delivery only when the
+utterance is shorter than the reload. The default stays at 5 minutes because
+other catalog models hold far more memory (Whisper Large Turbo is ~3 GB).
+The Performance tab shows the recent cold-load rate.
+
 Memory-pressure unload is an explicit manager operation and does not select or
 load another model. Murmur has no automatic cross-model fallback.
 

@@ -47,3 +47,31 @@ pub(super) fn cpu_percent() -> Option<f32> {
     let current = snapshot();
     update_cpu_percent(&mut PREVIOUS.lock_or_recover(), current)
 }
+
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOPSCopyPowerSourcesInfo() -> core_foundation::base::CFTypeRef;
+    fn IOPSGetProvidingPowerSourceType(
+        snapshot: core_foundation::base::CFTypeRef,
+    ) -> core_foundation::string::CFStringRef;
+}
+
+/// `kIOPMACPowerKey`; battery and UPS supplies report other values.
+const AC_POWER_SOURCE: &str = "AC Power";
+
+pub(super) fn on_external_power() -> bool {
+    use core_foundation::base::{CFRelease, TCFType};
+    use core_foundation::string::CFString;
+
+    let snapshot = unsafe { IOPSCopyPowerSourcesInfo() };
+    if snapshot.is_null() {
+        return false;
+    }
+    // The providing type follows the Get rule; copy it before releasing the
+    // snapshot that owns it.
+    let source = unsafe { IOPSGetProvidingPowerSourceType(snapshot) };
+    let external = !source.is_null()
+        && unsafe { CFString::wrap_under_get_rule(source) }.to_string() == AC_POWER_SOURCE;
+    unsafe { CFRelease(snapshot) };
+    external
+}

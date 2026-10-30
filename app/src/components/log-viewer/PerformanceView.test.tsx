@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PerformanceHealth } from '../../lib/hooks/usePerformanceHealth';
-import { makeResourceSample, unavailable } from './testFixtures';
+import { makeResourceSample, makeRun, measured, unavailable } from './testFixtures';
 import { PerformanceView } from './PerformanceView';
 
 const HEALTH: PerformanceHealth = {
@@ -92,6 +92,42 @@ describe('PerformanceView', () => {
     expect(container.querySelector('[aria-label="Shared resource chart timeline cursor"]')).not.toBeNull();
     expect(container.textContent).toContain('Microphone startup looks healthy');
     expect(container.textContent).toContain('240 ms');
+  });
+
+  it('shows the content-free cold model load rate from recent runs', async () => {
+    const warm = makeRun();
+    const cold = makeRun({
+      runtimes: [{ ...warm.runtimes[0], warmState: 'coldLoaded' }],
+      stages: warm.stages.map(stage => stage.stage === 'modelLoad'
+        ? { ...stage, durationMs: measured(420), outcome: 'completed' as const }
+        : stage),
+    });
+    await act(async () => {
+      root.render(
+        <PerformanceView
+          samples={[]}
+          loading={false}
+          error={null}
+          health={HEALTH}
+          onRetry={vi.fn()}
+          runs={[warm, warm, warm, cold]}
+        />,
+      );
+    });
+
+    const line = container.querySelector('[aria-label="Cold model loads"]');
+    expect(line?.textContent).toContain('Cold model loads: 1 of 4 recent dictations (25%)');
+    expect(line?.textContent).toContain('Median cold load 420 ms');
+    expect(line?.textContent).toContain('Release Model After Inactivity');
+  });
+
+  it('omits the cold model load line without run history', async () => {
+    await act(async () => {
+      root.render(
+        <PerformanceView samples={[]} loading={false} error={null} health={HEALTH} onRetry={vi.fn()} />,
+      );
+    });
+    expect(container.querySelector('[aria-label="Cold model loads"]')).toBeNull();
   });
 
   it('explains chronic fallback without restart advice', async () => {

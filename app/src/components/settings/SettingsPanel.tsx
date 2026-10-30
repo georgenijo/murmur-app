@@ -1250,7 +1250,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <div className="settings-field">
               <label className="block text-sm font-medium text-on-surface">Release Model After Inactivity</label>
               <Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />
-              <p className="text-xs text-on-surface-variant">Free memory by unloading an idle model; choose Never to keep it ready.</p>
+              <p className="text-xs text-on-surface-variant">Free memory by unloading an idle model. Never on power adapter keeps it ready while plugged in and unloads after 5 minutes on battery.</p>
             </div>
           </SettingsSection>
 

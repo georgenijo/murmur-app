@@ -158,15 +158,14 @@ struct IdleState {
 }
 
 fn should_release_model(
-    timeout_min: u32,
+    release_after: Option<std::time::Duration>,
     status: crate::state::DictationStatus,
     idle_for: Option<std::time::Duration>,
 ) -> bool {
-    timeout_min > 0
-        && status == crate::state::DictationStatus::Idle
-        && idle_for.is_some_and(|elapsed| {
-            elapsed >= std::time::Duration::from_secs(timeout_min as u64 * 60)
-        })
+    release_after.is_some_and(|timeout| {
+        status == crate::state::DictationStatus::Idle
+            && idle_for.is_some_and(|elapsed| elapsed >= timeout)
+    })
 }
 
 pub fn set_idle_timeout(app_handle: tauri::AppHandle) {
@@ -199,11 +198,13 @@ fn check_idle_timeout() {
     {
         return;
     }
-    let timeout_min = *state.app_state.idle_timeout_minutes.lock_or_recover();
+    let policy = *state.app_state.model_idle_policy.lock_or_recover();
+    // Read once per check so both release gates below see the same answer.
+    let release_after = policy.release_after(crate::platform::on_external_power);
     let should_release = {
         let status = state.app_state.dictation.lock_or_recover().status;
         let last = state.app_state.last_transcription_at.lock_or_recover();
-        should_release_model(timeout_min, status, last.map(|t| t.elapsed()))
+        should_release_model(release_after, status, last.map(|t| t.elapsed()))
     };
     if should_release {
         // Hold the status lock through reset so a racing recording either makes
@@ -211,7 +212,7 @@ fn check_idle_timeout() {
         let dictation = state.app_state.dictation.lock_or_recover();
         let still_idle = {
             let last = state.app_state.last_transcription_at.lock_or_recover();
-            should_release_model(timeout_min, dictation.status, last.map(|t| t.elapsed()))
+            should_release_model(release_after, dictation.status, last.map(|t| t.elapsed()))
         };
         if still_idle
             && !state.benchmark.is_running()
@@ -299,15 +300,16 @@ mod tests {
 
     #[test]
     fn idle_release_requires_expired_idle_status() {
-        let expired = Some(std::time::Duration::from_secs(5 * 60));
-        assert!(should_release_model(5, DictationStatus::Idle, expired));
+        let five = Some(std::time::Duration::from_secs(5 * 60));
+        let expired = five;
+        assert!(should_release_model(five, DictationStatus::Idle, expired));
         assert!(!should_release_model(
-            5,
+            five,
             DictationStatus::Recording,
             expired
         ));
         assert!(!should_release_model(
-            5,
+            five,
             DictationStatus::Processing,
             expired
         ));
@@ -351,16 +353,17 @@ mod tests {
 
     #[test]
     fn idle_release_respects_disabled_and_recent_activity() {
+        let five = Some(std::time::Duration::from_secs(5 * 60));
         assert!(!should_release_model(
-            0,
+            None,
             DictationStatus::Idle,
             Some(std::time::Duration::from_secs(60 * 60)),
         ));
         assert!(!should_release_model(
-            5,
+            five,
             DictationStatus::Idle,
             Some(std::time::Duration::from_secs(5 * 60 - 1)),
         ));
-        assert!(!should_release_model(5, DictationStatus::Idle, None));
+        assert!(!should_release_model(five, DictationStatus::Idle, None));
     }
 }

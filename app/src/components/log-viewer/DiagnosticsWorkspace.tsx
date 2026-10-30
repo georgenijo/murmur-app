@@ -296,6 +296,7 @@ export function DiagnosticsWorkspace({
               void performance.refreshResources();
               health.refresh();
             }}
+            runs={performance.runs}
           />
         </div>
       )}
