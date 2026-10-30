@@ -142,6 +142,33 @@ describe('appearance runtime hooks', () => {
     expect(controller!.library.document.themes.map((entry) => entry.id)).toEqual(['ocean', 'copy-of-ocean', 'copy-of-ocean-2']);
   });
 
+  it.each([
+    ['paired', { light: 'opencode', dark: 'opencode' }],
+    ['mixed', { light: 'sonic', dark: 'opencode' }],
+  ] as const)('preserves an active %s imported theme when its ID becomes built-in', async (_name, selection) => {
+    const imported = makeLocalThemeEntry('opencode', 'My imported palette', {
+      version: 1, presetId: 'custom', accent: '#ff8bc6', background: '#161616',
+    });
+    const initial = createAppearanceDocument('dark', imported.theme, 4, { ...selection });
+    localStorage.setItem(THEME_LIBRARY_STORAGE_KEY, JSON.stringify({ version: 1, revision: 3, themes: [imported] }));
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(initial));
+    await act(async () => { root.render(<Provider><Consumer /></Provider>); });
+    const renamed = controller!.library.document.themes[0]!;
+    expect(renamed.id).toBe('my-imported-palette');
+    expect(renamed.theme).toEqual(imported.theme);
+    expect(controller!.document.selection).toEqual({
+      light: selection.light === 'opencode' ? renamed.id : 'sonic', dark: renamed.id,
+    });
+    expect(controller!.document.cache.dark).toEqual(initial.cache.dark);
+    const persisted = JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY)!);
+    expect(persisted.selection.dark).toBe(renamed.id);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => { root.render(<Provider><Consumer /></Provider>); });
+    expect(controller!.document.selection.dark).toBe(renamed.id);
+    expect(controller!.document.cache.dark).toEqual(initial.cache.dark);
+  });
+
   it('shows the library-full error when a saved card cannot be duplicated', async () => {
     await act(async () => root.render(<Provider><Consumer /><ThemeLibrary onBrowse={() => {}} onImport={() => {}} onCustomize={() => {}} /></Provider>));
     const themes = Array.from({ length: 128 }, (_, index) => makeLocalThemeEntry(`theme-${index}`, `Theme ${index}`, { version: 1, presetId: 'sonic' }));

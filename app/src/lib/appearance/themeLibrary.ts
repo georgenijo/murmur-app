@@ -64,7 +64,7 @@ export interface ThemeLibraryStorageLike {
 }
 
 export type ThemeLibraryLoadResult =
-  | { status: 'ready'; document: ThemeLibraryDocumentV1; needsRepair: boolean }
+  | { status: 'ready'; document: ThemeLibraryDocumentV1; needsRepair: boolean; renamedIds?: Record<string, string> }
   | { status: 'unavailable'; document: ThemeLibraryDocumentV1; error: string };
 
 function byteLength(value: string): number {
@@ -208,10 +208,12 @@ export function loadThemeLibrary(
       isRecord(candidate) && typeof candidate.id === 'string' ? [candidate.id] : []),
   );
   let needsRepair = false;
+  const renamedIds: Record<string, string> = {};
   for (const candidate of value.themes) {
     let theme = parseThemeLibraryEntry(candidate);
     if (theme && RESERVED_THEME_IDS.has(theme.id)) {
       const id = availableThemeId(theme.label, new Set([...storedIds, ...ids]));
+      renamedIds[theme.id] ??= id;
       theme = { ...theme, id };
       storedIds.add(id);
     }
@@ -228,7 +230,9 @@ export function loadThemeLibrary(
     themes,
   };
   if (JSON.stringify(document) !== JSON.stringify(value)) needsRepair = true;
-  return { status: 'ready', document, needsRepair };
+  return { status: 'ready', document, needsRepair,
+    ...(Object.keys(renamedIds).length ? { renamedIds } : {}),
+  };
 }
 
 function nextLibraryRevision(revision: number): number {
