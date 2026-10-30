@@ -748,6 +748,16 @@ describe('loadSettings', () => {
     expect(loadSettings().autoStopSilenceMs).toBe(0);
   });
 
+  it('keeps Smart Auto-Stop off unless explicitly enabled', () => {
+    expect(DEFAULT_SETTINGS.smartAutoStopEnabled).toBe(false);
+    for (const value of ['true', 1, null, undefined]) {
+      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, smartAutoStopEnabled: value }));
+      expect(loadSettings().smartAutoStopEnabled).toBe(false);
+    }
+    localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, smartAutoStopEnabled: true }));
+    expect(loadSettings().smartAutoStopEnabled).toBe(true);
+  });
+
   it('removes the retired live transcript preview setting', () => {
     localStorage.setItem('dictation-settings', JSON.stringify({
       ...DEFAULT_SETTINGS,

@@ -53,6 +53,7 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Opt-in hands-free finish for toggle-started recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
 - Applies to any recording **not started by holding the trigger key** — double-tap, the main-window button, the overlay click, and locked mode, in every recording mode. While the key is physically held, the release owns the stop.
 - Arms only after it has heard speech, and its threshold only ever rises above an absolute floor — on a quiet mic it does nothing rather than cutting you off. Stopping manually always still works.
+- Optional, experimental **Smart Auto-Stop**: at each pause a local Smart Turn v3.2 model (~8.7 MB, user-initiated download) judges whether you sounded finished and stops early; the silence duration stays the ceiling and every failure falls back to it. Off by default.
 
 ### Meeting Capture — [features/meeting-capture.md](features/meeting-capture.md)
 
@@ -351,7 +352,7 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 235 registered commands |
+| Rust backend | `app/src-tauri/src/` — 239 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |

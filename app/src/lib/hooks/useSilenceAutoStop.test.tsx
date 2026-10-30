@@ -17,10 +17,14 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 vi.mock('../log', () => ({ flog: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
+const invoke = vi.fn();
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
+
 function Harness(props: {
   enabled: boolean;
   status: DictationStatus;
   silenceMs: number;
+  smartEnabled?: boolean;
   onAutoStop: () => void;
 }) {
   useSilenceAutoStop(props);
@@ -36,6 +40,7 @@ describe('useSilenceAutoStop', () => {
     enabled?: boolean;
     status?: DictationStatus;
     silenceMs?: number;
+    smartEnabled?: boolean;
     onAutoStop: () => void;
   }) {
     await act(async () => {
@@ -44,6 +49,7 @@ describe('useSilenceAutoStop', () => {
           enabled={props.enabled ?? true}
           status={props.status ?? 'recording'}
           silenceMs={props.silenceMs ?? 2000}
+          smartEnabled={props.smartEnabled ?? false}
           onAutoStop={props.onAutoStop}
         />,
       );
@@ -74,6 +80,7 @@ describe('useSilenceAutoStop', () => {
     levelHandler = null;
     originHandlers.clear();
     unlisten.mockClear();
+    invoke.mockReset();
     now = 1_000_000;
     vi.spyOn(Date, 'now').mockImplementation(() => now);
   });
@@ -246,5 +253,113 @@ describe('useSilenceAutoStop', () => {
     await act(async () => root.unmount());
     expect(unlisten).toHaveBeenCalled();
     root = createRoot(container);
+  });
+  describe('Smart Auto-Stop', () => {
+    const scored = (probability: number) => ({ outcome: 'scored', recordingId: 1, probability, inferenceMs: 9 });
+
+    it('stops early at the first pause the model calls complete', async () => {
+      invoke.mockResolvedValue(scored(0.93));
+      const onAutoStop = vi.fn();
+      await render({ smartEnabled: true, onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 250);
+      expect(invoke).not.toHaveBeenCalled();
+      await emit(0.0, 100);
+      expect(invoke).toHaveBeenCalledWith('check_smart_turn');
+      expect(onAutoStop).toHaveBeenCalledOnce();
+      // The silence timer is latched too: no second stop at the ceiling.
+      await emit(0.0, 3000);
+      expect(onAutoStop).toHaveBeenCalledOnce();
+    });
+
+    it('keeps recording through a mid-sentence pause and leaves the ceiling in charge', async () => {
+      invoke.mockResolvedValue(scored(0.2));
+      const onAutoStop = vi.fn();
+      await render({ smartEnabled: true, onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 1900);
+      expect(onAutoStop).not.toHaveBeenCalled();
+      // Asked exactly once for this pause, however long it lasts.
+      expect(invoke).toHaveBeenCalledOnce();
+      await emit(0.0, 200);
+      expect(onAutoStop).toHaveBeenCalledOnce();
+    });
+
+    it('asks again at the next pause after speech resumes', async () => {
+      invoke.mockResolvedValueOnce(scored(0.1)).mockResolvedValueOnce(scored(0.95));
+      const onAutoStop = vi.fn();
+      await render({ smartEnabled: true, onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 600);
+      expect(onAutoStop).not.toHaveBeenCalled();
+      await emit(0.3, 500);
+      await emit(0.0, 400);
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(onAutoStop).toHaveBeenCalledOnce();
+    });
+
+    it('drops an answer that arrives after speech resumed', async () => {
+      let answer: (value: unknown) => void = () => {};
+      invoke.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+      const onAutoStop = vi.fn();
+      await render({ smartEnabled: true, onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 320);
+      expect(invoke).toHaveBeenCalledOnce();
+      await emit(0.3, 200);
+      await act(async () => { answer(scored(0.99)); });
+      expect(onAutoStop).not.toHaveBeenCalled();
+    });
+
+    it('drops an answer that arrives after the recording ended', async () => {
+      let answer: (value: unknown) => void = () => {};
+      invoke.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+      const onAutoStop = vi.fn();
+      await render({ smartEnabled: true, onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 320);
+      await render({ smartEnabled: true, status: 'processing', onAutoStop });
+      await render({ smartEnabled: true, status: 'recording', onAutoStop });
+      await act(async () => { answer(scored(0.99)); });
+      expect(onAutoStop).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the silence timer when the model is unavailable or the check fails', async () => {
+      invoke.mockResolvedValueOnce({ outcome: 'unavailable', reason: 'not_installed' });
+      const onAutoStop = vi.fn();
+      await render({ smartEnabled: true, onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 1900);
+      expect(onAutoStop).not.toHaveBeenCalled();
+      await emit(0.0, 200);
+      expect(onAutoStop).toHaveBeenCalledOnce();
+
+      invoke.mockRejectedValueOnce(new Error('ipc'));
+      await render({ smartEnabled: true, status: 'idle', onAutoStop });
+      await render({ smartEnabled: true, status: 'recording', onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 1900);
+      expect(onAutoStop).toHaveBeenCalledOnce();
+      await emit(0.0, 200);
+      expect(onAutoStop).toHaveBeenCalledTimes(2);
+    });
+
+    it('never asks while off, while Stop on Silence is off, or for a hold-started recording', async () => {
+      const onAutoStop = vi.fn();
+      await render({ onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 1000);
+      await render({ smartEnabled: true, silenceMs: 0, status: 'idle', onAutoStop });
+      await render({ smartEnabled: true, silenceMs: 0, status: 'recording', onAutoStop });
+      await emit(0.3, 800);
+      await emit(0.0, 1000);
+      await render({ smartEnabled: true, status: 'idle', onAutoStop });
+      await render({ smartEnabled: true, status: 'recording', onAutoStop });
+      await emitOrigin('hold-down-start');
+      await emit(0.3, 800);
+      await emit(0.0, 1000);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(onAutoStop).not.toHaveBeenCalled();
+    });
   });
 });

@@ -61,11 +61,31 @@ silence auto-stop fired { silenceMs, speechMs }
 
 Visible in the Performance workspace's Events tab like any other recording event.
 
+## Smart Auto-Stop (Experimental)
+
+`smartAutoStopEnabled: boolean`, off by default. It shortens the wait at the end of a turn; it never extends it.
+
+At each pause of a recording Stop on Silence is watching, once the pause has lasted `SMART_TURN_CHECK_MS` (300 ms), the hook calls `check_smart_turn` — once per pause, never two checks at once. Rust peeks the last 8 s of the recording at 16 kHz (a copy taken through the audio supervisor; capture keeps running and the final stop still owns the buffer), computes Whisper log-mel features, and runs Pipecat's [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) on a Tokio blocking worker with a single-threaded ONNX session. A probability at or over `SMART_TURN_THRESHOLD` (0.7) stops the recording through the same `onAutoStop` path and latches the detector, so the silence timer cannot fire a second stop.
+
+The answer is honored only if the pause it was asked about is still running: speech that resumed, a newer pause, a status change, a hold that began, or a new recording all make it stale. Anything other than a confident score — a lower score, `notRecording`, `tooShort`, or `unavailable` (model not downloaded, a check already running, a load or inference failure) — leaves the recording to the silence timer, which stays the hard ceiling. With Stop on Silence Off the control is disabled and the hook never asks.
+
+The 300 ms check point and 0.7 threshold are Hex's tuned values. Smart Turn is trained on human speech; synthetic `say` voices are well outside its distribution, so the `#[ignore]` real-model test (`cargo test --lib smart_turn::tests::real_model -- --ignored --nocapture`) asserts runtime parity with the Python reference and only reports content-free scores for synthetic mid-sentence pauses and turn ends.
+
+**Model.** `smart-turn-v3.2-cpu.onnx`, 8,679,182 bytes, pinned to Hugging Face revision `f766f81d` and SHA-256 `2bb02631…967e4f`. The download is user-initiated from Settings → Recording, streamed with an exact size cap and hash, fsynced, and published atomically under `~/Library/Application Support/local-dictation/models/smart-turn/<sha256>/`. The full hash is re-verified on every load. Remove drops the loaded session first. The model is BSD-2-Clause (Copyright (c) 2024–2025, Daily); see `THIRD_PARTY_NOTICES.md`.
+
+**Runtime.** No second ONNX Runtime. sherpa-onnx already links ONNX Runtime 1.24 statically for CPU Parakeet; `ort` is built with `alternative-backend`, which links nothing, and `smart_turn.rs` hands it that runtime's C API (`OrtGetApiBase` → API version 24) once per process. The feature extractor and session setup are adapted from Hex (MIT).
+
+**Diagnostics.** Rust logs `smart turn check { recording_id, probability, inference_ms, loaded_model }` or `smart turn check unavailable { outcome }` to the `recording` stream; when it fires, the hook logs `smart auto-stop fired { probability, inferenceMs, silenceMs, speechMs }`. No audio or transcript is logged or stored.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `app/src/lib/silenceAutoStop.ts` | Thresholds, state, and the pure per-sample fold |
+| `app/src/lib/silenceAutoStop.ts` | Thresholds, state, the pause counter, and the pure per-sample fold |
+| `app/src/lib/smartTurn.ts` | Smart Auto-Stop check point, threshold, command wrappers, and pure check/verdict decisions |
+| `app/src/components/settings/SmartAutoStopSettings.tsx` | Smart Auto-Stop toggle and model download/remove row |
+| `app/src-tauri/src/smart_turn.rs` | Log-mel features, the shared ONNX Runtime hookup, single-flight scoring, model pins |
+| `app/src-tauri/src/commands/smart_turn.rs` | Model status/download/remove and `check_smart_turn` |
 | `app/src/lib/hooks/useSilenceAutoStop.ts` | Subscription, per-recording reset, the hold-origin gate, single call out |
 | `app/src/lib/hooks/useRecordingOrigin.ts` | Tracks whether the in-flight recording is hold-started |
 | `app/src/lib/settings.ts` | `autoStopSilenceMs`, its option list, and its validation |
@@ -76,4 +96,7 @@ Visible in the Performance workspace's Events tab like any other recording event
 
 - `app/src/lib/silenceAutoStop.test.ts` — arming, cumulative speech, the exact stop point, latching, silence reset on resumed speech, the disabled path, the sample-gap cap, backwards timestamps, non-finite levels, a microphone that never clears the floor, and room tone under a loud peak.
 - `app/src/lib/hooks/useSilenceAutoStop.test.tsx` — fires once, never on a silent recording, ignores levels while disabled/off/not recording, resets per recording, never fires for a hold-started recording, re-arms after a hold ends, survives the Both-mode tap-then-cancel sequence, and unsubscribes on unmount.
-- `app/src/lib/settings.test.ts` — the duration allow-list and its coercions.
+- `app/src/lib/settings.test.ts` — the duration allow-list and its coercions; Smart Auto-Stop stays off unless explicitly `true`.
+- `app/src/lib/smartTurn.test.ts` — one pause per silence run, the check point, once-per-pause, the threshold edge, and stale answers.
+- `app/src/lib/hooks/useSilenceAutoStop.test.tsx` (Smart Auto-Stop) — early stop on a confident score, a low score leaving the ceiling in charge, re-asking after speech resumes, answers dropped after resumed speech or a new recording, fail-open on unavailable/rejected checks, and no checks while off, with Stop on Silence Off, or for a held recording.
+- `app/src-tauri/src/smart_turn.rs` — log-mel parity with `WhisperFeatureExtractor`, non-finite input, window tail, load-once, fail-closed load/inference, busy instead of waiting; plus the ignored real-model test.

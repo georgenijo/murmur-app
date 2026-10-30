@@ -25,6 +25,7 @@ pub mod query_history;
 pub mod query_popover;
 pub mod recording;
 pub mod settings_store;
+pub mod smart_turn;
 pub mod theme;
 pub mod transform_diagnostics;
 pub mod transform_model;

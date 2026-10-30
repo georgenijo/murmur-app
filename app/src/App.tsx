@@ -333,6 +333,7 @@ function App() {
     enabled: hotkeysArmed,
     status,
     silenceMs: settings.autoStopSilenceMs,
+    smartEnabled: settings.smartAutoStopEnabled,
     onAutoStop: handleStop,
   });
   // Independent AX-selection transform hotkey (issue #312). Enabled only when

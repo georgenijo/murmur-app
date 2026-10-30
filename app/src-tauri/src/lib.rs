@@ -72,6 +72,7 @@ mod selection;
 mod smart_auto_probe;
 mod smart_destination;
 mod smart_formatting;
+mod smart_turn;
 mod spoken_numbers;
 mod spoken_structure;
 mod sqlite_support;
@@ -527,6 +528,10 @@ pub fn run() {
             commands::transform_model::download_transform_model,
             commands::transform_model::remove_transform_model,
             commands::transform_model::reset_transform_runtime,
+            commands::smart_turn::smart_turn_model_status,
+            commands::smart_turn::download_smart_turn_model,
+            commands::smart_turn::remove_smart_turn_model,
+            commands::smart_turn::check_smart_turn,
             frontmost::list_running_applications,
             commands::benchmark::get_benchmark_models,
             commands::benchmark::get_benchmark_activity,
