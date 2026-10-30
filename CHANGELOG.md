@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-30
+
+### Added
+
+- Optional warm microphone standby and bounded pre-roll to protect the first word of the next dictation; off by default (#828).
+- Experimental local Smart Turn auto-stop for hands-free dictation, with an explicit model download and the existing silence timer as fallback; off by default (#834).
+- Experimental on-device homophone correction with a bounded fallback; off by default, with real-speech benefit still unproven (#833).
+- A “Never on power adapter” model-idle option and a cold-model-load summary; the default remains five minutes (#831).
+- Content-free full release-to-paste timing, including the hotkey-to-command hop (#826).
+- Local accuracy-corpus export and model comparison tooling with punctuation, capitalization, and term-hit metrics (#827).
+
+### Fixed
+
+- Drain queued microphone samples when recording stops and retain a 50 ms dictation release tail to reduce clipped final words (#829).
+
+### Developer
+
+- Add a Core ML preview-decode reuse experiment behind the disabled-by-default `preview-decode-reuse` Cargo feature. Ordinary release builds keep whole-clip final decoding (#830).
+- Record a no-go for decode-time vocabulary biasing: the tested CTC rescoring approach did not justify a second recognition runtime (#832).
+
 ## [0.54.0] - 2026-10-29
 
 ### Changed
