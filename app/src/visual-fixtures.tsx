@@ -1,3 +1,4 @@
+import { AppSurface } from './components/ui/AppSurface';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Channel } from '@tauri-apps/api/core';
@@ -882,7 +883,13 @@ function TypographyFixture() {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'typography' ? (
+    {requestedState === 'production-font-roots' ? (
+      <main data-visual-ready="true">
+        {(['main', 'onboarding', 'diagnostics'] as const).map(surface => (
+          <AppSurface key={surface} surface={surface} className="font-serif"><p>{surface} production text</p></AppSurface>
+        ))}
+      </main>
+    ) : requestedState === 'typography' ? (
       <TypographyFixture />
     ) : requestedState === 'query-review' ? (
       <div className="h-screen w-full">

@@ -1179,11 +1179,11 @@ textarea {
 }
 
 .home-dashboard {
-  /* Home shape lock: surfaces 8px, every control 6px, key caps 4px; only
+  /* Home shape lock: surfaces and controls 8px, key caps 4px; only
      status dots and meters stay round. Metadata (times, counts, keys) is mono. */
   --ui-radius-card: var(--ui-radius-inset);
-  --ui-radius-control: 0.375rem;
-  --ui-radius-pill: 0.375rem;
+  --ui-radius-control: 0.5rem;
+  --ui-radius-pill: 0.5rem;
   --home-radius-key: 0.25rem;
   --home-font-mono: var(--ui-font-mono);
   overflow-y: auto;
