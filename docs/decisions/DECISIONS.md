@@ -1,5 +1,22 @@
 # Decisions Log
 
+## 2026-10-29: No decode-time vocabulary biasing for Parakeet yet (#832)
+
+**Decision:** Keep vocabulary correction after recognition. Do not wire
+FluidAudio's CTC word-spotter rescoring, and do not add a transcribe.cpp
+backend now.
+
+**Why:** FluidAudio 0.14.1 has no decode-time biasing for Parakeet TDT. Its
+custom-vocabulary path rescores with an auxiliary ~98 MB CTC encoder (a second
+encoder pass), and `fluidaudio-rs` does not expose it. On a synthetic `say`
+fixture (52 clips), stock thresholds raised look-alike WER from 0% to 10.87%
+and wrote 16 wrong terms. Conservative thresholds were safe but only joined
+split compounds, which Murmur's existing Smart Correction already fixes as
+text with no added latency (20/30 term hits vs 19/30). transcribe.cpp would
+need a second ggml copy, which can't link beside whisper.cpp, or a whole second
+Parakeet runtime in a sidecar. Real-voice accuracy is unmeasured; revisit with
+the #827 accuracy corpus. Details: [Transcription](../features/transcription.md#vocabulary-biasing-during-decoding-no-go-for-now-832).
+
 ## 2026-10-28: Mode-aware spoken numbers and context-cued vocabulary
 
 **Decision:** Freeze one content-free `TextRegister` per recording: the
