@@ -258,7 +258,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 241 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 239 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -269,7 +269,6 @@ stay local and never reach logs or telemetry. See
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership primitives |
 | `accuracy_corpus.rs` | Internal-benchmark-only `accuracy-v1` corpus loader (corrected-history or synthetic clips) for `scripts/murmur_accuracy.py` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
-| `browser_media.rs` | Optional browser-media pause while dictating: Hex-derived pause/resume proof, MediaRemote commands, System Audio consent gate; the tap runs in the capture worker (`--browser-level`) |
 | `browser_site.rs` | Allowlisted browser-host discovery and exact host-rule matching for site-bound modes |
 | `capture_agent_probe.rs` | Opt-in LaunchAgent service and recovery probe CLI. Production dictation does not use this path |
 | `capture_health.rs` | Bounded capture startup and fallback history derived from telemetry, persisted in `capture-health-v1.json` |
@@ -509,7 +508,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-241 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+239 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

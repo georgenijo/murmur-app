@@ -92,7 +92,6 @@ export interface ConfigureOptions {
   saveTranscript?: boolean;
   saveAudio?: boolean;
   mirrorToNotchPill?: boolean;
-  pauseBrowserMedia?: boolean;
   outputDir?: string;
   appProfiles?: AppProfile[];
   modes?: MurmurMode[];
@@ -155,7 +154,6 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     smartDestinationEnabled: s.smartDestinationEnabled,
     autoPasteDelayMs: s.autoPasteDelayMs,
     mirrorToNotchPill: s.mirrorToNotchPill,
-    pauseBrowserMedia: s.pauseBrowserMedia,
     vadSensitivity: s.vadSensitivity,
     idleTimeoutMinutes: s.idleTimeoutMinutes,
     captureStandbyEnabled: s.captureStandbyEnabled,

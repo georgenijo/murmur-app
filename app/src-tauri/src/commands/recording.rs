@@ -479,7 +479,6 @@ fn transition_dictation_status(
     let from = dictation.status;
     dictation.status = to;
     emit_dictation_state_changed(recording_id, from, to);
-    crate::browser_media::dictation_status_changed(recording_id, from, to);
     from
 }
 
@@ -3688,9 +3687,6 @@ pub async fn configure_dictation(
     }
     if let Some(auto_paste) = options.get("autoPaste").and_then(|v| v.as_bool()) {
         dictation.auto_paste = auto_paste;
-    }
-    if let Some(pause) = options.get("pauseBrowserMedia").and_then(|v| v.as_bool()) {
-        crate::browser_media::set_enabled(pause);
     }
     if let Some(mirror) = options.get("mirrorToNotchPill").and_then(|v| v.as_bool()) {
         dictation.mirror_to_notchpill = mirror;
