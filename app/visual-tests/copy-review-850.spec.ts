@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function settings(page: Page, editor: string) {
   await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=${editor}`);
-  await expect(page.locator('#settings-editor-title')).toBeVisible();
+  await expect(page.locator('.settings-editor-sheet > div:first-child h2')).toBeVisible();
 }
 
 test('C1: an armed deletion blocks every modified Return native activation', async ({ page }) => {
@@ -30,7 +30,7 @@ for (const appearance of ['light', 'dark']) {
         : page.getByRole('button', { name: 'Delete…', exact: true });
       const attribute = panel === 'runs' ? 'data-copy-cleared-runs' : 'data-copy-deleted-capture';
       await opener.click();
-      const dialog = page.getByRole('dialog');
+      const dialog = page.locator('[role="dialog"]:not(.settings-editor-sheet)');
       await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
       await page.keyboard.press('Escape');
       await expect(dialog).toHaveCount(0);
@@ -71,7 +71,7 @@ for (const appearance of ['light', 'dark']) {
     await page.keyboard.press('Shift+Tab');
     await page.keyboard.press('Space');
     await expect(page.locator('html')).toHaveAttribute('data-copy-refresh-waiting', 'true');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.locator('[role="dialog"]:not(.settings-editor-sheet)')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Transform diagnostics', exact: true })).toBeFocused();
     await page.evaluate(() => window.dispatchEvent(new Event('copy-release-refresh')));
     await expect(page.locator('html')).not.toHaveAttribute('data-copy-refresh-waiting');
@@ -86,7 +86,7 @@ for (const appearance of ['light', 'dark']) {
     await page.getByRole('button', { name: 'Refresh', exact: true }).evaluate((button: HTMLButtonElement) => button.click());
     await expect(page.getByText('Pass 52', { exact: true })).toBeVisible();
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.locator('[role="dialog"]:not(.settings-editor-sheet)')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Transform diagnostics', exact: true })).toBeFocused();
     await expect(page.locator('html')).not.toHaveAttribute('data-copy-deleted-capture');
   });
@@ -97,7 +97,7 @@ for (const appearance of ['light', 'dark']) {
     await page.getByRole('button', { name: 'Delete capture…', exact: true }).click();
     await page.keyboard.press('Shift+Tab');
     await page.keyboard.press('Space');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.locator('[role="dialog"]:not(.settings-editor-sheet)')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Transform diagnostics', exact: true })).toBeFocused();
     await expect(page.locator('html')).toHaveAttribute('data-copy-deleted-capture', 'capture-one');
   });
@@ -106,7 +106,7 @@ for (const appearance of ['light', 'dark']) {
     await page.emulateMedia({ colorScheme: appearance as 'light' | 'dark' });
     await page.goto(`/visual-fixtures.html?state=settings-copy&page=appearance&appearance=${appearance}`);
     await page.getByRole('button', { name: 'Create theme', exact: true }).click();
-    const dialog = page.getByRole('dialog');
+    const dialog = page.locator('[role="dialog"]:not(.settings-editor-sheet)');
     const accent = dialog.getByLabel('Accent', { exact: true });
     await accent.fill('not-a-color');
     await page.keyboard.press('Enter');
@@ -134,7 +134,7 @@ test('C4: command editor owns initial focus, wraps Tab, cancels on Escape, and r
   await settings(page, 'commands');
   const create = page.getByRole('button', { name: 'New command…', exact: true });
   await create.click();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.locator('[role="dialog"]:not(.settings-editor-sheet)');
   const first = dialog.getByRole('button', { name: 'Close voice command editor', exact: true });
   await expect(first).toBeFocused();
   await page.keyboard.press('Shift+Tab');
@@ -155,7 +155,7 @@ test('C4: Knowledge confirmation traps focus and restores the overflow trigger w
   const opener = page.getByRole('button', { name: 'More knowledge actions', exact: true });
   await opener.click();
   await page.getByRole('menuitem', { name: 'Delete all…', exact: true }).click();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.locator('[role="dialog"]:not(.settings-editor-sheet)');
   const input = dialog.getByLabel('Type DELETE to confirm', { exact: true });
   await expect(input).toBeFocused();
   await page.keyboard.press('Shift+Tab');

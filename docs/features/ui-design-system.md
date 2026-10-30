@@ -299,3 +299,10 @@ these rules govern Murmur’s copy and interactions.
 
 See the [copy and interaction audit](../copy-interaction-audit.md) for the
 issue #850 checklist, coverage, and native verification handoff.
+
+## Settings progressive disclosure (#849)
+
+The behavior layer, complete 22-pane before/after audit, search/permission
+boundaries, UI-only persistence contract and verification map are documented in
+[Settings progressive disclosure](settings-progressive-disclosure.md). Geometry
+continues to use the #848 measurements above.

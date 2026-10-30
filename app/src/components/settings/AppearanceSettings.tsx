@@ -1,5 +1,5 @@
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type MutableRefObject } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   AppearanceMode,
@@ -8,6 +8,7 @@ import type {
 } from "../../lib/appearance";
 import { useAppearance } from "../../lib/hooks/useAppearance";
 import { CommunityThemeDialog } from "./CommunityThemeDialog";
+import { useDialogFocus } from '../../lib/hooks/useDialogFocus';
 import { ThemeLibrary } from "./ThemeLibrary";
 
 const MODE_OPTIONS: readonly {
@@ -144,6 +145,25 @@ function ColorControl({
   );
 }
 
+function ThemeEditorDialog({ onClose, contentRef, children }: {
+  onClose: () => void;
+  contentRef: MutableRefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}) {
+  const dialogRef = useDialogFocus(onClose);
+  useLayoutEffect(() => {
+    contentRef.current = dialogRef.current;
+    return () => { contentRef.current = null; };
+  }, [contentRef, dialogRef]);
+  return <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]"
+    onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+    <div ref={dialogRef} role="dialog" tabIndex={-1} onKeyDown={defaultButtonKeyDown} aria-modal="true"
+      aria-labelledby="theme-editor-title" className="dialog-popover max-h-[86vh] w-full max-w-lg overflow-y-auto p-5">
+      {children}
+    </div>
+  </div>;
+}
+
 export function AppearanceSettings() {
   const appearance = useAppearance();
   const resolvedTokens =
@@ -154,7 +174,7 @@ export function AppearanceSettings() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [communityOpen, setCommunityOpen] = useState(false);
   const [customEditorOpen, setCustomEditorOpen] = useState(false);
-  const editorRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
   const finishEditor = () => {
     const invalid = Array.from(editorRef.current?.querySelectorAll<HTMLInputElement>('input[pattern]') ?? [])
       .filter((field) => !field.checkValidity());
@@ -253,15 +273,6 @@ export function AppearanceSettings() {
     updateTheme({ presetId: "custom", contrast });
   };
 
-  useEffect(() => {
-    if (!customEditorOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setCustomEditorOpen(false);
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [customEditorOpen]);
-
   return (
     <div className="space-y-3">
       <fieldset>
@@ -335,13 +346,7 @@ export function AppearanceSettings() {
       )}
 
       {customEditorOpen && (
-        <div
-          className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setCustomEditorOpen(false);
-          }}
-        >
-          <div ref={editorRef} role="dialog" onKeyDown={defaultButtonKeyDown} aria-modal="true" aria-labelledby="theme-editor-title" className="dialog-popover max-h-[86vh] w-full max-w-lg overflow-y-auto p-5">
+        <ThemeEditorDialog onClose={() => setCustomEditorOpen(false)} contentRef={editorRef}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 id="theme-editor-title" className="text-base font-semibold text-on-surface">Create theme</h2>
@@ -416,8 +421,7 @@ export function AppearanceSettings() {
                 <button type="button" onClick={finishEditor} data-default-button className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim">Done</button>
               </div>
             </div>
-          </div>
-        </div>
+        </ThemeEditorDialog>
       )}
       <CommunityThemeDialog open={communityOpen} onClose={() => setCommunityOpen(false)} />
     </div>

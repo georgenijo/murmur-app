@@ -2,6 +2,7 @@ import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { SettingsBranch } from './SettingsBranch';
 import { ModeFileActions } from './ModeFileActions';
 import {
   AVAILABLE_MODEL_OPTIONS,
@@ -196,13 +197,14 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
             <label className="text-xs">Vocabulary<select aria-label="Vocabulary policy" value={selected.vocabularyPolicy} onChange={(e) => updateMode({ vocabularyPolicy: e.target.value as MurmurMode['vocabularyPolicy'] })} className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-2"><option value="inherit">Inherit</option><option value="general">General</option><option value="technical">Technical</option></select></label>
           </div>}
           <fieldset><legend className="text-xs font-semibold text-on-surface">Bound applications</legend><div className="mt-2 flex flex-wrap items-center gap-2">{profiles.length ? profiles.map((profile) => <label key={profile.bundleId} className="inline-flex items-center gap-2 rounded-lg bg-surface-container-low px-3 py-2 text-xs"><input type="checkbox" checked={profile.modeId === selected.id} onChange={(e) => bind(profile.bundleId, e.target.checked)} />{profile.label || profile.bundleId}</label>) : <><span className="text-xs text-on-surface-variant">Add an app, then choose its Mode here.</span>{onAddAppProfile && <button type="button" onClick={() => onAddAppProfile(selected.id)} className="rounded-lg bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-primary">Add an app</button>}</>}</div></fieldset>
-          <fieldset className="space-y-3 rounded-lg border border-outline-variant/25 p-3">
+          <fieldset data-setting-target="browser-sites" className="space-y-3 rounded-lg border border-outline-variant/25 p-3">
             <legend className="px-1 text-xs font-semibold text-on-surface">Browser sites</legend>
             <label className="flex items-start justify-between gap-4 text-xs text-on-surface">
               <span><span className="block font-medium">Use frontmost browser host</span><span className="mt-1 block leading-relaxed text-on-surface-variant">Off by default. Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.</span></span>
               <input type="checkbox" role="switch" aria-label="Use browser site mode rules" checked={siteLookupEnabled} onChange={(event) => commit({ siteModeLookupEnabled: event.target.checked })} />
             </label>
-            {siteLookupEnabled && <>
+            <SettingsBranch open={siteLookupEnabled}>
+              <div data-setting-target="browser-site-rules" className="settings-stack">
               <div className="grid gap-2 sm:grid-cols-[160px_minmax(0,1fr)_auto]">
                 <select aria-label="Site rule browser" value={siteBrowser} onChange={(event) => setSiteBrowser(event.target.value)} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-2 text-xs">{SITE_MODE_BROWSERS.map((browser) => <option key={browser.bundleId} value={browser.bundleId}>{browser.label}</option>)}</select>
                 <input aria-label="Site rule host" value={siteHost} onChange={(event) => setSiteHost(event.target.value)} placeholder="github.com" className="rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-xs" />
@@ -217,7 +219,8 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
               </div>)}</div>
               <button type="button" disabled={siteTesting} onClick={() => void testCurrentSite()} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-semibold text-on-surface disabled:opacity-50">{siteTesting ? 'Waiting for browser…' : 'Test current site'}</button>
               {siteProbe && <p role="status" className="text-xs text-on-surface-variant">{siteProbe}</p>}
-            </>}
+              </div>
+            </SettingsBranch>
           </fieldset>
           <div><label className="text-xs font-semibold text-on-surface">Before / after test<textarea aria-label="Mode test input" value={sample} onChange={(e) => setSample(e.target.value)} className="mt-1 min-h-20 w-full rounded-lg border border-outline-variant bg-surface-container-lowest p-3 text-sm" /></label><div className="mt-2 grid gap-2 sm:grid-cols-2"><pre className="whitespace-pre-wrap rounded-lg bg-surface-container-low p-3 text-xs">{sample}</pre><pre data-testid="mode-preview" className="whitespace-pre-wrap rounded-lg bg-primary-container/40 p-3 text-xs">{previewModeText(sample, selected)}</pre></div><p className="mt-1 text-[10px] text-on-surface-variant">Preview stays in this window. It never copies, pastes, or injects into another app.</p></div>
         </div>

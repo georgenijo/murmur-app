@@ -1,8 +1,13 @@
+import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
+import { SettingsDisclosureContext } from './SettingsLayout';
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState, useId, useLayoutEffect, useRef } from 'react';
+import { useDialogFocus } from '../../lib/hooks/useDialogFocus';
+import { MiddleTruncate } from '../ui/middle-truncate';
 import type { VocabScanStats, VocabScanStatus, WalkerRow } from '../../lib/hooks/useVocabScan';
 import type { Settings } from '../../lib/settings';
 import { vocabularyPrompt } from '../../lib/settings';
+import { AppOverridesEditor } from './AppOverridesEditor';
 import { KnowledgeManager } from './KnowledgeManager';
 import { TransformsManager } from './TransformsManager';
 import { VocabScanStrip } from './VocabScanStrip';
@@ -10,6 +15,7 @@ import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
 
 export type SettingsEditorTab =
+  | 'app-overrides'
   | 'vocabulary'
   | 'aliases'
   | 'knowledge'
@@ -18,6 +24,7 @@ export type SettingsEditorTab =
   | 'scan';
 
 export const SETTINGS_EDITOR_LABELS: Record<SettingsEditorTab, string> = {
+  'app-overrides': 'App overrides',
   vocabulary: 'Vocabulary',
   aliases: 'Aliases',
   knowledge: 'Knowledge',
@@ -39,6 +46,8 @@ interface SettingsEditorsWindowProps {
   onCancelScan: () => void;
   onBack: () => void;
   backLabel?: string;
+  restoreFocus?: () => HTMLElement | null;
+  target?: { id: string } | null;
 }
 
 function ScannedVocabulary({ settings }: { settings: Settings }) {
@@ -119,21 +128,29 @@ export function SettingsEditorsWindow({
   onScan,
   onCancelScan,
   onBack,
-  backLabel = 'Back to Text settings',
+  backLabel = 'Close editor',
+  restoreFocus,
+  target,
 }: SettingsEditorsWindowProps) {
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      event.preventDefault();
-      onBack();
-    };
-    document.addEventListener('keydown', handleEscape);
-    return () => document.removeEventListener('keydown', handleEscape);
-  }, [onBack]);
-
+  const revealedTargetRef = useRef<typeof target>(null);
+  const [advancedOpen, setAdvancedOpen] = useSettingsAdvanced(initialTab);
+  const titleId = useId();
+  const dialogRef = useDialogFocus(onBack, restoreFocus);
+  useLayoutEffect(() => {
+    if (target?.id !== 'app-overrides-manual' || revealedTargetRef.current === target) return;
+    if (!advancedOpen) { setAdvancedOpen(true); return; }
+    revealedTargetRef.current = target;
+    const destination = dialogRef.current?.querySelector<HTMLElement>('[data-setting-target="app-overrides-manual"]');
+    destination?.scrollIntoView({ block: 'center' });
+    destination?.classList.add('settings-target-flash');
+    const timeout = setTimeout(() => destination?.classList.remove('settings-target-flash'), 1300);
+    return () => { clearTimeout(timeout); destination?.classList.remove('settings-target-flash'); };
+  }, [advancedOpen, setAdvancedOpen, target, dialogRef]);
   return (
-    <section onKeyDown={defaultButtonKeyDown} aria-labelledby="settings-editor-title" className="flex min-h-0 flex-1 flex-col">
+    <SettingsDisclosureContext.Provider value={{ open: advancedOpen, setOpen: setAdvancedOpen }}>
+    <div className="settings-sheet-backdrop">
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+      onKeyDown={defaultButtonKeyDown} className="settings-editor-sheet">
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
         <button
           type="button"
@@ -143,10 +160,11 @@ export function SettingsEditorsWindow({
           <span aria-hidden="true">‹</span>
           {backLabel}
         </button>
-        <span id="settings-editor-title" className="sr-only">{SETTINGS_EDITOR_LABELS[initialTab]}</span>
+        <h2 id={titleId} className="text-base font-semibold text-on-surface">{SETTINGS_EDITOR_LABELS[initialTab]}</h2>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
+        {initialTab === 'app-overrides' && <AppOverridesEditor profiles={settings.appProfiles} onChange={appProfiles => onUpdateSettings({ appProfiles })} />}
         {initialTab === 'vocabulary' && <ScannedVocabulary settings={settings} />}
         {initialTab === 'aliases' && (
           <VocabularyAliasesEditor
@@ -172,8 +190,8 @@ export function SettingsEditorsWindow({
             <h2 className="text-base font-semibold text-on-surface">Project scan</h2>
             <p className="mt-1 text-xs text-on-surface-variant">Scan one local source folder for identifiers. Dependency and build directories remain excluded.</p>
             <div className="settings-card mt-4 p-4">
-              <p className="break-all rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface">
-                {settings.codeVocabFolder || 'No project folder selected'}
+              <p className="flex min-w-0 rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface">
+                <MiddleTruncate value={settings.codeVocabFolder || 'No project folder selected'} />
               </p>
               <div className="mt-3 flex gap-2">
                 <button type="button" onClick={onChooseCodeFolder} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Choose folder…</button>
@@ -191,6 +209,8 @@ export function SettingsEditorsWindow({
           </section>
         )}
       </div>
-    </section>
+    </div>
+    </div>
+    </SettingsDisclosureContext.Provider>
   );
 }

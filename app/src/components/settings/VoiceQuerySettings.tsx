@@ -14,7 +14,8 @@ import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
 import { Select } from '../ui/Select';
 import { QueryCapabilities } from './QueryCapabilities';
 import { SettingToggle } from './SettingToggle';
-import { SettingsCallout } from './SettingsLayout';
+import { SettingsBranch } from './SettingsBranch';
+import { SettingsCallout, SettingsDisclosure } from './SettingsLayout';
 import { SettingsSection } from './SettingsSection';
 
 interface VoiceQuerySettingsProps {
@@ -299,14 +300,16 @@ export function VoiceQuerySettings({
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-          <SettingsRow title={<>Query shortcut</>} disabled={settings.queryHotkey === null} onReset={settings.queryHotkey !== DEFAULT_SETTINGS.queryHotkey ? () => { void vm.toggleVoiceQuery(); } : undefined} control={<Select
+      <SettingsBranch open={settings.queryHotkey !== null}>
+          <SettingsRow targetId="query-key" title={<>Query shortcut</>} disabled={settings.queryHotkey === null} onReset={settings.queryHotkey !== DEFAULT_SETTINGS.queryHotkey ? () => { void vm.toggleVoiceQuery(); } : undefined} control={<Select
               value={settings.queryHotkey ?? QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value ?? 'shift_r'}
               disabled={settings.queryHotkey === null}
               onChange={(value) => vm.updateQueryHotkey(value as QueryKey)}
               items={QUERY_KEY_OPTIONS}
             />}></SettingsRow>
-          <SettingsRow title={<>Timeout</>} onReset={settings.queryTimeoutSeconds !== DEFAULT_SETTINGS.queryTimeoutSeconds ? () => vm.updateQueryTimeoutSeconds(String(DEFAULT_SETTINGS.queryTimeoutSeconds)) : undefined} control={<Select
+      </SettingsBranch>
+      <SettingsDisclosure title="Advanced" layout="rows">
+          <SettingsRow targetId="query-timeout" title={<>Timeout</>} onReset={settings.queryTimeoutSeconds !== DEFAULT_SETTINGS.queryTimeoutSeconds ? () => vm.updateQueryTimeoutSeconds(String(DEFAULT_SETTINGS.queryTimeoutSeconds)) : undefined} control={<Select
               value={String(settings.queryTimeoutSeconds)}
               onChange={vm.updateQueryTimeoutSeconds}
               items={[
@@ -316,7 +319,7 @@ export function VoiceQuerySettings({
                 { value: '300', label: '5 minutes' },
               ]}
             />}></SettingsRow>
-      </div>
+      </SettingsDisclosure>
 
       {accessibilityGranted === false && settings.queryHotkey !== null && (
         <div>

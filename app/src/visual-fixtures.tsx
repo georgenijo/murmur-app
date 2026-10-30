@@ -540,7 +540,11 @@ const fixtureSettings = {
     enabled: true,
     scope: { kind: 'global' as const },
   }],
-  appProfiles: [],
+  appProfiles: requestedState === 'settings-folding' && query.get('profile') === '1' ? [{
+    bundleId: 'com.example.Fixture', label: 'Fixture editor', autoPasteOverride: null,
+    cleanupOverride: null, smartFormattingOverride: null, cliFormattingOverride: null,
+    writingStyle: null, ideContextEnabled: false, ideProjectRoots: ['/fixture/project'], queryContextExcluded: false,
+  }] : [],
 };
 
 const fixtureBuckets = Object.fromEntries(Array.from({ length: 7 }, (_, index) => {
@@ -610,7 +614,7 @@ function VisualFixture() {
     document.documentElement.classList.add('murmur-main-window');
     return () => document.documentElement.classList.remove('murmur-main-window');
   }, []);
-  const settingsOpen = copyFixture || requestedState === 'settings'
+  const settingsOpen = requestedState === 'settings-folding' || copyFixture || requestedState === 'settings'
     || requestedState === 'settings-general'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-shortcuts'
@@ -713,7 +717,9 @@ function VisualFixture() {
           onOpenUpdate={() => {}}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
-          pageRequest={copyFixture
+          pageRequest={requestedState === 'settings-folding'
+            ? { page: query.get('page') ?? 'recording', target: query.get('target') ?? undefined, token: 849 }
+            : copyFixture
             ? (copyRequestReady ? { page: query.get('page') ?? 'general', editorTab: (query.get('editor') ?? undefined) as SettingsEditorTab | undefined, token: 850 } : null)
             : requestedState === 'settings-general'
               ? { page: 'general', token: 1 }
@@ -1004,7 +1010,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       <DictationPreviewFixture />
     ) : requestedState === 'overlay-meeting-suggestion' ? (
       <MeetingSuggestionOverlayFixture />
-    ) : (requestedState === 'settings-appearance' || (copyFixture && query.get('page') === 'appearance')) ? (
+    ) : (requestedState === 'settings-appearance' || (requestedState === 'settings-folding' && query.get('page') === 'appearance') || (copyFixture && query.get('page') === 'appearance')) ? (
       <AppearanceProvider>
         <VisualFixture />
       </AppearanceProvider>

@@ -27,7 +27,7 @@ for (const { path, state } of pages) {
         for (let pass = 0; pass < 3; pass++) {
           const owners = page.locator('.settings-setting-row:has(+ .settings-dependent-branch) [role=switch][aria-checked=false]:not([data-disabled])');
           for (const owner of await owners.all()) if (await owner.isVisible()) await owner.click();
-          await page.locator('.settings-card-body details').evaluateAll(elements => elements.forEach(el => { (el as HTMLDetailsElement).open = true; }));
+          for (const button of await page.locator('.settings-advanced-toggle[aria-expanded=false]').all()) await button.click();
         }
       }
       const result = await page.locator('.settings-card-body').evaluate(body => {
@@ -41,7 +41,7 @@ for (const { path, state } of pages) {
           const branch = row.classList.contains('settings-dependent-branch');
           const label = row.textContent?.trim().slice(0, 40);
           if (style.paddingTop !== (branch ? '0px' : '12px') || style.paddingBottom !== (branch ? '0px' : '12px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
-          if (style.paddingLeft !== '16px' || style.paddingRight !== '16px') failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
+          if (style.paddingLeft !== (branch ? '0px' : '16px') || style.paddingRight !== (branch ? '0px' : '16px')) failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
           if (style.borderRadius !== '0px') failures.push(`${label}: rounded row ${style.borderRadius}`);
           if (Math.abs(bounds.width - (card.width - 2)) > .1) failures.push(`${label}: inset divider (${bounds.width}/${card.width})`);
           if (i > 0 && style.borderTopWidth !== (branch ? '0px' : '1px')) failures.push(`${label}: divider ${style.borderTopWidth}`);

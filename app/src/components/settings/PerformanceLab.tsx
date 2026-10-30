@@ -1,3 +1,4 @@
+import { MiddleTruncate } from '../ui/middle-truncate';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
@@ -566,8 +567,8 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         </p>
         <div className="mt-3 rounded-lg border border-outline-variant/30 bg-surface-container-low p-3 text-[11px] leading-relaxed text-on-surface-variant">
           <p className="font-medium text-on-surface">Output folder</p>
-          <p className="mt-1 break-all rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2.5 py-1.5 text-on-surface">
-            {settings.benchmarkOutputDir || 'Documents/Murmur (default)'}
+          <p className="mt-1 flex min-w-0 rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2.5 py-1.5 text-on-surface">
+            <MiddleTruncate value={settings.benchmarkOutputDir || 'Documents/Murmur (default)'} />
           </p>
           <div className="mt-2 flex flex-wrap gap-3">
             <button type="button" onClick={() => void chooseFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>
