@@ -351,7 +351,7 @@ export function useSettings() {
       });
     }
 
-    if ('model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'recordingMode' in updates || 'doubleTapKey' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || probePolicyChanged) {
+    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'recordingMode' in updates || 'doubleTapKey' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || probePolicyChanged) {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.
@@ -360,7 +360,7 @@ export function useSettings() {
 
     if (probePolicyChanged) scheduleProbePolicyWrite();
 
-    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates) {
+    if ('model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates || 'homophoneContextEnabled' in updates) {
       const version = ++configureVersionRef.current;
       const nativeModeVersion = nativeModeVersionRef.current;
       void configure(buildConfigureOptions(newSettings), {
@@ -378,6 +378,9 @@ export function useSettings() {
               autoPasteDelayMs: confirmed.autoPasteDelayMs,
               vadSensitivity: confirmed.vadSensitivity,
               idleTimeoutMinutes: confirmed.idleTimeoutMinutes,
+              captureStandbyEnabled: confirmed.captureStandbyEnabled,
+              captureStandbySeconds: confirmed.captureStandbySeconds,
+              capturePreRollMs: confirmed.capturePreRollMs,
               customVocabulary: confirmed.customVocabulary,
               vocabularyEntries: confirmed.vocabularyEntries,
               smartPunctuation: confirmed.smartPunctuation,
@@ -400,6 +403,7 @@ export function useSettings() {
               codeVocabFolder: confirmed.codeVocabFolder,
               correctionEnabled: confirmed.correctionEnabled,
               correctionFuzzy: confirmed.correctionFuzzy,
+              homophoneContextEnabled: confirmed.homophoneContextEnabled,
             };
             settingsRef.current = reverted;
             setSettings(reverted);

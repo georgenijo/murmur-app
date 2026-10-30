@@ -166,7 +166,12 @@ fn build_matcher(
             pairs.push((alias.trim().to_string(), entry.written.trim().to_string()));
         }
     }
+    let homophone_terms = entries
+        .iter()
+        .filter_map(|entry| crate::homophone_context::vocabulary_word(&entry.written))
+        .collect();
     CorrectionMatcher::build_with_learned(&terms, &pairs, learned_pairs, fuzzy, include_builtins)
+        .with_homophone_terms(homophone_terms)
 }
 
 fn unambiguous_project_root<'a>(
@@ -504,6 +509,22 @@ mod tests {
             enabled: true,
             scope: VocabularyScope::Global,
         }
+    }
+
+    #[test]
+    fn homophone_vocabulary_respects_enablement_and_app_scope() {
+        let global = entry("Read", &[]);
+        let mut disabled = entry("Claude", &[]);
+        disabled.enabled = false;
+        let mut scoped = entry("Cache", &["cash"]);
+        scoped.scope = VocabularyScope::App {
+            bundle_id: "test.editor".into(),
+        };
+        let set = CorrectionMatcherSet::build(&[], &[global, disabled, scoped], &[], false, false);
+        assert_eq!(set.select(None).homophone_terms(), &["Read"]);
+        let app = set.select(Some("test.editor"));
+        assert!(app.homophone_terms().contains(&"Cache".into()));
+        assert!(!app.homophone_terms().contains(&"Claude".into()));
     }
 
     #[test]

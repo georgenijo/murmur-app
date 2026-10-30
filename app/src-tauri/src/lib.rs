@@ -39,6 +39,7 @@ pub mod evaluation;
 mod file_output;
 mod frontmost;
 mod hang_diagnostics;
+mod homophone_context;
 mod hotkey_release;
 mod ide_context;
 mod injector;
@@ -63,6 +64,10 @@ mod model_hardware_guidance;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
+#[cfg(feature = "preview-decode-reuse")]
+mod preview_pause;
+#[cfg(feature = "preview-decode-reuse")]
+mod preview_reuse;
 mod query_adapter;
 mod query_capabilities;
 mod query_flow;
@@ -905,6 +910,7 @@ pub fn run() {
         }
 
         if let RunEvent::Exit = &_event {
+            audio_lifecycle::retire_standby();
             smart_destination::set_enabled(false);
             audio_inventory::shutdown();
             // App-exit teardown: stop resident native helpers so none outlive

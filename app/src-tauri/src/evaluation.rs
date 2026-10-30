@@ -1156,6 +1156,8 @@ fn run_transform(
             cleanup_capitalize: fixture.context.stages.cleanup_capitalize,
             voice_commands_enabled: fixture.context.stages.voice_commands,
             smart_correction_enabled: fixture.context.stages.smart_correction,
+            // Deterministic fixtures never invoke hardware inference.
+            homophone_context_enabled: false,
             smart_formatting_enabled: fixture.context.stages.smart_formatting,
             spoken_structure_policy: fixture
                 .context
@@ -1183,6 +1185,7 @@ fn run_transform(
         &context,
         TranscriptTransformResources {
             custom_commands: Vec::new(),
+            homophone_engine: None,
             voice_commands,
             correction_matcher: (!matcher.is_empty()).then(|| Arc::new(matcher)),
             cli_lexicon: CliLexicon::from_context(resources.cli_prompt.as_deref(), &pairs),

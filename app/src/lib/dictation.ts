@@ -83,6 +83,9 @@ export interface ConfigureOptions {
   autoPasteDelayMs?: number;
   vadSensitivity?: number;
   idleTimeoutMinutes?: number;
+  captureStandbyEnabled?: boolean;
+  captureStandbySeconds?: number;
+  capturePreRollMs?: number;
   customVocabulary?: string;
   vocabularyEntries?: VocabularyEntry[];
   smartPunctuation?: boolean;
@@ -105,6 +108,7 @@ export interface ConfigureOptions {
   codeVocabFolder?: string;
   correctionEnabled?: boolean;
   correctionFuzzy?: boolean;
+  homophoneContextEnabled?: boolean;
 }
 
 // Settings sends full snapshots; other callers may send partial updates. Keep
@@ -152,6 +156,9 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     mirrorToNotchPill: s.mirrorToNotchPill,
     vadSensitivity: s.vadSensitivity,
     idleTimeoutMinutes: s.idleTimeoutMinutes,
+    captureStandbyEnabled: s.captureStandbyEnabled,
+    captureStandbySeconds: s.captureStandbySeconds,
+    capturePreRollMs: s.capturePreRollMs,
     customVocabulary: s.customVocabulary,
     vocabularyEntries: s.vocabularyEntries,
     smartPunctuation: s.smartPunctuation,
@@ -173,6 +180,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     codeVocabFolder: s.codeVocabFolder,
     correctionEnabled: s.correctionEnabled,
     correctionFuzzy: s.correctionFuzzy,
+    homophoneContextEnabled: s.homophoneContextEnabled,
   };
 }
 

@@ -1021,6 +1021,21 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <p role="alert" className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
               )}
             </div>
+            <SettingToggle
+              title="Warm microphone standby"
+              description="Keep the microphone open briefly after dictation to protect the first word on your next press. The macOS microphone indicator stays on during standby. Only the selected pre-roll enters your next recording; other standby audio stays in memory and is discarded."
+              checked={settings.captureStandbyEnabled}
+              onChange={() => onUpdateSettings({ captureStandbyEnabled: !settings.captureStandbyEnabled })}
+              disabled={isRecording}
+            />
+            {settings.captureStandbyEnabled && (
+              <div className="settings-field">
+                <p className="text-sm font-medium text-on-surface">Microphone standby window</p>
+                <Select value={String(settings.captureStandbySeconds)} onChange={(value) => onUpdateSettings({ captureStandbySeconds: Number(value) })} disabled={isRecording} items={[{ value: '60', label: '1 minute' }, { value: '300', label: '5 minutes' }, { value: '900', label: '15 minutes' }]} />
+                <p className="text-sm font-medium text-on-surface">Pre-roll</p>
+                <Select value={String(settings.capturePreRollMs)} onChange={(value) => onUpdateSettings({ capturePreRollMs: Number(value) })} disabled={isRecording} items={[{ value: '300', label: '300 ms' }, { value: '450', label: '450 ms' }]} />
+              </div>
+            )}
             <div data-setting-target="voice-detection" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <p className="text-sm font-medium text-on-surface">Voice Detection</p>
               <VadSensitivitySlider
@@ -1290,6 +1305,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle title="Apply Preferred Spellings" label="Smart correction" description="Apply exact spoken aliases and supported vocabulary corrections after recognition on every model." checked={settings.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
               <SettingsBranch open={settings.correctionEnabled}>
                 <SettingToggle title="Correct Close Mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; disable if you see unwanted swaps." checked={settings.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
+                <SettingToggle title="Resolve Homophones" label="On-device context (experimental)" description="Use sentence context for confusable words only. Requires macOS 26+ and Apple Intelligence. Keeps deterministic text when unavailable or over the 150 ms budget." checked={settings.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
               <SettingToggle title="Structured Writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally." checked={settings.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
               <SettingToggle title="Spoken Formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery." checked={settings.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />

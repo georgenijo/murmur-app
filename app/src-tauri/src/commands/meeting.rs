@@ -127,6 +127,7 @@ pub async fn start_meeting(
     request: StartMeetingRequest,
     state: tauri::State<'_, State>,
 ) -> Result<MeetingSession, String> {
+    crate::audio_lifecycle::retire_standby();
     let _transition = if request.suggestion_token.is_some() {
         require_main_window(window.label())?;
         state.app_state.recording_transition.lock().await
