@@ -18,6 +18,7 @@ import { useQueryHistory } from './lib/hooks/useQueryHistory';
 import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
 import { QueryReviewView } from './components/query-review/QueryReviewApp';
 import './components/assistant/assistant.css';
+import type { SettingsEditorTab } from './components/settings/SettingsEditorsWindow';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
@@ -37,6 +38,11 @@ import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
+const copyFixture = requestedState === 'settings-copy';
+const copyKnowledge = [
+  { id: 'copy-transform', payload: { kind: 'transform', name: 'Meeting notes', instruction: 'Summarize decisions and action items.' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', createdAtMs: 1, updatedAtMs: 2, revision: 1 },
+  { id: 'copy-command', payload: { kind: 'replacement_rule', source: 'insert greeting', replacement: 'Hello, team' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', voiceCommand: { commandType: 'text_replacement', allowClipboardRead: false }, createdAtMs: 1, updatedAtMs: 2, revision: 1 },
+];
 const appearance = query.get('appearance') === 'dark' ? 'dark' : 'light';
 const importedThemeFixture = query.get('theme');
 const status: DictationStatus = requestedState === 'recording'
@@ -381,15 +387,19 @@ mockIPC((command, payload) => {
     return {
       availability: 'ready',
       schemaVersion: 1,
-      recordCount: 0,
+      recordCount: copyFixture ? copyKnowledge.length : 0,
       storeRevision: 0,
       recoveryAtMs: null,
       message: null,
     };
   }
   if (command === 'list_knowledge') {
-    return { entries: [], total: 0, nextOffset: null, storeRevision: 0 };
+    const request = (payload as Record<string, unknown> | undefined)?.request as { kind?: string; voiceCommand?: boolean } | undefined;
+    const entries = copyFixture ? copyKnowledge.filter((entry) => request?.voiceCommand ? !!entry.voiceCommand : !request?.kind || entry.payload.kind === request.kind) : [];
+    return { entries, total: entries.length, nextOffset: null, storeRevision: 0 };
   }
+  if (command === 'upsert_knowledge') return { ...copyKnowledge[1], ...((payload as Record<string, unknown> | undefined)?.draft as object) };
+  if (command === 'delete_knowledge') return 1;
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
   if (command === 'transform_model_status') {
     return { state: 'ready', path: '/fixture/transform.gguf', sizeBytes: 986_000_000, sha256: 'fixture', runtimeDisabled: false };
@@ -549,7 +559,7 @@ function VisualFixture() {
     document.documentElement.classList.add('murmur-main-window');
     return () => document.documentElement.classList.remove('murmur-main-window');
   }, []);
-  const settingsOpen = requestedState === 'settings'
+  const settingsOpen = copyFixture || requestedState === 'settings'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-shortcuts'
     || requestedState === 'settings-transform-practice'
@@ -558,6 +568,8 @@ function VisualFixture() {
   const meetings = useMeetings(fixtureSettings);
   const [historyEntries, setHistoryEntries] = React.useState(entries);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
+  const [copyRequestReady, setCopyRequestReady] = React.useState(false);
+  React.useEffect(() => { if (copyFixture) setCopyRequestReady(true); }, []);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('assistant') ? 'queries' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
@@ -640,7 +652,9 @@ function VisualFixture() {
           onOpenUpdate={() => {}}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
-          pageRequest={requestedState === 'settings-shortcuts'
+          pageRequest={copyFixture
+            ? (copyRequestReady ? { page: query.get('page') ?? 'general', editorTab: (query.get('editor') ?? undefined) as SettingsEditorTab | undefined, token: 850 } : null)
+            : requestedState === 'settings-shortcuts'
             ? { page: 'shortcuts', token: 1 }
             : requestedState === 'settings-transform-practice'
               ? { page: 'ai-transform', target: 'transform-practice', token: 1 }
@@ -664,7 +678,7 @@ function VisualFixture() {
                 <WorkspacePageHeader
                   title="Notetaker"
                   titleId="meetings-view-title"
-                  description="Local meeting transcripts and summaries."
+                  description="Local meeting transcripts and summaries"
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
                 <MeetingsPanel meetings={meetings} playbackBusy={false} />
@@ -674,7 +688,7 @@ function VisualFixture() {
                 <WorkspacePageHeader
                   title="Assistant"
                   titleId="queries-view-title"
-                  description="Talk, type, and pick up where you left off."
+                  description="Talk, type, and pick up where you left off"
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
                 <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
@@ -857,7 +871,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       <DictationPreviewFixture />
     ) : requestedState === 'overlay-meeting-suggestion' ? (
       <MeetingSuggestionOverlayFixture />
-    ) : requestedState === 'settings-appearance' ? (
+    ) : (requestedState === 'settings-appearance' || (copyFixture && query.get('page') === 'appearance')) ? (
       <AppearanceProvider>
         <VisualFixture />
       </AppearanceProvider>

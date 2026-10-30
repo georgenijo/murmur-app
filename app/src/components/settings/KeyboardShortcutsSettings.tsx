@@ -72,7 +72,7 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
       binding: transformKey === null
         ? { kind: 'off', label: null }
         : configuredBinding(`Hold ${transformKey}`, settings.disabled),
-      ownerLabel: 'Selected-Text Rewrite',
+      ownerLabel: 'Selected-text rewrite',
     },
     {
       destination: { shortcutId: 'voice-query', page: 'ai-query', target: 'voice-query-shortcut' },
@@ -84,7 +84,7 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
     },
     {
       destination: { shortcutId: 'paste-last', page: 'delivery', target: 'paste-last-shortcut' },
-      label: 'Paste Last / Retry Delivery',
+      label: 'Paste last or retry delivery',
       binding: pasteLast === undefined
         ? { kind: 'off', label: null }
         : configuredBinding(pasteLast, false),
@@ -96,7 +96,7 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
       binding: settings.correctionShortcutEnabled
         ? configuredBinding('⌘⇧E', settings.disabled)
         : { kind: 'off', label: '⌘⇧E' },
-      ownerLabel: 'Selected-Text Rewrite',
+      ownerLabel: 'Selected-text rewrite',
     },
   ];
 }
@@ -124,13 +124,13 @@ export function KeyboardShortcutsSettings({
       card={false}
       pageId="shortcuts"
       activePage={activePage}
-      title="Keyboard Shortcuts"
-      subtitle="See every Murmur shortcut in one place. Change global shortcuts on their owning settings pages."
+      title="Keyboard shortcuts"
+
     >
       <div data-setting-target="shortcuts" className="settings-stack">
         {settings.disabled && (
           <p role="status" className="settings-callout text-xs leading-relaxed text-on-surface" data-tone="accent">
-            Murmur is disabled, so recording, transform, Voice Query, and correction shortcuts are paused. Paste Last remains available, and every saved binding is shown below.
+            Murmur is disabled, so recording, transform, Voice Query, and correction shortcuts are paused. Paste last remains available, and every saved binding is shown below.
           </p>
         )}
         <section aria-labelledby="global-shortcuts-title">

@@ -472,7 +472,7 @@ function HistoryPanelComponent({
                 aria-label={`Transcription from ${formatTimestamp(entry.timestamp)}. Press Enter or Space to copy.`}
                 onClick={(event) => handleCardClick(event, entry)}
                 onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+                  if (event.target !== event.currentTarget || event.key !== ' ') return;
                   event.preventDefault();
                   void handleCopy(entry);
                 }}
@@ -550,7 +550,7 @@ function HistoryPanelComponent({
                       icon={<GraduationCap />}
                       onSelect={() => setTeachingEntry(entry)}
                     >
-                      Correct &amp; Teach
+                      Correct &amp; teach…
                     </SmartOverflowAction>
                   )}
                   <SmartOverflowAction
@@ -568,7 +568,7 @@ function HistoryPanelComponent({
                       showNotice('Deleted transcript.');
                     }}
                   >
-                    {confirmDeleteEntry === entry ? 'Confirm delete' : 'Delete'}
+                    {confirmDeleteEntry === entry ? 'Confirm delete…' : 'Delete…'}
                   </SmartOverflowAction>
                 </SmartOverflow>
               </div>

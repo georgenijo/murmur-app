@@ -9,13 +9,13 @@ interface ChecklistItem {
 }
 
 const ITEMS: readonly ChecklistItem[] = [
-  { id: 'command_palette', title: 'Open Command Palette', detail: 'Jump anywhere with ⌘K.', action: 'Open ⌘K' },
-  { id: 'mode_binding', title: 'Bind a Mode to an app', detail: 'Give one app its own writing behavior.', action: 'Choose app' },
-  { id: 'transform', title: 'Transform sample text', detail: 'Practice an on-device selected-text rewrite.', action: 'Try it' },
-  { id: 'voice_query', title: 'Set up Voice Query', detail: 'Ask through a CLI provider you choose.', action: 'Set up' },
-  { id: 'meeting', title: 'Record a meeting', detail: 'Capture local Me and Them transcripts.', action: 'Open Notetaker' },
-  { id: 'correction', title: 'Teach a correction', detail: 'Fix the latest dictation and remember it.', action: 'Teach' },
-  { id: 'shortcuts', title: 'See keyboard shortcuts', detail: 'Keep every Murmur action close.', action: 'View' },
+  { id: 'command_palette', title: 'Open the command palette', detail: 'Jump anywhere with ⌘K', action: 'Open ⌘K' },
+  { id: 'mode_binding', title: 'Bind a mode to an app', detail: 'Give one app its own writing behavior', action: 'Choose app' },
+  { id: 'transform', title: 'Transform sample text', detail: 'Practice an on-device selected-text rewrite', action: 'Try it' },
+  { id: 'voice_query', title: 'Set up Voice Query', detail: 'Ask through a CLI provider you choose', action: 'Set up' },
+  { id: 'meeting', title: 'Record a meeting', detail: 'Capture local Me and Them transcripts', action: 'Open Notetaker' },
+  { id: 'correction', title: 'Teach a correction', detail: 'Fix the latest dictation and remember it', action: 'Teach' },
+  { id: 'shortcuts', title: 'See keyboard shortcuts', detail: 'Keep every Murmur action close', action: 'View' },
 ] as const;
 
 interface DiscoveryChecklistProps {

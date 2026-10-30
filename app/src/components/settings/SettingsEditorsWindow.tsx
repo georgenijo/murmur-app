@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useEffect, useMemo, useState } from 'react';
 import type { VocabScanStats, VocabScanStatus, WalkerRow } from '../../lib/hooks/useVocabScan';
 import type { Settings } from '../../lib/settings';
@@ -20,9 +21,9 @@ const EDITOR_LABELS: Record<SettingsEditorTab, string> = {
   vocabulary: 'Vocabulary',
   aliases: 'Aliases',
   knowledge: 'Knowledge',
-  transforms: 'Saved Transforms',
-  commands: 'Voice Commands',
-  scan: 'Project Scan',
+  transforms: 'Saved transforms',
+  commands: 'Voice commands',
+  scan: 'Project scan',
 };
 
 interface SettingsEditorsWindowProps {
@@ -77,7 +78,7 @@ function ScannedVocabulary({ settings }: { settings: Settings }) {
       <div className="settings-card min-h-0 flex-1 overflow-hidden">
         {!summary ? (
           <div className="grid h-full min-h-48 place-items-center px-6 text-center text-sm text-on-surface-variant">
-            Run a Project Scan to populate local developer vocabulary.
+            Run a project scan to populate local developer vocabulary.
           </div>
         ) : (
           <>
@@ -132,7 +133,7 @@ export function SettingsEditorsWindow({
   }, [onBack]);
 
   return (
-    <section aria-labelledby="settings-editor-title" className="flex min-h-0 flex-1 flex-col">
+    <section onKeyDown={defaultButtonKeyDown} aria-labelledby="settings-editor-title" className="flex min-h-0 flex-1 flex-col">
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
         <button
           type="button"
@@ -173,14 +174,14 @@ export function SettingsEditorsWindow({
         )}
         {initialTab === 'scan' && (
           <section>
-            <h2 className="text-base font-semibold text-on-surface">Project Scan</h2>
+            <h2 className="text-base font-semibold text-on-surface">Project scan</h2>
             <p className="mt-1 text-xs text-on-surface-variant">Scan one local source folder for identifiers. Dependency and build directories remain excluded.</p>
             <div className="settings-card mt-4 p-4">
               <p className="break-all rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface">
                 {settings.codeVocabFolder || 'No project folder selected'}
               </p>
               <div className="mt-3 flex gap-2">
-                <button type="button" onClick={onChooseCodeFolder} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Choose Folder</button>
+                <button type="button" onClick={onChooseCodeFolder} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Choose folder…</button>
                 {settings.codeVocabFolder && <button type="button" onClick={onClearCodeFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant">Clear</button>}
               </div>
               <VocabScanStrip

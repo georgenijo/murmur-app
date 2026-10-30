@@ -115,6 +115,13 @@ export function LatencyMapView({ samples: suppliedSamples }: LatencyMapViewProps
               <>
                 <button
                   type="button"
+                  onClick={() => setConfirmClear(false)}
+                  className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     clearUiLatencySamples();
                     setConfirmClear(false);
@@ -122,13 +129,6 @@ export function LatencyMapView({ samples: suppliedSamples }: LatencyMapViewProps
                   className="rounded-lg bg-error px-2.5 py-1.5 text-xs font-semibold text-on-error"
                 >
                   Confirm clear
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmClear(false)}
-                  className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container"
-                >
-                  Cancel
                 </button>
               </>
             ) : (
@@ -138,7 +138,7 @@ export function LatencyMapView({ samples: suppliedSamples }: LatencyMapViewProps
                 disabled={samples.length === 0}
                 className="rounded-lg border border-outline-variant/20 bg-surface-container-lowest px-2.5 py-1.5 text-xs font-medium text-on-surface-variant hover:text-error disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Clear
+                Clear…
               </button>
             )}
           </div>

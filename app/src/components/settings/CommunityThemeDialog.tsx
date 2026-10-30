@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type {
@@ -171,7 +172,7 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
     >
       <div
         ref={dialogRef}
-        role="dialog"
+        role="dialog" onKeyDown={defaultButtonKeyDown}
         aria-modal="true"
         aria-labelledby="community-theme-title"
         className="dialog-popover flex max-h-[86vh] w-full max-w-[760px] flex-col overflow-hidden"
@@ -256,21 +257,21 @@ export function CommunityThemeDialog({ open, onClose }: Props) {
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
+                  onClick={() => setPendingUpdate(null)}
+                  className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     const extension = pendingUpdate;
                     setPendingUpdate(null);
                     void install(extension, true);
                   }}
-                  className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary"
+                  className="rounded-lg border border-error/30 bg-error/10 px-3 py-1.5 text-xs font-medium text-error"
                 >
                   Update collection
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingUpdate(null)}
-                  className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container"
-                >
-                  Cancel
                 </button>
               </div>
             </div>

@@ -109,7 +109,7 @@ export function TransformDiagnosticsView() {
             onClick={() => void deleteCapture(selected)}
             className="rounded-lg border border-error/20 px-3 py-1.5 text-xs font-medium text-error hover:bg-error/10"
           >
-            Delete capture
+            Delete capture…
           </button>
         </div>
         {textPanel('Selected text', selected.selection)}
@@ -175,7 +175,7 @@ export function TransformDiagnosticsView() {
                 </div>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => void reviewCapture(capture.captureId)} className="text-xs font-medium text-primary hover:underline">Review</button>
-                  <button type="button" onClick={() => void deleteCapture(capture)} className="text-xs font-medium text-error hover:underline">Delete</button>
+                  <button type="button" onClick={() => void deleteCapture(capture)} className="text-xs font-medium text-error hover:underline">Delete…</button>
                 </div>
               </div>
             ))}

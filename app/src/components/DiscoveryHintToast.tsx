@@ -12,9 +12,9 @@ const HINTS: Record<DiscoveryHintId, { title: string; detail: string; action: st
     action: 'Correct & Teach',
   },
   browser_modes: {
-    title: 'Use a Mode for this site',
-    detail: 'Murmur can apply a Mode to an exact browser site without storing the page or its text.',
-    action: 'Set up site Modes',
+    title: 'Use a mode for this site',
+    detail: 'Murmur can apply a mode to an exact browser site without storing the page or its text.',
+    action: 'Set up site modes',
   },
   meeting_summaries: {
     title: 'Your meeting can become a summary',

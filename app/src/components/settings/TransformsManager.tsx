@@ -1,3 +1,5 @@
+import { ActionsOverflow } from '../ui/ActionsOverflow';
+import { defaultButtonKeyDown, noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { useMemo, useRef, useState } from 'react';
 import {
   deleteKnowledge,
@@ -127,7 +129,7 @@ function TransformEditor({
   };
 
   return (
-    <div className="settings-card space-y-3 p-3">
+    <div data-default-scope onKeyDown={defaultButtonKeyDown} className="settings-card space-y-3 p-3">
       <div>
         <label className="mb-1 block text-xs font-medium text-on-surface">Spoken name</label>
         <input
@@ -167,14 +169,14 @@ function TransformEditor({
       </div>
       <label className="flex items-center gap-2 text-xs text-on-surface">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        Enabled
+        Use transform
       </label>
       {error && <p className="text-xs text-error">{error}</p>}
       <div className="flex gap-2">
         <button
           type="button"
           disabled={saving || overInstructionLimit}
-          onClick={() => void save()}
+          data-default-button onClick={() => void save()}
           className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save'}
@@ -231,19 +233,16 @@ export function TransformsManager({ active }: Props) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-on-surface-variant">
-          Speak a saved name during transform hold to expand it to the full instruction.
-          Built-ins: Shorten, Bullets, Professional, Fix grammar, Casual. If a saved name
-          matches a built-in preset (or one of its aliases), the built-in preset always
-          runs instead — rename the saved transform to avoid being shadowed.
-        </p>
+
         <button
           type="button"
           disabled={duplicating}
           onClick={() => openEditor({ kind: 'new' })}
-          className="shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary"
+          className={editing === null
+            ? 'shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary'
+            : 'shrink-0 rounded-lg bg-surface-container-high px-3 py-1.5 text-xs font-medium text-on-surface'}
         >
-          Add
+          Add transform…
         </button>
       </div>
 
@@ -315,9 +314,10 @@ export function TransformsManager({ active }: Props) {
                 >
                   {entry.enabled ? 'Disable' : 'Enable'}
                 </button>
+                <ActionsOverflow keepOpen label={`More actions for ${name}`}>
                 <button
                   type="button"
-                  className="text-xs text-error underline"
+                  onKeyDown={noDefaultButtonKeyDown} className="text-xs text-error underline"
                   onClick={() => {
                     if (confirmDeleteId !== entry.id) {
                       setConfirmDeleteId(entry.id);
@@ -330,8 +330,9 @@ export function TransformsManager({ active }: Props) {
                   }}
                   onBlur={() => setConfirmDeleteId((current) => (current === entry.id ? null : current))}
                 >
-                  {confirmDeleteId === entry.id ? 'Confirm delete' : 'Delete'}
+                  {confirmDeleteId === entry.id ? 'Confirm delete…' : 'Delete…'}
                 </button>
+                </ActionsOverflow>
               </div>
             </li>
           );

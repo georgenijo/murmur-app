@@ -82,9 +82,11 @@ describe('ModesManager', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       browserSiteRules: [expect.objectContaining({ enabled: false })],
     }));
-    await act(async () => (container.querySelector('[aria-label="Remove github.com"]') as HTMLButtonElement).click());
+    await act(async () => (container.querySelector('[aria-label="Remove github.com…"]') as HTMLButtonElement).click());
+    expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ browserSiteRules: [] }));
+    await act(async () => (container.querySelector('[aria-label="Confirm remove github.com…"]') as HTMLButtonElement).click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ browserSiteRules: [] }));
-    await act(async () => (container.querySelector('[aria-label="Use browser site Mode rules"]') as HTMLInputElement).click());
+    await act(async () => (container.querySelector('[aria-label="Use browser site mode rules"]') as HTMLInputElement).click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ siteModeLookupEnabled: false }));
   });
 

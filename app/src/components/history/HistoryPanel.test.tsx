@@ -350,13 +350,13 @@ describe('HistoryPanel', () => {
     await act(async () => targetActions.click());
 
     const deleteAction = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
-      .find((item) => item.textContent === 'Delete')!;
+      .find((item) => item.textContent === 'Delete…')!;
     await act(async () => deleteAction.click());
     expect(onDeleteEntries).not.toHaveBeenCalled();
 
     await act(async () => targetActions.click());
     const confirmAction = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'))
-      .find((item) => item.textContent === 'Confirm delete')!;
+      .find((item) => item.textContent === 'Confirm delete…')!;
     await act(async () => confirmAction.click());
 
     expect(onDeleteEntries).toHaveBeenCalledOnce();
@@ -500,7 +500,7 @@ describe('HistoryPanel', () => {
     expect(middleCard.querySelector('[data-action-id="copy"]')?.textContent).toBe('Copied');
   });
 
-  it.each(['Enter', ' '])('copies the focused row with %j', async (key) => {
+  it.each([' '])('copies the focused row with %j', async (key) => {
     await render({ entries: [entry({ id: 'keyboard', text: 'keyboard copy' })] });
     const card = container.querySelector('[data-testid="transcript-card"]') as HTMLElement;
     await act(async () => card.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
@@ -519,7 +519,7 @@ describe('HistoryPanel', () => {
       '[aria-label="More transcript actions"]',
     ) as HTMLButtonElement;
     await act(async () => moreTranscriptActions.click());
-    await act(async () => byText('Correct & Teach')!.click());
+    await act(async () => byText('Correct & teach…')!.click());
     expect(writeText).not.toHaveBeenCalled();
   });
 

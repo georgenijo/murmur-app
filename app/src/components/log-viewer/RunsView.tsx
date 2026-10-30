@@ -198,7 +198,7 @@ export function RunsView({
             onClick={() => void confirmClear()}
             className="rounded-lg border border-error/20 px-2.5 py-1.5 text-xs font-medium text-error hover:bg-error/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-error disabled:opacity-50"
           >
-            {clearing ? 'Clearing…' : 'Clear Performance Data'}
+            {clearing ? 'Clearing…' : 'Clear performance data'}
           </button>
         </div>
       </div>

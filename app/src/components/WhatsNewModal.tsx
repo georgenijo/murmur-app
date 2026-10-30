@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../lib/defaultButton';
 import { useEffect, useRef } from 'react';
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
@@ -62,10 +63,9 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
     >
       <motion.div
         ref={dialogRef}
-        role="dialog"
+        role="dialog" onKeyDown={defaultButtonKeyDown}
         aria-modal="true"
         aria-labelledby="whats-new-title"
-        aria-describedby="whats-new-description"
         initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.98 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: shouldReduceMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}
@@ -99,9 +99,6 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
             <h2 id="whats-new-title" className="text-2xl font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">
               What&apos;s new in Murmur {update.version}
             </h2>
-            <p id="whats-new-description" className="mt-1.5 text-sm text-on-surface-variant">
-              Here&apos;s what changed since your last version.
-            </p>
           </div>
         </div>
 
@@ -119,7 +116,7 @@ export function WhatsNewModal({ update, onDismiss }: WhatsNewModalProps) {
 
         <div className="shrink-0 border-t border-[var(--ui-hairline)] bg-[var(--ui-tint-sunken)] px-6 py-4">
           <button
-            ref={doneRef}
+            ref={doneRef} data-default-button
             type="button"
             onClick={onDismiss}
             className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-colors hover:brightness-105 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"

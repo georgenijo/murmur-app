@@ -80,9 +80,9 @@ vi.mock('../ModelDownloader', () => ({
     const label = installed
       ? 'Continue'
       : phase === 'downloading'
-      ? 'Downloading...'
+      ? 'Downloading…'
       : phase === 'error'
-      ? 'Retry Download'
+      ? 'Retry download'
       : 'Download';
 
     return (
@@ -189,25 +189,25 @@ describe('OnboardingFlow', () => {
 
   const goToSystemAudioStep = async () => {
     await renderFlow();
-    await clickButton('Get Started');
+    await clickButton('Get started');
     await clickButton('Continue');
     await clickButton('Continue');
-    expect(container.querySelector('h1')?.textContent).toContain('System Audio Access');
+    expect(container.querySelector('h1')?.textContent).toContain('System audio access');
   };
 
   const goToModelStep = async () => {
     await goToSystemAudioStep();
-    await clickButton('Skip Meetings for now');
-    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
+    await clickButton('Skip meetings for now');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar access');
     await clickButton('Skip Calendar for now');
-    expect(container.querySelector('h1')?.textContent).toContain('Transcription Model');
+    expect(container.querySelector('h1')?.textContent).toContain('Transcription model');
     await settle();
   };
 
   const goToCalendarStep = async () => {
     await goToSystemAudioStep();
-    await clickButton('Skip Meetings for now');
-    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
+    await clickButton('Skip meetings for now');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar access');
     await settle();
   };
 
@@ -246,7 +246,7 @@ describe('OnboardingFlow', () => {
     expect(container.querySelector('nav[aria-label="Setup step actions"]')).toBeNull();
     expect(container.querySelector('[aria-label="Go back to the previous setup step"]')).toBeNull();
 
-    await clickButton('Get Started');
+    await clickButton('Get started');
     expectProgress(2);
     expectNavigation('Continue');
 
@@ -256,9 +256,9 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     expectProgress(4);
-    expectNavigation('Continue', 'Skip Meetings for now');
+    expectNavigation('Continue', 'Skip meetings for now');
 
-    await clickButton('Skip Meetings for now');
+    await clickButton('Skip meetings for now');
     expectProgress(5);
     expectNavigation('Continue', 'Skip Calendar for now');
 
@@ -272,11 +272,11 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     expectProgress(8);
-    expectNavigation('Start Using Murmur');
+    expectNavigation('Start using Murmur');
 
     await clickButton('Back');
     expectProgress(7);
-    expect(container.querySelector('h1')?.textContent).toContain('Recording Shortcut');
+    expect(container.querySelector('h1')?.textContent).toContain('Recording shortcut');
   });
 
   it('keeps Skip secondary while unavailable permission actions stay disabled', async () => {
@@ -284,31 +284,31 @@ describe('OnboardingFlow', () => {
     mocks.checkAccessibilityPermission.mockResolvedValue(false);
     await renderFlow();
 
-    await clickButton('Get Started');
+    await clickButton('Get started');
     let navigation = expectNavigation('Continue', 'Skip for now');
     expect(navigation.actionButtons[0].disabled).toBe(false);
     expect(navigation.actionButtons[1].disabled).toBe(true);
 
     await clickButton('Skip for now');
-    expect(container.querySelector('h1')?.textContent).toContain('Accessibility Access');
+    expect(container.querySelector('h1')?.textContent).toContain('Accessibility access');
     navigation = expectNavigation('Continue', 'Skip for now');
     expect(navigation.actionButtons[0].disabled).toBe(false);
     expect(navigation.actionButtons[1].disabled).toBe(true);
 
     await clickButton('Skip for now');
-    expect(container.querySelector('h1')?.textContent).toContain('System Audio Access');
-    navigation = expectNavigation('Continue', 'Skip Meetings for now');
+    expect(container.querySelector('h1')?.textContent).toContain('System audio access');
+    navigation = expectNavigation('Continue', 'Skip meetings for now');
     expect(navigation.actionButtons[0].disabled).toBe(false);
     expect(navigation.actionButtons[1].disabled).toBe(true);
 
-    await clickButton('Skip Meetings for now');
-    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
+    await clickButton('Skip meetings for now');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar access');
     navigation = expectNavigation('Continue', 'Skip Calendar for now');
     expect(navigation.actionButtons[0].disabled).toBe(false);
     expect(navigation.actionButtons[1].disabled).toBe(true);
 
     await clickButton('Skip Calendar for now');
-    expect(container.querySelector('h1')?.textContent).toContain('Transcription Model');
+    expect(container.querySelector('h1')?.textContent).toContain('Transcription model');
   });
 
   it('keeps Back available while the model catalog is loading', async () => {
@@ -320,7 +320,7 @@ describe('OnboardingFlow', () => {
     expect(navigation.actionButtons[0].disabled).toBe(true);
 
     await clickButton('Back');
-    expect(container.querySelector('h1')?.textContent).toContain('Calendar Access');
+    expect(container.querySelector('h1')?.textContent).toContain('Calendar access');
   });
 
   it('locks model navigation during download and restores it for retry', async () => {
@@ -331,29 +331,29 @@ describe('OnboardingFlow', () => {
 
     let navigation = expectNavigation('Download');
     await clickButton('Download');
-    navigation = expectNavigation('Downloading...');
+    navigation = expectNavigation('Downloading…');
     expect(navigation.back.disabled).toBe(true);
     expect(navigation.back.title).toBe('Please wait for the model download to finish');
     expect(navigation.actionButtons[0].disabled).toBe(true);
 
     await clickButton('Back');
-    expect(container.querySelector('h1')?.textContent).toContain('Transcription Model');
+    expect(container.querySelector('h1')?.textContent).toContain('Transcription model');
 
     await clickButton('Simulate model failure');
-    navigation = expectNavigation('Retry Download');
+    navigation = expectNavigation('Retry download');
     expect(navigation.back.disabled).toBe(false);
     expect(navigation.back.title).toBe('');
 
-    await clickButton('Retry Download');
-    expect(expectNavigation('Downloading...').back.disabled).toBe(true);
+    await clickButton('Retry download');
+    expect(expectNavigation('Downloading…').back.disabled).toBe(true);
     await clickButton('Complete model download');
-    expect(container.querySelector('h1')?.textContent).toContain('Recording Shortcut');
+    expect(container.querySelector('h1')?.textContent).toContain('Recording shortcut');
   });
 
   it('preserves native focus order and selected shortcut through Back and completion', async () => {
     const onComplete = vi.fn();
     await renderFlow({ onComplete });
-    await clickButton('Get Started');
+    await clickButton('Get started');
 
     const micNavigation = expectNavigation('Continue');
     micNavigation.back.focus();
@@ -363,13 +363,13 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     await clickButton('Continue');
-    await clickButton('Skip Meetings for now');
+    await clickButton('Skip meetings for now');
     await clickButton('Skip Calendar for now');
     await clickButton('Continue');
 
-    await clickButton('Double-Tap');
+    await clickButton('Double-tap');
     const triggerKey = container.querySelector<HTMLSelectElement>('#onboarding-trigger-key');
-    expect(triggerKey?.labels?.[0]?.textContent).toBe('Trigger Key');
+    expect(triggerKey?.labels?.[0]?.textContent).toBe('Trigger key');
     await act(async () => {
       triggerKey!.value = 'alt_l';
       triggerKey!.dispatchEvent(new Event('change', { bubbles: true }));
@@ -377,21 +377,21 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     await clickButton('Back');
-    expect(getButton('Double-Tap').getAttribute('aria-pressed')).toBe('true');
+    expect(getButton('Double-tap').getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector<HTMLSelectElement>('#onboarding-trigger-key')?.value).toBe('alt_l');
 
     await clickButton('Continue');
-    await clickButton('Start Using Murmur');
+    await clickButton('Start using Murmur');
     expect(onComplete).toHaveBeenCalledWith('base.en', 'double_tap', 'alt_l');
   });
 
   it('offers F1 through F20 and carries a function key into the final hint', async () => {
     const onComplete = vi.fn();
     await renderFlow({ onComplete });
-    await clickButton('Get Started');
+    await clickButton('Get started');
     await clickButton('Continue');
     await clickButton('Continue');
-    await clickButton('Skip Meetings for now');
+    await clickButton('Skip meetings for now');
     await clickButton('Skip Calendar for now');
     await clickButton('Continue');
 
@@ -409,7 +409,7 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     expect(container.querySelector('kbd')?.textContent).toBe('F12');
-    await clickButton('Start Using Murmur');
+    await clickButton('Start using Murmur');
     expect(onComplete).toHaveBeenCalledWith('base.en', 'hold_down', 'f12');
   });
 
@@ -422,10 +422,10 @@ describe('OnboardingFlow', () => {
     });
     await goToSystemAudioStep();
 
-    await clickButton('Allow System Audio Access');
+    await clickButton('Allow system audio access');
 
     expect(container.textContent).not.toContain('Meeting audio capture failed');
-    expect(container.textContent).toContain('System Audio access granted');
+    expect(container.textContent).toContain('System audio access granted');
   });
 
   it('asks for a relaunch when macOS reports access but the tap is refused', async () => {
@@ -437,7 +437,7 @@ describe('OnboardingFlow', () => {
     });
     await goToSystemAudioStep();
 
-    await clickButton('Allow System Audio Access');
+    await clickButton('Allow system audio access');
 
     expect(container.textContent).toContain('Quit and reopen Murmur');
   });
@@ -449,17 +449,17 @@ describe('OnboardingFlow', () => {
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
 
-    await clickButton('Get Started');
+    await clickButton('Get started');
     await clickButton('Continue');
     await clickButton('Continue');
     expect(mocks.getCalendarPermissionStatus).not.toHaveBeenCalled();
 
-    await clickButton('Skip Meetings for now');
+    await clickButton('Skip meetings for now');
     expect(mocks.getCalendarPermissionStatus).toHaveBeenCalledTimes(1);
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
 
-    await clickButton('Allow Calendar Access');
+    await clickButton('Allow Calendar access');
     expect(mocks.requestCalendarPermission).toHaveBeenCalledTimes(1);
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Calendar access granted');
@@ -471,7 +471,7 @@ describe('OnboardingFlow', () => {
     );
     await goToCalendarStep();
 
-    await clickButton('Allow Calendar Access');
+    await clickButton('Allow Calendar access');
 
     expect(container.textContent).toContain('Could not request Calendar access');
     expect(container.textContent).not.toContain('private EventKit diagnostic');
@@ -485,7 +485,7 @@ describe('OnboardingFlow', () => {
     await act(async () => window.dispatchEvent(new Event('focus')));
     await settle();
 
-    expect(container.querySelector('h1')?.textContent).toContain('Transcription Model');
+    expect(container.querySelector('h1')?.textContent).toContain('Transcription model');
     expect(mocks.getCalendarPermissionStatus).toHaveBeenCalledTimes(1);
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
@@ -496,15 +496,15 @@ describe('OnboardingFlow', () => {
     await goToCalendarStep();
 
     expect(container.textContent).toContain('You can still name meetings manually');
-    expect(getButton('Reset Calendar permission').disabled).toBe(false);
+    expect(getButton('Reset Calendar permission…').disabled).toBe(false);
 
-    await clickButton('Open System Settings');
+    await clickButton('Open System Settings…');
     expect(mocks.openCalendarPreferences).toHaveBeenCalledTimes(1);
 
-    await clickButton('Reset Calendar permission');
+    await clickButton('Reset Calendar permission…');
     expect(mocks.resetCalendarPermission).toHaveBeenCalledTimes(1);
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
-    expect(getButton('Allow Calendar Access')).toBeDefined();
+    expect(getButton('Allow Calendar access')).toBeDefined();
   });
 
   it('finishes a pending Calendar request after leaving and re-entering the step', async () => {
@@ -512,7 +512,7 @@ describe('OnboardingFlow', () => {
     mocks.requestCalendarPermission.mockReturnValue(request.promise);
     await goToCalendarStep();
 
-    await clickButton('Allow Calendar Access');
+    await clickButton('Allow Calendar access');
     expect(getButton('Waiting for macOS…').disabled).toBe(true);
     await clickButton('Skip Calendar for now');
     await clickButton('Back');
@@ -531,16 +531,16 @@ describe('OnboardingFlow', () => {
     mocks.resetCalendarPermission.mockReturnValue(reset.promise);
     await goToCalendarStep();
 
-    await clickButton('Reset Calendar permission');
-    expect(getButton('Reset Calendar permission').disabled).toBe(true);
+    await clickButton('Reset Calendar permission…');
+    expect(getButton('Reset Calendar permission…').disabled).toBe(true);
     await clickButton('Skip Calendar for now');
     await clickButton('Back');
-    expect(getButton('Reset Calendar permission').disabled).toBe(true);
+    expect(getButton('Reset Calendar permission…').disabled).toBe(true);
 
     await act(async () => reset.resolve(undefined));
     await settle();
 
-    expect(getButton('Allow Calendar Access').disabled).toBe(false);
+    expect(getButton('Allow Calendar access').disabled).toBe(false);
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
   });
 
@@ -548,7 +548,7 @@ describe('OnboardingFlow', () => {
     mocks.getCalendarPermissionStatus.mockResolvedValue('denied');
     await goToCalendarStep();
 
-    await clickButton('Open System Settings');
+    await clickButton('Open System Settings…');
     mocks.getCalendarPermissionStatus.mockResolvedValue('granted');
     await act(async () => window.dispatchEvent(new Event('focus')));
     await settle();

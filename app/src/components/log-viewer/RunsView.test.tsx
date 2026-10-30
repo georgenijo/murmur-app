@@ -189,7 +189,7 @@ describe('RunsView', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     await renderRuns([makeRun()]);
     const clearButton = Array.from(container.querySelectorAll('button'))
-      .find(button => button.textContent === 'Clear Performance Data')!;
+      .find(button => button.textContent === 'Clear performance data')!;
     await act(async () => {
       clearButton.click();
       await Promise.resolve();

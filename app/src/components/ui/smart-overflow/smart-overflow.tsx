@@ -341,6 +341,12 @@ export default function SmartOverflow({
                               <Menu.Item
                                 disabled={disabled || action.disabled}
                                 onClick={action.onSelect}
+                                onKeyDownCapture={(event) => {
+                                  if (action.destructive && event.key === "Enter") {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }
+                                }}
                                 className={cn(
                                   "flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm outline-none",
                                   "data-[highlighted]:bg-accent disabled:cursor-not-allowed disabled:opacity-45",

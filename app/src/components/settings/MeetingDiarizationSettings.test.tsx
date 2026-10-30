@@ -55,7 +55,7 @@ describe('MeetingDiarizationSettings', () => {
       <MeetingDiarizationSettings enabled={false} onEnabledChange={onEnabledChange} />,
     ));
 
-    const toggle = container.querySelector('[role="switch"][aria-label="Label Remote Speakers"]') as HTMLButtonElement;
+    const toggle = container.querySelector('[role="switch"][aria-label="Label remote speakers"]') as HTMLButtonElement;
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     expect(container.textContent).toContain('saves up to two hours of system audio');
     expect(container.textContent).toContain('speaker labeling is skipped while capture and transcription continue');
@@ -86,12 +86,14 @@ describe('MeetingDiarizationSettings', () => {
       modelName: 'meeting-diarization-coreml', attemptId: 7,
       received: 10_000_000, total: 20_000_000, phase: 'downloading',
     } }));
-    expect(container.textContent).toContain('Downloading... 50%');
+    expect(container.textContent).toContain('Downloading… 50%');
     await act(async () => finishDownload?.());
 
     expect(meetingMocks.download).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('Installed locally');
-    const remove = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Remove model') as HTMLButtonElement;
+    const remove = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Remove model…') as HTMLButtonElement;
+    await act(async () => remove.click());
+    expect(meetingMocks.remove).not.toHaveBeenCalled();
     await act(async () => remove.click());
     expect(meetingMocks.remove).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('Optional download');

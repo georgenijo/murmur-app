@@ -1,3 +1,4 @@
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -399,10 +400,10 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         onBusyChange={setCorpusBusy}
       />}
       {INTERNAL_BENCHMARK_BUILD && <section>
-        <h3 className="mb-2 text-sm font-semibold text-on-surface">Benchmark Audio</h3>
+        <h3 className="mb-2 text-sm font-semibold text-on-surface">Benchmark audio</h3>
         <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface-container-low p-1">
           {([
-            ['personal', 'Your Voice', '20 verified recordings'],
+            ['personal', 'Your voice', '20 verified recordings'],
             ['bundled', 'Synthetic', 'Built-in reference clips'],
           ] as const).map(([source, label, detail]) => (
             <button
@@ -477,7 +478,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
                 >
                   {downloading === model.modelName
                     ? downloadProgress === null
-                      ? 'Starting...'
+                      ? 'Starting…'
                       : modelDownloadPercent(downloadProgress) === null
                         ? modelDownloadLabel(downloadProgress)
                         : `${modelDownloadPercent(downloadProgress)}%`
@@ -490,7 +491,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       </section>
 
       <section>
-        <h3 className="mb-2 text-sm font-semibold text-on-surface">Test Length</h3>
+        <h3 className="mb-2 text-sm font-semibold text-on-surface">Test length</h3>
         <div className="grid grid-cols-3 gap-1 p-1 bg-surface-container-low rounded-lg">
           {PRESETS.map((option) => (
             <button
@@ -538,7 +539,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             disabled={!canRun}
             className="w-full px-4 py-2.5 text-sm font-semibold rounded-(--ui-radius-control) bg-primary shadow-(--ui-shadow-accent) text-on-primary hover:bg-primary-dim disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal' ? 'Run Personal Benchmark' : 'Run Benchmark'}
+            {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal' ? 'Run personal benchmark' : 'Run benchmark'}
           </button>
         )}
         {status !== 'idle' && (
@@ -569,7 +570,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             {settings.benchmarkOutputDir || 'Documents/Murmur (default)'}
           </p>
           <div className="mt-2 flex flex-wrap gap-3">
-            <button type="button" onClick={() => void chooseFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Choose Folder</button>
+            <button type="button" onClick={() => void chooseFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>
             {settings.benchmarkOutputDir && <button type="button" onClick={() => onUpdateSettings({ benchmarkOutputDir: '' })} className="font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}
             <button type="button" onClick={() => void revealFolder()} className="font-medium text-on-surface-variant underline hover:text-primary">Reveal in Finder</button>
           </div>
@@ -648,16 +649,14 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
                 </option>
               ))}
             </select>
-            <button
+            <ConfirmActionButton label="Clear reports" confirmLabel="Confirm clear"
               type="button"
-              onClick={() => {
+              onConfirm={() => {
                 clearBenchmarkReports();
                 setDashboard({ reports: [], selectedAt: null });
               }}
               className="shrink-0 px-2 py-1.5 text-xs text-on-surface-variant hover:text-error"
-            >
-              Clear
-            </button>
+             />
           </div>
 
           <div className="grid grid-cols-3 border-y border-outline-variant/30 divide-x divide-outline-variant/30">

@@ -148,7 +148,7 @@ describe('QueryHistoryPanel', () => {
 
     expect(container.textContent).toContain('No matches for your search');
     expect(container.textContent).toContain('Try a different word or clear the search.');
-    expect(container.textContent).not.toContain('No saved Voice Queries');
+    expect(container.textContent).not.toContain('No saved voice queries');
   });
 
   it('explains the fail-closed default when retention is off', async () => {
@@ -210,6 +210,6 @@ describe('QueryHistoryPanel', () => {
 
     expect(container.textContent).toContain('No saved Codex queries');
     expect(container.textContent).toContain('Choose All providers');
-    expect(container.textContent).not.toContain('No saved Voice Queries');
+    expect(container.textContent).not.toContain('No saved voice queries');
   });
 });

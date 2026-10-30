@@ -78,7 +78,7 @@ export function OverlayPill({
                 role="status"
                 aria-live="assertive"
                 aria-label={indicator.failure === 'chooseMicrophone'
-                  ? 'Selected microphone unavailable. Open Settings to choose another.'
+                  ? 'Selected microphone unavailable. Open settings to choose another.'
                   : 'Microphone access denied. Open System Settings to grant access.'}
                 className="flex h-4 w-4 items-center justify-center text-red-300"
               >
@@ -182,7 +182,7 @@ export function OverlayPill({
                   ? `Smart Auto background check for ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}. Audio is not transcribed or saved.`
                 : smartAutoSummary?.kind === 'blocked'
                   ? smartAutoSummary.retryAfterMs === null
-                    ? 'Smart Auto next capture blocked. Open Settings to retry, verify signal, or pin an input.'
+                    ? 'Smart Auto next capture blocked. Open settings to retry, verify signal, or pin an input.'
                     : `Smart Auto next capture blocked. Cooldown: about ${Math.max(1, Math.ceil(smartAutoSummary.retryAfterMs / 1000))} seconds remaining.`
                   : undefined}
               title={smartAutoSummary?.kind === 'ready'
@@ -191,7 +191,7 @@ export function OverlayPill({
                   ? `Smart Auto checking ${smartAutoSummary.deviceName}: ${smartAutoSummary.phase}`
                 : smartAutoSummary?.kind === 'blocked'
                   ? smartAutoSummary.retryAfterMs === null
-                    ? 'Smart Auto blocked. Open Settings to retry, verify signal, or pin an input.'
+                    ? 'Smart Auto blocked. Open settings to retry, verify signal, or pin an input.'
                     : 'Smart Auto blocked. Waiting for cooldown.'
                   : undefined}
               className={smartAutoSummary?.kind === 'ready'

@@ -1,3 +1,4 @@
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useEventStore } from '../../lib/hooks/useEventStore';
 import { usePerformanceDiagnostics } from '../../lib/hooks/usePerformanceDiagnostics';
@@ -194,15 +195,13 @@ export function DiagnosticsWorkspace({
                 onClick={handleCopyAll}
                 className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
-                Copy filtered Events
+                Copy filtered events
               </button>
-              <button
+              <ConfirmActionButton label="Clear events" confirmLabel="Confirm clear"
                 type="button"
-                onClick={clear}
+                onConfirm={clear}
                 className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                Clear Events
-              </button>
+               />
                 </>
               )}
             </div>

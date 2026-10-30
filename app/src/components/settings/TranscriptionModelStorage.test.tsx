@@ -27,40 +27,40 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 
 it('requires two clicks, protects selected/active models, and reflects removal with Download', async () => {
   await render([model('base.en'), model('tiny.en'), model('small.en', { lifecycleState: 'ready' })]);
-  expect(button('Remove base.en')).toBeNull(); expect(button('Remove small.en')).toBeNull();
-  await act(async () => button('Remove tiny.en')!.click());
+  expect(button('Remove base.en…')).toBeNull(); expect(button('Remove small.en…')).toBeNull();
+  await act(async () => button('Remove tiny.en…')!.click());
   expect(invoke).not.toHaveBeenCalled();
-  await act(async () => button('Confirm remove tiny.en')!.click());
+  await act(async () => button('Confirm remove tiny.en…')!.click());
   expect(invoke).toHaveBeenCalledExactlyOnceWith('remove_model', { modelName: 'tiny.en' });
   await render([model('base.en'), model('tiny.en', { installState: 'notInstalled', generation: 2 })]);
-  expect(button('Remove tiny.en')).toBeNull(); expect(container.textContent).toContain('Not installed');
+  expect(button('Remove tiny.en…')).toBeNull(); expect(container.textContent).toContain('Not installed');
   await act(async () => button('Download tiny.en')!.click());
   expect(invoke).toHaveBeenLastCalledWith('download_model', { modelName: 'tiny.en' });
 });
 it('clears confirmation on blur, selection changes, and busy transitions', async () => {
   await render();
-  await act(async () => { button('Remove tiny.en')!.focus(); button('Remove tiny.en')!.click(); });
-  await act(async () => button('Confirm remove tiny.en')!.blur());
-  expect(button('Remove tiny.en')).not.toBeNull();
-  await act(async () => button('Remove tiny.en')!.click());
+  await act(async () => { button('Remove tiny.en…')!.focus(); button('Remove tiny.en…')!.click(); });
+  await act(async () => button('Confirm remove tiny.en…')!.blur());
+  expect(button('Remove tiny.en…')).not.toBeNull();
+  await act(async () => button('Remove tiny.en…')!.click());
   await render(undefined, true);
-  expect(button('Remove tiny.en')!.disabled).toBe(true);
+  expect(button('Remove tiny.en…')!.disabled).toBe(true);
   await render(undefined, false, 'tiny.en');
-  expect(button('Remove tiny.en')).toBeNull();
+  expect(button('Remove tiny.en…')).toBeNull();
   expect(invoke).not.toHaveBeenCalled();
 });
 it('shows refusal without removing the installed row and prevents duplicate requests', async () => {
   let reject: (reason: string) => void = () => {};
   invoke.mockImplementation(() => new Promise((_, fail) => { reject = fail; }));
   await render();
-  await act(async () => button('Remove tiny.en')!.click());
-  await act(async () => button('Confirm remove tiny.en')!.click());
-  expect(button('Remove tiny.en')!.disabled).toBe(true);
-  await act(async () => button('Remove tiny.en')!.click());
+  await act(async () => button('Remove tiny.en…')!.click());
+  await act(async () => button('Confirm remove tiny.en…')!.click());
+  expect(button('Remove tiny.en…')!.disabled).toBe(true);
+  await act(async () => button('Remove tiny.en…')!.click());
   expect(invoke).toHaveBeenCalledTimes(1);
   await act(async () => reject('Wait for transcription to finish'));
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('Wait for transcription');
-  expect(button('Remove tiny.en')!.disabled).toBe(false);
+  expect(button('Remove tiny.en…')!.disabled).toBe(false);
 });
 it('does not offer removal or download during installation', async () => {
   await render([model('tiny.en', { installState: 'installing' })]);

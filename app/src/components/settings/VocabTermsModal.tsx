@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RankedTerm, VocabScanSummary } from '../../lib/settings';
 
@@ -144,7 +145,7 @@ export function VocabTermsModal({
     >
       <div
         ref={dialogRef}
-        role="dialog"
+        role="dialog" onKeyDown={defaultButtonKeyDown}
         aria-modal="true"
         aria-labelledby="vocab-terms-title"
         tabIndex={-1}

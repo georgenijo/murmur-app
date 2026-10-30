@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../lib/defaultButton';
 import { useState, useEffect } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { motion, useReducedMotion } from 'motion/react';
@@ -8,7 +9,7 @@ interface AboutModalProps {
 }
 
 export function AboutModal({ isOpen, onClose }: AboutModalProps) {
-  const [version, setVersion] = useState<string>('...');
+  const [version, setVersion] = useState<string>('…');
   const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
@@ -29,7 +30,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
 
       {/* Modal */}
       <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-        <motion.div
+        <motion.div role="dialog" aria-modal="true" aria-label="About Murmur" onKeyDown={defaultButtonKeyDown}
           initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: shouldReduceMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}
@@ -59,7 +60,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
           </p>
 
           <button
-            onClick={onClose}
+            onClick={onClose} data-default-button
             className="dialog-pill-btn mt-4 px-4 py-2 text-on-surface hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             Close

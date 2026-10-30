@@ -1,3 +1,4 @@
+import { noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { MEETING_SEARCH_FIELD_LABELS } from '../../lib/meetings';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Search, Trash2 } from 'lucide-react';
@@ -145,7 +146,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                   onClick={() => void requestPermission()}
                   className="font-semibold text-primary hover:underline disabled:opacity-50"
                 >
-                  {permissionBusy ? 'Waiting…' : 'Check Access'}
+                  {permissionBusy ? 'Waiting…' : 'Check access'}
                 </button>
               </span>
             )}
@@ -156,10 +157,10 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
           disabled={processing || meetings.status.phase === 'stopping'}
           onClick={() => void (active ? meetings.stop() : meetings.start())}
           className="ui-dashboard-action shrink-0"
-          data-action="primary"
-          data-tone={active ? 'danger' : 'default'}
+          data-action={active ? 'secondary' : 'primary'}
+          data-tone="default"
         >
-          {active ? 'Stop Meeting' : processing ? 'Finishing…' : 'Start Meeting'}
+          {active ? 'Stop meeting' : processing ? 'Finishing…' : 'Start meeting'}
         </button>
       </div>
       {(failure || meetings.error || echoCancellationStatus || notice) && (
@@ -169,7 +170,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
               <span className="min-w-0 flex-1">{failure ?? meetings.error}</span>
               {meetings.permission === 'denied' && (
                 <button type="button" onClick={() => void meetings.openSystemAudioPreferences()} className="shrink-0 font-semibold underline">
-                  Open Settings
+                  Open settings…
                 </button>
               )}
             </div>
@@ -299,15 +300,15 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                 <button
                   type="button"
                   disabled={active && meetings.status.sessionId === detail.session.id}
-                  onClick={() => void deleteSelected()}
+                  onClick={() => void deleteSelected()} onKeyDown={noDefaultButtonKeyDown}
                   className="meeting-header-action"
                   data-tone="danger"
                   data-confirming={confirmDelete === detail.session.id}
-                  aria-label={confirmDelete === detail.session.id ? 'Confirm Delete' : 'Delete meeting'}
-                  title={confirmDelete === detail.session.id ? undefined : 'Delete meeting'}
+                  aria-label={confirmDelete === detail.session.id ? 'Confirm delete…' : 'Delete meeting…'}
+                  title={confirmDelete === detail.session.id ? undefined : 'Delete meeting…'}
                 >
                   <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-                  {confirmDelete === detail.session.id ? 'Confirm Delete' : <span className="ui-visually-hidden">Delete</span>}
+                  {confirmDelete === detail.session.id ? 'Confirm delete…' : <span className="ui-visually-hidden">Delete</span>}
                 </button>
               )}
             />

@@ -142,7 +142,7 @@ describe("AppearanceSettings", () => {
     )!;
     await act(async () => reset.click());
     expect(mocks.controller!.reset).toHaveBeenCalledOnce();
-    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Start from the colors currently on screen");
+    expect(container.querySelector('[role="dialog"]')?.textContent).toContain("Create theme");
     expect(container.textContent).not.toContain("Save current");
     expect(container.textContent).not.toContain("Choose dark style");
   });
@@ -271,6 +271,7 @@ describe("AppearanceSettings", () => {
     });
     vi.mocked(mocks.controller!.updateTheme).mockClear();
 
+    await act(async () => createTheme.click());
     const contrast = container.querySelector(
       "#appearance-contrast",
     ) as HTMLInputElement;

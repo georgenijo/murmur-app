@@ -71,8 +71,9 @@ describe('TransformsManager', () => {
     await act(async () => button(copy, 'Edit').click());
     await act(async () => button(container, 'Save').click());
     expect(mocks.upsert).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'copy', expectedRevision: 1 }));
-    await act(async () => button(copy, 'Delete').click());
-    await act(async () => button(copy, 'Confirm delete').click());
+    await act(async () => copy.querySelector<HTMLButtonElement>('[aria-label="More actions for Weekly notes"]')!.click());
+    await act(async () => button(document.body, 'Delete…').click());
+    await act(async () => button(document.body, 'Confirm delete…').click());
     expect(mocks.remove).toHaveBeenCalledWith(mocks.entries[1]);
     expect(mocks.entries[0]).toEqual(source);
   });
@@ -107,7 +108,7 @@ describe('TransformsManager', () => {
     expect(nameInput(container).value).toBe('Meeting notes');
     await act(async () => button(container, 'Save').click());
     expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({ id: source.id, expectedRevision: source.revision }));
-    await act(async () => button(container, 'Add').click());
+    await act(async () => button(container, 'Add transform…').click());
     expect(nameInput(container).value).toBe(''); expect(container.querySelector('textarea')?.value).toBe('');
     await act(async () => button(container, 'Cancel').click());
     await act(async () => button(container, 'Enable').click());

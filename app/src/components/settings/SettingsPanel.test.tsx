@@ -209,15 +209,15 @@ describe('SettingsPanel information architecture', () => {
 
   it('opens on a single customization hub before the direct settings destinations', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'General', 'Recording', 'Customize', 'Delivery', 'Meetings', 'Text & Vocabulary', 'AI & Models', 'Modes', 'Appearance',
+      'General', 'Recording', 'Customize', 'Delivery', 'Meetings', 'Text & vocabulary', 'AI & models', 'Modes', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
     expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('Customize');
     expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
     expect(Array.from(container.querySelectorAll('[aria-label="Customization destinations"] button')).map((button) => button.textContent)).toEqual([
-      expect.stringContaining('Text & Vocabulary'),
-      expect.stringContaining('Voice Commands'),
+      expect.stringContaining('Text & vocabulary'),
+      expect.stringContaining('Voice commands'),
       expect.stringContaining('Styles'),
       expect.stringContaining('Modes'),
       expect.stringContaining('Transforms'),
@@ -231,11 +231,11 @@ describe('SettingsPanel information architecture', () => {
       .find((button) => button.textContent?.includes(label)) as HTMLButtonElement;
 
     for (const [label, heading] of [
-      ['Text & Vocabulary', 'Text & Vocabulary'],
-      ['Voice Commands', 'Voice Commands'],
+      ['Text & vocabulary', 'Text & vocabulary'],
+      ['Voice commands', 'Voice commands'],
       ['Styles', 'Delivery'],
       ['Modes', 'Modes'],
-      ['Transforms', 'Selected-Text Rewrite'],
+      ['Transforms', 'Selected-text rewrite'],
     ] as const) {
       const row = hubButton(label);
       await act(async () => row.click());
@@ -278,7 +278,7 @@ describe('SettingsPanel information architecture', () => {
       target: 'transform-practice',
       token: 2,
     }, { onPageOpened, activeRef }));
-    expect(container.querySelector('h1')?.textContent).toBe('Selected-Text Rewrite');
+    expect(container.querySelector('h1')?.textContent).toBe('Selected-text rewrite');
     expect(onPageOpened).toHaveBeenCalledWith('ai-transform');
     expect(onPageOpened).not.toHaveBeenCalledWith('shortcuts');
   });
@@ -313,7 +313,7 @@ describe('SettingsPanel information architecture', () => {
 
     activeRef.current = true;
     await act(async () => renderVisiblePanel(true, token));
-    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard shortcuts');
     expect(onPageOpened).toHaveBeenCalledExactlyOnceWith('shortcuts');
   });
 
@@ -335,7 +335,7 @@ describe('SettingsPanel information architecture', () => {
     expect(onDiscoveryChecklistReopen).toHaveBeenCalledOnce();
 
     const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Keyboard Shortcuts')) as HTMLButtonElement;
+      .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;
     await act(async () => shortcuts.click());
     expect(onPageOpened).toHaveBeenCalledWith('shortcuts');
   });
@@ -397,7 +397,7 @@ describe('SettingsPanel information architecture', () => {
       if (input === 'keyboard') slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowRight', bubbles: true }));
     });
     expect(onUpdateSettings).toHaveBeenCalledWith({ autoPasteDelayMs: 80 });
-    expect(slider.labels?.[0]?.textContent).toBe('Paste Delay');
+    expect(slider.labels?.[0]?.textContent).toBe('Paste delay');
     await act(async () => renderPanel(true, persistedSettings, { page: 'general', token: 2 }));
     await act(async () => renderPanel(true, persistedSettings, { page: 'delivery', token: 3 }));
     expect(container.querySelector<HTMLInputElement>('input[type="range"]')!.value).toBe('80');
@@ -451,7 +451,7 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     await act(async () => recording.click());
     const heading = Array.from(container.querySelectorAll('p')).find(
-      (item) => item.textContent === 'Voice Detection',
+      (item) => item.textContent === 'Voice detection',
     ) as HTMLParagraphElement;
     const slider = heading.parentElement?.querySelector('input[type="range"]') as HTMLInputElement;
     await act(async () => {
@@ -492,7 +492,7 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent === 'Recording',
     ) as HTMLButtonElement;
     await act(async () => recording.click());
-    const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound Cues"]') as HTMLElement;
+    const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound cues"]') as HTMLElement;
     await act(async () => soundSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ soundCuesEnabled: false });
     const volumeLabel = Array.from(container.querySelectorAll('label')).find(
@@ -508,7 +508,7 @@ describe('SettingsPanel information architecture', () => {
     const success = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'success') as HTMLButtonElement;
     await act(async () => success.click());
     expect(soundCueMock).toHaveBeenCalledWith('success', 45);
-    const meetingSwitch = container.querySelector('[role="switch"][aria-label="Meeting Cues"]') as HTMLElement;
+    const meetingSwitch = container.querySelector('[role="switch"][aria-label="Meeting cues"]') as HTMLElement;
     await act(async () => meetingSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSoundCuesEnabled: true });
   });
@@ -518,7 +518,7 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent === 'Recording',
     ) as HTMLButtonElement;
     await act(async () => recording.click());
-    const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound Cues"]') as HTMLElement;
+    const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound cues"]') as HTMLElement;
     expect(soundSwitch).toBeTruthy();
     expect(soundSwitch.getAttribute('aria-checked')).toBe('true');
     await act(async () => soundSwitch.click());
@@ -526,7 +526,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('hides the NotchPill setting when the companion app is absent', () => {
-    expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
+    expect(container.textContent).not.toContain('Mirror captions to NotchPill');
   });
 
   it('does not re-enumerate microphones when the window receives focus', async () => {
@@ -572,7 +572,7 @@ describe('SettingsPanel information architecture', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).toContain('Mirror Captions to NotchPill');
+    expect(container.textContent).toContain('Mirror captions to NotchPill');
   });
 
   it('hides the NotchPill setting when detection fails', async () => {
@@ -585,7 +585,7 @@ describe('SettingsPanel information architecture', () => {
       window.dispatchEvent(new Event('focus'));
       await Promise.resolve();
     });
-    expect(container.textContent).toContain('Mirror Captions to NotchPill');
+    expect(container.textContent).toContain('Mirror captions to NotchPill');
 
     coreMocks.notchPillDetectionError = true;
     await act(async () => {
@@ -593,15 +593,15 @@ describe('SettingsPanel information architecture', () => {
       await Promise.resolve();
     });
 
-    expect(container.textContent).not.toContain('Mirror Captions to NotchPill');
+    expect(container.textContent).not.toContain('Mirror captions to NotchPill');
   });
 
   it('opens focused Recording, Meetings, Text, and AI destinations', async () => {
     for (const [page, expected] of [
-      ['Recording', 'Voice Detection'],
-      ['Meetings', 'Keep Meeting Audio'],
-      ['Text & Vocabulary', 'Vocabulary'],
-      ['AI & Models', 'Speech-to-Text'],
+      ['Recording', 'Voice detection'],
+      ['Meetings', 'Keep meeting audio'],
+      ['Text & vocabulary', 'Vocabulary'],
+      ['AI & models', 'Speech-to-text'],
     ] as const) {
       const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === page) as HTMLButtonElement;
       await act(async () => button.click());
@@ -618,7 +618,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => meetings.click());
 
     const toggle = container.querySelector<HTMLButtonElement>(
-      '[role="switch"][aria-label="Suggest Notetaker for Calendar Meetings"]',
+      '[role="switch"][aria-label="Suggest Notetaker for Calendar meetings"]',
     );
     expect(toggle?.getAttribute('aria-checked')).toBe('false');
     expect(container.textContent).toContain('reads upcoming Calendar events');
@@ -630,7 +630,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('opens Voice Query as a focused AI & Models drill-down', async () => {
-    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'AI & Models') as HTMLButtonElement;
+    const button = Array.from(container.querySelectorAll('nav button')).find((item) => item.textContent === 'AI & models') as HTMLButtonElement;
     await act(async () => button.click());
     const voiceQuery = Array.from(container.querySelectorAll('button')).find(
       (item) => item.textContent?.includes('Voice Query') && item.textContent?.includes('Configure'),
@@ -667,10 +667,10 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => general.click());
 
     const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Keyboard Shortcuts')) as HTMLButtonElement;
+      .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;
     await act(async () => shortcuts.click());
 
-    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard shortcuts');
     expect(general.getAttribute('aria-current')).toBe('page');
 
     const correction = container.querySelector<HTMLButtonElement>('[data-shortcut-id="correction"] button') as HTMLButtonElement;
@@ -680,7 +680,7 @@ describe('SettingsPanel information architecture', () => {
     try {
       await act(async () => correction.click());
       const target = container.querySelector('[data-setting-target="correction-shortcut"]') as HTMLElement;
-      expect(container.querySelector('h1')?.textContent).toBe('Selected-Text Rewrite');
+      expect(container.querySelector('h1')?.textContent).toBe('Selected-text rewrite');
       expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
       expect(scrollTo).not.toHaveBeenCalled();
       expect(target.classList.contains('settings-target-flash')).toBe(true);
@@ -692,15 +692,15 @@ describe('SettingsPanel information architecture', () => {
     }
 
     const backToShortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Keyboard Shortcuts')) as HTMLButtonElement;
+      .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;
     await act(async () => backToShortcuts.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard shortcuts');
     expect(document.activeElement).toBe(container.querySelector('[data-shortcut-id="correction"] button'));
 
     const backToGeneral = container.querySelector<HTMLButtonElement>('.settings-back-btn') as HTMLButtonElement;
     await act(async () => backToGeneral.click());
     expect(container.querySelector('h1')?.textContent).toBe('General');
-    expect(document.activeElement?.textContent).toContain('Keyboard Shortcuts');
+    expect(document.activeElement?.textContent).toContain('Keyboard shortcuts');
   });
 
   it('accepts a direct Keyboard Shortcuts page request for command-palette navigation', async () => {
@@ -724,7 +724,7 @@ describe('SettingsPanel information architecture', () => {
     ));
 
     expect(resolvePage('shortcuts')).toBe('shortcuts');
-    expect(container.querySelector('h1')?.textContent).toBe('Keyboard Shortcuts');
+    expect(container.querySelector('h1')?.textContent).toBe('Keyboard shortcuts');
     expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
   });
 
@@ -773,11 +773,11 @@ describe('SettingsPanel information architecture', () => {
     };
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, model: 'large-v3-turbo' }));
     const aiModels = Array.from(container.querySelectorAll('nav button')).find(
-      (button) => button.textContent === 'AI & Models',
+      (button) => button.textContent === 'AI & models',
     ) as HTMLButtonElement;
     await act(async () => aiModels.click());
     const speechModel = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Speech-to-Text') && button.textContent?.includes('Configure'),
+      (button) => button.textContent?.includes('Speech-to-text') && button.textContent?.includes('Configure'),
     ) as HTMLButtonElement;
     await act(async () => speechModel.click());
 
@@ -796,7 +796,7 @@ describe('SettingsPanel information architecture', () => {
   it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
     const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Text & Vocabulary',
+      (button) => button.textContent === 'Text & vocabulary',
     ) as HTMLButtonElement;
     await act(async () => textTab.click());
 
@@ -806,7 +806,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => aliases.click());
 
     expect(settingsPages.isConnected).toBe(true);
-    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & vocabulary');
     expect(container.querySelector('nav[aria-label="Settings editors"]')).toBeNull();
     expect(container.querySelector('h1')?.textContent).toBe('Aliases');
 
@@ -816,9 +816,9 @@ describe('SettingsPanel information architecture', () => {
     expect(back).toBeDefined();
     await act(async () => back.click());
 
-    expect(container.textContent).toContain('Text & Vocabulary');
+    expect(container.textContent).toContain('Text & vocabulary');
     expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
-    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & vocabulary');
   });
 
   it('accepts precise sidebar destinations for an editor or setting target', async () => {
@@ -846,7 +846,7 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Back to Customize');
 
     await act(async () => renderRequest({ page: 'text', editorTab: 'commands', token: 2 }));
-    expect(container.querySelector('h1')?.textContent).toBe('Voice Commands');
+    expect(container.querySelector('h1')?.textContent).toBe('Voice commands');
     expect(container.textContent).toContain('Voice commands editor');
     expect(container.textContent).toContain('Back to Customize');
 
@@ -860,7 +860,7 @@ describe('SettingsPanel information architecture', () => {
       renderRequest({ page: 'ai-transform', token: 4 });
       await Promise.resolve();
     });
-    expect(container.querySelector('h1')?.textContent).toBe('Selected-Text Rewrite');
+    expect(container.querySelector('h1')?.textContent).toBe('Selected-text rewrite');
     const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
       (button) => button.textContent?.includes('Back to Customize'),
     ) as HTMLButtonElement;
@@ -872,7 +872,7 @@ describe('SettingsPanel information architecture', () => {
   it('returns from an editor with Escape', async () => {
     const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Text & Vocabulary',
+      (button) => button.textContent === 'Text & vocabulary',
     ) as HTMLButtonElement;
     await act(async () => textTab.click());
     const vocabulary = Array.from(container.querySelectorAll('button')).find(
@@ -883,7 +883,7 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('h1')?.textContent).toBe('Vocabulary');
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
     expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
-    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & Vocabulary');
+    expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & vocabulary');
   });
 
   it('opens diagnostics as a dedicated tool destination', async () => {
@@ -897,7 +897,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('searches across tabs and routes a result to its owning tab', async () => {
-    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'appearance');
@@ -911,7 +911,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('finds calibration and reopens General advanced settings for repeated searches', async () => {
-    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     const searchCalibration = async () => {
       await act(async () => {
@@ -919,7 +919,7 @@ describe('SettingsPanel information architecture', () => {
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
       const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-        (button) => button.textContent?.includes('Calibrate Overlay Position'),
+        (button) => button.textContent?.includes('Calibrate overlay position'),
       ) as HTMLButtonElement;
       expect(result).toBeDefined();
       await act(async () => result.click());
@@ -945,14 +945,14 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('resets targeted scrolling when entering and leaving a settings editor', async () => {
-    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'vocabulary aliases');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.includes('Vocabulary & Aliases'),
+      (button) => button.textContent?.includes('Vocabulary & aliases'),
     ) as HTMLButtonElement;
     await act(async () => result.click());
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
@@ -970,12 +970,12 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent?.includes('Back to Text settings'),
     ) as HTMLButtonElement;
     await act(async () => back.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Text & Vocabulary');
+    expect(container.querySelector('h1')?.textContent).toBe('Text & vocabulary');
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
   it('finds the Voice Query clipboard preference from settings search', async () => {
-    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'clipboard copy');
@@ -987,14 +987,14 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     expect(result).toBeDefined();
     await act(async () => result.click());
-    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('AI & Models');
+    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('AI & models');
     expect(container.querySelector(
       '[role="switch"][aria-label="Automatically copy answers"]',
     )).not.toBeNull();
   });
 
   it('opens diagnostics when the cross-tab result explicitly targets them', async () => {
-    const input = container.querySelector('input[placeholder="Search Settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'diagnostics');
@@ -1013,12 +1013,12 @@ describe('SettingsPanel information architecture', () => {
     expect(selectedTool).toBeTruthy();
     expect(container.textContent).toContain('Diagnostics workspace');
   });
-  it('offers configurable and disabled Paste Last choices in Delivery settings', async () => {
+  it('offers configurable and disabled Paste last choices in Delivery settings', async () => {
     const delivery = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Delivery',
     ) as HTMLButtonElement;
     await act(async () => delivery.click());
-    const picker = container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement;
+    const picker = container.querySelector('button[aria-label="Paste last shortcut"]') as HTMLButtonElement;
     expect(picker.textContent).toContain('Disabled');
     await act(async () => picker.click());
     expect(Array.from(container.querySelectorAll('[role="option"]')).map((option) => option.textContent)).toEqual([
@@ -1056,7 +1056,7 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('secure target checks');
   });
 
-  it('keeps the last working Paste Last value when native registration fails', async () => {
+  it('keeps the last working Paste last value when native registration fails', async () => {
     const current = { ...DEFAULT_SETTINGS, pasteLastShortcut: 'command_shift_v' as const };
     await act(async () => root.render(
       <SettingsPanel
@@ -1083,7 +1083,7 @@ describe('SettingsPanel information architecture', () => {
       if (command === 'set_paste_last_shortcut') throw new Error('Shortcut registration failed');
       return undefined;
     });
-    const picker = container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement;
+    const picker = container.querySelector('button[aria-label="Paste last shortcut"]') as HTMLButtonElement;
     expect(picker.textContent).toContain('⌘⇧V');
     await act(async () => picker.click());
     const option = Array.from(container.querySelectorAll('[role="option"]')).find(
@@ -1092,7 +1092,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => option.click());
     expect(onUpdateSettings).not.toHaveBeenCalledWith({ pasteLastShortcut: 'command_control_v' });
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Shortcut registration failed');
-    expect((container.querySelector('button[aria-label="Paste Last Shortcut"]') as HTMLButtonElement).textContent)
+    expect((container.querySelector('button[aria-label="Paste last shortcut"]') as HTMLButtonElement).textContent)
       .toContain('⌘⇧V');
   });
 
@@ -1274,10 +1274,10 @@ describe('SettingsPanel information architecture', () => {
       />,
     ));
     const text = Array.from(container.querySelectorAll('nav button')).find(
-      (button) => button.textContent === 'Text & Vocabulary',
+      (button) => button.textContent === 'Text & vocabulary',
     ) as HTMLButtonElement;
     await act(async () => text.click());
-    const cleanupSwitch = container.querySelector('[role="switch"][aria-label="Transcript Cleanup"]') as HTMLElement;
+    const cleanupSwitch = container.querySelector('[role="switch"][aria-label="Transcript cleanup"]') as HTMLElement;
     const cleanupBranch = cleanupSwitch.parentElement?.nextElementSibling as HTMLElement;
     expect(cleanupBranch.classList.contains('settings-dependent-branch')).toBe(true);
     expect(cleanupBranch.dataset.expanded).toBe('true');
@@ -1292,7 +1292,7 @@ describe('SettingsPanel information architecture', () => {
     const fileOutput = container.querySelector('[data-setting-target="file-output"]') as HTMLElement;
     const fileBranch = fileOutput.querySelector('.settings-dependent-branch') as HTMLElement;
     expect(fileBranch.dataset.expanded).toBe('true');
-    expect(fileBranch.textContent).toContain('Output Folder');
+    expect(fileBranch.textContent).toContain('output folder');
   });
 });
 

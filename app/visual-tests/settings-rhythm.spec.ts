@@ -29,11 +29,11 @@ const PAGES = [
   { path: ['Recording'], fixtureState: 'settings-smart-auto', label: 'Recording · Smart Auto' },
   { path: ['Delivery'], fixtureState: 'settings' },
   { path: ['Meetings'], fixtureState: 'settings' },
-  { path: ['Text & Vocabulary'], fixtureState: 'settings' },
-  { path: ['AI & Models'], fixtureState: 'settings' },
-  { path: ['AI & Models', 'Speech-to-Text'], fixtureState: 'settings' },
-  { path: ['AI & Models', 'Voice Query'], fixtureState: 'settings' },
-  { path: ['AI & Models', 'Selected-Text Rewrite'], fixtureState: 'settings' },
+  { path: ['Text & vocabulary'], fixtureState: 'settings' },
+  { path: ['AI & models'], fixtureState: 'settings' },
+  { path: ['AI & models', 'Speech-to-text'], fixtureState: 'settings' },
+  { path: ['AI & models', 'Voice Query'], fixtureState: 'settings' },
+  { path: ['AI & models', 'Selected-text rewrite'], fixtureState: 'settings' },
 ] as const;
 
 type Item = { kind: 'edge' | 'line' | 'ink'; top: number; bottom: number; label: string; color?: string };

@@ -135,7 +135,7 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
 
   const newestCard = page.locator('.home-history .transcript-card').first();
   await newestCard.getByRole('button', { name: 'More transcript actions' }).click();
-  await expect(page.getByText('Correct & Teach', { exact: true }).last()).toBeVisible();
+  await expect(page.getByText('Correct & teach…', { exact: true }).last()).toBeVisible();
   await page.keyboard.press('Escape');
 
   await page.setViewportSize({ width: 680, height: 720 });
@@ -319,7 +319,7 @@ test('update discovery cannot expand or wrap the recovering header', async ({ pa
   const record = page.getByTestId('home-record-button');
 
   await expect(header).toBeVisible();
-  await expect(update).toHaveAccessibleName('View Update. Murmur v0.27.1 is available');
+  await expect(update).toHaveAccessibleName('View update. Murmur v0.27.1 is available');
   await expect(record).toHaveAccessibleName('Reconnecting your microphone…');
   await expect(record).toBeDisabled();
 
@@ -342,16 +342,16 @@ for (const notes of ['short', 'long'] as const) {
     await page.goto(`/visual-fixtures.html?state=update-dialog-${notes}&appearance=light`);
 
     const fixture = page.locator('[data-visual-ready="true"]');
-    const dialog = page.getByRole('dialog', { name: 'Update Available' });
+    const dialog = page.getByRole('dialog', { name: 'Update available' });
     const notesArea = dialog.locator('.overflow-y-auto');
-    const actions = dialog.getByRole('button', { name: 'Download Update' }).locator('..');
+    const actions = dialog.getByRole('button', { name: 'Download update' }).locator('..');
     const [notesBox, actionsBox] = await Promise.all([
       notesArea.boundingBox(),
       actions.boundingBox(),
     ]);
 
     expect(notesBox?.height).toBeGreaterThan(actionsBox?.height ?? 0);
-    await expect(dialog.getByRole('button', { name: 'Download Update' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Download update' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Later' })).toBeVisible();
     await expect(fixture).toHaveScreenshot(`light-update-dialog-${notes}.png`);
@@ -362,9 +362,9 @@ test('update dialog keeps every action visible in a smaller window', async ({ pa
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=update-dialog-long&appearance=light');
 
-  const dialog = page.getByRole('dialog', { name: 'Update Available' });
+  const dialog = page.getByRole('dialog', { name: 'Update available' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('button', { name: 'Download Update' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Download update' })).toBeInViewport();
   await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Later' })).toBeInViewport();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-update-dialog-long-small.png');
@@ -375,13 +375,13 @@ test('customization hub stays legible and restores focus at native and narrow wi
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
-  const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice Commands' });
+  const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
   await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
   await expect(customizationList.getByRole('button')).toHaveCount(5);
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub.png');
 
   await voiceCommands.click();
-  await expect(page.getByRole('heading', { name: 'Voice Commands', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Voice commands', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Back to Customize' }).click();
   await expect(voiceCommands).toBeFocused();
 
@@ -403,19 +403,19 @@ test('synthetic meeting suggestion overlay keeps its prompt and actions visible'
 
 test('settings editors preserve the primary hierarchy and provide a real back action', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
-  await page.getByRole('button', { name: 'Text & Vocabulary', exact: true }).click();
+  await page.getByRole('button', { name: 'Text & vocabulary', exact: true }).click();
   await page.getByRole('button', { name: /^Aliases\b/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
   await expect(page.getByRole('navigation', { name: 'Settings pages' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Text & Vocabulary', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: 'Text & vocabulary', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Aliases', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Back to Text settings' })).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-aliases.png');
 
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('heading', { name: 'Text & Vocabulary' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Text & vocabulary' })).toBeVisible();
 });
 
 test('recording settings make the live automatic microphone choice explicit', async ({ page }) => {
@@ -424,7 +424,7 @@ test('recording settings make the live automatic microphone choice explicit', as
 
   const fixture = page.locator('[data-visual-ready="true"]');
   await expect(page.getByRole('button', { name: 'Microphone input' })).toContainText(
-    'Follow macOS Default — MacBook Pro Microphone',
+    'Follow macOS default — MacBook Pro Microphone',
   );
   await expect(page.getByText(/Docking, undocking, or changing the system input/)).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-recording-auto-microphone.png');
@@ -481,7 +481,7 @@ test('recording settings show Smart Auto inclusion and selection status', async 
   const smartAutoMode = pickerDialog.getByRole('radio', { name: /Smart Auto/ });
   await smartAutoMode.focus();
   await smartAutoMode.press('ArrowDown');
-  await expect(picker).toContainText('Follow macOS Default');
+  await expect(picker).toContainText('Follow macOS default');
   await expect(pickerDialog).toHaveCount(0);
   await expect(picker).toBeFocused();
 });
@@ -553,7 +553,7 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
   };
 
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
-  await page.getByRole('button', { name: 'Double-Tap', exact: true }).click();
+  await page.getByRole('button', { name: 'Double-tap', exact: true }).click();
   await expectAligned(['hotkey-feedback', 'sound-cues']);
 
   const rail = page.locator('[data-setting-target="sound-cues"] .settings-dependent-branch-content');
@@ -579,7 +579,7 @@ test('browser-site Mode rules disclose their exact privacy boundary at normal an
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const browserSites = page.getByText('Browser sites', { exact: true });
-  await expect(page.getByRole('switch', { name: 'Use browser site Mode rules' })).toBeChecked();
+  await expect(page.getByRole('switch', { name: 'Use browser site mode rules' })).toBeChecked();
   await expect(page.getByText(/never reads page text or history/)).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Host for github.com' })).toHaveValue('github.com');
   await browserSites.scrollIntoViewIfNeeded();
@@ -838,7 +838,7 @@ test('meeting captions explain segment timing and keep copy and export reachable
 test('meeting calendar picker requires selection and keeps denied access usable', async ({ page }) => {
   await page.setViewportSize({ width: 880, height: 720 });
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
-  await page.getByRole('button', { name: 'Name from calendar', exact: true }).click();
+  await page.getByRole('button', { name: 'Name from calendar…', exact: true }).click();
   await expect(page.getByRole('radio')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'Apply event' })).toBeDisabled();
   await page.getByRole('radio', { name: /Orion planning/ }).focus();
@@ -847,10 +847,10 @@ test('meeting calendar picker requires selection and keeps denied access usable'
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-picker.png');
 
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&calendar=denied');
-  await page.getByRole('button', { name: 'Name from calendar', exact: true }).click();
+  await page.getByRole('button', { name: 'Name from calendar…', exact: true }).click();
   await expect(page.getByLabel('Meeting title', { exact: true })).toBeEditable();
-  await expect(page.getByRole('button', { name: 'Open Calendar Settings' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Reset Calendar Access' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open Calendar settings…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reset Calendar access…' })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-denied.png');
 });
 
@@ -968,7 +968,7 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
 test('discovery checklist and contextual hint remain readable together', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=discovery-hint&appearance=light');
   await expect(page.getByRole('heading', { name: 'Try what is ready when you are' })).toBeVisible();
-  await expect(page.getByText('Use a Mode for this site', { exact: true })).toBeVisible();
+  await expect(page.getByText('Use a mode for this site', { exact: true })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-discovery-hint.png');
 });
 

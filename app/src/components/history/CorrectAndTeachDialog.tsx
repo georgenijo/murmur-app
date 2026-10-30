@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import {
   useEffect,
   useRef,
@@ -224,7 +225,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
 
   return (
     <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-3 backdrop-blur-[2px] sm:p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="correct-and-teach-title" className="dialog-popover max-h-[calc(100vh-1.5rem)] w-full max-w-[640px] overflow-y-auto p-4 sm:max-h-[88vh] sm:p-5">
+      <div ref={dialogRef} role="dialog" onKeyDown={defaultButtonKeyDown} aria-modal="true" aria-labelledby="correct-and-teach-title" className="dialog-popover max-h-[calc(100vh-1.5rem)] w-full max-w-[640px] overflow-y-auto p-4 sm:max-h-[88vh] sm:p-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 id="correct-and-teach-title" className="text-base font-semibold tracking-[var(--ui-track-title,-0.022em)] text-on-surface">Correct and Teach</h2>
@@ -242,7 +243,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
             {error && <Alert>{error}</Alert>}
             <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--ui-hairline)] pt-4">
               <button type="button" onClick={close} className="dialog-pill-btn px-3 py-2 text-xs text-on-surface">Cancel</button>
-              <button type="button" onClick={() => void reviewAutomatic()} disabled={busy || !correctedText.trim() || correctedText === entry.text} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">{busy ? 'Reviewing…' : 'Review correction'}</button>
+              <button type="button" onClick={() => void reviewAutomatic()} data-default-button disabled={busy || !correctedText.trim() || correctedText === entry.text} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">{busy ? 'Reviewing…' : 'Review correction'}</button>
             </div>
           </div>
         )}
@@ -261,7 +262,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
             <SpecificTermAction onClick={openSpecificTerm} />
             <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--ui-hairline)] pt-4">
               <button type="button" onClick={backToEdit} className="dialog-pill-btn px-3 py-2 text-xs text-on-surface">Back</button>
-              <button type="button" onClick={saveOnly} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)]">Save correction only</button>
+              <button type="button" onClick={saveOnly} data-default-button className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)]">Save correction only</button>
             </div>
           </div>
         )}
@@ -319,7 +320,7 @@ export function CorrectAndTeachDialog({ entry, onClose, onSaveCorrection }: Prop
             <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--ui-hairline)] pt-4">
               <button type="button" onClick={backToEdit} disabled={busy} className="dialog-pill-btn px-3 py-2 text-xs text-on-surface">Back</button>
               <button type="button" onClick={saveOnly} disabled={busy} className="dialog-pill-btn px-3 py-2 text-xs text-on-surface">Save correction only</button>
-              <button type="button" onClick={() => void reviewSpecific()} disabled={busy || !specificSource.trim() || !specificReplacement.trim()} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">{busy ? 'Reviewing…' : 'Review specific term'}</button>
+              <button type="button" onClick={() => void reviewSpecific()} data-default-button disabled={busy || !specificSource.trim() || !specificReplacement.trim()} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">{busy ? 'Reviewing…' : 'Review specific term'}</button>
             </div>
           </div>
         )}
@@ -400,7 +401,7 @@ function ReviewStep({
       <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--ui-hairline)] pt-4">
         <button type="button" onClick={onBack} disabled={busy} className="dialog-pill-btn px-3 py-2 text-xs text-on-surface">Back</button>
         <button type="button" onClick={onSaveOnly} disabled={busy} className="dialog-pill-btn px-3 py-2 text-xs text-on-surface">Save correction only</button>
-        <button type="button" onClick={onRemember} disabled={busy} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">{busy ? 'Saving…' : 'Remember correction'}</button>
+        <button type="button" onClick={onRemember} data-default-button disabled={busy} className="rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-3 py-2 text-xs font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] disabled:opacity-40">{busy ? 'Saving…' : 'Remember correction'}</button>
       </div>
     </div>
   );

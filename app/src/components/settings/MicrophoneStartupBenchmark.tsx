@@ -1,3 +1,4 @@
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
@@ -161,7 +162,7 @@ export function MicrophoneStartupBenchmark({
     corpusBusy,
   });
   const selectedDevice = deviceId === 'system_default'
-    ? 'System Default'
+    ? 'System default'
     : audioInventory?.devices.find((device) => device.id === deviceId)?.name
       ?? 'Saved microphone (currently unavailable)';
   const progressPercent = progress
@@ -410,17 +411,15 @@ export function MicrophoneStartupBenchmark({
                   </option>
                 ))}
               </select>
-              <button
+              <ConfirmActionButton label="Clear reports" confirmLabel="Confirm clear"
                 type="button"
-                onClick={() => {
+                onConfirm={() => {
                   clearMicrophoneStartupReports();
                   setReports([]);
                   setSelectedAt(null);
                 }}
                 className="shrink-0 px-2 py-1.5 text-xs text-on-surface-variant hover:text-error"
-              >
-                Clear
-              </button>
+               />
             </div>
           )}
 

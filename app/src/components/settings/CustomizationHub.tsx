@@ -9,28 +9,28 @@ const DESTINATIONS: ReadonlyArray<{
 }> = [
   {
     id: 'text',
-    title: 'Text & Vocabulary',
-    description: 'Tune cleanup, punctuation, preferred spellings, and local vocabulary.',
+    title: 'Text & vocabulary',
+    description: 'Tune cleanup, punctuation, preferred spellings, and local vocabulary',
   },
   {
     id: 'commands',
-    title: 'Voice Commands',
-    description: 'Create exact spoken replacements and reusable snippets.',
+    title: 'Voice commands',
+    description: 'Create exact spoken replacements and reusable snippets',
   },
   {
     id: 'styles',
     title: 'Styles',
-    description: 'Choose how Murmur writes and delivers text in each app.',
+    description: 'Choose how Murmur writes and delivers text in each app',
   },
   {
     id: 'modes',
     title: 'Modes',
-    description: 'Build reusable behavior and assign it to apps or browser sites.',
+    description: 'Build reusable behavior and assign it to apps or browser sites',
   },
   {
     id: 'transforms',
     title: 'Transforms',
-    description: 'Configure on-device rewrites and saved instructions.',
+    description: 'Configure on-device rewrites and saved instructions',
   },
 ];
 
@@ -48,15 +48,9 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
 
   return (
     <section aria-labelledby="customization-title">
-      <p className="settings-eyebrow">
-        Make it yours
-      </p>
       <h1 id="customization-title" className="settings-page-title mt-2">
         Customize Murmur
       </h1>
-      <p className="mt-1 max-w-2xl text-sm leading-relaxed text-on-surface-variant">
-        Shape what Murmur writes, how spoken shortcuts behave, and how results adapt to your apps.
-      </p>
 
       <ol
         aria-label="Customization destinations"

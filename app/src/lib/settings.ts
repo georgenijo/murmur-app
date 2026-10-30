@@ -559,8 +559,8 @@ export const QUERY_CONTEXT_LEVEL_OPTIONS: { value: QueryContextLevel; label: str
 ];
 
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
-  { value: 'hold_down', label: 'Hold Down' },
-  { value: 'double_tap', label: 'Double-Tap' },
+  { value: 'hold_down', label: 'Hold down' },
+  { value: 'double_tap', label: 'Double-tap' },
   { value: 'both', label: 'Both' },
 ];
 
@@ -583,7 +583,7 @@ export const IDLE_TIMEOUT_OPTIONS: { value: number; label: string }[] = [
 ];
 
 export const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'auto', label: 'Auto Detect' },
+  { value: 'auto', label: 'Auto-detect' },
   { value: 'en', label: 'English' },
   { value: 'es', label: 'Spanish' },
   { value: 'fr', label: 'French' },

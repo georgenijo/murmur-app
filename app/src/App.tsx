@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from './lib/defaultButton';
 import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
@@ -661,7 +662,7 @@ function App() {
       },
       {
         id: 'paste-last',
-        title: 'Paste Last / Retry Delivery',
+        title: 'Paste last or retry delivery',
         section: 'History',
         keywords: ['clipboard', 'again', 'recover', 'retry', 'delivery'],
         hint: pasteLastShortcutLabel(settings.pasteLastShortcut),
@@ -686,7 +687,7 @@ function App() {
         },
       }, {
         id: 'history-export',
-        title: 'Export history to a Markdown file',
+        title: 'Export history to a Markdown file…',
         section: 'History',
         keywords: ['save', 'download', 'markdown'],
         run: async () => {
@@ -724,7 +725,7 @@ function App() {
       },
       {
         id: 'settings-shortcuts',
-        title: 'Settings: Keyboard Shortcuts',
+        title: 'Settings: Keyboard shortcuts',
         section: 'Settings',
         keywords: ['hotkeys', 'bindings', 'keys'],
         run: () => openSettingsPage('shortcuts'),
@@ -863,7 +864,7 @@ function App() {
   }
 
   return (
-    <div className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <div onKeyDown={defaultButtonKeyDown} className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       {import.meta.env.DEV && (
         <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning select-none">
           Dev
@@ -949,7 +950,7 @@ function App() {
                   <WorkspacePageHeader
                     title="Notetaker"
                     titleId="meetings-view-title"
-                    description="Local meeting transcripts and summaries."
+                    description="Local meeting transcripts and summaries"
                     back={{ label: 'Back to Home', onActivate: backToHome }}
                   />
                   <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
@@ -959,7 +960,7 @@ function App() {
                   <WorkspacePageHeader
                     title="Assistant"
                     titleId="queries-view-title"
-                    description="Talk, type, and pick up where you left off."
+                    description="Talk, type, and pick up where you left off"
                     back={{ label: 'Back to Home', onActivate: backToHome }}
                   />
                   <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
