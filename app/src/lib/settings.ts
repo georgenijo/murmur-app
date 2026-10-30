@@ -354,6 +354,9 @@ export interface Settings {
   launchAtLogin: boolean;
   /** Confirmed vertical fine-tuning for the notch overlay, in logical points. */
   overlayVerticalOffset: number;
+  overlayPlacement: 'notch' | 'below_menu_bar';
+  overlayLiveWords: boolean;
+  overlayProcessingStyle: 'sweep' | 'flow' | 'pulse';
   vadSensitivity: number;
   idleTimeoutMinutes: number;
   captureStandbyEnabled: boolean;
@@ -650,6 +653,9 @@ export const DEFAULT_SETTINGS: Settings = {
   smartAutoAllowContinuity: false,
   launchAtLogin: false,
   overlayVerticalOffset: 0,
+  overlayPlacement: 'notch',
+  overlayLiveWords: false,
+  overlayProcessingStyle: 'flow',
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   captureStandbyEnabled: false,
@@ -982,6 +988,13 @@ export function loadSettings(): Settings {
         parsed.overlayVerticalOffset = clampOverlayVerticalOffset(parsed.overlayVerticalOffset);
       }
       localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
+      if (parsed.overlayPlacement !== 'notch' && parsed.overlayPlacement !== 'below_menu_bar') {
+        parsed.overlayPlacement = DEFAULT_SETTINGS.overlayPlacement;
+      }
+      if (typeof parsed.overlayLiveWords !== 'boolean') parsed.overlayLiveWords = DEFAULT_SETTINGS.overlayLiveWords;
+      if (!['sweep', 'flow', 'pulse'].includes(parsed.overlayProcessingStyle as string)) {
+        parsed.overlayProcessingStyle = DEFAULT_SETTINGS.overlayProcessingStyle;
+      }
 
       // v1: installs that persisted the former 50 ms default should adopt the
       // zero-delay fast path once. A user can set 50 ms again after migration,

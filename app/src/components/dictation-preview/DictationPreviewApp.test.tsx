@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
-import { DictationPreviewApp, visiblePartial } from './DictationPreviewApp';
+import { DictationPreviewApp, DictationPreviewCard, visiblePartial } from './DictationPreviewApp';
+import { DEFAULT_SETTINGS, STORAGE_KEY } from '../../lib/settings';
 
 describe('visiblePartial', () => {
   it('keeps short transcripts intact', () => {
@@ -43,6 +44,9 @@ describe('DictationPreviewApp', () => {
   let container: HTMLDivElement;
 
   beforeEach(async () => {
+    localStorage.clear();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: true }));
+    Object.defineProperty(window, 'matchMedia', { configurable: true, value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) });
     mocks.listeners.clear();
     mocks.listen.mockReset();
     mocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
@@ -73,5 +77,32 @@ describe('DictationPreviewApp', () => {
     expect(card).not.toBeNull();
     expect(container.querySelector('[aria-label="Words recognized so far"]')?.textContent)
       .toBe('okay so one thing');
+    expect(container.querySelector('.live-words-stable')).toBeNull();
+    expect(container.querySelector('.live-words-tentative')?.textContent).toBe('okay so one thing');
+    expect(container.querySelector('button, input, textarea, [title], [contenteditable]')).toBeNull();
+  });
+
+  it('clears instantly when disabled and does not resurrect a stopped generation on re-enable', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 3 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 3, text: 'synthetic words' } });
+    });
+    expect(container.textContent).toContain('synthetic words');
+    const toggle = async (enabled: boolean) => act(async () => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: enabled }));
+      mocks.listeners.get('settings-changed')?.({ payload: null });
+    });
+    await toggle(false);
+    expect(container.textContent).toBe('');
+    await act(async () => mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' }));
+    await toggle(true);
+    await act(async () => mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 3, text: 'stale' } }));
+    expect(container.textContent).toBe('');
+  });
+
+  it('styles stable text only when the producer supplies an explicit boundary', async () => {
+    await act(async () => root.render(<DictationPreviewCard stableText="committed synthetic words" text="provisional ending" />));
+    expect(container.querySelector('.live-words-stable')?.textContent).toBe('committed synthetic words');
+    expect(container.querySelector('.live-words-tentative')?.textContent).toBe('provisional ending');
   });
 });

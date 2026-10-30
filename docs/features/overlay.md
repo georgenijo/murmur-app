@@ -2,15 +2,15 @@
 
 ## Overview
 
-The overlay is an always-on-top transparent window anchored to the macOS notch area, styled as a "Dynamic Island." It shows recording status, an animated audio waveform, and supports click interactions to start/stop recording. The overlay is a separate Tauri window (`label: "overlay"`) that loads its own HTML entry point (`overlay.html` → `src/overlay.tsx` → `OverlayWidget`) and has no shared React context with the main window.
+The overlay is an always-on-top transparent window anchored to the macOS notch area, styled as a "Dynamic Island." It shows recording status, a Canvas2D voice dot field, and supports click interactions to start/stop recording. The overlay is a separate Tauri window (`label: "overlay"`) that loads its own HTML entry point (`overlay.html` → `src/overlay.tsx` → `OverlayWidget`) and has no shared React context with the main window.
 
 The frontend is layered bottom-up:
 
 1. **Geometry contract** (Rust → `useOverlayGeometry`) — every pixel dimension.
 2. **Expansion controller** (`useOverlayExpansion`) — the hover-expand lifecycle and the single writer to the native resize path.
-3. **Runtime hooks** (`useOverlayRecordingStatus`, `useOverlayRuntime`, `useRecordingControls`, `useOverlaySettingsMirror`, `useWaveform`) — Tauri event subscriptions, click handling, the settings mirror, and the waveform animation.
-4. **Presentational components** (`OverlayPill`, `OverlayDropdown`) — pure rendering, driven by a `deriveVisual()` descriptor.
-5. **`OverlayWidget.tsx`** — a composition shell (~150 lines) that calls the hooks above and wires refs/handlers into the island container JSX.
+3. **Runtime hooks** (`useOverlayRecordingStatus`, `useOverlayRuntime`, `useRecordingControls`, `useOverlaySettingsMirror`) — Tauri event subscriptions, click handling, the settings mirror, and settings synchronization.
+4. **Presentational components** (`OverlayIsland`, `OverlayPill`, `OverlayDropdown`, `DotField`) — pure rendering, driven by a `deriveVisual()` descriptor.
+5. **`OverlayWidget.tsx`** — a composition shell that calls the hooks above and wires refs/handlers into the island container JSX.
 
 ## Notch Detection
 
@@ -30,34 +30,17 @@ the display topology changes. Results are cached in `State.notch_info` as a
 `NotchInfo` with an explicit physical-notch flag. `get_overlay_geometry`
 derives an `OverlayGeometry` from that snapshot.
 
-**No-notch displays:** Murmur uses a 280pt rounded floating pill. When the
-menu-bar display has a visible menu bar, the collapsed pill sits *inside* the
-band at the very top of that display, horizontally centred on it, and its
-collapsed height equals the measured bar height (clamped to 24–36pt). It
-therefore avoids browser tab strips beneath the bar. Hover expansion and the
-sibling popovers extend *downward* from the band only while active. Its native
-window and visible pill have the same collapsed width, so no transparent
-click-catching strips remain, and the window position is clamped to that
-display's usable bounds.
+**No-notch displays:** the default island uses a 185pt pretend notch at the
+screen top. Active width is the notch width plus 56pt, not the former 280pt
+floating waveform. The measured menu-bar height is retained (24–128pt, 37pt
+fallback). App → General → Recording overlay can instead select **Below-menu-bar
+pill**, on either physical-notched or external displays. This mode is 6pt below
+the usable menu-bar/safe-area top, including fullscreen Spaces.
 
-### Menu-bar band
-
-The position never depends on the frontmost application, its menu titles, or
-status items, so it stays put across app switches. `with_menu_bar_band_center`
-resolves `NotchInfo.band_center_x` from the menu-bar display's measurements
-alone: on a display without a physical notch whose menu bar is visible, it is
-the display's global logical frame origin x plus half its width; otherwise
-`None`. The window's left edge is `band_center_x − windowW / 2`.
-
-**Fallback.** A physical notch keeps the notch layout. An auto-hidden bar or a
-failed measurement (`NotchInfo.menu_bar_visible` false) uses the standalone
-placement (36pt pill, 8pt below the work-area top). Collapsed height,
-anchoring, native size, popover placement, and the emitted `OverlayGeometry`
-all derive from this one resolved value (`NotchInfo::in_menu_band`), so the
-shorter band height never pairs with a standalone anchor. Native measurement
-failure also uses the spacious floating layout so controls cannot be clipped
-by a synthetic narrow center. `get_overlay_geometry` and the
-`overlay-geometry-changed` event never return null.
+Horizontal centering depends only on the selected display, never app names,
+menu titles or status items. Native calibration and work-area clamps apply to
+the resolved placement. A display measurement failure uses the same bounded
+pretend-notch contract; geometry is never null.
 
 ### Placement refresh
 
@@ -114,31 +97,38 @@ Tauri's `focusable: false` configuration disables mouse events on macOS. The `sh
 
 ## Geometry Contract
 
-Every overlay dimension comes from one source: `geometry_for(notch)` in `commands/overlay.rs`, which returns an `OverlayGeometry` (`windowW`, `collapsedH`, `expandedH`, `pillIdleW`, `pillActiveW`, `pillMarginIdle`, `pillMarginActive`, `dropdownH`). Rust owns every geometry number; the frontend only reads the struct — via `get_overlay_geometry` (`useOverlayGeometry`, with retry-with-backoff on the initial fetch) and the `overlay-geometry-changed` event — and never hardcodes pixels. No overlay component holds a geometry literal.
+`geometry_for_layout(notch, content, layout)` in `commands/overlay.rs` owns the
+native target geometry. `OverlayGeometry` includes the window/pill/dropdown
+boxes and mandatory `island` metrics. `get_overlay_geometry` and topology events
+feed `useOverlayGeometry`; successful native resize transactions separately emit
+`overlay-surface-changed`, so activity changes do not reset hover ownership.
+Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
 
-- **Compact idle width.** On a physical notch, `windowW == pillActiveW == notchW + 2·WING`; while truly idle and not hovered, `pillIdleW == notchW + WING` with a fixed left edge. On a no-notch display, the pill fills the 280pt native window in every state. Recording, processing, and delivery-result cues retain the full active width. `WING = 36` fits the left status icon and right waveform.
-- **Notched vs. no-notch.** Notched (notch `185×32`): `windowW 257`, `collapsedH 32`, `expandedH 96`, `dropdownH 64`. An external display with a 30pt menu bar: `windowW 280`, `collapsedH 30`, `expandedH 94` (a 24pt bar gives `collapsedH 24`). Hidden menu bar or native measurement fallback: `windowW 280`, `collapsedH 36`, `expandedH 100`.
-- **Window width** (`windowW`) is fixed and horizontally centers the overlay on
-  the selected menu-bar display in logical coordinates. A notched pill sits at
-  the screen top; a floating pill sits in the menu-bar band at the screen top,
-  centred on the display, or 8pt below the usable top edge when the bar is
-  hidden or unmeasured. Calibration cannot lift a
-  band pill above the display.
-- **Size transition.** Height grows from `collapsedH` to `expandedH` (`= collapsedH + dropdownH`) while the hover dropdown opens. The native window stays at `windowW`, so recording/processing can use the full top bar immediately.
-- **Status and controls.** The wings hold the status indicator (left) and waveform or delivery action (right). The expanded surface places Mode and quick controls in one row, with recording, connecting, recovery, and hotkey-miss text in a separate row. Text cannot cover buttons. The amber `!` badge and border glow stay on the pill.
-- **Nearby popovers.** On a floating display, the click-through live dictation
-  preview follows the actual applied native overlay frame: it shares the pill's
-  horizontal center (clamped to the work area), sits 6pt below it, and moves
-  below the controls while the overlay is expanded or calibrated. Its height is
-  capped at the remaining work area. The interactive Voice Query popover keeps a
-  conservative static position below the largest calibrated expanded overlay;
-  hover therefore cannot move Copy/Close controls under the pointer. Under a
-  physical notch both stay tucked directly below the notch; hovering the pill
-  open can briefly overlap them.
-- **Mixed display scales.** Native size and position calls use logical points
-  derived from the selected monitor. Tao otherwise converts physical inputs
-  with the overlay window's old scale while it moves between 1x and 2x screens.
-- **Motion tokens** — durations and easing for the width/height transition — live in `app/src/lib/overlayMotion.ts` as the single source; see [Motion tokens](#motion-tokens) below rather than restating numbers here.
+- Metrics: pad/inset 7pt, top offset 6pt, notch gap 10pt, spread 28pt; plate height
+  26pt; idle/recording/processing plate widths 30/112/76pt; idle/active corners
+  8/18pt; field clip radius 11pt.
+- Truly idle notch mode fits the notch itself. Active mode is `notchW + 56` wide
+  and `notchH + 40` tall. A measured 185×32 notch therefore uses idle 185×32 and
+  active 241×72. An external 30pt bar uses active 241×70.
+- Below-menu-bar mode has no notch spacer: idle/recording/processing windows are
+  44/126/90pt wide and 40pt high. Expanded controls reserve at least 241pt width
+  and 64pt dropdown height. Meeting suggestions reserve 320pt width and a 136pt
+  dropdown; their text/actions use the production component, not a stand-in.
+- Status/refusal/delivery cues replace the decorative field in the visible
+  plate. Mode, quick controls and elapsed time remain in the expanded dropdown.
+- Logical points are resolved on the selected menu-bar display, including
+  nonzero monitor origins and 1×/2× scale transitions. Rust alone mutates native
+  geometry on the main thread.
+- Click-through live words follow the actual applied overlay frame on every
+  placement, centered and clamped to the work area, with a 6pt gap. Native size
+  is at most 560×44; height is capped by the remaining work area. Interactive
+  Voice Query controls instead reserve conservative expanded clearance, so
+  hover does not move actions underneath the pointer.
+- State-driven contractions first acknowledge a target while retaining larger
+  previous native bounds (`deferShrink`), animate the centered visual surface,
+  then serialize an exact-size request after spring settlement. This avoids
+  clipping and releases temporary transparent hit area. Hover opening still
+  requires native growth acknowledgement before revealing controls.
 
 ### Position calibration
 
@@ -163,8 +153,8 @@ and records both target and actual physical coordinates in structured,
 content-free telemetry.
 
 Physical-notch calibration intentionally retains the full ±12pt fine-tuning
-range; the screen-top clamp applies only to a synthetic pill in the menu-bar
-band.
+range; the screen-top clamp applies only to a pretend-notch island. Below-menu-bar calibration is clamped to the
+usable safe area and may advertise a smaller effective range.
 
 Settings schema v2 resets offsets produced by the former pointer-drag flow once
 and removes its standalone `murmur-overlay-vertical-offset` key. That flow could
@@ -207,7 +197,14 @@ belong to the visible island, not its transparent full-window wrapper.
 
 ### Motion tokens
 
-The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the single source: `OVERLAY_HEIGHT_MS`, `OVERLAY_SPRING`, `HOVER_OPEN_DWELL_MS`, `COLLAPSE_DELAY_MS`. `OVERLAY_ISLAND_TRANSITION` applies the same spring to width and height so the right wing and dropdown open as one surface. `SHRINK_DELAY_MS` is **derived** as `OVERLAY_HEIGHT_MS + 20` rather than a hand-tuned constant, so it cannot drift from the transition it guards. With `prefers-reduced-motion: reduce`, CSS transitions are removed (see `styles.css`) and the controller shrinks immediately after the leave-intent delay, avoiding both motion and a residual transparent hit area.
+The width/height/corner CSS easing is sampled from the same closed-form
+`Spring` oscillator used by the dot field: 0.3s duration, 0.15 bounce. Field scale
+is 0.9→1 and blur 3→0; opacity/blur use the zero-bounce 0.3s spring.
+`OVERLAY_HEIGHT_MS` is the calculated settlement time, not the response duration;
+`SHRINK_DELAY_MS` adds 20ms. Hover dwell is 150ms and leave intent is 300ms.
+Reduce Motion snaps geometry/scale/blur and uses only a field opacity fade,
+then sleeps even while recording. No traveling trace, processing sweep or Done
+wipe runs in that mode.
 
 ## Frontend Hooks
 
@@ -216,22 +213,22 @@ The transition durations/easings live in `app/src/lib/overlayMotion.ts` as the s
 | Hook | Owns |
 |------|------|
 | `useOverlayGeometry` | Fetches/subscribes to `OverlayGeometry` (see [Geometry Contract](#geometry-contract)). |
-| `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`, `overlayVerticalOffset`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
+| `useOverlaySettingsMirror` | The localStorage settings snapshot the overlay needs (`autoPaste`, `fileOutputEnabled`, `overlayVerticalOffset`, `overlayPlacement`, `overlayProcessingStyle`), `applySettingsSnapshot`/`refresh`, the `settings-changed` listener, and the three quick-control actions (toggle auto-paste with rollback-on-failure, toggle global disable, open Settings). |
 | `useOverlayRuntime` | The `recording-cancelled` (red-X flash), `hotkey-tap-rejected` (amber flash), typed `recording-initialization-failed`/generic `recording-interrupted` microphone cues, `dictation-generation-started` ownership floor, generation-ordered `dictation-delivery-outcome` (clipboard-only `⌘V` cue), inline retry command and authoritative returned-result presentation, and `app-disabled-changed` listeners, plus the transient flash timers. `disabled`/`showHotkeyMiss`/`hotkeyMissFeedbackRef` are created in the composition shell (not inside this hook or the settings mirror) because both hooks write into them synchronously and neither can be constructed from the other's return value without an artificial call-order dependency; this hook attaches behavior and re-exposes them. |
 | `useOverlayExpansion` (pre-existing, see [Expansion Controller](#expansion-controller)) | The hover-expand lifecycle. |
-| `useWaveform` | The `audio-level` listener and the rAF bar-height animation (see [Waveform Animation](#waveform-animation)). |
+| `DotField` | Ref-only audio levels, bounded fixed-step simulation and visibility-gated canvas painting (see [Dot field](#dot-field)). |
 | `useRecordingControls` | Click/double-click/mousedown disambiguation (250ms debounce) and "locked mode" (see [Click Interactions](#click-interactions)). Reads the microphone override via `loadSettings()` — no raw localStorage parsing. |
 
 Pure, React-free logic lives alongside the presentational components in `app/src/components/overlay/`:
 
 - **`deriveVisual.ts`** — runtime state → `OverlayVisual`. Encodes the top-bar indicator priority, including typed microphone failures, exactly once; locked by its exhaustive base-state matrix and focused priority tests in `deriveVisual.test.ts`.
 
-Presentational components, both driven entirely by props (no hooks beyond `OverlayPill`'s own local elapsed-timer state):
+Presentational components are driven by props:
 
-- **`OverlayPill.tsx`** — the top bar (status indicator slot and waveform or delivery-action wing), including accessible transient cues. A terminal `device_unavailable` uses a mic-off glyph with actionable Settings guidance; other capture failures retain a generic warning.
+- **`OverlayPill.tsx`** — the plate (priority status, decorative dot field or delivery action), including accessible transient cues. A terminal `device_unavailable` uses a mic-off glyph with actionable Settings guidance; other capture failures retain a generic warning.
 - **`OverlayDropdown.tsx`** — the three quick-settings buttons (Power, auto-paste toggle, gear). Icons (`PowerIcon`, `ClipboardPasteIcon`, `SlidersIcon`) are colocated in this file rather than split one-per-file.
 
-The island **container** (sizing, hover handlers, `islandRef`) stays in `OverlayWidget.tsx` itself, since it wraps both `OverlayPill` and `OverlayDropdown` as siblings.
+`OverlayIsland` owns the fixed-black surface and sizing. `OverlayWidget` wires its hover handlers and `islandRef`, then composes the pill and dropdown as siblings.
 
 ### Dropdown controls
 
@@ -259,10 +256,12 @@ The overlay's top-bar indicator is a pure function of status + transient flags +
 While a selected-text transform is in **Thinking** (sidecar running), the overlay can show a **transforming…** indicator (`deriveVisual` priority: cancelled > secure-field flash > hotkey-miss > recording > processing > transforming > idle). Secure/password fields refused by the transform capture path emit a content-free `transform-secure-field` flash via `useOverlayRuntime` — no selection text is ever read or shown.
 
 ### Idle
-Small mic SVG icon at 40% white opacity (dimmed further to 15% when globally disabled). Compact width.
+The notch rest shrinks to the notch and contains no animated plate. The below-menu-bar rest shows a small mic at 40% white opacity (15% when disabled). Neither keeps an idle canvas loop.
 
 ### Recording
-The red pulsing dot occupies the visible left wing and the animated 7-bar waveform occupies the right wing. The `m:ss` elapsed timer renders in the dropdown row (visible on hover-expand), not in a wing. No transcript text is displayed in the overlay while recording — Core ML live preview renders in its own `dictation-preview` popover below the notch (see [transcription.md](transcription.md#live-preview)), because a 36pt wing can only show ~4 head-truncated characters. (Width is constant across all states.)
+The braided voice field occupies the plate below the notch (or the standalone
+pill). The `m:ss` timer remains in the expanded dropdown. No transcript appears
+inside the island; optional Live words use the separate click-through window.
 
 ### Starting and Recovering
 
@@ -271,7 +270,7 @@ amber "Still connecting" cue. Clicking or toggling again cancels. Recovering
 uses an amber spinner and dropdown label during cancellation recovery; the app
 returns to Idle only after the exclusively owned Core Audio thread exits.
 Terminal microphone failure gets a five-second, non-interactive red status cue
-without expanding, focusing, or resizing the overlay. `device_unavailable`
+without opening controls or focusing the overlay; it retains the active plate size. `device_unavailable`
 uses a mic-off glyph whose accessibility label directs the user to Settings to
 choose another input; permission denial points to microphone settings, ordinary
 capture failures recommend retry, and an interrupted partial capture says to
@@ -282,7 +281,7 @@ recording stop whose teardown remains blocked surfaces persistent guidance in
 the main recording-error area.
 
 ### Processing
-Spinning circle in the left wing; the waveform is hidden (visible only while recording). No transcript text is displayed while processing.
+A 76pt field runs the selected Sweep, Flow or Pulse style. Processing→idle holds Done for 400ms: dots clear from the center outward, then fade. A new recording cancels the hold. Priority refusal/failure/delivery cues hide the field immediately. No provisional words remain while processing.
 
 ### Clipboard Only (transient)
 
@@ -301,8 +300,7 @@ is still there. The cue never appears after a failed/unconfirmed clipboard write
 or a completed automatic paste. Active
 recording, processing, meeting, transform, and higher-priority failure states
 remain truthful and take visual precedence; the cue appears once those states
-return to idle. The action never focuses Murmur, expands the surface, or resizes
-the window. Monotonic recording IDs make
+return to idle. The action never focuses Murmur or expands controls; the cue retains the active plate. Monotonic recording IDs make
 duplicate and stale delivery events unable to extend or resurrect the cue; a
 separate generation-start event advances the stale-event floor before delivery.
 
@@ -315,8 +313,9 @@ When `hotkeyMissFeedback` is enabled and the backend emits `hotkey-tap-rejected`
 The idle dropdown omits shortcut guidance. Recording, connection, recovery,
 and hotkey-miss feedback use the separate status row.
 
-**Styling:** Dark background (`rgba(20, 20, 20, 0.92)`), 40px backdrop blur,
-rounded bottom corners on notched displays and all corners on floating displays.
+**Styling:** The island is intentionally solid black in every theme, with rounded
+bottom corners for notch mode and all corners for below-menu-bar mode. Live words
+instead use semantic theme background, foreground and hairline tokens.
 
 ## Reload recovery
 
@@ -329,14 +328,38 @@ status ref synchronously and discards callbacks after unmount.
 Reloading the webview does not stop native capture. To stop a recording, click
 the recording indicator or use the recording shortcut.
 
-## Waveform Animation
+## Dot field
 
-7 bars (`BAR_COUNT` in `useWaveform.ts`) animate via `requestAnimationFrame` with direct DOM manipulation (no React state updates per frame).
+`DotField` paints Canvas2D from reused typed arrays; no React state update,
+native RPC, or explicit array/object allocation occurs per animation frame.
+The grid is 43×9 at 2.6pt pitch with two opposed 1.6-turn traces and
+center-weighted falloff. The 6.5Hz amplitude oscillator releases over 0.15s;
+its history travels outward at 150pt/s with a 0.6s phosphor tail. Auto-level
+uses a 40ms peak attack, room floor down/up 0.3/6s, 16dB minimum span and
+−60dB noise floor. Simulation is fixed at 240Hz, capped at 12 catch-up steps;
+painting follows display refresh. Audio older than 150ms is silence.
 
-- Audio levels arrive via the `audio-level` Tauri event and are stored in a ref
-- The rAF loop reads the ref and sets `el.style.height` on each bar element
-- Bar heights are computed from: baseline (random jitter), center-weighted envelope (middle bars taller), audio level (scaled x16, capped at 1), and a squared boost with random factor for organic movement
-- Animation only runs when `status === 'recording'`; bars reset to 2px when idle
+Idle/finished fields sleep. Document/native hiding cancels animation frames;
+showing resumes with a fresh timestep rather than accumulating hidden work.
+Deterministic synthetic fixtures exercise processing styles, Done, themes,
+placement, priority cues and Reduce Motion. They do not establish native
+performance, focus or real-dictation acceptance.
+
+### Optional live words
+
+App → General → **Live words** is off by default; the retired preview flag never
+opts an install in. The 32pt pill is attached 6pt below the native frame, in a
+560×44 click-through window. UI type is 13px with 14px horizontal padding.
+Stable segments head-clip and tentative segments tail-ellipsis. Existing APIs
+provide only whole provisional strings, so production renders tentative text
+only: it does not infer committed words or invent cadence. See
+[Live preview](transcription.md#live-preview) for the unchanged backend cadence.
+
+The generation/status/cancellation listeners remain active even while disabled,
+so re-enabling cannot resurrect a stopped generation. Stop, cancellation, newer
+generation, setting-off and rejected native presentation clear the content.
+No preview copy/paste/log/persist/export path exists. The native show gate
+revalidates the exact generation on the main thread immediately before display.
 
 ## Click Interactions
 
@@ -381,7 +404,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
 - Calls: `get_status`, `get_overlay_geometry`, `set_overlay_expanded`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `retry_last_delivery`, `set_app_disabled`, `configure_dictation`.
-- Listens: `overlay-geometry-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
+- Listens: `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
 

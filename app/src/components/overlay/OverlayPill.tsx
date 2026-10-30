@@ -1,6 +1,7 @@
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
-import { BAR_COUNT } from '../../lib/hooks/useWaveform';
+import { DotField } from './DotField';
+import type { ScopeStage, ProcessingStyle } from './dotScope';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 import type { OverlayVisual } from './deriveVisual';
 
@@ -8,7 +9,9 @@ interface OverlayPillProps {
   geometry: OverlayGeometry;
   visual: OverlayVisual;
   status: DictationStatus;
-  barRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
+  scopeStage?: ScopeStage;
+  processingStyle?: ProcessingStyle;
+  fixtureAt?: number;
   smartAutoSummary?: OverlaySmartAutoSummary | null;
   deliveryCue?: OverlayDeliveryCue | null;
   onRetryDelivery?: () => void;
@@ -22,37 +25,40 @@ export type OverlaySmartAutoSummary =
   | { kind: 'blocked'; retryAfterMs: number | null };
 
 /**
- * Top-bar content: status indicator (left wing) + waveform (right wing). Purely
- * presentational — driven by the `visual` descriptor from `deriveVisual`.
- *
- * Each wing is a fixed `geometry.wingW` slot with content *centered* inside it
- * (not flush to the notch edge). The flex-1 spacer is the notch-obscured
- * center. Wider content (recording timer, "Tap missed" label) lives in the
- * dropdown row, below notch height. Does not own the island container
- * (sizing/hover/islandRef stay in OverlayWidget.tsx, since they also govern
- * the sibling dropdown).
+ * Priority-resolved status and decorative canvas share the plate below the
+ * notch. Refusals/failures/delivery replace the field; provisional text belongs
+ * only to the optional click-through preview. The parent owns native sizing,
+ * hover and the sibling quick controls.
  */
 export function OverlayPill({
   geometry,
   visual,
-  status,
-  barRefs,
+  scopeStage,
+  processingStyle,
+  fixtureAt,
   smartAutoSummary = null,
   deliveryCue = null,
   onRetryDelivery,
   onPauseDeliveryTimer,
   onResumeDeliveryTimer,
 }: OverlayPillProps) {
-  const topH = geometry.collapsedH;
+  const topH = geometry.island.plateH + 2 * geometry.island.pad;
+  const stage = visual.indicator.kind === 'recording' ? 'recording'
+    : visual.indicator.kind === 'processing' ? 'processing'
+      : visual.indicator.kind === 'idle' && scopeStage === 'done' ? 'done' : 'idle';
   const wingW = geometry.wingW;
   const { indicator } = visual;
 
   return (
-    <>
+    <div className="overlay-pill" style={{ height: geometry.collapsedH, position: 'relative' }}>
       {/* The native overlay is anchor-owned; this surface deliberately is not a
           drag region because arbitrary movement is neither persisted nor part
           of the placement contract. */}
-      <div className="flex items-center" style={{ height: topH }}>
+      <div className="overlay-status-row flex items-center"
+        data-field-active={stage !== 'idle' || undefined}
+        role={stage !== 'idle' ? 'status' : undefined}
+        aria-label={stage === 'recording' ? 'Recording' : stage === 'processing' ? 'Processing' : stage === 'done' ? 'Done' : undefined}
+        style={{ position: 'absolute', left: 0, right: 0, top: geometry.island.notchH, height: topH }}>
         {/* Left wing — fixed wing slot, content centered */}
         <div
           className="shrink-0 flex items-center justify-center"
@@ -215,10 +221,9 @@ export function OverlayPill({
         {/* Notch-obscured center — flex absorbs the physical notch width. */}
         <div className="flex-1" aria-hidden="true" />
 
-        {/* Right wing — same fixed wing slot; waveform centered in the middle
-            of the wing (not flush against the notch edge). */}
+        {/* Delivery remains actionable without taking focus from the editor. */}
         {indicator.kind === 'clipboardOnly' ? (
-          <div className="shrink-0 flex items-center justify-center" style={{ width: wingW }}>
+          <div className="shrink-0 flex items-center justify-center" style={{ width: 52 }}>
             {deliveryCue?.kind === 'auto_pasted' ? (
               <span className="text-[8px] font-medium leading-none text-emerald-200">Pasted</span>
             ) : deliveryCue?.kind === 'retrying' ? (
@@ -259,28 +264,16 @@ export function OverlayPill({
               </button>
             )}
           </div>
-        ) : (
-          <div
-            className="shrink-0 flex items-center justify-center transition-opacity duration-300"
-            style={{ width: wingW, opacity: visual.waveformVisible ? 1 : 0 }}
-            aria-hidden={!visual.waveformVisible}
-          >
-            <div className="flex items-center gap-[1.5px] h-4">
-              {Array.from({ length: BAR_COUNT }, (_, i) => (
-                <div
-                  key={i}
-                  ref={el => { barRefs.current[i] = el; }}
-                  className="w-[2px] rounded-full bg-white/90"
-                  style={{
-                    height: '2px',
-                    transition: `height ${status === 'recording' ? '50ms' : '300ms'} ease-out`,
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+        ) : <div style={{ width: wingW }} aria-hidden="true" />}
       </div>
-    </>
+      <div className="overlay-field-slot" style={{
+        top: geometry.island.notchH + geometry.island.pad,
+        height: geometry.island.plateH,
+        borderRadius: geometry.island.innerRadius,
+        visibility: stage === 'idle' ? 'hidden' : undefined,
+      }}>
+        <DotField stage={stage} processingStyle={processingStyle} fixtureAt={fixtureAt} geometry={geometry.island} />
+      </div>
+    </div>
   );
 }

@@ -1,3 +1,4 @@
+import geometryFixture from './overlay-geometry.fixture.json';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +16,7 @@ const geometry: OverlayGeometry = {
   dropdownH: 136,
   wingW: 36,
   floating: false,
+  island: geometryFixture.notched.island,
 };
 
 describe('OverlayMeetingSuggestion', () => {

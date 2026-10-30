@@ -16,6 +16,51 @@ pub struct OverlayGeometry {
     pub dropdown_h: f64,
     pub wing_w: f64,
     pub floating: bool,
+    pub island: IslandMetrics,
+}
+
+/// Native-owned geometry shared by the island, field and attached preview.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct IslandMetrics {
+    pub notch_w: f64,
+    pub notch_h: f64,
+    pub pad: f64,
+    pub inset: f64,
+    pub top_offset: f64,
+    pub notch_gap: f64,
+    pub spread: f64,
+    pub plate_idle_w: f64,
+    pub plate_recording_w: f64,
+    pub plate_processing_w: f64,
+    pub plate_h: f64,
+    pub corner_idle: f64,
+    pub corner_active: f64,
+    pub inner_radius: f64,
+}
+
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayActivity {
+    #[default]
+    Idle,
+    Recording,
+    Processing,
+}
+
+#[derive(serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayPlacement {
+    #[default]
+    Notch,
+    BelowMenuBar,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OverlayLayout {
+    activity: OverlayActivity,
+    placement: OverlayPlacement,
+    expanded: bool,
 }
 
 /// The window frame `set_overlay_expanded` actually applied. Returned so the
@@ -101,32 +146,23 @@ impl NotchInfo {
     }
 }
 
-// Private geometry constants — the ONLY place these magic numbers live.
-//
-// The native window stays at the full active width (`notch_w + 2*WING`) so
-// recording/processing indicators can use either wing immediately. The visual
-// island is narrower only while truly idle and collapsed: `notch_w + WING`.
-// Its left edge stays fixed, which tucks the empty right wing under the notch;
-// hover grows the visible right edge back out without moving the mic wing.
-//
-// WING is the visible strip on each side of the physical notch. The frontend
-// treats each wing as a fixed-width slot of this size and *centers* its content
-// (icon / waveform) inside it — so content is not flush to the notch edge.
-//   - left: red pulse / mic / spinner centered in the wing
-//   - right: ~23px 7-bar waveform (7*2px + 6*1.5px) centered in the wing
-// WING = 36 fits both with a little slack. Anything wider than a wing
-// (recording timer, "Tap missed" label) renders below notch height instead.
-const WING: f64 = 36.0;
+// Native geometry is the only surface-size contract. The idle island matches
+// the notch; an active island spreads 28pt on either side and adds a padded
+// 26pt plate below it. Flat displays use a measured-height 185pt pretend notch.
+// Below-menu-bar placement instead wraps the plate, always below the safe top.
+// Hex a07f994 hud_placement.rs constants: MIT, Christopher Langton 2026;
+// see THIRD_PARTY_NOTICES.md.
+const WING: f64 = 28.0;
+const ISLAND_PAD: f64 = 7.0;
+const PLATE_H: f64 = 26.0;
 const DROPDOWN_H: f64 = 64.0;
-const FLOATING_W: f64 = 280.0;
-const FLOATING_TOP_H: f64 = 36.0;
-/// Shortest collapsed floating pill: fits the 14pt waveform and 16pt icons.
+/// Minimum plausible menu-bar height for the pretend notch.
 const FLOATING_MIN_H: f64 = 24.0;
-const FLOATING_GAP: f64 = 8.0;
+const FLOATING_GAP: f64 = 6.0;
 const POPOVER_GAP: f64 = 6.0;
 const MEETING_SUGGESTION_MIN_W: f64 = 320.0;
 const MEETING_SUGGESTION_DROPDOWN_H: f64 = 136.0;
-const FALLBACK_NOTCH_W: f64 = 80.0;
+const FALLBACK_NOTCH_W: f64 = 185.0;
 const FALLBACK_NOTCH_H: f64 = 37.0;
 const MAX_REASONABLE_MENU_BAR_H: f64 = 128.0;
 const MIN_VERTICAL_OFFSET: f64 = -12.0;
@@ -143,41 +179,81 @@ fn clamp_vertical_offset(offset: f64) -> f64 {
 }
 
 fn geometry_for(notch: Option<NotchInfo>) -> OverlayGeometry {
-    let notch_w = notch.map_or(FALLBACK_NOTCH_W, |info| info.width);
-    let notch_h = notch.map_or(FALLBACK_NOTCH_H, |info| info.height);
-    // When native screen measurement is unavailable, use the spacious
-    // floating surface. A synthetic 80pt center cannot fit quick controls.
-    let floating = notch.is_none_or(|info| !info.physical_notch);
-    // Inside the menu-bar band the collapsed pill takes the bar's own height so
-    // it never reaches down over browser tab strips; the standalone placement
-    // keeps the 36pt height. Both follow the same resolved band decision.
-    let floating_h = notch
-        .filter(|info| info.in_menu_band())
-        .map_or(FLOATING_TOP_H, |info| {
-            info.height.clamp(FLOATING_MIN_H, FLOATING_TOP_H)
-        });
-    let window_w = if floating {
-        FLOATING_W
-    } else {
-        notch_w + 2.0 * WING
-    };
+    // Flat displays deliberately use the same 185pt pretend notch as Hex.
+    let notch_w = notch
+        .filter(|n| n.physical_notch)
+        .map_or(FALLBACK_NOTCH_W, |n| n.width);
+    let notch_h = notch.map_or(FALLBACK_NOTCH_H, |n| {
+        n.height.clamp(FLOATING_MIN_H, MAX_REASONABLE_MENU_BAR_H)
+    });
+    let window_w = notch_w + 2.0 * WING;
+    let collapsed_h = notch_h + 2.0 * ISLAND_PAD + PLATE_H;
     OverlayGeometry {
         window_w,
-        collapsed_h: if floating { floating_h } else { notch_h },
-        expanded_h: if floating {
-            floating_h + DROPDOWN_H
-        } else {
-            notch_h + DROPDOWN_H
-        },
-        // Idle ends at the notch's right edge; active reveals the right wing.
-        pill_idle_w: if floating { FLOATING_W } else { notch_w + WING },
+        collapsed_h,
+        expanded_h: collapsed_h + DROPDOWN_H,
+        pill_idle_w: notch_w,
         pill_active_w: window_w,
-        pill_margin_idle: 0.0,
+        pill_margin_idle: WING,
         pill_margin_active: 0.0,
         dropdown_h: DROPDOWN_H,
         wing_w: WING,
-        floating,
+        floating: false,
+        island: IslandMetrics {
+            notch_w,
+            notch_h,
+            pad: ISLAND_PAD,
+            inset: ISLAND_PAD,
+            top_offset: 6.0,
+            notch_gap: 10.0,
+            spread: WING,
+            plate_idle_w: 30.0,
+            plate_recording_w: 112.0,
+            plate_processing_w: 76.0,
+            plate_h: PLATE_H,
+            corner_idle: 8.0,
+            corner_active: 18.0,
+            inner_radius: 11.0,
+        },
     }
+}
+
+fn geometry_for_layout(
+    notch: Option<NotchInfo>,
+    content: OverlayContent,
+    layout: OverlayLayout,
+) -> OverlayGeometry {
+    let content = if layout.expanded {
+        content
+    } else {
+        OverlayContent::Controls
+    };
+    let mut g = geometry_for_content(notch, content);
+    let active = layout.activity != OverlayActivity::Idle || layout.expanded;
+    if layout.placement == OverlayPlacement::BelowMenuBar {
+        g.floating = true;
+        g.island.notch_h = 0.0;
+        let plate_w = match layout.activity {
+            OverlayActivity::Idle => g.island.plate_idle_w,
+            OverlayActivity::Recording => g.island.plate_recording_w,
+            OverlayActivity::Processing => g.island.plate_processing_w,
+        };
+        g.window_w = if layout.expanded {
+            g.window_w.max(241.0)
+        } else {
+            plate_w + 2.0 * ISLAND_PAD
+        };
+        g.collapsed_h = PLATE_H + 2.0 * ISLAND_PAD;
+    } else if !active {
+        g.window_w = g.island.notch_w;
+        g.collapsed_h = g.island.notch_h;
+    }
+    g.pill_idle_w = g.window_w;
+    g.pill_active_w = g.window_w;
+    g.pill_margin_idle = 0.0;
+    g.pill_margin_active = 0.0;
+    g.expanded_h = g.collapsed_h + g.dropdown_h;
+    g
 }
 
 fn geometry_for_content(notch: Option<NotchInfo>, content: OverlayContent) -> OverlayGeometry {
@@ -197,17 +273,21 @@ fn geometry_for_content(notch: Option<NotchInfo>, content: OverlayContent) -> Ov
     geometry
 }
 
-fn surface_for_content(
-    notch: Option<NotchInfo>,
-    expanded: bool,
-    content: OverlayContent,
+/// During a CSS contraction retain only the bounds the previous visible
+/// surface still needs. A second, settled request releases them. Never grow
+/// a transparent steady-state hit target merely to simplify animation.
+fn animation_surface(
+    target: AppliedSurface,
+    current: Option<OverlayFrame>,
+    defer_shrink: bool,
 ) -> AppliedSurface {
-    let content = if expanded {
-        content
-    } else {
-        OverlayContent::Controls
-    };
-    applied_surface_for(&geometry_for_content(notch, content), expanded)
+    match current.filter(|_| defer_shrink) {
+        Some(frame) => AppliedSurface {
+            window_w: target.window_w.max(frame.width),
+            window_h: target.window_h.max(frame.height),
+        },
+        None => target,
+    }
 }
 
 fn resized_logical_position(
@@ -328,6 +408,10 @@ fn floating_window_x(centered_x: f64, notch: Option<NotchInfo>, window_w: f64) -
 
 /// Lowest `y` the floating window may take, and the `y` it takes with zero
 /// calibration offset.
+fn usable_top(frame_top: f64, work_top: f64, notch: Option<NotchInfo>) -> f64 {
+    work_top.max(frame_top + notch.filter(|n| n.physical_notch).map_or(0.0, |n| n.height))
+}
+
 fn floating_anchor(frame_top: f64, work_top: f64, in_menu_bar_band: bool) -> (f64, f64) {
     if in_menu_bar_band {
         (frame_top, frame_top)
@@ -418,10 +502,16 @@ pub(crate) fn overlay_popover_fit(
     }
     let state = app.try_state::<crate::State>()?;
     let notch = *state.notch_info.lock_or_recover();
-    let geometry = geometry_for(notch);
+    let mut layout = *state.overlay_layout.lock_or_recover();
+    layout.expanded = true;
+    let geometry = geometry_for_layout(notch, OverlayContent::Controls, layout);
     let scale = monitor.scale_factor();
     let frame_top = monitor.position().y as f64 / scale;
-    let work_top = monitor.work_area().position.y as f64 / scale;
+    let work_top = usable_top(
+        frame_top,
+        monitor.work_area().position.y as f64 / scale,
+        notch,
+    );
     let work_bottom =
         (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
     overlay_popover_fit_for_geometry(
@@ -430,7 +520,7 @@ pub(crate) fn overlay_popover_fit(
         work_bottom,
         popover_height,
         &geometry,
-        floating_in_menu_bar_band(notch),
+        false,
     )
 }
 
@@ -442,10 +532,11 @@ fn overlay_popover_fit_for_geometry(
     geometry: &OverlayGeometry,
     in_menu_bar_band: bool,
 ) -> Option<(f64, f64)> {
-    if !geometry.floating {
-        return None;
-    }
-    let (_, base_y) = floating_anchor(frame_top, work_top, in_menu_bar_band);
+    let (_, base_y) = if geometry.floating {
+        floating_anchor(frame_top, work_top, in_menu_bar_band)
+    } else {
+        (frame_top, frame_top)
+    };
     let below_overlay = base_y + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP;
     let top = below_overlay.clamp(work_top, work_bottom);
     Some((top, popover_height.min((work_bottom - top).max(0.0))))
@@ -473,8 +564,6 @@ pub(crate) fn dictation_preview_fit(
         return None;
     }
     let state = app.try_state::<crate::State>()?;
-    let notch = *state.notch_info.lock_or_recover();
-    let floating = geometry_for(notch).floating;
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let work_area = PopoverWorkArea {
@@ -484,21 +573,16 @@ pub(crate) fn dictation_preview_fit(
         bottom: (area.position.y as f64 + area.size.height as f64) / scale,
     };
     let frame = *state.overlay_frame.lock_or_recover();
-    dictation_preview_fit_for_frame(work_area, (preview_width, preview_height), frame, floating)
+    dictation_preview_fit_for_frame(work_area, (preview_width, preview_height), frame)
 }
 
 fn dictation_preview_fit_for_frame(
     work_area: PopoverWorkArea,
     preview_size: (f64, f64),
     frame: Option<OverlayFrame>,
-    floating: bool,
 ) -> Option<(f64, f64, f64)> {
-    // Under a physical notch the collapsed pill fills the notch; callers keep
-    // their popover tucked just below it. Reserving the full hover-expanded
-    // height there put the live transcript far from the pill.
-    if !floating {
-        return None;
-    }
+    // Both placements follow the acknowledged frame, never a guessed notch
+    // inset. The caller bounds preview width to this display's work area.
     let frame = frame?;
     let (preview_width, preview_height) = preview_size;
     let rightmost_x = (work_area.right - preview_width).max(work_area.left);
@@ -509,6 +593,15 @@ fn dictation_preview_fit_for_frame(
         top,
         preview_height.min((work_area.bottom - top).max(0.0)),
     ))
+}
+
+pub(crate) fn preview_fallback_inset(notch_h: Option<f64>) -> f64 {
+    notch_h
+        .filter(|h| h.is_finite() && *h > 0.0)
+        .unwrap_or(FALLBACK_NOTCH_H)
+        + 2.0 * ISLAND_PAD
+        + PLATE_H
+        + POPOVER_GAP
 }
 
 #[cfg(target_os = "macos")]
@@ -778,7 +871,11 @@ fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     // The frontend treats this event as authoritative for expansion: it
     // collapses and re-reads geometry. Native placement retained the effective
     // calibration above, including an active unsaved draft.
-    let _ = handle.emit("overlay-geometry-changed", geometry_for(notch));
+    let layout = *state.overlay_layout.lock_or_recover();
+    let _ = handle.emit(
+        "overlay-geometry-changed",
+        geometry_for_layout(notch, OverlayContent::Controls, layout),
+    );
 }
 
 /// Start the placement worker: it owns debouncing and sequencing for every
@@ -916,7 +1013,13 @@ pub(crate) fn position_overlay_default(
     notch_info: Option<NotchInfo>,
     reason: &'static str,
 ) {
-    let g = geometry_for(notch_info);
+    let state = overlay.app_handle().state::<State>();
+    let layout = {
+        let mut layout = state.overlay_layout.lock_or_recover();
+        layout.expanded = false;
+        *layout
+    };
+    let g = geometry_for_layout(notch_info, OverlayContent::Controls, layout);
     let overlay_w = g.window_w;
     let overlay_h = g.collapsed_h;
     tracing::info!(target: "system", "position_overlay_default: notch_info={:?}, overlay_w={}, overlay_h={}", notch_info, overlay_w, overlay_h);
@@ -948,9 +1051,9 @@ pub(crate) fn position_overlay_default(
             overlay_w,
         );
         let area = monitor.work_area();
-        let work_top = area.position.y as f64 / sf;
+        let work_top = usable_top(centered_y, area.position.y as f64 / sf, notch_info);
         let work_bottom = (area.position.y as f64 + area.size.height as f64) / sf;
-        let in_band = floating_in_menu_bar_band(notch_info);
+        let in_band = false;
         let calibration = *overlay
             .app_handle()
             .state::<State>()
@@ -978,9 +1081,9 @@ pub(crate) fn position_overlay_default(
                 centered_y,
                 (
                     area.position.x,
-                    area.position.y,
+                    (work_top * sf).round() as i32,
                     area.size.width,
-                    area.size.height,
+                    ((work_bottom - work_top) * sf).max(0.0).round() as u32,
                 ),
                 (overlay_w, overlay_h),
                 sf,
@@ -1077,9 +1180,10 @@ pub fn get_overlay_geometry(
     state: tauri::State<'_, State>,
     content: Option<OverlayContent>,
 ) -> OverlayGeometry {
-    geometry_for_content(
+    geometry_for_layout(
         *state.notch_info.lock_or_recover(),
         content.unwrap_or_default(),
+        *state.overlay_layout.lock_or_recover(),
     )
 }
 
@@ -1121,12 +1225,28 @@ pub async fn set_overlay_expanded(
     _state: tauri::State<'_, State>,
     expanded: bool,
     content: Option<OverlayContent>,
+    activity: Option<OverlayActivity>,
+    placement: Option<OverlayPlacement>,
+    defer_shrink: Option<bool>,
 ) -> Result<AppliedSurface, String> {
     let content = content.unwrap_or_default();
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = &app;
-        return Ok(surface_for_content(None, expanded, content));
+        let mut layout = _state.overlay_layout.lock_or_recover();
+        layout.expanded = expanded;
+        if let Some(activity) = activity {
+            layout.activity = activity;
+        }
+        if let Some(placement) = placement {
+            layout.placement = placement;
+        }
+        let g = geometry_for_layout(None, content, *layout);
+        let _ = app.emit("overlay-surface-changed", &g);
+        return Ok(animation_surface(
+            applied_surface_for(&g, expanded),
+            *_state.overlay_frame.lock_or_recover(),
+            defer_shrink.unwrap_or(false),
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -1143,7 +1263,23 @@ pub async fn set_overlay_expanded(
                 // notch/scale contract since the command was invoked.
                 let state = dispatch_app.state::<State>();
                 let notch = *state.notch_info.lock_or_recover();
-                let applied = surface_for_content(notch, expanded, content);
+                let mut layout = *state.overlay_layout.lock_or_recover();
+                layout.expanded = expanded;
+                if let Some(activity) = activity {
+                    layout.activity = activity;
+                }
+                if let Some(placement) = placement {
+                    layout.placement = placement;
+                }
+                let geometry = geometry_for_layout(notch, content, layout);
+                if tx.is_closed() {
+                    return Err("overlay resize expired before native dispatch".to_string());
+                }
+                let applied = animation_surface(
+                    applied_surface_for(&geometry, expanded),
+                    *state.overlay_frame.lock_or_recover(),
+                    defer_shrink.unwrap_or(false),
+                );
                 // Accepted native setters update `overlay_frame` synchronously
                 // on this same main-thread queue. Prefer that authoritative
                 // target over an immediate WindowServer read, which can still
@@ -1163,8 +1299,38 @@ pub async fn set_overlay_expanded(
                         )
                     }
                 };
-                let (x, y) =
+                let (mut x, mut y) =
                     resized_logical_position(logical_position, current_width, applied.window_w);
+                // Placement and size are one main-thread transaction. Re-clamp
+                // on every state/hover change, including a short work area.
+                let mut calibration = None;
+                if let Some(monitor) = dispatch_app.primary_monitor().map_err(|e| e.to_string())? {
+                    let sf = monitor.scale_factor();
+                    let area = monitor.work_area();
+                    let left = area.position.x as f64 / sf;
+                    let right = left + area.size.width as f64 / sf;
+                    let frame_top = monitor.position().y as f64 / sf;
+                    let work_top = usable_top(frame_top, area.position.y as f64 / sf, notch);
+                    let bottom = (area.position.y as f64 + area.size.height as f64) / sf;
+                    let offset = state.overlay_calibration.lock_or_recover().requested_offset;
+                    let position = applied_overlay_position(
+                        offset,
+                        frame_top,
+                        work_top,
+                        bottom,
+                        applied.window_h,
+                        geometry.floating,
+                        false,
+                    );
+                    y = if geometry.floating {
+                        work_top + FLOATING_GAP + position.applied_offset
+                    } else {
+                        frame_top + position.applied_offset
+                    };
+                    y = y.min((bottom - applied.window_h).max(frame_top));
+                    x = x.clamp(left, (right - applied.window_w).max(left));
+                    calibration = Some(position);
+                }
                 // Never retain an authoritative old frame after a partially
                 // successful size/position pair.
                 *state.overlay_frame.lock_or_recover() = None;
@@ -1174,16 +1340,24 @@ pub async fn set_overlay_expanded(
                 overlay
                     .set_position(tauri::LogicalPosition::new(x, y))
                     .map_err(|error| error.to_string())?;
-                remember_overlay_frame(
-                    &dispatch_app,
-                    OverlayFrame {
-                        x,
-                        y,
-                        width: applied.window_w,
-                        height: applied.window_h,
-                    },
-                );
+                let frame = OverlayFrame {
+                    x,
+                    y,
+                    width: applied.window_w,
+                    height: applied.window_h,
+                };
+                if let Some(position) = calibration {
+                    // Publish effective bounds only after both setters succeed,
+                    // so an open calibration sheet follows placement changes.
+                    remember_overlay_position(&dispatch_app, frame, position);
+                } else {
+                    remember_overlay_frame(&dispatch_app, frame);
+                }
+                *state.overlay_layout.lock_or_recover() = layout;
                 follow_dictation_preview(&dispatch_app);
+                // Emitted only after native setters succeed; the webview can
+                // never reveal a larger surface before its native grow ack.
+                let _ = dispatch_app.emit("overlay-surface-changed", geometry);
                 Ok(applied)
             })();
             let _ = tx.send(result);
@@ -1241,14 +1415,13 @@ pub async fn set_overlay_vertical_offset(
                 let monitor_position = (position.x, position.y);
                 let monitor_size = (size.width, size.height);
                 let area = monitor.work_area();
-                let work_area = (
-                    area.position.x,
-                    area.position.y,
-                    area.size.width,
-                    area.size.height,
-                );
                 let notch = *dispatch_app.state::<State>().notch_info.lock_or_recover();
-                let floating = geometry_for(notch).floating;
+                let floating = dispatch_app
+                    .state::<State>()
+                    .overlay_layout
+                    .lock_or_recover()
+                    .placement
+                    == OverlayPlacement::BelowMenuBar;
                 let current_scale = overlay_to_move
                     .scale_factor()
                     .map_err(|error| error.to_string())?;
@@ -1259,9 +1432,15 @@ pub async fn set_overlay_vertical_offset(
                 let height = current_size.height as f64 / current_scale;
                 let (centered_x, top_y) =
                     centered_logical_position(monitor_position, monitor_size, scale_factor, width);
-                let work_top = area.position.y as f64 / scale_factor;
+                let work_top = usable_top(top_y, area.position.y as f64 / scale_factor, notch);
                 let work_bottom = (area.position.y as f64 + area.size.height as f64) / scale_factor;
-                let in_band = floating_in_menu_bar_band(notch);
+                let work_area = (
+                    area.position.x,
+                    (work_top * scale_factor).round() as i32,
+                    area.size.width,
+                    ((work_bottom - work_top) * scale_factor).max(0.0).round() as u32,
+                );
+                let in_band = false;
                 let applied = applied_overlay_position(
                     offset,
                     top_y,
@@ -1428,6 +1607,128 @@ mod tests {
     }
 
     #[test]
+    fn layout_fixtures_cover_each_activity_placement_and_suggestion_surface() {
+        let fixtures: std::collections::HashMap<String, OverlayGeometry> = serde_json::from_str(
+            include_str!("../../../src/components/overlay/overlay-geometry.fixture.json"),
+        )
+        .unwrap();
+        for (screen, notch) in [
+            ("Notched", Some(notched(185.0, 32.0))),
+            ("External", Some(external(30.0))),
+        ] {
+            for (name, activity) in [
+                ("idle", OverlayActivity::Idle),
+                ("recording", OverlayActivity::Recording),
+                ("processing", OverlayActivity::Processing),
+            ] {
+                let g = geometry_for_layout(
+                    notch,
+                    OverlayContent::Controls,
+                    OverlayLayout {
+                        activity,
+                        ..OverlayLayout::default()
+                    },
+                );
+                assert_eq!(&g, &fixtures[&format!("{name}{screen}")]);
+                assert_eq!(g.pill_active_w, g.window_w);
+                assert_eq!(g.pill_margin_active, 0.0);
+            }
+        }
+        for (name, activity) in [
+            ("belowIdle", OverlayActivity::Idle),
+            ("belowRecording", OverlayActivity::Recording),
+            ("belowProcessing", OverlayActivity::Processing),
+        ] {
+            assert_eq!(
+                geometry_for_layout(
+                    Some(notched(185.0, 32.0)),
+                    OverlayContent::Controls,
+                    OverlayLayout {
+                        activity,
+                        placement: OverlayPlacement::BelowMenuBar,
+                        expanded: false
+                    }
+                ),
+                fixtures[name]
+            );
+        }
+        for (name, placement, content) in [
+            (
+                "belowExpanded",
+                OverlayPlacement::BelowMenuBar,
+                OverlayContent::Controls,
+            ),
+            (
+                "expandedNotched",
+                OverlayPlacement::Notch,
+                OverlayContent::Controls,
+            ),
+            (
+                "expandedMeetingNotched",
+                OverlayPlacement::Notch,
+                OverlayContent::MeetingSuggestion,
+            ),
+            (
+                "belowMeetingSuggestion",
+                OverlayPlacement::BelowMenuBar,
+                OverlayContent::MeetingSuggestion,
+            ),
+        ] {
+            let layout = OverlayLayout {
+                expanded: true,
+                placement,
+                ..OverlayLayout::default()
+            };
+            assert_eq!(
+                geometry_for_layout(Some(notched(185.0, 32.0)), content, layout),
+                fixtures[name]
+            );
+        }
+    }
+
+    #[test]
+    fn native_bounds_retain_only_the_animation_then_release_the_hit_area() {
+        let prior = Some(OverlayFrame {
+            x: 100.0,
+            y: 32.0,
+            width: 126.0,
+            height: 104.0,
+        });
+        let target = AppliedSurface {
+            window_w: 90.0,
+            window_h: 40.0,
+        };
+        assert_eq!(
+            animation_surface(target.clone(), prior, true),
+            AppliedSurface {
+                window_w: 126.0,
+                window_h: 104.0
+            }
+        );
+        assert_eq!(animation_surface(target.clone(), prior, false), target);
+        assert_eq!(animation_surface(target.clone(), None, true), target);
+        let bigger = AppliedSurface {
+            window_w: 320.0,
+            window_h: 208.0,
+        };
+        assert_eq!(animation_surface(bigger.clone(), prior, true), bigger);
+    }
+
+    #[test]
+    fn below_placement_uses_the_safe_top_even_in_fullscreen_and_reclamps_calibration() {
+        assert_eq!(usable_top(128.0, 128.0, Some(notched(185.0, 32.0))), 160.0);
+        assert_eq!(usable_top(128.0, 158.0, Some(external(30.0))), 158.0);
+        let applied = applied_overlay_position(-12.0, 128.0, 160.0, 982.0, 40.0, true, false);
+        assert_eq!(applied.applied_offset, -6.0);
+        assert_eq!(160.0 + FLOATING_GAP + applied.applied_offset, 160.0);
+        let short = applied_overlay_position(12.0, 128.0, 160.0, 180.0, 40.0, true, false);
+        assert_eq!(
+            (short.applied_offset, short.min_offset, short.max_offset),
+            (-6.0, -6.0, -6.0)
+        );
+    }
+
+    #[test]
     fn invariants() {
         for g in [
             geometry_for(Some(notched(185.0, 32.0))),
@@ -1463,7 +1764,7 @@ mod tests {
                 g.dropdown_h,
                 g.wing_w,
             ),
-            (257.0, 32.0, 96.0, 221.0, 257.0, 0.0, 0.0, 64.0, 36.0)
+            (241.0, 72.0, 136.0, 185.0, 241.0, 28.0, 0.0, 64.0, 28.0)
         );
     }
 
@@ -1476,28 +1777,26 @@ mod tests {
         assert_eq!(info, external(30.0));
 
         let g = geometry_for(Some(info));
-        assert_eq!(g.window_w, 280.0);
-        assert_eq!(g.pill_idle_w, 280.0);
-        assert_eq!(g.pill_margin_idle, 0.0);
-        assert_eq!(g.pill_active_w, 280.0);
-        // The collapsed pill takes the menu bar's own height so it fits the band.
-        assert_eq!(g.collapsed_h, 30.0);
-        assert_eq!(g.expanded_h, 94.0);
-        assert!(g.floating);
+        assert_eq!(g.window_w, 241.0);
+        assert_eq!(g.pill_idle_w, 185.0);
+        assert_eq!(g.pill_margin_idle, 28.0);
+        assert_eq!(g.pill_active_w, 241.0);
+        // The active pretend notch adds the padded plate below the measured band.
+        assert_eq!(g.collapsed_h, 70.0);
+        assert_eq!(g.expanded_h, 134.0);
+        assert!(!g.floating);
     }
 
     #[test]
-    fn collapsed_floating_pill_height_follows_the_menu_bar_within_bounds() {
-        let collapsed = |info| geometry_for(Some(info)).collapsed_h;
-        assert_eq!(collapsed(external(24.0)), 24.0);
-        assert_eq!(collapsed(external(30.0)), 30.0);
-        // Implausibly short or tall bars (e.g. a Dock at the top) are clamped.
-        assert_eq!(collapsed(external(10.0)), FLOATING_MIN_H);
-        assert_eq!(collapsed(external(90.0)), FLOATING_TOP_H);
-        // No visible bar, or no resolved centre: the standalone 36pt pill.
-        assert_eq!(collapsed(external_without_menu_bar()), FLOATING_TOP_H);
-        assert_eq!(collapsed(external_unresolved(30.0)), FLOATING_TOP_H);
-        assert_eq!(geometry_for(None).collapsed_h, FLOATING_TOP_H);
+    fn active_pretend_notch_height_tracks_measurements_with_a_padded_plate() {
+        let height = |info| geometry_for(Some(info)).collapsed_h;
+        assert_eq!(height(external(24.0)), 64.0);
+        assert_eq!(height(external(30.0)), 70.0);
+        assert_eq!(height(external(10.0)), FLOATING_MIN_H + 40.0);
+        assert_eq!(height(external(190.0)), MAX_REASONABLE_MENU_BAR_H + 40.0);
+        assert_eq!(height(external_without_menu_bar()), 77.0);
+        assert_eq!(height(external_unresolved(30.0)), 70.0);
+        assert_eq!(geometry_for(None).collapsed_h, 77.0);
     }
 
     #[test]
@@ -1591,7 +1890,7 @@ mod tests {
 
     #[test]
     fn floating_position_uses_selected_display_work_area_at_both_scales() {
-        // Work-area fallback: 8pt below the work-area top.
+        // Below placement: 6pt below the usable top.
         assert_eq!(
             floating_logical_position(
                 1204.0,
@@ -1602,7 +1901,7 @@ mod tests {
                 0.0,
                 false
             ),
-            (1204.0, 38.0),
+            (1204.0, 36.0),
         );
         assert_eq!(
             floating_logical_position(
@@ -1614,7 +1913,7 @@ mod tests {
                 0.0,
                 false
             ),
-            (-1960.0, 38.0),
+            (-1960.0, 36.0),
         );
         assert_eq!(
             floating_logical_position(
@@ -1631,9 +1930,13 @@ mod tests {
     }
 
     #[test]
-    fn collapsed_floating_pill_sits_inside_the_menu_bar_band() {
+    fn idle_pretend_notch_sits_inside_the_menu_bar_band() {
         let info = external(24.0);
-        let g = geometry_for(Some(info));
+        let g = geometry_for_layout(
+            Some(info),
+            OverlayContent::Controls,
+            OverlayLayout::default(),
+        );
         // 1x external display, menu bar 24pt tall.
         let (x, y) = floating_logical_position(
             1140.0,
@@ -1709,11 +2012,14 @@ mod tests {
         ] {
             let g = geometry_for(Some(info));
             let in_band = floating_in_menu_bar_band(Some(info));
-            assert_eq!(g.collapsed_h, if in_band { 30.0 } else { FLOATING_TOP_H });
+            assert_eq!(
+                g.collapsed_h,
+                info.height.clamp(FLOATING_MIN_H, MAX_REASONABLE_MENU_BAR_H) + 40.0
+            );
             let (floor, base) = floating_anchor(0.0, 30.0, in_band);
             assert_eq!(
                 (floor, base),
-                if in_band { (0.0, 0.0) } else { (30.0, 38.0) }
+                if in_band { (0.0, 0.0) } else { (30.0, 36.0) }
             );
         }
     }
@@ -1783,7 +2089,7 @@ mod tests {
                 notch_info_from_screen_measurements(width, 1440.0, 1416.0, 0.0, 0.0, 0.0);
             let info = with_menu_bar_band_center(measured, left, width);
             let g = geometry_for(Some(info));
-            assert_eq!(g.window_w, FLOATING_W);
+            assert_eq!(g.window_w, FALLBACK_NOTCH_W + 2.0 * WING);
             let center = left + width / 2.0;
             let x = floating_window_x(0.0, Some(info), g.window_w);
             assert_eq!(x, center - g.window_w / 2.0);
@@ -1798,7 +2104,7 @@ mod tests {
                 0.0,
                 floating_in_menu_bar_band(Some(info)),
             );
-            assert_eq!((x, y), (center - FLOATING_W / 2.0, 0.0));
+            assert_eq!((x, y), (center - g.window_w / 2.0, 0.0));
         }
     }
 
@@ -1834,7 +2140,7 @@ mod tests {
                 0.0,
                 in_band
             ),
-            (1140.0, 8.0),
+            (1140.0, 6.0),
         );
     }
 
@@ -1857,11 +2163,11 @@ mod tests {
             ..collapsed
         };
         assert_eq!(
-            dictation_preview_fit_for_frame(work_area, (460.0, 104.0), Some(collapsed), true),
+            dictation_preview_fit_for_frame(work_area, (460.0, 104.0), Some(collapsed)),
             Some((1050.0, 80.0, 104.0))
         );
         assert_eq!(
-            dictation_preview_fit_for_frame(work_area, (440.0, 340.0), Some(expanded), true),
+            dictation_preview_fit_for_frame(work_area, (440.0, 340.0), Some(expanded)),
             Some((1060.0, 144.0, 340.0))
         );
         assert_eq!(
@@ -1871,8 +2177,7 @@ mod tests {
                     ..work_area
                 },
                 (440.0, 340.0),
-                Some(expanded),
-                true
+                Some(expanded)
             ),
             Some((1060.0, 144.0, 256.0))
         );
@@ -1890,7 +2195,6 @@ mod tests {
                 },
                 (460.0, 104.0),
                 None,
-                true,
             ),
             None
         );
@@ -1913,8 +2217,7 @@ mod tests {
                     bottom: 1440.0,
                 },
                 (460.0, 104.0),
-                Some(frame),
-                true
+                Some(frame)
             ),
             Some((210.0, 30.0, 104.0))
         );
@@ -1927,17 +2230,15 @@ mod tests {
                     bottom: 1440.0,
                 },
                 (460.0, 104.0),
-                Some(OverlayFrame { x: -40.0, ..frame }),
-                true
+                Some(OverlayFrame { x: -40.0, ..frame })
             ),
             Some((100.0, 30.0, 104.0))
         );
     }
 
     #[test]
-    fn notched_popovers_stay_tucked_under_the_notch() {
-        // Callers fall back to their own under-notch inset instead of clearing
-        // the hover-expanded overlay, which left a large gap below the pill.
+    fn notched_preview_follows_the_plate_not_the_obscured_notch() {
+        // The attached preview follows the actual frame on physical notches too.
         let notched = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
             dictation_preview_fit_for_frame(
@@ -1953,10 +2254,9 @@ mod tests {
                     y: 0.0,
                     width: 257.0,
                     height: notched.collapsed_h,
-                }),
-                false
+                })
             ),
-            None
+            Some((526.0, 78.0, 104.0))
         );
     }
 
@@ -1965,17 +2265,17 @@ mod tests {
         let standalone = geometry_for(Some(external_unresolved(30.0)));
         assert_eq!(
             overlay_popover_fit_for_geometry(0.0, 30.0, 1440.0, 104.0, &standalone, false,),
-            Some((156.0, 104.0))
+            Some((152.0, 104.0))
         );
         let band = geometry_for(Some(external(24.0)));
         assert_eq!(
             overlay_popover_fit_for_geometry(0.0, 24.0, 200.0, 340.0, &band, true),
-            Some((106.0, 94.0))
+            Some((146.0, 54.0))
         );
         let notched = geometry_for(Some(notched(185.0, 32.0)));
         assert_eq!(
             overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &notched, false),
-            None
+            Some((154.0, 104.0))
         );
     }
 
@@ -1992,7 +2292,7 @@ mod tests {
                 max_offset: 12.0,
             }
         );
-        // Standalone placement starts 8pt below the usable top, so only 8pt of
+        // Standalone placement starts 6pt below the usable top, so only 6pt of
         // upward adjustment is real even though the durable schema accepts ±12.
         // Carrying the requested (not applied) value across mode changes keeps
         // the user's saved intent intact.
@@ -2000,8 +2300,8 @@ mod tests {
             applied_overlay_position(band.requested_offset, 0.0, 30.0, 1440.0, 36.0, true, false,),
             AppliedOverlayPosition {
                 requested_offset: -12.0,
-                applied_offset: -8.0,
-                min_offset: -8.0,
+                applied_offset: -6.0,
+                min_offset: -6.0,
                 max_offset: 12.0,
             }
         );
@@ -2016,9 +2316,9 @@ mod tests {
             applied_overlay_position(12.0, 0.0, 30.0, 50.0, 100.0, true, false),
             AppliedOverlayPosition {
                 requested_offset: 12.0,
-                applied_offset: -8.0,
-                min_offset: -8.0,
-                max_offset: -8.0,
+                applied_offset: -6.0,
+                min_offset: -6.0,
+                max_offset: -6.0,
             }
         );
     }
@@ -2109,11 +2409,32 @@ mod tests {
                 );
             }
             assert_eq!(
-                surface_for_content(notch, true, OverlayContent::MeetingSuggestion),
+                applied_surface_for(
+                    &geometry_for_layout(
+                        notch,
+                        OverlayContent::MeetingSuggestion,
+                        OverlayLayout {
+                            activity: OverlayActivity::Recording,
+                            expanded: true,
+                            ..OverlayLayout::default()
+                        }
+                    ),
+                    true
+                ),
                 applied_surface_for(&suggestion, true),
             );
             assert_eq!(
-                surface_for_content(notch, false, OverlayContent::MeetingSuggestion),
+                applied_surface_for(
+                    &geometry_for_layout(
+                        notch,
+                        OverlayContent::MeetingSuggestion,
+                        OverlayLayout {
+                            activity: OverlayActivity::Recording,
+                            ..OverlayLayout::default()
+                        }
+                    ),
+                    false
+                ),
                 applied_surface_for(&controls, false),
             );
         }
@@ -2158,15 +2479,15 @@ mod tests {
         assert_eq!(
             applied_surface_for(&notched, false),
             AppliedSurface {
-                window_w: 257.0,
-                window_h: 32.0,
+                window_w: 241.0,
+                window_h: 72.0,
             }
         );
         assert_eq!(
             applied_surface_for(&notched, true),
             AppliedSurface {
-                window_w: 257.0,
-                window_h: 96.0,
+                window_w: 241.0,
+                window_h: 136.0,
             }
         );
 
@@ -2174,15 +2495,15 @@ mod tests {
         assert_eq!(
             applied_surface_for(&fallback, false),
             AppliedSurface {
-                window_w: 280.0,
-                window_h: 36.0,
+                window_w: 241.0,
+                window_h: 77.0,
             }
         );
         assert_eq!(
             applied_surface_for(&fallback, true),
             AppliedSurface {
-                window_w: 280.0,
-                window_h: 100.0,
+                window_w: 241.0,
+                window_h: 141.0,
             }
         );
     }

@@ -1,3 +1,4 @@
+import geometryFixture from '../../components/overlay/overlay-geometry.fixture.json';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +20,7 @@ const geometry: OverlayGeometry = {
   dropdownH: 64,
   wingW: 36,
   floating: true,
+  island: geometryFixture.external.island,
 };
 
 function Harness({ value, savedOffset }: {

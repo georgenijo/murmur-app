@@ -1,15 +1,14 @@
 //! Native window transport for the live dictation preview popover (#611).
 //!
-//! The preview mirrors the voice-query popover: a small, non-activating card
-//! that appears just below the notch while dictation is recording and shows the
+//! The opt-in preview is a small, non-activating, click-through live-words pill
+//! attached below the actual overlay frame while recording. It shows the
 //! words recognized so far. It is presentation only. It never owns transcript
 //! state or takes focus. The hidden webview renders recognized words first,
 //! then asks Rust to show the native window for the exact recording. Rust hides
 //! the window when that recording stops being current.
 //!
-//! It replaces the earlier attempt at rendering partials inside the overlay's
-//! 36pt wing, which could only ever show ~4 head-anchored characters ("Oka…")
-//! no matter how long the speaker talked.
+//! Provisional content never enters the island or the final-delivery path.
+//! The existing partial API provides no authoritative stable-word boundary.
 
 use crate::commands::native_window::PopoverSpec;
 use crate::state::DictationStatus;
@@ -17,8 +16,8 @@ use crate::{MutexExt, State};
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 
-const WIDTH: f64 = 460.0;
-const HEIGHT: f64 = 104.0;
+const WIDTH: f64 = 560.0;
+const HEIGHT: f64 = 44.0;
 
 const POPOVER: PopoverSpec = PopoverSpec {
     label: "dictation-preview",
@@ -27,18 +26,12 @@ const POPOVER: PopoverSpec = PopoverSpec {
     ignore_cursor_events: true,
 };
 
-/// Breathing room between the bottom of the notch/menu bar and the card. The
-/// window is transparent and taller than the card, so this is the gap to the
-/// card's top edge, not to the window frame.
-const NOTCH_GAP: f64 = 6.0;
-const FALLBACK_NOTCH_H: f64 = 37.0;
-
 /// Logical frame for the preview window: horizontally centered on the
 /// menu-bar display, tucked directly under the notch (or menu bar on displays
 /// without one).
 ///
 /// The anchor is deliberately the primary monitor, matching the overlay's
-/// selected display. On a floating display, follow the actual overlay frame;
+/// selected display. Both placements follow the actual applied overlay frame;
 /// expansion and calibration reposition this click-through preview below it.
 fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
     let top_inset = top_inset_for(notch_h);
@@ -46,13 +39,14 @@ fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
     match monitor {
         Some(monitor) => {
             let scale = monitor.scale_factor();
+            let width = WIDTH.min(monitor.work_area().size.width as f64 / scale);
             let x = monitor.position().x as f64 / scale
-                + (monitor.size().width as f64 / scale - WIDTH) / 2.0;
+                + (monitor.size().width as f64 / scale - width) / 2.0;
             let base_y = monitor.position().y as f64 / scale + top_inset;
             let (x, y, height) =
-                super::overlay::dictation_preview_fit(app, &monitor, WIDTH, HEIGHT)
+                super::overlay::dictation_preview_fit(app, &monitor, width, HEIGHT)
                     .unwrap_or((x, base_y, HEIGHT));
-            (x, y, WIDTH, height)
+            (x, y, width, height)
         }
         None => (300.0, top_inset, WIDTH, HEIGHT),
     }
@@ -62,10 +56,7 @@ fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
 /// unmeasured, zero, or non-finite notch height means the display measurement
 /// has not landed yet — fall back rather than render the card over the menu bar.
 fn top_inset_for(notch_h: Option<f64>) -> f64 {
-    notch_h
-        .filter(|height| height.is_finite() && *height > 0.0)
-        .unwrap_or(FALLBACK_NOTCH_H)
-        + NOTCH_GAP
+    super::overlay::preview_fallback_inset(notch_h)
 }
 
 fn notch_height(app: &tauri::AppHandle) -> Option<f64> {
@@ -218,15 +209,14 @@ mod tests {
 
     #[test]
     fn preview_sits_below_the_measured_notch() {
-        // 37pt notch + 6pt gap: the card clears the physical notch instead of
-        // rendering behind it.
-        assert_eq!(top_inset_for(Some(37.0)), 43.0);
-        assert_eq!(top_inset_for(Some(24.0)), 30.0);
+        // Without an applied frame, conservatively clear notch + plate + 6pt gap.
+        assert_eq!(top_inset_for(Some(37.0)), 83.0);
+        assert_eq!(top_inset_for(Some(24.0)), 70.0);
     }
 
     #[test]
     fn unmeasured_or_absurd_notch_heights_fall_back() {
-        let fallback = FALLBACK_NOTCH_H + NOTCH_GAP;
+        let fallback = 83.0;
         assert_eq!(top_inset_for(None), fallback);
         assert_eq!(top_inset_for(Some(0.0)), fallback);
         assert_eq!(top_inset_for(Some(-4.0)), fallback);

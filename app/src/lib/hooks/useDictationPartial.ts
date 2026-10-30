@@ -40,13 +40,23 @@ function validRecordingId(value: unknown): value is number {
  * immediately, so a stopped recording never leaves provisional words on screen
  * while the native hide catches up.
  */
-export function useDictationPartial(): string {
+export function useDictationPartial(enabled = true): string {
   const [partial, setPartial] = useState<DictationPartialPayload | null>(null);
   const recordingIdRef = useRef(0);
   const shownRecordingIdRef = useRef(0);
   const stoppedThroughRef = useRef(0);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   useEffect(() => {
+    if (!enabled) setPartial(null);
+    shownRecordingIdRef.current = 0;
+  }, [enabled]);
+
+  // Observe ownership even while the setting is off. Re-enabling must never
+  // reopen a generation which stopped while this webview was not presenting.
+  useEffect(() => {
+    let accepting = true;
     let cancelled = false;
     const unlistens: Array<() => void> = [];
     const track = (pending: Promise<() => void>) => {
@@ -57,14 +67,17 @@ export function useDictationPartial(): string {
 
     track(listen<unknown>('dictation-generation-started', ({ payload }) => {
       const recordingId = (payload as { recordingId?: unknown } | null)?.recordingId;
-      if (!validRecordingId(recordingId) || recordingId <= recordingIdRef.current) return;
+      if (cancelled || !validRecordingId(recordingId) || recordingId <= recordingIdRef.current) return;
+      accepting = true;
       recordingIdRef.current = recordingId;
       shownRecordingIdRef.current = 0;
       setPartial(null);
     }));
 
     track(listen<unknown>('recording-status-changed', ({ payload }) => {
-      if (payload === 'processing' || payload === 'idle') {
+      if (cancelled) return;
+      accepting = payload === 'recording';
+      if (payload === 'processing' || payload === 'idle' || payload === 'recovering') {
         stoppedThroughRef.current = Math.max(stoppedThroughRef.current, recordingIdRef.current);
       }
       if (payload !== 'recording') {
@@ -74,13 +87,22 @@ export function useDictationPartial(): string {
     }));
 
     track(listen<unknown>('dictation-partial', ({ payload }) => {
-      if (!validPayload(payload) || payload.recordingId < recordingIdRef.current
+      if (cancelled || !enabledRef.current || !accepting || !validPayload(payload) || payload.recordingId < recordingIdRef.current
         || payload.recordingId <= stoppedThroughRef.current) return;
       // A partial can land before this window observes the generation event
       // (the card is only shown once words exist). Adopt the newer id rather
       // than dropping the very first line of the transcript.
       recordingIdRef.current = payload.recordingId;
       setPartial({ recordingId: payload.recordingId, text: payload.text.trim() });
+    }));
+
+    track(listen<unknown>('recording-cancelled', ({ payload }) => {
+      const id = (payload as { recordingId?: unknown } | null)?.recordingId;
+      if (cancelled || !validRecordingId(id) || id < recordingIdRef.current) return;
+      stoppedThroughRef.current = Math.max(stoppedThroughRef.current, id);
+      accepting = false;
+      shownRecordingIdRef.current = 0;
+      setPartial(null);
     }));
 
     return () => {
@@ -93,7 +115,7 @@ export function useDictationPartial(): string {
   // NSWindow. Showing first can commit an empty transparent frame that macOS
   // removes from the on-screen window list before the text event renders.
   useEffect(() => {
-    if (!partial?.text || shownRecordingIdRef.current === partial.recordingId) return;
+    if (!enabled || !partial?.text || shownRecordingIdRef.current === partial.recordingId) return;
     shownRecordingIdRef.current = partial.recordingId;
     void invoke('show_dictation_preview', { recordingId: partial.recordingId }).catch(() => {
       if (shownRecordingIdRef.current === partial.recordingId) {
@@ -101,7 +123,7 @@ export function useDictationPartial(): string {
         setPartial((current) => current?.recordingId === partial.recordingId ? null : current);
       }
     });
-  }, [partial]);
+  }, [partial, enabled]);
 
-  return partial?.text ?? '';
+  return enabled ? partial?.text ?? '' : '';
 }

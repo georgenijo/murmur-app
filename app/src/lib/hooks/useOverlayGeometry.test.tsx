@@ -1,3 +1,4 @@
+import geometryFixture from '../../components/overlay/overlay-geometry.fixture.json';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,12 +10,14 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listener: null as GeometryListener | null,
   unlisten: vi.fn(),
+  surfaceListener: null as GeometryListener | null,
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async (_event: string, listener: GeometryListener) => {
-    mocks.listener = listener;
+  listen: vi.fn(async (event: string, listener: GeometryListener) => {
+    if (event === 'overlay-surface-changed') mocks.surfaceListener = listener;
+    else mocks.listener = listener;
     return mocks.unlisten;
   }),
 }));
@@ -35,6 +38,7 @@ const notched: OverlayGeometry = {
   dropdownH: 64,
   wingW: 36,
   floating: false,
+  island: geometryFixture.notched.island,
 };
 
 const fallback: OverlayGeometry = {
@@ -48,6 +52,7 @@ const fallback: OverlayGeometry = {
   dropdownH: 64,
   wingW: 36,
   floating: true,
+  island: geometryFixture.external.island,
 };
 
 const meetingSuggestion: OverlayGeometry = {
@@ -61,6 +66,7 @@ const meetingSuggestion: OverlayGeometry = {
   dropdownH: 136,
   wingW: 36,
   floating: false,
+  island: geometryFixture.notched.island,
 };
 
 function deferred<T>() {
@@ -129,6 +135,19 @@ describe('useOverlayGeometry', () => {
     expect(current!).toEqual(fallback);
   });
 
+  it('accepts acknowledged surface geometry without letting a pending fetch overwrite it', async () => {
+    const pending = deferred<OverlayGeometry>();
+    mocks.invoke.mockReturnValueOnce(pending.promise);
+    function Harness() { current = useOverlayGeometry(); return null; }
+    await act(async () => root.render(<Harness />));
+    await act(async () => mocks.surfaceListener?.({ payload: geometryFixture.belowProcessing }));
+    expect(current).toEqual(geometryFixture.belowProcessing);
+    await act(async () => pending.resolve(notched));
+    expect(current).toEqual(geometryFixture.belowProcessing);
+    await act(async () => mocks.surfaceListener?.({ payload: { ...geometryFixture.belowProcessing, island: {} } }));
+    expect(current).toEqual(geometryFixture.belowProcessing);
+  });
+
   it('accepts the initial Rust geometry and unregisters on unmount', async () => {
     mocks.invoke.mockResolvedValueOnce(notched);
 
@@ -145,7 +164,7 @@ describe('useOverlayGeometry', () => {
     expect(current!).toEqual(notched);
 
     await act(async () => root.unmount());
-    expect(mocks.unlisten).toHaveBeenCalledOnce();
+    expect(mocks.unlisten).toHaveBeenCalledTimes(2);
     root = createRoot(container);
   });
 
