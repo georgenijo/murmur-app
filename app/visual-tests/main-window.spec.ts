@@ -212,9 +212,10 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
 
   expect(sidebarBox?.width).toBe(200);
   expect(mainBox?.width).toBeGreaterThan(850);
-  // The month summary shares the recording bar's row instead of a separate rail.
-  expect(monthBox?.y).toBe(talkBox?.y);
-  expect(monthBox?.height).toBe(talkBox?.height);
+  // The month summary lives in the composer's footer strip, not a separate card.
+  expect(monthBox!.y).toBeGreaterThan(talkBox!.y);
+  expect(monthBox!.y + monthBox!.height).toBeLessThanOrEqual(talkBox!.y + talkBox!.height);
+  expect(talkBox?.width).toBe(mainBox?.width);
   // The dictation list spans the whole content column.
   expect(historyBox?.width).toBe(mainBox?.width);
   await expect(page.getByText('This month', { exact: true })).toBeVisible();
@@ -241,8 +242,10 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }] a
 
     const talk = page.locator('.home-talk');
     await expect(talk).toContainText('Click to start talking');
-    const talkBox = await talk.boundingBox();
-    expect(talkBox?.height).toBeLessThanOrEqual(56);
+    // The prompt row stays one compact line; the footer strip adds one more.
+    const promptBox = await page.getByTestId('home-record-button').boundingBox();
+    expect(promptBox?.height).toBeLessThanOrEqual(56);
+    expect((await talk.boundingBox())?.height).toBeLessThanOrEqual(96);
     for (const line of [page.locator('.home-talk-title strong'), page.locator('.home-talk-hint')]) {
       expect(await line.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
     }

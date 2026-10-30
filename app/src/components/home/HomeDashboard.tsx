@@ -82,8 +82,8 @@ export function HomeDashboard({
             meetingPhase={meetings.status.phase}
             onRecord={onRecord}
             onStop={onStop}
+            footer={<HomeInsightsRail stats={stats} onOpenInsights={onOpenInsights} />}
           />
-          <HomeInsightsRail stats={stats} onOpenInsights={onOpenInsights} />
         </div>
 
         {discovery && (

@@ -1,3 +1,4 @@
+import { Check, X } from 'lucide-react';
 import type { ChecklistItemId } from '../../lib/discovery';
 
 interface ChecklistItem {
@@ -33,11 +34,16 @@ export function DiscoveryChecklist({ completed, onAction, onDismiss }: Discovery
           <p className="dashboard-eyebrow">Get more from Murmur</p>
           <h2 id="discovery-checklist-title">Try what is ready when you are</h2>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="discovery-checklist-status">
+          <span className="discovery-progress" aria-hidden="true">
+            <span style={{ width: `${(totalComplete / ITEMS.length) * 100}%` }} />
+          </span>
           <span className="discovery-checklist-count" aria-label={`${totalComplete} of ${ITEMS.length} complete`}>
             {totalComplete}/{ITEMS.length}
           </span>
-          <button type="button" onClick={onDismiss} aria-label="Dismiss Get more from Murmur" className="ui-icon-button">×</button>
+          <button type="button" onClick={onDismiss} aria-label="Dismiss Get more from Murmur" className="ui-icon-button">
+            <X aria-hidden="true" strokeWidth={2} />
+          </button>
         </div>
       </div>
       <ul className="discovery-checklist-items">
@@ -45,7 +51,7 @@ export function DiscoveryChecklist({ completed, onAction, onDismiss }: Discovery
           const complete = completedItems.has(item.id);
           return (
             <li key={item.id} data-complete={complete}>
-              <span className="discovery-check" aria-hidden="true">{complete ? '✓' : ''}</span>
+              <span className="discovery-check" aria-hidden="true">{complete && <Check strokeWidth={3} />}</span>
               <span className="min-w-0 flex-1">
                 <strong>{item.title}</strong>
                 <small>{item.detail}</small>
