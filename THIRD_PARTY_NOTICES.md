@@ -379,6 +379,9 @@ commercial use, without a fee. Refer to the package when you modify the code.
 
 ## Hex
 
+Murmur’s optional OpenCode color theme follows Hex’s theme integration at
+`a07f994`, with palette data from Rune.
+
 Murmur's Smart Auto-Stop log-mel feature extractor and Smart Turn ONNX session setup (`app/src-tauri/src/smart_turn.rs`) are adapted from Hex at commit `a07f994`.
 
 Parts of Murmur's dictation test harnesses are adapted from Hex at commit
@@ -440,3 +443,33 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## Rune
+
+Murmur’s optional OpenCode theme adapts the palette and semantic color mapping
+from `themes/opencode/assets/theme.json` and `themes/opencode/src/lib.rs` at
+commit `100b7d93`.
+
+- Source: https://github.com/anomalyco/rune
+
+MIT License
+
+Copyright (c) 2026 Christopher Langton
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

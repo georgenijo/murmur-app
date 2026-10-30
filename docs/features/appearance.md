@@ -298,3 +298,45 @@ only after explicit actions in the community dialog and go directly to Open
 VSX as disclosed above. There is no cloud inference, Murmur account, background
 sync, automatic marketplace traffic, arbitrary CSS input, font theming, or
 extension execution.
+
+## OpenCode built-in theme
+
+OpenCode is a bundled, paired light/dark library entry, independent of the
+installed library document. Its card offers the same selection, duplicate, and
+export actions as installed themes, with no Remove action. Duplicating installs
+an ordinary local copy; exporting produces the normal Murmur theme document.
+The built-in ID `opencode` is reserved. Existing local entries with that ID are
+preserved under an available suffixed ID during library hydration.
+
+The palette comes from Hex `a07f994` and Rune `100b7d93`, specifically
+`themes/opencode/assets/theme.json` and the semantic mapping in
+`themes/opencode/src/lib.rs`. This theme changes colors only; Murmur keeps its
+shared typography, geometry, and interaction rules.
+
+| Murmur role | Rune input | Light | Dark |
+| --- | --- | --- | --- |
+| background, surface | background-base (page) | #f8f8f8 | #121212 |
+| surface-container-lowest | v2-background-bg-base | #ffffff | #161616 |
+| surface-container-low | layer 01 | #fafafa | #242424 |
+| surface-container | layer 02 | #f2f2f2 | #2e2e2e |
+| surface-container-high | layer 03 | #eeeeee | #3a3a3a |
+| surface-container-highest | layer 04 | #dbdbdb | #5c5c5c |
+| on-surface | text base | #161616 | #fafafa |
+| on-surface-variant | text muted | #5c5c5c | #aeaeae |
+| primary | text accent | #3b5cf6 | #a2bcff |
+| primary-dim | accent hover / focus | #3250df | #7698fd |
+| on-primary | inverse text | #ffffff | #161616 |
+| outline-variant | strong border, composited over base | #cccccc | #454545 |
+| error | danger | #b82d35 | #f17471 |
+| success | success | #198b43 | #6bd586 |
+| warning | warning | #cb9f34 | #f2cf76 |
+
+The authored palette stays intact in exports and local copies. The existing
+mutable-palette resolver enforces Murmur's full semantic contrast matrix at
+render time. In light mode it repairs primary to `#304ce6`, primary-dim to
+`#2840cf`, error to `#a91b29`, success to `#00642b`, and warning to `#705300`.
+In dark mode it repairs surface-container-lowest to `#262626`,
+surface-container-highest to `#3c3c3c`, primary-dim to `#8eacff`, and error to
+`#ff9a95`. All other roles retain their mapped values. No emergency Sonic
+fallback is needed. The OpenCode tests assert every resulting CSS role and
+both contrast matrices, alongside real card selection and duplication flows.

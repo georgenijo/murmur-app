@@ -20,6 +20,7 @@ import {
   emptyThemeLibrary,
   exportAppearanceText,
   exportThemeLibraryEntryText,
+  findThemeLibraryEntry,
   installThemeLibraryEntries,
   loadAppearanceDocument,
   loadThemeLibrary,
@@ -264,7 +265,7 @@ function useMainAppearanceController(): AppearanceController {
     const available = (owner: string, appearance: ResolvedAppearance) =>
       owner === 'sonic'
       || owner === 'custom'
-      || library.themes.some((entry) => entry.id === owner && entry.modes.includes(appearance));
+      || Boolean(findThemeLibraryEntry(library, owner)?.modes.includes(appearance));
     const nextSelection: AppearanceSelectionV1 = {
       light: available(selection.light, 'light') ? selection.light : 'sonic',
       dark: available(selection.dark, 'dark') ? selection.dark : 'sonic',
