@@ -192,18 +192,12 @@ export function AnimatedDropdownContent({
         className="z-50"
       >
         <Menu.Popup
+          data-slot="menu-popup"
           className={cn(
-            // Layout
-            "z-50 min-w-[160px] rounded-xl p-1",
-            // Surface
-            "bg-popover text-popover-foreground shadow-lg",
-            "border border-border/60",
-            // Origin-aware transform — Base UI injects --transform-origin
-            "origin-[var(--transform-origin)]",
-            // Enter animation (CSS @starting-style + transition)
-            "transition-[opacity,transform]",
-            "starting:scale-95 starting:opacity-0",
-            shouldReduceMotion ? "duration-0" : "duration-150",
+            // Glass surface, 8px radius, p-1, scroll within --available-height,
+            // scale/fade from Base UI's --transform-origin (styles/menus.css).
+            "ui-menu-popup z-50",
+            shouldReduceMotion && "duration-0",
             className,
           )}
         >
@@ -240,14 +234,12 @@ export function AnimatedDropdownItem({
       aria-label={ariaLabel}
       disabled={disabled}
       onClick={onClick}
+      data-slot="menu-item"
+      data-variant={variant === "danger" ? "destructive" : undefined}
       className={cn(
-        "group relative flex cursor-pointer select-none items-center gap-2.5",
-        "rounded-lg px-2.5 py-2 text-sm outline-none",
-        "transition-colors duration-75",
-        variant === "danger"
-          ? "text-danger-foreground focus:text-on-primary"
-          : "text-popover-foreground",
-        disabled && "cursor-not-allowed opacity-50",
+        // 28px row, px-2 py-1 gap-2, 4px radius, 14/20 text (styles/menus.css).
+        // The shared motion highlight below paints the hover state instead.
+        "ui-menu-item group data-[highlighted]:bg-transparent",
         className,
       )}
       onMouseEnter={() => setActiveId(itemId)}
@@ -261,8 +253,10 @@ export function AnimatedDropdownItem({
           <motion.span
             layoutId={shouldReduceMotion ? undefined : `${layoutId}-highlight`}
             className={cn(
-              "absolute inset-0 rounded-lg",
-              variant === "danger" ? "bg-danger" : "bg-accent",
+              "absolute inset-0 rounded-(--ui-radius-menu-item)",
+              variant === "danger"
+                ? "bg-[color-mix(in_srgb,var(--murmur-error)_10%,transparent)]"
+                : "bg-(--ui-menu-highlight)",
             )}
             initial={shouldReduceMotion ? false : { opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -278,20 +272,11 @@ export function AnimatedDropdownItem({
 
       {/* Icon */}
       {icon && (
-        <span
-          className={cn(
-            "relative z-10 shrink-0 [&_svg]:size-4 text-muted-foreground",
-            variant === "danger"
-              ? "text-danger-foreground group-focus:text-on-primary"
-              : "text-popover-foreground",
-          )}
-        >
-          {icon}
-        </span>
+        <span className="ui-menu-item-icon relative z-10">{icon}</span>
       )}
 
       {/* Label */}
-      <span className="relative z-10 flex-1">{children}</span>
+      <span className="relative z-10 flex min-w-0 flex-1 items-center gap-2">{children}</span>
     </Menu.Item>
   );
 }
@@ -305,6 +290,6 @@ export function AnimatedDropdownSeparator({
   className?: string;
 }) {
   return (
-    <Menu.Separator className={cn("my-1 h-px bg-border/60 mx-1", className)} />
+    <Menu.Separator className={cn("ui-menu-separator", className)} />
   );
 }

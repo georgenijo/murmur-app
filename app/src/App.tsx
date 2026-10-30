@@ -865,7 +865,7 @@ function App() {
   return (
     <div className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
       {import.meta.env.DEV && (
-        <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-bold uppercase tracking-widest text-warning select-none">
+        <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-warning select-none">
           Dev
         </div>
       )}

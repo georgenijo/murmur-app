@@ -69,11 +69,20 @@ function priorityWeight(priority: SmartOverflowActionProps["priority"]) {
   return priority === "primary" ? 1 : 0;
 }
 
-function ActionContents({ action }: { action: ResolvedAction }) {
+function ActionContents({
+  action,
+  inMenu = false,
+}: {
+  action: ResolvedAction;
+  inMenu?: boolean;
+}) {
   return (
     <>
       {action.icon ? (
-        <span aria-hidden="true" className="shrink-0 [&_svg]:size-4">
+        <span
+          aria-hidden="true"
+          className={inMenu ? "ui-menu-item-icon" : "shrink-0 [&_svg]:size-4"}
+        >
           {action.icon}
         </span>
       ) : null}
@@ -319,9 +328,9 @@ export default function SmartOverflow({
                       className="z-50"
                     >
                       <Menu.Popup
+                        data-slot="menu-popup"
                         className={cn(
-                          "min-w-44 origin-[var(--transform-origin)] rounded-xl border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg",
-                          "transition-[opacity,transform] starting:scale-95 starting:opacity-0 duration-150 motion-reduce:duration-0",
+                          "ui-menu-popup min-w-44 motion-reduce:duration-0",
                           menuClassName,
                         )}
                       >
@@ -336,20 +345,18 @@ export default function SmartOverflow({
                           return (
                             <Fragment key={action.id}>
                               {separatesDestructiveAction ? (
-                                <Menu.Separator className="mx-1 my-1 h-px bg-border/60" />
+                                <Menu.Separator className="ui-menu-separator" />
                               ) : null}
                               <Menu.Item
                                 disabled={disabled || action.disabled}
                                 onClick={action.onSelect}
-                                className={cn(
-                                  "flex cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm outline-none",
-                                  "data-[highlighted]:bg-accent disabled:cursor-not-allowed disabled:opacity-45",
-                                  action.destructive
-                                    ? "text-danger-foreground data-[highlighted]:bg-danger data-[highlighted]:text-on-primary"
-                                    : "text-popover-foreground",
-                                )}
+                                data-slot="menu-item"
+                                data-variant={
+                                  action.destructive ? "destructive" : undefined
+                                }
+                                className="ui-menu-item"
                               >
-                                <ActionContents action={action} />
+                                <ActionContents action={action} inMenu />
                               </Menu.Item>
                             </Fragment>
                           );

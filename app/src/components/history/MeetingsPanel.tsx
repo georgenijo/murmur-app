@@ -217,7 +217,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                     confirmLabel="Click again to delete all meetings"
                     holdDuration={1200}
                     onDelete={() => void clearAll()}
-                    className="h-9 w-full min-w-0 justify-start rounded-lg px-2.5 text-[length:var(--ui-font-label)]"
+                    className="h-auto min-h-(--ui-menu-row) w-full min-w-0 justify-start gap-2 rounded-(--ui-radius-menu-item) px-2 py-1 text-sm shadow-none"
                   />
                 </AnimatedDropdownContent>
               </AnimatedDropdown>

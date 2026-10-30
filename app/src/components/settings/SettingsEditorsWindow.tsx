@@ -81,7 +81,7 @@ function ScannedVocabulary({ settings }: { settings: Settings }) {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-[48px_minmax(0,1fr)_90px_180px] gap-3 border-b border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-[10px] font-bold uppercase tracking-[0.12em] text-on-surface-variant">
+            <div className="grid grid-cols-[48px_minmax(0,1fr)_90px_180px] gap-3 border-b border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-[10px] font-semibold uppercase tracking-normal text-on-surface-variant">
               <span>#</span><span>Term</span><span className="text-right">Freq</span><span>Feeds</span>
             </div>
             <div className="h-full max-h-[460px] overflow-y-auto">

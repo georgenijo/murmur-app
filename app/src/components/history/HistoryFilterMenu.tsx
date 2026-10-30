@@ -70,15 +70,15 @@ export function HistoryFilterMenu({
         className={active ? 'history-filter-trigger history-filter-trigger-active' : 'history-filter-trigger'}
         aria-label={active ? `Filter transcripts: ${label}${label === names ? '' : `, ${names}`}` : 'Filter transcripts'}
       >
-        <ListFilter aria-hidden="true" size={13} strokeWidth={2.2} />
+        <ListFilter aria-hidden="true" size={14} />
         <span className="truncate">{label}</span>
-        <ChevronDown aria-hidden="true" size={12} strokeWidth={2.2} className="opacity-60" />
+        <ChevronDown aria-hidden="true" size={14} className="opacity-60" />
       </AnimatedDropdownTrigger>
       <AnimatedDropdownContent align="end" side="bottom" className="history-filter-menu min-w-48">
         <Menu.RadioGroup value={filter} onValueChange={(value) => { if (isHistoryFilter(value)) onFilterChange(value); }}>
-          <Menu.GroupLabel className="history-export-label">Show</Menu.GroupLabel>
+          <Menu.GroupLabel className="ui-menu-label">Show</Menu.GroupLabel>
           {HISTORY_FILTER_OPTIONS.map((option) => (
-            <Menu.RadioItem key={option.value} value={option.value} className="history-filter-option">
+            <Menu.RadioItem key={option.value} value={option.value} className="ui-menu-item history-filter-option">
               <span className="history-filter-radio" aria-hidden="true" />
               {option.label}
             </Menu.RadioItem>
@@ -86,9 +86,9 @@ export function HistoryFilterMenu({
         </Menu.RadioGroup>
         <AnimatedDropdownSeparator />
         <Menu.RadioGroup value={dateFilter} onValueChange={(value) => { if (isHistoryDateFilter(value)) onDateFilterChange(value); }}>
-          <Menu.GroupLabel className="history-export-label">From</Menu.GroupLabel>
+          <Menu.GroupLabel className="ui-menu-label">From</Menu.GroupLabel>
           {HISTORY_DATE_FILTER_OPTIONS.map((option) => (
-            <Menu.RadioItem key={option.value} value={option.value} className="history-filter-option">
+            <Menu.RadioItem key={option.value} value={option.value} className="ui-menu-item history-filter-option">
               <span className="history-filter-radio" aria-hidden="true" />
               {option.label}
             </Menu.RadioItem>
@@ -98,7 +98,7 @@ export function HistoryFilterMenu({
         <Menu.CheckboxItem
           checked={pinnedFilter === 'pinned'}
           onCheckedChange={(checked) => onPinnedFilterChange(checked ? 'pinned' : 'all')}
-          className="history-filter-option"
+          className="ui-menu-item history-filter-option"
         >
           <span className="history-filter-check" aria-hidden="true"><Check size={11} strokeWidth={3} /></span>
           Pinned only
