@@ -210,8 +210,8 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
     history.boundingBox(),
   ]);
 
-  expect(sidebarBox?.width).toBe(200);
-  expect(mainBox?.width).toBeGreaterThan(850);
+  expect(sidebarBox?.width).toBe(256);
+  expect(mainBox?.width).toBe(1120 - 256 - 32);
   // The month summary lives in the composer's footer strip, not a separate card.
   expect(monthBox!.y).toBeGreaterThan(talkBox!.y);
   expect(monthBox!.y + monthBox!.height).toBeLessThanOrEqual(talkBox!.y + talkBox!.height);
@@ -738,7 +738,12 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(1);
   for (const item of [...await tiles.all(), ...await view.locator('.usage-analytics-section').all()]) {
     await item.scrollIntoViewIfNeeded();
-    await expect(item).toBeInViewport({ ratio: 1 });
+    await expect(item).toBeInViewport();
+    const itemBounds = (await item.boundingBox())!;
+    const viewBounds = (await view.boundingBox())!;
+    // scrollIntoView rounds scrollTop to pixels; allow at most one CSS pixel.
+    expect(itemBounds.y).toBeGreaterThanOrEqual(viewBounds.y - 1);
+    expect(itemBounds.y + itemBounds.height).toBeLessThanOrEqual(viewBounds.y + viewBounds.height + 1);
   }
   await expect(page.locator('[data-query-note="failures"]')).toContainText('provider not authenticated 1');
   await expect(page.locator('.usage-analytics-section').first()).toHaveCSS('border-top-width', '1px');
