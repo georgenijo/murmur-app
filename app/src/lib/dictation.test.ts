@@ -7,6 +7,11 @@ import { buildConfigureOptions, cancelRecording } from './dictation';
 import { DEFAULT_SETTINGS } from './settings';
 
 describe('buildConfigureOptions', () => {
+  it('sends the opt-in homophone tier to the recording configuration', () => {
+    expect(buildConfigureOptions(DEFAULT_SETTINGS).homophoneContextEnabled).toBe(false);
+    expect(buildConfigureOptions({ ...DEFAULT_SETTINGS, homophoneContextEnabled: true }).homophoneContextEnabled).toBe(true);
+  });
+
   it('sends smart formatting and its independent per-app override to Rust', () => {
     const options = buildConfigureOptions({
       ...DEFAULT_SETTINGS,

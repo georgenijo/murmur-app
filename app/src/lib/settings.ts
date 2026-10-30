@@ -427,6 +427,8 @@ export interface Settings {
   correctionEnabled: boolean;
   /** Tier 2 phonetic "sounds-like" matching. Gated under correctionEnabled. */
   correctionFuzzy: boolean;
+  /** Experimental Apple on-device homophone context tier; opt-in. */
+  homophoneContextEnabled: boolean;
 }
 
 export type ModelOption =
@@ -678,6 +680,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // non-Whisper engines. A no-op when there's no vocabulary configured.
   correctionEnabled: true,
   correctionFuzzy: true,
+  homophoneContextEnabled: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -1360,6 +1363,10 @@ export function loadSettings(): Settings {
       }
       if (typeof parsed.correctionFuzzy !== 'boolean') {
         parsed.correctionFuzzy = DEFAULT_SETTINGS.correctionFuzzy;
+      }
+
+      if (typeof parsed.homophoneContextEnabled !== 'boolean') {
+        parsed.homophoneContextEnabled = false;
       }
 
       const settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;

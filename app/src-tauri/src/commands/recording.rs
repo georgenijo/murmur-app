@@ -2506,6 +2506,7 @@ async fn run_transcription_pipeline(
             cleanup_capitalize: transformations.cleanup_capitalize,
             voice_commands_enabled: context.enabled_command_groups.built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
+            homophone_context_enabled: transformations.homophone_context_enabled,
             smart_formatting_enabled: transformations.smart_formatting_enabled,
             spoken_structure_policy: transformations.spoken_structure_policy,
             spoken_numbers_enabled: transformations.spoken_numbers_enabled,
@@ -2525,6 +2526,7 @@ async fn run_transcription_pipeline(
         cli_lexicon,
         ide_context_index: transformations.ide_context_index.clone(),
         voice_command_runtime: None,
+        homophone_engine: None,
     };
     let transform_started = std::time::Instant::now();
     performance_guard.enter(PerformanceStageV1::TranscriptTransform);
@@ -3908,6 +3910,13 @@ pub async fn configure_dictation(
     }
     if let Some(v) = options.get("correctionFuzzy").and_then(|v| v.as_bool()) {
         dictation.correction_fuzzy = v;
+    }
+
+    if let Some(v) = options
+        .get("homophoneContextEnabled")
+        .and_then(|v| v.as_bool())
+    {
+        dictation.homophone_context_enabled = v;
     }
 
     // Rebuild the correction matcher from the (now-updated) unified vocab +

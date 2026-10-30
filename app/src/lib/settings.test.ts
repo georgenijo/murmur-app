@@ -984,6 +984,15 @@ describe('loadSettings', () => {
     expect(settings.correctionFuzzy).toBe(false);
   });
 
+  it('keeps on-device homophones off for old and malformed settings, preserving explicit opt-in', () => {
+    for (const value of [undefined, 'true', 1, null, false, true]) {
+      localStorage.setItem('dictation-settings', JSON.stringify({
+        ...DEFAULT_SETTINGS, homophoneContextEnabled: value,
+      }));
+      expect(loadSettings().homophoneContextEnabled).toBe(value === true);
+    }
+  });
+
   it('migrates legacy custom vocabulary into enabled global entries', () => {
     const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
     delete legacy.vocabularyEntries;

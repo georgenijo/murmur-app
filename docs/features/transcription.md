@@ -614,7 +614,7 @@ Uses `IdleGuard` (RAII) to reset status on any early return or error — prevent
 `transform_transcript()` is the authoritative post-recognition entry point for both live and imported-file transcription. It owns a fixed internal sequence:
 
 ```text
-raw transcript → cleanup → voice commands → Smart Correction (explicit aliases, scoped replacement knowledge, exact/derived terms, then fuzzy) → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
+raw transcript → cleanup → voice commands → Smart Correction (explicit aliases, scoped replacement knowledge, exact/derived terms, then fuzzy) → optional homophone context → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
 ```
 
 Each stage receives immutable session/source metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured stage logs never include transcript text, model/language settings, app/profile values, custom replacement values, correction vocabulary, package/script names, or project paths.
@@ -661,3 +661,49 @@ text, model paths, or raw backend errors.
 - `lib/dictation.ts` has `startRecording()` and `stopRecording()` wrappers around Tauri `invoke()`
 - `useRecordingState` hook manages status, transcription text, recording duration timer, and error state
 - `toggleRecording()` checks current status via ref and calls start or stop accordingly
+
+### Optional homophone context
+
+`homophoneContextEnabled` defaults to false. Under Smart Correction, Resolve
+Homophones enables an experimental live-only tier immediately after deterministic
+correction and before formatting. It uses Apple's on-device FoundationModels
+(macOS 26+ with Apple Intelligence); no remote engine or fallback is configured.
+The setting is frozen at recording start and has no effect in Verbatim, imported
+files, or deterministic evaluation fixtures.
+
+The trigger matches whole word cores against curated confusable groups (including
+cue/queue, cloud/Claude, CPO/CPU, there/their/they're, Maine/main) and close phonetic
+matches to enabled, scoped, single-word user vocabulary. Explicit aliases and
+learned replacements remain authoritative: their output spans are protected, and
+already canonical vocabulary spellings are skipped. Multiword aliases continue
+through deterministic correction; this tier does not rewrite phrases.
+
+No trigger means zero model calls, availability queries, or warming. Trigger
+scanning still has a small CPU cost. More than six flags or 1,200 characters skips
+inference. A fresh session chooses only among each flag's options, keeping its
+original on doubt; Rust rejects malformed answers and verifies that punctuation,
+spacing, and every unflagged token remain byte-identical. The Swift bridge waits
+at most 150 ms, cancels overdue work, and refuses another request until that task
+exits. Unavailable models, errors, late answers and failed validation use the
+pipeline's optional-fallback policy and deliver deterministic text. Stage timing
+and pass outcomes/counts are content-free; neither prompt nor answer is logged.
+
+CI uses floating `macos-latest` (observed image 20261013.0424: macOS 26 ARM64,
+default Xcode 26.6 with macOS SDK 26.5). `canImport` gates the
+bridge for older SDKs, availability guards gate older runtimes, and the framework
+is weakly linked. SDK 27 builds retain the macOS 14 deployment target.
+Focused fake-engine tests cover triggers, no-call neutrality, restricted diffs,
+scoping/protection, failures and late answers. An explicitly ignored
+`synthetic_system_engine_metrics` test measures content-free trigger, latency and
+accuracy aggregates on synthetic phrases. It is not evidence to enable this by
+default; real model improvement must be established before changing that default.
+
+The initial SDK 27 debug measurement on this Mac used 10 synthetic phrases:
+five triggered and five made no model calls. No corrections improved and no
+rephrasing regressions occurred. One request timed out and four were refused
+while its cancellation completed; maximum observed pass wall time was 161.4 ms
+(including scheduling/bridge overhead), and maximum neutral gate time was
+1.48 ms including cold initialization. Five additional requests spaced one
+second apart all timed out (153.4–155.1 ms bridge wall time). These results do
+not establish an accuracy benefit within the budget. The tier stays opt-in;
+default enablement needs successful on-device accuracy and latency evidence.

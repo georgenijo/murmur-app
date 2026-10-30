@@ -930,6 +930,7 @@ fn default_delivery_context() -> TranscriptContext {
             cleanup_capitalize: snapshot.transformations.cleanup_capitalize,
             voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
             smart_correction_enabled: snapshot.transformations.correction_enabled,
+            homophone_context_enabled: snapshot.transformations.homophone_context_enabled,
             smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
             spoken_structure_policy: snapshot.transformations.spoken_structure_policy,
             spoken_numbers_enabled: snapshot.transformations.spoken_numbers_enabled,
