@@ -12,6 +12,12 @@ async function open(page: Page, state: string, appearance = 'light') {
 }
 
 for (const appearance of ['light', 'dark']) {
+  test(`${appearance} Home controls keep the shared 8px radius`, async ({ page }) => {
+    await open(page, 'idle', appearance);
+    await expect(page.getByRole('button', { name: 'Filter transcripts' })).toHaveCSS('border-radius', '8px');
+    await expect(page.locator('.history-search')).toHaveCSS('border-radius', '8px');
+  });
+
   test(`${appearance} production primitives have exact typography and menu measurements`, async ({ page }) => {
     await open(page, 'typography', appearance);
     await expect(page.locator('.ui-window-wordmark')).toHaveCSS('font-weight', '600');
