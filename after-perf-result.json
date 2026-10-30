@@ -1,0 +1,19 @@
+{
+  "source": "5e985233506517cc539b6d7ec4656a98f6a9ace7",
+  "overlayPid": 92667,
+  "attributionProof": "after-perf-overlay-renderer-identification.json",
+  "nativeFps": 59.875,
+  "frames": 480,
+  "distinctConsecutiveUpdates": 479,
+  "cpuPercentOneCore": 6.236513928545439,
+  "rssMiBStart": 64.25,
+  "rssMiBEnd": 65.421875,
+  "focus": {
+    "before": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+    "during": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+    "after": "Murmur Focus Probe com.localdictation.epic846.focus-probe"
+  },
+  "targetCpuPercent": 2,
+  "nativeGate": "FAILED: overlay CPU exceeds target",
+  "note": "Single8-second sample; no statistical regression/improvement claim versus prior sample. Canvas fallback is already in use. No120Hz hardware available onMacmini."
+}

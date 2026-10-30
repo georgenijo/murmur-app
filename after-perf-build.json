@@ -1,0 +1,8 @@
+{
+  "source": "5e985233506517cc539b6d7ec4656a98f6a9ace7",
+  "app": "/Users/george-mac-mini/scratch/e846/target-847/release/bundle/macos/Murmur Island After.app",
+  "binarySha256": "25500b8d77239737af244db961185783d9ca54abfe45a1bb0d939883ebf7a14e",
+  "identifier": "com.localdictation.epic846.overlay852",
+  "signing": "Established Developer ID finalizer strict verification passed",
+  "flavor": "VITE_MURMUR_INTERNAL_BENCHMARK=1; automatic updates/login/log shipping disabled"
+}
