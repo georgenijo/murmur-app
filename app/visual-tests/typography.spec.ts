@@ -12,6 +12,16 @@ async function open(page: Page, state: string, appearance = 'light') {
 }
 
 for (const appearance of ['light', 'dark']) {
+  test(`${appearance} production workspace roots inherit the exact system font stack`, async ({ page }) => {
+    await open(page, 'production-font-roots', appearance);
+    for (const surface of ['main', 'onboarding', 'diagnostics']) {
+      await expect(page.locator(`[data-app-surface="${surface}"] p`))
+        .toHaveCSS('font-family', /^-apple-system, (BlinkMacSystemFont|"system-ui"), system-ui, sans-serif$/);
+      expect(await page.locator(`[data-app-surface="${surface}"]`).evaluate(el => getComputedStyle(el).getPropertyValue('--ui-font-sans').trim()))
+        .toBe('-apple-system, BlinkMacSystemFont, system-ui, sans-serif');
+    }
+  });
+
   test(`${appearance} Home controls keep the shared 8px radius`, async ({ page }) => {
     await open(page, 'idle', appearance);
     await expect(page.getByRole('button', { name: 'Filter transcripts' })).toHaveCSS('border-radius', '8px');

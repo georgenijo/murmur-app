@@ -1,3 +1,4 @@
+import { AppSurface } from '../ui/AppSurface';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   checkAccessibilityPermission,
@@ -358,7 +359,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background font-[-apple-system,BlinkMacSystemFont,'Segoe_UI',Roboto,sans-serif]">
+    <AppSurface surface="onboarding" className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
       <div className="w-full max-w-lg">
@@ -821,7 +822,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         )}
       </div>
       </div>
-    </div>
+    </AppSurface>
   );
 }
 
