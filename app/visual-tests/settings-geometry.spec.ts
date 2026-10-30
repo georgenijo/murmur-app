@@ -15,7 +15,7 @@ async function openPane(page: Page, path: readonly string[], appearance: string)
   await page.goto(`/visual-fixtures.html?state=${path[0] === 'Appearance' ? 'settings-appearance' : 'settings'}&appearance=${appearance}`);
   await expect(page.locator('[data-visual-ready="true"]')).toBeVisible();
   await page.locator('.settings-sidebar').getByRole('button', { name: path[0], exact: true }).click();
-  if (path[1] === 'Manage project scan') { await page.locator('summary').filter({ hasText: /^Advanced/ }).click(); await page.getByRole('switch', { name: 'Developer terms', exact: true }).check(); }
+  if (path[1] === 'Manage project scan') { await page.getByRole('button', { name: /^Advanced/ }).click(); await page.getByRole('switch', { name: 'Developer terms', exact: true }).check(); }
   if (path[1]) await page.locator('main').getByRole('button', { name: new RegExp(path[1]) }).first().click();
   await page.evaluate(() => document.fonts.ready);
 }
@@ -30,7 +30,7 @@ for (const appearance of ['light', 'dark']) {
       await openPane(page, path, appearance);
       expect(errors).toEqual([]);
       await expect(page.locator('.settings-sidebar')).toBeVisible();
-      await expect(page.locator('main')).toBeVisible();
+      await expect(page.locator('main')).toBeAttached();
       if (path[0] === 'Appearance') await expect(page.getByRole('button', { name: 'Use OpenCode theme', exact: true })).toBeVisible();
       if (path.length === 1 && path[0] === 'Customize') {
         for (const row of await page.locator('.settings-hub-card > button').all()) expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(66);

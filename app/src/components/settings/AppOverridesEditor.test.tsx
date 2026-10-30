@@ -64,6 +64,7 @@ describe('AppOverridesEditor', () => {
 
   it('keeps manual bundle ID entry and reports duplicates visibly', async () => {
     await act(async () => root.render(<AppOverridesEditor profiles={[TERMINAL]} onChange={onChange} />));
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
     const bundle = container.querySelector('input[placeholder="com.apple.Terminal"]') as HTMLInputElement;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(bundle, 'COM.APPLE.TERMINAL');

@@ -120,6 +120,8 @@ export function MeetingDiarizationSettings({
   const busy = operation !== 'idle' || status?.installing === true;
   const supported = status?.supported !== false;
 
+  if (!supported) return null;
+
   return (
     <div data-setting-target="meeting-speakers" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
       <SettingsRow title="Label remote speakers" description="Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting" onReset={enabled !== DEFAULT_SETTINGS.meetingDiarization ? () => onEnabledChange(DEFAULT_SETTINGS.meetingDiarization) : undefined} disabled={!supported} control={<AnimatedSwitch

@@ -1,4 +1,7 @@
 import { Search } from 'lucide-react';
+import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
+import { ADVANCED_TARGETS, visibleSettingsTarget } from './settingsDisclosureRouting';
+import { SettingsDisclosureContext } from './SettingsLayout';
 import { SettingsRow } from './SettingsRow';
 import { Button } from '../ui/FormControls';
 import { MiddleTruncate } from "../ui/middle-truncate";
@@ -60,7 +63,6 @@ import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiL
 import { Select } from '../ui/Select';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { playSoundCue, type SoundCue } from '../../lib/soundCues';
-import { AppOverridesEditor } from './AppOverridesEditor';
 import { ModesManager } from './ModesManager';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
@@ -70,7 +72,7 @@ import { SmartAutoStopSettings } from './SmartAutoStopSettings';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
 import { SettingsBranch } from './SettingsBranch';
-import { SettingsEditorsWindow, SETTINGS_EDITOR_LABELS, type SettingsEditorTab } from './SettingsEditorsWindow';
+import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import { CustomizationHub, type CustomizationDestination } from './CustomizationHub';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 import { SettingsCallout, SettingsDisclosure } from './SettingsLayout';
@@ -317,6 +319,29 @@ export function isMacOSSettingsPlatform(userAgent = typeof navigator === 'undefi
 }
 
 const SETTINGS_SEARCH_ITEMS = [
+  { page: 'recording', target: 'standby-window', title: 'Microphone standby window', detail: 'Adjust warm microphone standby duration', keywords: 'standby pre roll' },
+  { page: 'recording', target: 'pre-roll', title: 'Pre-roll', detail: 'Choose the standby audio prefix', keywords: 'warm capture' },
+  { page: 'recording', target: 'sound-cues', title: 'Sound cues', detail: 'Play local recording feedback', keywords: 'audio feedback' },
+  { page: 'recording', target: 'sound-volume', title: 'Sound cue volume', detail: 'Adjust local feedback volume', keywords: 'sound preview' },
+  { page: 'recording', target: 'meeting-cues', title: 'Meeting cues', detail: 'Play sound cues during meetings', keywords: 'notetaker sound' },
+  { page: 'recording', target: 'hotkey-feedback', title: 'Hotkey timing feedback', detail: 'Flash when a double tap misses', keywords: 'shortcut timing' },
+  { page: 'recording', target: 'smart-auto-stop', title: 'Smart Auto-Stop', detail: 'Manage the optional local end-of-turn model', keywords: 'experimental smart turn' },
+  { page: 'delivery', target: 'paste-delay', title: 'Paste delay', detail: 'Wait before automatic paste', keywords: 'milliseconds delivery' },
+  { page: 'text', target: 'cleanup-filler', title: 'Remove filler words', detail: 'Remove um and uh during cleanup', keywords: 'cleanup filler' },
+  { page: 'text', target: 'cleanup-capitalize', title: 'Capitalize sentences', detail: 'Capitalize cleaned sentence starts', keywords: 'cleanup case' },
+  { page: 'text', target: 'project-scan', title: 'Project scan', detail: 'Manage local developer vocabulary', keywords: 'developer terms code folder' },
+  { page: 'text', target: 'fuzzy-correction', title: 'Correct close mishearings', detail: 'Match sounds against preferred spellings', keywords: 'smart correction fuzzy' },
+  { page: 'text', target: 'homophone-context', title: 'Resolve homophones', detail: 'Use supported on-device context', keywords: 'experimental correction' },
+  { page: 'text', target: 'smart-formatting', title: 'Structured writing', detail: 'Format spoken lists and symbols', keywords: 'smart formatting' },
+  { page: 'text', target: 'voice-commands', title: 'Spoken formatting', detail: 'Enable spoken formatting tokens', keywords: 'voice commands' },
+  { page: 'ai-transcription', target: 'model-idle-timeout', title: 'Release model after inactivity', detail: 'Free idle model memory', keywords: 'timeout power adapter' },
+  { page: 'ai-query', target: 'query-key', title: 'Query shortcut', detail: 'Choose the dedicated Voice Query key', keywords: 'hotkey' },
+  { page: 'ai-query', target: 'query-timeout', title: 'Query timeout', detail: 'Bound provider execution time', keywords: 'seconds minutes' },
+  { page: 'ai-transform', target: 'transform-key', title: 'Transform hold key', detail: 'Choose the selected-text rewrite shortcut', keywords: 'keyboard hold' },
+  { page: 'ai-transform', target: 'transform-practice', title: 'Transform practice', detail: 'Try the transform shortcut locally', keywords: 'rewrite test' },
+  { page: 'meetings', target: 'meeting-calendar', title: 'Calendar suggestion access', detail: 'Manage permission for meeting suggestions', keywords: 'calendar settings permission' },
+  { page: 'meetings', target: 'meeting-echo-cancellation', title: 'Reduce speaker echo', detail: 'Experimental meeting echo removal', keywords: 'audio processing' },
+  { page: 'general', target: 'reset-statistics', title: 'Reset statistics', detail: 'Reset local usage counters', keywords: 'stats clear' },
   { page: 'recording', target: 'microphone', title: 'Microphone', detail: 'Choose an input and check its live level', keywords: 'audio input device test level gain' },
   { page: 'recording', target: 'voice-detection', title: 'Voice detection', detail: 'Adjust silence filtering sensitivity', keywords: 'vad sensitivity noise silence' },
   { page: 'recording', target: 'recording-trigger', title: 'Recording trigger', detail: 'Hold, double-tap, or use both', keywords: 'hotkey shortcut key timing feedback' },
@@ -325,7 +350,9 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'smart-destination', title: 'Smart destination', detail: 'Keep dictation with your recent text field across supported media controls', keywords: 'destination focus media play pause next previous', macOSOnly: true },
   { page: 'delivery', target: 'file-output', title: 'Save to file', detail: 'Save transcript or audio files locally', keywords: 'delivery output folder wav txt' },
   { page: 'delivery', target: 'history', title: 'Transcription history', detail: 'Keep completed dictations on this Mac', keywords: 'save retain local transcripts' },
+  { page: 'delivery', target: 'app-overrides-manual', editorTab: 'app-overrides', title: 'App bundle ID', detail: 'Add an app override by its exact bundle ID', keywords: 'manual advanced profile' },
   { page: 'delivery', target: 'app-overrides', title: 'App overrides', detail: 'Customize delivery for individual apps', keywords: 'profile bundle id per app' },
+  { page: 'modes', target: 'browser-site-rules', title: 'Browser site rules', detail: 'Bind exact browser hosts to Modes', keywords: 'browser sites host mappings' },
   { page: 'modes', target: 'modes', title: 'Modes', detail: 'Manage reusable behavior for apps and browser sites', keywords: 'style profiles browser host site rules' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting audio', detail: 'Choose whether source audio is retained', keywords: 'capture wav keep delete' },
   { page: 'meetings', target: 'meeting-speakers', title: 'Remote speaker labels', detail: 'Install and enable local per-speaker meeting labels', keywords: 'diarization speaker names model local system audio' },
@@ -429,28 +456,29 @@ export const SettingsPanel = memo(function SettingsPanel({
   const settingsSurfaceActive = useSettingsSurfaceActive();
   const macOSSettingsPlatform = isMacOSSettingsPlatform();
   const [activeCat, setActiveCat] = useState<string>(() => resolvePage(pageRequest?.page));
+  const [advancedOpen, setAdvancedOpen] = useSettingsAdvanced(activeCat);
+  const backgroundRef = useRef<HTMLDivElement>(null);
+  const editorOpenerRef = useRef<HTMLElement | null>(null);
   const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
   const pageRequestPending = pageRequest !== null && pageRequest.token !== appliedRequestToken;
   const pageVisible = settingsSurfaceActive && activeRef?.current !== false;
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(null);
+  const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(pageRequest?.editorTab ?? null);
+  const revealedTargetRef = useRef<SettingTargetRequest | null>(null);
   const [targetRequest, setTargetRequest] = useState<SettingTargetRequest | null>(() => (
     settingTargetRequest(pageRequest?.target)
   ));
   const [customizationDetail, setCustomizationDetail] = useState<CustomizationDestination | null>(() => (
     customizationDestinationForRequest(pageRequest)
   ));
-  const [editorBackToCustomization, setEditorBackToCustomization] = useState(() => (
-    Boolean(pageRequest?.editorTab && customizationDestinationForRequest(pageRequest))
-  ));
   const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(null);
   const [shortcutReturnFocus, setShortcutReturnFocus] = useState<GlobalShortcutId | null>(null);
   const [modeSelectionId, setModeSelectionId] = useState<string | null>(null);
   const [returnToModesPending, setReturnToModesPending] = useState(false);
   const latencyView = editorTab
-    ? `settings.text.editor.${editorTab}`
+    ? `settings.${activeCat}.editor.${editorTab}`
     : `settings.${activeCat}`;
   useUiLatencyDestination(activeRef?.current === false ? null : latencyView);
   useLayoutEffect(() => {
@@ -478,7 +506,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     const destination = customizationDestinationForRequest(pageRequest);
     setCustomizationDetail(destination);
     setCustomizationReturnFocus(destination);
-    setEditorBackToCustomization(Boolean(destination && pageRequest.editorTab));
     setShortcutReturnFocus(null);
     if (pageRequest.page !== 'delivery' || pageRequest.target !== 'app-overrides') {
       setModeSelectionId(null);
@@ -495,28 +522,49 @@ export const SettingsPanel = memo(function SettingsPanel({
   const restoreGeneralShortcutsFocusRef = useRef(false);
   const confirmResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  useLayoutEffect(() => {
+    backgroundRef.current?.toggleAttribute('inert', editorTab !== null);
+  }, [editorTab]);
   useEffect(() => { void getVersion().then(setVersion); }, []);
   useLayoutEffect(() => {
     const content = contentRef.current;
     if (!content) return;
+    if (editorTab) return;
     if (!targetRequest) {
+      revealedTargetRef.current = null;
       content.scrollTo({ top: 0 });
       return;
     }
-    const target = content.querySelector<HTMLElement>(`[data-setting-target="${targetRequest.id}"]`);
-    if (!target) return;
-    const disclosure = target instanceof HTMLDetailsElement ? target : target.closest('details');
-    if (disclosure instanceof HTMLDetailsElement) disclosure.open = true;
-    target.scrollIntoView({ block: 'center' });
-    target.classList.remove('settings-target-flash');
-    void target.offsetWidth;
-    target.classList.add('settings-target-flash');
-    const timeout = window.setTimeout(() => target.classList.remove('settings-target-flash'), 1300);
-    return () => {
-      window.clearTimeout(timeout);
+    if (revealedTargetRef.current === targetRequest) return;
+    const id = visibleSettingsTarget(targetRequest.id, settings);
+    if (ADVANCED_TARGETS[activeCat]?.includes(id) && !advancedOpen) {
+      setAdvancedOpen(true);
+      return;
+    }
+    revealedTargetRef.current = targetRequest;
+    // Wait for the folding clip to finish before centering the destination.
+    let flashed: HTMLElement | null = null;
+    const flash = () => {
+      const target = Array.from(content.querySelectorAll<HTMLElement>('[data-setting-target]'))
+        .find(element => element.dataset.settingTarget === id);
+      if (!target) return;
+      flashed = target;
+      target.scrollIntoView({ block: 'center' });
       target.classList.remove('settings-target-flash');
+      void target.offsetWidth;
+      target.classList.add('settings-target-flash');
     };
-  }, [activeCat, editorTab, targetRequest]);
+    flash();
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    // Recenter after layout settles without restarting #848's two pulses.
+    const reveal = reducedMotion ? null : window.setTimeout(() => flashed?.scrollIntoView({ block: 'center' }), 320);
+    const timeout = window.setTimeout(() => flashed?.classList.remove('settings-target-flash'), 1300);
+    return () => {
+      if (reveal !== null) window.clearTimeout(reveal);
+      window.clearTimeout(timeout);
+      flashed?.classList.remove('settings-target-flash');
+    };
+  }, [activeCat, editorTab, targetRequest, advancedOpen, setAdvancedOpen, settings]);
   useLayoutEffect(() => {
     if (activeCat !== 'shortcuts' || shortcutReturnFocus === null) return;
     contentRef.current
@@ -564,33 +612,31 @@ export const SettingsPanel = memo(function SettingsPanel({
     vocabScan.cancel();
     onUpdateSettings({ codeVocabFolder: '', codeVocabLastScan: null });
   };
-  const openEditor = useCallback((tab: SettingsEditorTab) => {
-    beginCurrentUiTransition(`settings.text.editor.${tab}`, 'pointer');
-    setActiveCat('text');
+  const openEditor = useCallback((tab: SettingsEditorTab, opener: HTMLElement) => {
+    beginCurrentUiTransition(`settings.${activeCat}.editor.${tab}`, 'pointer');
+    editorOpenerRef.current = opener;
     setSearchQuery('');
     setTargetRequest(null);
     setEditorTab(tab);
-    setEditorBackToCustomization(false);
-  }, []);
+  }, [activeCat]);
   const closeEditor = useCallback(() => {
-    beginCurrentUiTransition('settings.text', 'programmatic');
+    beginCurrentUiTransition(`settings.${activeCat}`, 'programmatic');
     setTargetRequest(null);
     setEditorTab(null);
-    setEditorBackToCustomization(false);
-  }, []);
+  }, [activeCat]);
 
-  const openCustomizationDestination = useCallback((destination: CustomizationDestination) => {
+  const openCustomizationDestination = useCallback((destination: CustomizationDestination, opener: HTMLElement) => {
     const route = customizationRoute(destination);
     beginCurrentUiTransition(route.editorTab
-      ? `settings.text.editor.${route.editorTab}`
+      ? `settings.customize.editor.${route.editorTab}`
       : `settings.${route.page}`, 'pointer');
-    setActiveCat(route.page);
+    editorOpenerRef.current = opener;
+    setActiveCat(route.editorTab ? 'customize' : route.page);
     setEditorTab(route.editorTab ?? null);
     setTargetRequest(settingTargetRequest(route.target));
     setSearchQuery('');
-    setCustomizationDetail(destination);
+    setCustomizationDetail(route.editorTab ? null : destination);
     setCustomizationReturnFocus(destination);
-    setEditorBackToCustomization(Boolean(route.editorTab));
   }, []);
 
   const returnToCustomization = useCallback(() => {
@@ -599,7 +645,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     setCustomizationDetail(null);
     setActiveCat('customize');
     setEditorTab(null);
-    setEditorBackToCustomization(false);
     setTargetRequest(null);
     setSearchQuery('');
   }, [customizationDetail]);
@@ -784,7 +829,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     setTargetRequest(null);
     setCustomizationDetail(null);
     setCustomizationReturnFocus(null);
-    setEditorBackToCustomization(false);
     setShortcutReturnFocus(null);
     if (page !== 'modes') {
       setModeSelectionId(null);
@@ -800,20 +844,18 @@ export const SettingsPanel = memo(function SettingsPanel({
     setTargetRequest(settingTargetRequest(destination.target));
     setCustomizationDetail(null);
     setCustomizationReturnFocus(null);
-    setEditorBackToCustomization(false);
     setShortcutReturnFocus(destination.shortcutId);
   };
 
-  const openAppProfileForMode = (modeId: string) => {
-    beginCurrentUiTransition('settings.delivery', 'pointer');
+  const openAppProfileForMode = (modeId: string, opener: HTMLElement) => {
+    beginCurrentUiTransition('settings.modes.editor.app-overrides', 'pointer');
     setModeSelectionId(modeId);
     setReturnToModesPending(true);
-    setActiveCat('delivery');
-    setEditorTab(null);
+    editorOpenerRef.current = opener;
+    setEditorTab('app-overrides');
     setSearchQuery('');
     setTargetRequest(settingTargetRequest('app-overrides'));
     setCustomizationDetail(null);
-    setEditorBackToCustomization(false);
   };
 
   useEffect(() => {
@@ -830,7 +872,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     setTargetRequest(null);
     setCustomizationDetail(null);
     setCustomizationReturnFocus(null);
-    setEditorBackToCustomization(false);
   };
 
   const returnToGeneral = () => {
@@ -838,9 +879,13 @@ export const SettingsPanel = memo(function SettingsPanel({
     openPage('general', 'programmatic');
   };
 
+  const enabledFeaturePages = [
+    { enabled: settings.queryHotkey !== null, page: 'ai-query', label: 'Voice Query', icon: 'ai' },
+    { enabled: settings.transformHoldKey !== null || settings.correctionShortcutEnabled, page: 'ai-transform', label: 'Selected-text rewrite', icon: 'ai' },
+  ].filter(item => item.enabled);
   const navPageIsActive = (page: string) => (
     page === 'ai'
-      ? activeCat === 'ai' || activeCat.startsWith('ai-')
+      ? activeCat === 'ai' || (activeCat.startsWith('ai-') && !enabledFeaturePages.some(item => item.page === activeCat))
       : page === 'general' ? activeCat === 'general' || activeCat === 'shortcuts' : activeCat === page
   );
 
@@ -850,12 +895,13 @@ export const SettingsPanel = memo(function SettingsPanel({
       ?? SETTINGS_TOOLS.find((tool) => tool.id === page)?.label
       ?? page;
   };
-  const pageTitle = searchQuery ? 'Search' : editorTab ? SETTINGS_EDITOR_LABELS[editorTab]
-    : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text', 'ai-query': 'Voice Query',
+  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text', 'ai-query': 'Voice Query',
       'ai-transform': 'Selected-text rewrite', shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
+    <SettingsDisclosureContext.Provider value={{ open: advancedOpen, setOpen: setAdvancedOpen }}>
     <div onKeyDown={defaultButtonKeyDown} className="settings-workspace flex min-h-0 flex-1 overflow-hidden bg-background text-on-surface">
+      <div ref={backgroundRef} className="flex min-h-0 min-w-0 flex-1 overflow-hidden" aria-hidden={editorTab ? true : undefined}>
       <aside data-search-open={compactSearchOpen || undefined} className="settings-sidebar flex min-h-0 shrink-0 flex-col overflow-hidden px-3 pb-3 pt-2">
         <button ref={railSearchRef} type="button" className="settings-rail-search" aria-label="Search settings" onClick={() => { setCompactSearchOpen(true); requestAnimationFrame(() => searchRef.current?.focus()); }}><Search aria-hidden="true" /></button>
         <label className="settings-search relative mb-3 block w-full min-w-0 shrink-0">
@@ -897,6 +943,13 @@ export const SettingsPanel = memo(function SettingsPanel({
               </button>
             );
           })}
+          {enabledFeaturePages.map(item => <button key={item.page} type="button"
+            aria-label={item.label} title={item.label} aria-current={activeCat === item.page ? 'page' : undefined}
+            className="settings-nav-item flex w-full items-center text-left"
+            onClick={() => openPage(item.page)}><SettingsNavIcon icon={item.icon} /><span className="min-w-0 truncate">{item.label}</span></button>)}
+          {settings.codeVocabEnabled && <button type="button" aria-label="Project scan" title="Project scan"
+            className="settings-nav-item flex w-full items-center text-left" onClick={(event) => openEditor('scan', event.currentTarget)}>
+            <SettingsNavIcon icon="text" /><span className="min-w-0 truncate">Project scan</span></button>}
         </nav>
         <div className="settings-nav-tools">
           <p className="settings-tools-eyebrow mb-1 px-3">Tools</p>
@@ -931,22 +984,7 @@ export const SettingsPanel = memo(function SettingsPanel({
         >
           <div className="settings-content-container">
           {configureError && <p role="alert" className="mb-4 rounded-lg bg-error/10 px-3 py-2 text-xs text-error">{configureError}</p>}
-          {editorTab ? (
-            <SettingsEditorsWindow
-              initialTab={editorTab}
-              settings={settings}
-              onUpdateSettings={onUpdateSettings}
-              scanStatus={vocabScan.status}
-              scanWalker={vocabScan.walker}
-              scanStats={vocabScan.stats}
-              onChooseCodeFolder={() => void chooseCodeFolder()}
-              onClearCodeFolder={clearCodeFolder}
-              onScan={() => void runVocabScan(settings.codeVocabFolder)}
-              onCancelScan={vocabScan.cancel}
-              onBack={editorBackToCustomization ? returnToCustomization : closeEditor}
-              backLabel={editorBackToCustomization ? 'Back to Customize' : undefined}
-            />
-          ) : searchQuery ? (
+          {searchQuery ? (
             <section aria-label="Settings search results">
               <h2 className="settings-section-title">Search</h2>
               <p className="mb-3 text-[11px] font-semibold uppercase tracking-normal text-on-surface-variant">
@@ -965,13 +1003,13 @@ export const SettingsPanel = memo(function SettingsPanel({
                       onClick={() => {
                         beginCurrentUiTransition(`settings.${result.page}`, 'pointer');
                         setActiveCat(result.page);
-                        setEditorTab(null);
+                        editorOpenerRef.current = searchRef.current;
+                        setEditorTab('editorTab' in result ? result.editorTab : null);
                         setTargetRequest(settingTargetRequest(result.target));
                         setSearchQuery('');
                         setCompactSearchOpen(false);
                         setCustomizationDetail(null);
                         setCustomizationReturnFocus(null);
-                        setEditorBackToCustomization(false);
                         setShortcutReturnFocus(null);
                       }}
                       className="flex w-full items-center gap-4 border-b border-outline-variant/15 px-4 py-3 text-left last:border-b-0 hover:bg-surface-container-low"
@@ -1060,23 +1098,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <p role="alert" className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
               )}
             </div>
-            <SettingToggle
-              title="Warm microphone standby"
-              description="Keep the microphone open briefly after dictation to protect the first word on your next press. The macOS microphone indicator stays on during standby. Only the selected pre-roll enters your next recording; other standby audio stays in memory and is discarded."
-              checked={settings.captureStandbyEnabled} defaultChecked={DEFAULT_SETTINGS.captureStandbyEnabled}
-              onChange={() => onUpdateSettings({ captureStandbyEnabled: !settings.captureStandbyEnabled })}
-              disabled={isRecording}
-            />
-            {settings.captureStandbyEnabled && (
-              <div className="settings-stack">
-                <SettingsRow title="Microphone standby window" disabled={isRecording}
-                  onReset={settings.captureStandbySeconds !== DEFAULT_SETTINGS.captureStandbySeconds ? () => onUpdateSettings({ captureStandbySeconds: DEFAULT_SETTINGS.captureStandbySeconds }) : undefined}
-                  control={<Select value={String(settings.captureStandbySeconds)} onChange={(value) => onUpdateSettings({ captureStandbySeconds: Number(value) })} disabled={isRecording} items={[{ value: '60', label: '1 minute' }, { value: '300', label: '5 minutes' }, { value: '900', label: '15 minutes' }]} />} />
-                <SettingsRow title="Pre-roll" disabled={isRecording}
-                  onReset={settings.capturePreRollMs !== DEFAULT_SETTINGS.capturePreRollMs ? () => onUpdateSettings({ capturePreRollMs: DEFAULT_SETTINGS.capturePreRollMs }) : undefined}
-                  control={<Select value={String(settings.capturePreRollMs)} onChange={(value) => onUpdateSettings({ capturePreRollMs: Number(value) })} disabled={isRecording} items={[{ value: '300', label: '300 ms' }, { value: '450', label: '450 ms' }]} />} />
-              </div>
-            )}
             <SettingsRow
               title={<>Voice detection</>}
               targetId="voice-detection"
@@ -1121,47 +1142,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur observes the key without suppressing its normal system or app action.
                 </p>
               )}</SettingsRow>
-            {(isDoubleTap || isBoth) && <SettingToggle targetId="hotkey-feedback" title="Hotkey timing feedback" description="Flash the overlay when a tap misses the double-tap window" checked={settings.hotkeyMissFeedback} defaultChecked={DEFAULT_SETTINGS.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} />}
-            <div data-setting-target="sound-cues" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <SettingToggle
-                title="Sound cues"
-                description="Play local feedback when recording starts, stops, succeeds, or fails"
-                checked={settings.soundCuesEnabled} defaultChecked={DEFAULT_SETTINGS.soundCuesEnabled}
-                onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
-              />
-              <SettingsBranch open={settings.soundCuesEnabled}>
-                <label className="block text-xs font-medium text-on-surface-variant">
-                  Volume · {settings.soundCueVolume}%
-                  <input
-                    className="mt-2 block w-full accent-primary"
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="5"
-                    value={settings.soundCueVolume}
-                    onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
-                  />
-                </label>
-                <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
-                  {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
-                    <Button
-                      key={cue}
-                      type="button"
-                      onClick={() => playSoundCue(cue, settings.soundCueVolume)}
-                      className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-medium capitalize text-on-surface hover:bg-surface-container"
-                    >
-                      {cue}
-                    </Button>
-                  ))}
-                </div>
-                <SettingToggle
-                  title="Meeting cues"
-                  description="Also play cues during meeting capture"
-                  checked={settings.meetingSoundCuesEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSoundCuesEnabled}
-                  onChange={() => onUpdateSettings({ meetingSoundCuesEnabled: !settings.meetingSoundCuesEnabled })}
-                />
-              </SettingsBranch>
-            </div>
+            <SettingsBranch open={isDoubleTap || isBoth}><SettingToggle targetId="hotkey-feedback" title="Hotkey timing feedback" description="Flash the overlay when a tap misses the double-tap window" checked={settings.hotkeyMissFeedback} defaultChecked={DEFAULT_SETTINGS.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} /></SettingsBranch>
             <SettingsRow
               title={<label className="block text-sm font-medium text-on-surface">Stop on silence</label>}
               targetId="stop-on-silence"
@@ -1193,12 +1174,69 @@ export const SettingsPanel = memo(function SettingsPanel({
                 can still stop manually at any time.
               </p>
             </SettingsRow>
+            <SettingsDisclosure title="Advanced" layout="rows">
+            <SettingToggle
+              targetId="standby" title="Warm microphone standby"
+              description="Keep the microphone open briefly after dictation to protect the first word on your next press. The macOS microphone indicator stays on during standby. Only the selected pre-roll enters your next recording; other standby audio stays in memory and is discarded."
+              checked={settings.captureStandbyEnabled} defaultChecked={DEFAULT_SETTINGS.captureStandbyEnabled}
+              onChange={() => onUpdateSettings({ captureStandbyEnabled: !settings.captureStandbyEnabled })}
+              disabled={isRecording}
+            />
+            <SettingsBranch open={settings.captureStandbyEnabled}>
+                <SettingsRow targetId="standby-window" title="Microphone standby window" disabled={isRecording}
+                  onReset={settings.captureStandbySeconds !== DEFAULT_SETTINGS.captureStandbySeconds ? () => onUpdateSettings({ captureStandbySeconds: DEFAULT_SETTINGS.captureStandbySeconds }) : undefined}
+                  control={<Select value={String(settings.captureStandbySeconds)} onChange={(value) => onUpdateSettings({ captureStandbySeconds: Number(value) })} disabled={isRecording} items={[{ value: '60', label: '1 minute' }, { value: '300', label: '5 minutes' }, { value: '900', label: '15 minutes' }]} />} />
+                <SettingsRow targetId="pre-roll" title="Pre-roll" disabled={isRecording}
+                  onReset={settings.capturePreRollMs !== DEFAULT_SETTINGS.capturePreRollMs ? () => onUpdateSettings({ capturePreRollMs: DEFAULT_SETTINGS.capturePreRollMs }) : undefined}
+                  control={<Select value={String(settings.capturePreRollMs)} onChange={(value) => onUpdateSettings({ capturePreRollMs: Number(value) })} disabled={isRecording} items={[{ value: '300', label: '300 ms' }, { value: '450', label: '450 ms' }]} />} />
+            </SettingsBranch>
+            <>
+              <SettingToggle
+                targetId="sound-cues" title="Sound cues"
+                description="Play local feedback when recording starts, stops, succeeds, or fails"
+                checked={settings.soundCuesEnabled} defaultChecked={DEFAULT_SETTINGS.soundCuesEnabled}
+                onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
+              />
+              <SettingsBranch open={settings.soundCuesEnabled}>
+                <label data-setting-target="sound-volume" className="block text-xs font-medium text-on-surface-variant">
+                  Volume · {settings.soundCueVolume}%
+                  <input
+                    className="mt-2 block w-full accent-primary"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={settings.soundCueVolume}
+                    onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
+                  {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
+                    <Button
+                      key={cue}
+                      type="button"
+                      onClick={() => playSoundCue(cue, settings.soundCueVolume)}
+                      className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-medium capitalize text-on-surface hover:bg-surface-container"
+                    >
+                      {cue}
+                    </Button>
+                  ))}
+                </div>
+                <SettingToggle
+                  targetId="meeting-cues" title="Meeting cues"
+                  description="Also play cues during meeting capture"
+                  checked={settings.meetingSoundCuesEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSoundCuesEnabled}
+                  onChange={() => onUpdateSettings({ meetingSoundCuesEnabled: !settings.meetingSoundCuesEnabled })}
+                />
+              </SettingsBranch>
+            </>
             <SmartAutoStopSettings
               enabled={settings.smartAutoStopEnabled}
               silenceAutoStopOn={settings.autoStopSilenceMs > 0}
               isRecording={isRecording}
               onEnabledChange={(smartAutoStopEnabled) => onUpdateSettings({ smartAutoStopEnabled })}
             />
+            </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="ai" activePage={activeCat} title="AI & models">
@@ -1303,15 +1341,17 @@ export const SettingsPanel = memo(function SettingsPanel({
 {modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}</SettingsRow>
             <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
             <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'This model is English-only. Choose Whisper Large Turbo for other languages.' : 'Auto-detect lets Whisper identify the language for each recording'}</p></SettingsRow>
-            <SettingsRow title={<>Release model after inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Free memory by unloading an idle model. Never on power adapter keeps it ready while plugged in and unloads after 5 minutes on battery.</p></SettingsRow>
+            <SettingsDisclosure title="Advanced" layout="rows">
+            <SettingsRow targetId="model-idle-timeout" title={<>Release model after inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Free memory by unloading an idle model. Never on power adapter keeps it ready while plugged in and unloads after 5 minutes on battery.</p></SettingsRow>
+            </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="text" activePage={activeCat} title="Text & vocabulary">
             <SettingToggle targetId="punctuation" title="Automatic punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions" checked={settings.smartPunctuation} defaultChecked={DEFAULT_SETTINGS.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
             <SettingToggle targetId="cleanup" title="Transcript cleanup" description="Remove filler and tidy spacing before delivery" checked={settings.cleanupEnabled} defaultChecked={DEFAULT_SETTINGS.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
             <SettingsBranch open={settings.cleanupEnabled}>
-              <SettingToggle title="Remove filler words" description="Remove filler tokens such as um and uh" checked={settings.cleanupRemoveFiller} defaultChecked={DEFAULT_SETTINGS.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
-              <SettingToggle title="Capitalize sentences" description="Capitalize detected sentence starts" checked={settings.cleanupCapitalize} defaultChecked={DEFAULT_SETTINGS.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
+              <SettingToggle targetId="cleanup-filler" title="Remove filler words" description="Remove filler tokens such as um and uh" checked={settings.cleanupRemoveFiller} defaultChecked={DEFAULT_SETTINGS.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
+              <SettingToggle targetId="cleanup-capitalize" title="Capitalize sentences" description="Capitalize detected sentence starts" checked={settings.cleanupCapitalize} defaultChecked={DEFAULT_SETTINGS.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
             </SettingsBranch>
             <div data-setting-target="text-editors" className="grid gap-2 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               {([
@@ -1320,7 +1360,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 ['knowledge', 'Knowledge', 'Manage corrections, terms, snippets, and transforms'],
                 ['commands', 'Voice commands', 'Create exact spoken replacements and snippets'],
               ] as const).map(([tab, title, detail]) => (
-                <button key={tab} type="button" onClick={() => openEditor(tab)} className="settings-card flex items-center gap-3 px-3 py-3 text-left transition-shadow hover:shadow-[var(--settings-shadow-2)]">
+                <button key={tab} type="button" onClick={(event) => openEditor(tab, event.currentTarget)} className="settings-card flex items-center gap-3 px-3 py-3 text-left transition-shadow hover:shadow-[var(--settings-shadow-2)]">
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-semibold text-on-surface">{title}</span>
                     <span className="mt-0.5 block text-[11px] leading-relaxed text-on-surface-variant">{detail}</span>
@@ -1330,21 +1370,21 @@ export const SettingsPanel = memo(function SettingsPanel({
               ))}
             </div>
             <SettingsDisclosure title="Advanced" layout="rows">
-              <SettingToggle title="Developer terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+              <SettingToggle targetId="developer-terms" title="Developer terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
-                <div className="settings-field">
-                  <p className="break-all rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder || 'No folder — built-in developer terms only'}</p>
-                  <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
+                <div data-setting-target="project-scan" className="settings-field">
+                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.codeVocabFolder || 'No folder — built-in developer terms only'} /></p>
+                  <button type="button" onClick={(event) => openEditor('scan', event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
                   <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
                 </div>
               </SettingsBranch>
-              <SettingToggle title="Apply preferred spellings" label="Smart correction" description="Apply exact spoken aliases and supported vocabulary corrections after recognition on every model" checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
+              <SettingToggle targetId="smart-correction" title="Apply preferred spellings" label="Smart correction" description="Apply exact spoken aliases and supported vocabulary corrections after recognition on every model" checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
               <SettingsBranch open={settings.correctionEnabled}>
-                <SettingToggle title="Correct close mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; turn off if you see unwanted swaps" checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
-                <SettingToggle title="Resolve homophones" label="On-device context (experimental)" description="Use sentence context for confusable words only. Requires macOS 26+ and Apple Intelligence. Keeps deterministic text when unavailable or over the 150 ms budget." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
+                <SettingToggle targetId="fuzzy-correction" title="Correct close mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; turn off if you see unwanted swaps" checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
+                <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Use sentence context for confusable words only. Requires macOS 26+ and Apple Intelligence. Keeps deterministic text when unavailable or over the 150 ms budget." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
-              <SettingToggle title="Structured writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
-              <SettingToggle title="Spoken formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
+              <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
+              <SettingToggle targetId="voice-commands" title="Spoken formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
             </SettingsDisclosure>
           </SettingsSection>
 
@@ -1365,7 +1405,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 aria-hidden={settings.autoPaste && !autoPasteOn}
                 className={settings.autoPaste && !autoPasteOn ? 'hidden' : undefined}
               >
-                <PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} />
+                <div data-setting-target="paste-delay"><PasteDelaySlider value={settings.autoPasteDelayMs} onCommit={(autoPasteDelayMs) => onUpdateSettings({ autoPasteDelayMs })} /></div>
               </div>
               {macOSSettingsPlatform && (
                 <SettingToggle
@@ -1401,8 +1441,8 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <button type="button" onClick={requestAccessibility} className="underline">Grant</button>
                 </div>
               )}</SettingsRow>
-            <div data-setting-target="file-output" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <SettingToggle title="Save transcript to file" description="Write each completed transcription to a .txt file" checked={settings.saveTranscript} defaultChecked={DEFAULT_SETTINGS.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
+            <>
+              <SettingToggle targetId="file-output" title="Save transcript to file" description="Write each completed transcription to a .txt file" checked={settings.saveTranscript} defaultChecked={DEFAULT_SETTINGS.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
               <SettingToggle title="Save audio to file" description="Write each recording to a .wav file" checked={settings.saveAudio} defaultChecked={DEFAULT_SETTINGS.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
               <SettingsBranch open={saveToFile}>
                 <div className="settings-field">
@@ -1412,7 +1452,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <p className="text-xs text-on-surface-variant">Used by saved transcripts and audio. {fileOutputDeliveryDescription(settings)}</p>
                 </div>
               </SettingsBranch>
-            </div>
+            </>
             <SettingToggle
               targetId="history"
               title="Save transcription history"
@@ -1422,7 +1462,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
             {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app" layout="stack" targetId="app-overrides">
-              <AppOverridesEditor profiles={settings.appProfiles} onChange={(appProfiles) => onUpdateSettings({ appProfiles })} />
+              <button type="button" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-quiet-btn flex w-full items-center justify-between text-left">Manage app overrides <span aria-hidden="true">›</span></button>
             </SettingsDisclosure>
           </SettingsSection>
 
@@ -1453,7 +1493,8 @@ export const SettingsPanel = memo(function SettingsPanel({
                 checked={settings.meetingSuggestionsEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSuggestionsEnabled}
                 onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
               />
-              <p className="text-xs leading-relaxed text-on-surface-variant">
+              <SettingsBranch open={settings.meetingSuggestionsEnabled}>
+              <div data-setting-target="meeting-calendar"><p className="text-xs leading-relaxed text-on-surface-variant">
                 Supports Zoom, Microsoft Teams, Slack, Webex, FaceTime, Safari, Chrome, Firefox, Edge, Brave, Arc, and Chromium. Browser suggestions cannot verify the active tab because Murmur does not read URLs or window titles.
               </p>
               <button
@@ -1468,6 +1509,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               >
                 Open Calendar settings…
               </button>
+              </div>
+              </SettingsBranch>
               {calendarSettingsError && (
                 <p role="alert" className="text-xs text-error">{calendarSettingsError}</p>
               )}
@@ -1479,16 +1522,17 @@ export const SettingsPanel = memo(function SettingsPanel({
               checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
               onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
             />
+            <MeetingDiarizationSettings
+              enabled={settings.meetingDiarization}
+              onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
+            />
+            <SettingsDisclosure title="Advanced" layout="rows">
             <SettingToggle
               targetId="meeting-echo-cancellation"
               title="Reduce speaker echo"
               description="Experimental. Removes speaker playback from the Me channel. If processing fails, Murmur keeps the original microphone audio."
               checked={settings.meetingEchoCancellationEnabled} defaultChecked={DEFAULT_SETTINGS.meetingEchoCancellationEnabled}
               onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
-            />
-            <MeetingDiarizationSettings
-              enabled={settings.meetingDiarization}
-              onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
             />
             <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <label className="text-sm font-medium text-on-surface">
@@ -1516,6 +1560,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 />
               </label>
             </div>
+            </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection hideHeading card={false} pageId="performance" activePage={activeCat} title="Performance Lab">
@@ -1574,7 +1619,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 offset={settings.overlayVerticalOffset}
                 onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
               />
-              <button type="button" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm reset…' : 'Reset statistics…'}</button>
+              <button type="button" data-setting-target="reset-statistics" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm reset…' : 'Reset statistics…'}</button>
             </SettingsDisclosure>
             {!INTERNAL_BENCHMARK_BUILD && <div data-setting-target="updates" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <UpdateIndicator
@@ -1598,6 +1643,26 @@ export const SettingsPanel = memo(function SettingsPanel({
       </div>
       </div>
       </main>
+      </div>
+      {editorTab && (
+            <SettingsEditorsWindow
+              initialTab={editorTab}
+              target={targetRequest}
+              settings={settings}
+              onUpdateSettings={onUpdateSettings}
+              scanStatus={vocabScan.status}
+              scanWalker={vocabScan.walker}
+              scanStats={vocabScan.stats}
+              onChooseCodeFolder={() => void chooseCodeFolder()}
+              onClearCodeFolder={clearCodeFolder}
+              onScan={() => void runVocabScan(settings.codeVocabFolder)}
+              onCancelScan={vocabScan.cancel}
+              onBack={closeEditor}
+              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="text-editors"] button, [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
+              backLabel={activeCat === 'customize' ? 'Back to Customize' : undefined}
+            />
+      )}
     </div>
+    </SettingsDisclosureContext.Provider>
   );
 });

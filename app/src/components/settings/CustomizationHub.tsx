@@ -36,7 +36,7 @@ const DESTINATIONS: ReadonlyArray<{
 
 interface CustomizationHubProps {
   focusDestination: CustomizationDestination | null;
-  onOpen: (destination: CustomizationDestination) => void;
+  onOpen: (destination: CustomizationDestination, opener: HTMLButtonElement) => void;
 }
 
 export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubProps) {
@@ -61,7 +61,7 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
                 else delete rowRefs.current[destination.id];
               }}
               type="button"
-              onClick={() => onOpen(destination.id)}
+              onClick={(event) => onOpen(destination.id, event.currentTarget)}
               className="group flex min-h-[76px] w-full items-center gap-4 px-4 py-3 text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:bg-surface-container-low focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
             >
               <span className="w-6 shrink-0 font-mono text-[11px] font-semibold tabular-nums text-on-surface-variant">

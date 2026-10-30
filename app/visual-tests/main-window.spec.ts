@@ -407,11 +407,11 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
   await page.getByRole('button', { name: /^Aliases\b/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
-  await expect(page.getByRole('navigation', { name: 'Settings pages' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Text & vocabulary', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('nav[aria-label="Settings pages"]')).toBeAttached();
+  await expect(page.locator('nav[aria-label="Settings pages"] [aria-label="Text & vocabulary"]')).toHaveAttribute('aria-current', 'page');
   await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: 'Aliases', exact: true, level: 1 })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Back to Text settings' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Aliases', exact: true, level: 2 })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close editor' })).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-aliases.png');
 
   await page.keyboard.press('Escape');
@@ -554,16 +554,14 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
 
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
   await page.getByRole('button', { name: 'Double-tap', exact: true }).click();
+  await page.getByRole('button', { name: /^Advanced/ }).click();
   await expectAligned(['hotkey-feedback', 'sound-cues']);
 
-  const rail = page.locator('[data-setting-target="sound-cues"] .settings-dependent-branch-content');
-  const railInsets = await rail.evaluate((element) => {
-    const style = getComputedStyle(element, '::before');
-    return { top: Number.parseFloat(style.top), bottom: Number.parseFloat(style.bottom) };
-  });
-  expect(railInsets.top).toBeGreaterThan(0);
-  expect(railInsets.bottom).toBeGreaterThan(0);
-  expect(Math.abs(railInsets.top - railInsets.bottom)).toBeLessThan(0.1);
+  const fold = page.locator('[data-setting-target="sound-cues"] + .settings-dependent-branch');
+  await expect(fold.locator('.settings-dependent-branch-content > :first-child')).toHaveCSS('border-top-width', '1px');
+  const widths = await fold.evaluate(branch => [branch.getBoundingClientRect().width,
+    branch.querySelector('.settings-dependent-branch-content > *')!.getBoundingClientRect().width]);
+  expect(widths[0]).toBe(widths[1]);
 
   await page.getByRole('button', { name: 'Meetings', exact: true }).click();
   await expectAligned(['meeting-audio', 'meeting-speakers']);
@@ -992,10 +990,12 @@ test('checklist feature names and pitches stay readable beside the Insights rail
 });
 
 test('Transform practice shows the real hold-flow instructions', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/visual-fixtures.html?state=settings-transform-practice&appearance=light');
   await expect(page.getByRole('heading', { name: 'Practice on sample text' })).toBeVisible();
   await page.getByRole('button', { name: 'Select sample text' }).click();
   await expect(page.locator('.transform-practice [role="status"]')).toContainText('make this shorter');
+  await page.locator('[data-testid=settings-content]').evaluate(element => { element.scrollTop = element.scrollHeight; });
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-settings-transform-practice.png');
 });
 

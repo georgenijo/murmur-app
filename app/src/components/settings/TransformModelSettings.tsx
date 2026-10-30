@@ -8,7 +8,7 @@ import type { SettingsEditorTab } from './SettingsEditorsWindow';
 import { Select } from '../ui/Select';
 import { SettingToggle } from './SettingToggle';
 import { SettingsBranch } from './SettingsBranch';
-import { SettingsCallout } from './SettingsLayout';
+import { SettingsCallout, SettingsDisclosure } from './SettingsLayout';
 import { SettingsSection } from './SettingsSection';
 import { TransformPractice } from './TransformPractice';
 
@@ -18,7 +18,7 @@ interface TransformModelSettingsProps {
   activePage: string;
   accessibilityGranted: boolean | null;
   onRequestAccessibility: () => void;
-  onOpenEditor: (tab: SettingsEditorTab) => void;
+  onOpenEditor: (tab: SettingsEditorTab, opener: HTMLButtonElement) => void;
   vm: ReturnType<typeof useTransformModelSettings>;
 }
 
@@ -63,7 +63,7 @@ export function TransformModelSettings({
         }}
       />
       <SettingsBranch open={settings.transformHoldKey !== null}>
-        <SettingsRow title={<>Hold key</>} onReset={settings.transformHoldKey !== DEFAULT_SETTINGS.transformHoldKey ? () => { void vm.updateTransformHoldKey(DEFAULT_SETTINGS.transformHoldKey); } : undefined} control={<Select
+        <SettingsRow targetId="transform-key" title={<>Hold key</>} onReset={settings.transformHoldKey !== DEFAULT_SETTINGS.transformHoldKey ? () => { void vm.updateTransformHoldKey(DEFAULT_SETTINGS.transformHoldKey); } : undefined} control={<Select
             value={settings.transformHoldKey ?? 'alt_r'}
             onChange={(value) => {
               void vm.updateTransformHoldKey(value as TransformKey);
@@ -82,10 +82,6 @@ export function TransformModelSettings({
             </div>
           )}</SettingsRow>
       </SettingsBranch>
-      <TransformPractice
-        transformHoldKey={settings.transformHoldKey}
-        modelReady={vm.transformModel?.state === 'ready'}
-      />
       <div>
         <h2 className="text-sm font-medium text-on-surface">On-device model</h2>
         <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
@@ -168,9 +164,15 @@ export function TransformModelSettings({
             <h2 className="text-sm font-medium text-on-surface">Saved transforms</h2>
             <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">Create reusable spoken rewrite instructions.</p>
           </div>
-          <button type="button" onClick={() => onOpenEditor('transforms')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
+          <button type="button" onClick={(event) => onOpenEditor('transforms', event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
         </div>
       </div>
+      <SettingsDisclosure title="Advanced" layout="rows">
+      <TransformPractice
+        transformHoldKey={settings.transformHoldKey}
+        modelReady={vm.transformModel?.state === 'ready'}
+      />
+      </SettingsDisclosure>
     </SettingsSection>
   );
 }

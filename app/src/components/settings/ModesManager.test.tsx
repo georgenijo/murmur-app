@@ -147,6 +147,6 @@ describe('ModesManager', () => {
       .find((button) => button.textContent === 'Add an app') as HTMLButtonElement;
     expect(container.textContent).toContain('then choose its Mode here');
     await act(async () => addApp.click());
-    expect(onAddAppProfile).toHaveBeenCalledWith('builtin.everyday');
+    expect(onAddAppProfile).toHaveBeenCalledWith('builtin.everyday', addApp);
   });
 });

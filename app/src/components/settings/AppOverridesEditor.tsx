@@ -1,3 +1,5 @@
+import { SettingsBranch } from './SettingsBranch';
+import { SettingsDisclosure } from './SettingsLayout';
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -255,8 +257,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
           <p className="mt-3 text-xs text-on-surface-variant">No unconfigured running apps are available. Use the advanced entry below.</p>
         )}
 
-        <details className="mt-3">
-          <summary className="cursor-pointer text-xs font-medium text-on-surface-variant hover:text-primary">Advanced: enter a bundle ID</summary>
+        <SettingsDisclosure pane="app-overrides" title="Advanced" description="Enter a bundle ID" layout="stack" targetId="app-overrides-manual">
           <div className="mt-2 space-y-2">
             <input
               type="text"
@@ -289,7 +290,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
               </button>
             </div>
           </div>
-        </details>
+        </SettingsDisclosure>
         {error && <p role="alert" className="mt-2 text-xs text-error">{error}</p>}
       </div>
 
@@ -369,8 +370,8 @@ export function AppOverridesEditor({ profiles, onChange }: {
                       <span className={`inline-block h-4 w-4 rounded-full shadow transition-transform ${profile.ideContextEnabled ? 'translate-x-6 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
                     </button>
                   </div>
-                  {profile.ideContextEnabled && (
-                    <div className="mt-3 space-y-2">
+                  <SettingsBranch open={profile.ideContextEnabled}>
+                    <div className="space-y-2">
                       {profile.ideProjectRoots.length > 0 ? (
                         <ul className="space-y-1">
                           {profile.ideProjectRoots.map((root) => (
@@ -389,7 +390,7 @@ export function AppOverridesEditor({ profiles, onChange }: {
                       <p role="status" className="text-xs text-on-surface-variant">{ideStatusText(ideStatuses[profile.bundleId], profile.ideProjectRoots.length)}</p>
                       <p className="text-xs text-on-surface-variant">Clear index removes only memory contents; Remove root changes the persisted override. Paths are never written to logs.</p>
                     </div>
-                  )}
+                  </SettingsBranch>
                 </div>
               </li>
             );

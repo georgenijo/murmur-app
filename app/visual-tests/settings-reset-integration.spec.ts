@@ -15,6 +15,7 @@ for (const appearance of ['light', 'dark']) {
     await expect(auto.getByRole('button', { name: 'Reset to default' })).toHaveCount(0);
 
     await nav.getByRole('button', { name: 'Recording', exact: true }).click();
+    await page.getByRole('button', { name: /^Advanced/ }).click();
     const smart = page.locator('[data-setting-target="smart-auto-stop"]');
     await expect(smart.getByRole('button', { name: 'Reset to default' })).toHaveCount(0);
     await expect(smart.getByRole('switch')).toBeDisabled();

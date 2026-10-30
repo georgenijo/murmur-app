@@ -1,12 +1,14 @@
 import { useEffect, useRef } from 'react';
 
 /** The existing modal keyboard pattern: enter, contain Tab, cancel, restore. */
-export function useDialogFocus(onCancel: () => void, restoreFocus?: () => HTMLElement | null) {
+export function useDialogFocus(onCancel: () => void, restoreFocus?: () => HTMLElement | null, preferExplicitRestore = false) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(onCancel);
   const restoreRef = useRef(restoreFocus);
+  const explicitRestoreRef = useRef(preferExplicitRestore);
   cancelRef.current = onCancel;
   restoreRef.current = restoreFocus;
+  explicitRestoreRef.current = preferExplicitRestore;
 
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -17,7 +19,12 @@ export function useDialogFocus(onCancel: () => void, restoreFocus?: () => HTMLEl
       && !element.matches(':disabled, [hidden], input[type="hidden"]')
       && !element.closest('[hidden], [inert], [aria-hidden="true"]'));
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return;
+      if (event.defaultPrevented || event.isComposing
+        || dialog?.closest('[hidden], [inert], [aria-hidden="true"]')) return;
+      // A sheet can open an existing nested dialog; only the top modal owns keys.
+      const modals = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))
+        .filter(element => !element.closest('[hidden], [inert], [aria-hidden="true"]'));
+      if (modals.length && modals[modals.length - 1] !== dialog) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         cancelRef.current();
@@ -32,14 +39,20 @@ export function useDialogFocus(onCancel: () => void, restoreFocus?: () => HTMLEl
       }
     };
     document.addEventListener('keydown', onKeyDown);
-    (focusable()[0] ?? dialog)?.focus();
+    if (!dialog?.closest('[hidden], [inert], [aria-hidden="true"]')) (focusable()[0] ?? dialog)?.focus();
     return () => {
       document.removeEventListener('keydown', onKeyDown);
       // Menu items can stay mounted through their exit animation after the
       // dialog has opened. Restore the caller's stable trigger, not that item.
       const restoreOpener = opener?.isConnected && opener !== document.body
         && !opener.closest('[role="menu"], [hidden], [inert], [aria-hidden="true"]');
-      (restoreOpener ? opener : restoreRef.current?.())?.focus();
+      // WKWebView can retain a previously focused background control while
+      // it becomes inert. Sheets with a known launch button own restoration.
+      const explicitDestination = explicitRestoreRef.current || !restoreOpener
+        ? restoreRef.current?.() : null;
+      const destination = explicitRestoreRef.current && explicitDestination
+        ? explicitDestination : restoreOpener ? opener : explicitDestination;
+      if (!destination?.closest('[hidden], [inert], [aria-hidden="true"]')) destination?.focus();
     };
   }, []);
   return dialogRef;

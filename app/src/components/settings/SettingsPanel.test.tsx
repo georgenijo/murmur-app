@@ -90,6 +90,7 @@ vi.mock('../../lib/transformSettings', () => ({
 }));
 
 beforeEach(() => {
+  localStorage.removeItem('murmur.settings-disclosure.v1');
   eventMocks.listeners.clear();
   eventMocks.listen.mockReset();
   eventMocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
@@ -239,7 +240,7 @@ describe('SettingsPanel information architecture', () => {
     ] as const) {
       const row = hubButton(label);
       await act(async () => row.click());
-      expect(container.querySelector('h1')?.textContent).toBe(heading);
+      expect((container.querySelector('[role="dialog"] h2') ?? container.querySelector('h1'))?.textContent).toBe(heading);
       const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
         (button) => button.textContent?.includes('Back to Customize'),
       ) as HTMLButtonElement;
@@ -357,8 +358,8 @@ describe('SettingsPanel information architecture', () => {
     const addApp = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Add an app') as HTMLButtonElement;
     await act(async () => addApp.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Delivery');
-    expect((container.querySelector('details[data-setting-target="app-overrides"]') as HTMLDetailsElement).open).toBe(true);
+    expect(container.querySelector('h1')?.textContent).toBe('Modes');
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('App overrides');
 
     await act(async () => renderPanel(true, {
       ...DEFAULT_SETTINGS,
@@ -509,6 +510,7 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent === 'Recording',
     ) as HTMLButtonElement;
     await act(async () => recording.click());
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
     const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound cues"]') as HTMLElement;
     await act(async () => soundSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ soundCuesEnabled: false });
@@ -535,6 +537,7 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent === 'Recording',
     ) as HTMLButtonElement;
     await act(async () => recording.click());
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
     const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound cues"]') as HTMLElement;
     expect(soundSwitch).toBeTruthy();
     expect(soundSwitch.getAttribute('aria-checked')).toBe('true');
@@ -810,7 +813,7 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ model: 'medium.en' });
   });
 
-  it('opens editors as a Text settings drill-down with explicit back navigation', async () => {
+  it('opens editors as a sheet over Text settings with explicit close navigation', async () => {
     const settingsPages = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     const textTab = Array.from(settingsPages.querySelectorAll('button')).find(
       (button) => button.textContent === 'Text & vocabulary',
@@ -825,16 +828,16 @@ describe('SettingsPanel information architecture', () => {
     expect(settingsPages.isConnected).toBe(true);
     expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & vocabulary');
     expect(container.querySelector('nav[aria-label="Settings editors"]')).toBeNull();
-    expect(container.querySelector('h1')?.textContent).toBe('Aliases');
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Aliases');
 
     const back = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Back to Text settings'),
+      (button) => button.textContent?.includes('Close editor'),
     ) as HTMLButtonElement;
     expect(back).toBeDefined();
     await act(async () => back.click());
 
     expect(container.textContent).toContain('Text & vocabulary');
-    expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & vocabulary');
   });
 
@@ -859,19 +862,19 @@ describe('SettingsPanel information architecture', () => {
     );
 
     await act(async () => renderRequest({ page: 'text', editorTab: 'aliases', token: 1 }));
-    expect(container.querySelector('h1')?.textContent).toBe('Aliases');
-    expect(container.textContent).toContain('Back to Customize');
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Aliases');
+    expect(container.textContent).toContain('Close editor');
 
     await act(async () => renderRequest({ page: 'text', editorTab: 'commands', token: 2 }));
-    expect(container.querySelector('h1')?.textContent).toBe('Voice commands');
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Voice commands');
     expect(container.textContent).toContain('Voice commands editor');
-    expect(container.textContent).toContain('Back to Customize');
+    expect(container.textContent).toContain('Close editor');
 
     await act(async () => renderRequest({ page: 'delivery', target: 'app-overrides', token: 3 }));
     expect(container.querySelector('h1')?.textContent).toBe('Delivery');
-    expect(container.textContent).toContain('App overrides editor');
+    expect(container.textContent).toContain('Manage app overrides');
     expect(container.textContent).toContain('Back to Customize');
-    expect((container.querySelector('details[data-setting-target="app-overrides"]') as HTMLDetailsElement).open).toBe(true);
+    expect(container.querySelector('[data-setting-target="app-overrides"] button')?.getAttribute('aria-expanded')).toBe('true');
 
     await act(async () => {
       renderRequest({ page: 'ai-transform', token: 4 });
@@ -897,9 +900,9 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     await act(async () => vocabulary.click());
 
-    expect(container.querySelector('h1')?.textContent).toBe('Vocabulary');
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Vocabulary');
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
-    expect(container.querySelector('[aria-labelledby="settings-editor-title"]')).toBeNull();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & vocabulary');
   });
 
@@ -946,9 +949,9 @@ describe('SettingsPanel information architecture', () => {
     await searchCalibration();
 
     const calibration = container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement;
-    const advanced = calibration.closest('details') as HTMLDetailsElement;
+    const advanced = calibration.closest('.settings-advanced')?.querySelector('button') as HTMLButtonElement;
     expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
-    expect(advanced.open).toBe(true);
+    expect(advanced.getAttribute('aria-expanded')).toBe('true');
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
     expect(calibration.classList.contains('settings-target-flash')).toBe(true);
 
@@ -957,11 +960,11 @@ describe('SettingsPanel information architecture', () => {
     await searchCalibration();
 
     expect((container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement)
-      .closest('details')?.open).toBe(true);
+      .closest('.settings-advanced')?.querySelector('button')?.getAttribute('aria-expanded')).toBe('true');
     expect(scrollIntoView).toHaveBeenCalledTimes(2);
   });
 
-  it('resets targeted scrolling when entering and leaving a settings editor', async () => {
+  it('preserves the parent scroll while entering a sheet and restores its page on close', async () => {
     const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
@@ -979,16 +982,45 @@ describe('SettingsPanel information architecture', () => {
       (button) => button.textContent?.trim().startsWith('Aliases'),
     ) as HTMLButtonElement;
     await act(async () => aliases.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Aliases');
-    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Aliases');
+    expect(scrollTo).not.toHaveBeenCalled();
 
     scrollTo.mockClear();
     const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.includes('Back to Text settings'),
+      (button) => button.textContent?.includes('Close editor'),
     ) as HTMLButtonElement;
     await act(async () => back.click());
     expect(container.querySelector('h1')?.textContent).toBe('Text & vocabulary');
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+  });
+
+  it.each([
+    ['Project scan', 'developer-terms'], ['Remove filler words', 'cleanup'],
+    ['Paste delay', 'auto-paste'], ['Query shortcut', 'voice-query-shortcut'],
+    ['Transform hold key', 'transform-shortcut'], ['Sound cue volume', 'sound-cues'],
+    ['Browser site rules', 'browser-sites'],
+  ])('search for %s highlights its off parent without configuration or permission writes', async (query, parent) => {
+    await act(async () => renderPanel(true, {
+      ...DEFAULT_SETTINGS, autoPaste: false, cleanupEnabled: false, codeVocabEnabled: false,
+      soundCuesEnabled: false, queryHotkey: null, transformHoldKey: null, siteModeLookupEnabled: false,
+    }));
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, query);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.startsWith(query))!;
+    coreMocks.invoke.mockClear(); onUpdateSettings.mockClear();
+    await act(async () => result.click());
+    const target = container.querySelector(`[data-setting-target="${parent}"]`)!;
+    expect(target.classList.contains('settings-target-flash')).toBe(true);
+    const owner = target.querySelector('[role="switch"]');
+    expect(owner instanceof HTMLInputElement ? owner.checked : owner?.getAttribute('aria-checked') === 'true').toBe(false);
+    expect(onUpdateSettings).not.toHaveBeenCalled();
+    expect(coreMocks.invoke.mock.calls.map(call => call[0]).filter(command => [
+      'request_accessibility_permission', 'request_microphone_permission', 'configure_dictation', 'set_query_key', 'set_transform_key',
+    ].includes(command))).toEqual([]);
   });
 
   it('finds the Voice Query clipboard preference from settings search', async () => {
@@ -1307,7 +1339,7 @@ describe('SettingsPanel information architecture', () => {
       delivery.click();
     });
     const fileOutput = container.querySelector('[data-setting-target="file-output"]') as HTMLElement;
-    const fileBranch = fileOutput.querySelector('.settings-dependent-branch') as HTMLElement;
+    const fileBranch = fileOutput.nextElementSibling?.nextElementSibling as HTMLElement;
     expect(fileBranch.dataset.expanded).toBe('true');
     expect(fileBranch.textContent).toContain('output folder');
   });

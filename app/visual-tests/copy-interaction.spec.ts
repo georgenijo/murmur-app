@@ -5,25 +5,29 @@ const editors = ['aliases', 'knowledge', 'commands', 'transforms', 'scan', 'voca
 for (const appearance of ['light', 'dark']) {
   for (const pane of [...panes, ...editors.map((editor) => `editor-${editor}`)]) {
     test(`${appearance} copy audit ${pane}`, async ({ page }) => {
-      await page.emulateMedia({ colorScheme: appearance as 'light' | 'dark' });
+      await page.emulateMedia({ colorScheme: appearance as 'light' | 'dark', reducedMotion: 'reduce' });
       await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
       const editor = pane.startsWith('editor-') ? pane.slice(7) : null;
       await page.goto(`/visual-fixtures.html?state=settings-copy&appearance=${appearance}&page=${editor ? 'text' : pane}${editor ? `&editor=${editor}` : ''}`);
       await expect(page.locator('[data-visual-ready=true]')).toBeVisible();
-      await expect(page.locator(editor ? '#settings-editor-title' : '.settings-workspace .settings-page-title')).toBeVisible();
+      await expect(page.locator(editor ? '.settings-editor-sheet > div:first-child h2' : '.settings-workspace .settings-page-title')).toBeVisible();
       // Real panes may retain several viewport lengths of advanced controls.
-      await expect(page.locator('[data-testid=settings-content]')).toHaveScreenshot(`${appearance}-copy-${pane}.png`);
-      const triples = await page.locator('[data-testid=settings-content]').innerText();
+      const content = page.locator(editor ? '.settings-editor-sheet' : '[data-testid=settings-content]');
+      await expect(content).toHaveScreenshot(`${appearance}-copy-${pane}.png`);
+      const triples = await content.innerText();
       expect(triples).not.toContain('...');
       expect(triples).not.toContain('Text & Vocabulary');
       expect(triples).not.toContain('AI & Models');
-      const summaries = page.locator('[data-testid=settings-content] summary');
+      const advanced = content.locator('.settings-advanced-toggle[aria-expanded=false]');
+      const advancedCount = await advanced.count();
+      for (const button of await advanced.all()) await button.click();
+      const summaries = content.locator('summary');
       for (const summary of await summaries.all()) {
         if (await summary.isVisible() && !(await summary.locator('..').getAttribute('open') !== null)) await summary.click();
       }
-      if (await summaries.count()) {
-        await page.locator('[data-testid=settings-content]').evaluate((element) => { element.scrollTop = element.scrollHeight; });
-        await expect(page.locator('[data-testid=settings-content]')).toHaveScreenshot(`${appearance}-copy-${pane}-expanded.png`);
+      if (advancedCount || await summaries.count()) {
+        await content.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+        await expect(content).toHaveScreenshot(`${appearance}-copy-${pane}-expanded.png`);
       }
     });
   }
@@ -32,9 +36,9 @@ for (const appearance of ['light', 'dark']) {
     await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=commands&appearance=${appearance}`);
     const create = page.getByRole('button', { name: 'New command…', exact: true });
     await create.focus(); await page.keyboard.press('Enter');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.locator('[role="dialog"]:not(.settings-editor-sheet)')).toHaveCount(0);
     await page.keyboard.press('Space');
-    const dialog = page.getByRole('dialog');
+    const dialog = page.locator('[role="dialog"]:not(.settings-editor-sheet)');
     await expect(dialog).toBeVisible();
     await dialog.getByLabel('Voice command phrase', { exact: true }).fill('insert farewell');
     await dialog.getByLabel('Voice command content', { exact: true }).fill('See you soon');
@@ -70,7 +74,7 @@ for (const appearance of ['light', 'dark']) {
     const deleteBounds = await confirm.boundingBox();
     expect(toggleBounds!.x + toggleBounds!.width).toBeLessThanOrEqual(deleteBounds!.x);
     await page.keyboard.press('Enter'); await expect(confirm).toBeVisible();
-    await expect(page.locator('[data-testid=settings-content]')).toHaveScreenshot(`${appearance}-copy-alias-armed.png`);
+    await expect(page.locator('.settings-editor-sheet')).toHaveScreenshot(`${appearance}-copy-alias-armed.png`);
     await page.keyboard.press('Space');
     await expect(page.getByRole('button', { name: 'Delete Murmur…', exact: true })).toHaveCount(0);
   });

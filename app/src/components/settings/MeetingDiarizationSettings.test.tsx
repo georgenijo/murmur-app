@@ -74,7 +74,12 @@ describe('MeetingDiarizationSettings', () => {
     expect(container.querySelector('[aria-label="Reset to default"]')).toBeNull();
     await act(async () => root.render(<MeetingDiarizationSettings enabled onEnabledChange={onEnabledChange} />));
     const reset = container.querySelector<HTMLButtonElement>('[aria-label="Reset to default"]')!;
-    expect(reset.disabled).toBe(!supported);
+    if (!supported) {
+      expect(reset).toBeNull();
+      expect(container.textContent).toBe('');
+      return;
+    }
+    expect(reset.disabled).toBe(false);
     await act(async () => reset.click());
     if (supported) expect(onEnabledChange).toHaveBeenCalledExactlyOnceWith(false);
     else expect(onEnabledChange).not.toHaveBeenCalled();
