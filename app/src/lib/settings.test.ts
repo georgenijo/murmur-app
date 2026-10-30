@@ -1370,3 +1370,16 @@ describe('microphoneDeviceNameArg', () => {
       .toBe('AppleUSBAudioEngine:Shure:MV7:1234:1');
   });
 });
+
+describe('warm microphone standby consent', () => {
+  it('keeps upgrades and malformed consent off and bounds the visible controls', () => {
+    expect(DEFAULT_SETTINGS.captureStandbyEnabled).toBe(false);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ captureStandbyEnabled: 'true', captureStandbySeconds: 999999, capturePreRollMs: -1 }));
+    expect(loadSettings()).toMatchObject({ captureStandbyEnabled: false, captureStandbySeconds: 300, capturePreRollMs: 450 });
+  });
+
+  it('round-trips explicit consent and bounded standby choices', () => {
+    saveSettings({ ...DEFAULT_SETTINGS, captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
+    expect(loadSettings()).toMatchObject({ captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
+  });
+});

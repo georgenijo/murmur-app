@@ -83,6 +83,9 @@ export interface ConfigureOptions {
   autoPasteDelayMs?: number;
   vadSensitivity?: number;
   idleTimeoutMinutes?: number;
+  captureStandbyEnabled?: boolean;
+  captureStandbySeconds?: number;
+  capturePreRollMs?: number;
   customVocabulary?: string;
   vocabularyEntries?: VocabularyEntry[];
   smartPunctuation?: boolean;
@@ -155,6 +158,9 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     pauseBrowserMedia: s.pauseBrowserMedia,
     vadSensitivity: s.vadSensitivity,
     idleTimeoutMinutes: s.idleTimeoutMinutes,
+    captureStandbyEnabled: s.captureStandbyEnabled,
+    captureStandbySeconds: s.captureStandbySeconds,
+    capturePreRollMs: s.capturePreRollMs,
     customVocabulary: s.customVocabulary,
     vocabularyEntries: s.vocabularyEntries,
     smartPunctuation: s.smartPunctuation,

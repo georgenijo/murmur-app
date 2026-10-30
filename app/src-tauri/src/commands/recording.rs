@@ -3929,6 +3929,25 @@ pub async fn configure_dictation(
     state.app_state.bump_settings_revision();
     crate::smart_destination::set_enabled(smart_destination_eligible(&dictation));
 
+    if let Some(enabled) = options
+        .get("captureStandbyEnabled")
+        .and_then(|v| v.as_bool())
+    {
+        audio_lifecycle::configure_standby(
+            enabled,
+            options
+                .get("captureStandbySeconds")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(300)
+                .min(900) as u32,
+            options
+                .get("capturePreRollMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(450)
+                .min(450) as u32,
+        );
+    }
+
     if let Some(idle_timeout) = options.get("idleTimeoutMinutes").and_then(|v| v.as_i64()) {
         *state.app_state.model_idle_policy.lock_or_recover() =
             crate::state::ModelIdlePolicy::from_setting(idle_timeout);

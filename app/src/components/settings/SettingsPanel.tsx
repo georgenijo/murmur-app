@@ -1021,6 +1021,21 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <p role="alert" className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
               )}
             </div>
+            <SettingToggle
+              title="Warm microphone standby"
+              description="Keep the microphone open briefly after dictation to protect the first word on your next press. The macOS microphone indicator stays on during standby. Only the selected pre-roll enters your next recording; other standby audio stays in memory and is discarded."
+              checked={settings.captureStandbyEnabled}
+              onChange={() => onUpdateSettings({ captureStandbyEnabled: !settings.captureStandbyEnabled })}
+              disabled={isRecording}
+            />
+            {settings.captureStandbyEnabled && (
+              <div className="settings-field">
+                <p className="text-sm font-medium text-on-surface">Microphone standby window</p>
+                <Select value={String(settings.captureStandbySeconds)} onChange={(value) => onUpdateSettings({ captureStandbySeconds: Number(value) })} disabled={isRecording} items={[{ value: '60', label: '1 minute' }, { value: '300', label: '5 minutes' }, { value: '900', label: '15 minutes' }]} />
+                <p className="text-sm font-medium text-on-surface">Pre-roll</p>
+                <Select value={String(settings.capturePreRollMs)} onChange={(value) => onUpdateSettings({ capturePreRollMs: Number(value) })} disabled={isRecording} items={[{ value: '300', label: '300 ms' }, { value: '450', label: '450 ms' }]} />
+              </div>
+            )}
             <div data-setting-target="voice-detection" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <p className="text-sm font-medium text-on-surface">Voice Detection</p>
               <VadSensitivitySlider

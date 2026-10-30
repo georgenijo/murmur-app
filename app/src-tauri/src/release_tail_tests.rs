@@ -373,3 +373,69 @@ fn release_tail_sweep() {
         }
     }
 }
+
+/// Offline start-boundary experiment. Cold initialization is MODELLED at the
+/// issue's observed 204ms median; this is not a live microphone timing result.
+/// `say -o` renders only synthetic fixtures, never routes audio to BlackHole.
+#[test]
+#[ignore = "renders synthetic WAVs and needs the installed Core ML model"]
+fn first_word_standby_sweep() {
+    use crate::transcriber::TranscriptionBackend;
+    let mut backend = crate::transcriber::CoreMlBackend::new();
+    backend
+        .load_model(crate::transcriber::COREML_MODEL_NAME)
+        .expect("installed Core ML model");
+    let vad_path = crate::vad::vad_model_path()
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().to_string());
+    let dir = std::env::temp_dir().join(format!("murmur-start-sweep-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let offsets = [0, 25, 50, 100];
+    let mut cold_hits = [0; 4];
+    let mut warm_hits = [0; 4];
+    let mut references = 0;
+    for voice in VOICES {
+        for (index, phrase) in PHRASES.iter().enumerate() {
+            let audio = synthesize(&dir, voice, phrase, index);
+            // Place the first audible window at the requested press offset,
+            // removing both harness lead and the synthesizer's leading silence.
+            let start = audio
+                .chunks(RATE as usize / 100)
+                .position(|chunk| compute_rms(chunk) > 0.0056)
+                .unwrap()
+                * (RATE as usize / 100);
+            let speech = &audio[start..];
+            let expected = normalized_words(phrase).remove(0);
+            let full = transcribe(&mut backend, vad_path.as_deref(), speech);
+            if normalized_words(&full).first() != Some(&expected) {
+                continue;
+            }
+            references += 1;
+            for (offset_index, offset_ms) in offsets.iter().enumerate() {
+                let mut timeline = vec![0.0; RATE as usize * (450 + offset_ms) / 1_000];
+                timeline.extend_from_slice(speech);
+                let mut warm = CaptureSamples::default();
+                warm.enter_standby(450);
+                warm.append_pcm(&timeline[..RATE as usize * 450 / 1_000], RATE);
+                warm.resume();
+                warm.append_pcm(&timeline[RATE as usize * 450 / 1_000..], RATE);
+                let cold_start = RATE as usize * (450 + 204) / 1_000;
+                let cold = transcribe(&mut backend, vad_path.as_deref(), &timeline[cold_start..]);
+                let warm_text = transcribe(&mut backend, vad_path.as_deref(), &warm);
+                cold_hits[offset_index] +=
+                    usize::from(normalized_words(&cold).first() == Some(&expected));
+                warm_hits[offset_index] +=
+                    usize::from(normalized_words(&warm_text).first() == Some(&expected));
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    println!("first-word synthetic references={references} offsets_ms={offsets:?} cold_modelled_ready_ms=204 cold_hits={cold_hits:?} warm_hits={warm_hits:?} warm_preroll_ms=450");
+    assert!(references > 0);
+    assert!(
+        warm_hits.iter().all(|hits| *hits == references),
+        "first word must survive every warm press offset"
+    );
+    // Cold misses are measured, not assumed: report even if ASR reconstructs a
+    // partly clipped word and the hypothesis does not hold for these fixtures.
+}

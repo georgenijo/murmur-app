@@ -356,6 +356,9 @@ export interface Settings {
   overlayVerticalOffset: number;
   vadSensitivity: number;
   idleTimeoutMinutes: number;
+  captureStandbyEnabled: boolean;
+  captureStandbySeconds: number;
+  capturePreRollMs: number;
   /** @deprecated Migration-only mirror; structured entries are authoritative. */
   customVocabulary: string;
   vocabularyEntries: VocabularyEntry[];
@@ -651,6 +654,9 @@ export const DEFAULT_SETTINGS: Settings = {
   overlayVerticalOffset: 0,
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
+  captureStandbyEnabled: false,
+  captureStandbySeconds: 300,
+  capturePreRollMs: 450,
   customVocabulary: '',
   vocabularyEntries: [],
   disabled: false,
@@ -1018,6 +1024,9 @@ export function loadSettings(): Settings {
         parsed.microphoneIdMigrationComplete = false;
       }
 
+      parsed.captureStandbyEnabled = parsed.captureStandbyEnabled === true;
+      parsed.captureStandbySeconds = [60, 300, 900].includes(parsed.captureStandbySeconds as number) ? parsed.captureStandbySeconds : 300;
+      parsed.capturePreRollMs = [300, 450].includes(parsed.capturePreRollMs as number) ? parsed.capturePreRollMs : 450;
       parsed.smartAutoMicrophoneEnabled = parsed.smartAutoMicrophoneEnabled === true;
       // Background microphone access is a separate consent. Existing Smart Auto
       // users and malformed persisted values remain off after upgrade.
