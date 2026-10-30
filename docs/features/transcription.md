@@ -334,6 +334,17 @@ Transcription processing is local. Network access occurs for model setup and may
 - A timed-out backend can advance only after its owned helper process group is
   positively confirmed empty. Unconfirmed termination leaves the lifecycle in
   exclusive recovery and suppresses fallback and new starts.
+- Stop keeps the end of the utterance (#829). A dictation stop first keeps
+  capturing for `DICTATION_RELEASE_TAIL` (`audio.rs`; zero disables it), then
+  sends `Stop`. The helper stops the stream, flushes every sample left in its
+  ring as ordinary PCM, and only then replies `Stopped`; the host keeps
+  accepting PCM until `Stopped` (bounded by the 250 ms cooperative-stop
+  grace) instead of discarding frames still in the pipe. The stop log carries
+  `release_tail_ms`, `stop_drain_ms`, `stop_drain`, and `unreceived_samples`.
+  `audio::release_tail_tests` holds the deterministic drain tests and the
+  opt-in `release_tail_sweep` harness (`cargo test --lib release_tail_sweep --
+  --ignored --nocapture`), which replays synthetic `say` speech with the
+  release swept from -300 to +200 ms around the last word.
 - If a stop caller times out first, the helper remains exclusively owned until
   it exits and is joined. That late completion publishes Idle to clear the
   current dictation's Processing state before a new recording can start.

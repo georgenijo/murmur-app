@@ -136,6 +136,60 @@ fn spawn_automatic_probe_watchdog(deadline_ns: u64) -> Result<(), ()> {
         .map_err(|_| ())
 }
 
+/// Writes every sample a stopped stream left in `ring` as ordinary PCM frames
+/// before the helper replies `Stopped`, so the host receives audio up to the
+/// instant capture stopped instead of losing the last poll interval and
+/// callback buffer (#829). Call only after the stream has stopped, so no
+/// producer can still append.
+#[allow(clippy::too_many_arguments)]
+fn flush_stopped_ring(
+    ring: &SpscRing,
+    writer: &mut impl Write,
+    capture_id: u64,
+    nonce: SessionNonce,
+    sample_rate: u32,
+    captured_at_ns: u64,
+    scratch: &mut [f32],
+    sequence: &mut u64,
+    retained: &mut u64,
+    backend: CaptureBackend,
+) -> Result<(), ()> {
+    loop {
+        let count = ring.drain(scratch);
+        if count == 0 {
+            return Ok(());
+        }
+        if *retained == 0 {
+            write_production_control(
+                writer,
+                capture_id,
+                nonce,
+                &ProductionHelperMessage::Phase {
+                    phase: CapturePhase::Active,
+                    backend,
+                },
+            )
+            .map_err(|_| ())?;
+        }
+        write_production_pcm(
+            writer,
+            capture_id,
+            nonce,
+            ProductionPcmMetadata {
+                channel: CaptureChannel::Microphone,
+                sequence: *sequence,
+                sample_rate,
+                captured_at_ns,
+                sample_offset: *retained,
+            },
+            &scratch[..count],
+        )
+        .map_err(|_| ())?;
+        *retained += count as u64;
+        *sequence += 1;
+    }
+}
+
 pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
     head: AtomicUsize,
@@ -2618,6 +2672,71 @@ mod tests {
     }
 
     #[test]
+    fn stop_flushes_every_ring_sample_before_stopped() {
+        loom::model(|| {
+            let nonce = [7_u8; 16];
+            // A stop lands with more than one scratch buffer still in the
+            // ring: every sample must reach the host, in order, as PCM.
+            let ring = SpscRing::with_capacity(64);
+            for value in 0..40 {
+                ring.push(value as f32);
+            }
+            let mut wire = Vec::new();
+            let mut scratch = [0.0_f32; 16];
+            let mut sequence = 3;
+            let mut retained = 100;
+            flush_stopped_ring(
+                &ring,
+                &mut wire,
+                9,
+                nonce,
+                48_000,
+                0,
+                &mut scratch,
+                &mut sequence,
+                &mut retained,
+                CaptureBackend::Auhal,
+            )
+            .unwrap();
+            assert_eq!(ring.len(), 0);
+            assert_eq!((sequence, retained), (6, 140));
+            let mut reader = wire.as_slice();
+            let mut samples = Vec::new();
+            let mut expected = (3, 100);
+            while !reader.is_empty() {
+                match read_production_frame::<ProductionHelperMessage>(&mut reader, 9, nonce)
+                    .unwrap()
+                {
+                    ProductionFrame::Pcm(pcm) => {
+                        assert_eq!((pcm.sequence, pcm.sample_offset), expected);
+                        expected = (expected.0 + 1, expected.1 + pcm.samples.len() as u64);
+                        samples.extend(pcm.samples);
+                    }
+                    ProductionFrame::Control(_) => panic!("retained capture repeats Active"),
+                }
+            }
+            assert_eq!(samples, (0..40).map(|v| v as f32).collect::<Vec<_>>());
+
+            // An empty ring writes nothing, so Stopped follows immediately.
+            let mut empty = Vec::new();
+            flush_stopped_ring(
+                &ring,
+                &mut empty,
+                9,
+                nonce,
+                48_000,
+                0,
+                &mut scratch,
+                &mut sequence,
+                &mut retained,
+                CaptureBackend::Auhal,
+            )
+            .unwrap();
+            assert!(empty.is_empty());
+        });
+    }
+
+    #[test]
     fn spsc_ring_publishes_samples_across_threads() {
         loom::model(|| {
             let ring = loom::sync::Arc::new(SpscRing::with_capacity(2));
@@ -3252,8 +3371,22 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                     }
                 }
                 match control_rx.try_recv() {
-                    Ok(ProductionHostMessage::Stop | ProductionHostMessage::Cancel) => {
+                    Ok(control @ (ProductionHostMessage::Stop | ProductionHostMessage::Cancel)) => {
                         stream.stop();
+                        if matches!(control, ProductionHostMessage::Stop) {
+                            flush_stopped_ring(
+                                &ring,
+                                &mut stdout,
+                                capture_id,
+                                nonce,
+                                sample_rate,
+                                started_at.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                                &mut scratch,
+                                &mut sequence,
+                                &mut retained,
+                                backend,
+                            )?;
+                        }
                         write_production_control(
                             &mut stdout,
                             capture_id,
