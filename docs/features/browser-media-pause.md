@@ -34,7 +34,15 @@ Dictation Starting → Recording (setting on, System Audio Recording granted)
     ├── 2 windows in a row below -90 dBFS → Murmur paused it (proof kept)
     └── Otherwise (another tab, a sound that ended, pause reached another app) → no play later
 
+While the recording lasts, the same tap keeps listening every 500 ms
+├── The browser sounds again (you played it) → give up the proof: no play later,
+│   even if you pause it again before the dictation ends
+├── The tap stops delivering for good (worker or tap lost) → give up the proof
+└── Silent, or its output closed after a long pause → keep the proof
+
 Recording → Processing or Idle, and Murmur holds the proof
+├── A newer recording already started → it inherits the pause; no play yet
+├── The resume worker could not create its tap → no play
 ├── Listen 300 ms to every browser process
 │   ├── Above -60 dBFS (you started it again) → no play
 │   ├── No level, a browser runs and every one closed its output → still paused: play
@@ -57,7 +65,8 @@ signed, sandboxed capture worker in `--browser-level <playing|all>` mode. It
 owns the tap and answers bounded line requests (`peak <ms>`, `closed`) with a
 peak in dBFS or `none`. The IO callback keeps only an atomic peak and callback
 count; no audio sample is copied, stored, or written out. Closing stdin tears
-the tap down in reverse creation order; the host hard-kills the exact process
+the tap down in reverse creation order. While Murmur holds a pause, the pause
+worker stays open for the whole recording and is closed before the resume; the host hard-kills the exact process
 group if the worker does not exit within 500 ms. The host owns the decision and
 sends the MediaRemote command (the worker's sandbox does not reach it).
 
@@ -85,7 +94,11 @@ shows **Open Settings**. No Automation (Apple Events) permission is used.
 - The pause and play go to whatever macOS treats as **Now Playing**. If another
   app owns Now Playing while a browser plays, the pause can reach that app
   instead. The browser then keeps sounding, Murmur does not confirm the pause,
-  and it sends no play, so the other app may stay paused.
+  and it sends no play, so the other app may stay paused. Likewise, if Now
+  Playing changes to another app while the browser is paused, the play can
+  reach that app. Murmur then hears the browser stay silent and sends pause
+  again within 1–2 s. Since macOS 15.4, apps cannot read Now Playing, so Murmur
+  cannot check the target first.
 - Two tabs sounding at once: one pause silences only one, so the pause is not
   confirmed and nothing is resumed.
 - Quitting Murmur during a recording leaves a paused browser paused.
@@ -98,7 +111,9 @@ Content-free `audio` events: `audio.browser_media_pause` (`outcome`:
 `paused`, `no_permission`, `in_call`, `silent`, `unheard`, `refused`,
 `unconfirmed`; `permission_granted`; `elapsed_ms`; `recording_id`) and
 `audio.browser_media_resume` (`outcome`: `resumed`, `already_playing`,
-`unheard`, `refused`, `lost_after_play`, `repaused`). No process, tab, page,
+`unheard`, `refused`, `lost_after_play`, `repaused`), and
+`audio.browser_media_released` (`outcome`: `restarted`, `lost`) when a pause is
+given up during dictation. No process, tab, page,
 title, or audio is logged.
 
 ## Validation
@@ -106,7 +121,8 @@ title, or audio is logged.
 - `cargo test browser_media -- --test-threads=1`: the pause/resume sequence on
   fakes (confirmed pause resumes, two sounding tabs never get play, a browser the
   user restarted gets no play, a call is never paused, a play nobody takes is
-  paused again, closed-output long pauses), transition mapping, and strict
+  paused again, closed-output long pauses), the during-dictation watch
+  (restarted or lost releases the proof), transition mapping, and strict
   worker reply parsing.
 - `cargo test -p murmur-capture-helper browser_level`: argument and request
   parsing, browser bundle matching, Safari attribution, fail-closed call check.

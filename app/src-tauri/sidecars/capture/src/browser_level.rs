@@ -42,8 +42,6 @@ use std::time::{Duration, Instant};
 const TAP_WARM_UP: Duration = Duration::from_millis(300);
 const MAX_WINDOW_MS: u64 = 1_000;
 const MAX_LINE_BYTES: usize = 32;
-/// The host never needs more than a few dozen questions per tap.
-const MAX_REQUESTS: usize = 64;
 const MAX_SAFARI_PIDS: usize = 32;
 
 /// Which browser processes to hear.
@@ -362,7 +360,9 @@ pub(crate) fn run(arguments: &[String]) -> i32 {
         return 70;
     }
     let mut stdin = std::io::stdin().lock();
-    for _ in 0..MAX_REQUESTS {
+    // The host keeps one tap open while a dictation holds a pause; it ends
+    // the loop by closing stdin.
+    loop {
         let mut line = String::new();
         match (&mut stdin)
             .take(MAX_LINE_BYTES as u64)
@@ -391,7 +391,6 @@ pub(crate) fn run(arguments: &[String]) -> i32 {
             return 0;
         }
     }
-    0
 }
 
 fn property_address(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {

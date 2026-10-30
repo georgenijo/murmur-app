@@ -37,6 +37,29 @@ const PLAY_CHECK_WINDOWS: usize = 20;
 /// of play. If none does, the play reached another app: pause it sooner.
 const OPEN_CHECK_WINDOWS: usize = 10;
 
+/// While dictating, Murmur keeps listening to the browser it paused.
+const WATCH_WINDOW: Duration = Duration::from_millis(500);
+
+/// What one watch window means for the pause proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Watch {
+    /// Still silent, or its output closed (a long pause): keep the proof.
+    Keep,
+    /// The browser sounds again: the user restarted it. Murmur no longer owns
+    /// the pause, so a later pause by the user must never get play.
+    Restarted,
+    /// Murmur can no longer listen: ownership is uncertain, so give it up.
+    Lost,
+}
+
+fn watch(peak: Option<f32>, listening: bool) -> Watch {
+    match peak {
+        Some(peak) if peak > SOUND_DBFS => Watch::Restarted,
+        _ if !listening => Watch::Lost,
+        _ => Watch::Keep,
+    }
+}
+
 /// The explicit MediaRemote commands. Never the toggle: it can start music.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -275,11 +298,12 @@ mod native {
         pause, resume, BrowserAudio, BrowserMediaPermission, Job, MediaCommand, PausedBrowser,
         ACTIVE_RECORDING,
     };
+    use super::{watch, Watch, WATCH_WINDOW};
     use crate::managed_child::{bundled_sibling, ManagedChild};
     use std::ffi::c_void;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::atomic::Ordering;
-    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
@@ -309,9 +333,44 @@ mod native {
         }
     }
 
+    /// The pause Murmur owns, and the tap that keeps watching it.
+    struct Held {
+        recording_id: u64,
+        proof: PausedBrowser,
+        watch: WorkerBrowserAudio,
+    }
+
     fn run_jobs(receiver: Receiver<Job>) {
-        let mut paused: Option<(u64, PausedBrowser)> = None;
-        while let Ok(job) = receiver.recv() {
+        let mut paused: Option<Held> = None;
+        loop {
+            let job = match paused.as_mut() {
+                None => match receiver.recv() {
+                    Ok(job) => job,
+                    Err(_) => return,
+                },
+                Some(held) => match receiver.try_recv() {
+                    Ok(job) => job,
+                    Err(TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Empty) => {
+                        let peak = held.watch.peak_dbfs(WATCH_WINDOW);
+                        let outcome = watch(peak, held.watch.listening());
+                        if outcome != Watch::Keep {
+                            tracing::info!(
+                                target: "audio",
+                                event_code = "audio.browser_media_released",
+                                recording_id = held.recording_id,
+                                outcome = match outcome {
+                                    Watch::Restarted => "restarted",
+                                    _ => "lost",
+                                },
+                                "browser media pause released"
+                            );
+                            paused = None;
+                        }
+                        continue;
+                    }
+                },
+            };
             match job {
                 Job::Pause(recording_id) => {
                     // A recording that already ended (a quick tap) needs no pause.
@@ -320,8 +379,9 @@ mod native {
                     }
                     let started = Instant::now();
                     let granted = authorization() == BrowserMediaPermission::Granted;
+                    let mut audio = WorkerBrowserAudio::new(Listen::Playing);
                     let result = if granted {
-                        pause(&mut WorkerBrowserAudio::new(Listen::Playing))
+                        pause(&mut audio)
                     } else {
                         Err(super::PauseSkip::NoPermission)
                     };
@@ -338,13 +398,30 @@ mod native {
                         "browser media pause finished"
                     );
                     if let Ok(proof) = result {
-                        paused = Some((recording_id, proof));
+                        paused = Some(Held {
+                            recording_id,
+                            proof,
+                            watch: audio,
+                        });
                     }
                 }
                 Job::Resume(recording_id) => {
-                    let Some((_, proof)) = paused.take_if(|(id, _)| *id == recording_id) else {
+                    let Some(held) = paused.take_if(|held| held.recording_id == recording_id)
+                    else {
                         continue;
                     };
+                    // A newer recording already started: it inherits the pause
+                    // instead of the browser playing into its first second.
+                    let newer = ACTIVE_RECORDING.load(Ordering::SeqCst);
+                    if newer != 0 {
+                        paused = Some(Held {
+                            recording_id: newer,
+                            ..held
+                        });
+                        continue;
+                    }
+                    let Held { proof, watch, .. } = held;
+                    drop(watch);
                     let started = Instant::now();
                     let outcome = resume(&mut WorkerBrowserAudio::new(Listen::All), proof);
                     tracing::info!(
@@ -373,6 +450,8 @@ mod native {
         input: Option<std::process::ChildStdin>,
         replies: Receiver<String>,
         in_call: bool,
+        /// The worker created its tap. Without one, "no level" proves nothing.
+        tapped: bool,
     }
 
     impl Drop for Worker {
@@ -406,6 +485,11 @@ mod native {
                 worker: None,
                 started: false,
             }
+        }
+
+        /// The worker still runs with a tap.
+        fn listening(&self) -> bool {
+            self.worker.as_ref().is_some_and(|worker| worker.tapped)
         }
 
         fn worker(&mut self) -> Option<&mut Worker> {
@@ -454,6 +538,11 @@ mod native {
         }
 
         fn output_closed(&mut self) -> bool {
+            // A failed tap also delivers nothing; only a working tap's silence
+            // means the browser closed its output while paused.
+            if !self.worker().is_some_and(|worker| worker.tapped) {
+                return false;
+            }
             self.ask("closed\n", Duration::ZERO)
                 .is_some_and(|reply| reply == "closed 1")
         }
@@ -518,13 +607,15 @@ mod native {
             input: Some(input),
             replies,
             in_call: true,
+            tapped: false,
         };
-        let (in_call, _tapped) = worker
+        let (in_call, tapped) = worker
             .replies
             .recv_timeout(READY_DEADLINE)
             .ok()
             .and_then(|reply| parse_ready(&reply))?;
         worker.in_call = in_call;
+        worker.tapped = tapped;
         Some(worker)
     }
 
@@ -927,6 +1018,18 @@ mod tests {
         audio.send_ok = false;
         assert_eq!(pause(&mut audio).unwrap_err(), PauseSkip::Refused);
         assert_eq!(audio.sent, [MediaCommand::Pause]);
+    }
+
+    #[test]
+    fn a_pause_the_user_takes_back_during_dictation_is_released() {
+        // Silence, or a closed output after a long pause, keeps the proof.
+        assert_eq!(watch(Some(-200.0), true), Watch::Keep);
+        assert_eq!(watch(None, true), Watch::Keep);
+        // The user played it again: a later pause is theirs, never Murmur's.
+        assert_eq!(watch(Some(-20.0), true), Watch::Restarted);
+        // Murmur stopped hearing it: ownership is uncertain.
+        assert_eq!(watch(None, false), Watch::Lost);
+        assert_eq!(watch(Some(-200.0), false), Watch::Lost);
     }
 
     #[test]
