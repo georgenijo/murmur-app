@@ -612,9 +612,9 @@ export const SettingsPanel = memo(function SettingsPanel({
     vocabScan.cancel();
     onUpdateSettings({ codeVocabFolder: '', codeVocabLastScan: null });
   };
-  const openEditor = useCallback((tab: SettingsEditorTab) => {
+  const openEditor = useCallback((tab: SettingsEditorTab, opener: HTMLElement) => {
     beginCurrentUiTransition(`settings.${activeCat}.editor.${tab}`, 'pointer');
-    editorOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    editorOpenerRef.current = opener;
     setSearchQuery('');
     setTargetRequest(null);
     setEditorTab(tab);
@@ -625,12 +625,12 @@ export const SettingsPanel = memo(function SettingsPanel({
     setEditorTab(null);
   }, [activeCat]);
 
-  const openCustomizationDestination = useCallback((destination: CustomizationDestination) => {
+  const openCustomizationDestination = useCallback((destination: CustomizationDestination, opener: HTMLElement) => {
     const route = customizationRoute(destination);
     beginCurrentUiTransition(route.editorTab
       ? `settings.customize.editor.${route.editorTab}`
       : `settings.${route.page}`, 'pointer');
-    editorOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    editorOpenerRef.current = opener;
     setActiveCat(route.editorTab ? 'customize' : route.page);
     setEditorTab(route.editorTab ?? null);
     setTargetRequest(settingTargetRequest(route.target));
@@ -847,11 +847,11 @@ export const SettingsPanel = memo(function SettingsPanel({
     setShortcutReturnFocus(destination.shortcutId);
   };
 
-  const openAppProfileForMode = (modeId: string) => {
+  const openAppProfileForMode = (modeId: string, opener: HTMLElement) => {
     beginCurrentUiTransition('settings.modes.editor.app-overrides', 'pointer');
     setModeSelectionId(modeId);
     setReturnToModesPending(true);
-    editorOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    editorOpenerRef.current = opener;
     setEditorTab('app-overrides');
     setSearchQuery('');
     setTargetRequest(settingTargetRequest('app-overrides'));
@@ -948,7 +948,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             className="settings-nav-item flex w-full items-center text-left"
             onClick={() => openPage(item.page)}><SettingsNavIcon icon={item.icon} /><span className="min-w-0 truncate">{item.label}</span></button>)}
           {settings.codeVocabEnabled && <button type="button" aria-label="Project scan" title="Project scan"
-            className="settings-nav-item flex w-full items-center text-left" onClick={() => openEditor('scan')}>
+            className="settings-nav-item flex w-full items-center text-left" onClick={(event) => openEditor('scan', event.currentTarget)}>
             <SettingsNavIcon icon="text" /><span className="min-w-0 truncate">Project scan</span></button>}
         </nav>
         <div className="settings-nav-tools">
@@ -1360,7 +1360,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 ['knowledge', 'Knowledge', 'Manage corrections, terms, snippets, and transforms'],
                 ['commands', 'Voice commands', 'Create exact spoken replacements and snippets'],
               ] as const).map(([tab, title, detail]) => (
-                <button key={tab} type="button" onClick={() => openEditor(tab)} className="settings-card flex items-center gap-3 px-3 py-3 text-left transition-shadow hover:shadow-[var(--settings-shadow-2)]">
+                <button key={tab} type="button" onClick={(event) => openEditor(tab, event.currentTarget)} className="settings-card flex items-center gap-3 px-3 py-3 text-left transition-shadow hover:shadow-[var(--settings-shadow-2)]">
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-semibold text-on-surface">{title}</span>
                     <span className="mt-0.5 block text-[11px] leading-relaxed text-on-surface-variant">{detail}</span>
@@ -1374,7 +1374,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div data-setting-target="project-scan" className="settings-field">
                   <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.codeVocabFolder || 'No folder — built-in developer terms only'} /></p>
-                  <button type="button" onClick={() => openEditor('scan')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
+                  <button type="button" onClick={(event) => openEditor('scan', event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
                   <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
                 </div>
               </SettingsBranch>
@@ -1462,7 +1462,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
             {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app" layout="stack" targetId="app-overrides">
-              <button type="button" onClick={() => openEditor('app-overrides')} className="settings-quiet-btn flex w-full items-center justify-between text-left">Manage app overrides <span aria-hidden="true">›</span></button>
+              <button type="button" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-quiet-btn flex w-full items-center justify-between text-left">Manage app overrides <span aria-hidden="true">›</span></button>
             </SettingsDisclosure>
           </SettingsSection>
 

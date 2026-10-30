@@ -8,6 +8,38 @@ async function open(page: Page, pane: string, appearance = 'light', motion: 'red
 }
 const advanced = (page: Page) => page.getByRole('button', { name: /^Advanced/ });
 
+for (const [pane, label, sheet] of [
+  ['text', 'Vocabulary Review', 'Vocabulary'],
+  ['text', 'Aliases Map', 'Aliases'],
+  ['text', 'Knowledge Manage', 'Knowledge'],
+  ['text', 'Voice commands Create', 'Voice commands'],
+  ['text', 'Manage project scan', 'Project scan'],
+  ['ai-transform', 'Manage', 'Saved transforms'],
+  ['delivery', 'Manage app overrides', 'App overrides'],
+  ['customize', '02 Voice commands', 'Voice commands'],
+  ['modes', 'Add an app', 'App overrides'],
+  ['text', 'Project scan', 'Project scan'],
+] as const) {
+  test(`non-focusing ${pane} ${label} activation restores the actual caller`, async ({ page }) => {
+    await open(page, pane);
+    if (pane === 'delivery' || label.includes('project scan') || label === 'Project scan') {
+      await advanced(page).click();
+    }
+    if (label.includes('project scan') || label === 'Project scan') {
+      await page.getByRole('switch', { name: 'Developer terms', exact: true }).check();
+    }
+    const opener = page.getByRole('button', { name: new RegExp(`^${label}`) }).first();
+    await page.getByRole('searchbox').focus();
+    // WKWebView pointer activation can leave focus on the previous control.
+    // Dispatching click exercises that behavior without focusing the caller.
+    await opener.dispatchEvent('click');
+    await expect(page.getByRole('dialog', { name: sheet, exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(opener).toBeFocused();
+  });
+}
+
 for (const appearance of ['light', 'dark']) {
   for (const pane of panes) {
     test(`${appearance} ${pane} folded and unfolded`, async ({ page }) => {

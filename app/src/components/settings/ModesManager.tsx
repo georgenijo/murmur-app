@@ -67,7 +67,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
     siteModeLookupEnabled: boolean;
     browserSiteRules: BrowserSiteRule[];
   }) => void;
-  onAddAppProfile?: (modeId: string) => void;
+  onAddAppProfile?: (modeId: string, opener: HTMLButtonElement) => void;
   onModeBound?: () => void;
   initialSelectedId?: string | null;
 }) {
@@ -196,7 +196,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
             <label className="text-xs">Language<select aria-label="Mode language" value={selected.language ?? ''} onChange={(e) => updateMode({ language: e.target.value || null })} className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-2"><option value="">Use global</option>{LANGUAGE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
             <label className="text-xs">Vocabulary<select aria-label="Vocabulary policy" value={selected.vocabularyPolicy} onChange={(e) => updateMode({ vocabularyPolicy: e.target.value as MurmurMode['vocabularyPolicy'] })} className="mt-1 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-2"><option value="inherit">Inherit</option><option value="general">General</option><option value="technical">Technical</option></select></label>
           </div>}
-          <fieldset><legend className="text-xs font-semibold text-on-surface">Bound applications</legend><div className="mt-2 flex flex-wrap items-center gap-2">{profiles.length ? profiles.map((profile) => <label key={profile.bundleId} className="inline-flex items-center gap-2 rounded-lg bg-surface-container-low px-3 py-2 text-xs"><input type="checkbox" checked={profile.modeId === selected.id} onChange={(e) => bind(profile.bundleId, e.target.checked)} />{profile.label || profile.bundleId}</label>) : <><span className="text-xs text-on-surface-variant">Add an app, then choose its Mode here.</span>{onAddAppProfile && <button type="button" onClick={() => onAddAppProfile(selected.id)} className="rounded-lg bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-primary">Add an app</button>}</>}</div></fieldset>
+          <fieldset><legend className="text-xs font-semibold text-on-surface">Bound applications</legend><div className="mt-2 flex flex-wrap items-center gap-2">{profiles.length ? profiles.map((profile) => <label key={profile.bundleId} className="inline-flex items-center gap-2 rounded-lg bg-surface-container-low px-3 py-2 text-xs"><input type="checkbox" checked={profile.modeId === selected.id} onChange={(e) => bind(profile.bundleId, e.target.checked)} />{profile.label || profile.bundleId}</label>) : <><span className="text-xs text-on-surface-variant">Add an app, then choose its Mode here.</span>{onAddAppProfile && <button type="button" onClick={(event) => onAddAppProfile(selected.id, event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-primary">Add an app</button>}</>}</div></fieldset>
           <fieldset data-setting-target="browser-sites" className="space-y-3 rounded-lg border border-outline-variant/25 p-3">
             <legend className="px-1 text-xs font-semibold text-on-surface">Browser sites</legend>
             <label className="flex items-start justify-between gap-4 text-xs text-on-surface">

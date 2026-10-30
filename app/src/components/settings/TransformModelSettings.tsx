@@ -18,7 +18,7 @@ interface TransformModelSettingsProps {
   activePage: string;
   accessibilityGranted: boolean | null;
   onRequestAccessibility: () => void;
-  onOpenEditor: (tab: SettingsEditorTab) => void;
+  onOpenEditor: (tab: SettingsEditorTab, opener: HTMLButtonElement) => void;
   vm: ReturnType<typeof useTransformModelSettings>;
 }
 
@@ -164,7 +164,7 @@ export function TransformModelSettings({
             <h2 className="text-sm font-medium text-on-surface">Saved transforms</h2>
             <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">Create reusable spoken rewrite instructions.</p>
           </div>
-          <button type="button" onClick={() => onOpenEditor('transforms')} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
+          <button type="button" onClick={(event) => onOpenEditor('transforms', event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage</button>
         </div>
       </div>
       <SettingsDisclosure title="Advanced" layout="rows">
