@@ -12,7 +12,11 @@ Rust. Rust places native traffic lights at x=16 points and
 `round(headerHeight × pageZoom / 2 − 7)` points from the top. AppKit changes run
 on the main thread. Cmd/Ctrl + `+` or `=` increases page zoom by 10%, `-`
 decreases it, and `0` resets it; the supported range is 50–200%. Display backing
-scale is independent from page zoom.
+scale is independent from page zoom. The lifecycle bridge also publishes
+`--ui-window-page-zoom`; `lib/windowLifecycle.css` divides the existing
+`--ui-window-controls-inset` token by that zoom. Thus the reserved native-control
+width stays 80 window points even at 50% page zoom, while the CSS token remains
+the sole inset measurement. Disposal restores the previous root property.
 
 Workspace windows start hidden with an opaque configuration fallback. The last
 resolved native background is restored before reveal; the current resolved CSS
@@ -26,11 +30,18 @@ geometry and visibility.
 
 Rust writes `window-state.json` in the bundle's application-data directory,
 500 ms after the last geometry/background event and again at exit. It stores
-whole physical-pixel outer bounds, inner size, the last ordinary bounds while
-maximized, the maximized flag, and resolved backgrounds. Restore requires the
-entire outer rectangle to fit one connected display and the inner size to meet
-the target display's minimum. Missing, invalid, undersized, or off-screen state
-falls back to the default size centered on the current display. Fullscreen and
+whole physical-pixel outer bounds, inner size, their backing scale, the last
+ordinary bounds while maximized, the maximized flag, and resolved backgrounds.
+Restore normalizes saved bounds using their saved scale and each connected
+display using its own scale before checking containment in logical desktop
+coordinates. Older state without a saved scale uses the candidate display's
+scale. The entire outer rectangle must fit one connected display and the inner
+size must meet the 840×620 logical minimum. Restored geometry rounds to whole
+pixels at the target display's scale and is passed to Tao as logical position
+and size. This avoids Tao converting physical arguments with the launch
+window's potentially different scale. Changing the target display's backing
+scale between launches preserves the logical geometry. Missing, invalid,
+undersized, or off-screen state falls back to the default size centered on the current display. Fullscreen and
 minimized geometry do not replace normal bounds.
 
 ## Lead's native acceptance checklist
@@ -44,13 +55,21 @@ revision. Native interaction and independent Sol review belong to the lead.
 - Record cold launches in explicit Light and Dark, then System and a custom
   imported theme. Verify the first visible background matches the webview,
   and changing theme/scheme updates the native background without flashing.
-- Check main and pop-out Diagnostics traffic lights at 100%, 120% (Cmd + `+`
-  twice), and reset (Cmd + `0`); x stays 16 points and y follows the actual
-  CSS header height. Resize, maximize/unmaximize, enter/exit fullscreen, and
+- Check main Settings and pop-out Diagnostics traffic lights at 100%, 50%
+  (Cmd + `-` five times from reset), 120% (reset, then Cmd + `+` twice), and
+  reset (Cmd + `0`); verify the first header content stays clear of all three
+  buttons at 50% and the reserved native-control width remains 80 points. The
+  native x stays 16 points and y follows the actual CSS header height. Resize, maximize/unmaximize, enter/exit fullscreen, and
   check that buttons stay clickable and centered.
 - Move and resize both workspaces, wait at least 500 ms, quit/relaunch, and
   verify normal bounds and maximized state separately. Diagnostics must not
   open automatically at launch. Close main; theme changes must not reopen it.
+  With lead-managed mixed-scale displays available, save normal and maximized
+  bounds on the 1× display and relaunch from the 2× display, then reverse the
+  direction. Verify the same logical inner size and outer origin, including a
+  display left of or above the primary. Changing a target display's scale must
+  retain logical bounds, rounded to whole pixels at its new scale. Do not alter
+  the shared display configuration or use the MacBook for this check.
 - At 840×620, inspect General, Recording, Delivery, Meetings, Appearance,
   Customize/editor pages, all three AI detail pages, and Diagnostics. Verify
   controls fit horizontally and all vertical content remains scrollable.
@@ -69,5 +88,20 @@ on the Mac mini (1920×1080 logical, 3840×2160 physical); this worker did not a
 it or exercise the native build. The mini's checked Docker context points at its
 local OrbStack socket, but that daemon was unavailable; no Linux screenshots were
 produced. Existing visual CI remains macOS. No Retina waiver was granted. Do not
-operate the MacBook to satisfy these gates. Home sidebar collapse/resize is
-deferred until #853 completes and is not implemented in this change.
+operate the MacBook to satisfy these gates. Home sidebar collapse/resize remains a lead-owned follow-up and is not
+implemented in this change.
+
+## S2/S3 regression evidence
+
+Pure Rust lifecycle tests simulate both launch/target scale directions, a
+backing-scale change between launches, negative monitor origins, disconnected
+and spanning windows, target-pixel rounding, legacy state, invalid scales,
+minimum inner size, and maximized-state retention. Headless Playwright tests in
+`window-lifecycle-zoom.spec.ts` render the real Settings and Diagnostics headers
+in both schemes, drive the production bridge to 50%, check actual content and
+inset layout in CSS coordinates converted to window points, change the CSS
+inset token, and check reset/120%. The 50% case doubles the CSS viewport to
+represent the native window's fixed point size; it does not operate a native
+webview or establish native traffic-light clickability. Existing goldens are
+unchanged. The lead's native delta is the 50% header flow and mixed-scale restore
+cases above; review recheck is limited to S2/S3 behavior, with no approval claim.

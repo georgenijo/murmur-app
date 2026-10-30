@@ -109,6 +109,40 @@ describe('workspace window lifecycle', () => {
     expect(send.mock.calls[send.mock.calls.length - 1]?.[0].zoom).toBe(1);
   });
 
+  it('publishes bounded page zoom for the CSS inset and resets it without an observer loop', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    cleanup = startWindowLifecycle(send, false);
+    for (let count = 0; count < 10; count++) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '-', metaKey: true }));
+    }
+    await settle(); await step(); await step(); await settle();
+    expect(document.documentElement.style.getPropertyValue('--ui-window-page-zoom')).toBe('0.5');
+    expect(send.mock.lastCall).toEqual([{ background: '#f7fafc', headerHeight: 52, zoom: 0.5 }, false]);
+    const calls = send.mock.calls.length;
+    await step(); await step(); await settle();
+    expect(send).toHaveBeenCalledTimes(calls);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '0', ctrlKey: true }));
+    await settle();
+    expect(document.documentElement.style.getPropertyValue('--ui-window-page-zoom')).toBe('1');
+    for (let count = 0; count < 15; count++) {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '+', ctrlKey: true }));
+      await settle();
+    }
+    await settle();
+    expect(document.documentElement.style.getPropertyValue('--ui-window-page-zoom')).toBe('2');
+    expect(send.mock.lastCall?.[0].zoom).toBe(2);
+  });
+
+  it('restores the previous CSS zoom property on disposal, including StrictMode remounts', () => {
+    const style = document.documentElement.style;
+    style.setProperty('--ui-window-page-zoom', '1.2', 'important');
+    const stop = startWindowLifecycle(vi.fn().mockResolvedValue(undefined), false);
+    expect(style.getPropertyValue('--ui-window-page-zoom')).toBe('1');
+    stop();
+    expect(style.getPropertyValue('--ui-window-page-zoom')).toBe('1.2');
+    expect(style.getPropertyPriority('--ui-window-page-zoom')).toBe('important');
+  });
+
   it('cancels pending reveal and observations when a mount is disposed', async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const stop = startWindowLifecycle(send, true);

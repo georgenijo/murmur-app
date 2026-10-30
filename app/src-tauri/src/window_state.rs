@@ -7,7 +7,7 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
-use tauri::{Manager, PhysicalPosition, PhysicalSize};
+use tauri::{LogicalPosition, LogicalSize, Manager};
 
 const LABELS: [&str; 2] = ["main", "diagnostics"];
 const DEBOUNCE: Duration = Duration::from_millis(500);
@@ -28,6 +28,22 @@ impl Rect {
             y: self.y.round(),
             width: self.width.round(),
             height: self.height.round(),
+        }
+    }
+    fn to_logical(self, scale: f64) -> Self {
+        Self {
+            x: self.x / scale,
+            y: self.y / scale,
+            width: self.width / scale,
+            height: self.height / scale,
+        }
+    }
+    fn at_pixel_boundary(self, scale: f64) -> Self {
+        Self {
+            x: (self.x * scale).round() / scale,
+            y: (self.y * scale).round() / scale,
+            width: (self.width * scale).round() / scale,
+            height: (self.height * scale).round() / scale,
         }
     }
     fn valid(self) -> bool {
@@ -61,6 +77,66 @@ struct SavedWindow {
     inner_width: u32,
     inner_height: u32,
     maximized: bool,
+    // Physical coordinates are meaningful only with the scale that produced
+    // them. Older state has no scale; interpret it with each candidate display.
+    #[serde(default)]
+    scale_factor: Option<f64>,
+}
+
+struct Display {
+    // Tao's macOS monitor origins AND sizes are multiplied by that monitor's
+    // scale. Normalize each independently before comparing desktop rectangles.
+    bounds: Rect,
+    scale_factor: f64,
+}
+impl Display {
+    fn from_physical(bounds: Rect, scale_factor: f64) -> Self {
+        Self {
+            bounds: bounds.to_logical(scale_factor),
+            scale_factor,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct RestoredWindow {
+    bounds: Rect,
+    inner_size: LogicalSize<f64>,
+    maximized: bool,
+}
+
+fn valid_scale(scale: f64) -> bool {
+    scale.is_finite() && scale > 0.0
+}
+
+fn restore_geometry(saved: &SavedWindow, displays: &[Display]) -> Option<RestoredWindow> {
+    displays.iter().find_map(|display| {
+        let target_scale = display.scale_factor;
+        let saved_scale = saved.scale_factor.unwrap_or(target_scale);
+        if !valid_scale(saved_scale) || !valid_scale(target_scale) {
+            return None;
+        }
+        // Keep the saved logical geometry across a backing-scale change, then
+        // round to whole pixels on the TARGET display, never the launch display.
+        let bounds = saved
+            .bounds
+            .to_logical(saved_scale)
+            .at_pixel_boundary(target_scale);
+        let inner_size = LogicalSize::new(
+            (saved.inner_width as f64 / saved_scale * target_scale).round() / target_scale,
+            (saved.inner_height as f64 / saved_scale * target_scale).round() / target_scale,
+        );
+        (inner_size.width >= 840.0
+            && inner_size.height >= 620.0
+            && inner_size.width <= bounds.width
+            && inner_size.height <= bounds.height
+            && window_fits_within_display(bounds, &[display.bounds]))
+        .then_some(RestoredWindow {
+            bounds,
+            inner_size,
+            maximized: saved.maximized,
+        })
+    })
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -113,37 +189,29 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
             let monitors = window.available_monitors()?;
             let displays: Vec<_> = monitors
                 .iter()
-                .map(|monitor| Rect {
-                    x: monitor.position().x as f64,
-                    y: monitor.position().y as f64,
-                    width: monitor.size().width as f64,
-                    height: monitor.size().height as f64,
+                .map(|monitor| {
+                    Display::from_physical(
+                        Rect {
+                            x: monitor.position().x as f64,
+                            y: monitor.position().y as f64,
+                            width: monitor.size().width as f64,
+                            height: monitor.size().height as f64,
+                        },
+                        monitor.scale_factor(),
+                    )
                 })
                 .collect();
-            let restored = saved.windows.get(label).filter(|saved| {
-                // The restored window may belong to a different-DPI monitor
-                // than the one on which Tauri initially created it.
-                let scale = monitors
-                    .iter()
-                    .zip(&displays)
-                    .find(|(_, display)| {
-                        window_fits_within_display(saved.bounds, std::slice::from_ref(*display))
-                    })
-                    .map(|(monitor, _)| monitor.scale_factor())
-                    .unwrap_or(1.0);
-                saved.inner_width as f64 >= 840.0 * scale
-                    && saved.inner_height as f64 >= 620.0 * scale
-                    && saved.inner_width as f64 <= saved.bounds.width
-                    && saved.inner_height as f64 <= saved.bounds.height
-                    && window_fits_within_display(saved.bounds, &displays)
-            });
-            if let Some(saved) = restored {
-                window.set_size(PhysicalSize::new(saved.inner_width, saved.inner_height))?;
-                window.set_position(PhysicalPosition::new(
-                    saved.bounds.x.round() as i32,
-                    saved.bounds.y.round() as i32,
-                ))?;
-                if saved.maximized {
+            let restored = saved
+                .windows
+                .get(label)
+                .and_then(|saved| restore_geometry(saved, &displays));
+            if let Some(restored) = restored {
+                // Tao converts Physical arguments using the window's CURRENT
+                // scale, which can still be the launch display's scale. Logical
+                // arguments preserve the target geometry through that move.
+                window.set_size(restored.inner_size)?;
+                window.set_position(LogicalPosition::new(restored.bounds.x, restored.bounds.y))?;
+                if restored.maximized {
                     window.maximize()?;
                 }
             } else {
@@ -165,6 +233,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
                         inner_width: inner.width,
                         inner_height: inner.height,
                         maximized: false,
+                        scale_factor: Some(window.scale_factor()?),
                     },
                 );
             }
@@ -238,10 +307,11 @@ pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         if let Some(saved) = store.saved.windows.get_mut(window.label()) {
             saved.maximized = true;
         }
-    } else if let (Ok(position), Ok(size), Ok(inner)) = (
+    } else if let (Ok(position), Ok(size), Ok(inner), Ok(scale)) = (
         window.outer_position(),
         window.outer_size(),
         window.inner_size(),
+        window.scale_factor(),
     ) {
         store.saved.windows.insert(
             window.label().into(),
@@ -256,6 +326,7 @@ pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
                 inner_width: inner.width,
                 inner_height: inner.height,
                 maximized,
+                scale_factor: Some(scale),
             },
         );
     }
@@ -426,6 +497,144 @@ mod tests {
         );
     }
 
+    fn saved_window(bounds: Rect, scale: f64, maximized: bool) -> SavedWindow {
+        SavedWindow {
+            bounds: Rect {
+                x: bounds.x * scale,
+                y: bounds.y * scale,
+                width: bounds.width * scale,
+                height: bounds.height * scale,
+            }
+            .rounded(),
+            inner_width: (bounds.width * scale).round() as u32,
+            inner_height: (bounds.height * scale).round() as u32,
+            maximized,
+            scale_factor: Some(scale),
+        }
+    }
+
+    fn display(bounds: Rect, scale: f64) -> Display {
+        Display::from_physical(
+            Rect {
+                x: bounds.x * scale,
+                y: bounds.y * scale,
+                width: bounds.width * scale,
+                height: bounds.height * scale,
+            },
+            scale,
+        )
+    }
+
+    #[test]
+    fn restore_from_2x_launch_to_1x_target_keeps_size_position_and_maximized_state() {
+        let bounds = rect(2000.0, 100.0, 1100.0, 780.0);
+        let displays = [
+            display(rect(0.0, 0.0, 1920.0, 1080.0), 2.0),
+            display(rect(1920.0, 0.0, 1920.0, 1080.0), 1.0),
+        ];
+        for maximized in [false, true] {
+            let restored = restore_geometry(&saved_window(bounds, 1.0, maximized), &displays)
+                .expect("the ordinary bounds fit the 1x target display");
+            assert_eq!(restored.bounds, bounds);
+            assert_eq!(restored.maximized, maximized);
+            // Simulate Tao's conversion while the window is still on the 2x
+            // launch monitor. Physical inputs used to halve both values here.
+            assert_eq!(
+                tauri::Size::from(restored.inner_size).to_logical::<f64>(2.0),
+                LogicalSize::new(1100.0, 780.0)
+            );
+            assert_eq!(
+                tauri::Position::from(LogicalPosition::new(bounds.x, bounds.y))
+                    .to_logical::<f64>(2.0),
+                LogicalPosition::new(2000.0, 100.0)
+            );
+        }
+    }
+
+    #[test]
+    fn restore_from_1x_launch_to_2x_target_normalizes_negative_monitor_origins() {
+        let bounds = rect(-1800.0, -100.0, 1100.0, 780.0);
+        let saved = saved_window(bounds, 2.0, false);
+        let displays = [
+            display(rect(0.0, 0.0, 1920.0, 1080.0), 1.0),
+            display(rect(-1920.0, -200.0, 1920.0, 1080.0), 2.0),
+        ];
+        let restored = restore_geometry(&saved, &displays).unwrap();
+        assert_eq!(restored.bounds, bounds);
+        // On the 1x launch display, Physical inputs used to double the size and
+        // send x=-3600 rather than x=-1800 to AppKit.
+        assert_eq!(
+            tauri::Size::from(restored.inner_size).to_logical::<f64>(1.0),
+            LogicalSize::new(1100.0, 780.0)
+        );
+        assert_eq!(
+            tauri::Position::from(LogicalPosition::new(restored.bounds.x, restored.bounds.y))
+                .to_logical::<f64>(1.0),
+            LogicalPosition::new(-1800.0, -100.0)
+        );
+    }
+
+    #[test]
+    fn restore_preserves_logical_geometry_when_the_target_display_changes_scale() {
+        let bounds = rect(50.0, 60.0, 1100.0, 780.0);
+        for (saved_scale, target_scale) in [(1.0, 2.0), (2.0, 1.0)] {
+            let saved = saved_window(bounds, saved_scale, true);
+            let restored = restore_geometry(
+                &saved,
+                &[display(rect(0.0, 0.0, 1920.0, 1080.0), target_scale)],
+            )
+            .unwrap();
+            assert_eq!(restored.bounds, bounds);
+            assert_eq!(restored.inner_size, LogicalSize::new(1100.0, 780.0));
+            assert!(restored.maximized);
+        }
+    }
+
+    #[test]
+    fn disconnected_or_spanning_normal_bounds_require_default_centered_fallback() {
+        let main = display(rect(0.0, 0.0, 1920.0, 1080.0), 1.0);
+        let external = display(rect(-1920.0, -200.0, 1920.0, 1080.0), 2.0);
+        let saved = saved_window(rect(-1800.0, -100.0, 1100.0, 780.0), 2.0, true);
+        assert!(restore_geometry(&saved, &[main]).is_none());
+        let spanning = saved_window(rect(-500.0, 50.0, 1100.0, 780.0), 2.0, false);
+        assert!(restore_geometry(&spanning, &[external]).is_none());
+        assert!(restore_geometry(&saved, &[]).is_none());
+    }
+
+    #[test]
+    fn restored_geometry_rounds_at_target_pixel_boundaries_and_checks_inner_minimum() {
+        let saved = saved_window(rect(-1700.5, -99.5, 1100.5, 780.5), 2.0, false);
+        let displays = [display(rect(-1920.0, -200.0, 1920.0, 1080.0), 1.0)];
+        let restored = restore_geometry(&saved, &displays).unwrap();
+        assert_eq!(restored.bounds, rect(-1701.0, -100.0, 1101.0, 781.0));
+        assert_eq!(restored.inner_size, LogicalSize::new(1101.0, 781.0));
+        let undersized = saved_window(rect(-1700.0, 0.0, 839.0, 780.0), 2.0, false);
+        assert!(restore_geometry(&undersized, &displays).is_none());
+        let mut oversized_inner = saved;
+        oversized_inner.inner_width = 4000;
+        assert!(restore_geometry(&oversized_inner, &displays).is_none());
+    }
+
+    #[test]
+    fn legacy_physical_state_uses_the_target_scale_and_invalid_scales_refuse_restore() {
+        let mut saved = saved_window(rect(-1800.0, -100.0, 1100.0, 780.0), 2.0, false);
+        let displays = [display(rect(-1920.0, -200.0, 1920.0, 1080.0), 2.0)];
+        saved.scale_factor = None;
+        let legacy_json = serde_json::to_value(&saved).unwrap();
+        let mut legacy_json = legacy_json.as_object().unwrap().clone();
+        legacy_json.remove("scale_factor");
+        let legacy: SavedWindow = serde_json::from_value(legacy_json.into()).unwrap();
+        assert_eq!(
+            restore_geometry(&legacy, &displays).unwrap().bounds.x,
+            -1800.0
+        );
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            saved.scale_factor = Some(scale);
+            assert!(restore_geometry(&saved, &displays).is_none());
+            assert!(restore_geometry(&legacy, &[display(displays[0].bounds, scale)]).is_none());
+        }
+    }
+
     #[test]
     fn native_background_refuses_transparency_and_invalid_input() {
         assert_eq!(
@@ -451,6 +660,7 @@ mod tests {
                 inner_width: 1100,
                 inner_height: 780,
                 maximized: true,
+                scale_factor: Some(1.0),
             },
         );
         saved.backgrounds.insert("main".into(), "#123456".into());
@@ -466,6 +676,7 @@ mod tests {
             rect(50.0, 60.0, 1100.0, 780.0)
         );
         assert_eq!(restored.windows["main"].inner_width, 1100);
+        assert_eq!(restored.windows["main"].scale_factor, Some(1.0));
         assert_eq!(restored.backgrounds["main"], "#123456");
         assert!(!path.with_extension("json.tmp").exists());
         std::fs::remove_file(path).unwrap();

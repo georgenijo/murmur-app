@@ -1,5 +1,6 @@
 import { useEffect, type PropsWithChildren } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import './windowLifecycle.css';
 
 export interface WindowAppearance {
   background: string;
@@ -35,8 +36,17 @@ export function startWindowLifecycle(send: Send, showAfterPaint: boolean): () =>
   let paintFrame = 0;
   let previous = '';
   let pending = Promise.resolve<unknown>(undefined);
+  const style = document.documentElement.style;
+  const zoomProperty = '--ui-window-page-zoom';
+  const previousZoom = style.getPropertyValue(zoomProperty);
+  const previousPriority = style.getPropertyPriority(zoomProperty);
   const sync = () => {
     if (disposed) return;
+    // Native controls keep their point size and x inset as page content zooms.
+    // Publish only the zoom: CSS still owns the reserved control inset.
+    if (style.getPropertyValue(zoomProperty) !== String(zoom)) {
+      style.setProperty(zoomProperty, String(zoom));
+    }
     const appearance = measureWindowAppearance(zoom);
     const key = JSON.stringify([appearance, ready]);
     if (key === previous) return;
@@ -81,6 +91,8 @@ export function startWindowLifecycle(send: Send, showAfterPaint: boolean): () =>
     window.removeEventListener('resize', schedule);
     window.visualViewport?.removeEventListener('resize', schedule);
     window.removeEventListener('keydown', onKey);
+    if (previousZoom) style.setProperty(zoomProperty, previousZoom, previousPriority);
+    else style.removeProperty(zoomProperty);
   };
 }
 
