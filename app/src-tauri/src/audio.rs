@@ -53,6 +53,10 @@ const CPAL_ATTEMPT_BUDGET: Duration = Duration::from_secs(16);
 const DEVICE_RERESOLUTION_DELAY: Duration = Duration::from_millis(500);
 const DEVICE_RERESOLUTION_MAX_PASSES: usize = 3;
 const COOPERATIVE_STOP_GRACE: Duration = Duration::from_millis(250);
+/// Audio kept after a dictation stop request before the helper is told to
+/// stop, because a key release often lands while the last word is still
+/// sounding (#829). Zero restores the pre-tail behavior.
+pub(crate) const DICTATION_RELEASE_TAIL: Duration = Duration::from_millis(50);
 const CAPTURE_TERMINATION_BUDGET: Duration = Duration::from_secs(2);
 const CAPTURE_PROTOCOL_RESERVE: Duration = Duration::from_secs(2);
 const CAPTURE_ACTIVE_BUDGET: Duration = Duration::from_secs(30);
@@ -1197,6 +1201,59 @@ enum HelperRead {
     Invalid,
 }
 
+/// What ended a read of helper frames after a stop request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopReadOutcome {
+    /// The read window (release tail or drain budget) elapsed.
+    Deadline,
+    /// The helper flushed its ring and confirmed the stop.
+    Stopped { retained_samples: u64 },
+    /// An invalid or failure frame, or a closed pipe. Audio already retained
+    /// is kept and the helper is terminated as before.
+    Ended,
+}
+
+/// Accepts valid microphone PCM until `deadline` or a terminal frame. Used
+/// for the dictation release tail and for the post-`Stop` ring drain (#829).
+fn read_stopping_frames(
+    reader_rx: &mpsc::Receiver<HelperRead>,
+    deadline: Instant,
+    expected_sequence: &mut u64,
+    sample_rate: Option<u32>,
+    accept: &mut impl FnMut(&[f32]),
+) -> StopReadOutcome {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // A zero timeout still returns queued frames; stop at the deadline.
+        if remaining.is_zero() {
+            return StopReadOutcome::Deadline;
+        }
+        match reader_rx.recv_timeout(remaining) {
+            Ok(HelperRead::Frame(ProductionFrame::Pcm(pcm))) => {
+                if pcm.channel != CaptureChannel::Microphone
+                    || pcm.sequence != *expected_sequence
+                    || pcm.samples.is_empty()
+                    || sample_rate.is_some_and(|rate| rate != pcm.sample_rate)
+                {
+                    return StopReadOutcome::Ended;
+                }
+                *expected_sequence += 1;
+                accept(&pcm.samples);
+            }
+            Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Stopped {
+                retained_samples,
+            }))) => return StopReadOutcome::Stopped { retained_samples },
+            Ok(HelperRead::Frame(ProductionFrame::Control(ProductionHelperMessage::Failure {
+                ..
+            })))
+            | Ok(HelperRead::Invalid)
+            | Err(RecvTimeoutError::Disconnected) => return StopReadOutcome::Ended,
+            Ok(HelperRead::Frame(ProductionFrame::Control(_))) => {}
+            Err(RecvTimeoutError::Timeout) => return StopReadOutcome::Deadline,
+        }
+    }
+}
+
 enum AttemptResult {
     Stopped,
     TerminalHandled,
@@ -1301,18 +1358,31 @@ fn backend_attempt_budget(backend: CaptureBackend) -> Duration {
 }
 
 fn terminate_helper(
+    child: ManagedChild,
+    input: Option<std::process::ChildStdin>,
+    capture_id: u64,
+    nonce: SessionNonce,
+    control: Option<ProductionHostMessage>,
+) -> Result<(), ManagedChild> {
+    terminate_helper_within(child, input, capture_id, nonce, control, Instant::now())
+}
+
+/// Terminates the helper within the cooperative grace and termination budget
+/// measured from `started`, so a stop drain counts against both bounds.
+fn terminate_helper_within(
     mut child: ManagedChild,
     mut input: Option<std::process::ChildStdin>,
     capture_id: u64,
     nonce: SessionNonce,
     control: Option<ProductionHostMessage>,
+    started: Instant,
 ) -> Result<(), ManagedChild> {
     if let (Some(input), Some(control)) = (input.as_mut(), control) {
         let _ = write_production_control(input, capture_id, nonce, &control);
     }
     drop(input);
-    let deadline = Instant::now() + CAPTURE_TERMINATION_BUDGET;
-    let cooperative_deadline = std::cmp::min(deadline, Instant::now() + COOPERATIVE_STOP_GRACE);
+    let deadline = started + CAPTURE_TERMINATION_BUDGET;
+    let cooperative_deadline = std::cmp::min(deadline, started + COOPERATIVE_STOP_GRACE);
     if child.wait_for_exit(cooperative_deadline).is_some()
         || child.hard_kill_confirmed(deadline).is_some()
     {
@@ -2157,6 +2227,7 @@ fn run_backend(
     });
 
     let mut expected_sequence = 0_u64;
+    let mut received_samples = 0_u64;
     let mut sample_rate = None;
     let mut retained_audio = false;
     let mut first_callback_wait_started: Option<Instant> = None;
@@ -2198,7 +2269,7 @@ fn run_backend(
             };
         }
         match command_receiver.try_recv() {
-            Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+            command @ (Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected)) => {
                 let stop_started = Instant::now();
                 end_permission_prompt_pause(
                     &mut permission_prompt_started,
@@ -2207,20 +2278,89 @@ fn run_backend(
                     event_sender,
                     stop_started,
                 );
-                if terminate_or_quarantine(
+                let retains_samples = owner.retains_samples();
+                let mut accept = |samples: &[f32]| {
+                    received_samples += samples.len() as u64;
+                    if retains_samples {
+                        shared
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .extend_from_slice(samples);
+                    }
+                };
+                let tail = if command.is_ok() && owner.dictation_id().is_some() {
+                    DICTATION_RELEASE_TAIL
+                } else {
+                    Duration::ZERO
+                };
+                let tail_outcome = if tail.is_zero() {
+                    StopReadOutcome::Deadline
+                } else {
+                    read_stopping_frames(
+                        &reader_rx,
+                        stop_started + tail,
+                        &mut expected_sequence,
+                        sample_rate,
+                        &mut accept,
+                    )
+                };
+                // Keep reading after Stop: the helper flushes its ring as PCM
+                // before Stopped, and frames already in the pipe are the last
+                // audio of the recording.
+                let drain_started = Instant::now();
+                let drain_outcome = if tail_outcome == StopReadOutcome::Deadline
+                    && write_production_control(
+                        &mut input,
+                        capture_id,
+                        nonce,
+                        &ProductionHostMessage::Stop,
+                    )
+                    .is_ok()
+                {
+                    read_stopping_frames(
+                        &reader_rx,
+                        drain_started + COOPERATIVE_STOP_GRACE,
+                        &mut expected_sequence,
+                        sample_rate,
+                        &mut accept,
+                    )
+                } else {
+                    StopReadOutcome::Ended
+                };
+                let drain_elapsed = drain_started.elapsed();
+                let stop_sent = tail_outcome == StopReadOutcome::Deadline;
+                let terminated = terminate_helper_within(
                     child,
                     Some(input),
                     capture_id,
                     nonce,
-                    Some(ProductionHostMessage::Stop),
-                    owner,
-                    event_sender,
-                    current_phase,
-                ) {
+                    (!stop_sent).then_some(ProductionHostMessage::Stop),
+                    drain_started,
+                );
+                let terminated = match terminated {
+                    Ok(()) => true,
+                    Err(child) => {
+                        quarantine_unconfirmed_child(child, owner, event_sender, current_phase);
+                        false
+                    }
+                };
+                if terminated {
+                    let (drain, unreceived_samples) = match drain_outcome {
+                        StopReadOutcome::Stopped { retained_samples } => (
+                            "complete",
+                            retained_samples.saturating_sub(received_samples),
+                        ),
+                        StopReadOutcome::Deadline => ("timed_out", 0),
+                        StopReadOutcome::Ended => ("ended", 0),
+                    };
                     tracing::info!(
                         target: "audio",
                         capture_id,
                         stop_to_exit_ms = stop_started.elapsed().as_millis() as u64,
+                        release_tail_ms = tail.as_millis() as u64,
+                        stop_drain_ms = drain_elapsed.as_millis() as u64,
+                        stop_drain = drain,
+                        unreceived_samples,
                         "capture helper stopped and exited"
                     );
                     if owner.dictation_id().is_some() {
@@ -2472,6 +2612,7 @@ fn run_backend(
                     };
                 }
                 expected_sequence += 1;
+                received_samples += pcm.samples.len() as u64;
                 sample_rate = Some(pcm.sample_rate);
                 if owner.retains_samples() {
                     shared
@@ -3264,6 +3405,10 @@ pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
     resampled
 }
+
+#[cfg(test)]
+#[path = "release_tail_tests.rs"]
+mod release_tail_tests;
 
 #[cfg(test)]
 mod tests {
