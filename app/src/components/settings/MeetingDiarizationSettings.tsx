@@ -1,3 +1,6 @@
+import { DEFAULT_SETTINGS } from '../../lib/settings';
+import { SettingsRow } from './SettingsRow';
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -119,21 +122,13 @@ export function MeetingDiarizationSettings({
 
   return (
     <div data-setting-target="meeting-speakers" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <div className="flex items-center justify-between gap-6">
-        <div className="settings-title-description">
-          <p className="text-sm font-medium text-on-surface">Label Remote Speakers</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
-            Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting.
-          </p>
-        </div>
-        <AnimatedSwitch
+      <SettingsRow title="Label remote speakers" description="Add local Speaker 1, Speaker 2 labels to clear system-audio passages after a meeting" onReset={enabled !== DEFAULT_SETTINGS.meetingDiarization ? () => onEnabledChange(DEFAULT_SETTINGS.meetingDiarization) : undefined} disabled={!supported} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={!supported}
-          aria-label="Label Remote Speakers"
+          aria-label="Label remote speakers"
           onCheckedChange={() => onEnabledChange(!enabled)}
-        />
-      </div>
+        />} />
 
       <div className="settings-callout text-xs leading-relaxed text-on-surface-variant">
         <p>
@@ -149,7 +144,7 @@ export function MeetingDiarizationSettings({
           <p className="text-xs font-semibold text-on-surface">Remote speaker model</p>
           <p className="mt-0.5 text-[11px] text-on-surface-variant">
             {!status
-              ? 'Checking this Mac...'
+              ? 'Checking this Mac…'
               : !status.supported
                 ? 'Requires an Apple Silicon Mac.'
                 : status.installed
@@ -161,12 +156,10 @@ export function MeetingDiarizationSettings({
           </p>
         </div>
         {status?.installed ? (
-          <button type="button" disabled={busy} onClick={() => void remove()} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-xs font-semibold text-error disabled:opacity-40">
-            {operation === 'removing' ? 'Removing...' : 'Remove model'}
-          </button>
+          <ConfirmActionButton label="Remove model" confirmLabel="Confirm remove" disabled={busy} onConfirm={() => void remove()} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-xs font-semibold text-error disabled:opacity-40" />
         ) : (
           <button type="button" disabled={busy || !supported || !status} onClick={() => void download()} className="dialog-pill-btn px-3 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">
-            {busy ? 'Installing...' : 'Download model'}
+            {busy ? 'Installing…' : 'Download model'}
           </button>
         )}
       </div>

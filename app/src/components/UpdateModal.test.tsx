@@ -55,7 +55,7 @@ describe('UpdateModal', () => {
       isForced: false,
     });
 
-    expect(actionLabels()).toEqual(['Download Update', 'Later']);
+    expect(actionLabels()).toEqual(['Download update', 'Later']);
     expect(container.textContent).not.toContain('Skip');
 
     const [download, later] = Array.from(
@@ -86,7 +86,7 @@ describe('UpdateModal', () => {
     expect(dialog?.className).toContain('h-[min(620px,calc(100vh-2.5rem))]');
     expect(unsafeLink?.getAttribute('href') ?? '').not.toMatch(/^javascript:/);
     expect(container.querySelector('script')).toBeNull();
-    expect(document.activeElement?.textContent).toBe('Download Update');
+    expect(document.activeElement?.textContent).toBe('Download update');
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
@@ -104,7 +104,7 @@ describe('UpdateModal', () => {
 
     const dialog = container.querySelector<HTMLDivElement>('[role="dialog"]');
     const progress = container.querySelector<HTMLElement>('[role="progressbar"]');
-    expect(container.textContent).toContain('Downloading Update');
+    expect(container.textContent).toContain('Downloading update');
     expect(container.textContent).toContain('42%');
     expect(dialog?.className).toContain('max-h-[calc(100vh-2.5rem)]');
     expect(progress?.getAttribute('aria-valuemin')).toBe('0');
@@ -127,7 +127,7 @@ describe('UpdateModal', () => {
     await act(async () => vi.advanceTimersByTime(60));
 
     const dialog = container.querySelector<HTMLDivElement>('[role="dialog"]');
-    expect(container.textContent).toContain('Preparing Update');
+    expect(container.textContent).toContain('Preparing update');
     expect(document.activeElement).toBe(dialog);
 
     outsideButton.focus();
@@ -151,14 +151,14 @@ describe('UpdateModal', () => {
     await render({ phase: 'ready', version: '0.43.1', isForced: false });
     await act(async () => vi.advanceTimersByTime(60));
 
-    expect(container.textContent).toContain('Ready to Restart');
+    expect(container.textContent).toContain('Ready to restart');
     expect(container.textContent).toContain('Restart Murmur to install the downloaded update.');
-    expect(actionLabels()).toEqual(['Restart Now', 'Later']);
-    expect(document.activeElement?.textContent).toBe('Restart Now');
+    expect(actionLabels()).toEqual(['Restart now', 'Later']);
+    expect(document.activeElement?.textContent).toBe('Restart now');
 
     await act(async () => {
       Array.from(container.querySelectorAll('button')).find(
-        (button) => button.textContent === 'Restart Now',
+        (button) => button.textContent === 'Restart now',
       )?.click();
     });
     expect(callbacks.onRestart).toHaveBeenCalledOnce();
@@ -166,14 +166,14 @@ describe('UpdateModal', () => {
     await render({ phase: 'idle' });
     await render({ phase: 'ready', version: '0.43.1', isForced: false });
     await act(async () => vi.advanceTimersByTime(60));
-    expect(actionLabels()).toEqual(['Restart Now', 'Later']);
-    expect(document.activeElement?.textContent).toBe('Restart Now');
+    expect(actionLabels()).toEqual(['Restart now', 'Later']);
+    expect(document.activeElement?.textContent).toBe('Restart now');
   });
 
   it('uses Quit for required updates and does not allow dismissal', async () => {
     await render({ phase: 'ready', version: '0.43.1', isForced: true });
 
-    expect(actionLabels()).toEqual(['Restart Now', 'Quit']);
+    expect(actionLabels()).toEqual(['Restart now', 'Quit']);
     expect(container.querySelector('[aria-label="Close update dialog"]')).toBeNull();
 
     await act(async () => {
@@ -191,7 +191,7 @@ describe('UpdateModal', () => {
     await render({ phase: 'restarting', version: '0.43.1' });
 
     expect(container.textContent).toContain('Restarting Murmur');
-    expect(container.textContent).toContain('Installing the update and restarting...');
+    expect(container.textContent).toContain('Installing the update and restarting…');
     expect(container.querySelector('button')).toBeNull();
 
     await act(async () => {
@@ -251,7 +251,7 @@ describe('UpdateModal', () => {
       recovery: 'reinstall',
     });
 
-    expect(container.textContent).toContain('Reinstall Murmur to Update');
+    expect(container.textContent).toContain('Reinstall Murmur to update');
     expect(container.textContent).toContain(message);
     expect(actionLabels()).toEqual(['Quit', 'Later']);
 

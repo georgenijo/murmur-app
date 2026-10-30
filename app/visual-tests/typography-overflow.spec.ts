@@ -1,12 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const destinations = [
-  ['General'], ['General', 'Keyboard Shortcuts'], ['Recording'], ['Customize'], ['Delivery'], ['Meetings'],
-  ['Text & Vocabulary'], ['AI & Models'], ['Modes'], ['Appearance'],
+  ['General'], ['General', 'Keyboard shortcuts'], ['Recording'], ['Customize'], ['Delivery'], ['Meetings'],
+  ['Text & vocabulary'], ['AI & models'], ['Modes'], ['Appearance'],
   ['Performance Lab'], ['Diagnostics'],
-  ['AI & Models', 'Speech-to-Text'], ['AI & Models', 'Voice Query'],
-  ['AI & Models', 'Selected-Text Rewrite'],
-  ['Customize', 'Voice Commands'], ['Customize', 'Styles'], ['Customize', 'Transforms'],
+  ['AI & models', 'Speech-to-text'], ['AI & models', 'Voice Query'],
+  ['AI & models', 'Selected-text rewrite'],
+  ['Customize', 'Voice commands'], ['Customize', 'Styles'], ['Customize', 'Transforms'],
 ] as const;
 
 async function audit(page: Page) {

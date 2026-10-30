@@ -124,7 +124,7 @@ export interface AudioDeviceSelectOption {
   label: string;
 }
 
-export const FOLLOW_SYSTEM_DEFAULT_LABEL = 'Follow macOS Default';
+export const FOLLOW_SYSTEM_DEFAULT_LABEL = 'Follow macOS default';
 
 /** Preserve concise unique labels; append the stable ID only for collisions. */
 export function audioDeviceSelectOptions(

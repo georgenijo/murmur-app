@@ -139,7 +139,7 @@ describe('OverlayPill transient cues', () => {
     const status = container.querySelector<HTMLElement>('[role="status"]');
     expect(status?.getAttribute('aria-live')).toBe('assertive');
     expect(status?.getAttribute('aria-label')).toBe(
-      'Selected microphone unavailable. Open Settings to choose another.',
+      'Selected microphone unavailable. Open settings to choose another.',
     );
     expect(status?.querySelector('svg')).not.toBeNull();
     expect(status?.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
@@ -195,7 +195,7 @@ describe('OverlayPill transient cues', () => {
       <CuePill indicator={{ kind: 'idle', dimmed: false }} smartAutoSummary={{ kind: 'blocked', retryAfterMs: null }} />,
     ));
     expect(container.querySelector<HTMLElement>('[role="status"]')?.getAttribute('aria-label'))
-      .toBe('Smart Auto next capture blocked. Open Settings to retry, verify signal, or pin an input.');
+      .toBe('Smart Auto next capture blocked. Open settings to retry, verify signal, or pin an input.');
 
     await act(async () => root.render(
       <CuePill indicator={{ kind: 'clipboardOnly' }} smartAutoSummary={{ kind: 'blocked', retryAfterMs: null }} />,

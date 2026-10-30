@@ -162,7 +162,7 @@ describe('useMeetings selected meeting finalization', () => {
   it('keeps capture refresh independent of unsaved review drafts and concurrent metadata saves', async () => {
     await act(async () => current.select('first'));
     const reviewState = current.detail!;
-    const edit = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!;
+    const edit = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review…')!;
     await act(async () => edit.click());
     const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Review summary"]')!;
     await act(async () => {

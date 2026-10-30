@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
@@ -22,12 +23,12 @@ const MODE_OPTIONS: readonly {
   {
     value: "light",
     label: "Light",
-    description: "Keep Murmur light regardless of macOS.",
+    description: "Keep Murmur light regardless of macOS",
   },
   {
     value: "dark",
     label: "Dark",
-    description: "Keep Murmur dark regardless of macOS.",
+    description: "Keep Murmur dark regardless of macOS",
   },
 ];
 
@@ -108,12 +109,18 @@ function ColorControl({
       <div className="mt-2 flex items-center gap-2">
         <input
           id={`appearance-${label.toLowerCase()}`}
+          required
+          pattern="\s*#[0-9a-fA-F]{6}\s*"
           aria-invalid={error ? "true" : undefined}
           value={draft}
           onChange={(event) => setDraft(event.currentTarget.value)}
           onBlur={() => commit(draft)}
+          onInvalid={() => setError("Enter a six-digit hex color, such as #036785.")}
           onKeyDown={(event) => {
-            if (event.key === "Enter") commit(event.currentTarget.value);
+            if (event.key === "Enter" && !event.nativeEvent.isComposing && !event.repeat && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+              commit(event.currentTarget.value);
+              if (!event.currentTarget.checkValidity()) event.preventDefault();
+            }
           }}
           spellCheck={false}
           className="w-32 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 font-mono text-xs text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -147,6 +154,16 @@ export function AppearanceSettings() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [communityOpen, setCommunityOpen] = useState(false);
   const [customEditorOpen, setCustomEditorOpen] = useState(false);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const finishEditor = () => {
+    const invalid = Array.from(editorRef.current?.querySelectorAll<HTMLInputElement>('input[pattern]') ?? [])
+      .filter((field) => !field.checkValidity());
+    if (invalid.length) {
+      invalid[0].focus();
+      return;
+    }
+    setCustomEditorOpen(false);
+  };
   const contrastDraftRef = useRef(contrastDraft);
   const lastCommittedContrastRef = useRef(
     appearance.document.theme.contrast ?? 0,
@@ -324,11 +341,10 @@ export function AppearanceSettings() {
             if (event.target === event.currentTarget) setCustomEditorOpen(false);
           }}
         >
-          <div role="dialog" aria-modal="true" aria-labelledby="theme-editor-title" className="dialog-popover max-h-[86vh] w-full max-w-lg overflow-y-auto p-5">
+          <div ref={editorRef} role="dialog" onKeyDown={defaultButtonKeyDown} aria-modal="true" aria-labelledby="theme-editor-title" className="dialog-popover max-h-[86vh] w-full max-w-lg overflow-y-auto p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 id="theme-editor-title" className="text-base font-semibold text-on-surface">Create theme</h2>
-                <p className="mt-1 text-xs text-on-surface-variant">Start from the colors currently on screen.</p>
               </div>
               <button type="button" aria-label="Close theme editor" onClick={() => setCustomEditorOpen(false)} className="rounded-md px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>
             </div>
@@ -336,21 +352,21 @@ export function AppearanceSettings() {
             <div className="mt-5 space-y-5">
               <ColorControl
                 label="Accent"
-                description="Selected controls, progress, and focus."
+                description="Selected controls, progress, and focus"
                 value={appearance.document.theme.accent}
                 fallback={resolvedTokens.primary}
                 onCommit={(accent) => updateTheme({ presetId: "custom", accent })}
               />
               <ColorControl
                 label="Background"
-                description="Canvas color and derived surfaces."
+                description="Canvas color and derived surfaces"
                 value={appearance.document.theme.background}
                 fallback={resolvedTokens.background}
                 onCommit={(background) => updateTheme({ presetId: "custom", background })}
               />
               <ColorControl
                 label="Foreground"
-                description="Primary readable text."
+                description="Primary readable text"
                 value={appearance.document.theme.foreground}
                 fallback={resolvedTokens["on-surface"]}
                 onCommit={(foreground) => updateTheme({ presetId: "custom", foreground })}
@@ -397,7 +413,7 @@ export function AppearanceSettings() {
               <button type="button" disabled={appearance.busy} onClick={() => runControllerAction(appearance.reset())} className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-50">Reset to Sonic</button>
               <div className="flex gap-2">
                 <button type="button" disabled={appearance.busy} onClick={() => void exportTheme()} className="rounded-(--ui-radius-pill) border border-(--ui-hairline) px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50">Export</button>
-                <button type="button" onClick={() => setCustomEditorOpen(false)} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim">Done</button>
+                <button type="button" onClick={finishEditor} data-default-button className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim">Done</button>
               </div>
             </div>
           </div>

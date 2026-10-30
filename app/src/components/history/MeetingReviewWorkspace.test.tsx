@@ -329,7 +329,7 @@ describe('MeetingReviewWorkspace', () => {
     await act(async () => root.render(
       <MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />,
     ));
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!.click());
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review…')!.click());
     expect(container.querySelector('form[aria-label="Edit meeting review"]')).not.toBeNull();
     const cancelGeneration = container.querySelectorAll<HTMLButtonElement>('button[aria-label="Cancel draft generation"]');
     expect(cancelGeneration).toHaveLength(1);
@@ -399,7 +399,7 @@ describe('MeetingReviewWorkspace', () => {
     const saveReview = vi.fn().mockResolvedValue(true);
     const meetings = controller({ saveReview });
     await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!.click());
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review…')!.click());
     const summary = container.querySelector('[aria-label="Review summary"]') as HTMLTextAreaElement;
     const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
     await act(async () => {
@@ -469,7 +469,7 @@ describe('MeetingReviewWorkspace', () => {
       ],
     };
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: initialDetail })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!.click());
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review…')!.click());
 
     const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     const setTextAreaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
@@ -513,7 +513,7 @@ describe('MeetingReviewWorkspace', () => {
       ],
     };
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: initialDetail, renameRemoteSpeaker })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review')!.click());
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review…')!.click());
 
     const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     const setTextAreaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
@@ -716,7 +716,7 @@ describe('MeetingReviewWorkspace', () => {
     };
     const saveReview = vi.fn().mockResolvedValue(true);
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: keyedDetail, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    await clickInAct(getButton('Edit review'));
+    await clickInAct(getButton('Edit review…'));
     await clickInAct(getButton('Save review'));
 
     expect(saveReview).toHaveBeenCalledWith(expect.objectContaining({

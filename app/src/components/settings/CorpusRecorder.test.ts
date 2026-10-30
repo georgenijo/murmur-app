@@ -60,7 +60,7 @@ describe('CorpusRecorder microphone inventory consumer', () => {
       label: 'Short command', reference: 'Open the project dashboard.', take: 1,
       selected: true, fileName: 'take.wav', sha256: 'abc', recordedAt: '2026-08-14T00:00:00Z',
       sampleRate: 16_000, durationMs: 1000, peak: 0.4, rms: 0.1,
-      clippingPercent: 0, deviceLabel: 'System Default', qualityWarnings: [],
+      clippingPercent: 0, deviceLabel: 'System default', qualityWarnings: [],
     };
     mocks.stop.mockResolvedValue({ corpusDirectory: '/private/corpus', recording });
     const container = document.createElement('div');
@@ -80,17 +80,15 @@ describe('CorpusRecorder microphone inventory consumer', () => {
     await act(async () => { render(available); await Promise.resolve(); });
     const record = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Record') as HTMLButtonElement;
     await act(async () => { record.click(); await Promise.resolve(); });
-    const stop = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Stop & Save') as HTMLButtonElement;
+    const stop = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Stop & save') as HTMLButtonElement;
     await act(async () => { stop.click(); await Promise.resolve(); });
 
     const stale = { ...available, revision: 2, status: 'stale' as const, errorCode: 'refreshPending' as const };
     await act(async () => { render(stale); await Promise.resolve(); });
-    const primary = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Record Another Take') as HTMLButtonElement;
-    const secondary = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Record another take') as HTMLButtonElement;
+    const primary = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Record another take') as HTMLButtonElement;
     expect(primary.disabled).toBe(true);
-    expect(secondary.disabled).toBe(true);
+    expect(Array.from(container.querySelectorAll('button')).filter((button) => button.textContent === 'Record another take')).toHaveLength(1);
     primary.click();
-    secondary.click();
     expect(mocks.start).toHaveBeenCalledOnce();
 
     await act(async () => root.unmount());

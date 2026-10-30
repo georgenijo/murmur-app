@@ -59,7 +59,7 @@ describe('PermissionsBanner', () => {
       details.dispatchEvent(new Event('toggle'));
     });
     const reset = Array.from(container.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Reset Microphone permission'),
+      button.textContent?.includes('Reset microphone permission…'),
     )!;
     await act(async () => reset.click());
     await settle();

@@ -1,3 +1,5 @@
+import { ConfirmActionButton } from '../ui/ConfirmActionButton';
+import { noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ModeFileActions } from './ModeFileActions';
@@ -44,7 +46,7 @@ export function previewModeText(text: string, mode: MurmurMode): string {
   return next.charAt(0).toUpperCase() + next.slice(1);
 }
 
-function blankMode(name = 'New Mode'): MurmurMode {
+function blankMode(name = 'New mode'): MurmurMode {
   return {
     id: nextModeId(), name, builtIn: false, enabled: true, writingStyle: null,
     cleanupEnabled: null, smartFormattingEnabled: null, cliFormattingEnabled: null,
@@ -79,6 +81,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
   const [siteProbe, setSiteProbe] = useState<string | null>(null);
   const [siteTesting, setSiteTesting] = useState(false);
   const [siteRuleDrafts, setSiteRuleDrafts] = useState<Record<string, string>>({});
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const selected = allModes.find((mode) => mode.id === selectedId) ?? allModes[0];
   const custom = selected && !selected.builtIn;
   const commit = (update: Partial<{
@@ -96,12 +99,17 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
     commit({ modes: modes.map((mode) => mode.id === selected.id ? { ...mode, ...update } : mode) });
   };
   const create = (source?: MurmurMode) => {
-    const mode = source ? { ...source, id: nextModeId(), name: `${source.name} Copy`, builtIn: false, enabled: true } : blankMode();
+    const mode = source ? { ...source, id: nextModeId(), name: `${source.name} copy`, builtIn: false, enabled: true } : blankMode();
     commit({ modes: [...modes, mode] });
     setSelectedId(mode.id);
   };
   const remove = () => {
     if (!selected || selected.builtIn) return;
+    if (confirmDeleteId !== selected.id) {
+      setConfirmDeleteId(selected.id);
+      return;
+    }
+    setConfirmDeleteId(null);
     commit({
       modes: modes.filter((mode) => mode.id !== selected.id),
       appProfiles: profiles.map((profile) => profile.modeId === selected.id ? { ...profile, modeId: null } : profile),
@@ -165,8 +173,8 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
   return (
     <section aria-labelledby="modes-title" className="settings-card p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 id="modes-title" className="text-sm font-semibold text-on-surface">Modes</h2><p className="mt-1 text-xs text-on-surface-variant">Reusable local behavior for any number of apps.</p></div>
-        <button type="button" onClick={() => create()} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Create Mode</button>
+        <div><h2 id="modes-title" className="text-sm font-semibold text-on-surface">Modes</h2></div>
+        <button type="button" onClick={() => create()} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Create mode</button>
       </div>
       <ModeFileActions settings={{ modes, appProfiles: profiles, browserSiteRules: siteRules, siteModeLookupEnabled: siteLookupEnabled }} onChange={onChange} />
       <div className="mt-4 grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
@@ -177,7 +185,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
           <div className="flex flex-wrap gap-2">
             {custom && <button type="button" onClick={() => updateMode({ enabled: !selected.enabled })} className="rounded-lg bg-surface-container-high px-3 py-1.5 text-xs">{selected.enabled ? 'Disable' : 'Enable'}</button>}
             <button type="button" onClick={() => create(selected)} className="rounded-lg bg-surface-container-high px-3 py-1.5 text-xs">Duplicate</button>
-            {custom && <button type="button" onClick={remove} className="rounded-lg bg-error-container px-3 py-1.5 text-xs text-on-error-container">Delete</button>}
+            {custom && <button type="button" onKeyDown={noDefaultButtonKeyDown} onClick={remove} onBlur={() => setConfirmDeleteId((current) => (current === selected.id ? null : current))} className="rounded-lg bg-error-container px-3 py-1.5 text-xs text-on-error-container">{confirmDeleteId === selected.id ? 'Confirm delete…' : 'Delete…'}</button>}
           </div>
           {custom ? <input aria-label="Mode name" value={selected.name} maxLength={128} onChange={(event) => updateMode({ name: event.target.value })} className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-sm" /> : <h3 className="text-base font-semibold text-on-surface">{selected.name}</h3>}
           <p className="rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant">{summarizeMode(selected)}</p>
@@ -192,20 +200,20 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
             <legend className="px-1 text-xs font-semibold text-on-surface">Browser sites</legend>
             <label className="flex items-start justify-between gap-4 text-xs text-on-surface">
               <span><span className="block font-medium">Use frontmost browser host</span><span className="mt-1 block leading-relaxed text-on-surface-variant">Off by default. Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.</span></span>
-              <input type="checkbox" role="switch" aria-label="Use browser site Mode rules" checked={siteLookupEnabled} onChange={(event) => commit({ siteModeLookupEnabled: event.target.checked })} />
+              <input type="checkbox" role="switch" aria-label="Use browser site mode rules" checked={siteLookupEnabled} onChange={(event) => commit({ siteModeLookupEnabled: event.target.checked })} />
             </label>
             {siteLookupEnabled && <>
               <div className="grid gap-2 sm:grid-cols-[160px_minmax(0,1fr)_auto]">
                 <select aria-label="Site rule browser" value={siteBrowser} onChange={(event) => setSiteBrowser(event.target.value)} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-2 text-xs">{SITE_MODE_BROWSERS.map((browser) => <option key={browser.bundleId} value={browser.bundleId}>{browser.label}</option>)}</select>
                 <input aria-label="Site rule host" value={siteHost} onChange={(event) => setSiteHost(event.target.value)} placeholder="github.com" className="rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 text-xs" />
-                <button type="button" onClick={addSiteRule} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Add</button>
+                <button type="button" onClick={addSiteRule} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold">Add</button>
               </div>
               {siteError && <p role="alert" className="text-xs text-error">{siteError}</p>}
               <div className="space-y-2">{siteRules.filter((rule) => rule.modeId === selected.id).map((rule) => <div key={rule.id} className="grid items-center gap-2 rounded-lg bg-surface-container-low p-2 sm:grid-cols-[auto_150px_minmax(0,1fr)_auto]">
                 <input type="checkbox" aria-label={`Enable ${rule.host}`} checked={rule.enabled} onChange={(event) => updateSiteRule(rule, { enabled: event.target.checked })} />
                 <select aria-label={`Browser for ${rule.host}`} value={rule.browserBundleId} onChange={(event) => updateSiteRule(rule, { browserBundleId: event.target.value })} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-1.5 text-xs">{SITE_MODE_BROWSERS.map((browser) => <option key={browser.bundleId} value={browser.bundleId}>{browser.label}</option>)}</select>
                 <input aria-label={`Host for ${rule.host}`} value={siteRuleDrafts[rule.id] ?? rule.host} onChange={(event) => setSiteRuleDrafts((drafts) => ({ ...drafts, [rule.id]: event.target.value }))} onBlur={(event) => { const host = normalizeSiteHost(event.currentTarget.value); if (host) updateSiteRule(rule, { host }); else { setSiteRuleDrafts((drafts) => ({ ...drafts, [rule.id]: rule.host })); setSiteError('Enter an exact host such as github.com.'); } }} className="rounded-lg border border-outline-variant bg-surface-container-lowest px-2 py-1.5 text-xs" />
-                <button type="button" aria-label={`Remove ${rule.host}`} onClick={() => commit({ browserSiteRules: siteRules.filter((item) => item.id !== rule.id) })} className="rounded-lg px-2 py-1.5 text-xs text-error">Remove</button>
+                <ConfirmActionButton label="Remove" confirmLabel="Confirm remove" aria-label={`Remove ${rule.host}`} onConfirm={() => commit({ browserSiteRules: siteRules.filter((item) => item.id !== rule.id) })} className="rounded-lg px-2 py-1.5 text-xs text-error" />
               </div>)}</div>
               <button type="button" disabled={siteTesting} onClick={() => void testCurrentSite()} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-semibold text-on-surface disabled:opacity-50">{siteTesting ? 'Waiting for browser…' : 'Test current site'}</button>
               {siteProbe && <p role="status" className="text-xs text-on-surface-variant">{siteProbe}</p>}

@@ -6,6 +6,9 @@ import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
 import { ModelDownloader } from './components/ModelDownloader';
+import { TransformDiagnosticsView } from './components/log-viewer/TransformDiagnosticsView';
+import { DictationDiagnosticsView } from './components/log-viewer/DictationDiagnosticsView';
+import { RunsView } from './components/log-viewer/RunsView';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { CommandPalette } from './components/CommandPalette';
 import { AboutModal } from './components/AboutModal';
@@ -19,6 +22,13 @@ import { useQueryHistory } from './lib/hooks/useQueryHistory';
 import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
 import { QueryReviewView } from './components/query-review/QueryReviewApp';
 import './components/assistant/assistant.css';
+import { Button, Input } from './components/ui/FormControls';
+import { Select } from './components/ui/Select';
+import AnimatedSwitch from './components/ui/animated-switch/animated-switch';
+import { SettingsSection } from './components/settings/SettingsSection';
+import { SettingsRow, SettingsCard, SettingsUnavailableGroup } from './components/settings/SettingsRow';
+import { SettingToggle } from './components/settings/SettingToggle';
+import type { SettingsEditorTab } from './components/settings/SettingsEditorsWindow';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
@@ -43,6 +53,11 @@ import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
+const copyFixture = requestedState === 'settings-copy';
+const copyKnowledge = [
+  { id: 'copy-transform', payload: { kind: 'transform', name: 'Meeting notes', instruction: 'Summarize decisions and action items.' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', createdAtMs: 1, updatedAtMs: 2, revision: 1 },
+  { id: 'copy-command', payload: { kind: 'replacement_rule', source: 'insert greeting', replacement: 'Hello, team' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', voiceCommand: { commandType: 'text_replacement', allowClipboardRead: false }, createdAtMs: 1, updatedAtMs: 2, revision: 1 },
+];
 const appearance = query.get('appearance') === 'dark' ? 'dark' : 'light';
 const importedThemeFixture = query.get('theme');
 const status: DictationStatus = requestedState === 'recording'
@@ -241,6 +256,41 @@ const queryHistoryFixture = {
 };
 
 mockIPC((command, payload) => {
+  // #850 regression states use synthetic captures and record only invoked IDs.
+  if (requestedState === 'copy-diagnostics') {
+    const replacement = document.documentElement.hasAttribute('data-copy-replace-captures');
+    const capture = { captureId: replacement ? 'capture-two' : 'capture-one', recordingId: replacement ? 42 : 41,
+      transformPassId: replacement ? 52 : 51, capturedAtMs: 1_788_552_000_000, expiresAtMs: 1_789_156_800_000, outcome: 'success', hasContent: true };
+    if (command === 'get_dictation_diagnostic_capture_status') return { state: 'unarmed' };
+    if (command === 'get_transform_diagnostic_capture_status') return { armed: false, expiresAtMs: null };
+    if (command === 'list_transform_attempts') return { schemaVersion: 1, attempts: [] };
+    if (command === 'list_transform_diagnostic_captures' || command === 'list_dictation_diagnostic_captures') {
+      if (command === 'list_transform_diagnostic_captures' && document.documentElement.hasAttribute('data-copy-delay-refresh')) {
+        document.documentElement.setAttribute('data-copy-refresh-waiting', 'true');
+        return new Promise(resolve => window.addEventListener('copy-release-refresh', () => {
+          document.documentElement.removeAttribute('data-copy-refresh-waiting');
+          document.documentElement.setAttribute('data-copy-listed-capture', capture.captureId);
+          resolve([capture]);
+        }, { once: true }));
+      }
+      document.documentElement.setAttribute('data-copy-listed-capture', capture.captureId);
+      return [capture];
+    }
+    if (command === 'get_transform_diagnostic_capture') return { ...capture, schemaVersion: 1, selection: 'Synthetic selection', instruction: 'Shorten', output: 'Synthetic output', phases: [] };
+    if (command === 'get_dictation_diagnostic_capture') return { ...capture, schemaVersion: 1, result: { kind: 'noContent', outcome: 'cancelled', errorCode: 'cancelled' } };
+    if (command === 'delete_transform_diagnostic_capture' || command === 'delete_dictation_diagnostic_capture') {
+      document.documentElement.setAttribute('data-copy-deleted-capture', String((payload as { captureId: string }).captureId));
+      return;
+    }
+  }
+  if (requestedState === 'copy-onboarding') {
+    const permission = query.get('permission') ?? 'unknown';
+    if (command === 'check_microphone_permission_status') return permission;
+    if (command === 'check_accessibility_permission') return permission === 'loading' ? new Promise(() => {}) : permission === 'granted';
+    if (command === 'get_system_audio_permission_status') return permission === 'granted' || permission === 'denied' ? permission : 'unknown';
+    if (command === 'get_calendar_permission_status') return permission === 'unknown' || permission === 'loading' ? 'notDetermined' : permission;
+    if (command === 'request_system_audio_permission' || command === 'request_calendar_permission') return new Promise(() => {});
+  }
   if (command === 'list_query_history') return queryHistoryFixture;
   if (manyMeetings) {
     if (command === 'get_system_audio_permission_status') return 'unknown';
@@ -388,15 +438,19 @@ mockIPC((command, payload) => {
     return {
       availability: 'ready',
       schemaVersion: 1,
-      recordCount: 0,
+      recordCount: copyFixture ? copyKnowledge.length : 0,
       storeRevision: 0,
       recoveryAtMs: null,
       message: null,
     };
   }
   if (command === 'list_knowledge') {
-    return { entries: [], total: 0, nextOffset: null, storeRevision: 0 };
+    const request = (payload as Record<string, unknown> | undefined)?.request as { kind?: string; voiceCommand?: boolean } | undefined;
+    const entries = copyFixture ? copyKnowledge.filter((entry) => request?.voiceCommand ? !!entry.voiceCommand : !request?.kind || entry.payload.kind === request.kind) : [];
+    return { entries, total: entries.length, nextOffset: null, storeRevision: 0 };
   }
+  if (command === 'upsert_knowledge') return { ...copyKnowledge[1], ...((payload as Record<string, unknown> | undefined)?.draft as object) };
+  if (command === 'delete_knowledge') return 1;
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
   if (command === 'transform_model_status') {
     return { state: 'ready', path: '/fixture/transform.gguf', sizeBytes: 986_000_000, sha256: 'fixture', runtimeDisabled: false };
@@ -556,16 +610,19 @@ function VisualFixture() {
     document.documentElement.classList.add('murmur-main-window');
     return () => document.documentElement.classList.remove('murmur-main-window');
   }, []);
-  const settingsOpen = requestedState === 'settings'
+  const settingsOpen = copyFixture || requestedState === 'settings'
     || requestedState === 'settings-general'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-shortcuts'
     || requestedState === 'settings-transform-practice'
     || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
+  const [homeSidebarWidth, setHomeSidebarWidth] = React.useState(256);
   const meetings = useMeetings(fixtureSettings);
   const [historyEntries, setHistoryEntries] = React.useState(entries);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
+  const [copyRequestReady, setCopyRequestReady] = React.useState(false);
+  React.useEffect(() => { if (copyFixture) setCopyRequestReady(true); }, []);
   const [destination, setDestination] = React.useState<MainDestination>(
     requestedState === 'insights' ? 'insights' : requestedState.startsWith('assistant') ? 'queries' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
@@ -588,15 +645,23 @@ function VisualFixture() {
     if (manyMeetings) void meetings.select('meeting-0');
   }, [meetings.select]);
 
+  if (requestedState === 'copy-diagnostics') return <div data-visual-ready="true" className="h-full overflow-auto bg-background text-on-surface">
+    {query.get('panel') === 'transform' ? <TransformDiagnosticsView />
+      : query.get('panel') === 'runs' ? <RunsView runs={[]} loading={false} error={null} cleared={false} clearing={false} clearError={null} onRetry={() => {}}
+        onClear={async () => { document.documentElement.setAttribute('data-copy-cleared-runs', 'true'); }} onShowEvents={() => {}} />
+      : <DictationDiagnosticsView />}
+  </div>;
+
   if (requestedState === 'first-run-model') return <div className="main-first-run main-first-run-model">
     <ModelDownloader initialModel={fixtureSettings.model} onComplete={() => {}} />
   </div>;
-  if (requestedState === 'first-run-onboarding') return <div className="main-first-run main-first-run-onboarding">
+  if (requestedState === 'first-run-onboarding' || requestedState === 'copy-onboarding') return <div className="main-first-run main-first-run-onboarding">
     <OnboardingFlow initialModel={fixtureSettings.model} recordingMode="both" triggerKey="shift_l" onComplete={() => {}} />
   </div>;
 
   return (
     <div
+      style={{ '--home-sidebar-width': `${homeSidebarWidth}px` } as React.CSSProperties}
       data-appearance={appearance}
       data-theme-fixture={importedThemeFixture ?? 'sonic'}
       data-visual-ready="true"
@@ -648,10 +713,12 @@ function VisualFixture() {
           onOpenUpdate={() => {}}
           updateStatus={{ phase: 'idle' }}
           configureError={null}
-          pageRequest={requestedState === 'settings-general'
-            ? { page: 'general', token: 1 }
-            : requestedState === 'settings-appearance'
-              ? { page: 'appearance', token: 1 }
+          pageRequest={copyFixture
+            ? (copyRequestReady ? { page: query.get('page') ?? 'general', editorTab: (query.get('editor') ?? undefined) as SettingsEditorTab | undefined, token: 850 } : null)
+            : requestedState === 'settings-general'
+              ? { page: 'general', token: 1 }
+              : requestedState === 'settings-appearance'
+                ? { page: 'appearance', token: 1 }
             : requestedState === 'settings-shortcuts'
             ? { page: 'shortcuts', token: 1 }
             : requestedState === 'settings-transform-practice'
@@ -661,6 +728,8 @@ function VisualFixture() {
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <HomeSidebar
+            onWidthChange={setHomeSidebarWidth}
+            initialCollapsed={requestedState === 'home-sidebar-collapsed'}
             active={destination}
             homeButtonRef={homeNavigationRef}
             onNavigate={setDestination}
@@ -676,7 +745,7 @@ function VisualFixture() {
                 <WorkspacePageHeader
                   title="Notetaker"
                   titleId="meetings-view-title"
-                  description="Local meeting transcripts and summaries."
+                  description="Local meeting transcripts and summaries"
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
                 <MeetingsPanel meetings={meetings} playbackBusy={false} />
@@ -686,7 +755,7 @@ function VisualFixture() {
                 <WorkspacePageHeader
                   title="Assistant"
                   titleId="queries-view-title"
-                  description="Talk, type, and pick up where you left off."
+                  description="Talk, type, and pick up where you left off"
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
                 <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
@@ -850,6 +919,28 @@ function MeetingSuggestionOverlayFixture() {
 
 /** Render production primitives for browser-computed measurements, never
  * substitutes for native WKWebView evidence. */
+/** Actual production primitives; only native IPC is mocked by this entry. */
+function SettingsGeometryFixture() {
+  const [changed, setChanged] = React.useState(true);
+  return <main data-visual-ready="true" className="settings-workspace" style={{ padding: 24, display: 'block', overflow: 'auto', height: '100%' }}>
+    <SettingsSection pageId="geometry" title="Delivery geometry">
+      <SettingToggle title="Clipboard delivery" description="Copy the complete transcript locally. A long description remains readable at every width without clamping." checked={changed} defaultChecked={false} onChange={() => setChanged(!changed)} />
+      <SettingsRow title="Language" description="Choose the language for recognition." control={<Select value="auto" onChange={() => {}} items={[{ value: 'auto', label: 'Automatic' }]} />} />
+      <SettingsRow title="Controls" control={<><Button>Default</Button><Button size="sm">Small</Button><Button size="xs">Extra small</Button></>} />
+      <SettingsRow title="Input" control={<Input aria-label="Example input" defaultValue="Local text" />} />
+      <SettingToggle title="Disabled" description="Unavailable while recording." checked disabled onChange={() => {}} />
+      <SettingsUnavailableGroup message="This feature requires a local model."><SettingToggle title="Unavailable" description="Install a model to enable this feature." checked={false} disabled onChange={() => {}} /></SettingsUnavailableGroup>
+    </SettingsSection>
+    <SettingsCard variant="plain"><Button>Plain one</Button><Button>Plain two</Button></SettingsCard>
+    <div className="settings-row-controls" style={{ marginTop: 16 }}>
+      <AnimatedSwitch aria-label="Small switch" size="sm" defaultChecked />
+      <Select aria-label="Small select" size="sm" value="a" onChange={() => {}} items={[{ value: 'a', label: 'Small' }]} />
+      <Select aria-label="Extra small select" size="xs" value="a" onChange={() => {}} items={[{ value: 'a', label: 'Extra small' }]} />
+    </div>
+    <div className="settings-segmented" style={{ marginTop: 16 }}><button className="settings-segmented-btn" data-selected="true">Selected</button><button className="settings-segmented-btn">Other</button></div>
+  </main>;
+}
+
 function TypographyFixture() {
   return (
     <main data-visual-ready="true" className="space-y-4 p-6">
@@ -884,7 +975,9 @@ function TypographyFixture() {
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    {requestedState === 'production-font-roots' ? (
+    {requestedState === 'settings-geometry' ? (
+      <SettingsGeometryFixture />
+    ) : requestedState === 'production-font-roots' ? (
       <main data-visual-ready="true">
         {(['main', 'onboarding', 'diagnostics'] as const).map(surface => (
           <AppSurface key={surface} surface={surface} className="font-serif"><p>{surface} production text</p></AppSurface>
@@ -911,7 +1004,7 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       <DictationPreviewFixture />
     ) : requestedState === 'overlay-meeting-suggestion' ? (
       <MeetingSuggestionOverlayFixture />
-    ) : requestedState === 'settings-appearance' ? (
+    ) : (requestedState === 'settings-appearance' || (copyFixture && query.get('page') === 'appearance')) ? (
       <AppearanceProvider>
         <VisualFixture />
       </AppearanceProvider>

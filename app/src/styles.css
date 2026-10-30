@@ -943,8 +943,9 @@ textarea {
 /* Main dashboard shell. The sidebar and content insets deliberately consume
    the whole native window instead of centering another max-width canvas. */
 .home-sidebar {
+  position: relative;
   display: flex;
-  width: var(--ui-sidebar-width);
+  width: var(--home-sidebar-width, 16rem);
   min-height: 0;
   flex-shrink: 0;
   flex-direction: column;
@@ -958,7 +959,7 @@ textarea {
   padding: var(--ui-space-4);
 }
 
-.settings-sidebar { width: var(--ui-sidebar-width); }
+/* Settings navigation has its own responsive geometry in styles/settings.css. */
 
 .home-nav,
 .home-dashboard,
@@ -972,6 +973,24 @@ textarea {
 }
 
 .home-sidebar .ui-main-nav-item { font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
+.home-sidebar-heading { display: flex; flex-shrink: 0; align-items: center; gap: var(--ui-space-2); padding-bottom: var(--ui-space-5); }
+.home-sidebar-heading .home-brand { min-width: 0; flex: 1; padding-bottom: var(--ui-space-3); }
+.home-sidebar .home-brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-sidebar-toggle { --ui-control-compact: 2rem; }
+.home-sidebar-resize { position: absolute; top: 0; right: 0; bottom: 0; z-index: 1; width: 8px; cursor: col-resize; touch-action: none; }
+.home-sidebar-resize::after { position: absolute; top: 0; right: 0; bottom: 0; width: 2px; background: transparent; content: ''; }
+.home-sidebar-resize:hover::after,
+.home-sidebar-resize:focus-visible::after,
+.home-sidebar[data-resizing="true"] .home-sidebar-resize::after { background: var(--murmur-primary); }
+.home-sidebar-resize:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: -2px; }
+.home-sidebar[data-resizing="true"] { user-select: none; }
+.home-sidebar[data-collapsed="true"] { padding-inline: 7px 8px; }
+.home-sidebar[data-collapsed="true"] .home-sidebar-heading { justify-content: center; }
+.home-sidebar[data-collapsed="true"] .home-brand { display: none; }
+.home-sidebar[data-collapsed="true"] .ui-main-nav-item { width: 2rem; height: 2rem; min-height: 2rem; justify-content: center; padding: 0; }
+.home-sidebar[data-collapsed="true"] .home-nav-label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.home-sidebar[data-collapsed="true"] .home-privacy-note { justify-content: center; border: 0; padding: var(--ui-space-3) 0; }
+.home-sidebar[data-collapsed="true"] .home-privacy-dot { margin: 0; }
 
 .home-brand {
   display: flex;
@@ -1045,14 +1064,14 @@ textarea {
 .main-error-banner {
   position: absolute;
   bottom: var(--ui-dashboard-inset);
-  left: calc(var(--ui-sidebar-width) + var(--ui-dashboard-inset));
+  left: calc(var(--home-sidebar-width, var(--ui-sidebar-width)) + var(--ui-dashboard-inset));
   z-index: 20;
   display: flex;
   width: fit-content;
   min-width: 0;
   max-width: min(
     30rem,
-    calc(100% - var(--ui-sidebar-width) - var(--ui-dashboard-inset) - var(--ui-dashboard-inset))
+    calc(100% - var(--home-sidebar-width, var(--ui-sidebar-width)) - var(--ui-dashboard-inset) - var(--ui-dashboard-inset))
   );
   align-items: flex-start;
   gap: var(--ui-space-3);
@@ -1447,8 +1466,8 @@ textarea {
 @media (max-width: 760px) {
   :root { --ui-sidebar-width: var(--ui-sidebar-compact-width); }
   .main-error-banner {
-    left: calc(var(--ui-sidebar-width) + var(--ui-dashboard-compact-inset));
-    max-width: calc(100% - var(--ui-sidebar-width) - var(--ui-dashboard-compact-inset) - var(--ui-dashboard-compact-inset));
+    left: calc(var(--home-sidebar-width, var(--ui-sidebar-width)) + var(--ui-dashboard-compact-inset));
+    max-width: calc(100% - var(--home-sidebar-width, var(--ui-sidebar-width)) - var(--ui-dashboard-compact-inset) - var(--ui-dashboard-compact-inset));
   }
   .home-dashboard,
   .insights-view,
@@ -1466,6 +1485,14 @@ textarea {
     var(--murmur-background) var(--ui-sidebar-width),
     var(--murmur-background) 100%
   );
+}
+
+.main-app-shell > .ui-window-header:not(.settings-window-header) {
+  background-image: linear-gradient(to right,
+    var(--murmur-surface-container-low) 0,
+    var(--murmur-surface-container-low) var(--home-sidebar-width, 16rem),
+    var(--murmur-background) var(--home-sidebar-width, 16rem),
+    var(--murmur-background) 100%);
 }
 
 .settings-search input[type='search']::-webkit-search-cancel-button {

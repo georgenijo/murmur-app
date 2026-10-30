@@ -37,18 +37,18 @@ export function modelDownloadPercent(progress: ModelDownloadProgress): number | 
 export function modelDownloadLabel(progress: ModelDownloadProgress): string {
   switch (progress.phase) {
     case 'preparing':
-      return 'Preparing secure installer...';
+      return 'Preparing secure installer…';
     case 'repairing':
       return progress.repeatedRepair
-        ? 'Repairing incomplete install again...'
-        : 'Repairing incomplete install...';
+        ? 'Repairing incomplete install again…'
+        : 'Repairing incomplete install…';
     case 'initializing':
-      return 'Installing Core ML model...';
+      return 'Installing Core ML model…';
     case 'validating':
-      return 'Validating installation...';
+      return 'Validating installation…';
     case 'installing':
-      return 'Installing...';
+      return 'Installing…';
     default:
-      return 'Downloading...';
+      return 'Downloading…';
   }
 }

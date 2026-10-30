@@ -49,7 +49,9 @@ describe('VocabularyAliasesEditor', () => {
     await act(async () => toggle.click());
     expect(onChange).toHaveBeenLastCalledWith([{ ...TAURI_ENTRY, enabled: false }]);
 
-    const deleteButton = container.querySelector('[aria-label="Delete Tauri"]') as HTMLButtonElement;
+    const deleteButton = container.querySelector('[aria-label="Delete Tauri…"]') as HTMLButtonElement;
+    await act(async () => deleteButton.click());
+    expect(onChange).not.toHaveBeenLastCalledWith([]);
     await act(async () => deleteButton.click());
     expect(onChange).toHaveBeenLastCalledWith([]);
 
@@ -90,7 +92,7 @@ describe('VocabularyAliasesEditor', () => {
     mocks.open.mockResolvedValue('/private/vocabulary.json');
     mocks.invoke.mockResolvedValue(exportVocabularyFile({ vocabularyEntries: [imported], voiceCommands: [] }));
     const importButton = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Import saved spellings')) as HTMLButtonElement;
+      .find((button) => button.textContent?.includes('Import saved spellings…')) as HTMLButtonElement;
     await act(async () => importButton.click());
     expect(mocks.invoke).toHaveBeenCalledWith('read_modes_file', { path: '/private/vocabulary.json' });
     expect(container.textContent).toContain('1 new saved spellings');
@@ -104,7 +106,7 @@ describe('VocabularyAliasesEditor', () => {
   it('exports all current saved spellings through the atomic text sink', async () => {
     mocks.save.mockResolvedValue('/private/vocabulary.json');
     await act(async () => (Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent?.includes('Export saved spellings')) as HTMLButtonElement).click());
+      .find((button) => button.textContent?.includes('Export saved spellings…')) as HTMLButtonElement).click());
     expect(mocks.invoke).toHaveBeenCalledWith('save_text_export', {
       path: '/private/vocabulary.json',
       contents: exportVocabularyFile({ vocabularyEntries: [TAURI_ENTRY], voiceCommands: [] }),

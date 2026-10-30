@@ -1,6 +1,8 @@
+import { ActionsOverflow } from '../ui/ActionsOverflow';
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { AppProfile } from '../../lib/settings';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import {
   deleteAllKnowledge,
   deleteKnowledge,
@@ -69,30 +71,9 @@ function StatusBanner({ availability, message, recoveryAtMs, onRetry }: {
   );
 }
 
-function ConfirmDialog({ title, children, confirmLabel, dangerous = false, disabled = false, onCancel, onConfirm }: {
-  title: string;
-  children: React.ReactNode;
-  confirmLabel: string;
-  dangerous?: boolean;
-  disabled?: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-6">
-      <div role="dialog" aria-modal="true" aria-labelledby="knowledge-confirm-title" className="dialog-popover w-full max-w-md p-5">
-        <h2 id="knowledge-confirm-title" className="text-base font-semibold text-on-surface">{title}</h2>
-        <div className="mt-2 text-sm text-on-surface-variant">{children}</div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="settings-quiet-btn px-3 py-2 text-xs text-on-surface">Cancel</button>
-          <button type="button" disabled={disabled} onClick={onConfirm} className={`rounded-lg px-3 py-2 text-xs font-semibold disabled:opacity-40 ${dangerous ? 'border border-error/30 bg-error/10 text-error' : 'bg-primary text-on-primary'}`}>{confirmLabel}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function KnowledgeManager({ active, profiles }: Props) {
+  const managerRef = useRef<HTMLDivElement>(null);
+  const restoreConfirmFocus = () => managerRef.current?.querySelector<HTMLElement>('[aria-label="More knowledge actions"]') ?? null;
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<KnowledgeKind | 'all'>('all');
   const [enabled, setEnabled] = useState<'all' | 'enabled' | 'disabled'>('all');
@@ -225,7 +206,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
   };
 
   return (
-    <div className="space-y-4">
+    <div ref={managerRef} className="space-y-4">
       <StatusBanner
         availability={knowledge.status.availability}
         message={knowledge.status.message}
@@ -237,16 +218,15 @@ export function KnowledgeManager({ active, profiles }: Props) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-medium text-on-surface">Personal knowledge</p>
-            <p className="mt-1 max-w-xl text-xs text-on-surface-variant">
-              Manage local replacement rules, vocabulary, reusable snippets, and Voice Command records. Voice-enabled records run locally during live transcription; other enabled replacements run through Smart Correction with deterministic scope and provenance precedence.
-            </p>
           </div>
-          <button type="button" onClick={() => setEditing(null)} disabled={unavailable || bulkBusy} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge</button>
+          <button type="button" onClick={() => setEditing(null)} disabled={unavailable || bulkBusy} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge…</button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
+          <ActionsOverflow label="More knowledge actions">
           <button type="button" onClick={() => void chooseExport().catch(() => {})} disabled={unavailable || bulkBusy} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Export…</button>
           <button type="button" onClick={() => void chooseImport()} disabled={unavailable || bulkBusy} className="rounded-lg border border-outline-variant/40 px-3 py-1.5 text-xs font-medium disabled:opacity-40">Import…</button>
           <button type="button" onClick={() => setDeleteAllOpen(true)} disabled={unavailable || bulkBusy || knowledge.status.recordCount === 0} className="rounded-lg border border-error/30 px-3 py-1.5 text-xs font-medium text-error disabled:opacity-40">Delete all…</button>
+          </ActionsOverflow>
           <span className="ml-auto self-center text-xs text-on-surface-variant">{knowledge.status.recordCount} stored locally · schema v{knowledge.status.schemaVersion}</span>
         </div>
       </div>
@@ -311,7 +291,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
                 </button>
                 <div className="flex shrink-0 gap-1">
                   <button type="button" disabled={bulkBusy} onClick={() => setEditing(entry)} aria-label={`Edit ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium hover:bg-surface-container">Edit</button>
-                  <button type="button" disabled={bulkBusy} onClick={() => setDeleteTarget(entry)} aria-label={`Delete ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium text-error hover:bg-error/10">Delete</button>
+                  <button type="button" disabled={bulkBusy} onClick={() => setDeleteTarget(entry)} aria-label={`Delete ${payloadTitle(entry.payload)}`} className="rounded-md px-2 py-1 text-xs font-medium text-error hover:bg-error/10">Delete…</button>
                 </div>
               </li>
             ))}
@@ -327,11 +307,11 @@ export function KnowledgeManager({ active, profiles }: Props) {
         setEditing(undefined);
       }} />}
 
-      {deleteTarget && <ConfirmDialog title="Delete this knowledge?" confirmLabel="Delete" dangerous onCancel={() => setDeleteTarget(null)} onConfirm={() => void run(() => deleteKnowledge(deleteTarget), 'Knowledge deleted.').then(() => setDeleteTarget(null)).catch(() => {})}>
+      {deleteTarget && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete this knowledge?" confirmLabel="Delete…" dangerous onCancel={() => setDeleteTarget(null)} onConfirm={() => void run(() => deleteKnowledge(deleteTarget), 'Knowledge deleted.').then(() => setDeleteTarget(null)).catch(() => {})}>
         This permanently removes “{payloadTitle(deleteTarget.payload)}” from Murmur’s local store.
       </ConfirmDialog>}
 
-      {importPreview && <ConfirmDialog title="Import personal knowledge?" confirmLabel="Import" onCancel={() => setImportPreview(null)} onConfirm={() => void run(async () => {
+      {importPreview && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Import personal knowledge?" confirmLabel="Import" onCancel={() => setImportPreview(null)} onConfirm={() => void run(async () => {
         const result = await importKnowledgeFromFile(importPreview.path);
         setNotice(`Imported ${result.imported}; skipped ${result.duplicates} duplicate${result.duplicates === 1 ? '' : 's'}.`);
       }, 'Knowledge imported.').then(() => setImportPreview(null)).catch(() => {})}>
@@ -339,7 +319,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
         <p className="mt-2">Existing records are never overwritten. Same-ID conflicts reject the import.</p>
       </ConfirmDialog>}
 
-      {bulk.kind === 'confirming' && <ConfirmDialog title="Delete all matching knowledge?" confirmLabel={`Delete ${bulk.entries.length} matching records`} dangerous disabled={bulkDeletePhrase !== 'DELETE' || bulk.entries.length === 0} onCancel={() => { if (bulkController.current === bulk.controller) cancelBulk(); }} onConfirm={() => {
+      {bulk.kind === 'confirming' && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all matching knowledge?" confirmLabel={`Delete ${bulk.entries.length} matching records…`} dangerous disabled={bulkDeletePhrase !== 'DELETE' || bulk.entries.length === 0} onCancel={() => { if (bulkController.current === bulk.controller) cancelBulk(); }} onConfirm={() => {
         const controller = bulk.controller;
         if (bulkController.current !== controller || controller.signal.aborted || bulkDeletePhrase !== 'DELETE') return;
         bulkController.current = null;
@@ -357,7 +337,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
         </label>
       </ConfirmDialog>}
 
-      {deleteAllOpen && <ConfirmDialog title="Delete all personal knowledge?" confirmLabel="Delete everything" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
+      {deleteAllOpen && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all personal knowledge?" confirmLabel="Delete everything…" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
         <p>This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later.</p>
         <label className="mt-3 block text-xs font-medium text-on-surface">Type DELETE to confirm
           <input aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-(--ui-radius-control) border border-error bg-(--ui-tint-raised) px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />

@@ -40,7 +40,7 @@ export interface HoldToDeleteButtonProps {
   className?: string;
   /**
    * Label shown after a discrete click arms the confirm state, awaiting a
-   * second discrete click. @default `${label}?`
+   * second discrete click. @default `Confirm ${rawLabel.toLowerCase()}…`
    */
   confirmLabel?: string;
   /**
@@ -51,15 +51,17 @@ export interface HoldToDeleteButtonProps {
 }
 
 export default function HoldToDeleteButton({
-  label = "Hold To Delete",
+  label: rawLabel = "Hold to delete",
   holdDuration = 2000,
   successDuration = 1200,
   onDelete,
   disabled = false,
   className,
-  confirmLabel,
+  confirmLabel: rawConfirmLabel,
   confirmTimeout = 4000,
 }: HoldToDeleteButtonProps) {
+  const label = `${rawLabel.replace(/…$/, "")}…`;
+  const confirmLabel = rawConfirmLabel ? `${rawConfirmLabel.replace(/…$/, "")}…` : undefined;
   const [isHolding, setIsHolding] = useState(false);
   const [isArmed, setIsArmed] = useState(false);
   const [isCompleted, setIsCompleted] = useState(false);
@@ -92,7 +94,7 @@ export default function HoldToDeleteButton({
   const resolvedHoldDuration = Math.max(0, holdDuration);
   const resolvedSuccessDuration = Math.max(0, successDuration);
   const resolvedConfirmTimeout = Math.max(0, confirmTimeout);
-  const resolvedConfirmLabel = confirmLabel ?? `${label}?`;
+  const resolvedConfirmLabel = confirmLabel ?? `Confirm ${rawLabel.toLowerCase()}…`;
   const progressClipPath = useTransform(
     progress,
     (value) => `inset(0 ${100 - value * 100}% 0 0)`,
@@ -436,7 +438,8 @@ export default function HoldToDeleteButton({
       onBlur={forceCancelHold}
       onKeyDown={(e) => {
         if (e.key === "Escape") forceCancelHold();
-        if (e.key === " " || e.key === "Enter") {
+        if (e.key === "Enter") { e.preventDefault(); return; }
+        if (e.key === " ") {
           e.preventDefault();
           if (e.repeat || disabled || completedRef.current || inputRef.current) return;
           inputRef.current = { key: e.key };
@@ -444,7 +447,7 @@ export default function HoldToDeleteButton({
         }
       }}
       onKeyUp={(e) => {
-        if (e.key !== " " && e.key !== "Enter") return;
+        if (e.key !== " ") return;
         e.preventDefault();
         const input = inputRef.current;
         if (!input || !('key' in input) || input.key !== e.key) return;

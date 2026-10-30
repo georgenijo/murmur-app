@@ -111,13 +111,13 @@ describe('KnowledgeManager', () => {
 
     await act(async () => (container.querySelector('[aria-label="Delete Tory"]') as HTMLButtonElement).click());
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Delete this knowledge');
-    const deleteButtons = Array.from(container.querySelectorAll('button')).filter((candidate) => candidate.textContent?.trim() === 'Delete');
+    const deleteButtons = Array.from(container.querySelectorAll('button')).filter((candidate) => candidate.textContent?.trim() === 'Delete…');
     await act(async () => deleteButtons[deleteButtons.length - 1].click());
     expect(mocks.remove).toHaveBeenCalledWith(ENTRY);
   });
 
   it('creates each type and exposes explicit visibility controls', async () => {
-    await act(async () => button(container, 'Create knowledge').click());
+    await act(async () => button(container, 'Create knowledge…').click());
     const type = container.querySelector('[role="dialog"] select') as HTMLSelectElement;
     expect(container.querySelector('[aria-label="Heard phrase"]')).not.toBeNull();
     await act(async () => setValue(type, 'vocabulary_term'));
@@ -129,22 +129,25 @@ describe('KnowledgeManager', () => {
 
   it('previews import, exports, and requires typed DELETE before delete-all', async () => {
     mocks.save.mockResolvedValue('/tmp/knowledge.json');
-    await act(async () => button(container, 'Export…').click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More knowledge actions"]')!.click());
+    await act(async () => button(document.body, 'Export…').click());
     expect(mocks.exportFile).toHaveBeenCalledWith('/tmp/knowledge.json');
 
     mocks.open.mockResolvedValue('/tmp/knowledge.json');
-    await act(async () => button(container, 'Import…').click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More knowledge actions"]')!.click());
+    await act(async () => button(document.body, 'Import…').click());
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain('2 records inspected');
     await act(async () => button(container, 'Import').click());
     expect(mocks.importFile).toHaveBeenCalledWith('/tmp/knowledge.json');
 
-    await act(async () => button(container, 'Delete all…').click());
-    const confirm = button(container, 'Delete everything');
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More knowledge actions"]')!.click());
+    await act(async () => button(document.body, 'Delete all…').click());
+    const confirm = button(container, 'Delete everything…');
     expect(confirm.disabled).toBe(true);
     const input = container.querySelector('[aria-label="Type DELETE to confirm"]') as HTMLInputElement;
     await act(async () => setValue(input, 'DELETE'));
-    expect(button(container, 'Delete everything').disabled).toBe(false);
-    await act(async () => button(container, 'Delete everything').click());
+    expect(button(container, 'Delete everything…').disabled).toBe(false);
+    await act(async () => button(container, 'Delete everything…').click());
     expect(mocks.removeAll).toHaveBeenCalledWith(9);
   });
 
@@ -175,14 +178,14 @@ describe('KnowledgeManager', () => {
     await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')!, 'Tory'));
     await act(async () => button(container, 'Delete all shown…').click());
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain('search: “Tory”');
-    expect(button(container, 'Delete 2 matching records').disabled).toBe(true);
+    expect(button(container, 'Delete 2 matching records…').disabled).toBe(true);
     expect(mocks.remove).not.toHaveBeenCalled();
     expect(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')?.disabled).toBe(true);
     // A filter change behind the modal must not change the confirmed snapshot.
     await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')!, 'other'));
     await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Type DELETE to confirm matching records"]')!, 'DELETE'));
     mocks.remove.mockRejectedValueOnce('Record changed; refresh before retrying.').mockResolvedValueOnce(10);
-    const confirm = button(container, 'Delete 2 matching records');
+    const confirm = button(container, 'Delete 2 matching records…');
     await act(async () => { confirm.click(); confirm.click(); });
     expect(mocks.list).toHaveBeenCalledTimes(1);
     expect(mocks.remove.mock.calls).toEqual([[ENTRY], [second]]);
@@ -198,7 +201,7 @@ describe('KnowledgeManager', () => {
     expect(mocks.remove).not.toHaveBeenCalled();
     await act(async () => setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter visibility"]')!, 'global'));
     await act(async () => button(container, 'Delete all shown…').click());
-    expect(button(container, 'Delete 1 matching records').disabled).toBe(true);
+    expect(button(container, 'Delete 1 matching records…').disabled).toBe(true);
     expect(mocks.list).toHaveBeenLastCalledWith(expect.objectContaining({ scopeKind: 'global' }));
   });
 

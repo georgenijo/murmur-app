@@ -102,14 +102,14 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
   const picking = state.kind === 'choosing' || state.kind === 'applying';
   return (
     <div className="contents text-xs">
-      <button type="button" disabled={disabled || state.kind === 'loading' || state.kind === 'applying'} onClick={() => void lookup()} className="meeting-header-action">{state.kind === 'loading' ? 'Reading calendar…' : 'Name from calendar'}</button>
+      <button type="button" disabled={disabled || state.kind === 'loading' || state.kind === 'applying'} onClick={() => void lookup()} className="meeting-header-action">{state.kind === 'loading' ? 'Reading calendar…' : 'Name from calendar…'}</button>
       {state.kind === 'unavailable' && (
         <div role="status" className="meeting-detail-header-panel space-y-2 text-xs text-on-surface-variant">
           <p>{state.message}</p>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={onManualNaming} className="dialog-pill-btn px-3 py-1.5 text-primary">Name manually</button>
-            {state.permission !== 'unsupported' && <button type="button" onClick={() => void openSettings()} className="dialog-pill-btn px-3 py-1.5">Open Calendar Settings</button>}
-            {state.permission === 'denied' && <button type="button" onClick={() => void reset()} className="dialog-pill-btn px-3 py-1.5">Reset Calendar Access</button>}
+            {state.permission !== 'unsupported' && <button type="button" onClick={() => void openSettings()} className="dialog-pill-btn px-3 py-1.5">Open Calendar settings…</button>}
+            {state.permission === 'denied' && <button type="button" onClick={() => void reset()} className="dialog-pill-btn px-3 py-1.5">Reset Calendar access…</button>}
           </div>
         </div>
       )}

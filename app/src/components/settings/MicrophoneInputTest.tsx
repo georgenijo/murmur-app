@@ -1,3 +1,4 @@
+import { SettingsRow } from './SettingsRow';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Popover } from '@base-ui/react/popover';
 import { listen } from '@tauri-apps/api/event';
@@ -171,7 +172,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
           }
         }}
       >
-        <Popover.Trigger ref={triggerRef} aria-label="Microphone input" aria-describedby={describedBy} disabled={disabled} className="group flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
+        <Popover.Trigger ref={triggerRef} aria-label="Microphone input" aria-describedby={describedBy} disabled={disabled} className="ui-select-trigger group flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
           <span className="truncate">{selectedLabel}</span>
           <svg className="ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform group-data-[popup-open]:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
         </Popover.Trigger>
@@ -191,7 +192,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
                 </label>
                 <label className="settings-microphone-choice">
                   <input ref={!smartAutoActive && microphone === 'system_default' ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} disabled={disabled} readOnly onClick={() => selectManual('system_default')} />
-                  <span><span className="block font-medium">Follow macOS Default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
+                  <span><span className="block font-medium">Follow macOS default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
                 </label>
                 {manualDevices.map((device) => (
                   <label key={`manual-${device.id}`} className="settings-microphone-choice">
@@ -681,7 +682,7 @@ export function MicrophoneInputTest({
       ? 'Loading available microphones…'
       : 'Microphone choices are temporarily unavailable.'
     : missingDevice
-      ? 'Selected device not found — choose an available microphone or Follow macOS Default.'
+      ? 'Selected device not found — choose an available microphone or Follow macOS default.'
       : null;
   const defaultDevice = devices.find((device) => device.id === defaultInputId) ?? null;
   const deviceOptions = audioDeviceSelectOptions(devices);
@@ -706,8 +707,7 @@ export function MicrophoneInputTest({
 
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-on-surface">Microphone</label>
-      {smartAuto && onSmartAutoChange ? (
+      <SettingsRow title="Microphone" control={<div className="settings-picker">{smartAuto && onSmartAutoChange ? (
         <MicrophonePicker
           microphone={microphone}
           devices={devices}
@@ -735,7 +735,7 @@ export function MicrophoneInputTest({
             ...audioDeviceSelectOptions(devices.filter((device) => device.hasInput)),
           ]}
         />
-      )}
+      )}</div>}>
       {selectorHelperText && missingDevice && inventoryAvailable ? (
         <p
           id={selectorHelperId}
@@ -792,6 +792,7 @@ export function MicrophoneInputTest({
       ) : (
         null
       )}
+      </SettingsRow>
       <div className="settings-meter-card">
         <div className="flex items-center gap-3">
           <div

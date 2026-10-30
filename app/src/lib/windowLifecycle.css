@@ -1,0 +1,7 @@
+/* Native traffic lights retain their point size at every page zoom. Keep the
+   reserved width from the design token, compensating only the renderer zoom.
+   The root selector outranks the shared header rule regardless of load order. */
+:root .ui-window-header,
+:root .main-header {
+  padding-left: calc(var(--ui-window-controls-inset) / var(--ui-window-page-zoom, 1));
+}

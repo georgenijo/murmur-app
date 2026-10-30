@@ -1,3 +1,6 @@
+import { SettingsRow } from './SettingsRow';
+import { Input } from '../ui/FormControls';
+import { DEFAULT_SETTINGS } from '../../lib/settings';
 import {
   QUERY_CONTEXT_LEVEL_OPTIONS,
   QUERY_KEY_OPTIONS,
@@ -37,23 +40,20 @@ export function VoiceQuerySettings({
   setupStatus,
 }: VoiceQuerySettingsProps) {
   return (
-    <SettingsSection pageId="ai-query" activePage={activePage} title="Voice Query" subtitle="Provider, privacy, shortcut, and response behavior">
+    <SettingsSection hideHeading pageId="ai-query" activePage={activePage} title="Voice Query">
       <SettingsCallout tone="warning" title="You control where the question goes">
         Murmur transcribes your question locally, then gives it to the exact CLI executable below.
         That CLI may send the question or answer to cloud services according to its own configuration, and may also send any optional app context you enable.
         Murmur cannot verify or prevent that network egress.
       </SettingsCallout>
 
-      <div data-setting-target="voice-query-provider" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-        <label className="block text-sm font-medium text-on-surface">Provider</label>
-        <Select
+      <SettingsRow title={<>Provider</>} targetId="voice-query-provider" onReset={settings.queryProvider !== DEFAULT_SETTINGS.queryProvider ? () => { void vm.selectQueryProvider(DEFAULT_SETTINGS.queryProvider); } : undefined} control={<Select
           value={settings.queryProvider}
           onChange={(value) => void vm.selectQueryProvider(value as QueryProviderId)}
           items={vm.queryProviderItems.length > 0
             ? vm.queryProviderItems
             : [{ value: 'custom', label: 'Custom' }]}
-        />
-        {vm.queryPresetsError && (
+        />}>{vm.queryPresetsError && (
           <div role="alert" className="flex items-center justify-between gap-3 text-xs text-error">
             <span>{vm.queryPresetsError}</span>
             <button
@@ -65,20 +65,19 @@ export function VoiceQuerySettings({
             </button>
           </div>
         )}
-        {vm.selectedQueryPreset && settings.queryProvider !== 'custom' && (
+{vm.selectedQueryPreset && settings.queryProvider !== 'custom' && (
           <p className="text-xs text-on-surface-variant">
             {vm.selectedQueryPreset.discoveredExecutable
               ? `Found ${vm.selectedQueryPreset.discoveredExecutable}`
               : `Not found in ${vm.selectedQueryPreset.discoveryPaths.join(', ')}`}
           </p>
         )}
-        {settings.queryProvider === 'custom' && (
+{settings.queryProvider === 'custom' && (
           <p className="text-xs text-on-surface-variant">
             Choose an absolute executable and its fixed arguments below. For a local smoke test,
             use <code>/usr/bin/printf</code> with one fixed argument: <code>%s</code>.
           </p>
-        )}
-      </div>
+        )}</SettingsRow>
 
       <div><QueryCapabilities command={vm.queryCommand} /></div>
 
@@ -101,7 +100,7 @@ export function VoiceQuerySettings({
         targetId="voice-query-copy"
         title="Automatically copy answers"
         description="Copy successful final answers to the clipboard. Voice Query never auto-pastes."
-        checked={settings.queryAutomaticallyCopyAnswers}
+        checked={settings.queryAutomaticallyCopyAnswers} defaultChecked={DEFAULT_SETTINGS.queryAutomaticallyCopyAnswers}
         onChange={() => onUpdateSettings({
           queryAutomaticallyCopyAnswers: !settings.queryAutomaticallyCopyAnswers,
         })}
@@ -111,10 +110,10 @@ export function VoiceQuerySettings({
         <p role="status" className="text-xs text-on-surface-variant">{vm.queryConfigNotice}</p>
       )}
 
-      <div className="settings-field">
-          <label htmlFor="query-executable" className="block text-sm font-medium text-on-surface">CLI executable</label>
-          <div className="flex gap-2">
-            <input
+      <SettingsRow
+              title={<label htmlFor="query-executable" className="block text-sm font-medium text-on-surface">CLI executable</label>}
+              control={<div className="flex gap-2">
+            <Input
               id="query-executable"
               type="text"
               value={settings.queryExecutable}
@@ -126,15 +125,16 @@ export function VoiceQuerySettings({
             <button type="button" onClick={() => void vm.chooseQueryExecutable()} className="rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-semibold text-on-surface hover:bg-surface-container">
               Browse…
             </button>
-          </div>
-          <p className="text-xs text-on-surface-variant">
+          </div>}
+            >
+              <p className="text-xs text-on-surface-variant">
             Must be an absolute path to an executable file. No shell is ever invoked.
           </p>
-      </div>
+            </SettingsRow>
 
-      <div className="settings-field">
-          <label htmlFor="query-arguments" className="block text-sm font-medium text-on-surface">Fixed arguments</label>
-          <textarea
+      <SettingsRow
+              title={<label htmlFor="query-arguments" className="block text-sm font-medium text-on-surface">Fixed arguments</label>}
+              control={<textarea
             id="query-arguments"
             rows={3}
             value={settings.queryArguments.join('\n')}
@@ -142,11 +142,12 @@ export function VoiceQuerySettings({
             placeholder={'One argument per line\n--print'}
             spellCheck={false}
             className="w-full resize-y rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs leading-relaxed text-on-surface outline-none focus:border-primary"
-          />
-          <p className="text-xs text-on-surface-variant">
+          />}
+            >
+              <p className="text-xs text-on-surface-variant">
             Each line stays one argument. The transcript is appended as exactly one final argument, including spaces and punctuation.
           </p>
-      </div>
+            </SettingsRow>
 
       <div>
         <div className="settings-card p-3">
@@ -161,7 +162,7 @@ export function VoiceQuerySettings({
               type="button"
               disabled={vm.queryTestBusy || !settings.queryExecutable.trim()}
               onClick={() => void vm.runQueryTest()}
-              className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-(--ui-radius-pill) border border-outline-variant/40 bg-surface-container-high px-3 py-1.5 text-xs font-semibold text-on-surface hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-50"
             >
               {vm.queryTestBusy ? 'Testing…' : 'Test'}
             </button>
@@ -229,11 +230,11 @@ export function VoiceQuerySettings({
             {vm.selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
               <div className="settings-stack mt-3">
                 {vm.selectedQueryPreset.permittedEnvironmentVariables.map((name) => (
-                  <div key={name} className="settings-field">
-                    <label htmlFor={`query-env-${name}`} className="block font-mono text-xs font-medium text-on-surface">
+                  <SettingsRow
+              title={<label htmlFor={`query-env-${name}`} className="block font-mono text-xs font-medium text-on-surface">
                       {name}{vm.configuredQueryEnvironment.includes(name) ? ' · configured' : ''}
-                    </label>
-                    <input
+                    </label>}
+              control={<input
                       id={`query-env-${name}`}
                       type="text"
                       value={vm.queryEnvironment.find((variable) => variable.name === name)?.value ?? ''}
@@ -243,8 +244,8 @@ export function VoiceQuerySettings({
                         : '/absolute/path/to/config'}
                       spellCheck={false}
                       className="w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-3 py-2 font-mono text-xs text-on-surface outline-none focus:border-primary"
-                    />
-                  </div>
+                    />}
+            />
                 ))}
               </div>
             )}
@@ -275,26 +276,22 @@ export function VoiceQuerySettings({
         </div>
       )}
 
-      <div className="settings-field">
-          <label className="block text-sm font-medium text-on-surface">Context shared with the CLI</label>
-          <Select
+      <SettingsRow title={<>Context shared with the CLI</>} onReset={settings.queryContextLevel !== DEFAULT_SETTINGS.queryContextLevel ? () => vm.updateQueryContextLevel(DEFAULT_SETTINGS.queryContextLevel) : undefined} control={<Select
             value={settings.queryContextLevel}
             onChange={vm.updateQueryContextLevel}
             items={QUERY_CONTEXT_LEVEL_OPTIONS}
-          />
-          <p className="text-xs text-on-surface-variant">
+          />}><p className="text-xs text-on-surface-variant">
             Off by default. App &amp; window adds only the frontmost app name and window title.
             Choose App, window &amp; selection (the third option) to also add up to 8 KiB of
             selected text after secure-field checks. The popover always shows what kind of
             context was included, and per-app exclusions take precedence.
-          </p>
-      </div>
+          </p></SettingsRow>
 
       <div className="settings-field">
         <SettingToggle
           title="Keep Voice Query history on this Mac"
-          description="Off by default. When on, Murmur keeps up to 200 recognized questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. This includes queries that shared app context: context is not stored as a separate field, but a saved answer may quote it. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
-          checked={settings.retainQueryHistory}
+          description="When on, Murmur keeps up to 200 recognized questions, answers, provider IDs, token counts, durations, and stable errors in a separate Rust-owned local store. This includes queries that shared app context: context is not stored as a separate field, but a saved answer may quote it. Turning history off affects new queries; existing entries remain until you delete them from History → Queries."
+          checked={settings.retainQueryHistory} defaultChecked={DEFAULT_SETTINGS.retainQueryHistory}
           onChange={() => onUpdateSettings({ retainQueryHistory: !settings.retainQueryHistory })}
         />
         <p className="text-xs text-on-surface-variant">
@@ -303,18 +300,13 @@ export function VoiceQuerySettings({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-          <div className="settings-field">
-            <label className="block text-sm font-medium text-on-surface">Query shortcut</label>
-            <Select
+          <SettingsRow title={<>Query shortcut</>} disabled={settings.queryHotkey === null} onReset={settings.queryHotkey !== DEFAULT_SETTINGS.queryHotkey ? () => { void vm.toggleVoiceQuery(); } : undefined} control={<Select
               value={settings.queryHotkey ?? QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value ?? 'shift_r'}
               disabled={settings.queryHotkey === null}
               onChange={(value) => vm.updateQueryHotkey(value as QueryKey)}
               items={QUERY_KEY_OPTIONS}
-            />
-          </div>
-          <div className="settings-field">
-            <label className="block text-sm font-medium text-on-surface">Timeout</label>
-            <Select
+            />}></SettingsRow>
+          <SettingsRow title={<>Timeout</>} onReset={settings.queryTimeoutSeconds !== DEFAULT_SETTINGS.queryTimeoutSeconds ? () => vm.updateQueryTimeoutSeconds(String(DEFAULT_SETTINGS.queryTimeoutSeconds)) : undefined} control={<Select
               value={String(settings.queryTimeoutSeconds)}
               onChange={vm.updateQueryTimeoutSeconds}
               items={[
@@ -323,8 +315,7 @@ export function VoiceQuerySettings({
                 { value: '120', label: '2 minutes' },
                 { value: '300', label: '5 minutes' },
               ]}
-            />
-          </div>
+            />}></SettingsRow>
       </div>
 
       {accessibilityGranted === false && settings.queryHotkey !== null && (

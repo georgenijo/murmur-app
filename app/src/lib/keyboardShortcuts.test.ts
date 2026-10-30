@@ -15,7 +15,7 @@ describe('mainWindowShortcut', () => {
     expect(MAIN_WINDOW_SHORTCUTS).toEqual([
       { action: 'palette', key: 'k', label: 'Command palette', binding: '⌘K' },
       { action: 'search', key: 'f', label: 'Search transcripts', binding: '⌘F' },
-      { action: 'settings', key: ',', label: 'Open Settings', binding: '⌘,' },
+      { action: 'settings', key: ',', label: 'Open settings…', binding: '⌘,' },
       { action: 'logs', key: 'l', label: 'Open Performance Lab', binding: '⌘L' },
     ]);
   });

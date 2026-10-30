@@ -224,14 +224,14 @@ describe('MicrophoneInputTest', () => {
   it('shows that automatic mode follows the currently resolved macOS input', async () => {
     await render();
     const selector = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
-    expect(selector.textContent).toContain('Follow macOS Default — USB Microphone');
+    expect(selector.textContent).toContain('Follow macOS default — USB Microphone');
     const helper = document.getElementById(selector.getAttribute('aria-describedby') ?? '');
     expect(helper?.textContent).toContain('Following macOS: USB Microphone');
     expect(helper?.textContent).toContain('next recording');
 
     defaultInputId = 'built-in';
     await render();
-    expect(selector.textContent).toContain('Follow macOS Default — Built-in Microphone');
+    expect(selector.textContent).toContain('Follow macOS default — Built-in Microphone');
     expect(selected).toBe('system_default');
   });
 
@@ -507,8 +507,8 @@ describe('MicrophoneInputTest', () => {
     const picker = container.querySelector('[aria-label="Microphone input"]') as HTMLButtonElement;
 
     await act(async () => picker.click());
-    expect(microphoneMode('Follow macOS Default').checked).toBe(true);
-    await act(async () => microphoneMode('Follow macOS Default').click());
+    expect(microphoneMode('Follow macOS default').checked).toBe(true);
+    await act(async () => microphoneMode('Follow macOS default').click());
 
     expect(picker.getAttribute('aria-expanded')).toBe('false');
     expect(selected).toBe('system_default');

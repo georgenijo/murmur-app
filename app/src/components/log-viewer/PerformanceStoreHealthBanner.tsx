@@ -62,8 +62,8 @@ function shouldOfferRecovery(health: PerformanceStoreHealthV1): boolean {
 function recoveryButtonLabel(health: PerformanceStoreHealthV1, recovering: boolean): string {
   if (recovering) return 'Recovering…';
   return health.recommendedAction === 'reinitializeStore'
-    ? 'Reinitialize Store…'
-    : 'Retry Store';
+    ? 'Reinitialize store…'
+    : 'Retry store';
 }
 
 export function PerformanceStoreHealthBanner({

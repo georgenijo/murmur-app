@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
@@ -74,18 +75,18 @@ export function VocabularyFileActions({ settings, onChange }: {
   const stale = state.kind === 'preview' && state.preview.baseline !== vocabularySettingsSnapshot(settings);
   return <div className="mt-3 space-y-2">
     <div className="flex flex-wrap gap-2">
-      <button type="button" disabled={state.kind === 'busy'} onClick={() => void exportFile()} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs disabled:opacity-50">Export saved spellings</button>
-      <button type="button" disabled={state.kind === 'busy'} onClick={() => void importFile()} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs disabled:opacity-50">Import saved spellings</button>
+      <button type="button" disabled={state.kind === 'busy'} onClick={() => void exportFile()} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs disabled:opacity-50">Export saved spellings…</button>
+      <button type="button" disabled={state.kind === 'busy'} onClick={() => void importFile()} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs disabled:opacity-50">Import saved spellings…</button>
     </div>
-    {state.kind === 'busy' && <p role="status" className="text-xs text-on-surface-variant">Opening Vocabulary file…</p>}
+    {state.kind === 'busy' && <p role="status" className="text-xs text-on-surface-variant">Opening vocabulary file…</p>}
     {state.kind === 'message' && <p role="status" className="text-xs text-on-surface-variant">{state.message}</p>}
     {state.kind === 'error' && <p role="alert" className="text-xs text-error">{state.message}</p>}
-    {state.kind === 'preview' && <div role="region" aria-label="Vocabulary import preview" className="space-y-2 rounded-lg border border-outline-variant p-3 text-xs">
+    {state.kind === 'preview' && <div data-default-scope onKeyDown={defaultButtonKeyDown} role="region" aria-label="Vocabulary import preview" className="space-y-2 rounded-lg border border-outline-variant p-3 text-xs">
       <p>{state.preview.counts.entries} new saved spellings. {state.preview.counts.duplicates} exact duplicates skipped.</p>
       {state.preview.kind === 'conflict' && <><p role="alert" className="text-error">{state.preview.conflicts.length} conflicts. Nothing will be imported.</p><ul className="list-inside list-disc">{state.preview.conflicts.map((conflict, index) => <li key={index}>{conflict}</li>)}</ul></>}
       {stale && <p role="alert" className="text-error">Saved spellings changed. Choose the file again to review a fresh preview.</p>}
       <div className="flex gap-2">
-        <button type="button" disabled={stale || state.preview.kind === 'conflict'} onClick={confirm} className="rounded-lg bg-primary px-3 py-2 font-semibold text-on-primary disabled:opacity-50">Confirm import</button>
+        <button type="button" disabled={stale || state.preview.kind === 'conflict'} onClick={confirm} data-default-button className="rounded-lg bg-surface-container-high px-3 py-2 font-semibold text-on-surface disabled:opacity-50">Confirm import</button>
         <button type="button" onClick={() => setState({ kind: 'idle' })} className="rounded-lg bg-surface-container-high px-3 py-2">Cancel import</button>
       </div>
     </div>}

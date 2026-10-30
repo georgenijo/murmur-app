@@ -370,7 +370,7 @@ describe('Sonic Canvas component details', () => {
     });
     const more = container.querySelector('[aria-label="More transcript actions"]') as HTMLButtonElement;
     await act(async () => more.click());
-    const actions = Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')).filter((candidate) => candidate.textContent === 'Correct & Teach');
+    const actions = Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')).filter((candidate) => candidate.textContent === 'Correct & teach…');
     expect(actions).toHaveLength(1);
     await act(async () => actions[0].click());
     expect((container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement).value).toBe('newest transcript');

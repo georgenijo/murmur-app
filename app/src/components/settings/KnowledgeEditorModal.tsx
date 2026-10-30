@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { returnPressesDefault } from '../../lib/defaultButton';
 import type { AppProfile } from '../../lib/settings';
 import type {
   KnowledgeDraft,
@@ -42,6 +43,9 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
   const firstRef = useRef<HTMLSelectElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  // Save is this dialog's default button; read through a ref so the
+  // mount-once key listener always presses the current draft's Save.
+  const saveRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -51,6 +55,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
         onCloseRef.current();
         return;
       }
+      if (!event.defaultPrevented && dialogRef.current?.contains(event.target as Node) && returnPressesDefault(event, () => saveRef.current())) return;
       if (event.key !== 'Tab') return;
       const nodes = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
@@ -139,6 +144,9 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
       setSaving(false);
     }
   };
+  saveRef.current = () => {
+    if (!saving) void submit();
+  };
 
   const inputClass = 'w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary';
 
@@ -157,7 +165,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <h2 id="knowledge-editor-title" className="text-base font-semibold text-on-surface">
-              {entry ? 'Edit knowledge' : 'Create knowledge'}
+              {entry ? 'Edit knowledge' : 'Create knowledge…'}
             </h2>
             <p className="mt-1 text-xs text-on-surface-variant">
               Stored only on this Mac. Content is never sent to a cloud service or written to logs.
@@ -283,7 +291,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
 
           <div className="flex justify-end gap-2 border-t border-outline-variant/25 pt-4">
             <button type="button" onClick={onClose} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-medium text-on-surface-variant hover:bg-surface-container">Cancel</button>
-            <button type="button" onClick={() => void submit()} disabled={saving} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:opacity-50">{saving ? 'Saving…' : 'Save knowledge'}</button>
+            <button type="button" onClick={() => void submit()} data-default-button disabled={saving} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:opacity-50">{saving ? 'Saving…' : 'Save knowledge'}</button>
           </div>
         </div>
       </div>

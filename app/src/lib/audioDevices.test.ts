@@ -41,16 +41,16 @@ describe('audio device persistence', () => {
 
   it('makes automatic selection explicit and identifies the live macOS default', () => {
     expect(followSystemDefaultOptionLabel(devices, 'USB-A')).toBe(
-      'Follow macOS Default — Studio Mic',
+      'Follow macOS default — Studio Mic',
     );
-    expect(followSystemDefaultOptionLabel(devices, null)).toBe('Follow macOS Default');
-    expect(followSystemDefaultOptionLabel(devices, 'missing')).toBe('Follow macOS Default');
+    expect(followSystemDefaultOptionLabel(devices, null)).toBe('Follow macOS default');
+    expect(followSystemDefaultOptionLabel(devices, 'missing')).toBe('Follow macOS default');
   });
 
   it('disambiguates duplicate names in the resolved default label', () => {
     const duplicates = [...devices, { id: 'USB-B', name: 'Studio Mic', kind: 'external' as const, connected: true, hasInput: true }];
     expect(followSystemDefaultOptionLabel(duplicates, 'USB-B')).toBe(
-      'Follow macOS Default — Studio Mic (USB-B)',
+      'Follow macOS default — Studio Mic (USB-B)',
     );
   });
 });

@@ -168,11 +168,11 @@ export function ModelDownloadPanel({
     });
   };
   const primaryLabel = isDownloading
-    ? progress ? modelDownloadLabel(progress) : 'Starting...'
+    ? progress ? modelDownloadLabel(progress) : 'Starting…'
     : selectedInstalled
     ? 'Continue'
     : downloadState.phase === 'error'
-    ? 'Retry Download'
+    ? 'Retry download'
     : 'Download';
   const activatePrimary = () => {
     if (selectedInstalled) {
@@ -248,11 +248,11 @@ export function ModelDownloadPanel({
         {isDownloading && (
           <div className="mb-4" aria-live="polite" aria-busy="true">
             <div className="flex justify-between text-xs text-on-surface-variant mb-1">
-              <span>{progress ? modelDownloadLabel(progress) : 'Starting...'}</span>
+              <span>{progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
               {progressPercent !== null ? (
                 <span>{progressPercent}%</span>
               ) : (
-                <span>Working...</span>
+                <span>Working…</span>
               )}
             </div>
             <div className="w-full h-2 overflow-hidden rounded-full bg-[var(--ui-tint-sunken)]">
@@ -286,14 +286,14 @@ export function ModelDownloadPanel({
                 <button
                   type="button"
                   onClick={() => chooseFallback('base.en')}
-                  className="dialog-pill-btn border-error/30 px-2.5 py-1.5 text-xs text-error hover:bg-error/10"
+                  className="dialog-pill-btn px-2.5 py-1.5 text-xs text-on-surface hover:bg-surface-container"
                 >
-                  Use Whisper Base
+                  Use Whisper base
                 </button>
                 <button
                   type="button"
                   onClick={() => chooseFallback('parakeet-tdt-0.6b-v2-fp16')}
-                  className="dialog-pill-btn border-error/30 px-2.5 py-1.5 text-xs text-error hover:bg-error/10"
+                  className="dialog-pill-btn px-2.5 py-1.5 text-xs text-on-surface hover:bg-surface-container"
                 >
                   Use CPU Parakeet
                 </button>

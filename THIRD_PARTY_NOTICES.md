@@ -379,6 +379,8 @@ commercial use, without a fee. Refer to the package when you modify the code.
 
 ## Hex
 
+Murmur’s UI copy and interaction rules follow Hex’s `docs/design-system.md:24–131` at `a07f994`.
+
 Murmur’s optional OpenCode color theme follows Hex’s theme integration at
 `a07f994`, with palette data from Rune.
 
@@ -446,10 +448,18 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-## T3 Code middle truncation
+## T3 Code middle truncation and settings geometry
 
 `app/src/components/ui/middle-truncate.tsx` is adapted from T3 Code
 (`cba30591f9`, `apps/web/src/components/ui/middle-truncate.tsx`).
+The settings geometry in `app/src/styles/settings.css`, `SettingsRow.tsx`,
+`FormControls.tsx`, and the shared switch/select also follows the settings and
+UI primitives at that pinned revision (`settingsLayout.tsx`, `SettingsGroup.tsx`,
+`SettingsSidebarNav.tsx`, and `ui/{switch,select,input,button}.tsx`).
+
+Display containment and traffic-light positioning also follow
+`apps/desktop/src/window/DesktopWindow.ts` at the same pinned revision.
+
 Source: https://github.com/pingdotgg/t3code
 
 MIT License

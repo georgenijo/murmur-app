@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 239 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 240 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -482,3 +482,9 @@ without logging their content.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `get_resource_usage` | — | `ResourceSampleV1` | Current CPU percentage, process RSS, and separated Rust-heap / FFI-heap figures (the custom malloc zone keeps whisper.cpp's allocations out of the Rust total). |
+
+## Workspace window lifecycle (`window_state.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `sync_window_chrome` | `background: String`, `header_height: f64`, `zoom: f64`, `ready: bool` | `Result<(), String>` | Main/Diagnostics only. Applies an opaque resolved hex background, CSS-measured header height and page zoom (0.5–2), positions native traffic lights on the main thread, and reveals main once after first paint. Diagnostics readiness never opens it. |

@@ -173,7 +173,7 @@ export function PermissionsBanner() {
             : handleOpenAccessibility())}
         className="shrink-0 rounded-[var(--ui-radius-pill)] px-2.5 py-1 font-semibold transition-colors hover:bg-warning/10"
       >
-        Open System Settings
+        Open System Settings…
       </button>
       <details
         open={moreOpen}
@@ -198,7 +198,7 @@ export function PermissionsBanner() {
                 onClick={handleResetMicrophone}
                 className="text-xs font-semibold underline hover:no-underline"
               >
-                Reset Microphone permission
+                Reset microphone permission…
               </button>
               <p className="text-[10px] leading-relaxed text-on-surface-variant">
                 Clears Murmur's stale Microphone entry, then opens System Settings.
@@ -221,7 +221,7 @@ export function PermissionsBanner() {
                 onClick={handleResetAccessibility}
                 className="text-xs font-semibold underline hover:no-underline"
               >
-                Reset Accessibility permission
+                Reset Accessibility permission…
               </button>
               <p className="text-[10px] leading-relaxed text-on-surface-variant">
                 Clears Murmur's stale Accessibility entry, then opens System Settings.

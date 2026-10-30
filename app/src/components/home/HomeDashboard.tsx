@@ -1,3 +1,4 @@
+import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useMemo } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import type { HistoryEntry } from '../../lib/history';
@@ -67,7 +68,7 @@ export function HomeDashboard({
   const stats = useMemo(() => loadStats(), [statsVersion]);
 
   return (
-    <div className="home-dashboard">
+    <div onKeyDown={defaultButtonKeyDown} className="home-dashboard">
       <div className="home-dashboard-main">
         <div className="home-dashboard-top">
           <HomeRecordingBar

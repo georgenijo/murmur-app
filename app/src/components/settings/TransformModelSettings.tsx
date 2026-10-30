@@ -1,3 +1,6 @@
+import { SettingsRow } from './SettingsRow';
+import { DEFAULT_SETTINGS } from '../../lib/settings';
+import { noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { TRANSFORM_KEY_OPTIONS, type Settings, type TransformKey } from '../../lib/settings';
 import { TRANSFORM_MODEL_SIZE_LABEL } from '../../lib/transformSettings';
 import type { useTransformModelSettings } from '../../lib/hooks/useTransformModelSettings';
@@ -19,7 +22,7 @@ interface TransformModelSettingsProps {
   vm: ReturnType<typeof useTransformModelSettings>;
 }
 
-/** Selected-Text Rewrite settings page (F7): on-device model, shortcut, and
+/** Selected-text rewrite settings page (F7): on-device model, shortcut, and
  *  saved transforms. Extracted from `SettingsPanel.tsx`; all state and
  *  handlers live in `useTransformModelSettings`. */
 export function TransformModelSettings({
@@ -32,7 +35,7 @@ export function TransformModelSettings({
   vm,
 }: TransformModelSettingsProps) {
   return (
-    <SettingsSection pageId="ai-transform" activePage={activePage} title="Selected-Text Rewrite" subtitle="On-device rewriting, shortcut, and saved instructions">
+    <SettingsSection hideHeading pageId="ai-transform" activePage={activePage} title="Selected-text rewrite">
       <SettingsCallout tone="accent" targetId="rewrite-model" title="Local only · Apple Silicon">
         Hold a dedicated shortcut, speak an instruction, and review a proposed rewrite before
         anything is written. The model stays on-device ({TRANSFORM_MODEL_SIZE_LABEL} download).
@@ -42,7 +45,7 @@ export function TransformModelSettings({
         targetId="correction-shortcut"
         title="Correct last dictation shortcut"
         description="Press ⌘⇧E to speak a correction to your latest dictation. Press again to finish, then review and copy or replace a matching selection. Uses the local model below."
-        checked={settings.correctionShortcutEnabled}
+        checked={settings.correctionShortcutEnabled} defaultChecked={DEFAULT_SETTINGS.correctionShortcutEnabled}
         onChange={() => onUpdateSettings({ correctionShortcutEnabled: !settings.correctionShortcutEnabled })}
       />
       {settings.correctionShortcutEnabled && accessibilityGranted === false && (
@@ -50,8 +53,8 @@ export function TransformModelSettings({
       )}
       <SettingToggle
         targetId="transform-shortcut"
-        title="Enable Transform Shortcut"
-        description="Hold the transform key while text is selected to capture a rewrite instruction."
+        title="Enable transform shortcut"
+        description="Hold the transform key while text is selected to capture a rewrite instruction"
         checked={settings.transformHoldKey !== null}
         onChange={() => {
           void vm.updateTransformHoldKey(
@@ -60,28 +63,24 @@ export function TransformModelSettings({
         }}
       />
       <SettingsBranch open={settings.transformHoldKey !== null}>
-        <div className="settings-field">
-          <label className="block text-sm font-medium text-on-surface">Hold key</label>
-          <Select
+        <SettingsRow title={<>Hold key</>} onReset={settings.transformHoldKey !== DEFAULT_SETTINGS.transformHoldKey ? () => { void vm.updateTransformHoldKey(DEFAULT_SETTINGS.transformHoldKey); } : undefined} control={<Select
             value={settings.transformHoldKey ?? 'alt_r'}
             onChange={(value) => {
               void vm.updateTransformHoldKey(value as TransformKey);
             }}
             items={TRANSFORM_KEY_OPTIONS}
-          />
-          <p className="text-xs text-on-surface-variant">
+          />}><p className="text-xs text-on-surface-variant">
             Dictation hold keys are rejected. Right Option / Left Control / Right Shift only.
           </p>
-          {vm.transformKeyError && (
+{vm.transformKeyError && (
             <p className="text-xs text-error">{vm.transformKeyError}</p>
           )}
-          {accessibilityGranted === false && (
+{accessibilityGranted === false && (
             <div className="settings-callout flex items-center gap-2 text-xs text-on-surface" data-tone="accent">
               <span>Accessibility permission is required for transform capture and apply.</span>
               <button type="button" onClick={onRequestAccessibility} className="ml-auto underline">Grant</button>
             </div>
-          )}
-        </div>
+          )}</SettingsRow>
       </SettingsBranch>
       <TransformPractice
         transformHoldKey={settings.transformHoldKey}
@@ -132,17 +131,7 @@ export function TransformModelSettings({
               {vm.transformModelBusy || vm.transformModel?.state === 'downloading' ? 'Working…' : 'Download'}
             </button>
           )}
-          {vm.transformModel?.state === 'ready' && (
-            <button
-              type="button"
-              disabled={vm.transformModelBusy}
-              onClick={() => void vm.removeTransform()}
-              onBlur={() => vm.setConfirmRemoveTransform(false)}
-              className="settings-quiet-btn px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
-            >
-              {vm.confirmRemoveTransform ? 'Confirm remove' : 'Remove'}
-            </button>
-          )}
+
           {vm.transformModel?.runtimeDisabled && (
             <button
               type="button"
@@ -152,6 +141,17 @@ export function TransformModelSettings({
               title="Clear the circuit breaker if the transform runtime was disabled after repeated faults"
             >
               Reset runtime
+            </button>
+          )}
+          {vm.transformModel?.state === 'ready' && (
+            <button
+              type="button"
+              disabled={vm.transformModelBusy}
+              onKeyDown={noDefaultButtonKeyDown} onClick={() => void vm.removeTransform()}
+              onBlur={() => vm.setConfirmRemoveTransform(false)}
+              className="settings-quiet-btn px-3 py-1.5 text-xs font-medium text-on-surface-variant disabled:opacity-50"
+            >
+              {vm.confirmRemoveTransform ? 'Confirm remove…' : 'Remove…'}
             </button>
           )}
         </div>

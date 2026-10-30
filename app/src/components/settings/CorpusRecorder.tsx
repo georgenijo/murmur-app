@@ -157,7 +157,7 @@ export function CorpusRecorder({
   const deviceOptions = useMemo(() => audioDeviceSelectOptions(selectableDevices), [selectableDevices]);
   const currentPrompt = PERSONAL_CORPUS_PROMPTS[promptIndex];
   const selectedDeviceLabel = deviceId === 'system_default'
-    ? 'System Default'
+    ? 'System default'
     : displayDevices.find((device) => device.id === deviceId)?.name ?? 'Unavailable microphone';
   const selectedRecordings = summary?.recordings.filter((recording) => recording.selected) ?? [];
   const completedPromptIds = useMemo(
@@ -254,7 +254,7 @@ export function CorpusRecorder({
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-on-surface">Personal Corpus Recorder</h3>
+            <h3 className="text-sm font-semibold text-on-surface">Personal corpus recorder</h3>
             <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-on-surface">Private · local</span>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
@@ -287,7 +287,7 @@ export function CorpusRecorder({
           }}
           className="w-full rounded-lg border border-outline-variant bg-surface-container-low px-3 py-2 text-xs text-on-surface outline-none focus:border-primary disabled:opacity-50"
         >
-          <option value="system_default">System Default</option>
+          <option value="system_default">System default</option>
           {deviceOptions.map((device) => <option key={device.value} value={device.value}>{device.label}</option>)}
         </select>
       </div>
@@ -323,9 +323,9 @@ export function CorpusRecorder({
           <button
             type="button"
             onClick={() => void finishRecording()}
-            className="min-w-40 rounded-full border border-error/40 bg-error/10 px-6 py-3 text-sm font-semibold text-error shadow-sm hover:bg-error/15"
+            className="min-w-40 rounded-full border border-outline-variant/40 bg-surface-container-high px-6 py-3 text-sm font-semibold text-on-surface shadow-sm hover:bg-surface-container"
           >
-            Stop & Save
+            Stop & save
           </button>
         ) : busy ? (
           <button
@@ -341,9 +341,11 @@ export function CorpusRecorder({
             type="button"
             onClick={() => void beginRecording()}
             disabled={!canRecord}
-            className="min-w-40 rounded-full bg-primary px-6 py-3 text-sm font-semibold text-on-primary shadow-sm hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-40"
+            className={lastRecording
+              ? 'min-w-40 rounded-full border border-outline-variant/40 px-6 py-3 text-sm font-semibold text-on-surface disabled:cursor-not-allowed disabled:opacity-40'
+              : 'min-w-40 rounded-full bg-primary px-6 py-3 text-sm font-semibold text-on-primary shadow-sm hover:bg-primary-dim disabled:cursor-not-allowed disabled:opacity-40'}
           >
-            {lastRecording ? 'Record Another Take' : 'Record'}
+            {lastRecording ? 'Record another take' : 'Record'}
           </button>
         )}
       </div>
@@ -358,8 +360,7 @@ export function CorpusRecorder({
           </div>
           {lastRecording.qualityWarnings.map((warning) => <p key={warning} className="mt-1 text-primary">{warning}</p>)}
           <div className="mt-3 flex flex-wrap items-center gap-3">
-            <button type="button" onClick={useAndContinue} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 font-semibold text-on-primary hover:bg-primary-dim">Use & Next</button>
-            <button type="button" disabled={!canRecord} onClick={() => void beginRecording()} className="font-medium text-on-surface-variant underline hover:text-primary disabled:cursor-not-allowed disabled:opacity-40">Record another take</button>
+            <button type="button" onClick={useAndContinue} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 font-semibold text-on-primary hover:bg-primary-dim">Use and next</button>
           </div>
         </div>
       )}

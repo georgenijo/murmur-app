@@ -1,11 +1,76 @@
-/* Settings workspace styles (Sona refresh). Owned by the settings lane. */
-
+/* T3 Code settings geometry; pane behavior and semantic theme ownership remain separate. */
+:root {
+  --settings-nav-width: 240px;
+  --settings-nav-rail: 56px;
+  --settings-nav-group-pad: 8px;
+  --settings-nav-group-gap: 16px;
+  --settings-nav-item-gap: 4px;
+  --settings-nav-item-height: 32px;
+  --settings-nav-item-inset: 10px;
+  --settings-nav-muted: color-mix(in oklab, var(--murmur-on-surface-variant) 80%, transparent);
+  --settings-content-max: 896px;
+  --settings-content-x: 24px;
+  --settings-content-top: 24px;
+  --settings-content-bottom: 48px;
+  --settings-section-gap: 32px;
+  --settings-heading-gap: 10px;
+  --settings-heading-height: 28px;
+  --settings-row-pad: 12px;
+  --settings-row-x: 16px;
+  --settings-stack-gap: 12px;
+  --settings-field-gap: 8px;
+  --settings-copy-gap: 4px;
+  --settings-control-gap: 32px;
+  --settings-control-min: 160px;
+  --settings-control-max: 320px;
+  --settings-description-max: 672px;
+  --settings-card-border: color-mix(in oklab, var(--murmur-outline-variant) 60%, transparent);
+  --settings-card-bg: color-mix(in oklab, var(--murmur-surface-container-lowest) 40%, transparent);
+  --settings-divider: color-mix(in oklab, var(--murmur-outline-variant) 50%, transparent);
+  --settings-card-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+  --settings-unavailable-bg: color-mix(in oklab, var(--murmur-surface-container) 20%, transparent);
+  --settings-reset-size: 20px;
+  --settings-reset-icon: 12px;
+  --settings-search-radius: 6px;
+  --settings-search-match-bg: oklch(.915 .11 85);
+  --settings-search-match-fg: oklch(.216 .028 77.4);
+  --settings-search-pulse-duration: 650ms;
+  --settings-search-pulse-ring: color-mix(in oklab, var(--murmur-primary) 70%, transparent);
+  --ui-control-xs: 24px;
+  --ui-input-height: 30px;
+  --ui-control-inset: 11px;
+  --ui-select-min: 144px;
+  --ui-control-border: var(--murmur-outline-variant);
+  --ui-control-bg: var(--murmur-background);
+  --ui-control-shadow: 0 1px 2px rgb(0 0 0 / 5%), inset 0 1px rgb(0 0 0 / 4%);
+  --ui-control-focus: 0 0 0 3px color-mix(in oklab, var(--murmur-primary) 24%, transparent);
+  --ui-disabled-opacity: .64;
+  --ui-switch-width: 30px;
+  --ui-switch-height: 18px;
+  --ui-switch-knob: 14px;
+  --ui-switch-pad: 2px;
+  --ui-switch-travel: 12px;
+  --ui-switch-small-width: 26px;
+  --ui-switch-small-height: 16px;
+  --ui-switch-small-knob: 12px;
+  --ui-switch-small-travel: 10px;
+  --ui-switch-track-duration: 200ms;
+  --ui-switch-knob-duration: 150ms;
+  --ui-segment-height: 32px;
+  --ui-segment-selected: var(--murmur-background);
+  --ui-segment-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+}
+[data-appearance='dark'] {
+  --ui-control-bg: color-mix(in oklab, var(--murmur-outline-variant) 32%, transparent);
+  --ui-control-shadow: 0 1px 2px rgb(0 0 0 / 5%), inset 0 -1px rgb(255 255 255 / 6%);
+  --ui-segment-selected: color-mix(in oklab, var(--murmur-outline-variant) 72%, transparent);
+  --settings-search-match-bg: oklch(.55 .1 85);
+  --settings-search-match-fg: oklch(.970 0 0);
+}
+@media (max-width: 639px) {
+  :root { --settings-content-x: 20px; --settings-row-x: 12px; }
+}
 @layer components {
-
-/* Falls back to literal spec values when the tokens lane has not yet landed
-   the ui-hairline, ui-shadow, ui-tint, and ui-track custom properties in
-   src/styles.css. Once those are defined at the top level, the var()
-   lookups below pick them up automatically. */
 
 .settings-workspace {
   --settings-hairline: var(--ui-hairline, color-mix(in srgb, var(--murmur-outline-variant) 55%, transparent));
@@ -21,73 +86,7 @@
   --settings-track-tight: var(--ui-track-tight, 0);
   --settings-track-title: var(--ui-track-title, -0.01em);
   --settings-track-caps: var(--ui-track-caps, 0.07em);
-  /* Settings rhythm (see the unlayered block at the end of this file). */
-  --settings-row-pad: var(--ui-space-6, 0.75rem);
-  --settings-stack-gap: var(--ui-space-6, 0.75rem);
-  --settings-field-gap: var(--ui-space-4, 0.5rem);
-  --settings-divider: color-mix(in oklab, var(--murmur-outline-variant) 15%, transparent);
-}
 
-/* ---------- sidebar ------------------------------------------------------ */
-
-.settings-sidebar {
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--murmur-surface-container-low) 88%, var(--murmur-background)),
-    var(--murmur-surface-container-low)
-  );
-  border-right: 1px solid var(--ui-dashboard-border-subtle);
-}
-
-.settings-search {
-  position: relative;
-  display: block;
-}
-
-.settings-search input {
-  border-radius: var(--settings-radius-pill);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.settings-search input:focus-visible {
-  border-color: var(--murmur-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
-  outline: none;
-}
-
-.settings-nav-item {
-  position: relative;
-  border: 1px solid transparent;
-  border-radius: var(--settings-radius-control);
-  font-weight: var(--ui-weight-label, 500);
-  letter-spacing: var(--settings-track-tight);
-  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
-}
-
-.settings-nav-item[aria-current='page'] {
-  background: color-mix(in srgb, var(--murmur-primary) 11%, var(--settings-tint-raised));
-  border: 1px solid color-mix(in srgb, var(--murmur-primary) 46%, var(--settings-hairline));
-  box-shadow: var(--settings-shadow-1);
-  font-weight: var(--ui-weight-label, 500);
-}
-
-.settings-nav-item[aria-current='page'] svg {
-  color: var(--murmur-primary);
-}
-
-.settings-nav-item[aria-current='page']::before {
-  content: '';
-  position: absolute;
-  left: -8px;
-  top: 50%;
-  width: 3px;
-  height: 16px;
-  margin-top: -8px;
-  border-radius: var(--settings-radius-pill);
-  background: var(--murmur-primary);
 }
 
 .settings-mode-row {
@@ -100,54 +99,6 @@
   border-color: color-mix(in srgb, var(--murmur-primary) 48%, var(--settings-hairline));
   box-shadow: inset 3px 0 0 var(--murmur-primary);
   font-weight: var(--ui-weight-label, 500);
-}
-
-.settings-tools-eyebrow {
-  font-size: 10px;
-  font-weight: var(--ui-weight-title, 600);
-  letter-spacing: var(--settings-track-caps);
-  text-transform: uppercase;
-  color: var(--murmur-on-surface-variant);
-}
-
-/* ---------- page header + cards ------------------------------------------ */
-
-.settings-page-head {
-  margin-bottom: 14px;
-}
-
-.settings-page-title {
-  font-size: 20px;
-  font-weight: var(--ui-weight-title, 600);
-  letter-spacing: var(--settings-track-title);
-  line-height: 1.3;
-  color: var(--murmur-on-surface);
-}
-
-.settings-page-subtitle {
-  margin-top: 5px;
-  font-size: 13px;
-  line-height: var(--ui-leading-label);
-  letter-spacing: var(--settings-track-tight);
-  color: var(--murmur-on-surface-variant);
-}
-
-.settings-card {
-  border-radius: var(--settings-radius-card);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
-}
-
-.settings-card-body {
-  margin-top: 14px;
-  padding: 6px 20px;
-}
-
-/* A card inside a card steps down to the control radius so nested corners
-   stay concentric instead of repeating the outer 14px curve. */
-.settings-card .settings-card {
-  border-radius: var(--settings-radius-control);
 }
 
 .settings-callout {
@@ -172,92 +123,18 @@
   color: var(--murmur-on-surface-variant);
 }
 
-/* ---------- back / pill / quiet buttons ----------------------------------- */
-
-.settings-back-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 calc(12px - 1px);
-  border-radius: var(--settings-radius-pill);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--ui-shadow-xs, var(--settings-shadow-1));
-  color: var(--murmur-on-surface-variant);
-  font-size: 12px;
-  line-height: var(--ui-leading-caption);
-  font-weight: var(--ui-weight-label, 500);
-  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
-}
-
 .settings-back-btn:hover {
   color: var(--murmur-on-surface);
   background: var(--murmur-surface-container-low);
-}
-
-.settings-quiet-btn {
-  border-radius: var(--settings-radius-control);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--ui-shadow-xs, var(--settings-shadow-1));
-  font-weight: var(--ui-weight-label, 500);
-  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
 .settings-quiet-btn:hover {
   background: var(--murmur-surface-container-low);
 }
 
-.settings-back-btn:active:not(:disabled),
-.settings-quiet-btn:active:not(:disabled) {
-  transform: scale(var(--ui-button-press-scale, 0.97));
-}
-
-/* ---------- segmented control (Recording Trigger, Stop on Silence, …) ---- */
-
-.settings-segmented {
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: var(--settings-radius-pill);
-  background: var(--settings-tint-sunken);
-  border: 1px solid var(--settings-hairline);
-}
-
-.settings-segmented-btn {
-  flex: 1;
-  height: 30px;
-  border: 0;
-  border-radius: var(--settings-radius-pill);
-  background: transparent;
-  color: var(--murmur-on-surface-variant);
-  font-weight: var(--ui-weight-label, 500);
-  font-size: var(--ui-font-label, 0.8125rem);
-  line-height: var(--ui-leading-label);
-  letter-spacing: var(--settings-track-tight);
-  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
-}
-
 .settings-segmented-btn:hover:not(:disabled) {
   color: var(--murmur-on-surface);
 }
-
-.settings-segmented-btn[data-selected='true'] {
-  outline: 1px solid var(--settings-hairline-strong);
-  outline-offset: -1px;
-  background: var(--settings-tint-raised);
-  color: var(--murmur-on-surface);
-  font-weight: var(--ui-weight-label, 500);
-  box-shadow: var(--settings-shadow-1);
-}
-
-.settings-segmented-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-
-/* ---------- microphone meter card ----------------------------------------- */
 
 .settings-meter-card {
   margin-top: 12px;
@@ -271,8 +148,6 @@
 .settings-meter-track {
   background: var(--settings-tint-sunken);
 }
-
-/* ---------- customize hub cards -------------------------------------------- */
 
 .settings-hub-list {
   display: flex;
@@ -301,22 +176,6 @@
   }
 }
 
-/* ---------- form controls: selects, text inputs, sliders ------------------ */
-
-.settings-workspace button[role='combobox'] {
-  height: 34px;
-  border-radius: var(--settings-radius-control);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.settings-workspace button[role='combobox']:focus-visible {
-  border-color: var(--murmur-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
-}
-
 .settings-workspace ul[role='listbox'] {
   border-radius: var(--ui-radius-popover, 0.5rem);
   border: 1px solid var(--ui-popover-border);
@@ -325,38 +184,6 @@
   backdrop-filter: blur(var(--ui-glass-blur)) saturate(var(--ui-glass-saturation));
   box-shadow: var(--ui-popover-shadow);
 }
-
-/* `input:not([type])` covers plain text inputs that omit the attribute
-   (the HTML default is still "text"); CSS attribute selectors only match
-   attributes that are actually present in markup. */
-.settings-workspace input[type='text'],
-.settings-workspace input:not([type]),
-.settings-workspace input[type='number'],
-.settings-workspace input[type='search'],
-.settings-workspace input[type='url'],
-.settings-workspace select,
-.settings-workspace textarea {
-  border-radius: var(--settings-radius-control);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-.settings-workspace input[type='text']:focus-visible,
-.settings-workspace input:not([type]):focus-visible,
-.settings-workspace input[type='number']:focus-visible,
-.settings-workspace input[type='search']:focus-visible,
-.settings-workspace input[type='url']:focus-visible,
-.settings-workspace select:focus-visible,
-.settings-workspace textarea:focus-visible {
-  border-color: var(--murmur-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent);
-  outline: none;
-}
-
-/* Range sliders: sunken track, primary thumb — matches spec's "sliders keep
-   native input but style the track with --ui-tint-sunken and primary thumb". */
 .settings-workspace input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
@@ -393,11 +220,6 @@
   border-radius: var(--settings-radius-pill);
   background: transparent;
 }
-
-/* Quiet dependent branches: the owning switch remains the only disclosure
-   control. Grid rows animate between their intrinsic height and zero, while
-   the delayed visibility change keeps collapsed fields out of the tab order
-   after the exit motion completes. */
 .settings-dependent-branch {
   display: grid;
   grid-template-rows: 0fr;
@@ -553,71 +375,180 @@
 
 }
 
-/* ---------- settings rhythm ------------------------------------------------
-   One vertical spacing contract for every settings card. Containers own the
-   space; the settings inside them own none:
-
-     card edge  ─ 6 + 12 ─  first/last content   (.settings-card-body)
-     divider    ─ 12 ─ content ─ 12 ─  divider   (.settings-rows > *)
-     sub-setting ─ 12 ─ sub-setting               (.settings-stack, branches)
-     label ─ 8 ─ control ─ 8 ─ help               (.settings-field)
-     title ─ 2 ─ description                      (SettingToggle, callouts)
-
-   Unlayered on purpose: these rules beat stray Tailwind spacing on a child,
-   so a row cannot add its own padding, margin, or divider and drift off the
-   grid. visual-tests/settings-rhythm.spec.ts measures every page against it. */
-
-/* Square corners keep the divider straight: a rounded row would taper its
-   top border into the radius at both ends. */
-.settings-rows > * {
-  padding: var(--settings-row-pad) 0.25rem;
-  border-radius: 0;
+/* Geometry is unlayered to beat legacy per-pane Tailwind spacing. */
+.settings-sidebar {
+  width: var(--settings-nav-width);
+  padding: var(--settings-nav-group-pad);
+  border-right: 1px solid var(--murmur-outline-variant);
+  background: var(--murmur-surface-container-low);
+  gap: var(--settings-nav-group-gap);
+}
+.settings-window-header { --ui-sidebar-width: var(--settings-nav-width); }
+.settings-sidebar nav, .settings-nav-tools { display: flex; flex-direction: column; gap: var(--settings-nav-item-gap); }
+.settings-nav-tools { margin-top: auto; padding: 0; border: 0; }
+.settings-tools-eyebrow { padding-inline: 8px; margin: 0; font-size: 12px; line-height: 16px; font-weight: 500; text-transform: none; color: var(--settings-nav-muted); }
+.settings-nav-item {
+  height: var(--settings-nav-item-height); min-height: var(--settings-nav-item-height); flex-shrink: 0;
+  gap: 8px; padding: 0 var(--settings-nav-item-inset); border: 0; border-radius: var(--ui-radius-control);
+  font-size: 14px; line-height: 20px; font-weight: 500; color: var(--settings-nav-muted);
+}
+.settings-nav-item svg { width: 16px; height: 16px; flex: none; }
+.settings-nav-item[aria-current='page'] { background: var(--murmur-surface-container-lowest); color: var(--murmur-on-surface); border: 0; box-shadow: none; }
+.settings-nav-item[aria-current='page'] svg { color: inherit; }
+.settings-nav-item[aria-current='page']::before { content: none; }
+.settings-search { margin: 0; }
+.settings-search input { height: 32px; border-radius: var(--settings-search-radius); font-size: 14px; }
+.settings-rail-search { display: none; }
+.settings-content-container { margin-inline: auto; width: 100%; max-width: var(--settings-content-max); padding: var(--settings-content-top) var(--settings-content-x) var(--settings-content-bottom); }
+.settings-content-topbar { flex: none; min-height: 44px; display: flex; align-items: center; padding: 8px var(--settings-content-x); border-bottom: 1px solid var(--settings-divider); }
+.settings-content-topbar h1 { font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: var(--ui-track-title); }
+.settings-section { margin: 0 0 var(--settings-section-gap); }
+.settings-section:last-child { margin-bottom: 0; }
+.settings-page-head { margin-bottom: var(--settings-heading-gap); padding-inline: 16px; min-height: var(--settings-heading-height); }
+.settings-section-title { font-size: 16px; line-height: 24px; font-weight: 600; min-height: var(--settings-heading-height); display: flex; align-items: center; }
+.settings-page-subtitle { margin-top: 4px; font-size: 12px; line-height: 18px; }
+.settings-card, .settings-hub-card { border: 1px solid var(--settings-card-border); border-radius: 12px; background: var(--settings-card-bg); box-shadow: var(--settings-card-shadow); }
+.settings-card .settings-card { border-radius: 12px; }
+.settings-card-body { padding: 0; margin: 0; }
+.settings-group-plain { display: flex; flex-direction: column; gap: 4px; }
+.settings-rows > * { padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; }
+.settings-rows > * + * { border-top: 1px solid var(--settings-divider); }
+.settings-setting-row { container: settings-row / inline-size; min-width: 0; }
+.settings-setting-row:hover { background: transparent; }
+.settings-row-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(var(--settings-control-min), auto); gap: var(--settings-control-gap); align-items: center; }
+.settings-row-controls { max-width: var(--settings-control-max); justify-self: end; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.settings-row-controls > :not([role='switch']) { max-width: 100%; }
+.settings-title-description { min-width: 0; }
+.settings-row-title { display: flex; align-items: center; gap: 4px; }
+.settings-row-title, .settings-title-description > :first-child { font-size: 14px; line-height: 20px; font-weight: 500; color: var(--murmur-on-surface); }
+.settings-row-description, .settings-title-description > :nth-child(2) { margin-top: var(--settings-copy-gap); font-size: 12px; line-height: 18px; font-weight: 400; color: var(--murmur-on-surface-variant); max-width: var(--settings-description-max); text-wrap: balance; -webkit-line-clamp: unset; }
+.settings-reset-slot { width: var(--settings-reset-size); height: var(--settings-reset-size); flex: none; display: inline-flex; }
+.settings-reset { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--murmur-on-surface-variant); }
+.settings-reset svg { width: var(--settings-reset-icon); height: var(--settings-reset-icon); }
+.settings-reset:hover { background: var(--murmur-surface-container-high); }
+.settings-setting-row[data-disabled], .settings-unavailable-rows { opacity: var(--ui-disabled-opacity); color: var(--murmur-on-surface-variant); }
+/* Avoid compounding disabled opacity on controls inside disabled rows. */
+.settings-setting-row[data-disabled] :is(:disabled, [data-disabled]) { opacity: 1; }
+.settings-unavailable { background: var(--settings-unavailable-bg); }
+.settings-unavailable-notice { display: flex; align-items: flex-start; gap: 8px; padding: 8px var(--settings-row-x); font-size: 12px; line-height: 18px; color: var(--murmur-on-surface-variant); }
+.settings-unavailable-notice svg { width: 14px; height: 14px; flex: none; color: var(--murmur-warning); margin-top: 2px; }
+@container settings-row (width < 512px) {
+  .settings-row-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-row-controls { width: 100%; max-width: none; justify-self: stretch; justify-content: flex-start; }
+  .settings-row-controls > :not([role='switch']) { flex: 1; }
+}
+.settings-rows > .settings-dependent-branch { border-top: 0; padding-block: 0; }
+.settings-rows > .settings-dependent-branch > .settings-dependent-branch-clip > .settings-dependent-branch-content { margin-bottom: var(--settings-row-pad); }
+.settings-rows-nested { margin-top: var(--settings-row-pad); margin-bottom: calc(-1 * var(--settings-row-pad)); border-top: 1px solid var(--settings-divider); }
+.settings-rows-nested > * { padding-inline: 0; }
+.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
+.settings-stack > .settings-dependent-branch { margin-top: 0; }
+.settings-stack > .settings-dependent-branch > .settings-dependent-branch-clip > .settings-dependent-branch-content { margin-top: var(--settings-stack-gap); }
+.settings-field > * + * { margin-top: var(--settings-field-gap); }
+/* Existing complex fields retain their markup/behavior; simple fields share the row grid. */
+.settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, auto); column-gap: 32px; align-items: center; }
+.settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) > .ui-select { grid-column: 2; grid-row: 1 / span 8; margin: 0; max-width: 320px; justify-self: end; }
+.settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) > :not(.ui-select) { grid-column: 1; }
+.settings-field > :is(p, label):first-child { font-size: 14px; line-height: 20px; font-weight: 500; }
+.settings-field > p:not(:first-child) { font-size: 12px; line-height: 18px; max-width: var(--settings-description-max); text-wrap: balance; }
+.settings-rows { container: settings-fields / inline-size; }
+@container settings-fields (width < 512px) {
+  .settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) { grid-template-columns: minmax(0, 1fr); row-gap: 12px; }
+  .settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) > .ui-select { grid-column: 1; grid-row: auto; width: 100%; max-width: none; justify-self: stretch; }
+}
+.settings-segmented { height: var(--ui-segment-height); border-radius: 8px; padding: 2px; gap: 2px; border: 0; }
+.settings-segmented-btn { padding-inline: 12px; white-space: nowrap; height: 28px; border-radius: 6px; font-size: 14px; line-height: 20px; }
+.settings-segmented-btn[data-selected='true'] { background: var(--ui-segment-selected); box-shadow: var(--ui-segment-shadow); outline: 0; }
+.settings-segmented-btn:disabled { opacity: var(--ui-disabled-opacity); }
+.settings-target-flash { animation: settings-search-target-pulse var(--settings-search-pulse-duration) ease-in-out 2; }
+@keyframes settings-search-target-pulse { 0%, 100% { box-shadow: inset 0 0 0 0 transparent; } 50% { box-shadow: inset 0 0 0 2px var(--settings-search-pulse-ring); } }
+.settings-search-match { background: var(--settings-search-match-bg); color: var(--settings-search-match-fg); }
+@media (max-width: 767px) {
+  .settings-window-header { --ui-sidebar-width: var(--settings-nav-rail); }
+  .settings-sidebar { width: var(--settings-nav-rail); }
+  .settings-sidebar .settings-nav-item { justify-content: center; padding-inline: 0; }
+  .settings-sidebar .settings-nav-item span, .settings-tools-eyebrow { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .settings-search { display: none; }
+  .settings-rail-search { display: flex; align-items: center; justify-content: center; height: 32px; width: 100%; border-radius: 6px; }
+  .settings-rail-search svg { width: 16px; height: 16px; }
+  .settings-sidebar[data-search-open='true'] { position: absolute; inset: 0 auto 0 0; z-index: 20; width: min(320px, 100%); }
+  .settings-sidebar[data-search-open='true'] .settings-search { display: block; }
+  .settings-sidebar[data-search-open='true'] .settings-rail-search { display: none; }
 }
 
-.settings-rows > * + * {
-  border-top: 1px solid var(--settings-divider);
+/* Shared Base UI and legacy native control geometry. Auxiliary dark windows
+   keep their own controls unless they explicitly use these primitives. */
+.ui-switch { width: var(--ui-switch-width); height: var(--ui-switch-height); padding: var(--ui-switch-pad); border: 0; border-radius: 999px; background: var(--ui-control-border); transition: background-color var(--ui-switch-track-duration), box-shadow var(--ui-switch-track-duration); }
+.ui-switch[data-checked] { background: var(--murmur-primary); }
+.ui-switch[data-size='sm'] { width: var(--ui-switch-small-width); height: var(--ui-switch-small-height); }
+.ui-switch-thumb { display: block; flex: none; width: var(--ui-switch-knob); height: var(--ui-switch-knob); border-radius: 999px; background: var(--murmur-background); box-shadow: 0 1px 2px rgb(0 0 0 / 5%); }
+.ui-switch[data-size='sm'] .ui-switch-thumb { width: var(--ui-switch-small-knob); height: var(--ui-switch-small-knob); }
+.ui-switch:is(:disabled, [data-disabled]) { opacity: var(--ui-disabled-opacity); }
+.ui-select { min-width: min(var(--ui-select-min), 100%); }
+.ui-select-trigger,
+.ui-form-input,
+.settings-workspace :is(input:not([type]), input[type='text'], input[type='number'], input[type='search'], input[type='url'], input[type='password'], select, textarea) {
+  border: 1px solid var(--ui-control-border); border-radius: var(--ui-radius-control); background: var(--ui-control-bg); box-shadow: var(--ui-control-shadow);
+  padding-inline: var(--ui-control-inset); font-size: 14px; line-height: 20px; color: var(--murmur-on-surface); transition: border-color 120ms, box-shadow 120ms;
+}
+.ui-select-trigger, .settings-workspace button.ui-select-trigger { height: var(--ui-control-standard); min-width: var(--ui-select-min); }
+.ui-select-trigger[data-size='sm'], .settings-workspace .ui-select-trigger[data-size='sm'] { height: var(--ui-control-compact); }
+.ui-select-trigger[data-size='xs'], .settings-workspace .ui-select-trigger[data-size='xs'] { height: var(--ui-control-xs); }
+.ui-select-trigger > svg { width: 14px; height: 14px; opacity: .7; }
+.ui-form-input, .settings-workspace :is(input:not([type]), input[type='text'], input[type='number'], input[type='search'], input[type='url'], input[type='password']) { height: var(--ui-input-height); }
+.settings-workspace select { height: var(--ui-control-standard); min-width: var(--ui-select-min); }
+.settings-workspace .settings-search input { height: 32px; border-radius: var(--settings-search-radius); padding-left: 35px; padding-right: 28px; }
+:is(.ui-select-trigger, .ui-form-input):focus-visible,
+.settings-workspace :is(input:not([type]), input[type='text'], input[type='number'], input[type='search'], input[type='url'], input[type='password'], select, textarea):focus-visible {
+  border-color: var(--murmur-primary); box-shadow: var(--ui-control-focus); outline: none;
+}
+.ui-select-trigger:disabled, .ui-form-input:disabled, .ui-form-button:disabled { opacity: var(--ui-disabled-opacity); cursor: not-allowed; }
+.ui-form-button, .settings-workspace .settings-quiet-btn, .settings-workspace .settings-back-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: var(--ui-control-standard); flex: none;
+  padding: 0 calc(12px - 1px); border: 1px solid var(--ui-control-border); border-radius: var(--ui-radius-control);
+  background: var(--ui-control-bg); color: var(--murmur-on-surface); box-shadow: var(--ui-control-shadow); font-size: 14px; line-height: 20px; font-weight: 500; border-color: var(--ui-control-border);
+}
+.ui-form-button[data-size='sm'] { height: var(--ui-control-compact); padding-inline: calc(10px - 1px); }
+.ui-form-button[data-size='xs'] { height: var(--ui-control-xs); padding-inline: calc(8px - 1px); }
+.ui-form-button[data-variant='primary'] { background: var(--murmur-primary); color: var(--murmur-on-primary); border-color: transparent; box-shadow: var(--ui-button-highlight), var(--ui-shadow-xs); }
+.ui-form-button[data-variant='ghost'] { background: transparent; box-shadow: none; border-color: transparent; }
+.ui-form-button:active:not(:disabled), .settings-workspace .settings-quiet-btn:active:not(:disabled), .settings-workspace .settings-back-btn:active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
+@media (prefers-reduced-motion: reduce) { .settings-target-flash { animation: none; } }
+
+.settings-unavailable-rows .settings-setting-row[data-disabled] { opacity: 1; }
+.settings-setting-row[data-disabled] :is(.settings-row-title, .settings-row-description) { color: var(--murmur-on-surface-variant); }
+.settings-setting-row:not(:has(> .settings-row-layout)) { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 32px; }
+.ui-switch[data-size='lg'] { width: 56px; height: 32px; }
+.ui-switch[data-size='lg'] .ui-switch-thumb { width: 28px; height: 28px; }
+
+.settings-sidebar :is(nav, .settings-nav-tools) > * { margin-block: 0; }
+/* Legacy panes use native action elements. Keep their behavior while giving
+   bordered actions the same geometry as the shared Base UI button. */
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not([aria-expanded]) {
+  min-height: var(--ui-control-standard); height: var(--ui-control-standard); padding: 0 calc(12px - 1px); border-width: 1px; border-style: solid; border-radius: var(--ui-radius-control); font-size: 14px; line-height: 20px; font-weight: 500; border-color: var(--ui-control-border);
+}
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
+
+.settings-title-description > p { font-size: 12px; line-height: 18px; text-wrap: balance; max-width: var(--settings-description-max); margin-top: var(--settings-copy-gap); }
+.ui-switch-thumb { transform: translateX(0); transform-origin: left center; transition: transform var(--ui-switch-knob-duration), scale 100ms; }
+.ui-switch[data-checked] .ui-switch-thumb { transform: translateX(var(--ui-switch-travel)); transform-origin: right center; }
+.ui-switch[data-size='sm'][data-checked] .ui-switch-thumb { transform: translateX(var(--ui-switch-small-travel)); }
+.ui-switch[data-size='lg'][data-checked] .ui-switch-thumb { transform: translateX(24px); }
+.ui-switch:active:not([data-disabled]) .ui-switch-thumb { scale: 1.1 1; }
+
+.settings-picker { min-width: 0; width: var(--settings-control-max); }
+.settings-page .settings-page-title { font-size: 16px; line-height: 24px; font-weight: 600; letter-spacing: 0; }
+.settings-rows > .transform-practice { margin-top: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; box-shadow: none; border-inline: 0; border-bottom: 0; }
+@media (max-width: 767px) { .settings-tools-eyebrow { display: none; } }
+
+@media (max-width: 767px) {
+  .settings-sidebar[data-search-open='true'] .settings-nav-item span { position: static; width: auto; height: auto; clip-path: none; overflow: hidden; }
+  .settings-sidebar[data-search-open='true'] .settings-nav-item { justify-content: flex-start; padding-inline: var(--settings-nav-item-inset); }
+  .settings-sidebar[data-search-open='true'] .settings-tools-eyebrow { display: block; position: static; width: auto; height: auto; clip-path: none; }
 }
 
-.settings-rows > .settings-setting-row {
-  min-height: 3rem;
-}
-
-/* A branch belongs to the row above it: no divider and no row padding. Its
-   content closes with the row padding the next divider expects. */
-.settings-rows > .settings-dependent-branch {
-  border-top: 0;
-  padding-block: 0;
-}
-
-.settings-rows > .settings-dependent-branch > .settings-dependent-branch-clip > .settings-dependent-branch-content {
-  margin-bottom: var(--settings-row-pad);
-}
-
-/* Rows under a disclosure summary. The parent row already supplies the inset
-   and the bottom padding, so the last nested row takes over the latter. */
-.settings-rows-nested {
-  margin-top: var(--settings-row-pad);
-  margin-bottom: calc(-1 * var(--settings-row-pad));
-  border-top: 1px solid var(--settings-divider);
-}
-
-.settings-rows-nested > * {
-  padding-inline: 0;
-}
-
-.settings-stack > * + * {
-  margin-top: var(--settings-stack-gap);
-}
-
-/* A collapsed branch is zero-height, so its gap lives inside the clip. */
-.settings-stack > .settings-dependent-branch {
-  margin-top: 0;
-}
-
-.settings-stack > .settings-dependent-branch > .settings-dependent-branch-clip > .settings-dependent-branch-content {
-  margin-top: var(--settings-stack-gap);
-}
-
-.settings-field > * + * {
-  margin-top: var(--settings-field-gap);
-}
+.settings-workspace :is(button, input, select, textarea):disabled { opacity: var(--ui-disabled-opacity); }
+.settings-hub-card > button { min-height: 0; height: auto; padding: var(--settings-row-pad) var(--settings-row-x); }
+.settings-hub-card > button:hover { background: transparent; }
+.settings-hub-card > button > .min-w-0 > :first-child { font-size: 14px; line-height: 20px; font-weight: 500; }
+.settings-hub-card > button > .min-w-0 > :nth-child(2) { margin-top: var(--settings-copy-gap); font-size: 12px; line-height: 18px; text-wrap: balance; }
