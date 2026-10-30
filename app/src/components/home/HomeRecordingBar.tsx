@@ -24,6 +24,8 @@ interface HomeRecordingBarProps {
   meetingPhase: MeetingRuntimePhase;
   onRecord: () => void;
   onStop: () => void;
+  /** Status strip under the prompt row, like a composer's model/agent bar. */
+  footer?: ReactNode;
 }
 
 function timer(seconds: number): string {
@@ -47,6 +49,7 @@ export function HomeRecordingBar({
   meetingPhase,
   onRecord,
   onStop,
+  footer,
 }: HomeRecordingBarProps) {
   const isCapturing = status === 'starting' || status === 'recording';
   const busy = status === 'processing' || status === 'recovering';
@@ -127,6 +130,7 @@ export function HomeRecordingBar({
           </span>
         </span>
       </button>
+      {footer && <div className="home-talk-footer">{footer}</div>}
     </section>
   );
 }

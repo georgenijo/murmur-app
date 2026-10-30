@@ -54,17 +54,17 @@ for (const theme of ['sonic', 'flat-dark', 'open-vsx-low-contrast', 'open-vsx-hi
     const top = await sample(dayStart, 'top');
     const divider = await sample(row, 'top');
     const bottom = await sample(dayEnd, 'bottom');
-    // The day surface stands off the page, with a visible rounded outline and a shadow.
+    // The day surface stands off the page with a visible rounded outline; Home is flat, so no shadow.
     expect(top.surfaceContrast).toBeGreaterThan(1.2);
     expect(top.borderContrast).toBeGreaterThan(1.25);
     expect(top.radius).toBeGreaterThanOrEqual(8);
     expect(bottom.radius).toBeGreaterThanOrEqual(8);
-    expect(bottom.shadow).toContain('0, 0, 0');
+    expect(bottom.shadow).toBe('none');
     // Rows inside a day stay separated by a hairline divider.
     expect(divider.borderContrast).toBeGreaterThan(1.1);
     const recording = page.locator('.home-talk');
     await expect(recording).toContainText('Listening');
-    expect((await recording.boundingBox())!.height).toBeLessThanOrEqual(56);
+    expect((await page.getByTestId('home-record-button').boundingBox())!.height).toBeLessThanOrEqual(56);
     await expect(page.locator('[data-visual-ready=true]')).toHaveScreenshot(`${theme}-recording-cards.png`);
     await page.setViewportSize({ width: 720, height: 560 });
     const box = await recording.boundingBox();
