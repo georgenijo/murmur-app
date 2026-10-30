@@ -37,26 +37,32 @@ const PLAY_CHECK_WINDOWS: usize = 20;
 /// of play. If none does, the play reached another app: pause it sooner.
 const OPEN_CHECK_WINDOWS: usize = 10;
 
-/// While dictating, Murmur keeps listening to the browser it paused.
+/// While dictating, Murmur keeps listening to every browser.
 const WATCH_WINDOW: Duration = Duration::from_millis(500);
 
 /// What one watch window means for the pause proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Watch {
-    /// Still silent, or its output closed (a long pause): keep the proof.
+    /// Silent, or every browser output closed (a long pause): keep the proof.
     Keep,
-    /// The browser sounds again: the user restarted it. Murmur no longer owns
-    /// the pause, so a later pause by the user must never get play.
+    /// A browser sounds again: the user played it or another one, so the
+    /// Now Playing target may have changed. A later pause by the user must
+    /// never get play.
     Restarted,
-    /// Murmur can no longer listen: ownership is uncertain, so give it up.
+    /// Murmur cannot tell silence from a tap that stopped delivering:
+    /// ownership is uncertain, so give it up.
     Lost,
 }
 
-fn watch(peak: Option<f32>, listening: bool) -> Watch {
+/// `closed`: the worker confirmed every browser closed its output, the only
+/// reason a working tap delivers nothing.
+fn watch(peak: Option<f32>, listening: bool, closed: bool) -> Watch {
     match peak {
         Some(peak) if peak > SOUND_DBFS => Watch::Restarted,
         _ if !listening => Watch::Lost,
-        _ => Watch::Keep,
+        Some(_) => Watch::Keep,
+        None if closed => Watch::Keep,
+        None => Watch::Lost,
     }
 }
 
@@ -353,7 +359,8 @@ mod native {
                     Err(TryRecvError::Disconnected) => return,
                     Err(TryRecvError::Empty) => {
                         let peak = held.watch.peak_dbfs(WATCH_WINDOW);
-                        let outcome = watch(peak, held.watch.listening());
+                        let closed = peak.is_none() && held.watch.output_closed();
+                        let outcome = watch(peak, held.watch.listening(), closed);
                         if outcome != Watch::Keep {
                             tracing::info!(
                                 target: "audio",
@@ -398,10 +405,16 @@ mod native {
                         "browser media pause finished"
                     );
                     if let Ok(proof) = result {
+                        drop(audio);
+                        // Watch every browser, not only the paused one: any
+                        // browser sounding may move Now Playing, after which
+                        // play could start media that was not playing.
+                        let mut watch = WorkerBrowserAudio::new(Listen::All);
+                        watch.start();
                         paused = Some(Held {
                             recording_id,
                             proof,
-                            watch: audio,
+                            watch,
                         });
                     }
                 }
@@ -490,6 +503,10 @@ mod native {
         /// The worker still runs with a tap.
         fn listening(&self) -> bool {
             self.worker.as_ref().is_some_and(|worker| worker.tapped)
+        }
+
+        fn start(&mut self) {
+            let _ = self.worker();
         }
 
         fn worker(&mut self) -> Option<&mut Worker> {
@@ -1022,14 +1039,16 @@ mod tests {
 
     #[test]
     fn a_pause_the_user_takes_back_during_dictation_is_released() {
-        // Silence, or a closed output after a long pause, keeps the proof.
-        assert_eq!(watch(Some(-200.0), true), Watch::Keep);
-        assert_eq!(watch(None, true), Watch::Keep);
-        // The user played it again: a later pause is theirs, never Murmur's.
-        assert_eq!(watch(Some(-20.0), true), Watch::Restarted);
+        // Silence, or confirmed closed outputs after a long pause, keep the proof.
+        assert_eq!(watch(Some(-200.0), true, false), Watch::Keep);
+        assert_eq!(watch(None, true, true), Watch::Keep);
+        // A browser played again: a later pause is the user's, never Murmur's.
+        assert_eq!(watch(Some(-20.0), true, false), Watch::Restarted);
+        // No level without confirmed closed outputs: the tap may have stopped.
+        assert_eq!(watch(None, true, false), Watch::Lost);
         // Murmur stopped hearing it: ownership is uncertain.
-        assert_eq!(watch(None, false), Watch::Lost);
-        assert_eq!(watch(Some(-200.0), false), Watch::Lost);
+        assert_eq!(watch(None, false, true), Watch::Lost);
+        assert_eq!(watch(Some(-200.0), false, false), Watch::Lost);
     }
 
     #[test]

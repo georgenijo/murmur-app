@@ -34,11 +34,12 @@ Dictation Starting → Recording (setting on, System Audio Recording granted)
     ├── 2 windows in a row below -90 dBFS → Murmur paused it (proof kept)
     └── Otherwise (another tab, a sound that ended, pause reached another app) → no play later
 
-While the recording lasts, the same tap keeps listening every 500 ms
-├── The browser sounds again (you played it) → give up the proof: no play later,
-│   even if you pause it again before the dictation ends
-├── The tap stops delivering for good (worker or tap lost) → give up the proof
-└── Silent, or its output closed after a long pause → keep the proof
+While the recording lasts, a tap on every browser listens every 500 ms
+├── Any browser sounds (you played it, or another tab or browser) → give up the
+│   proof: no play later, even if you pause it again before the dictation ends
+├── No level and the worker cannot confirm every browser output closed, or the
+│   worker or tap is lost → give up the proof
+└── Silent, or every output closed after a long pause → keep the proof
 
 Recording → Processing or Idle, and Murmur holds the proof
 ├── A newer recording already started → it inherits the pause; no play yet
@@ -65,8 +66,9 @@ signed, sandboxed capture worker in `--browser-level <playing|all>` mode. It
 owns the tap and answers bounded line requests (`peak <ms>`, `closed`) with a
 peak in dBFS or `none`. The IO callback keeps only an atomic peak and callback
 count; no audio sample is copied, stored, or written out. Closing stdin tears
-the tap down in reverse creation order. While Murmur holds a pause, the pause
-worker stays open for the whole recording and is closed before the resume; the host hard-kills the exact process
+the tap down in reverse creation order. While Murmur holds a pause, a second
+worker tapping every browser stays open for the whole recording and is closed
+before the resume; the host hard-kills the exact process
 group if the worker does not exit within 500 ms. The host owns the decision and
 sends the MediaRemote command (the worker's sandbox does not reach it).
 
