@@ -1024,7 +1024,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               onClick={() => openPage('ai', 'programmatic')}
               className="settings-back-btn mb-4"
             >
-              <span aria-hidden="true">‹</span> AI &amp; Models
+              <span aria-hidden="true">‹</span> AI &amp; models
             </Button>
           )}
           {activeCat === 'customize' && (

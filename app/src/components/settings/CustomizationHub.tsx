@@ -47,8 +47,7 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
   }, [focusDestination]);
 
   return (
-    <section aria-labelledby="customization-title">
-      <h2 id="customization-title" className="sr-only">Customize Murmur</h2>
+    <section aria-label="Customize Murmur">
 
       <ol
         aria-label="Customization destinations"

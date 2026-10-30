@@ -170,7 +170,7 @@ test('search highlights exact colors and destination pulses twice at 650ms', asy
     await page.getByRole('searchbox').fill('Launch');
     const match = page.locator('mark').first();
     await css(match, { 'background-color': appearance === 'light' ? 'oklch(0.915 0.11 85)' : 'oklch(0.55 0.1 85)', color: appearance === 'light' ? 'oklch(0.216 0.028 77.4)' : 'oklch(0.97 0 0)' });
-    await page.getByRole('button', { name: /Launch at Login/ }).click();
+    await page.getByRole('button', { name: /Launch at login/ }).click();
     const target = page.locator('[data-setting-target=launch-login]');
     await css(target, { 'animation-name': 'settings-search-target-pulse', 'animation-duration': '0.65s', 'animation-iteration-count': '2', 'animation-timing-function': 'ease-in-out' });
     const keyframes = await target.evaluate(el => el.getAnimations()[0].effect!.getKeyframes());

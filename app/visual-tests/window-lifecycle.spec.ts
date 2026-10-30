@@ -9,7 +9,7 @@ test.use({ viewport: { width: mainWindow.minWidth!, height: mainWindow.minHeight
 async function expectNoHorizontalClipping(page: Page, label: string) {
   const overflow = await page.locator('#root').evaluate((root) => {
     return [...root.querySelectorAll<HTMLElement>('button, input:not([type=hidden]), select, textarea, [role=switch]')]
-      .filter((element) => element.checkVisibility())
+      .filter((element) => element.checkVisibility() && !element.closest('[hidden], [inert], [aria-hidden="true"]'))
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width > 0 && (rect.right > window.innerWidth + 1 || rect.left < -1);
@@ -57,8 +57,8 @@ for (const appearance of ['light', 'dark']) {
       // horizontal scroll or put its actionable right edge off screen.
       await expectNoHorizontalClipping(page, label);
     }
-    for (const detail of ['Speech-to-Text', 'Voice Query', 'Selected-Text Rewrite']) {
-      await nav.getByRole('button', { name: 'AI & Models', exact: true }).click();
+    for (const detail of ['Speech-to-text', 'Voice Query', 'Selected-text rewrite']) {
+      await nav.getByRole('button', { name: 'AI & models', exact: true }).click();
       await page.locator('main').getByRole('button', { name: new RegExp(`^${detail}`) }).click();
       await expect(page.locator('.settings-card-body')).toBeVisible();
       await expectNoHorizontalClipping(page, detail);

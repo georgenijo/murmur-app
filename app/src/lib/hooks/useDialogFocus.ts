@@ -35,7 +35,11 @@ export function useDialogFocus(onCancel: () => void, restoreFocus?: () => HTMLEl
     (focusable()[0] ?? dialog)?.focus();
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      (opener?.isConnected && opener !== document.body ? opener : restoreRef.current?.())?.focus();
+      // Menu items can stay mounted through their exit animation after the
+      // dialog has opened. Restore the caller's stable trigger, not that item.
+      const restoreOpener = opener?.isConnected && opener !== document.body
+        && !opener.closest('[role="menu"], [hidden], [inert], [aria-hidden="true"]');
+      (restoreOpener ? opener : restoreRef.current?.())?.focus();
     };
   }, []);
   return dialogRef;

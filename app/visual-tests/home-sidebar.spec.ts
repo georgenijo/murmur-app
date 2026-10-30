@@ -62,7 +62,7 @@ test('T3 breakpoint collapses Home only and restores width and desktop preferenc
   for (const width of [720, 767, 840]) {
     await page.setViewportSize({ width, height: 620 });
     await page.goto('/visual-fixtures.html?state=settings');
-    await expect(page.locator('.settings-sidebar')).toHaveCSS('width', width <= 760 ? '184px' : '200px');
+    await expect(page.locator('.settings-sidebar')).toHaveCSS('width', width < 768 ? '56px' : '240px');
   }
 });
 

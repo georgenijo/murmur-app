@@ -143,12 +143,7 @@ export function SettingsEditorsWindow({
           <span aria-hidden="true">‹</span>
           {backLabel}
         </button>
-        <div>
-          <p className="settings-eyebrow">Text editor</p>
-          <h2 id="settings-editor-title" className="text-base font-semibold text-on-surface">
-            {SETTINGS_EDITOR_LABELS[initialTab]}
-          </h2>
-        </div>
+        <span id="settings-editor-title" className="sr-only">{SETTINGS_EDITOR_LABELS[initialTab]}</span>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
