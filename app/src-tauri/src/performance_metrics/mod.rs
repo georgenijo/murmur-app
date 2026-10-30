@@ -881,7 +881,7 @@ mod tests {
         let decoded: PerformanceRunV1 = serde_json::from_str(&payload).unwrap();
         assert_eq!(decoded, run);
         assert_eq!(decoded.schema_version, PERFORMANCE_RUN_SCHEMA_VERSION);
-        assert_eq!(decoded.stages.len(), 28);
+        assert_eq!(decoded.stages.len(), 30);
     }
 
     #[test]

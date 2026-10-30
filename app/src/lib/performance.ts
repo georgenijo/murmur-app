@@ -58,7 +58,9 @@ export type PerformanceStageV1 =
   | 'generation'
   | 'reviewReady'
   | 'apply'
-  | 'undo';
+  | 'undo'
+  | 'releaseToStop'
+  | 'releaseToPaste';
 
 export type StageOutcomeV1 = 'completed' | 'skipped' | 'fallback' | 'failed';
 
@@ -302,8 +304,14 @@ export const PERFORMANCE_STAGES_V1: readonly PerformanceStageV1[] = [
   'fileOutput', 'clipboardPaste', 'fileReturn', 'totalProcessing',
   'selectedTextCapture', 'instructionCapture', 'instructionAsr',
   'sidecarSpawnLoad', 'generation', 'reviewReady', 'apply', 'undo',
+  'releaseToStop', 'releaseToPaste',
 ] as const;
 const performanceStages = new Set<PerformanceStageV1>(PERFORMANCE_STAGES_V1);
+// Stages added after the first v1 records shipped. Historical records omit
+// them; that absence must not be read as a measured zero.
+const ADDITIVE_STAGES_V1 = new Set<PerformanceStageV1>([
+  'inferenceQueue', 'releaseToStop', 'releaseToPaste',
+]);
 const sizeBuckets = new Set<SizeBucketV1>([
   'empty', 'tiny', 'small', 'medium', 'large', 'extraLarge',
 ]);
@@ -684,11 +692,12 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));
-  // inferenceQueue is additive: historical v1 records did not measure it.
-  // Accept that one absent stage, without accepting missing legacy stages or
-  // inventing a zero-duration measurement for an older run.
+  // inferenceQueue, releaseToStop, and releaseToPaste are additive:
+  // historical v1 records did not measure them. Accept those absent stages,
+  // without accepting missing legacy stages or inventing a zero-duration
+  // measurement for an older run.
   if (stages.size !== value.stages.length
-    || !PERFORMANCE_STAGES_V1.every(stage => stage === 'inferenceQueue' || stages.has(stage))) {
+    || !PERFORMANCE_STAGES_V1.every(stage => ADDITIVE_STAGES_V1.has(stage) || stages.has(stage))) {
     return false;
   }
   return isRunCorrelation(value.correlation, value.kind as PerformanceRunKindV1)

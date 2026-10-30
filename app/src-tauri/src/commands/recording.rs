@@ -1131,6 +1131,9 @@ pub(crate) struct PipelineTimings {
     pub rss_before_mb: u64,
     pub rss_after_mb: u64,
     pub warm_state: Option<ModelWarmStateV1>,
+    /// Clipboard write (and paste, when enabled) confirmed; the
+    /// `releaseToPaste` endpoint exists only then (#826).
+    pub delivery_confirmed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1170,6 +1173,27 @@ fn confirmed_delivery_outcome(outcome: injector::InjectionOutcome) -> DictationD
         injector::InjectionOutcome::ClipboardOnly(_) => DictationDeliveryOutcome::ClipboardOnly,
         injector::InjectionOutcome::AutoPasted => DictationDeliveryOutcome::AutoPastePosted,
     }
+}
+
+/// Clipboard-only and posted auto-paste are confirmed deliveries; a failed
+/// clipboard write, timeout, or stopped delivery is not.
+fn delivery_confirms_paste(outcome: DictationDeliveryOutcome) -> bool {
+    matches!(
+        outcome,
+        DictationDeliveryOutcome::ClipboardOnly | DictationDeliveryOutcome::AutoPastePosted
+    )
+}
+
+/// `releaseToPaste` exists only for a hotkey-released, successful run whose
+/// delivery was confirmed (#826).
+fn release_to_paste_stage(
+    outcome: &RunOutcomeV1,
+    delivery_confirmed: bool,
+    release: Option<crate::hotkey_release::HotkeyRelease>,
+    delivered_at: std::time::Instant,
+) -> Option<StageTimingV1> {
+    let release = release.filter(|_| delivery_confirmed)?;
+    matches!(outcome, RunOutcomeV1::Success).then(|| release.release_to_paste(delivered_at))
 }
 
 fn delivery_event_recording_id(
@@ -2850,6 +2874,7 @@ async fn run_transcription_pipeline(
             outcome_code = injection_outcome_code,
             "smart destination delivery"
         );
+        timings.delivery_confirmed = delivery_confirms_paste(delivery_outcome);
         // Hold the recording-state lock across ownership validation and event
         // publication. A concurrent cancel changes Processing to Idle under
         // this same lock before marking the ID cancelled, and a new start also
@@ -5313,6 +5338,8 @@ async fn stop_native_recording_for(
     state: tauri::State<'_, State>,
     expected_recording_id: Option<u64>,
 ) -> Result<serde_json::Value, String> {
+    // The `releaseToStop` endpoint: entry, before any lock wait (#826).
+    let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
     let current_recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
     if !stop_owner_matches(current_recording_id, expected_recording_id) {
@@ -5382,6 +5409,9 @@ async fn stop_native_recording_for(
             }
         }
     };
+    // Claim the release at the accepted transition, before teardown, so a
+    // later release queued behind this stop cannot replace it.
+    let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
     if status == DictationStatus::Starting {
         drop(transition);
         // Cancel the exact owner even if readiness races with this command
@@ -5492,6 +5522,9 @@ async fn stop_native_recording_for(
         rid,
         PerformanceStageV1::CaptureFinalization,
     );
+    if let Some(release) = hotkey_release {
+        performance_guard.record(release.release_to_stop());
+    }
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.dictation_stop_handoff",
@@ -5617,7 +5650,8 @@ async fn stop_native_recording_for(
     let text = pipeline.text;
     let timings = pipeline.timings;
 
-    let total_ms = t_total.elapsed().as_millis() as u64;
+    let delivered_at = std::time::Instant::now();
+    let total_ms = delivered_at.duration_since(t_total).as_millis() as u64;
     let audio_secs = samples.len() as f64 / 16_000.0;
     let word_count = if text.trim().is_empty() {
         0
@@ -5680,9 +5714,16 @@ async fn stop_native_recording_for(
         PipelineTerminal::Cancelled(stage) => RunOutcomeV1::Cancelled { stage },
     };
     let warm_state = timings.warm_state.unwrap_or(ModelWarmStateV1::Unknown);
+    let mut stages = pipeline_stages(&timings, total_ms);
+    stages.extend(release_to_paste_stage(
+        &outcome,
+        timings.delivery_confirmed,
+        hotkey_release,
+        delivered_at,
+    ));
     performance_guard.finish(
         outcome,
-        pipeline_stages(&timings, total_ms),
+        stages,
         Some(ContentFreeInputSummaryV1::audio_with_output(
             (audio_secs * 1_000.0).round() as u64,
             text.len(),
@@ -8249,6 +8290,57 @@ pub(crate) mod tests {
             1
         ))
         .is_none());
+    }
+
+    #[test]
+    fn release_to_paste_requires_confirmed_delivery_of_a_successful_run() {
+        use crate::hotkey_release::HotkeyRelease;
+        use std::time::{Duration, Instant};
+
+        let released_at = Instant::now();
+        let release = HotkeyRelease::for_test(released_at, released_at + Duration::from_millis(12));
+        let delivered_at = released_at + Duration::from_millis(180);
+        let stage =
+            release_to_paste_stage(&RunOutcomeV1::Success, true, Some(release), delivered_at)
+                .expect("confirmed delivery has a release-to-paste total");
+        assert_eq!(stage.stage, PerformanceStageV1::ReleaseToPaste);
+        assert_eq!(
+            stage.duration_ms,
+            crate::performance_metrics::MeasurementV1::measured(180)
+        );
+
+        for outcome in [
+            DictationDeliveryOutcome::ClipboardOnly,
+            DictationDeliveryOutcome::AutoPastePosted,
+        ] {
+            assert!(delivery_confirms_paste(outcome));
+        }
+        // Clipboard-write failure, injection timeout, and stopped delivery are
+        // all reported as these two outcomes; neither enters the cohort.
+        for outcome in [
+            DictationDeliveryOutcome::ClipboardWriteFailed,
+            DictationDeliveryOutcome::Unconfirmed,
+        ] {
+            assert!(!delivery_confirms_paste(outcome));
+            assert_eq!(
+                release_to_paste_stage(
+                    &RunOutcomeV1::Success,
+                    delivery_confirms_paste(outcome),
+                    Some(release),
+                    delivered_at,
+                ),
+                None
+            );
+        }
+        assert_eq!(
+            release_to_paste_stage(&RunOutcomeV1::NoSpeech, true, Some(release), delivered_at),
+            None
+        );
+        assert_eq!(
+            release_to_paste_stage(&RunOutcomeV1::Success, true, None, delivered_at),
+            None
+        );
+        assert!(!PipelineTimings::default().delivery_confirmed);
     }
 
     #[test]

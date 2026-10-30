@@ -20,6 +20,7 @@ import {
 import { RunDetail } from './RunDetail';
 import { PerformanceStoreHealthBanner } from './PerformanceStoreHealthBanner';
 import { ProductionComparison } from './ProductionComparison';
+import { DictationLatencySummary } from './DictationLatencySummary';
 
 type OutcomeFilter =
   | 'all'
@@ -201,6 +202,8 @@ export function RunsView({
           </button>
         </div>
       </div>
+
+      {runs.length > 0 && <DictationLatencySummary runs={runs} />}
 
       <ProductionComparison runs={runs} />
 

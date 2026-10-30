@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 2;
+const LATEST_DB_SCHEMA_VERSION: u32 = 3;
 const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
@@ -671,10 +671,13 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
             .pragma_update(None, "user_version", LATEST_DB_SCHEMA_VERSION)
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
-    } else if current == 1 {
+    } else if current < LATEST_DB_SCHEMA_VERSION {
         // V2 only extends the versioned JSON payload with an optional,
-        // content-free Voice Query process summary. The relational shape and
-        // V1 run envelope remain unchanged.
+        // content-free Voice Query process summary. V3 adds the dictation
+        // `releaseToStop` and `releaseToPaste` stages (#826); older payloads
+        // stay readable and simply omit them. The relational shape and V1 run
+        // envelope remain unchanged, and the bump keeps older builds from
+        // decoding stages they do not know.
         let transaction = connection.transaction().map_err(db_error)?;
         transaction
             .pragma_update(None, "user_version", LATEST_DB_SCHEMA_VERSION)
@@ -781,6 +784,8 @@ const ALL_STAGES: &[PerformanceStageV1] = &[
     PerformanceStageV1::ReviewReady,
     PerformanceStageV1::Apply,
     PerformanceStageV1::Undo,
+    PerformanceStageV1::ReleaseToStop,
+    PerformanceStageV1::ReleaseToPaste,
 ];
 
 fn canonical_stages(measured: Vec<StageTimingV1>) -> Vec<StageTimingV1> {
@@ -1503,6 +1508,106 @@ mod tests {
     }
 
     #[test]
+    fn v2_database_migrates_and_keeps_runs_without_release_timing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+        let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(81),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let legacy = repository
+            .complete(
+                &correlation(81),
+                RunOutcomeV1::Success,
+                vec![StageTimingV1::measured(
+                    PerformanceStageV1::TotalProcessing,
+                    150,
+                )],
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        drop(repository);
+
+        // Rewrite the run as a v2 build stored it: no release stages.
+        let db = root.join(DB_FILE);
+        let connection = Connection::open(&db).unwrap();
+        let mut stored = legacy.clone();
+        stored.stages.retain(|timing| {
+            !matches!(
+                timing.stage,
+                PerformanceStageV1::ReleaseToStop | PerformanceStageV1::ReleaseToPaste
+            )
+        });
+        connection
+            .execute(
+                "UPDATE completed_runs SET payload_json = ? WHERE run_id = ?",
+                params![serde_json::to_string(&stored).unwrap(), legacy.run_id],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        drop(connection);
+
+        let migrated = PerformanceRepository::initialize(root).unwrap().0;
+        let version: u32 = migrated
+            .open()
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let runs = migrated.list(10).unwrap();
+        assert_eq!(runs, vec![stored]);
+
+        migrated
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(82),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        migrated
+            .complete(
+                &correlation(82),
+                RunOutcomeV1::Success,
+                vec![
+                    StageTimingV1::measured(PerformanceStageV1::ReleaseToStop, 21),
+                    StageTimingV1::measured(PerformanceStageV1::TotalProcessing, 150),
+                    StageTimingV1::measured(PerformanceStageV1::ReleaseToPaste, 174),
+                ],
+                None,
+                None,
+            )
+            .unwrap();
+        let run = migrated
+            .list(10)
+            .unwrap()
+            .into_iter()
+            .find(|run| run.correlation == correlation(82))
+            .unwrap();
+        assert_eq!(run.stages.len(), ALL_STAGES.len());
+        for (stage, expected) in [
+            (PerformanceStageV1::ReleaseToStop, 21),
+            (PerformanceStageV1::ReleaseToPaste, 174),
+        ] {
+            assert_eq!(
+                run.stages
+                    .iter()
+                    .find(|timing| timing.stage == stage)
+                    .unwrap()
+                    .duration_ms,
+                MeasurementV1::measured(expected),
+            );
+        }
+    }
+
+    #[test]
     fn v1_database_migrates_without_losing_completed_or_active_runs() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("diagnostics");
@@ -1555,7 +1660,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, LATEST_DB_SCHEMA_VERSION);
         drop(connection);
         let runs = migrated.list(10).unwrap();
         assert_eq!(runs.len(), 2);
@@ -1606,7 +1711,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(run.schema_version, 1);
-        assert_eq!(run.stages.len(), 28);
+        assert_eq!(run.stages.len(), 30);
         assert_eq!(
             run.query_process,
             Some(QueryProcessSummaryV1 {
