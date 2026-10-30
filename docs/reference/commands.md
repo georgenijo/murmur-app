@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 235 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 239 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -274,6 +274,15 @@ from query-review. Local deletion does not erase Pi's separately retained remote
 | `download_transform_model` | — | `Result<(), String>` | Streams the pinned GGUF to a `.partial`, hashes while streaming, fsyncs, then atomically publishes under its SHA-256 directory. Exact size and hash are enforced. |
 | `remove_transform_model` | — | `Result<(), String>` | Shuts the helper down first, then deletes the hash directory and any partial. |
 | `reset_transform_runtime` | — | `()` | Clears the circuit breaker after repeated helper faults. |
+
+## Smart Auto-Stop (`commands/smart_turn.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `smart_turn_model_status` | — | `SmartTurnModelStatus` | `{state, sizeBytes}` for the pinned Smart Turn v3.2 model: `notDownloaded`, `downloading`, or `ready`. |
+| `download_smart_turn_model` | — | `Result<(), String>` | User-initiated. Streams the pinned ONNX file to a `.partial`, hashes while streaming, fsyncs, then atomically publishes under its SHA-256 directory. Exact size and hash are enforced. |
+| `remove_smart_turn_model` | — | `Result<(), String>` | Drops the loaded session, then deletes the hash directory and any partial. |
+| `check_smart_turn` | — | `Result<SmartTurnCheckResult, String>` | Scores whether the in-flight dictation's speaker has finished: peeks the last 8 s at 16 kHz (capture keeps running) and runs the model on a blocking worker. Tagged `outcome`: `scored` (`recordingId`, `probability`, `inferenceMs`), `notRecording`, `tooShort`, or `unavailable` (`reason`: `not_installed`, `busy`, `load_failed`, `inference_failed`). Nothing is persisted. |
 
 ## Transform diagnostics (`commands/transform_diagnostics.rs`)
 

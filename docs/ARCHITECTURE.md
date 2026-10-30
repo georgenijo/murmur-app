@@ -257,7 +257,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 235 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 239 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -328,6 +328,7 @@ stay local and never reach logs or telemetry. See
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `selection.rs` | AX selection capture with secure-field fail-closed and clipboard fallback |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
+| `smart_turn.rs` | Smart Auto-Stop: Smart Turn log-mel features, scoring on the sherpa-linked ONNX Runtime, model pins |
 | `spoken_numbers.rs` | Deterministic English spoken-cardinal rendering |
 | `spoken_structure.rs` | Single owner for spoken punctuation, layout, symbols, arbitration, and `scratch that` |
 | `sqlite_support.rs` | Shared SQLite pragma, integrity, schema-version, sidecar quarantine, timestamp, and newest-first file helpers |
@@ -506,7 +507,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-235 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+239 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

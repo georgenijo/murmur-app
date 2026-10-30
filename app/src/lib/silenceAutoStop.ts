@@ -45,6 +45,12 @@ export interface SilenceAutoStopState {
   armed: boolean;
   /** Trailing silence accumulated since the last speech sample. */
   silenceMs: number;
+  /**
+   * Counts armed pauses: bumped when trailing silence starts accumulating.
+   * Smart Auto-Stop asks about each pause at most once and drops an answer
+   * whose pause has already ended.
+   */
+  pause: number;
   /** Timestamp of the previous sample, or null before the first one. */
   lastSampleMs: number | null;
   /** Latched once the stop has been reported, so it fires exactly once. */
@@ -52,7 +58,7 @@ export interface SilenceAutoStopState {
 }
 
 export function initialSilenceState(): SilenceAutoStopState {
-  return { peak: 0, speechMs: 0, armed: false, silenceMs: 0, lastSampleMs: null, stopped: false };
+  return { peak: 0, speechMs: 0, armed: false, silenceMs: 0, pause: 0, lastSampleMs: null, stopped: false };
 }
 
 /** The RMS level a sample must reach to count as speech, given what has been
@@ -94,6 +100,7 @@ export function reduceSilenceSample(
         speechMs,
         armed: state.armed || speechMs >= MIN_SPEECH_MS,
         silenceMs: 0,
+        pause: state.pause,
         lastSampleMs: sample.atMs,
         stopped: false,
       },
@@ -104,15 +111,25 @@ export function reduceSilenceSample(
   // Silence only counts once the detector has actually heard the speaker.
   const silenceMs = state.armed ? state.silenceMs + elapsed : 0;
   const stop = state.armed && silenceMs >= silenceMsToStop;
+  const pause = state.silenceMs === 0 && silenceMs > 0 ? state.pause + 1 : state.pause;
   return {
     state: {
       peak,
       speechMs: state.speechMs,
       armed: state.armed,
       silenceMs,
+      pause,
       lastSampleMs: sample.atMs,
       stopped: stop,
     },
     stop,
   };
+}
+
+/**
+ * Latch a stop decided outside the per-sample fold (Smart Auto-Stop), so the
+ * silence timer cannot report a second stop for the same recording.
+ */
+export function latchSilenceStop(state: SilenceAutoStopState): SilenceAutoStopState {
+  return { ...state, stopped: true };
 }

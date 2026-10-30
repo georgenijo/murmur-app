@@ -332,6 +332,12 @@ export interface Settings {
    * Hold Down (and the hold half of Both) the key release owns the stop.
    */
   autoStopSilenceMs: number;
+  /**
+   * Smart Auto-Stop (#834): at each pause, ask the local Smart Turn model
+   * whether the speaker is done and stop early when it is. Rides on
+   * `autoStopSilenceMs`, which stays the ceiling. Off by default.
+   */
+  smartAutoStopEnabled: boolean;
   microphone: string;
   /** True once `microphone` is proven to be a backend ID or System Default. */
   microphoneIdMigrationComplete: boolean;
@@ -625,6 +631,7 @@ export const DEFAULT_SETTINGS: Settings = {
   meetingSoundCuesEnabled: false,
   // Opt-in: a recording that ends itself is a surprise until you ask for it.
   autoStopSilenceMs: 0,
+  smartAutoStopEnabled: false,
   microphone: 'system_default',
   microphoneIdMigrationComplete: true,
   smartAutoMicrophoneEnabled: false,
@@ -1325,6 +1332,9 @@ export function loadSettings(): Settings {
           parsed.autoStopSilenceMs = DEFAULT_SETTINGS.autoStopSilenceMs;
         }
       }
+      // Smart Auto-Stop can also end a recording on its own: only an explicit
+      // true turns it on.
+      parsed.smartAutoStopEnabled = parsed.smartAutoStopEnabled === true;
       // codeVocabEnabled gates the Rust scan — coerce non-booleans (or a missing
       // field on pre-feature stored settings) back to the default.
       if (typeof parsed.codeVocabEnabled !== 'boolean') {
