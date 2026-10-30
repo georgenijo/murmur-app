@@ -453,6 +453,60 @@ same manager.
 - FluidAudio owns download/compilation in its Application Support cache
 - An installed model warms in the background after startup configuration; recording-start preparation remains the fallback after idle unloading or a model change
 - Language is auto-detected; the current Rust bridge ignores language hints and initial prompts
+- No decode-time vocabulary biasing; user vocabulary is applied after recognition by Smart Correction (see the decision below)
+
+### Vocabulary biasing during decoding: no-go for now (#832)
+
+**Decision:** Do not wire decoder-side vocabulary boosting into Parakeet
+yet. Murmur keeps correcting vocabulary after recognition (Smart Correction,
+explicit aliases, and context-cued built-ins). Revisit when the #827 personal
+accuracy corpus shows named-term misses that text correction cannot fix.
+
+**What FluidAudio offers.** FluidAudio 0.14.1 (the version pinned through
+`fluidaudio-rs`) has no decode-time biasing for Parakeet TDT. Its
+`CustomVocabulary` module is CTC word-spotter *rescoring* (NeMo CTC-WS,
+arXiv:2406.07096): an auxiliary Parakeet CTC 110M encoder (about 98 MB more
+download, plus a second encoder pass) scores vocabulary terms, then
+`VocabularyRescorer` swaps transcript spans whose spelling is similar enough
+when the term has stronger CTC evidence. Batch `AsrManager.transcribe` does not
+take a vocabulary, and only `SlidingWindowAsrManager` and the CLI wire it up.
+The `fluidaudio-rs` bridge exposes none of it. Shipping it would need a forked
+or vendored Swift/Rust bridge, a second Core ML model download and lifecycle,
+and a second encoder pass on every dictation.
+
+**Spike evidence** (synthetic only: 26 `say` sentences × 2 voices, 16 kHz,
+through FluidAudio's own `fluidaudiocli` 0.14.1 with Parakeet TDT 0.6B v3; 9
+terms and 3 aliases; term hits are case-sensitive exact matches; cold
+per-process timings on the Mac mini):
+
+| Arm | Term hits (24 term clips) | WER, term clips | WER, plain prose (16) | WER, look-alikes (12) | Wrong insertions | Added time, median |
+|---|---|---|---|---|---|---|
+| FluidAudio baseline | 13/30 | 9.79% | 2.70% | 0.00% | 0 | — |
+| CTC rescoring, stock thresholds (similarity 0.50, CBW 3.0) | 21/30 | 9.79% | 4.05% | 10.87% | 16 | ~210–225 ms |
+| CTC rescoring, conservative (similarity 0.75, CBW 1.5) | 19/30 | 3.61% | 2.70% | 0.00% | 0 | ~150–225 ms |
+| Murmur Smart Correction on the baseline text, same terms | 20/30 | 3.09% | 2.70% | 0.00% | 0 | none (no model) |
+
+With stock thresholds, rescoring rewrites ordinary words into terms
+("clouds"→Claude, "battery"→Abattoir, "Turn"→Tauri) and drops words around
+compound terms. With conservative thresholds, every win joins a split compound
+("open code"→OpenCode, "Fluid Audio"→FluidAudio). Murmur's derived camelCase
+terms already make the same fixes as text, with no added latency. Neither arm
+recovered the acoustically hard misses in this fixture (for example, a split
+"Kubernetes"). Real-voice accuracy is **unmeasured**: Murmur Bench and the
+personal corpus were waived for this spike, and #827's accuracy report is the
+follow-up measurement.
+
+**transcribe.cpp.** Hex biases Parakeet through `transcribe.cpp`, and at the
+reference commit even that is rescoring. It keeps the greedy decode, then
+compares the transducer's own forward score for a candidate term against the
+heard span. Hex found token boosting during greedy decoding either never let a
+term start or raised WER. A second ggml copy cannot link into the app crate
+because it clashes with whisper.cpp's ggml. An isolated signed sidecar (like
+`sidecars/local-llm`) would add a second Parakeet runtime, a GGUF model, and
+Metal memory alongside Core ML. A prototype isn't justified until #827 shows
+misses that text correction cannot reach. The most promising follow-up is
+Hex-style transducer-score rescoring inside FluidAudio's own TDT decoder,
+which needs no auxiliary model, but that requires upstream FluidAudio support.
 
 ### Whisper Backend (`transcriber/whisper.rs`)
 
