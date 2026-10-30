@@ -852,7 +852,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   };
   const pageTitle = searchQuery ? 'Search' : editorTab ? SETTINGS_EDITOR_LABELS[editorTab]
     : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text', 'ai-query': 'Voice Query',
-      'ai-transform': 'Selected-Text Rewrite', shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
+      'ai-transform': 'Selected-text rewrite', shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
     <div onKeyDown={defaultButtonKeyDown} className="settings-workspace flex min-h-0 flex-1 overflow-hidden bg-background text-on-surface">
@@ -1038,7 +1038,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             activePage={activeCat}
             onOpenOwner={openShortcutOwner}
           />
-          <SettingsSection pageId="recording" activePage={activeCat} title="Recording">
+          <SettingsSection hideHeading pageId="recording" activePage={activeCat} title="Recording">
             <div data-setting-target="microphone" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <MicrophoneInputTest
                 microphone={settings.microphone}
@@ -1201,7 +1201,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
           </SettingsSection>
 
-          <SettingsSection pageId="ai" activePage={activeCat} title="AI & models">
+          <SettingsSection hideHeading pageId="ai" activePage={activeCat} title="AI & models">
             <button
               type="button"
               onClick={() => openPage('ai-transcription')}
@@ -1260,7 +1260,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             vm={transformVm}
           />
 
-          <SettingsSection pageId="ai-transcription" activePage={activeCat} title="Speech-to-text">
+          <SettingsSection hideHeading pageId="ai-transcription" activePage={activeCat} title="Speech-to-text">
             <SettingsRow title={<>Transcription model</>} targetId="transcription-model" disabled={isRecording} onReset={settings.model !== DEFAULT_SETTINGS.model ? () => onUpdateSettings({ model: DEFAULT_SETTINGS.model }) : undefined} control={<Select
                 value={settings.model}
                 onChange={(model) => onUpdateSettings({ model })}
@@ -1306,7 +1306,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsRow title={<>Release model after inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Free memory by unloading an idle model. Never on power adapter keeps it ready while plugged in and unloads after 5 minutes on battery.</p></SettingsRow>
           </SettingsSection>
 
-          <SettingsSection pageId="text" activePage={activeCat} title="Text & vocabulary">
+          <SettingsSection hideHeading pageId="text" activePage={activeCat} title="Text & vocabulary">
             <SettingToggle targetId="punctuation" title="Automatic punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions" checked={settings.smartPunctuation} defaultChecked={DEFAULT_SETTINGS.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
             <SettingToggle targetId="cleanup" title="Transcript cleanup" description="Remove filler and tidy spacing before delivery" checked={settings.cleanupEnabled} defaultChecked={DEFAULT_SETTINGS.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
             <SettingsBranch open={settings.cleanupEnabled}>
@@ -1348,7 +1348,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             </SettingsDisclosure>
           </SettingsSection>
 
-          <SettingsSection pageId="delivery" activePage={activeCat} title="Delivery">
+          <SettingsSection hideHeading pageId="delivery" activePage={activeCat} title="Delivery">
             <SettingsCallout title="Always copied to clipboard">
               Auto-paste and file output happen afterward, so the finished text remains recoverable.
             </SettingsCallout>
@@ -1426,7 +1426,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             </SettingsDisclosure>
           </SettingsSection>
 
-          <SettingsSection card={false} pageId="modes" activePage={activeCat} title="Modes">
+          <SettingsSection hideHeading card={false} pageId="modes" activePage={activeCat} title="Modes">
             <div data-setting-target="modes">
               <ModesManager
                 modes={settings.modes}
@@ -1441,7 +1441,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection pageId="meetings" activePage={activeCat} title="Meetings">
+          <SettingsSection hideHeading pageId="meetings" activePage={activeCat} title="Meetings">
             <SettingsCallout title="Stored separately from dictation">
               Meeting transcripts use the crash-safe local store and never appear in dictation history.
             </SettingsCallout>
@@ -1518,13 +1518,13 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection card={false} pageId="performance" activePage={activeCat} title="Performance Lab">
+          <SettingsSection hideHeading card={false} pageId="performance" activePage={activeCat} title="Performance Lab">
             <div data-setting-target="performance">
               <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} audioInventory={audioInventory} />
             </div>
           </SettingsSection>
 
-          <SettingsSection card={false} pageId="diagnostics" activePage={activeCat} title="Diagnostics">
+          <SettingsSection hideHeading card={false} pageId="diagnostics" activePage={activeCat} title="Diagnostics">
             <div data-setting-target="diagnostics" className="settings-card h-[520px] min-h-0 overflow-hidden">
               <DiagnosticsWorkspace
                 active={activeCat === 'diagnostics'}
@@ -1539,11 +1539,11 @@ export const SettingsPanel = memo(function SettingsPanel({
             )}
           </SettingsSection>
 
-          <SettingsSection plain pageId="appearance" activePage={activeCat} title="Appearance">
+          <SettingsSection hideHeading plain pageId="appearance" activePage={activeCat} title="Appearance">
             <div data-setting-target="appearance"><AppearanceSettings /></div>
           </SettingsSection>
 
-          <SettingsSection pageId="general" activePage={activeCat} title="General">
+          <SettingsSection hideHeading pageId="general" activePage={activeCat} title="General">
             {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at login" description="Start Murmur automatically when you log in" checked={settings.launchAtLogin} defaultChecked={DEFAULT_SETTINGS.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
             <button
               ref={generalShortcutsButtonRef}

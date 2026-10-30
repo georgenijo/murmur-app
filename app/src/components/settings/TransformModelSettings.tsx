@@ -35,7 +35,7 @@ export function TransformModelSettings({
   vm,
 }: TransformModelSettingsProps) {
   return (
-    <SettingsSection pageId="ai-transform" activePage={activePage} title="Selected-text rewrite">
+    <SettingsSection hideHeading pageId="ai-transform" activePage={activePage} title="Selected-text rewrite">
       <SettingsCallout tone="accent" targetId="rewrite-model" title="Local only · Apple Silicon">
         Hold a dedicated shortcut, speak an instruction, and review a proposed rewrite before
         anything is written. The model stays on-device ({TRANSFORM_MODEL_SIZE_LABEL} download).

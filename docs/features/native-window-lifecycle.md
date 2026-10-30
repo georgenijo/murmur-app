@@ -88,8 +88,7 @@ on the Mac mini (1920×1080 logical, 3840×2160 physical); this worker did not a
 it or exercise the native build. The mini's checked Docker context points at its
 local OrbStack socket, but that daemon was unavailable; no Linux screenshots were
 produced. Existing visual CI remains macOS. No Retina waiver was granted. Do not
-operate the MacBook to satisfy these gates. Home sidebar collapse/resize remains a lead-owned follow-up and is not
-implemented in this change.
+operate the MacBook to satisfy these gates. Home now uses a 256px sidebar or 48px icon rail, collapses below 768px, and resizes from 256–384px. Width and collapse preferences last for the session; Settings owns its separate 240/56px navigation.
 
 ## S2/S3 regression evidence
 

@@ -120,7 +120,7 @@ export function KeyboardShortcutsSettings({
   const globalRows = globalShortcutRows(settings);
 
   return (
-    <SettingsSection
+    <SettingsSection hideHeading
       card={false}
       pageId="shortcuts"
       activePage={activePage}

@@ -13,6 +13,8 @@ for (const appearance of ['light', 'dark']) {
   test(`${appearance} real rows, cards, controls and states have exact geometry`, async ({ page }, info) => {
     await page.setViewportSize({ width: 1180, height: 1400 });
     await open(page, 'settings-geometry', appearance);
+    await css(page.locator('.settings-page-head'), { 'min-height': '28px', 'padding-left': '16px', 'margin-bottom': '10px' });
+    await css(page.locator('.settings-section-title'), { 'font-size': '16px', 'line-height': '24px', 'font-weight': '600' });
     await css(page.locator('.settings-section'), { 'margin-bottom': '32px' });
     const card = page.locator('.settings-card').first();
     await css(card, { 'border-radius': '12px', 'border-top-width': '1px', padding: '0px', 'box-shadow': 'rgba(0, 0, 0, 0.05) 0px 1px 2px 0px' });
@@ -125,8 +127,8 @@ for (const appearance of ['light', 'dark']) {
     await css(page.getByRole('searchbox'), { height: '32px', 'border-radius': '6px' });
     const content = page.locator('.settings-content-container');
     await css(content, { 'max-width': '896px', width: '896px', 'padding-top': '24px', 'padding-left': '24px', 'padding-bottom': '48px' });
-    await css(page.locator('.settings-page-head'), { 'min-height': '28px', 'padding-left': '16px', 'margin-bottom': '10px' });
-    await css(page.locator('.settings-section-title'), { 'font-size': '16px', 'line-height': '24px', 'font-weight': '600' });
+    await expect(page.locator('.settings-page-head')).toHaveCount(0);
+    await expect(page.locator('.settings-content-topbar h1')).toHaveText('General');
     await css(page.locator('.settings-section'), { 'margin-bottom': '0px' });
     expect(await page.locator('main [data-testid=settings-content] h1').count()).toBe(0);
     for (const width of [768, 767, 640, 639, 560]) {

@@ -1,21 +1,21 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const panes = [
-  ['General'], ['General', 'Keyboard Shortcuts'], ['Recording'], ['Customize'],
-  ['Delivery'], ['Meetings'], ['Text & Vocabulary'], ['AI & Models'], ['Modes'],
+  ['General'], ['General', 'Keyboard shortcuts'], ['Recording'], ['Customize'],
+  ['Delivery'], ['Meetings'], ['Text & vocabulary'], ['AI & models'], ['Modes'],
   ['Appearance'], ['Performance Lab'], ['Diagnostics'],
-  ['AI & Models', 'Speech-to-Text'], ['AI & Models', 'Voice Query'],
-  ['AI & Models', 'Selected-Text Rewrite'], ['Customize', 'Voice Commands'],
+  ['AI & models', 'Speech-to-text'], ['AI & models', 'Voice Query'],
+  ['AI & models', 'Selected-text rewrite'], ['Customize', 'Voice commands'],
   ['Customize', 'Styles'], ['Customize', 'Transforms'],
-  ['Text & Vocabulary', 'Vocabulary'], ['Text & Vocabulary', 'Aliases'],
-  ['Text & Vocabulary', 'Knowledge'], ['Text & Vocabulary', 'Manage Project Scan'],
+  ['Text & vocabulary', 'Vocabulary'], ['Text & vocabulary', 'Aliases'],
+  ['Text & vocabulary', 'Knowledge'], ['Text & vocabulary', 'Manage project scan'],
 ] as const;
 
 async function openPane(page: Page, path: readonly string[], appearance: string) {
   await page.goto(`/visual-fixtures.html?state=${path[0] === 'Appearance' ? 'settings-appearance' : 'settings'}&appearance=${appearance}`);
   await expect(page.locator('[data-visual-ready="true"]')).toBeVisible();
   await page.locator('.settings-sidebar').getByRole('button', { name: path[0], exact: true }).click();
-  if (path[1] === 'Manage Project Scan') { await page.locator('summary').filter({ hasText: /^Advanced/ }).click(); await page.getByRole('switch', { name: 'Developer Terms', exact: true }).check(); }
+  if (path[1] === 'Manage project scan') { await page.locator('summary').filter({ hasText: /^Advanced/ }).click(); await page.getByRole('switch', { name: 'Developer terms', exact: true }).check(); }
   if (path[1]) await page.locator('main').getByRole('button', { name: new RegExp(path[1]) }).first().click();
   await page.evaluate(() => document.fonts.ready);
 }

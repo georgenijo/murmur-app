@@ -10,7 +10,7 @@ for (const appearance of ['light', 'dark']) {
       const editor = pane.startsWith('editor-') ? pane.slice(7) : null;
       await page.goto(`/visual-fixtures.html?state=settings-copy&appearance=${appearance}&page=${editor ? 'text' : pane}${editor ? `&editor=${editor}` : ''}`);
       await expect(page.locator('[data-visual-ready=true]')).toBeVisible();
-      await expect(page.locator(editor ? '#settings-editor-title' : '[data-testid=settings-content] h1')).toBeVisible();
+      await expect(page.locator(editor ? '#settings-editor-title' : '.settings-workspace .settings-page-title')).toBeVisible();
       // Real panes may retain several viewport lengths of advanced controls.
       await expect(page.locator('[data-testid=settings-content]')).toHaveScreenshot(`${appearance}-copy-${pane}.png`);
       const triples = await page.locator('[data-testid=settings-content]').innerText();

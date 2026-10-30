@@ -40,7 +40,7 @@ export function VoiceQuerySettings({
   setupStatus,
 }: VoiceQuerySettingsProps) {
   return (
-    <SettingsSection pageId="ai-query" activePage={activePage} title="Voice Query">
+    <SettingsSection hideHeading pageId="ai-query" activePage={activePage} title="Voice Query">
       <SettingsCallout tone="warning" title="You control where the question goes">
         Murmur transcribes your question locally, then gives it to the exact CLI executable below.
         That CLI may send the question or answer to cloud services according to its own configuration, and may also send any optional app context you enable.

@@ -9,11 +9,11 @@ const pages = [
   { path: ['Recording'], state: 'settings-smart-auto' },
   { path: ['Delivery'], state: 'settings' },
   { path: ['Meetings'], state: 'settings' },
-  { path: ['Text & Vocabulary'], state: 'settings' },
-  { path: ['AI & Models'], state: 'settings' },
-  { path: ['AI & Models', 'Speech-to-Text'], state: 'settings' },
-  { path: ['AI & Models', 'Voice Query'], state: 'settings' },
-  { path: ['AI & Models', 'Selected-Text Rewrite'], state: 'settings' },
+  { path: ['Text & vocabulary'], state: 'settings' },
+  { path: ['AI & models'], state: 'settings' },
+  { path: ['AI & models', 'Speech-to-text'], state: 'settings' },
+  { path: ['AI & models', 'Voice Query'], state: 'settings' },
+  { path: ['AI & models', 'Selected-text rewrite'], state: 'settings' },
 ];
 for (const { path, state } of pages) {
   for (const expanded of [false, true]) {

@@ -12,12 +12,14 @@ interface SettingsSectionProps {
   pageId?: string;
   activePage?: string;
   plain?: boolean;
+  /** The workspace top bar already displays this page title. */
+  hideHeading?: boolean;
   /** Wrap the page body in a `.settings-card`. Defaults to on; embedded
    *  full-bleed workspaces (Performance Lab, Diagnostics) opt out. */
   card?: boolean;
 }
 
-export function SettingsSection({ title, subtitle, defaultExpanded = true, children, pageId, activePage, plain = false, card = true }: SettingsSectionProps) {
+export function SettingsSection({ title, subtitle, defaultExpanded = true, children, pageId, activePage, plain = false, card = true, hideHeading = false }: SettingsSectionProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [overflowVisible, setOverflowVisible] = useState(defaultExpanded);
   const contentId = useId();
@@ -39,13 +41,13 @@ export function SettingsSection({ title, subtitle, defaultExpanded = true, child
   if (pageId !== undefined) {
     if (activePage !== undefined && activePage !== pageId) return null;
     return (
-      <section className="settings-section">
-        <div className="settings-page-head">
+      <section className="settings-section" aria-label={title}>
+        {!hideHeading && <div className="settings-page-head">
           <h2 className="settings-section-title">{title}</h2>
           {subtitle && (
             <p className={plain ? "mt-2 text-[13px] leading-[1.45] text-on-surface-variant" : "settings-page-subtitle"}>{subtitle}</p>
           )}
-        </div>
+        </div>}
         {plain ? <div className="settings-group-plain">{children}</div> : card
           ? <SettingsCard>{children}</SettingsCard>
           : <div className="settings-rows">{children}</div>}
