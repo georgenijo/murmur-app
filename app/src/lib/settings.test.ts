@@ -12,6 +12,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import {
   hydrateSettingsFromDisk,
+  parseSettingsBlob,
   loadSettings,
   saveSettings,
   AUTO_STOP_SILENCE_OPTIONS,
@@ -1381,5 +1382,24 @@ describe('warm microphone standby consent', () => {
   it('round-trips explicit consent and bounded standby choices', () => {
     saveSettings({ ...DEFAULT_SETTINGS, captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
     expect(loadSettings()).toMatchObject({ captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
+  });
+});
+
+
+describe('read-only durable settings snapshots', () => {
+  it('validates a legacy snapshot without overwriting cache, disk or migration keys', () => {
+    mocks.isTauri.mockReturnValue(true);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: false }));
+    localStorage.setItem(LEGACY_OVERLAY_OFFSET_KEY, '48');
+    const cached = localStorage.getItem(STORAGE_KEY);
+    const parsed = parseSettingsBlob(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 1,
+      overlayVerticalOffset: 48, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse', overlayLiveWords: true }));
+    expect(parsed.overlayVerticalOffset).toBe(0);
+    expect(parsed.overlayPlacement).toBe('below_menu_bar');
+    expect(parsed.overlayProcessingStyle).toBe('pulse');
+    expect(parsed.overlayLiveWords).toBe(true);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
+    expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBe('48');
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 });

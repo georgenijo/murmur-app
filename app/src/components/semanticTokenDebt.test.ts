@@ -15,7 +15,6 @@ const sources = productionSources("./src");
 const alwaysDarkPrefixes = [
   "components/overlay/",
   "components/transform-review/",
-  "components/dictation-preview/",
 ] as const;
 const alwaysDarkFiles = new Set(["components/OverlayWidget.tsx"]);
 // Files allowed a hardcoded `bg-black/50` or `bg-black/55` scrim. Kept empty
@@ -558,7 +557,12 @@ describe("semantic theme token debt gate", () => {
     expect(queryHtml).toMatch(
       /html, body, #root[\s\S]*background:\s*transparent/,
     );
-    expect(overlay).toContain("background: 'rgba(20, 20, 20, 0.92)'");
+    expect(overlay).toContain('<OverlayIsland');
+    expect(readFileSync('./src/components/overlay/OverlayIsland.tsx', 'utf8'))
+      .toContain("background: '#000'");
+    const liveWords = readFileSync('./src/styles/overlay.css', 'utf8');
+    expect(liveWords).toContain('background: var(--murmur-surface-container-lowest)');
+    expect(liveWords).toContain('color: var(--murmur-on-surface)');
     expect(transform).toContain("background: 'rgba(20, 20, 20, 0.92)'");
     expect(alwaysDarkSource).not.toContain("useAppearance");
     expect(alwaysDarkSource).not.toContain("appearance-changed");

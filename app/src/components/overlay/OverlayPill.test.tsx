@@ -1,9 +1,9 @@
-import { act, useRef } from 'react';
+import geometryFixture from './overlay-geometry.fixture.json';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import { OverlayPill, type OverlaySmartAutoSummary } from './OverlayPill';
-import { BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayIndicator } from './deriveVisual';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 
@@ -18,6 +18,7 @@ const geometry: OverlayGeometry = {
   dropdownH: 64,
   wingW: 36,
   floating: false,
+  island: geometryFixture.notched.island,
 };
 
 function CuePill({
@@ -35,7 +36,6 @@ function CuePill({
   onPauseDeliveryTimer?: () => void;
   onResumeDeliveryTimer?: () => void;
 }) {
-  const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   return (
     <OverlayPill
       geometry={geometry}
@@ -45,7 +45,6 @@ function CuePill({
         waveformVisible: false,
       }}
       status="idle"
-      barRefs={barRefs}
       smartAutoSummary={smartAutoSummary}
       deliveryCue={deliveryCue}
       onRetryDelivery={onRetryDelivery}
@@ -60,6 +59,7 @@ describe('OverlayPill transient cues', () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -68,6 +68,17 @@ describe('OverlayPill transient cues', () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it.each<OverlayIndicator>([
+    { kind: 'cancelled' }, { kind: 'secureField' }, { kind: 'hotkeyMiss' },
+    { kind: 'microphoneFailure', failure: 'chooseMicrophone' }, { kind: 'clipboardOnly' },
+  ])('a pending Done cannot obscure the priority cue $kind', async (indicator) => {
+    await act(async () => root.render(<OverlayPill geometry={geometryFixture.processingNotched}
+      visual={{ indicator, showTapMissedLabel: false, waveformVisible: false }} status="idle" scopeStage="done" />));
+    expect(container.querySelector<HTMLElement>('.overlay-field-slot')?.style.visibility).toBe('hidden');
+    expect(container.querySelector('[aria-label="Done"]')).toBeNull();
   });
 
   it('does not advertise free native dragging on the anchor-owned top bar', async () => {
@@ -226,21 +237,21 @@ describe('OverlayPill transient cues', () => {
     expect(status?.getAttribute('aria-label')).not.toContain('scheduled');
   });
 
-  it('keeps the wing on the waveform while recording — transcript text lives in the preview popover', async () => {
+  it('renders the dot field without transcript text or actions while recording', async () => {
     function LivePill() {
-      const barRefs = useRef<(HTMLDivElement | null)[]>([]);
-      return <OverlayPill
+          return <OverlayPill
         geometry={geometry}
         visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }}
         status="recording"
-        barRefs={barRefs}
-      />;
+        />;
     }
     await act(async () => root.render(<LivePill />));
-    // A 36pt wing can only show ~4 head-truncated characters, so provisional
-    // text renders in the `dictation-preview` window instead.
+    // Provisional words stay in the optional click-through preview, never here.
     expect(container.querySelector('[aria-label^="Live transcription preview:"]')).toBeNull();
-    expect(container.querySelectorAll('.rounded-full.bg-white\\/90').length).toBe(BAR_COUNT);
+    const field = container.querySelector('canvas');
+    expect(field?.getAttribute('data-columns')).toBe('43');
+    expect(field?.getAttribute('data-rows')).toBe('9');
+    expect(field?.getAttribute('data-pitch')).toBe('2.6');
     expect(container.querySelector('button')).toBeNull();
   });
 });

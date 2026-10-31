@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
-import { Settings, loadSettings, saveSettings } from '../settings';
+import { Settings, loadSettings, saveSettings, cacheSettings } from '../settings';
 import { configure, buildConfigureOptions } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
 import {
@@ -351,7 +351,7 @@ export function useSettings() {
       });
     }
 
-    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'recordingMode' in updates || 'doubleTapKey' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || probePolicyChanged) {
+    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'recordingMode' in updates || 'doubleTapKey' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'overlayPlacement' in updates || 'overlayLiveWords' in updates || 'overlayProcessingStyle' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || probePolicyChanged) {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.
@@ -420,7 +420,8 @@ export function useSettings() {
   // Ingest a settings change made by another window (the overlay's quick controls).
   // Diffs against the current value so a window applying its own emitted change is a
   // no-op — this is what breaks the settings-changed echo loop.
-  const applyExternalSettings = useCallback((fresh: Settings) => {
+  const applyExternalSettings = useCallback((patch: Partial<Pick<Settings, 'autoPaste' | 'disabled'>>) => {
+    const fresh = { ...settingsRef.current, ...patch };
     const prev = settingsRef.current;
     const disabledChanged = fresh.disabled !== prev.disabled;
     const autoPasteChanged = fresh.autoPaste !== prev.autoPaste;
@@ -431,7 +432,7 @@ export function useSettings() {
     const next = { ...prev, disabled: fresh.disabled, autoPaste: fresh.autoPaste };
     settingsRef.current = next;
     setSettings(next);
-    persistSettings(next);
+    cacheSettings(next);
 
     if (disabledChanged) {
       // Idempotent: the overlay also calls this directly for a snappy gate.
@@ -453,7 +454,7 @@ export function useSettings() {
         },
       }).catch(() => {});
     }
-  }, [confirmConfigured, persistSettings]);
+  }, [confirmConfigured]);
 
   return {
     settings,

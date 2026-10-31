@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 240 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 242 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -408,6 +408,7 @@ without logging their content.
 |---------|-----------|---------|-------------|
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
 | `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Concurrent writers (main and overlay windows) are serialized; a failed write removes the temp file and preserves the previous settings. |
+| `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool` | `Result<String, String>` | Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
 | `load_history_blob` | — | `Result<Option<String>, String>` | Reads `history.json`. `None` means absent or quarantined; the 8 MiB JSON-array bound is checked before returning content. |
 | `save_history_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a history JSON array up to 8 MiB. |
 | `clear_history_blob` | — | `Result<(), String>` | Idempotently removes `history.json` without touching settings or stats. |
@@ -422,10 +423,11 @@ without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `get_overlay_geometry` | — | `OverlayGeometry` | The geometry contract (window/pill/dropdown boxes) derived from the cached notch by `geometry_for()`. Never null — a synthetic fallback notch substitutes when none is detected. |
+| `set_overlay_field_state` | `stage: idle/recording/processing/done`, `style: sweep/flow/pulse`, `reduced: bool`, `visible: bool` | `Result<bool, String>` | Overlay-window-only native Metal field state. Rust resolves metrics and dispatches view updates to the main thread; false selects the Canvas fallback. No text or per-frame data is accepted. |
+| `get_overlay_geometry` | `content?: OverlayContent` | `OverlayGeometry` | Current native activity/placement/content contract from `geometry_for_layout()`, including mandatory island metrics. Never null; a 185pt pretend notch substitutes on flat/unmeasured displays. |
 | `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
-| `set_overlay_expanded` | `expanded: bool` | `Result<AppliedSurface, String>` | Resizes between collapsed and expanded frames (top-anchored) and returns the applied frame, so CSS never animates into a window that hasn't grown yet. |
+| `set_overlay_expanded` | `expanded: bool`, `content?: OverlayContent`, `activity?: OverlayActivity`, `placement?: OverlayPlacement`, `defer_shrink?: bool` | `Result<AppliedSurface, String>` | Single acknowledged native surface writer. Applies layout on the main thread, publishes target `overlay-surface-changed` after successful setters, and returns actual bounds. `defer_shrink` retains larger old bounds during contraction; a later exact request releases the temporary hit area. Activity is idle/recording/processing; placement is notch/below_menu_bar. |
 | `set_overlay_vertical_offset` | `offset: f64` | `Result<AppliedOverlayPosition, String>` | Clamps calibration to the current display/window's effective range within ±12 logical points, moves the native overlay, retains the session offset across native placement refreshes, and returns requested/applied offsets plus effective bounds. Durable persistence still occurs only on Save and inactive Reset. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
 

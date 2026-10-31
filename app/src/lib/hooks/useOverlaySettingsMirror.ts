@@ -4,7 +4,7 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { flog } from '../log';
 import {
   loadSettings,
-  saveSettings,
+  parseSettingsBlob,
   smartAutoMicrophoneRequest,
 } from '../settings';
 import type { Settings, SmartAutoMicrophoneRequest } from '../settings';
@@ -20,6 +20,8 @@ export interface OverlaySettingsMirror {
   autoPaste: boolean;
   fileOutputEnabled: boolean;
   overlayVerticalOffset: number;
+  overlayPlacement: Settings['overlayPlacement'];
+  overlayProcessingStyle: Settings['overlayProcessingStyle'];
   smartAuto: SmartAutoMicrophoneRequest | null;
   /** Re-reads localStorage and applies the snapshot. Stable identity. */
   refresh: () => void;
@@ -42,21 +44,28 @@ export function useOverlaySettingsMirror({
   hotkeyMissFeedbackRef,
 }: UseOverlaySettingsMirrorArgs): OverlaySettingsMirror {
   const [autoPaste, setAutoPaste] = useState(false);
+  const durableSnapshot = useRef<Settings | null>(null);
+  const refreshDurableRef = useRef<() => Promise<Settings | null>>(async () => null);
   const autoPasteOperation = useRef(0);
   const disabledOperation = useRef(0);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
   const [overlayVerticalOffset, setOverlayVerticalOffset] = useState(
     () => loadSettings().overlayVerticalOffset,
   );
+  const [overlayPlacement, setOverlayPlacement] = useState(() => loadSettings().overlayPlacement);
+  const [overlayProcessingStyle, setOverlayProcessingStyle] = useState(() => loadSettings().overlayProcessingStyle);
   const [smartAuto, setSmartAuto] = useState<SmartAutoMicrophoneRequest | null>(
     () => smartAutoMicrophoneRequest(loadSettings()),
   );
 
   const applySettingsSnapshot = useCallback((settings: Settings) => {
+    if (durableSnapshot.current !== null) durableSnapshot.current = settings;
     setDisabled(settings.disabled);
     setAutoPaste(settings.autoPaste);
     setFileOutputEnabled(settings.saveTranscript || settings.saveAudio);
     setOverlayVerticalOffset(settings.overlayVerticalOffset);
+    setOverlayPlacement(settings.overlayPlacement);
+    setOverlayProcessingStyle(settings.overlayProcessingStyle);
     setSmartAuto(smartAutoMicrophoneRequest(settings));
     hotkeyMissFeedbackRef.current = settings.hotkeyMissFeedback;
     if (!settings.hotkeyMissFeedback) setShowHotkeyMiss(false);
@@ -64,7 +73,7 @@ export function useOverlaySettingsMirror({
 
   const refresh = useCallback(() => {
     try {
-      applySettingsSnapshot(loadSettings());
+      applySettingsSnapshot(durableSnapshot.current ?? loadSettings());
     } catch { /* ignore */ }
   }, [applySettingsSnapshot]);
 
@@ -86,55 +95,86 @@ export function useOverlaySettingsMirror({
     return () => { cancelled = true; unlisten?.(); };
   }, [refresh]);
 
-  // Quick control: auto-paste. Write localStorage + notify the main window.
+  // A hidden/independent WKWebView may receive the generic notification before
+  // its localStorage cache changes. Read the committed file without mutating a
+  // shared cache; older reads must not replace a newer snapshot.
+  useEffect(() => {
+    let cancelled = false, revision = 0;
+    let unlisten: (() => void) | undefined;
+    const refreshDurable = async () => {
+      const request = ++revision;
+      try {
+        const blob = await invoke<string | null>('load_settings_blob');
+        if (cancelled || request !== revision || typeof blob !== 'string') return null;
+        const settings = parseSettingsBlob(blob);
+        durableSnapshot.current = settings;
+        applySettingsSnapshot(settings);
+        return settings;
+      } catch { return null; }
+    };
+    refreshDurableRef.current = refreshDurable;
+    void listen('overlay-settings-persisted', () => { void refreshDurable(); }).then(fn => {
+      if (cancelled) fn(); else { unlisten = fn; void refreshDurable(); }
+    }).catch(() => {});
+    return () => { cancelled = true; revision++; refreshDurableRef.current = async () => null; unlisten?.(); };
+  }, [applySettingsSnapshot]);
+
+  // Persist only the owned field; the host merges into the latest durable
+  // document under its writer lock. Never write a retained settings snapshot.
+  const commitOwnedField = useCallback(async (field: 'autoPaste' | 'disabled', value: boolean) => {
+    const blob = await invoke<string>('patch_overlay_setting', { field, value });
+    durableSnapshot.current = parseSettingsBlob(blob);
+    applySettingsSnapshot(durableSnapshot.current);
+    // Invalidate reads started before this acknowledgement and catch commits
+    // made since the patch, including a concurrent main-window opt-out.
+    await refreshDurableRef.current();
+  }, [applySettingsSnapshot]);
+
   const handleToggleAutoPaste = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     const operation = ++autoPasteOperation.current;
+    let backendChanged = false;
     try {
-      const s = loadSettings();
-      const next = !s.autoPaste;
-      const nextSettings = { ...s, autoPaste: next };
-      saveSettings(nextSettings);
-      applySettingsSnapshot(nextSettings);
-      try {
-        // This webview has a separate Settings snapshot. Send only the value it
-        // owns so it cannot restore older vocabulary or other main-window edits.
-        await invoke('configure_dictation', { options: { autoPaste: next } });
-      } catch (err) {
-        const fresh = loadSettings();
-        if (operation === autoPasteOperation.current && fresh.autoPaste === next) {
-          const rollback = { ...fresh, autoPaste: s.autoPaste };
-          saveSettings(rollback);
-          applySettingsSnapshot(rollback);
-          void emit('settings-changed').catch(() => flog.warn('overlay', 'emit settings rollback failed'));
-        }
-        throw err;
-      }
-      emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
+      const next = !(durableSnapshot.current ?? loadSettings()).autoPaste;
+      await invoke('configure_dictation', { options: { autoPaste: next } });
+      backendChanged = true;
+      if (operation !== autoPasteOperation.current) return;
+      await commitOwnedField('autoPaste', next);
     } catch (err) {
       flog.error('overlay', 'toggle autoPaste failed', { error: String(err) });
-      try {
-        applySettingsSnapshot(loadSettings());
-      } catch { /* ignore */ }
+      const confirmed = await refreshDurableRef.current();
+      if (backendChanged && operation === autoPasteOperation.current) {
+        // No full-file rollback. Restore only the backend value the failed
+        // quick action owns; an unavailable durable read fails closed.
+        const autoPaste = confirmed?.autoPaste ?? false;
+        setAutoPaste(autoPaste);
+        try { await invoke('configure_dictation', { options: { autoPaste } }); }
+        catch { flog.error('overlay', 'autoPaste reconciliation failed'); }
+      }
     }
-  }, [applySettingsSnapshot]);
+  }, [commitOwnedField]);
 
-  // Quick control: global disable. Gate the backend immediately, then notify.
   const handleToggleDisabled = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     const operation = ++disabledOperation.current;
+    let backendChanged = false;
     try {
-      const s = loadSettings();
-      const next = !s.disabled;
+      const next = !(durableSnapshot.current ?? loadSettings()).disabled;
       await invoke('set_app_disabled', { disabled: next });
+      backendChanged = true;
       if (operation !== disabledOperation.current) return;
-      saveSettings({ ...loadSettings(), disabled: next });
-      setDisabled(next);
-      emit('settings-changed').catch((err) => flog.warn('overlay', 'emit settings-changed failed', { error: String(err) }));
+      await commitOwnedField('disabled', next);
     } catch (err) {
       flog.error('overlay', 'toggle disabled failed', { error: String(err) });
+      const confirmed = await refreshDurableRef.current();
+      if (backendChanged && operation === disabledOperation.current) {
+        const disabled = confirmed?.disabled ?? true;
+        setDisabled(disabled);
+        try { await invoke('set_app_disabled', { disabled }); }
+        catch { flog.error('overlay', 'disabled reconciliation failed'); }
+      }
     }
-  }, [setDisabled]);
+  }, [commitOwnedField, setDisabled]);
 
   // Quick control: open the main window's Settings panel.
   const handleOpenSettings = useCallback(async (e: React.MouseEvent) => {
@@ -151,6 +191,8 @@ export function useOverlaySettingsMirror({
     autoPaste,
     fileOutputEnabled,
     overlayVerticalOffset,
+    overlayPlacement,
+    overlayProcessingStyle,
     smartAuto,
     refresh,
     handleToggleAutoPaste,

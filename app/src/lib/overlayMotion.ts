@@ -6,14 +6,15 @@
 // shrink delay — from the very numbers the CSS transitions use, so the code link
 // can never silently drift.
 //
-// The idle island tucks its empty right wing under the notch, then grows that
-// edge back out on hover (see `geometry_for` in commands/overlay.rs). Width and
-// height share one duration/easing so the rectangle opens as one surface.
+// The island grows around the notch centre. Width, height and corners share
+// one oscillator; native bounds contract only after that oscillator settles.
 
 /** Width/height transition duration for the island element (ms). */
-export const OVERLAY_HEIGHT_MS = 360;
-/** Spring easing for the width/height transition. */
-const OVERLAY_SPRING = 'cubic-bezier(0.34,1.56,0.64,1)';
+import { ISLAND_SPRING, springEasing, springSettleMs } from '../components/overlay/spring';
+
+export const OVERLAY_HEIGHT_MS = springSettleMs(ISLAND_SPRING);
+/** Exact 0.3s / 0.15-bounce oscillator sampled for CSS, not a bezier guess. */
+const OVERLAY_SPRING = springEasing(ISLAND_SPRING);
 
 /** Sustained hover (ms) required on the island before the card opens. */
 export const HOVER_OPEN_DWELL_MS = 150;
@@ -31,12 +32,10 @@ export const COLLAPSE_DELAY_MS = 300;
 export const SHRINK_DELAY_MS = OVERLAY_HEIGHT_MS + 20;
 
 /**
- * The composed `transition` string applied to the island element. The left edge
- * stays fixed while width reveals/conceals the right wing; height reveals the
- * dropdown on the same spring.
+ * The composed transition for the centred island and its hover dropdown.
  */
 export const OVERLAY_ISLAND_TRANSITION =
-  `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}`;
+  `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, border-radius ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}`;
 
 // --- Transform review popover motion tokens ---------------------------------
 //

@@ -118,6 +118,24 @@ describe('useDictationPartial', () => {
     expect(container.textContent).toBe('new take');
   });
 
+  it('clears on cancellation, rejects queued text, and ignores an older cancellation after restart', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 8 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 8, text: 'synthetic take' } });
+    });
+    await act(async () => {
+      mocks.listeners.get('recording-cancelled')?.({ payload: { recordingId: 8 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 8, text: 'late' } });
+    });
+    expect(container.textContent).toBe('');
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 9 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 9, text: 'new take' } });
+      mocks.listeners.get('recording-cancelled')?.({ payload: { recordingId: 8 } });
+    });
+    expect(container.textContent).toBe('new take');
+  });
+
   it('clears text when native presentation rejects a stopped recording', async () => {
     mocks.invoke.mockRejectedValue(new Error('recording stopped'));
     await act(async () => {

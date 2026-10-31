@@ -93,6 +93,14 @@ export function useOverlayGeometry(content: OverlayContent = 'controls'): Overla
       await attemptFetch(0);
     };
 
+    const surfaceStop = listen<unknown>('overlay-surface-changed', ({ payload }) => {
+      if (!cancelled && isOverlayGeometry(payload)) {
+        eventGeneration += 1;
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        setGeometry(payload);
+      }
+    }).catch(() => () => {});
+
     initialize().catch((e) => {
       flog.warn('overlay', 'overlay geometry listener setup failed', { error: String(e) });
     });
@@ -101,6 +109,7 @@ export function useOverlayGeometry(content: OverlayContent = 'controls'): Overla
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
       unlisten?.();
+      void surfaceStop.then((fn) => fn()).catch(() => {});
     };
   }, [content]);
 

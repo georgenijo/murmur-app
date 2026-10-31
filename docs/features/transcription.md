@@ -563,11 +563,12 @@ and CPU Parakeet previews stay disabled. There is no automatic model substitutio
 CPU cancellation is cooperative at inference abort checkpoints; model loading is
 not interruptible, but neither loading nor cleanup holds the final runtime lock.
 
-The preview renders in its own `dictation-preview` window. The non-activating,
-click-through glass card is centered under the notch and mirrors the Voice
-Query answer popover. The preview uses the menu-bar display, which also owns
-the notch measurement and overlay. It does not follow the main window to
-another monitor.
+The preview is opt-in through App → General → **Live words** (off by default).
+It renders in its own non-activating, click-through `dictation-preview` window,
+up to 560×44pt with a 32pt semantic-theme pill and 13px UI text. It follows the
+actual overlay frame, centered and work-area-clamped with a 6pt attached gap,
+including calibration/expansion and both notch/below-menu-bar placements. It
+uses the menu-bar display, not the main window's monitor.
 
 Rust sends each partial to the hidden webview. React commits the non-empty card,
 then calls `show_dictation_preview` with the recording ID. Rust rejects another
@@ -578,11 +579,14 @@ hides the window when the recording stops being current. The frontend also
 clears the text as soon as capture leaves `recording`, because an in-flight
 decode can delay the native hide.
 
-It deliberately does **not** render inside the overlay. The overlay's wings are
-fixed 36pt slots sized for an icon and a waveform; text there fits roughly four
-head-anchored characters, so a long utterance shows its first word forever
-("Oka…") and never follows the speaker. The popover shows the trailing ~320
-characters, broken on a word boundary and pinned to the newest words.
+It deliberately does **not** render inside the voice island. Existing partials
+are complete provisional strings without authoritative committed boundaries;
+production therefore renders only tentative text with tail ellipsis and never
+guesses a stable prefix. The presentation component supports head-clipped
+stable text only when an authoritative source explicitly provides it (currently
+synthetic fixtures). Setting-off, stop and cancellation clear the card, and
+lifecycle ownership continues while disabled so re-enabling cannot revive an
+old generation. No partial is copied, pasted, persisted, exported or logged.
 
 ## Model Options
 

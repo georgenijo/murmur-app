@@ -258,7 +258,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 240 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 242 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -500,7 +500,7 @@ See [reference/hooks.md](reference/hooks.md) for the full hook inventory.
 Two rules keep the multi-window state coherent:
 
 - **`transcription-complete` is the single source of truth** for history and stats. Entries are added only from the Rust event, never in `handleStop()` — otherwise an overlay-initiated recording double-counts.
-- **The overlay reads settings from localStorage directly** (`useOverlaySettingsMirror`), not through React context or IPC. There is no shared context across windows.
+- **The overlay has no shared React settings context.** `useOverlaySettingsMirror` seeds from its cache and refreshes guarded, read-only durable snapshots after host commit notifications; quick controls retain the latest snapshot.
 - **Appearance has a separate ownership domain.** Main is the only writer and runtime for the small `murmur-appearance` active cache and the revisioned `murmur-theme-library`. Open VSX access is explicit and renderer-side; installed variants compile locally into the active cache. Transparent utility windows remain outside theme synchronization.
 - **Meeting history is Rust-owned.** `useMeetings` reads SQLite through bounded commands and events; transcript localStorage remains dictation-only.
 
@@ -508,7 +508,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-240 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+242 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

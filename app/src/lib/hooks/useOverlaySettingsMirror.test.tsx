@@ -5,8 +5,9 @@ import { DEFAULT_SETTINGS, type Settings } from '../settings';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
   emit: vi.fn(async () => {}),
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (_name: string, _handler: (event: { payload: unknown }) => void) => () => {}),
   loadSettings: vi.fn<() => Settings>(),
   saveSettings: vi.fn<(settings: Settings) => void>(),
   setDisabled: vi.fn(),
@@ -36,6 +37,7 @@ describe('overlay settings write ownership', () => {
       hotkeyMissFeedbackRef,
     });
     return <>
+      <output>{mirror.overlayPlacement}|{mirror.overlayProcessingStyle}</output>
       <button onClick={mirror.handleToggleAutoPaste}>Paste</button>
       <button onClick={mirror.handleToggleDisabled}>Disable</button>
       <button onClick={mirror.refresh}>Refresh</button>
@@ -44,6 +46,11 @@ describe('overlay settings write ownership', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.invoke.mockReset().mockResolvedValue(undefined);
+    mocks.listeners.clear();
+    mocks.listen.mockImplementation(async (name, handler) => {
+      mocks.listeners.set(name, handler); return () => { mocks.listeners.delete(name); };
+    });
     stored = {
       ...DEFAULT_SETTINGS,
       autoPaste: false,
@@ -77,38 +84,104 @@ describe('overlay settings write ownership', () => {
     expect(stored.smartAutoPreferredDeviceIds).toEqual(['new']);
   }
 
-  it('rolls back only auto-paste after main revokes consent during configuration', async () => {
-    let fail: (reason: Error) => void = () => { throw new Error('No pending request'); };
-    mocks.invoke.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+  it('does not persist when auto-paste configuration fails after main revokes consent', async () => {
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'configure_dictation') { revokeInMain(); throw new Error('refused'); }
+      if (command === 'load_settings_blob') return JSON.stringify(stored);
+    });
     await act(async () => container.querySelector('button')?.click());
-    expect(stored.autoPaste).toBe(true);
-    expect(mocks.invoke).toHaveBeenCalledWith('configure_dictation', { options: { autoPaste: true } });
-    revokeInMain();
-    await act(async () => fail(new Error('configuration refused')));
     expect(stored.autoPaste).toBe(false);
     expectRevocationPreserved();
-    expect(mocks.emit).toHaveBeenCalledWith('settings-changed');
+    expect(mocks.saveSettings).not.toHaveBeenCalled();
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'patch_overlay_setting')).toBe(false);
+    expect(mocks.emit).not.toHaveBeenCalledWith('settings-changed');
   });
 
-  it('merges disabled success into current settings after a pending backend reply', async () => {
-    let finish: () => void = () => { throw new Error('No pending request'); };
-    mocks.invoke.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
-    await act(async () => container.querySelectorAll('button')[1]?.click());
-    revokeInMain();
-    await act(async () => finish());
-    expect(stored.disabled).toBe(true);
-    expectRevocationPreserved();
-  });
+  for (const [index, field] of [[0, 'autoPaste'], [1, 'disabled']] as const) {
+    it(`preserves committed opt-out/style while a stale refresh is pending during ${field}`, async () => {
+      const cached = { ...stored, overlayLiveWords: true };
+      stored = cached;
+      mocks.invoke.mockResolvedValue(JSON.stringify(cached));
+      await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+      let finishOld!: (value: string) => void;
+      mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+      await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+      stored = { ...stored, overlayLiveWords: false, overlayProcessingStyle: 'pulse',
+        smartAutoProbeEnabled: false, smartAutoApprovedDeviceIds: ['new'], smartAutoPreferredDeviceIds: ['new'] };
+      mocks.invoke.mockImplementation(async (command: string, args?: { field: 'autoPaste' | 'disabled'; value: boolean }) => {
+        if (command === 'patch_overlay_setting') stored = { ...stored, [args!.field]: args!.value };
+        if (command === 'patch_overlay_setting' || command === 'load_settings_blob') return JSON.stringify(stored);
+      });
+      await act(async () => container.querySelectorAll('button')[index].click());
+      await act(async () => finishOld(JSON.stringify(cached)));
+      expect(stored[field]).toBe(true);
+      expect(stored.overlayLiveWords).toBe(false);
+      expect(stored.overlayProcessingStyle).toBe('pulse');
+      expect(container.querySelector('output')?.textContent).toContain('|pulse');
+      expectRevocationPreserved();
+      expect(mocks.invoke).toHaveBeenCalledWith('patch_overlay_setting', { field, value: true });
+      expect(mocks.saveSettings).not.toHaveBeenCalled();
+      expect(mocks.emit).not.toHaveBeenCalledWith('settings-changed');
+    });
+  }
 
   it('does not write a stale snapshot when disabling fails', async () => {
-    let fail: (reason: Error) => void = () => { throw new Error('No pending request'); };
-    mocks.invoke.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'set_app_disabled') { revokeInMain(); throw new Error('refused'); }
+      if (command === 'load_settings_blob') return JSON.stringify(stored);
+    });
     await act(async () => container.querySelectorAll('button')[1]?.click());
-    revokeInMain();
-    await act(async () => fail(new Error('backend refused')));
     expect(stored.disabled).toBe(false);
     expectRevocationPreserved();
     expect(mocks.saveSettings).not.toHaveBeenCalled();
+  });
+
+  for (const [index, field, backend, argument] of [[0, 'autoPaste', 'configure_dictation', 'options'], [1, 'disabled', 'set_app_disabled', 'disabled']] as const) {
+    it(`reconciles only ${field} after backend success followed by patch failure`, async () => {
+      const calls: unknown[] = [];
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command === backend) calls.push(args);
+        if (command === 'patch_overlay_setting') throw new Error('disk write refused');
+        if (command === 'load_settings_blob') return JSON.stringify({ ...stored, overlayLiveWords: false, overlayProcessingStyle: 'pulse' });
+      });
+      await act(async () => container.querySelectorAll('button')[index].click());
+      expect(calls).toEqual(argument === 'options'
+        ? [{ options: { autoPaste: true } }, { options: { autoPaste: false } }]
+        : [{ disabled: true }, { disabled: false }]);
+      expect(stored[field]).toBe(false);
+      expect(mocks.saveSettings).not.toHaveBeenCalled();
+    });
+  }
+
+  it('does not reconcile an old failed patch over a newer successful quick action', async () => {
+    let rejectOld!: (reason: Error) => void;
+    let first = true;
+    mocks.invoke.mockImplementation(async (command: string, args?: { value: boolean }) => {
+      if (command === 'patch_overlay_setting') {
+        if (first) { first = false; return new Promise((_, reject) => { rejectOld = reject; }); }
+        stored = { ...stored, autoPaste: args!.value }; return JSON.stringify(stored);
+      }
+      if (command === 'load_settings_blob') return JSON.stringify(stored);
+    });
+    await act(async () => container.querySelector('button')!.click());
+    await act(async () => container.querySelector('button')!.click());
+    const callsBeforeFailure = mocks.invoke.mock.calls.filter(([command]) => command === 'configure_dictation').length;
+    await act(async () => rejectOld(new Error('old patch refused')));
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_dictation')).toHaveLength(callsBeforeFailure);
+    expect(stored.autoPaste).toBe(true);
+  });
+
+  it('drops an old durable read after a newer placement/style commit', async () => {
+    let older!: (blob: string) => void, newer!: (blob: string) => void;
+    mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { older = resolve; }));
+    await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+    mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { newer = resolve; }));
+    await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+    await act(async () => {
+      newer(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse' }));
+      older(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'notch', overlayProcessingStyle: 'sweep' }));
+    });
+    expect(container.querySelector('output')?.textContent).toBe('below_menu_bar|pulse');
   });
 
 });

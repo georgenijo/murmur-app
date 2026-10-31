@@ -15,10 +15,13 @@ The main window is the themed webview and maintains a concrete
 `data-appearance="light"` or `data-appearance="dark"` attribute even when the
 saved preference is `system`.
 
-The overlay and transform-review popover are deliberately outside theme
-synchronization. They remain transparent, always-dark glass surfaces. In
-particular, the shared `body.overlay-window { background: transparent }`
-invariant must never be replaced by an opaque theme background.
+The overlay island and transform-review popover are deliberately outside theme
+synchronization: the island is fixed black, while transform review retains its
+always-dark glass. Their native window backgrounds remain transparent; the
+shared `body.overlay-window { background: transparent }` invariant must never
+be replaced by an opaque theme background. Optional dictation live words are a
+separate surface: they read appearance using the existing read-only mirror and
+use semantic background, foreground and hairline tokens in both light and dark.
 
 ## Storage and first paint
 

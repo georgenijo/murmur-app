@@ -354,6 +354,9 @@ export interface Settings {
   launchAtLogin: boolean;
   /** Confirmed vertical fine-tuning for the notch overlay, in logical points. */
   overlayVerticalOffset: number;
+  overlayPlacement: 'notch' | 'below_menu_bar';
+  overlayLiveWords: boolean;
+  overlayProcessingStyle: 'sweep' | 'flow' | 'pulse';
   vadSensitivity: number;
   idleTimeoutMinutes: number;
   captureStandbyEnabled: boolean;
@@ -650,6 +653,9 @@ export const DEFAULT_SETTINGS: Settings = {
   smartAutoAllowContinuity: false,
   launchAtLogin: false,
   overlayVerticalOffset: 0,
+  overlayPlacement: 'notch',
+  overlayLiveWords: false,
+  overlayProcessingStyle: 'flow',
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   captureStandbyEnabled: false,
@@ -959,9 +965,18 @@ function sanitizeBrowserSiteRules(raw: unknown, availableModeIds: ReadonlySet<st
   return rules;
 }
 
+/** Decode a durable snapshot without rewriting a webview's cache or disk. */
+export function parseSettingsBlob(blob: string | null): Settings {
+  return settingsFromBlob(blob, false);
+}
+
 export function loadSettings(): Settings {
+  try { return settingsFromBlob(localStorage.getItem(STORAGE_KEY), true); }
+  catch (e) { console.error('Failed to load settings:', e); return DEFAULT_SETTINGS; }
+}
+
+function settingsFromBlob(stored: string | null, repairCache: boolean): Settings {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as PersistedSettings;
       const storedSettingsVersion =
@@ -981,7 +996,14 @@ export function loadSettings(): Settings {
       } else {
         parsed.overlayVerticalOffset = clampOverlayVerticalOffset(parsed.overlayVerticalOffset);
       }
-      localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
+      if (repairCache) localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
+      if (parsed.overlayPlacement !== 'notch' && parsed.overlayPlacement !== 'below_menu_bar') {
+        parsed.overlayPlacement = DEFAULT_SETTINGS.overlayPlacement;
+      }
+      if (typeof parsed.overlayLiveWords !== 'boolean') parsed.overlayLiveWords = DEFAULT_SETTINGS.overlayLiveWords;
+      if (!['sweep', 'flow', 'pulse'].includes(parsed.overlayProcessingStyle as string)) {
+        parsed.overlayProcessingStyle = DEFAULT_SETTINGS.overlayProcessingStyle;
+      }
 
       // v1: installs that persisted the former 50 ms default should adopt the
       // zero-delay fast path once. A user can set 50 ms again after migration,
@@ -1383,7 +1405,7 @@ export function loadSettings(): Settings {
       }
 
       const settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;
-      if (storedSettingsVersion < SETTINGS_VERSION) {
+      if (repairCache && storedSettingsVersion < SETTINGS_VERSION) {
         try {
           writePersistedSettings(settings);
         } catch (e) {
@@ -1392,11 +1414,20 @@ export function loadSettings(): Settings {
       }
       return settings;
     }
-    localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
+    if (repairCache) localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
   } catch (e) {
     console.error('Failed to load settings:', e);
   }
   return DEFAULT_SETTINGS;
+}
+
+/** Refresh a webview cache after the host has already committed settings. */
+export function cacheSettings(settings: Settings): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, settingsVersion: SETTINGS_VERSION }));
+  } catch (e) {
+    console.error('Failed to cache settings:', e);
+  }
 }
 
 export function saveSettings(settings: Settings): void {

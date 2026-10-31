@@ -1,23 +1,19 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { Settings, loadSettings } from '../settings';
+import type { Settings } from '../settings';
 
-/**
- * Listens for the `settings-changed` event emitted by the overlay window's
- * quick-settings controls (auto-paste / global disable) and applies the latest
- * persisted settings via `apply`. The overlay runs in a separate Tauri window
- * with no shared React context, so this event is the bridge back to the main
- * window's settings state and backend configuration.
- */
-export function useOverlaySettingsSync(apply: (fresh: Settings) => void) {
+/** Host-committed quick controls own one field, never a full cached snapshot. */
+export function useOverlaySettingsSync(apply: (fresh: Partial<Pick<Settings, 'autoPaste' | 'disabled'>>) => void) {
   useEffect(() => {
     let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen('settings-changed', () => {
-      if (!cancelled) apply(loadSettings());
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>('overlay-owned-setting-committed', ({ payload }) => {
+      if (cancelled || !payload || typeof payload !== 'object') return;
+      const { field, value } = payload as { field?: unknown; value?: unknown };
+      if ((field === 'autoPaste' || field === 'disabled') && typeof value === 'boolean') {
+        apply({ [field]: value });
+      }
+    }).then(fn => { if (cancelled) fn(); else unlisten = fn; });
     return () => { cancelled = true; unlisten?.(); };
   }, [apply]);
 }

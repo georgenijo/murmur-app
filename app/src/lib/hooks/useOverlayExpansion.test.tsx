@@ -29,7 +29,7 @@ import { useOverlayExpansion, type OverlayExpansion } from './useOverlayExpansio
 
 // A pending set_overlay_expanded invocation the test controls.
 interface SurfaceCall {
-  args: { expanded: boolean; content: 'controls' | 'meeting_suggestion' };
+  args: { expanded: boolean; content: 'controls' | 'meeting_suggestion'; activity?: 'idle' | 'recording' | 'processing'; placement?: 'notch' | 'below_menu_bar'; deferShrink?: boolean };
   resolve: (v: { windowW: number; windowH: number }) => void;
   reject: (e: unknown) => void;
 }
@@ -53,8 +53,10 @@ describe('useOverlayExpansion', () => {
     withIsland?: boolean;
     forcedOpen?: boolean;
     content?: 'controls' | 'meeting_suggestion';
+    activity?: 'idle' | 'recording' | 'processing';
+    placement?: 'notch' | 'below_menu_bar';
   }) {
-    current = useOverlayExpansion({ forcedOpen: props.forcedOpen, content: props.content });
+    current = useOverlayExpansion({ forcedOpen: props.forcedOpen, content: props.content, activity: props.activity, placement: props.placement });
     return props.withIsland ? <div ref={current.islandRef} /> : null;
   }
 
@@ -74,6 +76,8 @@ describe('useOverlayExpansion', () => {
     withIsland?: boolean;
     forcedOpen?: boolean;
     content?: 'controls' | 'meeting_suggestion';
+    activity?: 'idle' | 'recording' | 'processing';
+    placement?: 'notch' | 'below_menu_bar';
   } = {}) {
     // mount owns the root's whole lifecycle so beforeEach never leaks an empty
     // container. A prior mount (a test that re-mounts) is torn down first.
@@ -127,6 +131,79 @@ describe('useOverlayExpansion', () => {
     if (root) { await act(async () => { root!.unmount(); }); root = null; }
     if (container) { container.remove(); container = null; }
     vi.useRealTimers();
+  });
+
+  it('settles state-driven bounds only after the latest resize acknowledgement and animation', async () => {
+    await mount({ activity: 'recording', placement: 'below_menu_bar' });
+    expect(surfaceCalls[0].args).toEqual({ expanded: false, content: 'controls', activity: 'recording', placement: 'below_menu_bar', deferShrink: true });
+    await act(async () => surfaceCalls[0].resolve(APPLIED));
+    await act(async () => root!.render(<Harness activity="processing" placement="below_menu_bar" />));
+    expect(surfaceCalls).toHaveLength(2);
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(surfaceCalls).toHaveLength(2); // No settlement before the new ack.
+    await act(async () => surfaceCalls[1].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS - 1));
+    expect(surfaceCalls).toHaveLength(2);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(surfaceCalls[2].args).toEqual({ expanded: false, content: 'controls', activity: 'processing', placement: 'below_menu_bar' });
+  });
+
+  it('does not replay hidden layout changes until show, then applies only the latest placement', async () => {
+    await mount({ activity: 'recording', placement: 'notch' });
+    await act(async () => surfaceCalls[0].resolve(APPLIED));
+    await act(async () => emitEvent('overlay-visible-changed', false));
+    const hiddenCall = surfaceCalls[surfaceCalls.length - 1];
+    await act(async () => hiddenCall.resolve(APPLIED));
+    const count = surfaceCalls.length;
+    await act(async () => root!.render(<Harness activity="processing" placement="below_menu_bar" />));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(surfaceCalls).toHaveLength(count);
+    await act(async () => emitEvent('overlay-visible-changed', true));
+    expect(surfaceCalls[surfaceCalls.length - 1].args).toEqual({ expanded: false, content: 'controls', activity: 'processing', placement: 'below_menu_bar' });
+  });
+
+  it('a hover grow supersedes pending layout settlement without later shrinking the open card', async () => {
+    await mount({ activity: 'recording', placement: 'notch' });
+    await act(async () => surfaceCalls[0].resolve(APPLIED));
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    expect(surfaceCalls[1].args.expanded).toBe(true);
+    expect(current.expanded).toBe(false);
+    await act(async () => surfaceCalls[1].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(current.expanded).toBe(true);
+    expect(surfaceCalls).toHaveLength(2);
+  });
+
+  it.each(['notch', 'below_menu_bar'] as const)('retains native bounds for the idle %s contraction and supersedes release on reversal', async (placement) => {
+    await mount({ activity: 'idle', placement });
+    await act(async () => surfaceCalls[0].resolve(APPLIED));
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    await act(async () => surfaceCalls[1].resolve(APPLIED));
+    await act(async () => current.onHoverEnd());
+    await act(async () => vi.advanceTimersByTime(COLLAPSE_DELAY_MS + SHRINK_DELAY_MS));
+    expect(surfaceCalls[2].args).toMatchObject({ expanded: false, activity: 'idle', placement, deferShrink: true });
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(surfaceCalls).toHaveLength(3);
+    await act(async () => surfaceCalls[2].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS - 1));
+    expect(surfaceCalls).toHaveLength(3);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(surfaceCalls[3].args).toEqual({ expanded: false, content: 'controls', activity: 'idle', placement });
+    await act(async () => surfaceCalls[3].resolve(APPLIED));
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    await act(async () => surfaceCalls[4].resolve(APPLIED));
+    await act(async () => current.onHoverEnd());
+    await act(async () => vi.advanceTimersByTime(COLLAPSE_DELAY_MS + SHRINK_DELAY_MS));
+    await act(async () => surfaceCalls[5].resolve(APPLIED));
+    await act(async () => current.onHoverStart());
+    await act(async () => vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS));
+    expect(surfaceCalls[6].args.expanded).toBe(true);
+    await act(async () => surfaceCalls[6].resolve(APPLIED));
+    await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
+    expect(surfaceCalls).toHaveLength(7); expect(current.expanded).toBe(true);
   });
 
   it('reveals the card only after the grow resize is acknowledged (dwell → opening → ack → open)', async () => {
