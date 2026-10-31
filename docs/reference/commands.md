@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 241 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 242 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -408,6 +408,7 @@ without logging their content.
 |---------|-----------|---------|-------------|
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
 | `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Concurrent writers (main and overlay windows) are serialized; a failed write removes the temp file and preserves the previous settings. |
+| `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool` | `Result<String, String>` | Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
 | `load_history_blob` | — | `Result<Option<String>, String>` | Reads `history.json`. `None` means absent or quarantined; the 8 MiB JSON-array bound is checked before returning content. |
 | `save_history_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a history JSON array up to 8 MiB. |
 | `clear_history_blob` | — | `Result<(), String>` | Idempotently removes `history.json` without touching settings or stats. |

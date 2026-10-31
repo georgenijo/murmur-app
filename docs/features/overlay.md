@@ -410,7 +410,7 @@ A boolean tracking whether recording was initiated from the overlay (vs. keyboar
 
 ### Settings Access
 
-The overlay reads settings from `localStorage` via the validated `loadSettings()` API (never a raw `JSON.parse` of the stored blob) because it runs in a separate window with no shared React context. `loadSettings()` sanitizes/migrates the stored shape, so a malformed or stale blob degrades to defaults rather than surfacing a parse error.
+The overlay seeds its presentation with validated cached settings, then reads the durable host snapshot on committed-setting notifications. Quick controls configure their owned backend field and call `patch_overlay_setting`: the host merges only Auto-paste or Disabled into the latest document under its writer lock. Main applies that one committed field to state/cache without a full-file echo. A stale webview snapshot cannot restore revoked Live Words consent or overwrite a newer processing style.
 
 ## Screen Change Observer
 

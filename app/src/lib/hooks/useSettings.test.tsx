@@ -94,14 +94,26 @@ describe('useSettings configure rollback privacy', () => {
       smartAutoPreferredDeviceIds: ['new-approved'],
     }));
     await act(async () => current.applyExternalSettings({
-      ...DEFAULT_SETTINGS,
       disabled: true,
-      smartAutoApprovedDeviceIds: ['removed-approved'],
     }));
     expect(current.settings.disabled).toBe(true);
     expect(current.settings.smartAutoProbeEnabled).toBe(true);
     expect(current.settings.smartAutoApprovedDeviceIds).toEqual(['new-approved']);
     expect(current.settings.smartAutoPreferredDeviceIds).toEqual(['new-approved']);
+  });
+
+  it('applies one host-owned field using cache only without overwriting newer main preferences', async () => {
+    await mountHarness();
+    await act(async () => current.updateSettings({ overlayLiveWords: false, overlayProcessingStyle: 'pulse', autoPaste: true }));
+    mocks.invoke.mockClear();
+    mocks.isTauri.mockReturnValue(true);
+    await act(async () => current.applyExternalSettings({ disabled: true }));
+    expect(current.settings.disabled).toBe(true);
+    expect(current.settings.autoPaste).toBe(true);
+    expect(current.settings.overlayLiveWords).toBe(false);
+    expect(current.settings.overlayProcessingStyle).toBe('pulse');
+    expect(JSON.parse(localStorage.getItem('dictation-settings')!).disabled).toBe(true);
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'save_settings_blob')).toBe(false);
   });
 
   it('restores UI state and never logs alias-bearing backend validation text', async () => {

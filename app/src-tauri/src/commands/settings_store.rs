@@ -170,13 +170,18 @@ fn read_blob(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
 }
 
 fn write_blob(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    write_blob_locked(dir, spec, blob)
+}
+
+/// Caller holds WRITE_LOCK, including any read/merge preceding this publish.
+fn write_blob_locked(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
     validate_blob(spec, blob)?;
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
 
     let path = blob_path(dir, spec);
     let temp = temp_path_for(&path);
-    let _guard = WRITE_LOCK.lock_or_recover();
     if let Err(e) = std::fs::write(&temp, blob) {
         let _ = std::fs::remove_file(&temp);
         return Err(format!("Failed to write {}: {e}", spec.label));
@@ -226,15 +231,82 @@ pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, Strin
 #[tauri::command]
 pub fn save_settings_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
     write_blob(&data_dir(&app)?, SETTINGS, &blob)?;
+    notify_settings_committed(&app, &blob);
+    Ok(())
+}
+
+fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
     // Hidden WKWebViews can observe settings-changed before their localStorage
     // cache updates. Notify only after the authoritative file was committed.
-    let enabled = serde_json::from_str::<serde_json::Value>(&blob)
+    let enabled = serde_json::from_str::<serde_json::Value>(blob)
         .ok()
         .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
         .unwrap_or(false);
     let _ = app.emit_to("dictation-preview", "live-words-consent-persisted", enabled);
     let _ = app.emit_to("overlay", "overlay-settings-persisted", ());
-    Ok(())
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OverlaySettingField {
+    AutoPaste,
+    Disabled,
+}
+
+impl OverlaySettingField {
+    fn key(self) -> &'static str {
+        match self {
+            Self::AutoPaste => "autoPaste",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+fn require_overlay_owner(label: &str) -> Result<(), String> {
+    if label == "overlay" {
+        Ok(())
+    } else {
+        Err("Quick settings are owned by the overlay window".into())
+    }
+}
+
+fn patch_owned_setting(
+    dir: &Path,
+    field: OverlaySettingField,
+    value: bool,
+) -> Result<String, String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let blob = read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?;
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&blob).map_err(|_| "Durable settings could not be decoded")?;
+    settings
+        .as_object_mut()
+        .ok_or("Durable settings must be an object")?
+        .insert(field.key().into(), serde_json::Value::Bool(value));
+    let committed =
+        serde_json::to_string(&settings).map_err(|_| "Settings could not be encoded")?;
+    write_blob_locked(dir, SETTINGS, &committed)?;
+    Ok(committed)
+}
+
+/// Never accept a retained full snapshot from a quick control. Merge its one
+/// owned field into the latest document under the same lock as full writers.
+#[tauri::command]
+pub fn patch_overlay_setting(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    field: OverlaySettingField,
+    value: bool,
+) -> Result<String, String> {
+    require_overlay_owner(window.label())?;
+    let committed = patch_owned_setting(&data_dir(&app)?, field, value)?;
+    notify_settings_committed(&app, &committed);
+    let _ = app.emit_to(
+        "main",
+        "overlay-owned-setting-committed",
+        serde_json::json!({ "field": field.key(), "value": value }),
+    );
+    Ok(committed)
 }
 
 #[tauri::command]
@@ -318,6 +390,33 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn owned_patches_preserve_revoked_consent_and_concurrent_fields() {
+        let dir = temp_dir("owned_patch");
+        write_blob(&dir, SETTINGS, r#"{"overlayLiveWords":false,"overlayProcessingStyle":"pulse","autoPaste":false,"disabled":false}"#).unwrap();
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| patch_owned_setting(&dir, OverlaySettingField::AutoPaste, true).unwrap());
+            scope.spawn(|| patch_owned_setting(&dir, OverlaySettingField::Disabled, true).unwrap());
+        });
+        let value: serde_json::Value =
+            serde_json::from_str(&read_blob(&dir, SETTINGS).unwrap().unwrap()).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"overlayLiveWords":false,"overlayProcessingStyle":"pulse","autoPaste":true,"disabled":true})
+        );
+        assert!(require_overlay_owner("overlay").is_ok());
+        for owner in ["main", "dictation-preview", "diagnostics", ""] {
+            assert!(require_overlay_owner(owner).is_err());
+        }
+        for field in ["overlayLiveWords", "overlayProcessingStyle", "__proto__"] {
+            assert!(
+                serde_json::from_value::<OverlaySettingField>(serde_json::json!(field)).is_err()
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

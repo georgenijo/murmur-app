@@ -1421,6 +1421,15 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
   return DEFAULT_SETTINGS;
 }
 
+/** Refresh a webview cache after the host has already committed settings. */
+export function cacheSettings(settings: Settings): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, settingsVersion: SETTINGS_VERSION }));
+  } catch (e) {
+    console.error('Failed to cache settings:', e);
+  }
+}
+
 export function saveSettings(settings: Settings): void {
   try {
     writePersistedSettings(settings);

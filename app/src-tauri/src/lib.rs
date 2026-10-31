@@ -492,6 +492,7 @@ pub fn run() {
             commands::mode_exchange::read_modes_file,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
+            commands::settings_store::patch_overlay_setting,
             commands::settings_store::load_history_blob,
             commands::settings_store::save_history_blob,
             commands::settings_store::clear_history_blob,
