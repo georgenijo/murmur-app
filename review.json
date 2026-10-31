@@ -1,0 +1,16 @@
+{
+  "head": "c618d8f22ef52a55938633046b9e50cd6a995a9e",
+  "model": "gpt-6.1-sol",
+  "effort": "high",
+  "providerInstanceId": "codex_gpt_via_cpa",
+  "verdict": "APPROVE",
+  "findings": {
+    "S1": "resolved at1e3f508b: host atomic whitelist patches, no full retained snapshots",
+    "S2": "resolved atc618d8f2: reconcile only owned backend field with operation guards on patch failure"
+  },
+  "rechecks": [
+    "852-s1-recheck-1e3f508b-high",
+    "852-s2-recheck-c618d8f2-high"
+  ],
+  "nativeAndCIGates": "Separate; final-head collection in progress"
+}

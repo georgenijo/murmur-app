@@ -1,0 +1,10 @@
+{
+  "source": "c618d8f22ef52a55938633046b9e50cd6a995a9e",
+  "recordedFrames": 480,
+  "distinctConsecutiveUpdates": 479,
+  "visibleUpdatesPerSecond": 59.875,
+  "windowSeconds": 8,
+  "windowStartSeconds": 5,
+  "crop": "224:52:688:74",
+  "method": "Pixel hashes of actual dot field in lossless native capture; stream FPS metadata is not accepted as animation proof."
+}

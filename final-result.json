@@ -1,0 +1,51 @@
+{
+  "source": "c618d8f22ef52a55938633046b9e50cd6a995a9e",
+  "overlayPid": 29144,
+  "cpuPercentOneCore": 0.9981292511568105,
+  "rssMiBStart": 64.296875,
+  "rssMiBEnd": 64.1875,
+  "focus": {
+    "before": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+    "during": "Murmur Focus Probe com.localdictation.epic846.focus-probe",
+    "after": "Murmur Focus Probe com.localdictation.epic846.focus-probe"
+  },
+  "allProcessMetrics": {
+    "host": {
+      "pids": [
+        29114
+      ],
+      "cpuPercentOneCore": 30.94200678586108,
+      "rssMiBStart": 276.65625,
+      "rssMiBEnd": 277.453125
+    },
+    "webcontent": {
+      "pids": [
+        29141,
+        29143,
+        29144,
+        29145,
+        29146,
+        29147
+      ],
+      "cpuPercentOneCore": 23.955102027763434,
+      "rssMiBStart": 570.703125,
+      "rssMiBEnd": 572.84375
+    },
+    "gpu": {
+      "pids": [
+        29140
+      ],
+      "cpuPercentOneCore": 2.994387753470429,
+      "rssMiBStart": 54.359375,
+      "rssMiBEnd": 54.671875
+    },
+    "network": {
+      "pids": [
+        29142
+      ],
+      "cpuPercentOneCore": 0.0,
+      "rssMiBStart": 16.125,
+      "rssMiBEnd": 16.125
+    }
+  }
+}

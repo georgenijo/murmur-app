@@ -1,0 +1,8 @@
+{
+  "source": "c618d8f22ef52a55938633046b9e50cd6a995a9e",
+  "binarySha256": "8446102e402439d4638a1f79e66abe9980d86f3b06e133b721555d14fc46a0b5",
+  "identifier": "com.localdictation.epic846.overlay852",
+  "hostPid": 29114,
+  "signing": "Developer ID finalizer strict verification passed",
+  "flavor": "isolated internal verification build; updater/login/log shipping disabled"
+}

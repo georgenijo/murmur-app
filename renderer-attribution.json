@@ -1,0 +1,137 @@
+{
+  "method": "Pause one owned isolated-app WebContent process, enter the island, observe native overlay-window bounds. Only the overlay process prevents hover growth while paused and grows on resume. Every process is resumed in finally. Native Metal is independent of webview frames.",
+  "processes": [
+    {
+      "pid": 29141,
+      "before": {
+        "Height": 40,
+        "Width": 44,
+        "X": 938,
+        "Y": 36
+      },
+      "whilePaused": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "afterResume": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "ownsHover": false
+    },
+    {
+      "pid": 29143,
+      "before": {
+        "Height": 40,
+        "Width": 44,
+        "X": 938,
+        "Y": 36
+      },
+      "whilePaused": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "afterResume": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "ownsHover": false
+    },
+    {
+      "pid": 29144,
+      "before": {
+        "Height": 40,
+        "Width": 44,
+        "X": 938,
+        "Y": 36
+      },
+      "whilePaused": {
+        "Height": 40,
+        "Width": 44,
+        "X": 938,
+        "Y": 36
+      },
+      "afterResume": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "ownsHover": true
+    },
+    {
+      "pid": 29145,
+      "before": {
+        "Height": 40,
+        "Width": 44,
+        "X": 938,
+        "Y": 36
+      },
+      "whilePaused": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "afterResume": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "ownsHover": false
+    },
+    {
+      "pid": 29146,
+      "before": {
+        "Height": 40,
+        "Width": 44,
+        "X": 938,
+        "Y": 36
+      },
+      "whilePaused": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "afterResume": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "ownsHover": false
+    },
+    {
+      "pid": 29147,
+      "before": {
+        "Height": 40,
+        "Width": 44,
+        "X": 938,
+        "Y": 36
+      },
+      "whilePaused": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "afterResume": {
+        "Height": 104,
+        "Width": 241,
+        "X": 839,
+        "Y": 36
+      },
+      "ownsHover": false
+    }
+  ]
+}
