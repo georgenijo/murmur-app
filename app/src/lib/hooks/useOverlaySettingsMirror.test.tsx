@@ -5,8 +5,9 @@ import { DEFAULT_SETTINGS, type Settings } from '../settings';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
   emit: vi.fn(async () => {}),
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (_name: string, _handler: (event: { payload: unknown }) => void) => () => {}),
   loadSettings: vi.fn<() => Settings>(),
   saveSettings: vi.fn<(settings: Settings) => void>(),
   setDisabled: vi.fn(),
@@ -36,6 +37,7 @@ describe('overlay settings write ownership', () => {
       hotkeyMissFeedbackRef,
     });
     return <>
+      <output>{mirror.overlayPlacement}|{mirror.overlayProcessingStyle}</output>
       <button onClick={mirror.handleToggleAutoPaste}>Paste</button>
       <button onClick={mirror.handleToggleDisabled}>Disable</button>
       <button onClick={mirror.refresh}>Refresh</button>
@@ -44,6 +46,11 @@ describe('overlay settings write ownership', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mocks.invoke.mockReset().mockResolvedValue(undefined);
+    mocks.listeners.clear();
+    mocks.listen.mockImplementation(async (name, handler) => {
+      mocks.listeners.set(name, handler); return () => { mocks.listeners.delete(name); };
+    });
     stored = {
       ...DEFAULT_SETTINGS,
       autoPaste: false,
@@ -109,6 +116,33 @@ describe('overlay settings write ownership', () => {
     expect(stored.disabled).toBe(false);
     expectRevocationPreserved();
     expect(mocks.saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('applies committed placement/style despite a stale cache and preserves them through quick controls', async () => {
+    const committed = { ...stored, settingsVersion: 6, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse' };
+    mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob' ? JSON.stringify(committed) : undefined);
+    await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+    expect(container.querySelector('output')?.textContent).toBe('below_menu_bar|pulse');
+    expect(stored.overlayPlacement).toBe('notch');
+    await act(async () => container.querySelectorAll('button')[2].click());
+    expect(container.querySelector('output')?.textContent).toBe('below_menu_bar|pulse');
+    await act(async () => container.querySelector('button')?.click());
+    expect(stored.overlayPlacement).toBe('below_menu_bar');
+    expect(stored.overlayProcessingStyle).toBe('pulse');
+    expect(stored.autoPaste).toBe(true);
+  });
+
+  it('drops an old durable read after a newer placement/style commit', async () => {
+    let older!: (blob: string) => void, newer!: (blob: string) => void;
+    mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { older = resolve; }));
+    await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+    mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { newer = resolve; }));
+    await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
+    await act(async () => {
+      newer(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse' }));
+      older(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'notch', overlayProcessingStyle: 'sweep' }));
+    });
+    expect(container.querySelector('output')?.textContent).toBe('below_menu_bar|pulse');
   });
 
 });

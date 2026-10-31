@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 240 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 241 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -422,6 +422,7 @@ without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
+| `set_overlay_field_state` | `stage: idle/recording/processing/done`, `style: sweep/flow/pulse`, `reduced: bool`, `visible: bool` | `Result<bool, String>` | Overlay-window-only native Metal field state. Rust resolves metrics and dispatches view updates to the main thread; false selects the Canvas fallback. No text or per-frame data is accepted. |
 | `get_overlay_geometry` | `content?: OverlayContent` | `OverlayGeometry` | Current native activity/placement/content contract from `geometry_for_layout()`, including mandatory island metrics. Never null; a 185pt pretend notch substitutes on flat/unmeasured displays. |
 | `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |

@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::MutexExt;
 
@@ -225,7 +225,16 @@ pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, Strin
 
 #[tauri::command]
 pub fn save_settings_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
-    write_blob(&data_dir(&app)?, SETTINGS, &blob)
+    write_blob(&data_dir(&app)?, SETTINGS, &blob)?;
+    // Hidden WKWebViews can observe settings-changed before their localStorage
+    // cache updates. Notify only after the authoritative file was committed.
+    let enabled = serde_json::from_str::<serde_json::Value>(&blob)
+        .ok()
+        .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
+        .unwrap_or(false);
+    let _ = app.emit_to("dictation-preview", "live-words-consent-persisted", enabled);
+    let _ = app.emit_to("overlay", "overlay-settings-persisted", ());
+    Ok(())
 }
 
 #[tauri::command]

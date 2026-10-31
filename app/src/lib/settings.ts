@@ -965,9 +965,18 @@ function sanitizeBrowserSiteRules(raw: unknown, availableModeIds: ReadonlySet<st
   return rules;
 }
 
+/** Decode a durable snapshot without rewriting a webview's cache or disk. */
+export function parseSettingsBlob(blob: string | null): Settings {
+  return settingsFromBlob(blob, false);
+}
+
 export function loadSettings(): Settings {
+  try { return settingsFromBlob(localStorage.getItem(STORAGE_KEY), true); }
+  catch (e) { console.error('Failed to load settings:', e); return DEFAULT_SETTINGS; }
+}
+
+function settingsFromBlob(stored: string | null, repairCache: boolean): Settings {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as PersistedSettings;
       const storedSettingsVersion =
@@ -987,7 +996,7 @@ export function loadSettings(): Settings {
       } else {
         parsed.overlayVerticalOffset = clampOverlayVerticalOffset(parsed.overlayVerticalOffset);
       }
-      localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
+      if (repairCache) localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
       if (parsed.overlayPlacement !== 'notch' && parsed.overlayPlacement !== 'below_menu_bar') {
         parsed.overlayPlacement = DEFAULT_SETTINGS.overlayPlacement;
       }
@@ -1396,7 +1405,7 @@ export function loadSettings(): Settings {
       }
 
       const settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;
-      if (storedSettingsVersion < SETTINGS_VERSION) {
+      if (repairCache && storedSettingsVersion < SETTINGS_VERSION) {
         try {
           writePersistedSettings(settings);
         } catch (e) {
@@ -1405,7 +1414,7 @@ export function loadSettings(): Settings {
       }
       return settings;
     }
-    localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
+    if (repairCache) localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
   } catch (e) {
     console.error('Failed to load settings:', e);
   }

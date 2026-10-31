@@ -48,6 +48,8 @@ describe('DictationPreviewApp', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: true }));
     Object.defineProperty(window, 'matchMedia', { configurable: true, value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) });
     mocks.listeners.clear();
+    mocks.invoke.mockReset().mockImplementation(async (command: string) => command === 'load_settings_blob'
+      ? JSON.stringify({ overlayLiveWords: true }) : undefined);
     mocks.listen.mockReset();
     mocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
       mocks.listeners.set(name, handler);
@@ -90,13 +92,59 @@ describe('DictationPreviewApp', () => {
     expect(container.textContent).toContain('synthetic words');
     const toggle = async (enabled: boolean) => act(async () => {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: enabled }));
-      mocks.listeners.get('settings-changed')?.({ payload: null });
+      mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
+        ? JSON.stringify({ overlayLiveWords: enabled }) : undefined);
+      mocks.listeners.get('live-words-consent-persisted')?.({ payload: enabled });
     });
     await toggle(false);
     expect(container.textContent).toBe('');
     await act(async () => mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' }));
     await toggle(true);
     await act(async () => mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 3, text: 'stale' } }));
+    expect(container.textContent).toBe('');
+  });
+
+  it('hot-enables from durable consent while the hidden webview cache remains false', async () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: false }));
+    mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
+      ? JSON.stringify({ overlayLiveWords: false }) : undefined);
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: false }));
+    mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
+      ? JSON.stringify({ overlayLiveWords: true }) : undefined);
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: true }));
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 8 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 8, text: 'synthetic live words' } });
+    });
+    expect(container.textContent).toContain('synthetic live words');
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).overlayLiveWords).toBe(false);
+  });
+
+  it('a stale true cache or forged true event cannot override durable opt-out', async () => {
+    mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
+      ? JSON.stringify({ overlayLiveWords: false }) : undefined);
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: true }));
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 8 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 8, text: 'must stay hidden' } });
+    });
+    expect(container.textContent).toBe('');
+  });
+
+  it('clears on opt-out before disk read completes and ignores an older true response', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 8 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 8, text: 'synthetic words' } });
+    });
+    expect(container.textContent).toContain('synthetic words');
+    let old!: (value: string) => void, latest!: (value: string) => void;
+    mocks.invoke.mockImplementationOnce(() => new Promise<string>(resolve => { old = resolve; }));
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: true }));
+    mocks.invoke.mockImplementationOnce(() => new Promise<string>(resolve => { latest = resolve; }));
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: false }));
+    expect(container.textContent).toBe('');
+    await act(async () => { latest('{"overlayLiveWords":false}'); old('{"overlayLiveWords":true}'); });
+    await act(async () => mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 8, text: 'must stay hidden' } }));
     expect(container.textContent).toBe('');
   });
 

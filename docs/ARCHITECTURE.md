@@ -500,7 +500,7 @@ See [reference/hooks.md](reference/hooks.md) for the full hook inventory.
 Two rules keep the multi-window state coherent:
 
 - **`transcription-complete` is the single source of truth** for history and stats. Entries are added only from the Rust event, never in `handleStop()` — otherwise an overlay-initiated recording double-counts.
-- **The overlay reads settings from localStorage directly** (`useOverlaySettingsMirror`), not through React context or IPC. There is no shared context across windows.
+- **The overlay has no shared React settings context.** `useOverlaySettingsMirror` seeds from its cache and refreshes guarded, read-only durable snapshots after host commit notifications; quick controls retain the latest snapshot.
 - **Appearance has a separate ownership domain.** Main is the only writer and runtime for the small `murmur-appearance` active cache and the revisioned `murmur-theme-library`. Open VSX access is explicit and renderer-side; installed variants compile locally into the active cache. Transparent utility windows remain outside theme synchronization.
 - **Meeting history is Rust-owned.** `useMeetings` reads SQLite through bounded commands and events; transcript localStorage remains dictation-only.
 

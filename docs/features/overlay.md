@@ -35,6 +35,13 @@ content-free `MTLDrawable.presentedTime` timing summaries to stderr. The optiona
 counter is absent from ordinary runs. Screen recordings and process CPU/RSS
 measurements remain separate native acceptance evidence.
 
+Hidden WKWebViews can receive a generic settings event before their storage
+cache changes. Host persistence therefore sends targeted commit notifications:
+preview consent is re-read from disk (a true notification alone cannot enable
+words), and overlay controls read a validated snapshot without overwriting a
+shared cache. Generation guards discard older responses. Hover refresh and
+quick-control writes retain the latest confirmed/optimistic snapshot.
+
 ## Notch Detection
 
 Overlay dimensions are detected via NSScreen APIs on macOS:
