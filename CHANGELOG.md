@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-31
+
+### Added
+
+- Add a voice-responsive dot-matrix recording island with opt-in attached Live Words, notch and below-menu-bar placement, and Sweep, Flow and Pulse processing styles (#852).
+
+### Changed
+
+- Draw the macOS dot field with Metal while retaining a Canvas fallback, spring motion, Reduce Motion support, and existing recording and delivery priorities (#852).
+
+### Fixed
+
+- Apply Live Words and animation changes immediately across windows. Preserve opt-out when quick controls update settings, and reconcile their backend state if persistence fails (#852).
+
 ## [0.56.0] - 2026-10-30
 
 ### Added
