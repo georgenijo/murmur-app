@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { DOT_SCOPE, DOT_ALPHAS, DotScope, loudness, clamp, type DotScopeGeometry, type ScopeStage, type ProcessingStyle } from './dotScope';
 
-import { createGpuDotRenderer } from './gpuDotRenderer';
+import { useNativeDotField } from './useNativeDotField';
 
 const COLORS = ['rgb(222, 215, 201)', 'rgb(200, 220, 248)'];
 const BLUR_FILTERS = Array.from({ length: 31 }, (_, i) => i ? `blur(${i / 10}px)` : 'none');
@@ -10,10 +10,20 @@ const COLUMN_X = Float64Array.from({ length: DOT_SCOPE.columns }, (_, c) => (c -
 const ROW_Y = Float64Array.from({ length: DOT_SCOPE.rows }, (_, r) => (r - 4) * DOT_SCOPE.pitch);
 const ROW_FLOOR = Float64Array.from(ROW_Y, y => 0.07 * (1 - 0.7 * Math.abs(y) / 13));
 
-/** Shared paint inputs: GPU and Canvas use the same simulation, alpha buckets,
- * radii, width mask and Done wipe. No backend owns recording state. */
-export function prepareDots(scope: DotScope, dt: number, style: ProcessingStyle, reduced: boolean) {
+/** Canvas paths are batched by intensity; no React state or native RPC per frame.
+ * The canvas is decorative: the existing priority-resolved status owns meaning. */
+export function paintDots(ctx: CanvasRenderingContext2D, scope: DotScope, dt: number,
+  style: ProcessingStyle, reduced: boolean) {
   const dots = scope.sample(dt, style, reduced);
+  const g = scope.geometry;
+  ctx.clearRect(0, 0, g.plateRecordingW, g.plateH);
+  ctx.save();
+  ctx.translate(g.plateRecordingW / 2, g.plateH / 2);
+  ctx.scale(scope.scale.x, scope.scale.x);
+  ctx.beginPath();
+  ctx.roundRect(-scope.width.x / 2, -g.plateH / 2, scope.width.x, g.plateH, g.innerRadius);
+  ctx.clip();
+  ctx.fillStyle = COLORS[style === 'sweep' ? 1 : 0];
   // Compute nonlinear light/radius once, then batch paths by quantized alpha.
   // All scratch storage belongs to the mounted scope, not the display frame.
   scope.bucketCounts.fill(0);
@@ -36,22 +46,6 @@ export function prepareDots(scope: DotScope, dt: number, style: ProcessingStyle,
       scope.radii[opposite] = scope.radii[n];
     }
   }
-}
-
-/** Canvas paths are batched by intensity; no React state or native RPC per frame.
- * The canvas is decorative: the existing priority-resolved status owns meaning. */
-export function paintDots(ctx: CanvasRenderingContext2D, scope: DotScope, dt: number,
-  style: ProcessingStyle, reduced: boolean) {
-  const g = scope.geometry;
-  ctx.clearRect(0, 0, g.plateRecordingW, g.plateH);
-  ctx.save();
-  ctx.translate(g.plateRecordingW / 2, g.plateH / 2);
-  ctx.scale(scope.scale.x, scope.scale.x);
-  ctx.beginPath();
-  ctx.roundRect(-scope.width.x / 2, -g.plateH / 2, scope.width.x, g.plateH, g.innerRadius);
-  ctx.clip();
-  ctx.fillStyle = COLORS[style === 'sweep' ? 1 : 0];
-  prepareDots(scope, dt, style, reduced);
   // Stable counting sort visits each dot once instead of rescanning the full
   // grid for every alpha. Keep row order within each path and skip empty fills.
   let total = 0;
@@ -59,7 +53,7 @@ export function paintDots(ctx: CanvasRenderingContext2D, scope: DotScope, dt: nu
     scope.bucketOffsets[bucket] = total;
     total += scope.bucketCounts[bucket];
   }
-  for (let n = 0; n < scope.dots.length; n++) {
+  for (let n = 0; n < dots.length; n++) {
     const bucket = scope.buckets[n];
     if (bucket) scope.paintOrder[scope.bucketOffsets[bucket]++] = n;
   }
@@ -88,7 +82,7 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
   /** Only the standalone fixture passes a fixed simulation time. No debug IPC. */
   fixtureAt?: number;
 }) {
-  const [backend, setBackend] = useState<'gpu' | 'canvas'>('gpu');
+  const native = useNativeDotField(stage, processingStyle, geometry, fixtureAt);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scopeRef = useRef<DotScope | null>(null);
   if (!scopeRef.current) scopeRef.current = new DotScope(geometry);
@@ -97,7 +91,7 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
   const restartRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
-    if (fixtureAt !== undefined) return;
+    if (fixtureAt !== undefined || native) return;
     let disposed = false;
     const stop = listen<number>('audio-level', ({ payload }) => {
       if (!disposed && Number.isFinite(payload)) {
@@ -105,12 +99,12 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
       }
     }).catch(() => () => {});
     return () => { disposed = true; void stop.then((fn) => fn()); };
-  }, [fixtureAt]);
+  }, [fixtureAt, native]);
 
   // Visibility belongs to the mounted native window, not to its current
   // recording stage or processing style. Keep one subscription across them.
   useEffect(() => {
-    if (fixtureAt !== undefined) return;
+    if (fixtureAt !== undefined || native) return;
     let disposed = false;
     const stop = listen<boolean>('overlay-visible-changed', ({ payload }) => {
       if (disposed) return;
@@ -118,26 +112,14 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
       restartRef.current?.();
     }).catch(() => () => {});
     return () => { disposed = true; void stop.then((fn) => fn()).catch(() => {}); };
-  }, [fixtureAt]);
+  }, [fixtureAt, native]);
 
   useEffect(() => {
+    if (native) return;
     const canvas = canvasRef.current;
+    const ctx = canvas?.getContext('2d');
     const scope = scopeRef.current!;
-    if (!canvas) return;
-    const gpu = backend === 'gpu' ? createGpuDotRenderer(canvas) : null;
-    if (backend === 'gpu' && !gpu) { setBackend('canvas'); return; }
-    const ctx = gpu ? null : canvas.getContext('2d');
-    if (!gpu && !ctx) return;
-    const paint = (value: DotScope, dt: number) => {
-      if (gpu) { prepareDots(value, dt, processingStyle, reduced); gpu.paint(value, processingStyle); }
-      else paintDots(ctx!, value, dt, processingStyle, reduced);
-    };
-    const onContextLost = (event: Event) => {
-      event.preventDefault();
-      // A new keyed canvas is required: one canvas cannot switch context kinds.
-      setBackend('canvas');
-    };
-    canvas.addEventListener('webglcontextlost', onContextLost);
+    if (!canvas || !ctx) return;
     const syncResolution = () => {
       const ratio = window.devicePixelRatio || 1;
       const width = Math.ceil(scope.geometry.plateRecordingW * ratio);
@@ -145,7 +127,7 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
       if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width; canvas.height = height;
       }
-      ctx?.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     };
     syncResolution();
     const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
@@ -163,7 +145,7 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
       const db = now - level.current.at < 150 ? loudness(level.current.rms) : -120;
       scope.advance(dt, stage, db, reduced);
       canvas.style.filter = BLUR_FILTERS[Math.round(clamp(scope.blur.x, 0, 3) * 10)];
-      paint(scope, dt);
+      paintDots(ctx, scope, dt, processingStyle, reduced);
       // Reduced Motion is fade only: settle once, then stop even while recording.
       // No idle loop; a new stage/visibility/media change wakes it explicitly.
       if (reduced) staticDrawn = scope.opacity.x > 0.998 || stage === 'idle' && scope.opacity.x < 0.002;
@@ -187,8 +169,8 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
       if (stage === 'done') {
         for (let t = 0; t < 0.12; t += 1 / 60) { fixed.advance(1 / 60, 'done', -120, reduced); fixed.sample(1 / 60, processingStyle, reduced); }
       }
-      paint(fixed, 1 / 60);
-      return () => { canvas.removeEventListener('webglcontextlost', onContextLost); gpu?.dispose(); };
+      paintDots(ctx, fixed, 1 / 60, processingStyle, reduced);
+      return;
     }
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('resize', onResize);
@@ -197,15 +179,14 @@ export function DotField({ stage, processingStyle = 'flow', fixtureAt, geometry 
     restart();
     return () => {
       disposed = true; cancelAnimationFrame(raf);
-      canvas.removeEventListener('webglcontextlost', onContextLost); gpu?.dispose();
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('resize', onResize);
       media?.removeEventListener('change', onMotion);
       if (restartRef.current === restart) restartRef.current = null;
     };
-  }, [stage, processingStyle, fixtureAt, geometry, backend]);
+  }, [stage, processingStyle, fixtureAt, geometry, native]);
 
-  return <canvas key={backend} ref={canvasRef} data-renderer={backend} className="overlay-dot-field" aria-hidden="true"
+  return <canvas ref={canvasRef} data-renderer={native ? 'native' : 'canvas'} className="overlay-dot-field" aria-hidden="true"
     data-columns={DOT_SCOPE.columns} data-rows={DOT_SCOPE.rows} data-pitch={DOT_SCOPE.pitch}
-    style={{ width: scopeRef.current.geometry.plateRecordingW, height: scopeRef.current.geometry.plateH }} />;
+    style={{ visibility: native ? 'hidden' : undefined, width: scopeRef.current.geometry.plateRecordingW, height: scopeRef.current.geometry.plateH }} />;
 }

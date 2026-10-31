@@ -62,6 +62,7 @@ mod microphone_signal;
 mod model_artifact;
 mod model_hardware_guidance;
 mod model_runtime;
+mod native_overlay_field;
 mod performance_metrics;
 mod platform;
 #[cfg(feature = "preview-decode-reuse")]
@@ -558,6 +559,7 @@ pub fn run() {
             commands::overlay::set_overlay_vertical_offset,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
+            native_overlay_field::set_overlay_field_state,
             commands::dictation_preview::show_dictation_preview,
             commands::transform_popover::get_transform_popover_geometry,
             commands::transform_popover::show_transform_popover,

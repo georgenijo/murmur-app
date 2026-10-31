@@ -10,16 +10,20 @@ fn main() {
     // AVFoundation is needed for AVCaptureDevice microphone authorization status
     // (commands::permissions::check_microphone_permission). AppKit does not load it.
     println!("cargo:rustc-link-lib=framework=AVFoundation");
+    println!("cargo:rustc-link-lib=framework=MetalKit");
+    println!("cargo:rustc-link-lib=framework=CoreImage");
     build_foundation_models_bridge();
     tauri_build::build()
 }
 
-/// Compile the small Swift bridge used by the optional homophone context pass
+/// Compile the Swift bridges for the native overlay and optional homophone context pass
 /// (`homophone_context.rs`) into a static library. FoundationModels is weakly
 /// linked so the app still launches on macOS 14/15; an SDK without the
 /// framework compiles a stub that always reports "unavailable".
 fn build_foundation_models_bridge() {
     let source = Path::new("macos/FoundationModelsBridge.swift");
+    let overlay = Path::new("macos/OverlayDotRenderer.swift");
+    println!("cargo:rerun-if-changed={}", overlay.display());
     println!("cargo:rerun-if-changed={}", source.display());
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
 
@@ -51,6 +55,7 @@ fn build_foundation_models_bridge() {
         .arg("-o")
         .arg(&library)
         .arg(source)
+        .arg(overlay)
         .status()
         .expect("failed to run swiftc for the FoundationModels bridge");
     if !status.success() {

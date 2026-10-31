@@ -5,6 +5,8 @@ import { DotField, paintDots } from './DotField';
 import { DOT_ALPHAS, DOT_SCOPE, DotScope } from './dotScope';
 
 const events = vi.hoisted(() => ({ listeners: new Map<string, (e: { payload: unknown }) => void>(), stops: vi.fn() }));
+const native = vi.hoisted(() => ({ available: false, invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>) => true) }));
+vi.mock('@tauri-apps/api/core', () => ({ isTauri: () => native.available, invoke: native.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, fn) => {
   events.listeners.set(name, fn); return () => { events.listeners.delete(name); events.stops(); };
 }) }));
@@ -24,6 +26,7 @@ describe('canvas field lifecycle', () => {
     }
   };
   beforeEach(() => {
+    native.available = false; native.invoke.mockReset().mockResolvedValue(true);
     reduced = false; now = 0; next = 0; motion = undefined; frames.clear(); events.listeners.clear(); events.stops.mockClear();
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => { frames.set(++next, fn); return next; });
@@ -148,6 +151,42 @@ describe('canvas field lifecycle', () => {
 
   it('does not subscribe or schedule a live loop in deterministic fixtures', async () => {
     await act(async () => root.render(<DotField stage="recording" fixtureAt={1.2} />));
+    expect(frames.size).toBe(0); expect(events.listeners.size).toBe(0);
+  });
+
+  it('leaves frames and levels to native ownership and forwards visibility without an animation loop', async () => {
+    native.available = true;
+    await act(async () => root.render(<DotField stage="recording" />));
+    expect(container.querySelector('canvas')?.dataset.renderer).toBe('native');
+    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled();
+    expect(events.listeners.has('audio-level')).toBe(false);
+    expect(frames.size).toBe(0);
+    expect(native.invoke).toHaveBeenLastCalledWith('set_overlay_field_state', {
+      stage: 'recording', style: 'flow', reduced: false, visible: true,
+    });
+    await act(async () => events.listeners.get('overlay-visible-changed')?.({ payload: false }));
+    expect(native.invoke.mock.calls[native.invoke.mock.calls.length - 1]?.[1]).toMatchObject({ visible: false });
+    await act(async () => root.unmount()); root = createRoot(container);
+    expect(native.invoke.mock.calls[native.invoke.mock.calls.length - 1]?.[1]).toMatchObject({ stage: 'idle', visible: false });
+  });
+
+  it('falls back to Canvas if native initialization is unavailable', async () => {
+    native.available = true; native.invoke.mockResolvedValue(false);
+    await act(async () => root.render(<DotField stage="recording" />));
+    expect(container.querySelector('canvas')?.dataset.renderer).toBe('canvas');
+    expect(events.listeners.has('audio-level')).toBe(true);
+    expect(frames.size).toBe(1);
+    expect(native.invoke.mock.calls[native.invoke.mock.calls.length - 1]?.[1]).toMatchObject({ stage: 'idle', visible: false });
+  });
+
+  it('serializes native teardown after a delayed state acknowledgement', async () => {
+    native.available = true;
+    let finish!: (value: boolean) => void;
+    native.invoke.mockImplementationOnce(() => new Promise<boolean>(resolve => { finish = resolve; }));
+    await act(async () => root.render(<DotField stage="recording" />));
+    await act(async () => root.unmount()); root = createRoot(container);
+    await act(async () => finish(true));
+    expect(native.invoke.mock.calls[native.invoke.mock.calls.length - 1]?.[1]).toMatchObject({ stage: 'idle', visible: false });
     expect(frames.size).toBe(0); expect(events.listeners.size).toBe(0);
   });
 });

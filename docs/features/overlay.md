@@ -2,7 +2,7 @@
 
 ## Overview
 
-The overlay is an always-on-top transparent window anchored to the macOS notch area, styled as a "Dynamic Island." It shows recording status, a Canvas2D voice dot field, and supports click interactions to start/stop recording. The overlay is a separate Tauri window (`label: "overlay"`) that loads its own HTML entry point (`overlay.html` → `src/overlay.tsx` → `OverlayWidget`) and has no shared React context with the main window.
+The overlay is an always-on-top transparent window anchored to the macOS notch area, styled as a "Dynamic Island." It shows recording status, a native Metal voice dot field with Canvas2D fallback, and supports click interactions to start/stop recording. The overlay is a separate Tauri window (`label: "overlay"`) that loads its own HTML entry point (`overlay.html` → `src/overlay.tsx` → `OverlayWidget`) and has no shared React context with the main window.
 
 The frontend is layered bottom-up:
 
@@ -11,6 +11,29 @@ The frontend is layered bottom-up:
 3. **Runtime hooks** (`useOverlayRecordingStatus`, `useOverlayRuntime`, `useRecordingControls`, `useOverlaySettingsMirror`) — Tauri event subscriptions, click handling, the settings mirror, and settings synchronization.
 4. **Presentational components** (`OverlayIsland`, `OverlayPill`, `OverlayDropdown`, `DotField`) — pure rendering, driven by a `deriveVisual()` descriptor.
 5. **`OverlayWidget.tsx`** — a composition shell that calls the hooks above and wires refs/handlers into the island container JSX.
+
+## Native field renderer
+
+On macOS the decorative 43×9 field is a transparent, non-interactive MetalKit
+view inside the existing overlay window. The webview still owns status priority,
+clicks, hover, menus and live words. `useNativeDotField` serializes stage/style,
+visibility and Reduced Motion updates; Rust verifies the caller is `overlay`,
+resolves geometry, and dispatches every native view mutation on the main thread.
+The native view declines hit testing and first-responder status. No text enters
+its API. The existing throttled RMS publisher supplies only a scalar level.
+
+`macos/OverlayDotRenderer.swift` implements the same bounded 240Hz simulation
+and native display-paced painting. Three Metal buffers protect in-flight frames.
+Idle/hidden work pauses, and Reduced Motion settles into one static field. Native
+frames do not execute JavaScript or per-frame IPC. Unsupported initialization
+falls back to the existing Canvas component. `node scripts/test_overlay_dot_scope.mjs`
+compares the real Swift and TypeScript simulations through mixed refresh rates,
+all processing styles, restarts and motion changes; CI runs it on macOS.
+
+For explicit local measurements, `MURMUR_OVERLAY_METRICS=1` records bounded,
+content-free `MTLDrawable.presentedTime` timing summaries to stderr. The optional
+counter is absent from ordinary runs. Screen recordings and process CPU/RSS
+measurements remain separate native acceptance evidence.
 
 ## Notch Detection
 
