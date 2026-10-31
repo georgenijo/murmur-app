@@ -244,7 +244,7 @@ private final class DotRenderer: NSObject, MTKViewDelegate {
         guard inFlight.wait(timeout: .now()) == .success else { return }
         var committed = false
         defer { if !committed { inFlight.signal() } }
-        let buffer = buffers[bufferIndex]; bufferIndex = (bufferIndex + 1) % buffers.count
+        let buffer = buffers[bufferIndex]
         let now = CACurrentMediaTime(), dt = last == 0 ? 1 / 60 : min(now - last, 0.05)
         last = now
         levelLock.lock(); let rms = latestLevel, at = latestLevelAt; levelLock.unlock()
@@ -254,7 +254,7 @@ private final class DotRenderer: NSObject, MTKViewDelegate {
         let blur = Int(round(clamp(scope.blur.x, 0, 3) * 10))
         if blur != lastBlur {
             lastBlur = blur
-            view.layer?.filters = blur == 0 ? nil : [CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: Double(blur) / 10])!]
+            view.layer?.filters = blur == 0 ? nil : CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: Double(blur) / 10]).map { [$0] }
         }
         guard let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer(), let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
@@ -268,7 +268,7 @@ private final class DotRenderer: NSObject, MTKViewDelegate {
         encoder.endEncoding(); command.present(drawable)
         if let presentation = presentation { drawable.addPresentedHandler { presentation.presented($0.presentedTime) } }
         command.addCompletedHandler { [inFlight = self.inFlight] _ in inFlight.signal() }
-        command.commit(); committed = true
+        command.commit(); committed = true; bufferIndex = (bufferIndex + 1) % buffers.count
         if reduced && scope.opacity.x > 0.998 || stage == 3 && scope.opacity.x < 0.002 { view.isPaused = true }
     }
 }
