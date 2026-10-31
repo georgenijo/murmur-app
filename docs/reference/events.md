@@ -324,6 +324,7 @@ and safe error class.
 |-------|---------|--------|---------------|-----------|
 | `appearance-changed` | `{revision, reason}` where `reason` is `"user"` \| `"repair"` \| `"reset"` \| `"import"` \| `"library"` | Main window appearance controller | After main commits a user edit, reset, import, library selection/update, derived-cache repair, or explicit high-water revision rollover to `1` in `murmur-appearance`. The event carries no colors, source metadata, queries, or file contents. System-mode OS changes do not emit. | Diagnostics appearance controller; it reloads storage with a bounded retry, ignores stale revisions, and accepts the single high-water-to-`1` repair rollover. |
 | `settings-changed` | `()` | `useSettings`, `useOverlaySettingsMirror` | A window mutates persisted settings, so the other windows re-read localStorage. | Main window, overlay. |
+| `overlay-owned-setting-committed` | `{ field: "autoPaste" or "disabled", value: boolean }` | Host `patch_overlay_setting` after persistence | Main applies only this field and updates its cache without rewriting disk. | Main window. |
 | `overlay-calibration-changed` | `{active: boolean}` | Main Settings calibration control | Calibration starts or finishes. It carries no position; native preview movement remains command-owned. | Overlay switches its visual into or out of calibration mode and suppresses normal click/hover behavior. |
 | `open-settings` | `()` | `useOverlaySettingsMirror` | The overlay's quick-settings card asks the main window to open Settings. | Main window (`useOpenSettingsListener`). |
 
@@ -373,5 +374,3 @@ only opaque local installation identity, bounded OS/configuration/device
 classes and capture measurements. It never contains raw device IDs, paths,
 transcripts, prompts, or vocabulary. Older records omit the field. See
 [production comparisons](../features/performance-diagnostics.md#production-app-version-comparisons).
-
-| `overlay-owned-setting-committed` | `{ field: "autoPaste" or "disabled", value: boolean }` | Host `patch_overlay_setting` after persistence | Main applies only this field and updates its cache without rewriting disk. | Main window. |
