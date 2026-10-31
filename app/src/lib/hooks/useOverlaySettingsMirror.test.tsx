@@ -136,6 +136,41 @@ describe('overlay settings write ownership', () => {
     expect(mocks.saveSettings).not.toHaveBeenCalled();
   });
 
+  for (const [index, field, backend, argument] of [[0, 'autoPaste', 'configure_dictation', 'options'], [1, 'disabled', 'set_app_disabled', 'disabled']] as const) {
+    it(`reconciles only ${field} after backend success followed by patch failure`, async () => {
+      const calls: unknown[] = [];
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command === backend) calls.push(args);
+        if (command === 'patch_overlay_setting') throw new Error('disk write refused');
+        if (command === 'load_settings_blob') return JSON.stringify({ ...stored, overlayLiveWords: false, overlayProcessingStyle: 'pulse' });
+      });
+      await act(async () => container.querySelectorAll('button')[index].click());
+      expect(calls).toEqual(argument === 'options'
+        ? [{ options: { autoPaste: true } }, { options: { autoPaste: false } }]
+        : [{ disabled: true }, { disabled: false }]);
+      expect(stored[field]).toBe(false);
+      expect(mocks.saveSettings).not.toHaveBeenCalled();
+    });
+  }
+
+  it('does not reconcile an old failed patch over a newer successful quick action', async () => {
+    let rejectOld!: (reason: Error) => void;
+    let first = true;
+    mocks.invoke.mockImplementation(async (command: string, args?: { value: boolean }) => {
+      if (command === 'patch_overlay_setting') {
+        if (first) { first = false; return new Promise((_, reject) => { rejectOld = reject; }); }
+        stored = { ...stored, autoPaste: args!.value }; return JSON.stringify(stored);
+      }
+      if (command === 'load_settings_blob') return JSON.stringify(stored);
+    });
+    await act(async () => container.querySelector('button')!.click());
+    await act(async () => container.querySelector('button')!.click());
+    const callsBeforeFailure = mocks.invoke.mock.calls.filter(([command]) => command === 'configure_dictation').length;
+    await act(async () => rejectOld(new Error('old patch refused')));
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'configure_dictation')).toHaveLength(callsBeforeFailure);
+    expect(stored.autoPaste).toBe(true);
+  });
+
   it('drops an old durable read after a newer placement/style commit', async () => {
     let older!: (blob: string) => void, newer!: (blob: string) => void;
     mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { older = resolve; }));

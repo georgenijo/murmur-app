@@ -45,7 +45,7 @@ export function useOverlaySettingsMirror({
 }: UseOverlaySettingsMirrorArgs): OverlaySettingsMirror {
   const [autoPaste, setAutoPaste] = useState(false);
   const durableSnapshot = useRef<Settings | null>(null);
-  const refreshDurableRef = useRef<() => Promise<void>>(async () => {});
+  const refreshDurableRef = useRef<() => Promise<Settings | null>>(async () => null);
   const autoPasteOperation = useRef(0);
   const disabledOperation = useRef(0);
   const [fileOutputEnabled, setFileOutputEnabled] = useState(false);
@@ -105,17 +105,18 @@ export function useOverlaySettingsMirror({
       const request = ++revision;
       try {
         const blob = await invoke<string | null>('load_settings_blob');
-        if (cancelled || request !== revision || typeof blob !== 'string') return;
+        if (cancelled || request !== revision || typeof blob !== 'string') return null;
         const settings = parseSettingsBlob(blob);
         durableSnapshot.current = settings;
         applySettingsSnapshot(settings);
-      } catch { /* keep the confirmed/optimistic snapshot on an unavailable bridge */ }
+        return settings;
+      } catch { return null; }
     };
     refreshDurableRef.current = refreshDurable;
     void listen('overlay-settings-persisted', () => { void refreshDurable(); }).then(fn => {
       if (cancelled) fn(); else { unlisten = fn; void refreshDurable(); }
     }).catch(() => {});
-    return () => { cancelled = true; revision++; refreshDurableRef.current = async () => {}; unlisten?.(); };
+    return () => { cancelled = true; revision++; refreshDurableRef.current = async () => null; unlisten?.(); };
   }, [applySettingsSnapshot]);
 
   // Persist only the owned field; the host merges into the latest durable
@@ -132,30 +133,48 @@ export function useOverlaySettingsMirror({
   const handleToggleAutoPaste = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     const operation = ++autoPasteOperation.current;
+    let backendChanged = false;
     try {
       const next = !(durableSnapshot.current ?? loadSettings()).autoPaste;
       await invoke('configure_dictation', { options: { autoPaste: next } });
+      backendChanged = true;
       if (operation !== autoPasteOperation.current) return;
       await commitOwnedField('autoPaste', next);
     } catch (err) {
       flog.error('overlay', 'toggle autoPaste failed', { error: String(err) });
-      await refreshDurableRef.current();
+      const confirmed = await refreshDurableRef.current();
+      if (backendChanged && operation === autoPasteOperation.current) {
+        // No full-file rollback. Restore only the backend value the failed
+        // quick action owns; an unavailable durable read fails closed.
+        const autoPaste = confirmed?.autoPaste ?? false;
+        setAutoPaste(autoPaste);
+        try { await invoke('configure_dictation', { options: { autoPaste } }); }
+        catch { flog.error('overlay', 'autoPaste reconciliation failed'); }
+      }
     }
   }, [commitOwnedField]);
 
   const handleToggleDisabled = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     const operation = ++disabledOperation.current;
+    let backendChanged = false;
     try {
       const next = !(durableSnapshot.current ?? loadSettings()).disabled;
       await invoke('set_app_disabled', { disabled: next });
+      backendChanged = true;
       if (operation !== disabledOperation.current) return;
       await commitOwnedField('disabled', next);
     } catch (err) {
       flog.error('overlay', 'toggle disabled failed', { error: String(err) });
-      await refreshDurableRef.current();
+      const confirmed = await refreshDurableRef.current();
+      if (backendChanged && operation === disabledOperation.current) {
+        const disabled = confirmed?.disabled ?? true;
+        setDisabled(disabled);
+        try { await invoke('set_app_disabled', { disabled }); }
+        catch { flog.error('overlay', 'disabled reconciliation failed'); }
+      }
     }
-  }, [commitOwnedField]);
+  }, [commitOwnedField, setDisabled]);
 
   // Quick control: open the main window's Settings panel.
   const handleOpenSettings = useCallback(async (e: React.MouseEvent) => {
