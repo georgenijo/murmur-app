@@ -121,6 +121,14 @@ final class NativeDotScope {
     }
 }
 
+/// A new stage must receive at least one step before its settle condition can
+/// apply. Done/idle fade out; only recording/processing may sleep fully opaque.
+func dotAnimationSettled(_ scope: NativeDotScope, _ stage: Int, _ reduced: Bool) -> Bool {
+    guard scope.stage == stage else { return false }
+    if stage == 0 || stage == 3 { return scope.opacity.x < 0.002 }
+    return reduced && scope.opacity.x > 0.998
+}
+
 private let shader = """
 #include <metal_stdlib>
 using namespace metal;
@@ -234,9 +242,11 @@ private final class DotRenderer: NSObject, MTKViewDelegate {
     func resume() {
         last = 0
         let shown = visible && window?.isVisible == true
-        view.isHidden = !shown || stage == 0
-        view.isPaused = !shown || stage == 0
-        if shown && stage != 0 { view.isPaused = false }
+        view.isHidden = !shown
+        // Match the Canvas slot: idle becomes invisible immediately, while its
+        // short hidden settle loop preserves smooth reversal and the next reveal.
+        view.alphaValue = stage == 0 ? 0 : 1
+        view.isPaused = !shown || dotAnimationSettled(scope, stage, reduced)
     }
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
     func draw(in view: MTKView) {
@@ -269,7 +279,7 @@ private final class DotRenderer: NSObject, MTKViewDelegate {
         if let presentation = presentation { drawable.addPresentedHandler { presentation.presented($0.presentedTime) } }
         command.addCompletedHandler { [inFlight = self.inFlight] _ in inFlight.signal() }
         command.commit(); committed = true; bufferIndex = (bufferIndex + 1) % buffers.count
-        if reduced && scope.opacity.x > 0.998 || stage == 3 && scope.opacity.x < 0.002 { view.isPaused = true }
+        if dotAnimationSettled(scope, stage, reduced) { view.isPaused = true }
     }
 }
 private var renderer: DotRenderer?

@@ -56,6 +56,33 @@ for item in cases {
     }
     results.append(actual)
 }
+// Exercise the actual scheduling predicate, beyond continuous math parity.
+let done = NativeDotScope()
+for _ in 0..<120 { done.advance(1 / 60, 2, -120, true); done.sample(1 / 60, 1, true) }
+precondition(!dotAnimationSettled(done, 3, true), "new Done stage must run")
+done.advance(1 / 60, 3, -120, true)
+precondition(done.opacity.x > 0.998 && !dotAnimationSettled(done, 3, true), "Done must not sleep opaque")
+var fadeFrames = 0
+while !dotAnimationSettled(done, 3, true) && fadeFrames < 120 {
+    done.advance(1 / 60, 3, -120, true); done.sample(1 / 60, 1, true); fadeFrames += 1
+}
+precondition(fadeFrames > 20 && fadeFrames < 120 && done.opacity.x < 0.002, "Done must fade to zero")
+let idle = NativeDotScope()
+for _ in 0..<120 { idle.advance(1 / 60, 1, -34, false); idle.sample(1 / 60, 1, false) }
+precondition(!dotAnimationSettled(idle, 0, false), "idle must settle before sleeping")
+var idleFrames = 0
+while !dotAnimationSettled(idle, 0, false) && idleFrames < 120 {
+    idle.advance(1 / 60, 0, -120, false); idle.sample(1 / 60, 1, false); idleFrames += 1
+}
+precondition(idleFrames > 0 && idleFrames < 120 && abs(idle.width.x - 30) < 0.1, "idle reveal state must settle")
+idle.advance(1 / 60, 1, -34, false)
+precondition(idle.opacity.x < 0.2 && idle.scale.x < 0.95 && idle.width.x < 50, "next recording must reveal")
+let reversal = NativeDotScope()
+for _ in 0..<120 { reversal.advance(1 / 60, 1, -34, false); reversal.sample(1 / 60, 1, false) }
+for _ in 0..<2 { reversal.advance(1 / 60, 0, -120, false); reversal.sample(1 / 60, 1, false) }
+let previousWidth = reversal.width.x
+reversal.advance(1 / 60, 1, -34, false)
+precondition(reversal.width.x > 50 && abs(reversal.width.x - previousWidth) < 25 && reversal.opacity.x > 0.2, "quick reversal must retain its trajectory")
 FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: results))
 `);
   execFileSync('xcrun', ['swiftc', '-O', join(root, 'app/src-tauri/macos/OverlayDotRenderer.swift'),
@@ -69,5 +96,5 @@ FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: resul
       if (!Number.isFinite(error) || error > 1e-6) throw new Error(`Native mismatch: case ${c}, checkpoint ${f}, value ${n}, ${error}`);
     }
   }
-  console.log(JSON.stringify({ passed: true, scenarios: cases.length, frames: cases.reduce((sum, c) => sum + c.frames.length, 0), compared, maxError }));
+  console.log(JSON.stringify({ passed: true, schedulingRegressions: 3, scenarios: cases.length, frames: cases.reduce((sum, c) => sum + c.frames.length, 0), compared, maxError }));
 } finally { rmSync(work, { recursive: true }); }
