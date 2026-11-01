@@ -214,6 +214,19 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
 
+    def test_rust_caches_are_saved_only_from_main(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        line = "          save-if: ${{ github.ref == 'refs/heads/main' }}\n"
+        self.assertEqual(workflow.count(line), 2)
+        for index in range(2):
+            with self.subTest(cache=index):
+                start = -1
+                for _ in range(index + 1):
+                    start = workflow.index(line, start + 1)
+                mutated = workflow[:start] + workflow[start + len(line):]
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
     def test_cargo_audit_installs_pinned_prebuilt(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(

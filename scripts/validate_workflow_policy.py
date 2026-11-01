@@ -194,6 +194,11 @@ def validate_ci(ci: str) -> int:
         in lint_step
     )
     assert "cargo clippy" not in capture_build
+    for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
+        cache = named_step_block(job, "Cache Rust dependencies", 6)
+        assert (
+            "save-if: ${{ github.ref == 'refs/heads/main' }}" in cache
+        ), f"{job_name} must not save PR caches"
     nextest_install = named_step_block(rust_macos, "Install cargo-nextest", 6)
     assert "uses: taiki-e/install-action@v2" in nextest_install
     assert re.search(r"tool: cargo-nextest@[0-9]+\.[0-9]+\.[0-9]+\n", nextest_install)

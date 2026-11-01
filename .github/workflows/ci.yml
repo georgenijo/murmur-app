@@ -206,6 +206,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
+          # PRs restore main's cache but never save their own: each PR copy is
+          # 1-2 GB and pushes the repository past its 10 GB cache quota, which
+          # evicts main's and the release build's caches.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Stub externalBin helpers
         # Clippy only type-checks; tauri-build needs the externalBin paths to
@@ -257,6 +261,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
+          # PRs restore main's cache but never save their own: each PR copy is
+          # 1-2 GB and pushes the repository past its 10 GB cache quota, which
+          # evicts main's and the release build's caches.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build capture isolation helpers and stub local-LLM externalBin
         # PR CI compiles the Swift agent with warnings as errors and builds the
@@ -285,11 +293,15 @@ jobs:
       - name: Build test binaries
         # One cargo invocation compiles the cfg(test) library and the plain
         # library (used by the integration suites and examples) in parallel.
+        # Every cargo command below repeats `--workspace --exclude
+        # murmur-llm-sidecar`: a different package selection unifies features
+        # differently and recompiles the whole app crate.
         run: >-
           cd app/src-tauri &&
           cargo test --workspace --exclude murmur-llm-sidecar --no-run
           --lib --test llm_sidecar_integration --test transform_flow_integration &&
-          cargo build --example mock_llm_helper --example murmur-eval
+          cargo build --workspace --exclude murmur-llm-sidecar
+          --example mock_llm_helper --example murmur-eval
 
       - name: Run tests
         # --workspace --lib covers protocol crate unit tests. The capture helper
@@ -308,13 +320,14 @@ jobs:
         # hardware or downloaded models and stay out of CI deliberately.
         run: >-
           cd app/src-tauri &&
-          cargo test --test llm_sidecar_integration --test transform_flow_integration
+          cargo test --workspace --exclude murmur-llm-sidecar
+          --test llm_sidecar_integration --test transform_flow_integration
           -- --test-threads=1
 
       - name: Run deterministic dictation evaluation
         run: >-
           cd app/src-tauri &&
-          cargo run --example murmur-eval -- deterministic
+          target/debug/examples/murmur-eval deterministic
           --output target/murmur-eval/ci-report.json
 
   dependency-audit:
