@@ -27,6 +27,7 @@ import {
   LEGACY_OVERLAY_OFFSET_KEY,
   microphoneDeviceNameArg,
   MODEL_OPTIONS,
+  ownSettingsMigrations,
   pasteLastShortcutConflict,
   STORAGE_KEY,
   recordingShortcutHint,
@@ -36,6 +37,7 @@ import {
 
 beforeEach(() => {
   localStorage.clear();
+  ownSettingsMigrations();
   mocks.invoke.mockReset();
   mocks.invoke.mockResolvedValue(undefined);
   // Default to "not running under Tauri" so the existing localStorage-only

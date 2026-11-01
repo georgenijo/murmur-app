@@ -968,6 +968,16 @@ function sanitizeBrowserSiteRules(raw: unknown, availableModeIds: ReadonlySet<st
   return rules;
 }
 
+// Only the main window rewrites a migrated snapshot. A companion window can
+// hold a stale pre-migration cache, and persisting its migration would
+// overwrite choices the main window has since saved (Live Words opt-out).
+let ownsSettingsMigrations = false;
+
+/** Called once by the main window entry before it hydrates settings. */
+export function ownSettingsMigrations(owns = true): void {
+  ownsSettingsMigrations = owns;
+}
+
 /** Decode a durable snapshot without rewriting a webview's cache or disk. */
 export function parseSettingsBlob(blob: string | null): Settings {
   return settingsFromBlob(blob, false);
@@ -1416,7 +1426,7 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       }
 
       const settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;
-      if (repairCache && storedSettingsVersion < SETTINGS_VERSION) {
+      if (repairCache && ownsSettingsMigrations && storedSettingsVersion < SETTINGS_VERSION) {
         try {
           writePersistedSettings(settings);
         } catch (e) {

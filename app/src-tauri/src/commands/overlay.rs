@@ -1213,9 +1213,17 @@ pub async fn set_overlay_expanded(
                             (applied.window_w, applied.window_h),
                         );
                     } else {
+                        // The notch is centred on the display frame, never the
+                        // work area. Re-derive x so a side Dock left behind by
+                        // the bottom pill cannot shift the island off the notch.
+                        (x, _) = centered_logical_position(
+                            (monitor.position().x, monitor.position().y),
+                            (monitor.size().width, monitor.size().height),
+                            sf,
+                            applied.window_w,
+                        );
                         y = frame_top + position.applied_offset;
                         y = y.min((bottom - applied.window_h).max(frame_top));
-                        x = x.clamp(left, (right - applied.window_w).max(left));
                     }
                     calibration = Some(position);
                 }
@@ -1596,6 +1604,18 @@ mod tests {
             assert_eq!(idle.collapsed_h, idle.island.notch_h);
             assert_eq!(recording.collapsed_h, idle.island.notch_h);
             assert!(!recording.floating);
+        }
+    }
+
+    #[test]
+    fn notch_centres_on_the_display_while_the_pill_centres_on_the_work_area() {
+        // 1512pt display with an 80pt left Dock: the pill shifts right, but the
+        // notch (expanded, deferred-shrink, or idle) stays on the display centre.
+        let pill = pill_logical_position((80.0, 32.0, 1512.0, 982.0), (112.0, 34.0));
+        assert_eq!(pill.0, 740.0);
+        for width in [185.0, 241.0] {
+            let (x, _) = centered_logical_position((0, 0), (3024, 1964), 2.0, width);
+            assert_eq!(x + width / 2.0, 756.0);
         }
     }
 

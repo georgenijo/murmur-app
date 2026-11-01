@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_SETTINGS, loadSettings, saveSettings, STORAGE_KEY } from './settings';
+import { DEFAULT_SETTINGS, loadSettings, ownSettingsMigrations, saveSettings, STORAGE_KEY } from './settings';
 
-afterEach(() => localStorage.clear());
+afterEach(() => { localStorage.clear(); ownSettingsMigrations(false); });
 describe('voice island settings', () => {
   it('defaults to the notch with live words on', () => {
     localStorage.clear();
@@ -21,6 +21,17 @@ describe('voice island settings', () => {
       overlayPlacement: 'below_menu_bar', overlayLiveWords: false, overlayProcessingStyle: 'flow' }));
     const s = loadSettings();
     expect([s.overlayPlacement, s.overlayLiveWords]).toEqual(['floating_pill', true]);
+  });
+  it('never lets a companion window persist a stale migration over a newer opt-out', () => {
+    // A companion webview still holds a v6 cache after main saved a v7 opt-out.
+    const stale = JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 6, overlayLiveWords: false });
+    localStorage.setItem(STORAGE_KEY, stale);
+    expect(loadSettings().overlayLiveWords).toBe(true);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(stale);
+    // The main window owns migrations and writes them back once.
+    ownSettingsMigrations();
+    loadSettings();
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toMatchObject({ settingsVersion: 7, overlayLiveWords: true });
   });
   it('round-trips placement and an explicit live-words opt-out without storing preview content', () => {
     for (const placement of ['notch', 'floating_pill'] as const) {

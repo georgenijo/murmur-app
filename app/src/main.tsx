@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { NativeWindowLifecycle } from "./lib/windowLifecycle";
 import { AppearanceProvider } from "./lib/hooks/useAppearance";
-import { hydrateSettingsFromDisk } from "./lib/settings";
+import { hydrateSettingsFromDisk, ownSettingsMigrations } from "./lib/settings";
 import {
   hydrateThemeLibraryFromDisk,
   hydrateUserDataFromDisk,
@@ -12,6 +12,7 @@ import "./styles.css";
 
 // Only the main entry owns the document viewport; companion windows share CSS.
 document.documentElement.classList.add("murmur-main-window");
+ownSettingsMigrations();
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 

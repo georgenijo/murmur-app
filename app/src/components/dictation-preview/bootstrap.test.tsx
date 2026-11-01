@@ -27,7 +27,7 @@ it.each([true, false])('waits for durable consent %s before preview can mount or
     expect(container.textContent).toBe('');
     expect(mocks.listeners.has('dictation-partial')).toBe(false);
     expect(mocks.invoke).not.toHaveBeenCalledWith('show_dictation_preview', expect.anything());
-    await act(async () => { resolve(JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: durableEnabled })); await boot; });
+    await act(async () => { resolve(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 7, overlayLiveWords: durableEnabled })); await boot; });
     await act(async () => {
       mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 7 } });
       mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 7, text: 'synthetic consent probe' } });

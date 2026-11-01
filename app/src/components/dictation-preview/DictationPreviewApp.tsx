@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useDictationPartial } from '../../lib/hooks/useDictationPartial';
 import { useQueryAppearance } from '../../lib/hooks/useQueryAppearance';
+import { parseSettingsBlob } from '../../lib/settings';
 
 const MAX_VISIBLE_CHARS = 320;
 export function visiblePartial(text: string): string {
@@ -47,15 +48,13 @@ export function DictationPreviewApp() {
       const request = ++revision;
       try {
         const blob = await invoke<string | null>('load_settings_blob');
-        const value: unknown = typeof blob === 'string' ? JSON.parse(blob) : null;
-        const settings = value !== null && typeof value === 'object' && !Array.isArray(value)
-          ? value as { overlayLiveWords?: unknown; overlayPlacement?: unknown }
-          : null;
-        // Live words default on: only an explicit `false` opts out.
-        const consent = settings !== null && settings.overlayLiveWords !== false;
+        if (typeof blob === 'string') JSON.parse(blob); // Unreadable documents fail closed.
+        // Same migrations and defaults as Settings, without persisting them.
+        // An absent document is a fresh install, where live words default on.
+        const settings = parseSettingsBlob(blob);
         if (!disposed && request === revision) {
-          setEnabled(consent);
-          setAbove(settings?.overlayPlacement === 'floating_pill' || settings?.overlayPlacement === 'below_menu_bar');
+          setEnabled(settings.overlayLiveWords);
+          setAbove(settings.overlayPlacement === 'floating_pill');
         }
       } catch { if (!disposed && request === revision) setEnabled(false); }
     };

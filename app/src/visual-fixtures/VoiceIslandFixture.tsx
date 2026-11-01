@@ -54,7 +54,8 @@ function FixtureRow({ variant, pill, external, meetingOnly }: {
         {meeting ? <OverlayMeetingSuggestion geometry={g} expanded suggestion={{
           token: '88888888-8888-4888-8888-888888888888', title: 'Synthetic calendar: Product review', startMs: 1, endMs: 2,
         }} busy={false} error={null} onAccept={noop} onDismiss={noop} />
-          : expanded && <OverlayDropdown geometry={g} expanded status="idle" stillConnecting={false}
+          // Production always mounts the dropdown, collapsed or not.
+          : <OverlayDropdown geometry={g} expanded={expanded} status="idle" stillConnecting={false}
             showTapMissed={false} disabled={false} autoPaste fileOutputEnabled={false}
             onToggleDisabled={noop} onToggleAutoPaste={noop} onOpenSettings={noop} />}
       </OverlayIsland>

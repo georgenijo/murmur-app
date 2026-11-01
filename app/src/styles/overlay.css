@@ -6,6 +6,10 @@
   transform-origin: 50% 50%;
   will-change: transform;
 }
+/* The floating pill stacks bottom-up and always mounts its dropdown. Neither
+   row may shrink: the dropdown overflows above the collapsed capsule, where
+   the island clips it, so the status row keeps its full height. */
+.overlay-island[data-floating] > * { flex-shrink: 0; }
 .live-words-window {
   display: flex;
   align-items: flex-start;
