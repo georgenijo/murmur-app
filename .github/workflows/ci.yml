@@ -294,10 +294,11 @@ jobs:
         # Every cargo command below repeats `--workspace --exclude
         # murmur-llm-sidecar`: a different package selection unifies features
         # differently and recompiles the whole app crate. Order matters too:
-        # each app-crate compile rewrites a tauri codegen file in the shared
-        # build-script OUT_DIR, which makes any app-crate artifact built before
-        # it stale. Build the examples first and every test target in one final
-        # invocation, so the later run steps compile nothing.
+        # an app-crate compile leaves a newer mtime on a file in the shared
+        # build-script OUT_DIR, so cargo's fingerprint marks app-crate
+        # artifacts built before it stale. Build the examples first and every
+        # test target in one final invocation, so the later run steps compile
+        # nothing.
         run: >-
           cd app/src-tauri &&
           cargo build --workspace --exclude murmur-llm-sidecar
