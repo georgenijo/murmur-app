@@ -10,6 +10,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Path filtering only. Keep this job seconds-long: every build job waits on
+  # it, so validation work belongs in `policy`, which runs alongside the builds.
   changes:
     if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
@@ -23,6 +25,8 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # Docs, scripts, and Python tests are covered by `policy`, which runs
+          # on every CI run, so they do not start the frontend or Rust builds.
           filters: |
             frontend:
               - 'app/src/**'
@@ -39,6 +43,9 @@ jobs:
               - 'app/visual-fixtures.html'
               - 'app/visual-tests/**'
               - 'app/playwright*.ts'
+              # Read directly by frontend and visual tests.
+              - 'app/src-tauri/tauri.conf.json'
+              - 'app/src-tauri/capabilities/**'
             rust:
               - 'app/src-tauri/**'
               - 'app/src-tauri/Cargo.toml'
@@ -48,37 +55,18 @@ jobs:
               - 'rustfmt.toml'
             github:
               - '.github/**'
-              - 'scripts/validate_workflow_policy.py'
-              - 'scripts/release_artifacts.py'
-              - 'scripts/capture_agent_matrix.py'
-              - 'scripts/smoke_test_capture_worker.py'
-              - 'scripts/smoke_test_capture_first_pcm.py'
-              - 'scripts/validate_capture_boundary.py'
-              - 'scripts/validate_reference_docs.py'
-              - 'scripts/validate_markdown_links.py'
-              - 'requirements-test.txt'
-              - 'scripts/release_version.py'
-              - 'CLAUDE.md'
-              - 'AGENTS.md'
-              - 'README.md'
-              - 'CHANGELOG.md'
-              - 'THIRD_PARTY_NOTICES.md'
-              - 'docs/reference/**'
-              - 'docs/**'
-              - 'infra/log-receiver/**'
-              - 'tests/test_reference_docs.py'
-              - 'tests/test_markdown_links.py'
-              - 'tests/test_release_artifacts.py'
-              - 'tests/test_release_version.py'
-              - 'tests/test_workflow_policy.py'
-              - 'tests/test_capture_agent_matrix.py'
-              - 'tests/test_capture_worker_smoke.py'
-              - 'tests/test_capture_first_pcm.py'
-              - 'tests/test_native_capture_ci.py'
-              - 'infra/native-capture-ci/**'
-              - 'tests/test_log_receiver.py'
-              - 'tests/test_event_store.py'
-              - 'tests/test_receiver_key_scrub.py'
+
+  policy:
+    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-test.txt
 
       - name: Validate workflow policy
         run: |
@@ -115,8 +103,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
     runs-on: ubuntu-latest
-    # Match the Linux golden environment, including its installed fonts.
-    container: mcr.microsoft.com/playwright:v1.62.1-noble
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
 
@@ -130,18 +120,45 @@ jobs:
         run: cd app && npm ci
 
       - name: TypeScript check
+        if: matrix.shard == 1
         run: cd app && npx tsc --noEmit
 
       - name: Unit tests
-        run: cd app && npm test
+        run: cd app && npm test -- --shard=${{ matrix.shard }}/2
+
+  visual-linux:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
+    runs-on: ubuntu-latest
+    # Match the Linux golden environment, including its installed fonts.
+    container: mcr.microsoft.com/playwright:v1.62.1-noble
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: cd app && npm ci
 
       - name: Linux visual golden tests
-        run: cd app && npm run test:visual
+        run: cd app && npm run test:visual -- --shard=${{ matrix.shard }}/3
 
   visual-regression:
     needs: changes
     if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
 
@@ -158,12 +175,19 @@ jobs:
         run: cd app && npx playwright install chromium
 
       - name: Visual golden tests
-        run: cd app && npm run test:visual
+        run: cd app && npm run test:visual -- --shard=${{ matrix.shard }}/2
 
-  rust-macos:
+  # Formatting and clippy run on their own runner so lint and the test build
+  # compile in parallel instead of back to back.
+  rust-lint:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
     runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+      CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+      CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -172,11 +196,62 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Check Rust formatting
+        run: cd app/src-tauri && cargo fmt --all -- --check
+
       - name: Install capture worker build tools
         run: brew install meson ninja pkg-config
 
-      - name: Check Rust formatting
-        run: cd app/src-tauri && cargo fmt --all -- --check
+      - name: Cache Rust dependencies
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Stub externalBin helpers
+        # Clippy only type-checks; tauri-build needs the externalBin paths to
+        # exist. rust-macos builds and tests the real helpers.
+        run: |
+          cd app/src-tauri
+          mkdir -p binaries
+          for helper in capture-agent capture-helper capture-worker llm-sidecar; do
+            : > "binaries/murmur-$helper-aarch64-apple-darwin"
+            chmod +x "binaries/murmur-$helper-aarch64-apple-darwin"
+          done
+
+      - name: Lint Rust
+        # --workspace covers the capture worker and protocol crates; default-members
+        # is ["."] so a bare cargo clippy would skip them. Exclude the llama sidecar:
+        # CI stubs that externalBin and must not compile llama-cpp-2. --all-targets
+        # so `tests/` and `examples/` are type-checked too. Clippy performs the
+        # full compile check, so there is no separate `cargo check` pass.
+        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings
+
+  rust-macos:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
+    runs-on: macos-latest
+    # One environment for every cargo invocation so build scripts that watch
+    # these variables never rebuild between steps.
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+      CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+      CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
+      # Panics keep file:line; full debuginfo only slows compile, link, and cache.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.150
+
+      - name: Install capture worker build tools
+        run: brew install meson ninja pkg-config
 
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2
@@ -207,62 +282,36 @@ jobs:
           : > binaries/murmur-llm-sidecar-aarch64-apple-darwin
           chmod +x binaries/murmur-llm-sidecar-aarch64-apple-darwin
 
-      - name: Compile check
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-        # --workspace covers the capture worker and protocol crates; default-members
-        # is ["."] so a bare cargo check would skip them. Exclude the llama sidecar:
-        # CI stubs that externalBin and must not compile llama-cpp-2. --all-targets
-        # so `tests/` and `examples/` are type-checked too.
-        run: cd app/src-tauri && cargo check --workspace --exclude murmur-llm-sidecar --all-targets
-
-      - name: Lint Rust
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-        # Same workspace scope as Compile check. One clippy pass is enough; do not
-        # duplicate this into the MURMUR_CAPTURE_ROLE agent/worker matrix above.
-        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings
+      - name: Build test binaries
+        # One cargo invocation compiles the cfg(test) library and the plain
+        # library (used by the integration suites and examples) in parallel.
+        run: >-
+          cd app/src-tauri &&
+          cargo test --workspace --exclude murmur-llm-sidecar --no-run
+          --lib --test llm_sidecar_integration --test transform_flow_integration &&
+          cargo build --example mock_llm_helper --example murmur-eval
 
       - name: Run tests
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         # --workspace --lib covers protocol crate unit tests. The capture helper
         # is bin-only, so its tests stay in the following dedicated step.
-        run: cd app/src-tauri && cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1
+        # nextest gives every test its own process, so tests that share process
+        # state stay as isolated as `cargo test -- --test-threads=1` kept them,
+        # while the suite uses every core.
+        run: cd app/src-tauri && cargo nextest run --workspace --exclude murmur-llm-sidecar --lib
 
       - name: Run capture worker unit tests
         run: cd app/src-tauri && cargo test -p murmur-capture-helper
 
       - name: Run hardware-free integration suites
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         # These two drive the real supervisors against mock helpers — no model,
         # no microphone, no permissions. The remaining suites in `tests/` need
         # hardware or downloaded models and stay out of CI deliberately.
         run: >-
           cd app/src-tauri &&
-          cargo build --example mock_llm_helper &&
           cargo test --test llm_sidecar_integration --test transform_flow_integration
           -- --test-threads=1
 
       - name: Run deterministic dictation evaluation
-        env:
-          MACOSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-          CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-          CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         run: >-
           cd app/src-tauri &&
           cargo run --example murmur-eval -- deterministic
@@ -277,28 +326,27 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
+      - name: Install cargo-audit
+        # Prebuilt binary; compiling it from source cost ~2-3 minutes per run.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2
+
       - name: Audit Rust dependencies (advisory)
         continue-on-error: true
         run: |
-          cargo install cargo-audit --locked --version 0.22.2
           cd app/src-tauri
           cargo audit
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
       - name: Audit npm dependencies (advisory)
         continue-on-error: true
+        # npm audit reads the lockfile; it does not need node_modules.
         run: |
           cd app
-          npm ci
           npm audit --audit-level=high
 
   ci-pass:
-    needs: [changes, typecheck, visual-regression, rust-macos]
+    needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn
     # an intentionally skipped release-bump run into a failure.
     if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
@@ -306,14 +354,20 @@ jobs:
     steps:
       - name: Check CI result
         run: |
-          if [ "${{ needs.changes.result }}" != "success" ]; then
-            echo "changes job failed: ${{ needs.changes.result }}"
-            exit 1
-          fi
+          for result in \
+            "${{ needs.changes.result }}" \
+            "${{ needs.policy.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "required CI job failed: $result"
+              exit 1
+            fi
+          done
 
           for result in \
             "${{ needs.typecheck.result }}" \
+            "${{ needs.visual-linux.result }}" \
             "${{ needs.visual-regression.result }}" \
+            "${{ needs.rust-lint.result }}" \
             "${{ needs.rust-macos.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               echo "required CI job failed or was cancelled: $result"

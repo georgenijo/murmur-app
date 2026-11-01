@@ -1,5 +1,26 @@
 # Decisions Log
 
+## 2026-11-01: Parallel, sharded CI with process-isolated Rust tests
+
+**Decision:** `changes` only filters paths; workflow validation runs in a
+separate `policy` job that every run requires. Vitest, the Linux and macOS
+Playwright goldens, and Rust lint vs. Rust tests run as parallel shards or jobs,
+and `ci-pass` requires all of them. Rust unit tests run under `cargo nextest`
+instead of `cargo test -- --test-threads=1`. Docs, scripts, and Python tests no
+longer start the frontend or Rust builds, and CI no longer runs a separate
+`cargo check` before clippy.
+
+**Why:** PR CI took 7–10 minutes, mostly in serial work: validation blocked
+every job, Linux goldens ran after vitest, and a single Rust job ran check,
+clippy, the test build, and serial tests back to back. nextest runs every test
+in its own process, so the shared process state that forced one thread stays
+isolated. Locally the suite went from 29 s to 9 s, and it passed repeated runs
+at 3 and 20 threads. Clippy `--all-targets` already type-checks everything
+`cargo check` did. Only `ci-pass` is a required check, so renaming or splitting
+jobs does not touch branch protection.
+
+**References:** `.github/workflows/ci.yml`, `scripts/validate_workflow_policy.py`
+
 ## 2026-10-29: No decode-time vocabulary biasing for Parakeet yet (#832)
 
 **Decision:** Keep vocabulary correction after recognition. Do not wire
