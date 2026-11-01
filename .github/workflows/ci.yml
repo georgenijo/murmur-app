@@ -291,17 +291,19 @@ jobs:
           chmod +x binaries/murmur-llm-sidecar-aarch64-apple-darwin
 
       - name: Build test binaries
-        # One cargo invocation compiles the cfg(test) library and the plain
-        # library (used by the integration suites and examples) in parallel.
         # Every cargo command below repeats `--workspace --exclude
         # murmur-llm-sidecar`: a different package selection unifies features
-        # differently and recompiles the whole app crate.
+        # differently and recompiles the whole app crate. Order matters too:
+        # each app-crate compile rewrites a tauri codegen file in the shared
+        # build-script OUT_DIR, which makes any app-crate artifact built before
+        # it stale. Build the examples first and every test target in one final
+        # invocation, so the later run steps compile nothing.
         run: >-
           cd app/src-tauri &&
-          cargo test --workspace --exclude murmur-llm-sidecar --no-run
-          --lib --test llm_sidecar_integration --test transform_flow_integration &&
           cargo build --workspace --exclude murmur-llm-sidecar
-          --example mock_llm_helper --example murmur-eval
+          --example mock_llm_helper --example murmur-eval &&
+          cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run
+          --lib --test llm_sidecar_integration --test transform_flow_integration
 
       - name: Run tests
         # --workspace --lib covers protocol crate unit tests. The capture helper

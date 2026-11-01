@@ -209,6 +209,18 @@ def validate_ci(ci: str) -> int:
         "cargo nextest run --workspace --exclude murmur-llm-sidecar --lib"
         in macos_lib_tests
     )
+    # The prebuild must use the run steps' package selection and build the
+    # examples before the test targets, or the run steps recompile the app crate.
+    test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
+    example_build = test_build.find(
+        "cargo build --workspace --exclude murmur-llm-sidecar"
+        " --example mock_llm_helper --example murmur-eval"
+    )
+    test_prebuild = test_build.find(
+        "cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run --lib"
+        " --test llm_sidecar_integration --test transform_flow_integration"
+    )
+    assert 0 <= example_build < test_prebuild, "build examples, then every test target"
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build

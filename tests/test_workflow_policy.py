@@ -236,6 +236,22 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
 
+    def test_rust_test_prebuild_builds_examples_before_test_targets(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        examples = (
+            "          cargo build --workspace --exclude murmur-llm-sidecar\n"
+            "          --example mock_llm_helper --example murmur-eval &&\n"
+        )
+        tests = (
+            "          cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run\n"
+            "          --lib --test llm_sidecar_integration --test transform_flow_integration\n"
+        )
+        swapped = tests.rstrip("\n") + " &&\n" + examples.removesuffix(" &&\n") + "\n"
+        mutated = workflow.replace(examples + tests, swapped, 1)
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
     def test_macos_compile_check_builds_capture_worker(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(
