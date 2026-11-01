@@ -104,14 +104,14 @@ describe('useSettings configure rollback privacy', () => {
 
   it('applies one host-owned field using cache only without overwriting newer main preferences', async () => {
     await mountHarness();
-    await act(async () => current.updateSettings({ overlayLiveWords: false, overlayProcessingStyle: 'pulse', autoPaste: true }));
+    await act(async () => current.updateSettings({ overlayLiveWords: false, overlayPlacement: 'floating_pill', autoPaste: true }));
     mocks.invoke.mockClear();
     mocks.isTauri.mockReturnValue(true);
     await act(async () => current.applyExternalSettings({ disabled: true }));
     expect(current.settings.disabled).toBe(true);
     expect(current.settings.autoPaste).toBe(true);
     expect(current.settings.overlayLiveWords).toBe(false);
-    expect(current.settings.overlayProcessingStyle).toBe('pulse');
+    expect(current.settings.overlayPlacement).toBe('floating_pill');
     expect(JSON.parse(localStorage.getItem('dictation-settings')!).disabled).toBe(true);
     expect(mocks.invoke.mock.calls.some(([command]) => command === 'save_settings_blob')).toBe(false);
   });

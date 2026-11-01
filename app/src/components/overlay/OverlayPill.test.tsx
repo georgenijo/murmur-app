@@ -3,9 +3,12 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
+import { NOTCH_BAR_COUNT, PILL_BAR_COUNT } from '../../lib/hooks/useWaveform';
 import { OverlayPill, type OverlaySmartAutoSummary } from './OverlayPill';
 import type { OverlayIndicator } from './deriveVisual';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
+
+const barRefs = { current: [] as (HTMLDivElement | null)[] };
 
 const geometry: OverlayGeometry = {
   windowW: 257,
@@ -45,6 +48,7 @@ function CuePill({
         waveformVisible: false,
       }}
       status="idle"
+      barRefs={barRefs}
       smartAutoSummary={smartAutoSummary}
       deliveryCue={deliveryCue}
       onRetryDelivery={onRetryDelivery}
@@ -59,7 +63,6 @@ describe('OverlayPill transient cues', () => {
   let root: Root;
 
   beforeEach(() => {
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -74,10 +77,12 @@ describe('OverlayPill transient cues', () => {
   it.each<OverlayIndicator>([
     { kind: 'cancelled' }, { kind: 'secureField' }, { kind: 'hotkeyMiss' },
     { kind: 'microphoneFailure', failure: 'chooseMicrophone' }, { kind: 'clipboardOnly' },
-  ])('a pending Done cannot obscure the priority cue $kind', async (indicator) => {
-    await act(async () => root.render(<OverlayPill geometry={geometryFixture.processingNotched}
-      visual={{ indicator, showTapMissedLabel: false, waveformVisible: false }} status="idle" scopeStage="done" />));
-    expect(container.querySelector<HTMLElement>('.overlay-field-slot')?.style.visibility).toBe('hidden');
+  ])('the priority cue $kind hides the waveform', async (indicator) => {
+    await act(async () => root.render(<OverlayPill geometry={geometryFixture.processingNotched} barRefs={barRefs}
+      visual={{ indicator, showTapMissedLabel: false, waveformVisible: false }} status="idle" />));
+    const waveform = container.querySelector<HTMLElement>('.overlay-waveform');
+    if (waveform) expect(waveform.style.opacity).toBe('0');
+    else expect(indicator.kind).toBe('clipboardOnly');
     expect(container.querySelector('[aria-label="Done"]')).toBeNull();
   });
 
@@ -106,7 +111,9 @@ describe('OverlayPill transient cues', () => {
     expect(status?.getAttribute('aria-live')).toBe('polite');
     expect(status?.getAttribute('aria-label')).toBe('Text copied. Try again.');
     const action = container.querySelector<HTMLButtonElement>('[aria-label="Try delivery again"]')!;
-    expect(action.textContent).toBe('Try again');
+    // The 28pt notch wing fits only the retry icon; the label stays accessible.
+    expect(action.textContent).toBe('');
+    expect(action.querySelector('svg')).not.toBeNull();
     expect(action.tabIndex).toBe(-1);
     expect(action.style.fontSize).toBe('8px');
     expect(action.style.fontWeight).toBe('600');
@@ -129,10 +136,10 @@ describe('OverlayPill transient cues', () => {
   it.each([
     [{ kind: 'auto_pasted', message: 'Pasted.' } as const, '✓', 'Pasted', false],
     [{ kind: 'retrying', message: 'Trying.' } as const, '…', 'Trying…', false],
-    [{ kind: 'clipboard_only', message: 'Clipboard changed.' } as const, '↻', 'Try again', true],
+    [{ kind: 'clipboard_only', message: 'Clipboard changed.' } as const, '↻', '', true],
     [{ kind: 'empty', message: 'Nothing.' } as const, '—', 'Nothing', false],
-    [{ kind: 'busy', message: 'Busy.' } as const, '…', 'Try again', true],
-    [{ kind: 'failed', message: 'Failed.' } as const, '!', 'Try again', true],
+    [{ kind: 'busy', message: 'Busy.' } as const, '…', '', true],
+    [{ kind: 'failed', message: 'Failed.' } as const, '!', '', true],
   ])('renders a sensible %s delivery result', async (deliveryCue, icon, label, retryable) => {
     await act(async () => root.render(
       <CuePill indicator={{ kind: 'clipboardOnly' }} deliveryCue={deliveryCue} />,
@@ -140,6 +147,13 @@ describe('OverlayPill transient cues', () => {
     expect(container.querySelector<HTMLElement>('[role="status"]')?.textContent).toBe(icon);
     expect(container.textContent).toContain(label);
     expect(Boolean(container.querySelector('[aria-label="Try delivery again"]'))).toBe(retryable);
+  });
+
+  it('spells out the retry inside the wider floating pill', async () => {
+    await act(async () => root.render(<OverlayPill geometry={geometryFixture.pillProcessing} barRefs={barRefs}
+      visual={{ indicator: { kind: 'clipboardOnly' }, showTapMissedLabel: false, waveformVisible: false }} status="idle"
+      deliveryCue={{ kind: 'failed', message: 'Failed.' }} />));
+    expect(container.querySelector('[aria-label="Try delivery again"]')?.textContent).toBe('Try again');
   });
 
   it('renders an actionable, non-interactive mic-off status for an unavailable device', async () => {
@@ -237,21 +251,20 @@ describe('OverlayPill transient cues', () => {
     expect(status?.getAttribute('aria-label')).not.toContain('scheduled');
   });
 
-  it('renders the dot field without transcript text or actions while recording', async () => {
-    function LivePill() {
-          return <OverlayPill
-        geometry={geometry}
-        visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }}
-        status="recording"
-        />;
-    }
-    await act(async () => root.render(<LivePill />));
+  it.each([
+    ['notch', geometry, NOTCH_BAR_COUNT],
+    ['floating pill', geometryFixture.pillRecording, PILL_BAR_COUNT],
+  ] as const)('renders the %s waveform without transcript text or actions while recording', async (_name, g, count) => {
+    await act(async () => root.render(<OverlayPill
+      geometry={g}
+      barRefs={barRefs}
+      visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }}
+      status="recording"
+    />));
     // Provisional words stay in the optional click-through preview, never here.
     expect(container.querySelector('[aria-label^="Live transcription preview:"]')).toBeNull();
-    const field = container.querySelector('canvas');
-    expect(field?.getAttribute('data-columns')).toBe('43');
-    expect(field?.getAttribute('data-rows')).toBe('9');
-    expect(field?.getAttribute('data-pitch')).toBe('2.6');
+    expect(container.querySelectorAll('.overlay-waveform-bar')).toHaveLength(count);
+    expect(container.querySelector<HTMLElement>('.overlay-waveform')?.style.opacity).toBe('1');
     expect(container.querySelector('button')).toBeNull();
   });
 });

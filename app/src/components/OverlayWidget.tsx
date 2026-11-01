@@ -22,6 +22,7 @@ import { useMeetingSuggestion } from '../lib/hooks/useMeetingSuggestion';
 import { OverlayMeetingSuggestion } from './overlay/OverlayMeetingSuggestion';
 import type { OverlayContent } from '../lib/overlayGeometry';
 import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOffset';
+import { useWaveform } from '../lib/hooks/useWaveform';
 
 export function OverlayWidget() {
   const [calibrating, setCalibrating] = useState(false);
@@ -106,9 +107,13 @@ export function OverlayWidget() {
     || runtime.showTransformBusy || runtime.showMicrophoneFailure !== null;
   const activity = status === 'recording' ? 'recording'
     : status !== 'idle' || showDone || cueActive ? 'processing' : 'idle';
+  // The idle floating pill is invisible and click-through, so hover must not
+  // open a card over whatever sits above the Dock.
+  const pillHidden = settingsMirror.overlayPlacement === 'floating_pill' && activity === 'idle';
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
     useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent,
-      activity, placement: settingsMirror.overlayPlacement });
+      activity, placement: settingsMirror.overlayPlacement, hoverEnabled: !pillHidden });
+  const waveform = useWaveform(status);
   const modeRuntime = useModeRuntime();
 
   const recordingControls = useRecordingControls({
@@ -223,12 +228,12 @@ export function OverlayWidget() {
 
   return (
     <div
-      className="relative flex h-full w-full"
+      className={`relative flex h-full w-full ${geometry.floating ? 'items-end' : ''}`}
       style={{ background: 'transparent' }}
     >
-      {/* Dynamic Island: top bar matches notch height; hover expands it downward
-          to reveal the quick-settings dropdown. Idle/recording only changes the
-          top bar — the dropdown row is identical. */}
+      {/* Notch: the top bar matches the notch height and hover expands it
+          downward. Floating pill: the capsule sits at the window bottom and
+          hover grows it upward. The dropdown row is identical in both. */}
       <OverlayIsland
         ref={islandRef}
         geometry={geometry}
@@ -246,8 +251,7 @@ export function OverlayWidget() {
           geometry={geometry}
           visual={visual}
           status={status}
-          scopeStage={showDone ? 'done' : undefined}
-          processingStyle={settingsMirror.overlayProcessingStyle}
+          barRefs={waveform.barRefs}
           smartAutoSummary={smartAutoSummary}
           deliveryCue={runtime.deliveryCue}
           onRetryDelivery={runtime.retryDelivery}

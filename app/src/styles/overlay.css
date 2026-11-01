@@ -1,62 +1,71 @@
-/* The island is deliberately black, independent of the active theme. */
-.overlay-field-slot {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
+/* The overlay and live-words card are deliberately dark, independent of the
+   active theme. Neither uses backdrop-filter: both windows are transparent, so
+   there is nothing behind them in the webview to blur. */
+.overlay-waveform-bar {
+  transform: scaleY(0.14);
+  transform-origin: 50% 50%;
+  will-change: transform;
 }
-.overlay-dot-field { display: block; flex-shrink: 0; }
-.overlay-status-row[data-field-active] > * { visibility: hidden; }
-.overlay-island[data-floating] .overlay-status-row:not([data-field-active]) {
-  justify-content: center;
-}
-.overlay-island[data-floating] .overlay-status-row:not([data-field-active]) > .flex-1 {
-  flex: 0;
-}
+/* The floating pill stacks bottom-up and always mounts its dropdown. Neither
+   row may shrink: the dropdown overflows above the collapsed capsule, where
+   the island clips it, so the status row keeps its full height. */
+.overlay-island[data-floating] > * { flex-shrink: 0; }
 .live-words-window {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   width: 100%;
-  height: 44px;
+  height: 100%;
+  padding: 0 12px;
+  box-sizing: border-box;
   user-select: none;
   pointer-events: none;
 }
-.live-words-pill {
+.live-words-window[data-above] { align-items: flex-end; }
+.live-words-card {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
+  align-items: flex-start;
+  gap: 10px;
   width: 100%;
-  padding: 0 14px;
-  border: 0.5px solid color-mix(in srgb, var(--murmur-on-surface) 14%, transparent);
-  border-radius: 16px;
-  background: var(--murmur-surface-container-lowest);
-  color: var(--murmur-on-surface);
+  padding: 10px 14px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(20, 20, 20, 0.95);
+  color: rgba(255, 255, 255, 0.85);
   font-family: var(--ui-font-sans);
   font-size: 13px;
-  line-height: 18px;
+  line-height: 1.6;
   letter-spacing: 0;
-  overflow: hidden;
 }
-.live-words-stable {
-  min-width: 0;
-  flex: 1 1 auto;
+.live-words-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 9999px;
+  background: rgb(239, 68, 68);
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+/* About three lines; the column ends at the newest words so older lines leave
+   from the top without any scroll bookkeeping. */
+.live-words-text {
   display: flex;
+  flex-direction: column;
   justify-content: flex-end;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.live-words-stable > span { flex-shrink: 0; }
-.live-words-tentative {
+  flex: 1 1 auto;
   min-width: 0;
-  flex: 0 1 auto;
-  opacity: 0.55;
-  white-space: nowrap;
+  max-height: 63px;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
-.live-words-stable + .live-words-tentative { max-width: 45%; }
+.live-words-text > p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.live-words-tentative { opacity: 0.7; }
 @media (prefers-reduced-motion: reduce) {
   .overlay-island { transition: opacity 160ms ease-out !important; }
+  .live-words-dot { animation: none; }
 }

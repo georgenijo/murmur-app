@@ -157,9 +157,6 @@ jobs:
       - name: Install Playwright Chromium
         run: cd app && npx playwright install chromium
 
-      - name: Native dot-scope parity
-        run: node scripts/test_overlay_dot_scope.mjs
-
       - name: Visual golden tests
         run: cd app && npm run test:visual
 

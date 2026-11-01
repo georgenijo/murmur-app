@@ -16,8 +16,8 @@ use crate::{MutexExt, State};
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 
-const WIDTH: f64 = 560.0;
-const HEIGHT: f64 = 44.0;
+const WIDTH: f64 = 460.0;
+const HEIGHT: f64 = 104.0;
 
 const POPOVER: PopoverSpec = PopoverSpec {
     label: "dictation-preview",
@@ -31,8 +31,8 @@ const POPOVER: PopoverSpec = PopoverSpec {
 /// without one).
 ///
 /// The anchor is deliberately the primary monitor, matching the overlay's
-/// selected display. Both placements follow the actual applied overlay frame;
-/// expansion and calibration reposition this click-through preview below it.
+/// selected display. Both placements follow the actual applied overlay frame:
+/// the preview sits below the notch island or above the bottom pill.
 fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
     let top_inset = top_inset_for(notch_h);
     let monitor = app.primary_monitor().ok().flatten();
@@ -209,14 +209,14 @@ mod tests {
 
     #[test]
     fn preview_sits_below_the_measured_notch() {
-        // Without an applied frame, conservatively clear notch + plate + 6pt gap.
-        assert_eq!(top_inset_for(Some(37.0)), 83.0);
-        assert_eq!(top_inset_for(Some(24.0)), 70.0);
+        // Without an applied frame, clear the in-menu-bar island plus a 6pt gap.
+        assert_eq!(top_inset_for(Some(37.0)), 43.0);
+        assert_eq!(top_inset_for(Some(24.0)), 30.0);
     }
 
     #[test]
     fn unmeasured_or_absurd_notch_heights_fall_back() {
-        let fallback = 83.0;
+        let fallback = 43.0;
         assert_eq!(top_inset_for(None), fallback);
         assert_eq!(top_inset_for(Some(0.0)), fallback);
         assert_eq!(top_inset_for(Some(-4.0)), fallback);

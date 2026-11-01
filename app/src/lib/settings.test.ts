@@ -27,6 +27,7 @@ import {
   LEGACY_OVERLAY_OFFSET_KEY,
   microphoneDeviceNameArg,
   MODEL_OPTIONS,
+  ownSettingsMigrations,
   pasteLastShortcutConflict,
   STORAGE_KEY,
   recordingShortcutHint,
@@ -36,6 +37,7 @@ import {
 
 beforeEach(() => {
   localStorage.clear();
+  ownSettingsMigrations();
   mocks.invoke.mockReset();
   mocks.invoke.mockResolvedValue(undefined);
   // Default to "not running under Tauri" so the existing localStorage-only
@@ -284,13 +286,13 @@ describe('loadSettings', () => {
     expect(loadSettings().smartDestinationEnabled).toBe(false);
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       smartDestinationEnabled: false,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
 
     for (const corrupt of [null, 'true', 1, {}]) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         ...DEFAULT_SETTINGS,
-        settingsVersion: 6,
+        settingsVersion: 7,
         smartDestinationEnabled: corrupt,
       }));
       expect(loadSettings().smartDestinationEnabled).toBe(false);
@@ -298,7 +300,7 @@ describe('loadSettings', () => {
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       ...DEFAULT_SETTINGS,
-      settingsVersion: 6,
+      settingsVersion: 7,
       smartDestinationEnabled: true,
     }));
     expect(loadSettings().smartDestinationEnabled).toBe(true);
@@ -423,7 +425,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(0);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 0,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
 
     saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
@@ -449,7 +451,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(23);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 23,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
   });
 
@@ -465,7 +467,7 @@ describe('loadSettings', () => {
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       overlayVerticalOffset: 0,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
   });
 
@@ -1214,13 +1216,21 @@ describe('durable settings store', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
   });
 
-  it('writes nothing on a first run with no cached settings', async () => {
+  it('lets only the main window seed the defaults on a first run', async () => {
     mocks.invoke.mockResolvedValue(null);
+    ownSettingsMigrations(false);
 
     await hydrateSettingsFromDisk();
 
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+
+    ownSettingsMigrations();
+    await hydrateSettingsFromDisk();
+
+    const seeded = localStorage.getItem(STORAGE_KEY)!;
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: seeded });
+    expect(JSON.parse(seeded)).toMatchObject({ settingsVersion: 7, overlayLiveWords: true });
   });
 
   it('leaves localStorage untouched when the backend rejects', async () => {
@@ -1248,7 +1258,7 @@ describe('durable settings store', () => {
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
-    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 6 });
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 7 });
     expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
   });
 
@@ -1395,8 +1405,8 @@ describe('read-only durable settings snapshots', () => {
     const parsed = parseSettingsBlob(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 1,
       overlayVerticalOffset: 48, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse', overlayLiveWords: true }));
     expect(parsed.overlayVerticalOffset).toBe(0);
-    expect(parsed.overlayPlacement).toBe('below_menu_bar');
-    expect(parsed.overlayProcessingStyle).toBe('pulse');
+    expect(parsed.overlayPlacement).toBe('floating_pill');
+    expect('overlayProcessingStyle' in parsed).toBe(false);
     expect(parsed.overlayLiveWords).toBe(true);
     expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBe('48');

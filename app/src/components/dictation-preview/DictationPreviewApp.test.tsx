@@ -49,7 +49,7 @@ describe('DictationPreviewApp', () => {
     Object.defineProperty(window, 'matchMedia', { configurable: true, value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) });
     mocks.listeners.clear();
     mocks.invoke.mockReset().mockImplementation(async (command: string) => command === 'load_settings_blob'
-      ? JSON.stringify({ overlayLiveWords: true }) : undefined);
+      ? JSON.stringify({ settingsVersion: 7, overlayLiveWords: true }) : undefined);
     mocks.listen.mockReset();
     mocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
       mocks.listeners.set(name, handler);
@@ -93,7 +93,7 @@ describe('DictationPreviewApp', () => {
     const toggle = async (enabled: boolean) => act(async () => {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: enabled }));
       mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
-        ? JSON.stringify({ overlayLiveWords: enabled }) : undefined);
+        ? JSON.stringify({ settingsVersion: 7, overlayLiveWords: enabled }) : undefined);
       mocks.listeners.get('live-words-consent-persisted')?.({ payload: enabled });
     });
     await toggle(false);
@@ -107,10 +107,10 @@ describe('DictationPreviewApp', () => {
   it('hot-enables from durable consent while the hidden webview cache remains false', async () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: false }));
     mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
-      ? JSON.stringify({ overlayLiveWords: false }) : undefined);
+      ? JSON.stringify({ settingsVersion: 7, overlayLiveWords: false }) : undefined);
     await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: false }));
     mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
-      ? JSON.stringify({ overlayLiveWords: true }) : undefined);
+      ? JSON.stringify({ settingsVersion: 7, overlayLiveWords: true }) : undefined);
     await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: true }));
     await act(async () => {
       mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 8 } });
@@ -122,7 +122,7 @@ describe('DictationPreviewApp', () => {
 
   it('a stale true cache or forged true event cannot override durable opt-out', async () => {
     mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob'
-      ? JSON.stringify({ overlayLiveWords: false }) : undefined);
+      ? JSON.stringify({ settingsVersion: 7, overlayLiveWords: false }) : undefined);
     await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: true }));
     await act(async () => {
       mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 8 } });
@@ -143,9 +143,23 @@ describe('DictationPreviewApp', () => {
     mocks.invoke.mockImplementationOnce(() => new Promise<string>(resolve => { latest = resolve; }));
     await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: false }));
     expect(container.textContent).toBe('');
-    await act(async () => { latest('{"overlayLiveWords":false}'); old('{"overlayLiveWords":true}'); });
+    await act(async () => { latest('{"settingsVersion":7,"overlayLiveWords":false}'); old('{"settingsVersion":7,"overlayLiveWords":true}'); });
     await act(async () => mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 8, text: 'must stay hidden' } }));
     expect(container.textContent).toBe('');
+  });
+
+  it.each([
+    ['an absent or quarantined document fails closed', null, false],
+    ['a v6 document migrates its old off default', '{"settingsVersion":6,"overlayLiveWords":false}', true],
+    ['an unreadable document fails closed', '{not json', false],
+  ] as const)('%s', async (_name, blob, shown) => {
+    mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob' ? blob : undefined);
+    await act(async () => mocks.listeners.get('live-words-consent-persisted')?.({ payload: false }));
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 9 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 9, text: 'synthetic default probe' } });
+    });
+    expect(container.textContent?.includes('synthetic default probe')).toBe(shown);
   });
 
   it('styles stable text only when the producer supplies an explicit boundary', async () => {

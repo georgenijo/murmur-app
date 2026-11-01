@@ -7,7 +7,8 @@ const entries: Array<[string, OverlayGeometry]> = [
   ['notched', fixture.notched],
   ['external', fixture.external],
   ['fallback', fixture.fallback],
-  ['belowRecording', fixture.belowRecording],
+  ['pillRecording', fixture.pillRecording],
+  ['pillExpanded', fixture.pillExpanded],
   ['expandedMeetingNotched', fixture.expandedMeetingNotched],
 ];
 
@@ -29,19 +30,19 @@ describe('overlay geometry contract fixture', () => {
 
   it('locks the characterization values', () => {
     expect(fixture.notched).toEqual({
-      windowW: 241, collapsedH: 72, expandedH: 136,
+      windowW: 241, collapsedH: 32, expandedH: 96,
       pillIdleW: 185, pillActiveW: 241,
       pillMarginIdle: 28, pillMarginActive: 0,
       dropdownH: 64, wingW: 28, floating: false, island: fixture.notched.island,
     });
     expect(fixture.external).toEqual({
-      windowW: 241, collapsedH: 70, expandedH: 134,
+      windowW: 241, collapsedH: 30, expandedH: 94,
       pillIdleW: 185, pillActiveW: 241,
       pillMarginIdle: 28, pillMarginActive: 0,
       dropdownH: 64, wingW: 28, floating: false, island: fixture.external.island,
     });
     expect(fixture.fallback).toEqual({
-      windowW: 241, collapsedH: 77, expandedH: 141,
+      windowW: 241, collapsedH: 37, expandedH: 101,
       pillIdleW: 185, pillActiveW: 241,
       pillMarginIdle: 28, pillMarginActive: 0,
       dropdownH: 64, wingW: 28, floating: false, island: fixture.fallback.island,
@@ -49,9 +50,14 @@ describe('overlay geometry contract fixture', () => {
   });
 
   it('locks native island metrics and exact steady-state bounds', () => {
-    expect(fixture.notched.island).toEqual({ notchW: 185, notchH: 32, pad: 7, inset: 7, topOffset: 6, notchGap: 10, spread: 28, plateIdleW: 30, plateRecordingW: 112, plateProcessingW: 76, plateH: 26, cornerIdle: 8, cornerActive: 18, innerRadius: 11 });
+    expect(fixture.notched.island).toEqual({ notchW: 185, notchH: 32, cornerIdle: 8, cornerActive: 12, pillW: 112, pillH: 34 });
+    // The notch wings stay inside the menu bar for every activity.
     expect([fixture.idleNotched.windowW, fixture.idleNotched.collapsedH]).toEqual([185, 32]);
-    expect([fixture.belowIdle.windowW, fixture.belowRecording.windowW, fixture.belowProcessing.windowW]).toEqual([44, 126, 90]);
+    expect([fixture.recordingNotched.windowW, fixture.recordingNotched.collapsedH]).toEqual([241, 32]);
+    // The floating pill never resizes between activities.
+    for (const g of [fixture.pillIdle, fixture.pillRecording, fixture.pillProcessing]) {
+      expect([g.windowW, g.collapsedH, g.floating]).toEqual([112, 34, true]);
+    }
     for (const g of Object.values(fixture)) expect(isOverlayGeometry(g)).toBe(true);
     expect(isOverlayGeometry({ ...fixture.notched, island: { ...fixture.notched.island, extra: 1 } })).toBe(false);
   });

@@ -872,7 +872,7 @@ function DictationPreviewFixture() {
     ?? 'Okay, um, one thing I want to clear up is why is it showing me a snippet of my prompt';
   return (
     <div className="flex min-h-screen items-start justify-center bg-[#6b6fae] pt-6">
-      <div style={{ width: 560 }}>
+      <div style={{ width: 460, height: 104 }}>
         <DictationPreviewCard text={text} />
       </div>
     </div>

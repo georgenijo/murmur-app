@@ -2,8 +2,12 @@ import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { DictationStatus } from '../types';
 
-/** Number of animated waveform bars in the top-bar right slot. */
-export const BAR_COUNT = 7;
+/** Bars in the notch's right wing. */
+export const NOTCH_BAR_COUNT = 7;
+/** Bars in the floating pill. */
+export const PILL_BAR_COUNT = 18;
+/** Resting bar scale: a short tick rather than an empty slot. */
+const REST_SCALE = 0.14;
 
 export interface OverlayWaveform {
   /** Attach to each bar element via `ref={el => { barRefs.current[i] = el; }}`. */
@@ -11,15 +15,15 @@ export interface OverlayWaveform {
 }
 
 /**
- * Owns the audio-level listener and the rAF bar-height animation. Bars are
- * updated via direct DOM writes (no React state per frame) — unchanged from
- * the original inline implementation, just relocated.
+ * Owns the `audio-level` listener and the per-frame bar animation. Bars keep a
+ * fixed layout box and animate only `transform: scaleY`, written directly to
+ * the DOM from rAF: no React render, layout, or paint invalidation per frame.
+ * The loop runs only while recording.
  */
 export function useWaveform(status: DictationStatus): OverlayWaveform {
   const audioLevelRef = useRef(0);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Subscribe to audio level events from Rust (store in ref, no state update)
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
@@ -27,31 +31,34 @@ export function useWaveform(status: DictationStatus): OverlayWaveform {
       audioLevelRef.current = event.payload;
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
+    }).catch(() => {
+      // Non-Tauri previews do not expose the native event bridge.
     });
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  // Animate waveform bars via rAF (direct DOM updates, no React reconciliation)
   useEffect(() => {
+    const bars = () => barRefs.current.filter((el): el is HTMLDivElement => el !== null);
     if (status !== 'recording') {
-      barRefs.current.forEach(el => {
-        if (el) el.style.height = '2px';
-      });
+      audioLevelRef.current = 0;
+      for (const el of bars()) {
+        el.style.transition = 'transform 300ms ease-out';
+        el.style.transform = `scaleY(${REST_SCALE})`;
+      }
       return;
     }
+    for (const el of bars()) el.style.transition = 'transform 60ms linear';
     let rafId: number;
     const animate = () => {
       const level = Math.min(1, audioLevelRef.current * 16);
-      barRefs.current.forEach((el, i) => {
-        if (!el) return;
+      const current = bars();
+      const center = (current.length - 1) / 2 || 1;
+      current.forEach((el, i) => {
         const baseline = 0.08 + Math.random() * 0.07;
-        const center = (BAR_COUNT - 1) / 2;
-        const distFromCenter = 1 - Math.abs(i - center) / center;
-        const envelope = 0.5 + 0.5 * distFromCenter;
-        const reactiveHeight = level * envelope;
+        const envelope = 0.5 + 0.5 * (1 - Math.abs(i - center) / center);
         const boost = level * level * 0.4 * Math.random();
-        const h = Math.min(1, baseline + reactiveHeight + boost);
-        el.style.height = `${Math.max(2, Math.round(h * 14))}px`;
+        const h = Math.max(REST_SCALE, Math.min(1, baseline + level * envelope + boost));
+        el.style.transform = `scaleY(${h.toFixed(3)})`;
       });
       rafId = requestAnimationFrame(animate);
     };
