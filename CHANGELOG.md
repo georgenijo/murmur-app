@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-11-01
+
+### Added
+
+- Add a Floating pill recording overlay: hidden until you dictate, then a dark capsule with a live waveform at the bottom centre of the screen. Choose it in Settings → General → Recording overlay (#871).
+
+### Changed
+
+- Restore the dark notch island with smooth, frame-stable motion. The island widens inside the menu bar while recording and replaces the dot field with a lightweight waveform (#871).
+- Turn Live Words on by default and show it again while the notch is active, below the notch or above the pill (#871).
+- Skip native window updates when the overlay frame does not change, which removes dropped frames between recording states (#871).
+
+### Fixed
+
+- Keep the notch island centred on the display after switching from the pill with a side Dock (#871).
+- Keep a Live Words opt-out when a companion window holds an older settings cache, and keep the preview hidden when the settings file is missing or unreadable (#871).
+
 ## [0.57.0] - 2026-10-31
 
 ### Added
