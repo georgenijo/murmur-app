@@ -508,6 +508,19 @@ fn remember_overlay_frame(app: &tauri::AppHandle, frame: OverlayFrame) {
     *app.state::<State>().overlay_frame.lock_or_recover() = Some(frame);
 }
 
+/// True when the authoritative saved frame already matches `target` to within
+/// a sub-point rounding error.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn frame_unchanged(saved: Option<OverlayFrame>, target: OverlayFrame) -> bool {
+    const EPSILON: f64 = 0.01;
+    saved.is_some_and(|f| {
+        (f.x - target.x).abs() < EPSILON
+            && (f.y - target.y).abs() < EPSILON
+            && (f.width - target.width).abs() < EPSILON
+            && (f.height - target.height).abs() < EPSILON
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn remember_overlay_position(
     app: &tauri::AppHandle,
@@ -1206,21 +1219,26 @@ pub async fn set_overlay_expanded(
                     }
                     calibration = Some(position);
                 }
-                // Never retain an authoritative old frame after a partially
-                // successful size/position pair.
-                *state.overlay_frame.lock_or_recover() = None;
-                overlay
-                    .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
-                    .map_err(|error| error.to_string())?;
-                overlay
-                    .set_position(tauri::LogicalPosition::new(x, y))
-                    .map_err(|error| error.to_string())?;
                 let frame = OverlayFrame {
                     x,
                     y,
                     width: applied.window_w,
                     height: applied.window_h,
                 };
+                // Most activity changes keep the same bounds (the pill never
+                // resizes). Skipping the setters avoids a WindowServer
+                // transaction, and its dropped frames, for a no-op.
+                if !frame_unchanged(saved_frame, frame) {
+                    // Never retain an authoritative old frame after a partially
+                    // successful size/position pair.
+                    *state.overlay_frame.lock_or_recover() = None;
+                    overlay
+                        .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
+                        .map_err(|error| error.to_string())?;
+                    overlay
+                        .set_position(tauri::LogicalPosition::new(x, y))
+                        .map_err(|error| error.to_string())?;
+                }
                 if let Some(position) = calibration {
                     // Publish effective bounds only after both setters succeed,
                     // so an open calibration sheet follows placement changes.
@@ -1579,6 +1597,36 @@ mod tests {
             assert_eq!(recording.collapsed_h, idle.island.notch_h);
             assert!(!recording.floating);
         }
+    }
+
+    #[test]
+    fn unchanged_frames_skip_native_setters() {
+        let frame = OverlayFrame {
+            x: 640.0,
+            y: 0.0,
+            width: 241.0,
+            height: 32.0,
+        };
+        assert!(!frame_unchanged(None, frame));
+        assert!(frame_unchanged(Some(frame), frame));
+        assert!(frame_unchanged(
+            Some(OverlayFrame {
+                x: 640.004,
+                ..frame
+            }),
+            frame
+        ));
+        assert!(!frame_unchanged(
+            Some(OverlayFrame {
+                width: 185.0,
+                ..frame
+            }),
+            frame
+        ));
+        assert!(!frame_unchanged(
+            Some(OverlayFrame { y: 4.0, ..frame }),
+            frame
+        ));
     }
 
     #[test]
