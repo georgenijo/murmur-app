@@ -48,9 +48,12 @@ export function DictationPreviewApp() {
       const request = ++revision;
       try {
         const blob = await invoke<string | null>('load_settings_blob');
-        if (typeof blob === 'string') JSON.parse(blob); // Unreadable documents fail closed.
+        // `null` covers both a fresh install and a quarantined corrupt file, so
+        // it fails closed. The main window seeds a fresh install's document,
+        // whose commit event re-runs this read.
+        if (typeof blob !== 'string') throw new Error('no durable settings');
+        JSON.parse(blob); // parseSettingsBlob would fall back to defaults.
         // Same migrations and defaults as Settings, without persisting them.
-        // An absent document is a fresh install, where live words default on.
         const settings = parseSettingsBlob(blob);
         if (!disposed && request === revision) {
           setEnabled(settings.overlayLiveWords);

@@ -1216,13 +1216,21 @@ describe('durable settings store', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
   });
 
-  it('writes nothing on a first run with no cached settings', async () => {
+  it('lets only the main window seed the defaults on a first run', async () => {
     mocks.invoke.mockResolvedValue(null);
+    ownSettingsMigrations(false);
 
     await hydrateSettingsFromDisk();
 
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+
+    ownSettingsMigrations();
+    await hydrateSettingsFromDisk();
+
+    const seeded = localStorage.getItem(STORAGE_KEY)!;
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: seeded });
+    expect(JSON.parse(seeded)).toMatchObject({ settingsVersion: 7, overlayLiveWords: true });
   });
 
   it('leaves localStorage untouched when the backend rejects', async () => {

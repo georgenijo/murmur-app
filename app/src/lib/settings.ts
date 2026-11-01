@@ -804,6 +804,16 @@ function writePersistedSettings(settings: Settings): void {
   mirrorToDisk(blob);
 }
 
+// Only the main window rewrites a migrated snapshot or seeds a fresh install.
+// A companion window can hold a stale pre-migration cache, and persisting its
+// migration would overwrite choices the main window has since saved.
+let ownsSettingsMigrations = false;
+
+/** Called once by the main window entry before it hydrates settings. */
+export function ownSettingsMigrations(owns = true): void {
+  ownsSettingsMigrations = owns;
+}
+
 /**
  * Seed localStorage from the durable `settings.json` before any window renders.
  * Disk wins: localStorage is a write-through cache that a reinstall or a WebKit
@@ -825,6 +835,12 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
     const cached = localStorage.getItem(STORAGE_KEY);
     if (cached !== null) {
       await invoke('save_settings_blob', { blob: cached });
+    } else if (ownsSettingsMigrations) {
+      // A fresh install. Commit the defaults so companions that fail closed
+      // on a missing document (the live-words preview) see default-on.
+      const defaults = JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: SETTINGS_VERSION });
+      localStorage.setItem(STORAGE_KEY, defaults);
+      await invoke('save_settings_blob', { blob: defaults });
     }
   } catch (e) {
     // Boot must never block on the settings store; localStorage stays the
@@ -966,16 +982,6 @@ function sanitizeBrowserSiteRules(raw: unknown, availableModeIds: ReadonlySet<st
     seenSites.add(siteKey);
   }
   return rules;
-}
-
-// Only the main window rewrites a migrated snapshot. A companion window can
-// hold a stale pre-migration cache, and persisting its migration would
-// overwrite choices the main window has since saved (Live Words opt-out).
-let ownsSettingsMigrations = false;
-
-/** Called once by the main window entry before it hydrates settings. */
-export function ownSettingsMigrations(owns = true): void {
-  ownsSettingsMigrations = owns;
 }
 
 /** Decode a durable snapshot without rewriting a webview's cache or disk. */

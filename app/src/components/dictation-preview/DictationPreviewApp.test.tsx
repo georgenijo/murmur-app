@@ -149,7 +149,7 @@ describe('DictationPreviewApp', () => {
   });
 
   it.each([
-    ['an absent document keeps the default-on preview', null, true],
+    ['an absent or quarantined document fails closed', null, false],
     ['a v6 document migrates its old off default', '{"settingsVersion":6,"overlayLiveWords":false}', true],
     ['an unreadable document fails closed', '{not json', false],
   ] as const)('%s', async (_name, blob, shown) => {
