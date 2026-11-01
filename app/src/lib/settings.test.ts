@@ -284,13 +284,13 @@ describe('loadSettings', () => {
     expect(loadSettings().smartDestinationEnabled).toBe(false);
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       smartDestinationEnabled: false,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
 
     for (const corrupt of [null, 'true', 1, {}]) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         ...DEFAULT_SETTINGS,
-        settingsVersion: 6,
+        settingsVersion: 7,
         smartDestinationEnabled: corrupt,
       }));
       expect(loadSettings().smartDestinationEnabled).toBe(false);
@@ -298,7 +298,7 @@ describe('loadSettings', () => {
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       ...DEFAULT_SETTINGS,
-      settingsVersion: 6,
+      settingsVersion: 7,
       smartDestinationEnabled: true,
     }));
     expect(loadSettings().smartDestinationEnabled).toBe(true);
@@ -423,7 +423,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(0);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 0,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
 
     saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
@@ -449,7 +449,7 @@ describe('loadSettings', () => {
     expect(loadSettings().autoPasteDelayMs).toBe(23);
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
       autoPasteDelayMs: 23,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
   });
 
@@ -465,7 +465,7 @@ describe('loadSettings', () => {
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
       overlayVerticalOffset: 0,
-      settingsVersion: 6,
+      settingsVersion: 7,
     });
   });
 
@@ -1248,7 +1248,7 @@ describe('durable settings store', () => {
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
-    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 6 });
+    expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 7 });
     expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
   });
 
@@ -1395,8 +1395,8 @@ describe('read-only durable settings snapshots', () => {
     const parsed = parseSettingsBlob(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 1,
       overlayVerticalOffset: 48, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse', overlayLiveWords: true }));
     expect(parsed.overlayVerticalOffset).toBe(0);
-    expect(parsed.overlayPlacement).toBe('below_menu_bar');
-    expect(parsed.overlayProcessingStyle).toBe('pulse');
+    expect(parsed.overlayPlacement).toBe('floating_pill');
+    expect('overlayProcessingStyle' in parsed).toBe(false);
     expect(parsed.overlayLiveWords).toBe(true);
     expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBe('48');

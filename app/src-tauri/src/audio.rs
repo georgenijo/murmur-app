@@ -2795,9 +2795,7 @@ fn run_backend(
                                 },
                             );
                         } else {
-                            let rms = compute_rms(&pcm.samples);
-                            crate::native_overlay_field::level(rms);
-                            let _ = handle.emit("audio-level", rms);
+                            let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
                         }
                     }
                     last_level_emit = Instant::now();

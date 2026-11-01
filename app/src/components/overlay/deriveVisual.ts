@@ -24,6 +24,10 @@ export type OverlayIndicator =
   | { kind: 'clipboardOnly' }
   | { kind: 'idle'; dimmed: boolean };
 
+const PRIORITY_CUES = new Set<OverlayIndicator['kind']>([
+  'calibrating', 'cancelled', 'secureField', 'microphoneFailure', 'transformBusy', 'hotkeyMiss',
+]);
+
 export interface OverlayVisual {
   /** Which icon/badge the top-bar left slot renders. */
   indicator: OverlayIndicator;
@@ -101,6 +105,7 @@ export function deriveVisual(
   return {
     indicator,
     showTapMissedLabel: showHotkeyMiss,
-    waveformVisible: status === 'recording' && !calibrating,
+    // A priority cue owns the bar while it flashes; live levels would bury it.
+    waveformVisible: status === 'recording' && !PRIORITY_CUES.has(indicator.kind),
   };
 }

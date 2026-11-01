@@ -37,7 +37,8 @@ describe('deriveVisual', () => {
               expectedIndicator(status, showCancelled, showHotkeyMiss, disabled),
             );
             expect(visual.showTapMissedLabel).toBe(showHotkeyMiss);
-            expect(visual.waveformVisible).toBe(status === 'recording');
+            // Cancel and hotkey-miss flashes own the bar over live levels.
+            expect(visual.waveformVisible).toBe(status === 'recording' && !showCancelled && !showHotkeyMiss);
           });
         }
       }

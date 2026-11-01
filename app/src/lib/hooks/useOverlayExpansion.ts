@@ -87,11 +87,15 @@ export function useOverlayExpansion({
   content = 'controls',
   activity,
   placement,
+  hoverEnabled = true,
 }: {
   forcedOpen?: boolean;
   content?: OverlayContent;
   activity?: OverlayActivity;
   placement?: OverlayPlacement;
+  /** False while the surface is invisible (the idle floating pill): hover may
+   * not open a card nobody can see. An already-open card still closes normally. */
+  hoverEnabled?: boolean;
 } = {}): OverlayExpansion {
   const [phase, setPhase] = useState<OverlayPhase>('collapsed');
 
@@ -116,6 +120,8 @@ export function useOverlayExpansion({
   forcedOpenRef.current = forcedOpen;
   const layoutRef = useRef({ activity, placement });
   layoutRef.current = { activity, placement };
+  const hoverEnabledRef = useRef(hoverEnabled);
+  hoverEnabledRef.current = hoverEnabled;
 
   // Inputs mirrored into refs for the always-on poller / async callbacks.
   const visibleRef = useRef(true); // default visible on mount, matches show_overlay ordering
@@ -311,6 +317,7 @@ export function useOverlayExpansion({
     if (collapseTimerRef.current) { clearTimeout(collapseTimerRef.current); collapseTimerRef.current = null; }
     const ph = phaseRef.current;
     if (ph === 'open' || ph === 'opening') return;
+    if (!hoverEnabledRef.current) return;
     if (dwellTimerRef.current) return;
     dwellTimerRef.current = setTimeout(() => {
       dwellTimerRef.current = null;
@@ -332,6 +339,10 @@ export function useOverlayExpansion({
     }
     beginClose(COLLAPSE_DELAY_MS);
   }, [clearOpenDwell, clearCloseTimers, setPhaseSync, pushSurface, beginClose]);
+
+  useEffect(() => {
+    if (!hoverEnabled) clearOpenDwell();
+  }, [hoverEnabled, clearOpenDwell]);
 
   useEffect(() => {
     const wasForcedOpen = wasForcedOpenRef.current;
@@ -427,6 +438,7 @@ export function useOverlayExpansion({
       const island = islandRef.current;
       if (!island) return;
       if (ph === 'opening') return; // transient; nothing to poll
+      if (ph !== 'open' && !hoverEnabledRef.current) return; // invisible: no entry IPC
       if (pollInFlightRef.current) return;
       pollInFlightRef.current = true;
       try {

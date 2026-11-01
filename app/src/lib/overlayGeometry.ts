@@ -1,8 +1,7 @@
 export interface IslandMetrics {
-  notchW: number; notchH: number; pad: number; inset: number;
-  topOffset: number; notchGap: number; spread: number;
-  plateIdleW: number; plateRecordingW: number; plateProcessingW: number; plateH: number;
-  cornerIdle: number; cornerActive: number; innerRadius: number;
+  notchW: number; notchH: number;
+  cornerIdle: number; cornerActive: number;
+  pillW: number; pillH: number;
 }
 export interface OverlayGeometry {
   windowW: number; collapsedH: number; expandedH: number;
@@ -13,12 +12,11 @@ export interface OverlayGeometry {
   island: IslandMetrics;
 }
 export type OverlayActivity = 'idle' | 'recording' | 'processing';
-export type OverlayPlacement = 'notch' | 'below_menu_bar';
+export type OverlayPlacement = 'notch' | 'floating_pill';
 export type OverlayContent = 'controls' | 'meeting_suggestion';
 const NUMBER_KEYS = ['windowW', 'collapsedH', 'expandedH', 'pillIdleW', 'pillActiveW',
   'pillMarginIdle', 'pillMarginActive', 'dropdownH', 'wingW'] as const;
-const ISLAND_KEYS = ['notchW', 'notchH', 'pad', 'inset', 'topOffset', 'notchGap', 'spread',
-  'plateIdleW', 'plateRecordingW', 'plateProcessingW', 'plateH', 'cornerIdle', 'cornerActive', 'innerRadius'] as const;
+const ISLAND_KEYS = ['notchW', 'notchH', 'cornerIdle', 'cornerActive', 'pillW', 'pillH'] as const;
 export function isOverlayGeometry(v: unknown): v is OverlayGeometry {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;

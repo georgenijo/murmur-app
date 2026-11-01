@@ -2,7 +2,7 @@ import type { Settings } from '../../lib/settings';
 
 /** Explicit owner routes: search reveals UI state, never backend preferences. */
 export const ADVANCED_TARGETS: Record<string, readonly string[]> = {
-  general: ['overlay-calibration', 'overlay-processing-style', 'reset-statistics'],
+  general: ['overlay-calibration', 'reset-statistics'],
   recording: ['standby', 'standby-window', 'pre-roll', 'sound-cues', 'sound-volume', 'meeting-cues', 'smart-auto-stop'],
   text: ['developer-terms', 'project-scan', 'smart-correction', 'fuzzy-correction', 'homophone-context', 'smart-formatting', 'voice-commands'],
   delivery: ['app-overrides'],

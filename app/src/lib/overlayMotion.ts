@@ -6,15 +6,16 @@
 // shrink delay — from the very numbers the CSS transitions use, so the code link
 // can never silently drift.
 //
-// The island grows around the notch centre. Width, height and corners share
-// one oscillator; native bounds contract only after that oscillator settles.
+// The notch island grows its wings out from the notch centre and reveals the
+// dropdown downward; the floating pill grows upward from its bottom edge.
+// Width and height share one duration/easing so each opens as one surface.
 
 /** Width/height transition duration for the island element (ms). */
-import { ISLAND_SPRING, springEasing, springSettleMs } from '../components/overlay/spring';
-
-export const OVERLAY_HEIGHT_MS = springSettleMs(ISLAND_SPRING);
-/** Exact 0.3s / 0.15-bounce oscillator sampled for CSS, not a bezier guess. */
-const OVERLAY_SPRING = springEasing(ISLAND_SPRING);
+export const OVERLAY_HEIGHT_MS = 360;
+/** Spring easing for the width/height transition. */
+const OVERLAY_SPRING = 'cubic-bezier(0.34,1.56,0.64,1)';
+/** Fade/scale for the floating pill appearing and hiding (ms). */
+const OVERLAY_PILL_FADE_MS = 180;
 
 /** Sustained hover (ms) required on the island before the card opens. */
 export const HOVER_OPEN_DWELL_MS = 150;
@@ -32,10 +33,17 @@ export const COLLAPSE_DELAY_MS = 300;
 export const SHRINK_DELAY_MS = OVERLAY_HEIGHT_MS + 20;
 
 /**
- * The composed transition for the centred island and its hover dropdown.
+ * The composed transition for the centred notch island and its hover dropdown.
  */
 export const OVERLAY_ISLAND_TRANSITION =
-  `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, border-radius ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}`;
+  `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}`;
+
+/**
+ * The floating pill: composited opacity/transform for appearing, plus the same
+ * width/height spring as the notch when hover grows it.
+ */
+export const OVERLAY_PILL_TRANSITION =
+  `opacity ${OVERLAY_PILL_FADE_MS}ms ease-out, transform ${OVERLAY_PILL_FADE_MS}ms ease-out, ${OVERLAY_ISLAND_TRANSITION}`;
 
 // --- Transform review popover motion tokens ---------------------------------
 //

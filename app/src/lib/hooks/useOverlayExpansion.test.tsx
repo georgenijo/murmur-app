@@ -29,7 +29,7 @@ import { useOverlayExpansion, type OverlayExpansion } from './useOverlayExpansio
 
 // A pending set_overlay_expanded invocation the test controls.
 interface SurfaceCall {
-  args: { expanded: boolean; content: 'controls' | 'meeting_suggestion'; activity?: 'idle' | 'recording' | 'processing'; placement?: 'notch' | 'below_menu_bar'; deferShrink?: boolean };
+  args: { expanded: boolean; content: 'controls' | 'meeting_suggestion'; activity?: 'idle' | 'recording' | 'processing'; placement?: 'notch' | 'floating_pill'; deferShrink?: boolean };
   resolve: (v: { windowW: number; windowH: number }) => void;
   reject: (e: unknown) => void;
 }
@@ -54,9 +54,10 @@ describe('useOverlayExpansion', () => {
     forcedOpen?: boolean;
     content?: 'controls' | 'meeting_suggestion';
     activity?: 'idle' | 'recording' | 'processing';
-    placement?: 'notch' | 'below_menu_bar';
+    placement?: 'notch' | 'floating_pill';
+    hoverEnabled?: boolean;
   }) {
-    current = useOverlayExpansion({ forcedOpen: props.forcedOpen, content: props.content, activity: props.activity, placement: props.placement });
+    current = useOverlayExpansion({ forcedOpen: props.forcedOpen, content: props.content, activity: props.activity, placement: props.placement, hoverEnabled: props.hoverEnabled });
     return props.withIsland ? <div ref={current.islandRef} /> : null;
   }
 
@@ -77,7 +78,8 @@ describe('useOverlayExpansion', () => {
     forcedOpen?: boolean;
     content?: 'controls' | 'meeting_suggestion';
     activity?: 'idle' | 'recording' | 'processing';
-    placement?: 'notch' | 'below_menu_bar';
+    placement?: 'notch' | 'floating_pill';
+    hoverEnabled?: boolean;
   } = {}) {
     // mount owns the root's whole lifecycle so beforeEach never leaks an empty
     // container. A prior mount (a test that re-mounts) is torn down first.
@@ -134,10 +136,10 @@ describe('useOverlayExpansion', () => {
   });
 
   it('settles state-driven bounds only after the latest resize acknowledgement and animation', async () => {
-    await mount({ activity: 'recording', placement: 'below_menu_bar' });
-    expect(surfaceCalls[0].args).toEqual({ expanded: false, content: 'controls', activity: 'recording', placement: 'below_menu_bar', deferShrink: true });
+    await mount({ activity: 'recording', placement: 'floating_pill' });
+    expect(surfaceCalls[0].args).toEqual({ expanded: false, content: 'controls', activity: 'recording', placement: 'floating_pill', deferShrink: true });
     await act(async () => surfaceCalls[0].resolve(APPLIED));
-    await act(async () => root!.render(<Harness activity="processing" placement="below_menu_bar" />));
+    await act(async () => root!.render(<Harness activity="processing" placement="floating_pill" />));
     expect(surfaceCalls).toHaveLength(2);
     await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
     expect(surfaceCalls).toHaveLength(2); // No settlement before the new ack.
@@ -145,7 +147,7 @@ describe('useOverlayExpansion', () => {
     await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS - 1));
     expect(surfaceCalls).toHaveLength(2);
     await act(async () => vi.advanceTimersByTime(1));
-    expect(surfaceCalls[2].args).toEqual({ expanded: false, content: 'controls', activity: 'processing', placement: 'below_menu_bar' });
+    expect(surfaceCalls[2].args).toEqual({ expanded: false, content: 'controls', activity: 'processing', placement: 'floating_pill' });
   });
 
   it('does not replay hidden layout changes until show, then applies only the latest placement', async () => {
@@ -155,11 +157,11 @@ describe('useOverlayExpansion', () => {
     const hiddenCall = surfaceCalls[surfaceCalls.length - 1];
     await act(async () => hiddenCall.resolve(APPLIED));
     const count = surfaceCalls.length;
-    await act(async () => root!.render(<Harness activity="processing" placement="below_menu_bar" />));
+    await act(async () => root!.render(<Harness activity="processing" placement="floating_pill" />));
     await act(async () => vi.advanceTimersByTime(SHRINK_DELAY_MS));
     expect(surfaceCalls).toHaveLength(count);
     await act(async () => emitEvent('overlay-visible-changed', true));
-    expect(surfaceCalls[surfaceCalls.length - 1].args).toEqual({ expanded: false, content: 'controls', activity: 'processing', placement: 'below_menu_bar' });
+    expect(surfaceCalls[surfaceCalls.length - 1].args).toEqual({ expanded: false, content: 'controls', activity: 'processing', placement: 'floating_pill' });
   });
 
   it('a hover grow supersedes pending layout settlement without later shrinking the open card', async () => {
@@ -175,7 +177,7 @@ describe('useOverlayExpansion', () => {
     expect(surfaceCalls).toHaveLength(2);
   });
 
-  it.each(['notch', 'below_menu_bar'] as const)('retains native bounds for the idle %s contraction and supersedes release on reversal', async (placement) => {
+  it.each(['notch', 'floating_pill'] as const)('retains native bounds for the idle %s contraction and supersedes release on reversal', async (placement) => {
     await mount({ activity: 'idle', placement });
     await act(async () => surfaceCalls[0].resolve(APPLIED));
     await act(async () => current.onHoverStart());
@@ -555,6 +557,15 @@ describe('useOverlayExpansion', () => {
     await act(async () => { grow!.resolve(APPLIED); });
     await flush();
     expect(current.phase).toBe('open');
+  });
+
+  it('ignores hover while the hidden idle pill has hover disabled', async () => {
+    await mount({ withIsland: true, placement: 'floating_pill', hoverEnabled: false });
+    await act(async () => { current.onHoverStart(); });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS * 2); });
+    await flush();
+    expect(surfaceCalls.some((c) => c.args.expanded)).toBe(false);
+    expect(current.phase).toBe('collapsed');
   });
 
   it('drops a cursor result that resolves after the overlay becomes hidden', async () => {

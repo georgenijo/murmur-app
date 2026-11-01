@@ -37,7 +37,7 @@ describe('overlay settings write ownership', () => {
       hotkeyMissFeedbackRef,
     });
     return <>
-      <output>{mirror.overlayPlacement}|{mirror.overlayProcessingStyle}</output>
+      <output>{mirror.overlayPlacement}</output>
       <button onClick={mirror.handleToggleAutoPaste}>Paste</button>
       <button onClick={mirror.handleToggleDisabled}>Disable</button>
       <button onClick={mirror.refresh}>Refresh</button>
@@ -106,7 +106,7 @@ describe('overlay settings write ownership', () => {
       let finishOld!: (value: string) => void;
       mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
       await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
-      stored = { ...stored, overlayLiveWords: false, overlayProcessingStyle: 'pulse',
+      stored = { ...stored, overlayLiveWords: false, overlayPlacement: 'floating_pill',
         smartAutoProbeEnabled: false, smartAutoApprovedDeviceIds: ['new'], smartAutoPreferredDeviceIds: ['new'] };
       mocks.invoke.mockImplementation(async (command: string, args?: { field: 'autoPaste' | 'disabled'; value: boolean }) => {
         if (command === 'patch_overlay_setting') stored = { ...stored, [args!.field]: args!.value };
@@ -116,8 +116,8 @@ describe('overlay settings write ownership', () => {
       await act(async () => finishOld(JSON.stringify(cached)));
       expect(stored[field]).toBe(true);
       expect(stored.overlayLiveWords).toBe(false);
-      expect(stored.overlayProcessingStyle).toBe('pulse');
-      expect(container.querySelector('output')?.textContent).toContain('|pulse');
+      expect(stored.overlayPlacement).toBe('floating_pill');
+      expect(container.querySelector('output')?.textContent).toBe('floating_pill');
       expectRevocationPreserved();
       expect(mocks.invoke).toHaveBeenCalledWith('patch_overlay_setting', { field, value: true });
       expect(mocks.saveSettings).not.toHaveBeenCalled();
@@ -142,7 +142,7 @@ describe('overlay settings write ownership', () => {
       mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
         if (command === backend) calls.push(args);
         if (command === 'patch_overlay_setting') throw new Error('disk write refused');
-        if (command === 'load_settings_blob') return JSON.stringify({ ...stored, overlayLiveWords: false, overlayProcessingStyle: 'pulse' });
+        if (command === 'load_settings_blob') return JSON.stringify({ ...stored, overlayLiveWords: false, overlayPlacement: 'floating_pill' });
       });
       await act(async () => container.querySelectorAll('button')[index].click());
       expect(calls).toEqual(argument === 'options'
@@ -178,10 +178,10 @@ describe('overlay settings write ownership', () => {
     mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { newer = resolve; }));
     await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
     await act(async () => {
-      newer(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse' }));
-      older(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'notch', overlayProcessingStyle: 'sweep' }));
+      newer(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'below_menu_bar' }));
+      older(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'notch' }));
     });
-    expect(container.querySelector('output')?.textContent).toBe('below_menu_bar|pulse');
+    expect(container.querySelector('output')?.textContent).toBe('floating_pill');
   });
 
 });

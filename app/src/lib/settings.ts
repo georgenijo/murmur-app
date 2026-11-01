@@ -354,9 +354,8 @@ export interface Settings {
   launchAtLogin: boolean;
   /** Confirmed vertical fine-tuning for the notch overlay, in logical points. */
   overlayVerticalOffset: number;
-  overlayPlacement: 'notch' | 'below_menu_bar';
+  overlayPlacement: 'notch' | 'floating_pill';
   overlayLiveWords: boolean;
-  overlayProcessingStyle: 'sweep' | 'flow' | 'pulse';
   vadSensitivity: number;
   idleTimeoutMinutes: number;
   captureStandbyEnabled: boolean;
@@ -654,8 +653,7 @@ export const DEFAULT_SETTINGS: Settings = {
   launchAtLogin: false,
   overlayVerticalOffset: 0,
   overlayPlacement: 'notch',
-  overlayLiveWords: false,
-  overlayProcessingStyle: 'flow',
+  overlayLiveWords: true,
   vadSensitivity: 50,
   idleTimeoutMinutes: 5,
   captureStandbyEnabled: false,
@@ -703,9 +701,10 @@ export const STORAGE_KEY = 'dictation-settings';
 export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
 export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
 export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
-const SETTINGS_VERSION = 6;
+const SETTINGS_VERSION = 7;
 const ZERO_DELAY_MIGRATION_VERSION = 1;
 const OVERLAY_CALIBRATION_MIGRATION_VERSION = 2;
+const LIVE_WORDS_DEFAULT_ON_MIGRATION_VERSION = 7;
 const MAX_SMART_AUTO_DEVICES = 32;
 
 export interface SmartAutoMicrophoneRequest {
@@ -768,8 +767,12 @@ export function clampOverlayVerticalOffset(value: unknown): number {
   );
 }
 
-type PersistedSettings = Partial<Settings> & {
+type PersistedSettings = Omit<Partial<Settings>, 'overlayPlacement'> & {
   settingsVersion?: unknown;
+  /** v6 and earlier also stored `below_menu_bar`, migrated to `floating_pill`. */
+  overlayPlacement?: string;
+  /** @deprecated v6 and earlier. Belonged to the removed dot field. */
+  overlayProcessingStyle?: unknown;
   hotkey?: string;
   liveTranscriptPreview?: unknown;
   recordingMode?: string;
@@ -997,13 +1000,21 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
         parsed.overlayVerticalOffset = clampOverlayVerticalOffset(parsed.overlayVerticalOffset);
       }
       if (repairCache) localStorage.removeItem(LEGACY_OVERLAY_OFFSET_KEY);
-      if (parsed.overlayPlacement !== 'notch' && parsed.overlayPlacement !== 'below_menu_bar') {
+      // v7: the below-menu-bar placement became the bottom floating pill.
+      if (parsed.overlayPlacement === 'below_menu_bar') parsed.overlayPlacement = 'floating_pill';
+      if (parsed.overlayPlacement !== 'notch' && parsed.overlayPlacement !== 'floating_pill') {
         parsed.overlayPlacement = DEFAULT_SETTINGS.overlayPlacement;
       }
-      if (typeof parsed.overlayLiveWords !== 'boolean') parsed.overlayLiveWords = DEFAULT_SETTINGS.overlayLiveWords;
-      if (!['sweep', 'flow', 'pulse'].includes(parsed.overlayProcessingStyle as string)) {
-        parsed.overlayProcessingStyle = DEFAULT_SETTINGS.overlayProcessingStyle;
+      // v7: live words shipped off by default during the field redesign, so
+      // stored `false` values are the old default rather than a user choice.
+      if (
+        typeof parsed.overlayLiveWords !== 'boolean'
+        || storedSettingsVersion < LIVE_WORDS_DEFAULT_ON_MIGRATION_VERSION
+      ) {
+        parsed.overlayLiveWords = DEFAULT_SETTINGS.overlayLiveWords;
       }
+      // The processing-style picker belonged to the removed dot field.
+      delete parsed.overlayProcessingStyle;
 
       // v1: installs that persisted the former 50 ms default should adopt the
       // zero-delay fast path once. A user can set 50 ms again after migration,

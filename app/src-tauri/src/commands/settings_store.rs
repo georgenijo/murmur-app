@@ -241,7 +241,7 @@ fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
     let enabled = serde_json::from_str::<serde_json::Value>(blob)
         .ok()
         .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
-        .unwrap_or(false);
+        .unwrap_or(true);
     let _ = app.emit_to("dictation-preview", "live-words-consent-persisted", enabled);
     let _ = app.emit_to("overlay", "overlay-settings-persisted", ());
 }

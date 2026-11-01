@@ -140,12 +140,12 @@ describe('useOverlayGeometry', () => {
     mocks.invoke.mockReturnValueOnce(pending.promise);
     function Harness() { current = useOverlayGeometry(); return null; }
     await act(async () => root.render(<Harness />));
-    await act(async () => mocks.surfaceListener?.({ payload: geometryFixture.belowProcessing }));
-    expect(current).toEqual(geometryFixture.belowProcessing);
+    await act(async () => mocks.surfaceListener?.({ payload: geometryFixture.pillProcessing }));
+    expect(current).toEqual(geometryFixture.pillProcessing);
     await act(async () => pending.resolve(notched));
-    expect(current).toEqual(geometryFixture.belowProcessing);
-    await act(async () => mocks.surfaceListener?.({ payload: { ...geometryFixture.belowProcessing, island: {} } }));
-    expect(current).toEqual(geometryFixture.belowProcessing);
+    expect(current).toEqual(geometryFixture.pillProcessing);
+    await act(async () => mocks.surfaceListener?.({ payload: { ...geometryFixture.pillProcessing, island: {} } }));
+    expect(current).toEqual(geometryFixture.pillProcessing);
   });
 
   it('accepts the initial Rust geometry and unregisters on unmount', async () => {

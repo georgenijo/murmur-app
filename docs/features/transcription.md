@@ -563,11 +563,12 @@ and CPU Parakeet previews stay disabled. There is no automatic model substitutio
 CPU cancellation is cooperative at inference abort checkpoints; model loading is
 not interruptible, but neither loading nor cleanup holds the final runtime lock.
 
-The preview is opt-in through App → General → **Live words** (off by default).
+The preview is on by default through App → General → **Live words**.
 It renders in its own non-activating, click-through `dictation-preview` window,
-up to 560×44pt with a 32pt semantic-theme pill and 13px UI text. It follows the
-actual overlay frame, centered and work-area-clamped with a 6pt attached gap,
-including calibration/expansion and both notch/below-menu-bar placements. It
+up to 460×104pt: a dark card that wraps up to three lines of 13px text. It
+follows the actual overlay frame, centered and work-area-clamped with a 6pt
+gap, below the notch island or above the floating pill, including
+calibration/expansion. It
 uses the menu-bar display, not the main window's monitor.
 
 Rust sends each partial to the hidden webview. React commits the non-empty card,

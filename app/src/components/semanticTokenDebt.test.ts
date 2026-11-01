@@ -559,10 +559,11 @@ describe("semantic theme token debt gate", () => {
     );
     expect(overlay).toContain('<OverlayIsland');
     expect(readFileSync('./src/components/overlay/OverlayIsland.tsx', 'utf8'))
-      .toContain("background: '#000'");
+      .toContain("'rgba(20, 20, 20, 0.92)'");
+    // Live words match the always-dark island rather than the app theme.
     const liveWords = readFileSync('./src/styles/overlay.css', 'utf8');
-    expect(liveWords).toContain('background: var(--murmur-surface-container-lowest)');
-    expect(liveWords).toContain('color: var(--murmur-on-surface)');
+    expect(liveWords).toContain('background: rgba(20, 20, 20, 0.95)');
+    expect(liveWords).not.toContain('--murmur-');
     expect(transform).toContain("background: 'rgba(20, 20, 20, 0.92)'");
     expect(alwaysDarkSource).not.toContain("useAppearance");
     expect(alwaysDarkSource).not.toContain("appearance-changed");

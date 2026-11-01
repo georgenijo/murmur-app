@@ -15,13 +15,22 @@ export function visiblePartial(text: string): string {
 
 /** Presentation only: no copy action, title, export, persistence or telemetry.
  * Stable text is only accepted explicitly from an authoritative stream. Today's
- * whole-string partial API has no commit boundary, so all of it is tentative. */
-export function DictationPreviewCard({ text, stableText = '' }: { text: string; stableText?: string }) {
+ * whole-string partial API has no commit boundary, so all of it is tentative.
+ * The card wraps up to three lines and keeps the newest words in view; `above`
+ * bottom-aligns it so it hugs the floating pill beneath the window. */
+export function DictationPreviewCard({ text, stableText = '', above = false }: {
+  text: string; stableText?: string; above?: boolean;
+}) {
   if (!text && !stableText) return null;
-  return <main className="live-words-window" aria-label="Live dictation preview">
-    <div className="live-words-pill" role="status" aria-label="Words recognized so far">
-      {stableText && <span className="live-words-stable"><span>{visiblePartial(stableText)}</span></span>}
-      {text && <span className="live-words-tentative">{text}</span>}
+  return <main className="live-words-window" data-above={above || undefined} aria-label="Live dictation preview">
+    <div className="live-words-card">
+      <span className="live-words-dot" aria-hidden="true" />
+      <div className="live-words-text" role="status" aria-live="polite" aria-label="Words recognized so far">
+        <p>
+          {stableText && <><span className="live-words-stable">{visiblePartial(stableText)}</span>{' '}</>}
+          {text && <span className="live-words-tentative">{visiblePartial(text)}</span>}
+        </p>
+      </div>
     </div>
   </main>;
 }
@@ -29,6 +38,7 @@ export function DictationPreviewCard({ text, stableText = '' }: { text: string; 
 export function DictationPreviewApp() {
   useQueryAppearance();
   const [enabled, setEnabled] = useState(false);
+  const [above, setAbove] = useState(false);
   useEffect(() => {
     let disposed = false;
     let revision = 0;
@@ -38,9 +48,15 @@ export function DictationPreviewApp() {
       try {
         const blob = await invoke<string | null>('load_settings_blob');
         const value: unknown = typeof blob === 'string' ? JSON.parse(blob) : null;
-        const consent = value !== null && typeof value === 'object' && !Array.isArray(value)
-          && (value as { overlayLiveWords?: unknown }).overlayLiveWords === true;
-        if (!disposed && request === revision) setEnabled(consent);
+        const settings = value !== null && typeof value === 'object' && !Array.isArray(value)
+          ? value as { overlayLiveWords?: unknown; overlayPlacement?: unknown }
+          : null;
+        // Live words default on: only an explicit `false` opts out.
+        const consent = settings !== null && settings.overlayLiveWords !== false;
+        if (!disposed && request === revision) {
+          setEnabled(consent);
+          setAbove(settings?.overlayPlacement === 'floating_pill' || settings?.overlayPlacement === 'below_menu_bar');
+        }
       } catch { if (!disposed && request === revision) setEnabled(false); }
     };
     void listen<unknown>('live-words-consent-persisted', ({ payload }) => {
@@ -55,5 +71,5 @@ export function DictationPreviewApp() {
     }).catch(() => { if (!disposed) setEnabled(false); });
     return () => { disposed = true; revision++; unlisten?.(); };
   }, []);
-  return <DictationPreviewCard text={useDictationPartial(enabled)} />;
+  return <DictationPreviewCard text={useDictationPartial(enabled)} above={above} />;
 }
