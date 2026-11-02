@@ -900,6 +900,7 @@ fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     // The frontend treats this event as authoritative for expansion: it
     // collapses and re-reads geometry. Native placement retained the effective
     // calibration above, including an active unsaved draft.
+    let layout = *state.overlay_layout.lock_or_recover();
     let _ = handle.emit(
         "overlay-geometry-changed",
         geometry_for_layout(notch, OverlayContent::Controls, layout),
