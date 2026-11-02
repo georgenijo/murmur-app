@@ -23,6 +23,7 @@ import { OverlayMeetingSuggestion } from './overlay/OverlayMeetingSuggestion';
 import type { OverlayContent } from '../lib/overlayGeometry';
 import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOffset';
 import { useWaveform } from '../lib/hooks/useWaveform';
+import { useLiveWordsLift } from '../lib/hooks/useLiveWordsLift';
 
 export function OverlayWidget() {
   const [calibrating, setCalibrating] = useState(false);
@@ -114,6 +115,7 @@ export function OverlayWidget() {
     useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent,
       activity, placement: settingsMirror.overlayPlacement, hoverEnabled: !pillHidden });
   const waveform = useWaveform(status);
+  useLiveWordsLift(geometry, expanded);
   const modeRuntime = useModeRuntime();
 
   const recordingControls = useRecordingControls({

@@ -112,9 +112,18 @@ pub(crate) struct DisplaySnapshot {
     monitor_size: Option<(u32, u32)>,
     monitor_work_area: Option<(i32, i32, u32, u32)>,
     scale_factor: Option<f64>,
-    /// Tile size of an auto-hidden bottom Dock. Resizing it leaves the work
-    /// area unchanged, so it must invalidate placement on its own.
-    hidden_dock_tile: Option<f64>,
+    /// An auto-hidden bottom Dock's size preferences. Resizing it leaves the
+    /// work area unchanged, so it must invalidate placement on its own.
+    hidden_dock_tile: Option<HiddenDock>,
+}
+
+/// Size preferences of an auto-hidden bottom Dock: the static fallback used
+/// when `dock_watch` has no live reading.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HiddenDock {
+    tile: f64,
+    /// Magnified icon size, when magnification is on.
+    magnified: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -150,6 +159,8 @@ const PILL_EXPANDED_MIN_W: f64 = 241.0;
 const DOCK_MIN_TILE: f64 = 16.0;
 const DOCK_MAX_TILE: f64 = 128.0;
 const DOCK_DEFAULT_TILE: f64 = 64.0;
+/// Bottom margin under a magnified icon plus room for its name label.
+const DOCK_MAGNIFIED_MARGIN: f64 = 52.0;
 /// Minimum plausible menu-bar height for the pretend notch.
 const FLOATING_MIN_H: f64 = 24.0;
 const POPOVER_GAP: f64 = 6.0;
@@ -376,27 +387,41 @@ fn pill_logical_position(work_area: (f64, f64, f64, f64), window_size: (f64, f64
     )
 }
 
-/// An auto-hidden Dock leaves only a few points of work area reserved, so the
-/// pill would sit underneath the Dock whenever it slides up. Reserve the
-/// revealed Dock's height instead: its bar and bottom margin measure about
-/// 1.5× the icon tile size plus a small constant.
-fn hidden_dock_reserve(tile_size: f64) -> f64 {
-    tile_size.clamp(DOCK_MIN_TILE, DOCK_MAX_TILE) * 1.5 + 8.0
-}
-
-/// Bottom edge the pill may rest on. `hidden_dock_tile` is the tile size of a
-/// bottom Dock that auto-hides, if there is one.
-fn pill_work_bottom(display_bottom: f64, work_bottom: f64, hidden_dock_tile: Option<f64>) -> f64 {
-    hidden_dock_tile.map_or(work_bottom, |tile| {
-        work_bottom.min(display_bottom - hidden_dock_reserve(tile))
+/// Static fallback for when the Dock cannot be read live. An auto-hidden Dock
+/// leaves only a few points of work area reserved, so reserve the revealed
+/// Dock instead: its bar and bottom margin measure about 1.5× the icon tile
+/// size plus a small constant. A magnified icon rises above the bar, with its
+/// name label above that.
+fn hidden_dock_reserve(dock: HiddenDock) -> f64 {
+    let bar = dock.tile.clamp(DOCK_MIN_TILE, DOCK_MAX_TILE) * 1.5 + 8.0;
+    dock.magnified.map_or(bar, |size| {
+        bar.max(size.clamp(DOCK_MIN_TILE, DOCK_MAX_TILE) + DOCK_MAGNIFIED_MARGIN)
     })
 }
 
-/// Tile size of the Dock when it auto-hides along the bottom edge. A visible
-/// Dock is already excluded from the work area, and a side Dock never covers
-/// the bottom-centre pill.
+/// Bottom edge the pill may rest on. A live Dock reading wins; without one,
+/// an auto-hidden bottom Dock (`hidden_dock`) reserves its static height.
+fn pill_work_bottom(
+    display_bottom: f64,
+    work_bottom: f64,
+    hidden_dock: Option<HiddenDock>,
+    live: crate::dock_watch::DockLimit,
+) -> f64 {
+    use crate::dock_watch::DockLimit;
+    match live {
+        DockLimit::Clear => work_bottom,
+        DockLimit::Above(top) => work_bottom.min(top),
+        DockLimit::Unknown => hidden_dock.map_or(work_bottom, |dock| {
+            work_bottom.min(display_bottom - hidden_dock_reserve(dock))
+        }),
+    }
+}
+
+/// Size preferences of the Dock when it auto-hides along the bottom edge. A
+/// visible Dock is already excluded from the work area, and a side Dock never
+/// covers the bottom-centre pill.
 #[cfg(target_os = "macos")]
-fn hidden_bottom_dock_tile() -> Option<f64> {
+fn hidden_bottom_dock_tile() -> Option<HiddenDock> {
     use core_foundation::base::{CFType, TCFType};
     use core_foundation::boolean::CFBoolean;
     use core_foundation::number::CFNumber;
@@ -431,21 +456,36 @@ fn hidden_bottom_dock_tile() -> Option<f64> {
     let bottom = read("orientation")
         .and_then(|v| v.downcast::<CFString>())
         .is_none_or(|o| o == "bottom");
-    (autohide && bottom).then(|| {
-        read("tilesize")
+    let number = |key| {
+        read(key)
             .and_then(|v| v.downcast::<CFNumber>())
             .and_then(|n| n.to_f64())
-            .unwrap_or(DOCK_DEFAULT_TILE)
+            .filter(|n| n.is_finite())
+    };
+    let magnification = read("magnification")
+        .and_then(|v| {
+            v.downcast::<CFBoolean>().map(bool::from).or_else(|| {
+                v.downcast::<CFNumber>()
+                    .and_then(|n| n.to_i64())
+                    .map(|n| n != 0)
+            })
+        })
+        .unwrap_or(false);
+    (autohide && bottom).then(|| HiddenDock {
+        tile: number("tilesize").unwrap_or(DOCK_DEFAULT_TILE),
+        // An absent `largesize` means the Dock's own maximum.
+        magnified: magnification.then(|| number("largesize").unwrap_or(DOCK_MAX_TILE)),
     })
 }
 
 #[cfg(not(target_os = "macos"))]
-fn hidden_bottom_dock_tile() -> Option<f64> {
+fn hidden_bottom_dock_tile() -> Option<HiddenDock> {
     None
 }
 
-/// Logical bottom edge the pill rests on for `monitor`. The Dock preference
-/// comes from the cached display snapshot, so resizes never read preferences.
+/// Logical bottom edge the pill rests on for `monitor`. The live Dock limit
+/// comes from `dock_watch` and the fallback preference from the cached display
+/// snapshot, so resizes never query the Dock.
 #[cfg(target_os = "macos")]
 fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
     let sf = monitor.scale_factor();
@@ -460,7 +500,93 @@ fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
         (monitor.position().y as f64 + monitor.size().height as f64) / sf,
         (area.position.y as f64 + area.size.height as f64) / sf,
         hidden_dock_tile,
+        crate::dock_watch::current_limit(),
     )
+}
+
+/// Where `dock_watch` should look: the pill's display while the pill placement
+/// is active, from the cached display snapshot. Safe off the main thread.
+#[cfg(target_os = "macos")]
+pub(crate) fn dock_watch_context(
+    app: &tauri::AppHandle,
+) -> Option<crate::dock_watch::WatchContext> {
+    let state = app.state::<State>();
+    let layout = *state.overlay_layout.lock_or_recover();
+    if layout.placement != OverlayPlacement::FloatingPill {
+        return None;
+    }
+    let snapshot = state.display_snapshot.lock_or_recover().clone()?;
+    let scale = snapshot
+        .scale_factor
+        .filter(|s| s.is_finite() && *s > 0.0)?;
+    let (x, y) = snapshot.monitor_position?;
+    let (width, height) = snapshot.monitor_size?;
+    let (_, work_y, _, work_h) = snapshot.monitor_work_area?;
+    Some(crate::dock_watch::WatchContext {
+        display: crate::dock_watch::PillDisplay {
+            left: x as f64 / scale,
+            top: y as f64 / scale,
+            right: (x as f64 + width as f64) / scale,
+            bottom: (y as f64 + height as f64) / scale,
+            work_bottom: (work_y as f64 + work_h as f64) / scale,
+        },
+        visible: layout.activity != OverlayActivity::Idle,
+    })
+}
+
+/// Re-rest the pill after the live Dock limit moved. Dispatched to the main
+/// thread; keeps the current size so a hover card stays bottom-anchored.
+#[cfg(target_os = "macos")]
+pub(crate) fn follow_dock(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let dispatched = app.run_on_main_thread(move || {
+        let state = handle.state::<State>();
+        let layout = *state.overlay_layout.lock_or_recover();
+        if layout.placement != OverlayPlacement::FloatingPill {
+            return;
+        }
+        let Some(frame) = *state.overlay_frame.lock_or_recover() else {
+            return;
+        };
+        let (Some(overlay), Ok(Some(monitor))) = (
+            handle.get_webview_window("overlay"),
+            handle.primary_monitor(),
+        ) else {
+            return;
+        };
+        let sf = monitor.scale_factor();
+        let area = monitor.work_area();
+        let notch = *state.notch_info.lock_or_recover();
+        let left = area.position.x as f64 / sf;
+        let top = usable_top(
+            monitor.position().y as f64 / sf,
+            area.position.y as f64 / sf,
+            notch,
+        );
+        let (_, y) = pill_logical_position(
+            (
+                left,
+                top,
+                left + area.size.width as f64 / sf,
+                pill_bottom_for(&handle, &monitor),
+            ),
+            (frame.width, frame.height),
+        );
+        let target = OverlayFrame { y, ..frame };
+        if frame_unchanged(Some(frame), target) {
+            return;
+        }
+        *state.overlay_frame.lock_or_recover() = None;
+        if let Err(error) = overlay.set_position(tauri::LogicalPosition::new(frame.x, y)) {
+            tracing::warn!(target: "system", "follow_dock: set_position failed: {}", error);
+            return;
+        }
+        remember_overlay_frame(&handle, target);
+        follow_dictation_preview(&handle);
+    });
+    if let Err(error) = dispatched {
+        tracing::warn!(target: "system", "follow_dock: main-thread dispatch failed: {}", error);
+    }
 }
 
 /// Re-read the Dock preference off the main thread and fold it into the cached
@@ -555,8 +681,13 @@ struct PopoverWorkArea {
 }
 
 /// Actual-frame placement used only by the click-through live dictation
-/// preview. It follows collapsed/expanded/calibrated overlay movement without
-/// changing the interactive Voice Query surface under the pointer.
+/// preview. It follows calibrated overlay movement without changing the
+/// interactive Voice Query surface under the pointer.
+///
+/// The window anchors to the collapsed surface and reserves `DROPDOWN_H` of
+/// transparent room beyond the card. Hover expansion never moves it: the
+/// webview slides the card into that room in step with the island, so a
+/// delayed native shrink can no longer leave a gap and then snap.
 pub(crate) fn dictation_preview_fit(
     app: &tauri::AppHandle,
     monitor: &tauri::Monitor,
@@ -577,8 +708,32 @@ pub(crate) fn dictation_preview_fit(
         bottom: (area.position.y as f64 + area.size.height as f64) / scale,
     };
     let frame = *state.overlay_frame.lock_or_recover();
-    let above = state.overlay_layout.lock_or_recover().placement == OverlayPlacement::FloatingPill;
-    dictation_preview_fit_for_frame(work_area, (preview_width, preview_height), frame, above)
+    let mut layout = *state.overlay_layout.lock_or_recover();
+    let above = layout.placement == OverlayPlacement::FloatingPill;
+    layout.expanded = false;
+    let notch = *state.notch_info.lock_or_recover();
+    let collapsed_h = geometry_for_layout(notch, OverlayContent::Controls, layout).collapsed_h;
+    dictation_preview_fit_for_frame(
+        work_area,
+        (preview_width, preview_height + DROPDOWN_H),
+        frame.map(|frame| collapsed_frame(frame, collapsed_h, above)),
+        above,
+    )
+}
+
+/// The overlay frame with any hover dropdown removed. The pill grows upward
+/// from a fixed bottom edge, the notch island downward from a fixed top.
+fn collapsed_frame(frame: OverlayFrame, collapsed_h: f64, above: bool) -> OverlayFrame {
+    let height = collapsed_h.min(frame.height);
+    OverlayFrame {
+        y: if above {
+            frame.y + frame.height - height
+        } else {
+            frame.y
+        },
+        height,
+        ..frame
+    }
 }
 
 fn dictation_preview_fit_for_frame(
@@ -972,7 +1127,13 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
     let notification_name =
         NSNotificationName::from_str("NSApplicationDidChangeScreenParametersNotification");
 
-    start_placement_worker(app_handle);
+    start_placement_worker(app_handle.clone());
+    let context_app = app_handle.clone();
+    let follow_app = app_handle.clone();
+    crate::dock_watch::start(
+        move || dock_watch_context(&context_app),
+        move || follow_dock(&follow_app),
+    );
 
     let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
         request_placement_refresh(PlacementTrigger::DisplayChange);
@@ -1997,7 +2158,10 @@ mod tests {
                 ..baseline.clone()
             },
             DisplaySnapshot {
-                hidden_dock_tile: Some(64.0),
+                hidden_dock_tile: Some(HiddenDock {
+                    tile: 64.0,
+                    magnified: None,
+                }),
                 ..baseline.clone()
             },
         ] {
@@ -2006,18 +2170,49 @@ mod tests {
     }
 
     #[test]
-    fn pill_clears_an_auto_hidden_bottom_dock() {
+    fn pill_clears_an_auto_hidden_bottom_dock_without_a_live_reading() {
+        use crate::dock_watch::DockLimit::Unknown;
+        let dock = |tile, magnified| Some(HiddenDock { tile, magnified });
         // A visible Dock already shrinks the work area: nothing to add.
-        assert_eq!(pill_work_bottom(1080.0, 990.0, None), 990.0);
+        assert_eq!(pill_work_bottom(1080.0, 990.0, None, Unknown), 990.0);
         // Auto-hidden: macOS keeps ~4pt, so reserve the revealed Dock instead.
-        assert_eq!(pill_work_bottom(1080.0, 1076.0, Some(64.0)), 1080.0 - 104.0);
-        assert_eq!(pill_work_bottom(1080.0, 1076.0, Some(83.0)), 1080.0 - 132.5);
-        // Never lower than the work area, and the tile preference is bounded.
-        assert_eq!(pill_work_bottom(1080.0, 900.0, Some(48.0)), 900.0);
         assert_eq!(
-            pill_work_bottom(1080.0, 1076.0, Some(500.0)),
+            pill_work_bottom(1080.0, 1076.0, dock(64.0, None), Unknown),
+            1080.0 - 104.0
+        );
+        assert_eq!(
+            pill_work_bottom(1080.0, 1076.0, dock(83.0, None), Unknown),
+            1080.0 - 132.5
+        );
+        // Magnified icons and their label rise above the bar.
+        assert_eq!(
+            pill_work_bottom(1080.0, 1076.0, dock(54.0, Some(113.0)), Unknown),
+            1080.0 - 165.0
+        );
+        // Never lower than the work area, and the size preferences are bounded.
+        assert_eq!(
+            pill_work_bottom(1080.0, 900.0, dock(48.0, None), Unknown),
+            900.0
+        );
+        assert_eq!(
+            pill_work_bottom(1080.0, 1076.0, dock(500.0, Some(500.0)), Unknown),
             1080.0 - 200.0
         );
+    }
+
+    #[test]
+    fn a_live_dock_reading_replaces_the_static_reserve() {
+        use crate::dock_watch::DockLimit::{Above, Clear};
+        let dock = Some(HiddenDock {
+            tile: 54.0,
+            magnified: Some(113.0),
+        });
+        // Hidden: the pill rests low, just above the work area.
+        assert_eq!(pill_work_bottom(1080.0, 1076.0, dock, Clear), 1076.0);
+        // Revealed: above the magnified icons and label.
+        assert_eq!(pill_work_bottom(1080.0, 1076.0, dock, Above(887.0)), 887.0);
+        // A pinned Dock's work area already clears an unmagnified bar.
+        assert_eq!(pill_work_bottom(1080.0, 990.0, None, Above(1000.0)), 990.0);
     }
 
     #[test]
@@ -2094,6 +2289,44 @@ mod tests {
             ),
             Some((1000.0, 1330.0, 22.0))
         );
+    }
+
+    #[test]
+    fn preview_anchors_to_the_collapsed_surface_while_hover_expanded() {
+        let expanded_pill = OverlayFrame {
+            x: 1159.5,
+            y: 1288.0,
+            width: PILL_EXPANDED_MIN_W,
+            height: PILL_H + DROPDOWN_H,
+        };
+        assert_eq!(
+            collapsed_frame(expanded_pill, PILL_H, true),
+            OverlayFrame {
+                y: 1352.0,
+                height: PILL_H,
+                ..expanded_pill
+            }
+        );
+        let expanded_island = OverlayFrame {
+            x: 1159.5,
+            y: 0.0,
+            width: 241.0,
+            height: 32.0 + DROPDOWN_H,
+        };
+        assert_eq!(
+            collapsed_frame(expanded_island, 32.0, false),
+            OverlayFrame {
+                height: 32.0,
+                ..expanded_island
+            }
+        );
+        // A collapsed frame is already the anchor.
+        let collapsed = OverlayFrame {
+            height: PILL_H,
+            y: 1352.0,
+            ..expanded_pill
+        };
+        assert_eq!(collapsed_frame(collapsed, PILL_H, true), collapsed);
     }
 
     #[test]

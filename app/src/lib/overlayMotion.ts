@@ -51,6 +51,16 @@ export const OVERLAY_PILL_TRANSITION =
   `opacity ${OVERLAY_PILL_FADE_MS}ms ease-out, transform ${OVERLAY_PILL_FADE_MS}ms ease-out, `
   + `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_PILL_EASE}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_PILL_EASE}`;
 
+/**
+ * Live Words rides the island: its window anchors to the collapsed surface and
+ * the card moves by the hover dropdown's height on the island's own curve, so
+ * the two never separate while the native window waits to shrink.
+ */
+export const LIVE_WORDS_LIFT_EVENT = 'overlay-live-words-lift';
+export function liveWordsLiftTransition(floating: boolean): string {
+  return `transform ${OVERLAY_HEIGHT_MS}ms ${floating ? OVERLAY_PILL_EASE : OVERLAY_SPRING}`;
+}
+
 // --- Transform review popover motion tokens ---------------------------------
 //
 // The review popover (`app/src/components/transform-review/`) is a separate

@@ -22,11 +22,11 @@
   pointer-events: none;
 }
 .live-words-window[data-above] { align-items: flex-end; }
+/* Shrink-wraps the words and stays centred on the island; long text fills
+   the window width and wraps. */
 .live-words-card {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  width: 100%;
+  max-width: 100%;
   padding: 10px 14px;
   box-sizing: border-box;
   overflow: hidden;
@@ -38,15 +38,6 @@
   font-size: 13px;
   line-height: 1.6;
   letter-spacing: 0;
-}
-.live-words-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: 9999px;
-  background: rgb(239, 68, 68);
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 /* About three lines; the column ends at the newest words so older lines leave
    from the top without any scroll bookkeeping. */
@@ -67,5 +58,5 @@
 .live-words-tentative { opacity: 0.7; }
 @media (prefers-reduced-motion: reduce) {
   .overlay-island { transition: opacity 160ms ease-out !important; }
-  .live-words-dot { animation: none; }
+  .live-words-card { transition: none !important; }
 }

@@ -27,9 +27,10 @@ for (const placement of ['notch', 'pill'] as const) {
             pill ? 'rgba(12, 12, 14, 0.92)' : 'rgba(20, 20, 20, 0.92)');
         }
         if (pill) {
-          // The always-mounted dropdown must not squeeze the collapsed status row.
+          // The always-mounted dropdown must not squeeze the collapsed status row,
+          // which fills the island inside its 1px border so it centres exactly.
           const row = fixture.locator('[data-variant="recording"] .overlay-pill-row');
-          await expect(row).toHaveCSS('height', `${geometry.pillRecording.collapsedH}px`);
+          await expect(row).toHaveCSS('height', `${geometry.pillRecording.collapsedH - 2}px`);
         }
         // The idle pill is fully hidden; the notch island always shows.
         await expect(fixture.locator('[data-variant="idle"] .overlay-island'))

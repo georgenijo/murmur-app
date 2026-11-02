@@ -301,6 +301,7 @@ stay local and never reach logs or telemetry. See
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
+| `dock_watch.rs` | Live Dock accessibility geometry → floating-pill limit, glide, static fallback |
 | `hang_diagnostics.rs` | Server-armed, consent-bound capture-hang bundle collection with bounded native probes and upload |
 | `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout/stderr streaming, immutable provider configuration, and exact-pass cancellation |
 | `query_adapter.rs` | Incremental Claude/Codex JSONL answer, typed failure, and pass-scoped usage extraction with non-duplicating raw fallback |

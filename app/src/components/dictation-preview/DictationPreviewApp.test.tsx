@@ -84,6 +84,21 @@ describe('DictationPreviewApp', () => {
     expect(container.querySelector('button, input, textarea, [title], [contenteditable]')).toBeNull();
   });
 
+  it('draws no recording dot of its own and rides the island hover lift', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 3 } });
+      mocks.listeners.get('dictation-partial')?.({ payload: { recordingId: 3, text: 'okay' } });
+    });
+    const card = container.querySelector<HTMLElement>('.live-words-card')!;
+    expect(card.children).toHaveLength(1);
+    expect(card.style.transform).toBe('');
+    // Notch placement: the dropdown grows downward, so the card follows it down.
+    await act(async () => mocks.listeners.get('overlay-live-words-lift')?.({ payload: 64 }));
+    expect(card.style.transform).toBe('translateY(64px)');
+    await act(async () => mocks.listeners.get('overlay-live-words-lift')?.({ payload: 'bogus' }));
+    expect(card.style.transform).toBe('');
+  });
+
   it('clears instantly when disabled and does not resurrect a stopped generation on re-enable', async () => {
     await act(async () => {
       mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 3 } });
@@ -166,5 +181,15 @@ describe('DictationPreviewApp', () => {
     await act(async () => root.render(<DictationPreviewCard stableText="committed synthetic words" text="provisional ending" />));
     expect(container.querySelector('.live-words-stable')?.textContent).toBe('committed synthetic words');
     expect(container.querySelector('.live-words-tentative')?.textContent).toBe('provisional ending');
+  });
+});
+
+describe('DictationPreviewCard', () => {
+  it('lifts above the floating pill instead of below the notch', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => root.render(<DictationPreviewCard text="words" above lift={64} />));
+    expect(container.querySelector<HTMLElement>('.live-words-card')!.style.transform).toBe('translateY(-64px)');
+    await act(async () => root.unmount());
   });
 });
