@@ -143,6 +143,10 @@ const PILL_H: f64 = 34.0;
 /// Distance between the pill and the bottom of the usable work area (Dock).
 const PILL_BOTTOM_GAP: f64 = 14.0;
 const PILL_EXPANDED_MIN_W: f64 = 241.0;
+/// Dock tile-size preference bounds and default, in points.
+const DOCK_MIN_TILE: f64 = 16.0;
+const DOCK_MAX_TILE: f64 = 128.0;
+const DOCK_DEFAULT_TILE: f64 = 64.0;
 /// Minimum plausible menu-bar height for the pretend notch.
 const FLOATING_MIN_H: f64 = 24.0;
 const POPOVER_GAP: f64 = 6.0;
@@ -366,6 +370,81 @@ fn pill_logical_position(work_area: (f64, f64, f64, f64), window_size: (f64, f64
     (
         ((left + right - width) / 2.0).max(left),
         (bottom - PILL_BOTTOM_GAP - height).max(top),
+    )
+}
+
+/// An auto-hidden Dock leaves only a few points of work area reserved, so the
+/// pill would sit underneath the Dock whenever it slides up. Reserve the
+/// revealed Dock's height instead: its bar and bottom margin measure about
+/// 1.5× the icon tile size plus a small constant.
+fn hidden_dock_reserve(tile_size: f64) -> f64 {
+    tile_size.clamp(DOCK_MIN_TILE, DOCK_MAX_TILE) * 1.5 + 8.0
+}
+
+/// Bottom edge the pill may rest on. `hidden_dock_tile` is the tile size of a
+/// bottom Dock that auto-hides, if there is one.
+fn pill_work_bottom(display_bottom: f64, work_bottom: f64, hidden_dock_tile: Option<f64>) -> f64 {
+    hidden_dock_tile.map_or(work_bottom, |tile| {
+        work_bottom.min(display_bottom - hidden_dock_reserve(tile))
+    })
+}
+
+/// Tile size of the Dock when it auto-hides along the bottom edge. A visible
+/// Dock is already excluded from the work area, and a side Dock never covers
+/// the bottom-centre pill.
+#[cfg(target_os = "macos")]
+fn hidden_bottom_dock_tile() -> Option<f64> {
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::{CFString, CFStringRef};
+
+    extern "C" {
+        fn CFPreferencesCopyAppValue(key: CFStringRef, app: CFStringRef)
+            -> *const std::ffi::c_void;
+        fn CFPreferencesAppSynchronize(app: CFStringRef) -> u8;
+    }
+    let domain = CFString::from_static_string("com.apple.dock");
+    let read = |key: &'static str| -> Option<CFType> {
+        let key = CFString::from_static_string(key);
+        // SAFETY: both arguments are live CFStrings; the copy rule hands us
+        // ownership of a non-null result.
+        let value = unsafe {
+            CFPreferencesCopyAppValue(key.as_concrete_TypeRef(), domain.as_concrete_TypeRef())
+        };
+        (!value.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(value) })
+    };
+    // SAFETY: `domain` is a live CFString. Picks up Dock changes made since launch.
+    unsafe { CFPreferencesAppSynchronize(domain.as_concrete_TypeRef()) };
+    let autohide = read("autohide")
+        .and_then(|v| {
+            v.downcast::<CFBoolean>().map(bool::from).or_else(|| {
+                v.downcast::<CFNumber>()
+                    .and_then(|n| n.to_i64())
+                    .map(|n| n != 0)
+            })
+        })
+        .unwrap_or(false);
+    let bottom = read("orientation")
+        .and_then(|v| v.downcast::<CFString>())
+        .is_none_or(|o| o == "bottom");
+    (autohide && bottom).then(|| {
+        read("tilesize")
+            .and_then(|v| v.downcast::<CFNumber>())
+            .and_then(|n| n.to_f64())
+            .unwrap_or(DOCK_DEFAULT_TILE)
+    })
+}
+
+/// Logical bottom edge the pill rests on for `monitor`.
+#[cfg(target_os = "macos")]
+fn pill_bottom_for(monitor: &tauri::Monitor) -> f64 {
+    let sf = monitor.scale_factor();
+    let area = monitor.work_area();
+    pill_work_bottom(
+        (monitor.position().y as f64 + monitor.size().height as f64) / sf,
+        (area.position.y as f64 + area.size.height as f64) / sf,
+        hidden_bottom_dock_tile(),
     )
 }
 
@@ -960,7 +1039,6 @@ pub(crate) fn position_overlay_default(
         let work_left = area.position.x as f64 / sf;
         let work_top = usable_top(centered_y, area.position.y as f64 / sf, notch_info);
         let work_right = work_left + area.size.width as f64 / sf;
-        let work_bottom = (area.position.y as f64 + area.size.height as f64) / sf;
         let calibration = *overlay
             .app_handle()
             .state::<State>()
@@ -976,7 +1054,7 @@ pub(crate) fn position_overlay_default(
         let applied_position = applied_overlay_position(requested_offset, g.floating);
         let (x, y) = if g.floating {
             pill_logical_position(
-                (work_left, work_top, work_right, work_bottom),
+                (work_left, work_top, work_right, pill_bottom_for(&monitor)),
                 (overlay_w, overlay_h),
             )
         } else {
@@ -1209,7 +1287,7 @@ pub async fn set_overlay_expanded(
                         // Bottom-anchored: width changes keep the centre, height
                         // changes grow the hover card upward from the pill.
                         (x, y) = pill_logical_position(
-                            (left, work_top, right, bottom),
+                            (left, work_top, right, pill_bottom_for(&monitor)),
                             (applied.window_w, applied.window_h),
                         );
                     } else {
@@ -1337,11 +1415,10 @@ pub async fn set_overlay_vertical_offset(
                 let work_left = area.position.x as f64 / scale_factor;
                 let work_top = usable_top(top_y, area.position.y as f64 / scale_factor, notch);
                 let work_right = work_left + area.size.width as f64 / scale_factor;
-                let work_bottom = (area.position.y as f64 + area.size.height as f64) / scale_factor;
                 let applied = applied_overlay_position(offset, floating);
                 let (x, y) = if floating {
                     pill_logical_position(
-                        (work_left, work_top, work_right, work_bottom),
+                        (work_left, work_top, work_right, pill_bottom_for(&monitor)),
                         (width, height),
                     )
                 } else {
@@ -1861,6 +1938,21 @@ mod tests {
         ] {
             assert_ne!(baseline, changed);
         }
+    }
+
+    #[test]
+    fn pill_clears_an_auto_hidden_bottom_dock() {
+        // A visible Dock already shrinks the work area: nothing to add.
+        assert_eq!(pill_work_bottom(1080.0, 990.0, None), 990.0);
+        // Auto-hidden: macOS keeps ~4pt, so reserve the revealed Dock instead.
+        assert_eq!(pill_work_bottom(1080.0, 1076.0, Some(64.0)), 1080.0 - 104.0);
+        assert_eq!(pill_work_bottom(1080.0, 1076.0, Some(83.0)), 1080.0 - 132.5);
+        // Never lower than the work area, and the tile preference is bounded.
+        assert_eq!(pill_work_bottom(1080.0, 900.0, Some(48.0)), 900.0);
+        assert_eq!(
+            pill_work_bottom(1080.0, 1076.0, Some(500.0)),
+            1080.0 - 200.0
+        );
     }
 
     #[test]

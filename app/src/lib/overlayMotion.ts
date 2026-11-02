@@ -38,12 +38,18 @@ export const SHRINK_DELAY_MS = OVERLAY_HEIGHT_MS + 20;
 export const OVERLAY_ISLAND_TRANSITION =
   `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_SPRING}`;
 
+/** Settling easing for the floating pill's resize. The spring's overshoot
+ * reads as a bounce on a free-floating capsule, most visibly on collapse. */
+const OVERLAY_PILL_EASE = 'cubic-bezier(0.32,0.72,0,1)';
+
 /**
- * The floating pill: composited opacity/transform for appearing, plus the same
- * width/height spring as the notch when hover grows it.
+ * The floating pill: composited opacity/transform for appearing, plus one
+ * settling width/height resize (same duration as the notch) when hover grows
+ * or collapses it, so both dimensions move as one surface.
  */
 export const OVERLAY_PILL_TRANSITION =
-  `opacity ${OVERLAY_PILL_FADE_MS}ms ease-out, transform ${OVERLAY_PILL_FADE_MS}ms ease-out, ${OVERLAY_ISLAND_TRANSITION}`;
+  `opacity ${OVERLAY_PILL_FADE_MS}ms ease-out, transform ${OVERLAY_PILL_FADE_MS}ms ease-out, `
+  + `width ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_PILL_EASE}, height ${OVERLAY_HEIGHT_MS}ms ${OVERLAY_PILL_EASE}`;
 
 // --- Transform review popover motion tokens ---------------------------------
 //

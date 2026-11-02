@@ -25,7 +25,10 @@ App → General → **Recording overlay** chooses one of two renditions:
   Dock (work area). It is fully hidden and click-through while idle, and fades
   in with an 18-bar waveform when recording starts. The native window never
   resizes between activities, so recording never waits on a native resize.
-  Hover controls grow it upward.
+  Hover controls grow it upward. An auto-hidden bottom Dock reserves almost no
+  work area, so the pill instead clears the revealed Dock: it rests at least
+  `1.5 × tilesize + 8pt` (the `com.apple.dock` tile size, 16–128pt, default 64)
+  above the display bottom, re-read on every placement.
 
 Neither rendition uses `backdrop-filter`: the transparent webview has nothing
 behind the island to blur. Older `below_menu_bar` settings migrate to the pill.
@@ -225,7 +228,11 @@ Notch width/height changes use a 360ms `cubic-bezier(0.34, 1.56, 0.64, 1)`
 transition (`OVERLAY_ISLAND_TRANSITION`); `OVERLAY_HEIGHT_MS` is 360 and
 `SHRINK_DELAY_MS` adds 20ms. The floating pill fades and scales with
 opacity/transform only (`OVERLAY_PILL_TRANSITION`, 180ms), which stays on the
-compositor. Hover dwell is 150ms and leave intent is 300ms. Reduce Motion
+compositor. Its hover resize uses the same 360ms with a non-overshooting
+`cubic-bezier(0.32, 0.72, 0, 1)`. The capsule's width follows `expanded`
+rather than the native window, which grows before the reveal and shrinks after
+the collapse, so width and height move together. Its rows sit in a centred,
+window-width frame so they never reflow mid-resize. Hover dwell is 150ms and leave intent is 300ms. Reduce Motion
 removes the transitions and the waveform's per-level easing.
 
 ### Idle
