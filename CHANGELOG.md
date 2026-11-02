@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.58.1] - 2026-11-01
+
+### Fixed
+
+- Lift the floating pill clear of an auto-hidden bottom Dock, sized from your Dock icon size, so the revealed Dock no longer covers it (#873).
+- Close the floating pill's hover controls smoothly: width and height now shrink together without the snap to a wide bar or the bounce (#873).
+- Keep the recording timer and controls running when the overlay switches between the notch and the floating pill (#873).
+
 ## [0.58.0] - 2026-11-01
 
 ### Added
