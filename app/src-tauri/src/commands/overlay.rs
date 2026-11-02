@@ -463,6 +463,22 @@ fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
     )
 }
 
+/// Re-read the Dock preference off the main thread and fold it into the cached
+/// snapshot. Resizing the Dock changes no display geometry and posts none of
+/// the placement triggers, so every pill resize samples it here first.
+#[cfg(target_os = "macos")]
+fn refresh_cached_dock_tile(app: &tauri::AppHandle) {
+    let tile = hidden_bottom_dock_tile();
+    if let Some(snapshot) = app
+        .state::<State>()
+        .display_snapshot
+        .lock_or_recover()
+        .as_mut()
+    {
+        snapshot.hidden_dock_tile = tile;
+    }
+}
+
 /// Vertical calibration only moves the notch island; the pill has no travel.
 fn vertical_offset_bounds(floating: bool) -> (f64, f64) {
     if floating {
@@ -840,6 +856,12 @@ fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     let snapshot = capture_display_snapshot(handle);
     let notch = snapshot.notch_info;
     let changed = previous.as_ref() != Some(&snapshot);
+    let dock_only = previous.as_ref().is_some_and(|previous| {
+        DisplaySnapshot {
+            hidden_dock_tile: snapshot.hidden_dock_tile,
+            ..previous.clone()
+        } == snapshot
+    });
     let display_left = snapshot
         .monitor_position
         .zip(snapshot.scale_factor)
@@ -866,13 +888,18 @@ fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     if !changed {
         return;
     }
+    let layout = *state.overlay_layout.lock_or_recover();
+    // The Dock only moves the bottom pill. A Dock-only change must not
+    // collapse an open notch island whose geometry is unchanged.
+    if dock_only && !geometry_for_layout(notch, OverlayContent::Controls, layout).floating {
+        return;
+    }
     if let Some(overlay) = handle.get_webview_window("overlay") {
         position_overlay_default(&overlay, notch, trigger.as_str());
     }
     // The frontend treats this event as authoritative for expansion: it
     // collapses and re-reads geometry. Native placement retained the effective
     // calibration above, including an active unsaved draft.
-    let layout = *state.overlay_layout.lock_or_recover();
     let _ = handle.emit(
         "overlay-geometry-changed",
         geometry_for_layout(notch, OverlayContent::Controls, layout),
@@ -1244,6 +1271,7 @@ pub async fn set_overlay_expanded(
         let overlay = app
             .get_webview_window("overlay")
             .ok_or_else(|| "overlay window not found".to_string())?;
+        refresh_cached_dock_tile(&app);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let dispatch_app = app.clone();
         app.run_on_main_thread(move || {

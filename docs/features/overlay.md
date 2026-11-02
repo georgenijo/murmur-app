@@ -28,7 +28,10 @@ App → General → **Recording overlay** chooses one of two renditions:
   Hover controls grow it upward. An auto-hidden bottom Dock reserves almost no
   work area, so the pill instead clears the revealed Dock: it rests at least
   `1.5 × tilesize + 8pt` (the `com.apple.dock` tile size, 16–128pt, default 64)
-  above the display bottom, re-read on every placement.
+  above the display bottom. The preference is cached in the display snapshot,
+  sampled on every placement refresh and before every hover/recording resize
+  (resizing the Dock posts no display notification). A Dock-only change never
+  collapses the notch island.
 
 Neither rendition uses `backdrop-filter`: the transparent webview has nothing
 behind the island to blur. Older `below_menu_bar` settings migrate to the pill.
