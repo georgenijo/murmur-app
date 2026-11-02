@@ -25,13 +25,36 @@ App → General → **Recording overlay** chooses one of two renditions:
   Dock (work area). It is fully hidden and click-through while idle, and fades
   in with an 18-bar waveform when recording starts. The native window never
   resizes between activities, so recording never waits on a native resize.
-  Hover controls grow it upward. An auto-hidden bottom Dock reserves almost no
-  work area, so the pill instead clears the revealed Dock: it rests at least
-  `1.5 × tilesize + 8pt` (the `com.apple.dock` tile size, 16–128pt, default 64)
-  above the display bottom. The preference is cached in the display snapshot,
-  sampled on every placement refresh and before every hover/recording resize
-  (resizing the Dock posts no display notification). A Dock-only change never
-  collapses the notch island.
+  Hover controls grow it upward. The pill follows the Dock live (see
+  [Dock tracking](#dock-tracking)): it rests low while an auto-hidden Dock is
+  hidden and rises above the revealed Dock, including magnified icons and
+  their name label. A Dock-only change never collapses the notch island.
+
+### Dock tracking
+
+An auto-hidden bottom Dock reserves almost no work area, and a magnified Dock
+overflows the area it does reserve, so neither the work area nor preferences
+say where the Dock is. `dock_watch.rs` reads the Dock's accessibility tree
+instead: the `AXList` frame slides with the reveal, and its items report their
+magnified frames. Only frames are read (no titles, no screen capture).
+
+- While the pill placement is active, a worker samples the list at 2Hz, and at
+  ~30Hz while the pill is visible and the pointer is within 200pt of the
+  bottom edge or the Dock is showing. Item frames are read only while the Dock
+  shows.
+- A revealed Dock sets a limit 40pt above its tallest icon for the hover label.
+  The limit holds the highest clearance of one reveal, so magnification never
+  makes the pill bob, and clears after two consecutive hidden samples.
+- A visible pill glides: 120ms ease-out up, 200ms down. A hidden pill, Reduce
+  Motion, and the static fallback jump. Every move goes through `follow_dock`
+  on the main thread, which keeps the current size (a hover card stays
+  bottom-anchored) and moves Live Words with it. Resizes read the same
+  published limit, so the two never disagree.
+- A side Dock or a Dock on another display never moves the pill.
+- Without accessibility, or after three failed samples, the pill falls back to
+  a static reserve from the `com.apple.dock` preferences, cached in the display
+  snapshot: the larger of `1.5 × tilesize + 8pt` and, with magnification on,
+  `largesize + 52pt` (absent `largesize` means 128).
 
 Neither rendition uses `backdrop-filter`: the transparent webview has nothing
 behind the island to blur. Older `below_menu_bar` settings migrate to the pill.
@@ -150,8 +173,13 @@ Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
   geometry on the main thread.
 - Click-through live words follow the actual applied overlay frame: below the
   notch island, above the floating pill, centered and clamped to the work area,
-  with a 6pt gap. Native size is at most 460×104; height is capped by the
-  remaining work area. Interactive
+  with a 6pt gap. They anchor to the collapsed surface, never the hover
+  dropdown, so the native window does not move on hover. Instead it reserves
+  `dropdownH` of transparent room, and the card slides by `translateY` on the
+  overlay's `overlay-live-words-lift` event with the island's own easing. The
+  card and the dropdown move together, with no gap or snap on hover-off.
+  Native size is at most 460×(104 + 64); height is capped by the remaining
+  work area. Interactive
   Voice Query controls instead reserve conservative expanded clearance, so
   hover does not move actions underneath the pointer.
 - State-driven contractions first acknowledge a target while retaining larger
@@ -328,9 +356,11 @@ acceptance.
 
 App → General → **Live words** is on by default. Settings version 7 turns it on
 once for earlier installs, where it had shipped off; an explicit opt-out after
-that is kept. A dark card with a pulsing red dot wraps up to three lines and
-keeps the newest words in view. It sits in a 460×104 click-through window, below
-the notch island or above the floating pill. Existing APIs provide only whole
+that is kept. A dark card wraps up to three lines and
+keeps the newest words in view. It has no recording dot of its own: the island
+already shows one. The card shrink-wraps short text and stays centred on the
+island. It sits in a click-through window, below the notch island or above the
+floating pill. Existing APIs provide only whole
 provisional strings, so production renders tentative text only: it does not
 infer committed words or invent cadence. See
 [Live preview](transcription.md#live-preview) for the unchanged backend cadence.

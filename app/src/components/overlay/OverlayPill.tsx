@@ -3,6 +3,7 @@ import type { DictationStatus } from '../../lib/types';
 import { NOTCH_BAR_COUNT, PILL_BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
 import type { OverlayVisual } from './deriveVisual';
+import { PILL_BORDER } from './OverlayIsland';
 
 interface OverlayPillProps {
   geometry: OverlayGeometry;
@@ -52,7 +53,8 @@ export function OverlayPill({
 
   if (geometry.floating) {
     return (
-      <div className="overlay-pill-row flex items-center justify-center gap-2.5 px-3" style={{ height: topH }}>
+      // The capsule's hairline border takes layout space; centre the row inside it.
+      <div className="overlay-pill-row flex items-center justify-center gap-2.5 px-3" style={{ height: topH - 2 * PILL_BORDER }}>
         <div className="shrink-0 flex items-center justify-center">{indicator}</div>
         {delivery ? <DeliveryRetry {...retryProps} /> : (
           <Waveform barRefs={barRefs} count={PILL_BAR_COUNT} status={status} visible={visual.waveformVisible} height={16} />
@@ -194,7 +196,7 @@ function StatusIndicator({ visual, smartAutoSummary = null, deliveryCue = null }
           aria-label={indicator.slow ? 'still connecting microphone' : 'connecting microphone'}
         />
       ) : indicator.kind === 'recording' ? (
-        <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} />
+        <div className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ animation: 'pulse 0.8s ease-in-out infinite' }} role="img" aria-label="Recording" />
       ) : indicator.kind === 'meeting' ? (
         indicator.processing ? (
           <span className="block h-3 w-3 animate-spin rounded-full border-[1.5px] border-cyan-300/25 border-t-cyan-300" aria-label="finishing meeting transcript" />

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useDictationPartial } from '../../lib/hooks/useDictationPartial';
 import { useQueryAppearance } from '../../lib/hooks/useQueryAppearance';
 import { parseSettingsBlob } from '../../lib/settings';
+import { LIVE_WORDS_LIFT_EVENT, LIVE_WORDS_LIFT_REQUEST_EVENT, liveWordsLiftTransition } from '../../lib/overlayMotion';
 
 const MAX_VISIBLE_CHARS = 320;
 export function visiblePartial(text: string): string {
@@ -18,14 +19,18 @@ export function visiblePartial(text: string): string {
  * Stable text is only accepted explicitly from an authoritative stream. Today's
  * whole-string partial API has no commit boundary, so all of it is tentative.
  * The card wraps up to three lines and keeps the newest words in view; `above`
- * bottom-aligns it so it hugs the floating pill beneath the window. */
-export function DictationPreviewCard({ text, stableText = '', above = false }: {
-  text: string; stableText?: string; above?: boolean;
+ * bottom-aligns it so it hugs the floating pill beneath the window. It carries
+ * no recording dot: the island already shows recording state. `lift` moves the
+ * card clear of the island's hover dropdown, on the island's own curve. */
+export function DictationPreviewCard({ text, stableText = '', above = false, lift = 0 }: {
+  text: string; stableText?: string; above?: boolean; lift?: number;
 }) {
   if (!text && !stableText) return null;
   return <main className="live-words-window" data-above={above || undefined} aria-label="Live dictation preview">
-    <div className="live-words-card">
-      <span className="live-words-dot" aria-hidden="true" />
+    <div className="live-words-card" style={{
+      transform: lift ? `translateY(${above ? -lift : lift}px)` : undefined,
+      transition: liveWordsLiftTransition(above),
+    }}>
       <div className="live-words-text" role="status" aria-live="polite" aria-label="Words recognized so far">
         <p>
           {stableText && <><span className="live-words-stable">{visiblePartial(stableText)}</span>{' '}</>}
@@ -40,6 +45,20 @@ export function DictationPreviewApp() {
   useQueryAppearance();
   const [enabled, setEnabled] = useState(false);
   const [above, setAbove] = useState(false);
+  const [lift, setLift] = useState(0);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>(LIVE_WORDS_LIFT_EVENT, ({ payload }) => {
+      if (!disposed) setLift(typeof payload === 'number' && Number.isFinite(payload) && payload > 0 ? payload : 0);
+    }).then(fn => {
+      if (disposed) { fn(); return; }
+      unlisten = fn;
+      // Subscribed first, so the reply cannot be missed.
+      emitTo('overlay', LIVE_WORDS_LIFT_REQUEST_EVENT).catch(() => {});
+    }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   useEffect(() => {
     let disposed = false;
     let revision = 0;
@@ -73,5 +92,5 @@ export function DictationPreviewApp() {
     }).catch(() => { if (!disposed) setEnabled(false); });
     return () => { disposed = true; revision++; unlisten?.(); };
   }, []);
-  return <DictationPreviewCard text={useDictationPartial(enabled)} above={above} />;
+  return <DictationPreviewCard text={useDictationPartial(enabled)} above={above} lift={lift} />;
 }

@@ -14,7 +14,7 @@ import { OVERLAY_ISLAND_TRANSITION, OVERLAY_PILL_TRANSITION } from '../../lib/ov
  * grows before the reveal and shrinks after the collapse, so width and height
  * animate together inside it. Its children sit in a frame fixed at the window
  * width, centred, so they never reflow while the capsule resizes around them. */
-const PILL_BORDER = 1;
+export const PILL_BORDER = 1;
 export const OverlayIsland = forwardRef<HTMLDivElement, ComponentPropsWithoutRef<'div'> & {
   geometry: OverlayGeometry; expanded: boolean; active: boolean; tapMissed?: boolean;
 }>(function OverlayIsland({ geometry: g, expanded, active, tapMissed, children, ...props }, ref) {
