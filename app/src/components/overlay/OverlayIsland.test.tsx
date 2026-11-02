@@ -52,10 +52,17 @@ describe('OverlayIsland floating pill', () => {
     expect(frame().style.width).toBe(`${pillRecording.windowW - 2}px`);
   });
 
-  it('leaves the notch island at the window width without a frame', async () => {
+  it('leaves the notch island at the window width with a layout-neutral frame', async () => {
     const notched = geometryFixture.notched as OverlayGeometry;
     await render(notched, false);
     expect(island().style.width).toBe(`${notched.windowW}px`);
-    expect(frame()).toBeNull();
+    expect(frame().style.display).toBe('contents');
+  });
+
+  it('keeps its rows mounted across a placement switch', async () => {
+    await render(geometryFixture.recordingNotched as OverlayGeometry, false);
+    const row = container.querySelector('[data-testid="row"]');
+    await render(pillRecording, false);
+    expect(container.querySelector('[data-testid="row"]')).toBe(row);
   });
 });

@@ -46,9 +46,11 @@ export const OverlayIsland = forwardRef<HTMLDivElement, ComponentPropsWithoutRef
       // Inset only: the native window is exactly the island's size, so an
       // outer shadow would be clipped to a hard rectangle at its corners.
       boxShadow: tapMissed ? 'inset 0 -2px 0 rgba(245,158,11,0.9)' : 'none',
-    }}>{g.floating ? (
-      <div className="overlay-pill-frame" style={{
+    }}>
+      {/* Always mounted, layout-neutral for the notch: a placement switch must
+          not remount the rows and reset their state (e.g. the elapsed timer). */}
+      <div className="overlay-pill-frame" style={g.floating ? {
         display: 'flex', flexDirection: 'column-reverse', flexShrink: 0, width: g.windowW - 2 * PILL_BORDER,
-      }}>{children}</div>
-    ) : children}</div>;
+      } : { display: 'contents' }}>{children}</div>
+    </div>;
 });

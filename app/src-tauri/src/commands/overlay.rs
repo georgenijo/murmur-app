@@ -112,6 +112,9 @@ pub(crate) struct DisplaySnapshot {
     monitor_size: Option<(u32, u32)>,
     monitor_work_area: Option<(i32, i32, u32, u32)>,
     scale_factor: Option<f64>,
+    /// Tile size of an auto-hidden bottom Dock. Resizing it leaves the work
+    /// area unchanged, so it must invalidate placement on its own.
+    hidden_dock_tile: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -436,15 +439,27 @@ fn hidden_bottom_dock_tile() -> Option<f64> {
     })
 }
 
-/// Logical bottom edge the pill rests on for `monitor`.
+#[cfg(not(target_os = "macos"))]
+fn hidden_bottom_dock_tile() -> Option<f64> {
+    None
+}
+
+/// Logical bottom edge the pill rests on for `monitor`. The Dock preference
+/// comes from the cached display snapshot, so resizes never read preferences.
 #[cfg(target_os = "macos")]
-fn pill_bottom_for(monitor: &tauri::Monitor) -> f64 {
+fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
     let sf = monitor.scale_factor();
     let area = monitor.work_area();
+    let hidden_dock_tile = app
+        .state::<State>()
+        .display_snapshot
+        .lock_or_recover()
+        .as_ref()
+        .and_then(|snapshot| snapshot.hidden_dock_tile);
     pill_work_bottom(
         (monitor.position().y as f64 + monitor.size().height as f64) / sf,
         (area.position.y as f64 + area.size.height as f64) / sf,
-        hidden_bottom_dock_tile(),
+        hidden_dock_tile,
     )
 }
 
@@ -743,6 +758,7 @@ pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> Display
             )
         }),
         scale_factor: monitor.as_ref().map(|monitor| monitor.scale_factor()),
+        hidden_dock_tile: hidden_bottom_dock_tile(),
     }
 }
 
@@ -1054,7 +1070,12 @@ pub(crate) fn position_overlay_default(
         let applied_position = applied_overlay_position(requested_offset, g.floating);
         let (x, y) = if g.floating {
             pill_logical_position(
-                (work_left, work_top, work_right, pill_bottom_for(&monitor)),
+                (
+                    work_left,
+                    work_top,
+                    work_right,
+                    pill_bottom_for(overlay.app_handle(), &monitor),
+                ),
                 (overlay_w, overlay_h),
             )
         } else {
@@ -1287,7 +1308,12 @@ pub async fn set_overlay_expanded(
                         // Bottom-anchored: width changes keep the centre, height
                         // changes grow the hover card upward from the pill.
                         (x, y) = pill_logical_position(
-                            (left, work_top, right, pill_bottom_for(&monitor)),
+                            (
+                                left,
+                                work_top,
+                                right,
+                                pill_bottom_for(&dispatch_app, &monitor),
+                            ),
                             (applied.window_w, applied.window_h),
                         );
                     } else {
@@ -1418,7 +1444,12 @@ pub async fn set_overlay_vertical_offset(
                 let applied = applied_overlay_position(offset, floating);
                 let (x, y) = if floating {
                     pill_logical_position(
-                        (work_left, work_top, work_right, pill_bottom_for(&monitor)),
+                        (
+                            work_left,
+                            work_top,
+                            work_right,
+                            pill_bottom_for(&dispatch_app, &monitor),
+                        ),
                         (width, height),
                     )
                 } else {
@@ -1912,6 +1943,7 @@ mod tests {
             monitor_size: Some((3024, 1964)),
             monitor_work_area: Some((0, 48, 3024, 1916)),
             scale_factor: Some(2.0),
+            hidden_dock_tile: None,
         };
         assert_eq!(baseline, baseline.clone());
         for changed in [
@@ -1933,6 +1965,10 @@ mod tests {
             },
             DisplaySnapshot {
                 scale_factor: Some(1.0),
+                ..baseline.clone()
+            },
+            DisplaySnapshot {
+                hidden_dock_tile: Some(64.0),
                 ..baseline.clone()
             },
         ] {
