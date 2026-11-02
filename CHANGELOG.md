@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.58.2] - 2026-11-02
+
+### Fixed
+
+- Follow the Dock live with the floating pill: it rises clear of the revealed Dock, including magnified icons and their labels, and settles back once the Dock hides (#874).
+- Keep Live Words attached to the overlay while its hover controls open and close, without the large gap and snap on hover-off (#874).
+- Remove the duplicate recording dot from Live Words and centre the pill's waveform row (#874).
+
 ## [0.58.1] - 2026-11-01
 
 ### Fixed
