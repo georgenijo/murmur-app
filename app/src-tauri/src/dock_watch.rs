@@ -645,6 +645,11 @@ mod macos {
                     }
                 }
             }
+            // Covers binding, the list read and the last item too: a reading
+            // that took too long is already stale.
+            if Instant::now() >= deadline {
+                return DockReading::Unavailable;
+            }
             classify(list_frame, &items, display)
         }
     }
