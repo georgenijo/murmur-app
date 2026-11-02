@@ -490,6 +490,12 @@ fn hidden_bottom_dock_tile() -> Option<HiddenDock> {
 fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
     let sf = monitor.scale_factor();
     let area = monitor.work_area();
+    let display = pill_display(
+        (monitor.position().x, monitor.position().y),
+        (monitor.size().width, monitor.size().height),
+        (area.position.y, area.size.height),
+        sf,
+    );
     let hidden_dock_tile = app
         .state::<State>()
         .display_snapshot
@@ -497,11 +503,30 @@ fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
         .as_ref()
         .and_then(|snapshot| snapshot.hidden_dock_tile);
     pill_work_bottom(
-        (monitor.position().y as f64 + monitor.size().height as f64) / sf,
-        (area.position.y as f64 + area.size.height as f64) / sf,
+        display.bottom,
+        display.work_bottom,
         hidden_dock_tile,
-        crate::dock_watch::current_limit(),
+        crate::dock_watch::current_limit(display),
     )
+}
+
+/// A monitor's bounds and work-area bottom in global logical points, from
+/// physical pixels. Shared by placement and `dock_watch` so their displays
+/// compare equal.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pill_display(
+    (x, y): (i32, i32),
+    (width, height): (u32, u32),
+    (work_y, work_h): (i32, u32),
+    scale: f64,
+) -> crate::dock_watch::PillDisplay {
+    crate::dock_watch::PillDisplay {
+        left: x as f64 / scale,
+        top: y as f64 / scale,
+        right: (x as f64 + width as f64) / scale,
+        bottom: (y as f64 + height as f64) / scale,
+        work_bottom: (work_y as f64 + work_h as f64) / scale,
+    }
 }
 
 /// Where `dock_watch` should look: the pill's display while the pill placement
@@ -519,17 +544,14 @@ pub(crate) fn dock_watch_context(
     let scale = snapshot
         .scale_factor
         .filter(|s| s.is_finite() && *s > 0.0)?;
-    let (x, y) = snapshot.monitor_position?;
-    let (width, height) = snapshot.monitor_size?;
     let (_, work_y, _, work_h) = snapshot.monitor_work_area?;
     Some(crate::dock_watch::WatchContext {
-        display: crate::dock_watch::PillDisplay {
-            left: x as f64 / scale,
-            top: y as f64 / scale,
-            right: (x as f64 + width as f64) / scale,
-            bottom: (y as f64 + height as f64) / scale,
-            work_bottom: (work_y as f64 + work_h as f64) / scale,
-        },
+        display: pill_display(
+            snapshot.monitor_position?,
+            snapshot.monitor_size?,
+            (work_y, work_h),
+            scale,
+        ),
         visible: layout.activity != OverlayActivity::Idle,
     })
 }
@@ -578,6 +600,9 @@ pub(crate) fn follow_dock(app: &tauri::AppHandle) {
         }
         *state.overlay_frame.lock_or_recover() = None;
         if let Err(error) = overlay.set_position(tauri::LogicalPosition::new(frame.x, y)) {
+            // The window did not move: keep its frame so the next Dock change
+            // can still follow.
+            remember_overlay_frame(&handle, frame);
             tracing::warn!(target: "system", "follow_dock: set_position failed: {}", error);
             return;
         }
@@ -750,8 +775,9 @@ fn dictation_preview_fit_for_frame(
     let rightmost_x = (work_area.right - preview_width).max(work_area.left);
     let x = (frame.x + (frame.width - preview_width) / 2.0).clamp(work_area.left, rightmost_x);
     if above {
-        let top = (frame.y - POPOVER_GAP - preview_height).max(work_area.top);
-        return Some((x, top, preview_height.min((frame.y - top).max(0.0))));
+        let bottom = frame.y - POPOVER_GAP;
+        let top = (bottom - preview_height).max(work_area.top);
+        return Some((x, top, preview_height.min((bottom - top).max(0.0))));
     }
     let top = (frame.y + frame.height + POPOVER_GAP).clamp(work_area.top, work_area.bottom);
     Some((
@@ -2276,7 +2302,7 @@ mod tests {
             dictation_preview_fit_for_frame(work_area, (560.0, 44.0), Some(pill_frame), true),
             Some((1000.0, 1302.0, 44.0))
         );
-        // A short work area clips the preview rather than overlapping the pill.
+        // A short work area clips the preview and still keeps the gap.
         assert_eq!(
             dictation_preview_fit_for_frame(
                 PopoverWorkArea {
@@ -2287,7 +2313,23 @@ mod tests {
                 Some(pill_frame),
                 true
             ),
-            Some((1000.0, 1330.0, 22.0))
+            Some((1000.0, 1330.0, 16.0))
+        );
+        // The full request, card plus hover room, clamps the same way.
+        assert_eq!(
+            dictation_preview_fit_for_frame(
+                PopoverWorkArea {
+                    top: 24.0,
+                    ..work_area
+                },
+                (560.0, 104.0 + DROPDOWN_H),
+                Some(OverlayFrame {
+                    y: 180.0,
+                    ..pill_frame
+                }),
+                true
+            ),
+            Some((1000.0, 24.0, 180.0 - POPOVER_GAP - 24.0))
         );
     }
 

@@ -57,6 +57,9 @@ export const OVERLAY_PILL_TRANSITION =
  * the two never separate while the native window waits to shrink.
  */
 export const LIVE_WORDS_LIFT_EVENT = 'overlay-live-words-lift';
+/** Sent by a (re)loaded Live Words window once it listens; the overlay replies
+ * with the current lift so a missed hover transition never strands the card. */
+export const LIVE_WORDS_LIFT_REQUEST_EVENT = 'overlay-live-words-lift-request';
 export function liveWordsLiftTransition(floating: boolean): string {
   return `transform ${OVERLAY_HEIGHT_MS}ms ${floating ? OVERLAY_PILL_EASE : OVERLAY_SPRING}`;
 }

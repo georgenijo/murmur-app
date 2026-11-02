@@ -6,8 +6,9 @@ const mocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
   listen: vi.fn(),
   invoke: vi.fn().mockResolvedValue(undefined),
+  emitTo: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen, emitTo: mocks.emitTo }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 
 import { DictationPreviewApp, DictationPreviewCard, visiblePartial } from './DictationPreviewApp';
@@ -51,6 +52,7 @@ describe('DictationPreviewApp', () => {
     mocks.invoke.mockReset().mockImplementation(async (command: string) => command === 'load_settings_blob'
       ? JSON.stringify({ settingsVersion: 7, overlayLiveWords: true }) : undefined);
     mocks.listen.mockReset();
+    mocks.emitTo.mockClear();
     mocks.listen.mockImplementation(async (name: string, handler: (event: { payload: unknown }) => void) => {
       mocks.listeners.set(name, handler);
       return () => mocks.listeners.delete(name);
@@ -97,6 +99,13 @@ describe('DictationPreviewApp', () => {
     expect(card.style.transform).toBe('translateY(64px)');
     await act(async () => mocks.listeners.get('overlay-live-words-lift')?.({ payload: 'bogus' }));
     expect(card.style.transform).toBe('');
+  });
+
+  it('asks the overlay for the current lift only after it is listening', () => {
+    expect(mocks.emitTo).toHaveBeenCalledWith('overlay', 'overlay-live-words-lift-request');
+    const listened = mocks.listen.mock.calls.findIndex(([name]) => name === 'overlay-live-words-lift');
+    expect(listened).toBeGreaterThanOrEqual(0);
+    expect(mocks.listen.mock.invocationCallOrder[listened]).toBeLessThan(mocks.emitTo.mock.invocationCallOrder[0]);
   });
 
   it('clears instantly when disabled and does not resurrect a stopped generation on re-enable', async () => {

@@ -32,6 +32,9 @@ const HIDDEN_CONFIRMATIONS: u8 = 2;
 const FAILURES_BEFORE_FALLBACK: u8 = 3;
 /// Never walk more Dock items than this in one sample.
 const MAX_ITEMS: usize = 96;
+/// Wall-clock budget for one whole sample. A Dock that answers every request
+/// just under the per-request timeout must not stall the worker for seconds.
+const SAMPLE_BUDGET: Duration = Duration::from_millis(40);
 
 /// Where the pill must stay above, in global logical y (top-left origin).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,20 +47,30 @@ pub(crate) enum DockLimit {
     Above(f64),
 }
 
-static LIMIT: Mutex<DockLimit> = Mutex::new(DockLimit::Unknown);
+/// The published limit and the display it was measured against.
+static LIMIT: Mutex<(DockLimit, Option<PillDisplay>)> = Mutex::new((DockLimit::Unknown, None));
 
-pub(crate) fn current_limit() -> DockLimit {
-    *LIMIT
+/// The live limit for the pill on `display`. A limit measured for another
+/// display configuration is `Unknown`, so a display change falls back to the
+/// static reserve until the worker has sampled the new layout.
+pub(crate) fn current_limit(display: PillDisplay) -> DockLimit {
+    let (limit, measured) = *LIMIT
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if measured.is_some_and(|measured| measured.same_bounds(display)) {
+        limit
+    } else {
+        DockLimit::Unknown
+    }
 }
 
-fn publish(limit: DockLimit) -> bool {
+fn publish(limit: DockLimit, display: Option<PillDisplay>) -> bool {
     let mut current = LIMIT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let changed = *current != limit;
-    *current = limit;
+    let next = (limit, display);
+    let changed = *current != next;
+    *current = next;
     changed
 }
 
@@ -88,6 +101,21 @@ pub(crate) struct PillDisplay {
     pub(crate) bottom: f64,
     /// Bottom of the work area: where the pill rests with the Dock clear.
     pub(crate) work_bottom: f64,
+}
+
+impl PillDisplay {
+    /// Same display bounds, ignoring the work area (which the Dock itself moves).
+    pub(crate) fn same_bounds(self, other: PillDisplay) -> bool {
+        const EPSILON: f64 = 0.5;
+        [
+            (self.left, other.left),
+            (self.top, other.top),
+            (self.right, other.right),
+            (self.bottom, other.bottom),
+        ]
+        .iter()
+        .all(|(a, b)| (a - b).abs() < EPSILON)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -308,53 +336,119 @@ fn next_interval(context: WatchContext, pointer_y: Option<f64>, limit: DockLimit
     }
 }
 
-/// Start the Dock worker. `context` returns `None` while the pill placement is
-/// off; `reposition` moves the pill after the published limit changes.
+/// What the sampler hands the animator.
+enum Update {
+    /// Pill placement is off: drop all history.
+    Off,
+    Target {
+        display: PillDisplay,
+        target: DockLimit,
+        reduce_motion: bool,
+    },
+}
+
+/// Start the Dock workers. `context` returns `None` while the pill placement
+/// is off; `reposition` moves the pill after the published limit changes.
+/// Sampling and gliding run on separate threads so a slow Dock never freezes
+/// a glide mid-flight.
 #[cfg(target_os = "macos")]
 pub(crate) fn start(
     context: impl Fn() -> Option<WatchContext> + Send + 'static,
     reposition: impl Fn() + Send + 'static,
 ) {
-    let spawned = std::thread::Builder::new()
+    let (updates, received) = std::sync::mpsc::channel::<Update>();
+    let animator = std::thread::Builder::new()
+        .name("murmur-dock-glide".to_string())
+        .spawn(move || animate(received, reposition));
+    if let Err(error) = animator {
+        tracing::warn!(target: "system", "dock glide worker failed to start: {}", error);
+        return;
+    }
+    let sampler = std::thread::Builder::new()
         .name("murmur-dock-watch".to_string())
         .spawn(move || {
             let mut sampler = macos::DockSampler::default();
             let mut tracker = DockTracker::default();
-            let mut animator = LimitAnimator::default();
+            let mut watched: Option<PillDisplay> = None;
             loop {
                 let Some(context) = context() else {
-                    publish(DockLimit::Unknown);
-                    sampler = macos::DockSampler::default();
-                    tracker = DockTracker::default();
-                    animator = LimitAnimator::default();
+                    if watched.take().is_some() {
+                        sampler = macos::DockSampler::default();
+                        tracker = DockTracker::default();
+                        if updates.send(Update::Off).is_err() {
+                            return;
+                        }
+                    }
                     std::thread::sleep(IDLE_INTERVAL);
                     continue;
                 };
-                let reading = objc2::rc::autoreleasepool(|_| sampler.sample(context.display));
+                // Readings from another display layout mean nothing here.
+                if !watched.is_some_and(|display| display.same_bounds(context.display)) {
+                    tracker = DockTracker::default();
+                }
+                watched = Some(context.display);
+                let reading = objc2::rc::autoreleasepool(|_| {
+                    sampler.sample(context.display, Instant::now() + SAMPLE_BUDGET)
+                });
                 let target = tracker.observe(reading);
-                let now = Instant::now();
                 // A hidden pill jumps: nobody sees it, and it must already be
                 // in place when it appears.
-                let reduce = !context.visible || macos::reduce_motion();
-                if publish(animator.retarget(target, context.display, reduce, now)) {
-                    reposition();
+                let reduce_motion = !context.visible || macos::reduce_motion();
+                let update = Update::Target {
+                    display: context.display,
+                    target,
+                    reduce_motion,
+                };
+                if updates.send(update).is_err() {
+                    return;
                 }
-                let interval = next_interval(context, macos::pointer_y(), target);
-                let deadline = Instant::now() + interval;
-                // Glide frames run between samples; a new sample retargets.
-                while animator.animating() && Instant::now() < deadline {
-                    std::thread::sleep(FRAME_INTERVAL);
-                    if animator.step(Instant::now()).is_some_and(publish) {
-                        reposition();
-                    }
-                }
-                if let Some(rest) = deadline.checked_duration_since(Instant::now()) {
-                    std::thread::sleep(rest);
-                }
+                std::thread::sleep(next_interval(context, macos::pointer_y(), target));
             }
         });
-    if let Err(error) = spawned {
+    if let Err(error) = sampler {
         tracing::warn!(target: "system", "dock watch worker failed to start: {}", error);
+    }
+}
+
+/// Publishes settled limits and glide frames as the sampler's targets arrive.
+#[cfg(target_os = "macos")]
+fn animate(updates: std::sync::mpsc::Receiver<Update>, reposition: impl Fn()) {
+    use std::sync::mpsc::RecvTimeoutError;
+    let mut animator = LimitAnimator::default();
+    let mut shown_on: Option<PillDisplay> = None;
+    loop {
+        let wait = if animator.animating() {
+            FRAME_INTERVAL
+        } else {
+            Duration::from_secs(60)
+        };
+        let published = match updates.recv_timeout(wait) {
+            Ok(Update::Off) => {
+                animator = LimitAnimator::default();
+                shown_on = None;
+                publish(DockLimit::Unknown, None)
+            }
+            Ok(Update::Target {
+                display,
+                target,
+                reduce_motion,
+            }) => {
+                // Never glide from a position on another display layout.
+                if !shown_on.is_some_and(|shown| shown.same_bounds(display)) {
+                    animator = LimitAnimator::default();
+                }
+                shown_on = Some(display);
+                let limit = animator.retarget(target, display, reduce_motion, Instant::now());
+                publish(limit, Some(display))
+            }
+            Err(RecvTimeoutError::Timeout) => animator
+                .step(Instant::now())
+                .is_some_and(|limit| publish(limit, shown_on)),
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        if published {
+            reposition();
+        }
     }
 }
 
@@ -364,6 +458,7 @@ mod macos {
     use core_foundation::base::TCFType;
     use core_foundation::string::{CFString, CFStringRef};
     use std::ffi::c_void;
+    use std::time::Instant;
 
     type AXUIElementRef = *const c_void;
     type CFTypeRef = *const c_void;
@@ -390,7 +485,7 @@ mod macos {
     }
 
     const AX_SUCCESS: i32 = 0;
-    const AX_TIMEOUT_SECONDS: f32 = 0.050;
+    const AX_TIMEOUT_SECONDS: f32 = 0.025;
     // kAXValueCGPointType / kAXValueCGSizeType (HIServices AXValue.h).
     const AX_VALUE_CGPOINT_TYPE: u32 = 1;
     const AX_VALUE_CGSIZE_TYPE: u32 = 2;
@@ -514,7 +609,9 @@ mod macos {
             Some((app, list))
         }
 
-        pub(super) fn sample(&mut self, display: PillDisplay) -> DockReading {
+        /// One reading, or `Unavailable` when any part of it failed or ran
+        /// past `deadline`: a partial walk could miss the tallest icon.
+        pub(super) fn sample(&mut self, display: PillDisplay, deadline: Instant) -> DockReading {
             if self.list.is_none() {
                 self.list = Self::bind();
             }
@@ -528,17 +625,23 @@ mod macos {
             // Item frames only matter while the Dock shows; skip the IPC
             // otherwise.
             let mut items = Vec::new();
-            if let reading @ DockReading::Exposed { .. } = classify(list_frame, &[], display) {
+            if let DockReading::Exposed { .. } = classify(list_frame, &[], display) {
                 let Some(children) = children(list.0) else {
                     self.list = None;
                     return DockReading::Unavailable;
                 };
                 for child in &children {
+                    if Instant::now() >= deadline {
+                        return DockReading::Unavailable;
+                    }
                     match frame(child.0) {
                         Some(rect) => items.push(rect),
-                        // A failed item stops the sample rather than
-                        // accumulating per-item timeouts.
-                        None => return reading,
+                        // The item list changed under us, or the Dock is
+                        // wedged: rebind next time.
+                        None => {
+                            self.list = None;
+                            return DockReading::Unavailable;
+                        }
                     }
                 }
             }
@@ -583,7 +686,9 @@ mod tests {
         let mut tracker = DockTracker::default();
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(6) {
-            let reading = objc2::rc::autoreleasepool(|_| sampler.sample(display));
+            let reading = objc2::rc::autoreleasepool(|_| {
+                sampler.sample(display, Instant::now() + SAMPLE_BUDGET)
+            });
             println!(
                 "{:>5}ms {:?} -> {:?}",
                 started.elapsed().as_millis(),
@@ -779,6 +884,31 @@ mod tests {
             animator.retarget(DockLimit::Clear, DISPLAY, false, start + RISE / 2),
             DockLimit::Above(mid)
         );
+    }
+
+    #[test]
+    fn a_published_limit_only_applies_to_the_display_it_was_measured_on() {
+        publish(DockLimit::Above(887.0), Some(DISPLAY));
+        assert_eq!(current_limit(DISPLAY), DockLimit::Above(887.0));
+        // The Dock moving the work area is still the same display.
+        assert_eq!(
+            current_limit(PillDisplay {
+                work_bottom: 1000.0,
+                ..DISPLAY
+            }),
+            DockLimit::Above(887.0)
+        );
+        // A new resolution falls back to the static reserve until resampled.
+        assert_eq!(
+            current_limit(PillDisplay {
+                right: 2560.0,
+                bottom: 1440.0,
+                ..DISPLAY
+            }),
+            DockLimit::Unknown
+        );
+        publish(DockLimit::Unknown, None);
+        assert_eq!(current_limit(DISPLAY), DockLimit::Unknown);
     }
 
     #[test]

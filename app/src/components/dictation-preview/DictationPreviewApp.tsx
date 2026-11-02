@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useDictationPartial } from '../../lib/hooks/useDictationPartial';
 import { useQueryAppearance } from '../../lib/hooks/useQueryAppearance';
 import { parseSettingsBlob } from '../../lib/settings';
-import { LIVE_WORDS_LIFT_EVENT, liveWordsLiftTransition } from '../../lib/overlayMotion';
+import { LIVE_WORDS_LIFT_EVENT, LIVE_WORDS_LIFT_REQUEST_EVENT, liveWordsLiftTransition } from '../../lib/overlayMotion';
 
 const MAX_VISIBLE_CHARS = 320;
 export function visiblePartial(text: string): string {
@@ -51,7 +51,12 @@ export function DictationPreviewApp() {
     let unlisten: (() => void) | undefined;
     void listen<unknown>(LIVE_WORDS_LIFT_EVENT, ({ payload }) => {
       if (!disposed) setLift(typeof payload === 'number' && Number.isFinite(payload) && payload > 0 ? payload : 0);
-    }).then(fn => { if (disposed) fn(); else unlisten = fn; }).catch(() => {});
+    }).then(fn => {
+      if (disposed) { fn(); return; }
+      unlisten = fn;
+      // Subscribed first, so the reply cannot be missed.
+      emitTo('overlay', LIVE_WORDS_LIFT_REQUEST_EVENT).catch(() => {});
+    }).catch(() => {});
     return () => { disposed = true; unlisten?.(); };
   }, []);
   useEffect(() => {
