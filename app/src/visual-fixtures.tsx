@@ -417,6 +417,7 @@ mockIPC((command, payload) => {
     }
     return { state: 'blocked', message: 'Smart Auto fixture received an invalid request.' };
   }
+  if (command === 'smart_turn_model_status') return { state: query.get('smartTurn') === 'ready' ? 'ready' : 'notDownloaded', sizeBytes: 9_100_000 };
   if (command === 'get_audio_input_inventory') {
     return {
       schemaVersion: 2,

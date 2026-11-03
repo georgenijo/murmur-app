@@ -1,3 +1,4 @@
+import { ChevronDown } from 'lucide-react';
 import { createContext, useContext, useId, useRef, type ReactNode } from 'react';
 import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
 import { SettingsBranch } from './SettingsBranch';
@@ -50,7 +51,8 @@ export function SettingsDisclosure({ title, description, layout, targetId, child
     <div data-setting-target={targetId} className="settings-advanced">
       <button ref={buttonRef} type="button" aria-expanded={open} aria-controls={contentId}
         className="settings-advanced-toggle" onClick={() => state?.setOpen(!open)}>
-        {title} <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span>{title}</span>
+        <ChevronDown aria-hidden="true" className="settings-advanced-chevron" />
       </button>
       {description && <p className="settings-row-description">{description}</p>}
       <SettingsBranch id={contentId} open={open} unmountOnClose restoreFocus={() => buttonRef.current}

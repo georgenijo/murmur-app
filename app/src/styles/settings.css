@@ -340,7 +340,8 @@
   }
 
   .settings-dependent-branch,
-  .settings-dependent-branch-content {
+  .settings-dependent-branch-content,
+  .settings-advanced-chevron {
     transition: none;
   }
 }
@@ -389,6 +390,8 @@
 .settings-rows > * + * { border-top: 1px solid var(--settings-divider); }
 .settings-setting-row { container: settings-row / inline-size; min-width: 0; }
 .settings-setting-row:hover { background: transparent; }
+.settings-row-layout[data-align='start'] { align-items: start; }
+.settings-row-layout[data-align='start'] > .settings-title-description > .settings-row-title { min-height: var(--ui-control-standard, 32px); }
 .settings-row-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(var(--settings-control-min), auto); gap: var(--settings-control-gap); align-items: center; }
 .settings-row-controls { max-width: var(--settings-control-max); justify-self: end; display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
 .settings-row-controls > :not([role='switch']) { max-width: 100%; }
@@ -400,9 +403,9 @@
 .settings-reset { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--murmur-on-surface-variant); }
 .settings-reset svg { width: var(--settings-reset-icon); height: var(--settings-reset-icon); }
 .settings-reset:hover { background: var(--murmur-surface-container-high); }
-.settings-setting-row[data-disabled], .settings-unavailable-rows { opacity: var(--ui-disabled-opacity); color: var(--murmur-on-surface-variant); }
+.settings-setting-row[data-disabled], .settings-dependent-card[data-disabled], .settings-unavailable-rows { opacity: var(--ui-disabled-opacity); color: var(--murmur-on-surface-variant); }
 /* Avoid compounding disabled opacity on controls inside disabled rows. */
-.settings-setting-row[data-disabled] :is(:disabled, [data-disabled]) { opacity: 1; }
+.settings-setting-row[data-disabled] :is(:disabled, [data-disabled]), .settings-dependent-card[data-disabled] :is(:disabled, [data-disabled]) { opacity: 1; }
 .settings-unavailable { background: var(--settings-unavailable-bg); }
 .settings-unavailable-notice { display: flex; align-items: flex-start; gap: 8px; padding: 8px var(--settings-row-x); font-size: 12px; line-height: 18px; color: var(--murmur-on-surface-variant); }
 .settings-unavailable-notice svg { width: 14px; height: 14px; flex: none; color: var(--murmur-warning); margin-top: 2px; }
@@ -412,12 +415,19 @@
   .settings-row-controls > :not([role='switch']) { flex: 1; }
 }
 .settings-rows > .settings-dependent-branch { border-top: 0; padding: 0; }
-.settings-dependent-branch-content.settings-stack > * { margin: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-top: 1px solid var(--settings-divider); }
+/* Advanced stacks are excluded: their children keep their own box (calibration
+   card, quiet buttons). :where() keeps the specificity of the rules below. */
+.settings-dependent-branch-content.settings-stack:where(:not(.settings-advanced-stack > .settings-dependent-branch-clip > *)) > * { margin: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-top: 1px solid var(--settings-divider); }
 .settings-dependent-branch-content.settings-stack > .settings-dependent-branch { padding: 0; border: 0; }
 .settings-stack > .settings-dependent-branch { margin-top: 0; }
-.settings-advanced-toggle { display: inline-flex; align-items: center; gap: 4px; color: var(--murmur-on-surface-variant); font-size: 12px; line-height: 18px; font-weight: 500; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
+.settings-advanced-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 20px; padding: 0; text-align: left; color: var(--murmur-on-surface); font-size: 14px; line-height: 20px; font-weight: 500; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .settings-advanced-toggle:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
-.settings-advanced > .settings-dependent-branch { margin-inline: calc(-1 * var(--settings-row-x)); }
+.settings-advanced-chevron { width: 16px; height: 16px; flex: none; color: var(--murmur-on-surface-variant); transition: transform 150ms ease-out; }
+.settings-advanced-toggle[aria-expanded='true'] .settings-advanced-chevron { transform: rotate(180deg); }
+/* Rows reach the card edge so their dividers do; stacks stay inside the row inset. */
+.settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
+.settings-advanced-stack .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
+.settings-advanced-stack .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
 .settings-advanced > .settings-row-description { margin-bottom: 0; }
 .settings-rows-nested { margin-top: var(--settings-row-pad); border-top: 1px solid var(--settings-divider); }
 .settings-rows-nested > * { padding-inline: 0; }
