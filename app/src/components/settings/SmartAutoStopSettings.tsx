@@ -66,19 +66,21 @@ export function SmartAutoStopSettings({
   };
 
   const ready = status?.state === 'ready';
+  // One rule for the whole feature: the model card dims with its parent row.
+  const parentDisabled = isRecording || (!enabled && !silenceAutoStopOn);
   const busy = operation !== 'idle' || status?.state === 'downloading';
 
   return (
     <div data-setting-target="smart-auto-stop" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <SettingsRow title="Smart Auto-Stop (experimental)" description="At each pause, a small local model listens to how you stopped speaking and finishes the recording early when you sound done. Stop on Silence stays the longest it will wait, so this needs Stop on Silence on. Without the model it changes nothing." onReset={enabled !== DEFAULT_SETTINGS.smartAutoStopEnabled ? () => onEnabledChange(DEFAULT_SETTINGS.smartAutoStopEnabled) : undefined} disabled={isRecording || (!enabled && !silenceAutoStopOn)} control={<AnimatedSwitch
+      <SettingsRow title="Smart Auto-Stop (experimental)" description="At each pause, a small local model listens to how you stopped speaking and finishes the recording early when you sound done. Stop on Silence stays the longest it will wait, so this needs Stop on Silence on. Without the model it changes nothing." onReset={enabled !== DEFAULT_SETTINGS.smartAutoStopEnabled ? () => onEnabledChange(DEFAULT_SETTINGS.smartAutoStopEnabled) : undefined} disabled={parentDisabled} control={<AnimatedSwitch
           size="md"
           checked={enabled}
-          disabled={isRecording || (!enabled && !silenceAutoStopOn)}
+          disabled={parentDisabled}
           aria-label="Smart Auto-Stop"
           onCheckedChange={() => onEnabledChange(!enabled)}
         />} />
 
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-outline-variant/30 px-3 py-2.5">
+      <div data-smart-auto-model data-disabled={parentDisabled || undefined} className="settings-dependent-card flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-outline-variant/30 px-3 py-2.5">
         <div>
           <p className="text-xs font-semibold text-on-surface">End-of-turn model</p>
           <p className="mt-0.5 text-[11px] text-on-surface-variant">
