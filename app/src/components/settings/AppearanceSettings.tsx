@@ -176,6 +176,7 @@ export function AppearanceSettings() {
   const [communityOpen, setCommunityOpen] = useState(false);
   const [customEditorOpen, setCustomEditorOpen] = useState(false);
   const editorOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const createThemeRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const finishEditor = () => {
     const invalid = Array.from(editorRef.current?.querySelectorAll<HTMLInputElement>('input[pattern]') ?? [])
@@ -333,6 +334,7 @@ export function AppearanceSettings() {
       </fieldset>
 
       <ThemeLibrary
+        createThemeRef={createThemeRef}
         onBrowse={() => setCommunityOpen(true)}
         onImport={() => void importTheme()}
         onCustomize={opener => { editorOpenerRef.current = opener; setCustomEditorOpen(true); }}
@@ -348,7 +350,8 @@ export function AppearanceSettings() {
       )}
 
       {customEditorOpen && (
-        <ThemeEditorDialog onClose={() => setCustomEditorOpen(false)} contentRef={editorRef} restoreFocus={() => editorOpenerRef.current}>
+        <ThemeEditorDialog onClose={() => setCustomEditorOpen(false)} contentRef={editorRef}
+          restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : createThemeRef.current}>
             <div className="flex shrink-0 items-start justify-between gap-4">
               <div>
                 <h2 id="theme-editor-title" className="text-base font-semibold text-on-surface">Create theme</h2>

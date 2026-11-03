@@ -1,5 +1,5 @@
 import { save } from '@tauri-apps/plugin-dialog';
-import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useMemo, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
 import {
   availableThemeId,
   BUILTIN_THEME_LIBRARY_ENTRIES,
@@ -18,6 +18,7 @@ interface Props {
   onBrowse: () => void;
   onImport: () => void;
   onCustomize: (opener: HTMLButtonElement) => void;
+  createThemeRef?: Ref<HTMLButtonElement>;
 }
 
 function SunIcon({ className = 'h-3 w-3' }: { className?: string }) {
@@ -371,7 +372,7 @@ function CollectionCard({
   );
 }
 
-export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
+export function ThemeLibrary({ onBrowse, onImport, onCustomize, createThemeRef }: Props) {
   const appearance = useAppearance();
   const selection = effectiveAppearanceSelection(
     appearance.document,
@@ -490,7 +491,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 pt-1">
         <h2 id="themes-heading" className="text-sm font-medium text-on-surface">Themes</h2>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={event => onCustomize(event.currentTarget)} className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface">
+          <button ref={createThemeRef} type="button" onClick={event => onCustomize(event.currentTarget)} className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface">
             <span aria-hidden="true">＋</span> Create theme
           </button>
           <div

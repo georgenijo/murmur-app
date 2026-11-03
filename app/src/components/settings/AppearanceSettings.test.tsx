@@ -158,6 +158,33 @@ describe("AppearanceSettings", () => {
     expect(document.activeElement).toBe(opener);
   });
 
+  it.each(['Done', 'Escape', 'Close'])('restores Create theme after Reset removes the Custom opener (%s)', async (close) => {
+    mocks.controller!.document.theme = { version: 1, presetId: 'custom', accent: '#123456' };
+    await act(async () => root.render(<AppearanceSettings />));
+    const opener = container.querySelector<HTMLButtonElement>('[aria-label="Edit Custom"]')!;
+    expect(opener).not.toBeNull();
+    await act(async () => opener.click());
+    mocks.controller!.reset = vi.fn(async () => {
+      mocks.controller!.document.theme = { version: 1, presetId: 'sonic' };
+      root.render(<AppearanceSettings />);
+    });
+    const reset = Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'Reset to Sonic')!;
+    await act(async () => reset.click());
+    expect(opener.isConnected).toBe(false);
+    await act(async () => {
+      if (close === 'Escape') {
+        document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      } else if (close === 'Close') {
+        container.querySelector<HTMLButtonElement>('[aria-label="Close theme editor"]')!.click();
+      } else {
+        Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'Done')!.click();
+      }
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const fallback = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('Create theme'));
+    expect(document.activeElement).toBe(fallback);
+  });
+
   it("keeps System distinct from its resolved appearance and follows external changes", async () => {
     mocks.controller!.resolvedAppearance = "dark";
     await act(async () => root.render(<AppearanceSettings />));
