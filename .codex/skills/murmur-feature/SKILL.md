@@ -2,7 +2,7 @@
 name: murmur-feature
 description: >-
   End-to-end Murmur feature delivery in Codex: GitHub issue worktree (work
-  flow), plan and implement from prompts/PROMPT.md, self-review, native app
+  flow), plan and implement, self-review, native app
   smoke test via Computer Use, PR creation, validation, and merge when green.
   Use when the user invokes /feature, ships a feature from an issue number,
   or wants plan + build + review + test + merge in one workflow.
@@ -10,7 +10,7 @@ description: >-
 
 # Murmur Feature — Plan → Ship → Merge
 
-Single Codex workflow combining **codex-work** (issue worktree + `PROMPT.md`) and **murmur-pr-test** (checks, native app, merge). Complete the independent review required by the working agreements.
+Single Codex workflow combining **codex-work** (issue worktree + assignment) and **murmur-pr-test** (checks, native app, merge). Complete the independent review required by the working agreements.
 
 **Repo:** `georgenijo/murmur-app`
 
@@ -43,11 +43,11 @@ Record: issue #, title, worktree path, branch name.
 
 ---
 
-## Phase 2 — Plan (`prompts/PROMPT.md`)
+## Phase 2 — Plan
 
-Follow the assignment and **PROMPT.md** sections 1–4:
+Follow the assignment:
 
-1. Load context (`CLAUDE.md`, `CHANGELOG.md`, relevant `docs/features/`, etc.).
+1. Load context (`CLAUDE.md` and the `docs/features/` files relevant to the issue).
 2. Silent health check (`git status` in worktree).
 3. Read issue body from the assignment — do not re-fetch unless the user asks.
 4. **Plan mode:** design approach (files, risks, tests). **Wait for user approval before any code.**
@@ -58,7 +58,7 @@ No scope creep beyond the issue.
 
 ## Phase 3 — Implement
 
-After approval, implement exactly the plan (PROMPT.md §5):
+After approval, implement exactly the plan:
 
 - Match project patterns in `CLAUDE.md` / `AGENTS.md`.
 - Verify all app UI and behavior in the native app, including settings. Follow the agent guide for Computer Use and allowed native UI tool fallbacks.

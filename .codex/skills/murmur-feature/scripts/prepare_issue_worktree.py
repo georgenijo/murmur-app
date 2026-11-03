@@ -365,11 +365,6 @@ def decide_or_create_worktree(
     return "created worktree and branch from origin/default"
 
 
-def load_prompt(root: Path) -> str:
-    prompt_path = root / "prompts" / "PROMPT.md"
-    return prompt_path.read_text() if prompt_path.exists() else ""
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare a GitHub issue worktree for Codex.")
     parser.add_argument("issue", help="GitHub issue number, e.g. 152")
@@ -419,10 +414,7 @@ def main() -> int:
                 no_fetch=ns.no_fetch,
             )
 
-    base_prompt = load_prompt(root)
-    assignment = f"""{base_prompt}
-
-## Your Assignment
+    assignment = f"""## Your Assignment
 
 You are working on GitHub Issue #{ns.issue}: {title}
 
