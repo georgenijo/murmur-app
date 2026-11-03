@@ -379,6 +379,11 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
   await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
   await expect(customizationList.getByRole('button')).toHaveCount(5);
+  expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
+  for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes', 'Selected-text rewrite']) {
+    await expect(customizationList.getByRole('button', { name: new RegExp(`^${label}`) })).toHaveCount(1);
+  }
+  await expect(customizationList).not.toContainText(/\b0[1-5]\b/);
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub.png');
 
   await voiceCommands.click();

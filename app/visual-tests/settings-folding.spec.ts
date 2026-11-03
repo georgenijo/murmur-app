@@ -16,7 +16,7 @@ for (const [pane, label, sheet] of [
   ['text', 'Manage project scan', 'Project scan'],
   ['ai-transform', 'Manage', 'Saved transforms'],
   ['delivery', 'Manage app overrides', 'App overrides'],
-  ['customize', '02 Voice commands', 'Voice commands'],
+  ['customize', 'Voice commands', 'Voice commands'],
   ['modes', 'Add an app', 'App overrides'],
   ['text', 'Project scan', 'Project scan'],
 ] as const) {
@@ -63,11 +63,16 @@ for (const appearance of ['light', 'dark']) {
   test(`${appearance} browser site rows fold inside their card`, async ({ page }) => {
     await open(page, 'modes', appearance);
     const toggle = page.getByRole('switch', { name: 'Use browser site mode rules' });
-    await toggle.scrollIntoViewIfNeeded();
+    const sites = page.getByRole('group', { name: 'Browser sites', exact: true });
+    // Center the feature rather than clamping to the page bottom, whose
+    // rounded scroll height can move otherwise identical content by one pixel.
+    await sites.evaluate(element => element.scrollIntoView({ block: 'center' }));
+    await expect(toggle).toBeInViewport();
     await expect(page.getByRole('textbox', { name: 'Site rule host', exact: true })).toHaveCount(0);
     await expect(page).toHaveScreenshot(`${appearance}-modes-folded.png`);
     await toggle.check();
-    await expect(page.getByRole('textbox', { name: 'Site rule host', exact: true })).toBeVisible();
+    await sites.evaluate(element => element.scrollIntoView({ block: 'center' }));
+    await expect(page.getByRole('textbox', { name: 'Site rule host', exact: true })).toBeInViewport();
     await expect(page).toHaveScreenshot(`${appearance}-modes-unfolded.png`);
   });
   test(`${appearance} appearance editor remains a sheet`, async ({ page }) => {

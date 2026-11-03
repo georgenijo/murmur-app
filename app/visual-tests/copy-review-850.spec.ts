@@ -130,7 +130,7 @@ for (const appearance of ['light', 'dark']) {
   });
 }
 
-test('C4: command editor owns initial focus, wraps Tab, cancels on Escape, and restores its opener', async ({ page }) => {
+test('C4: command editor wraps Tab, preserves dirty edits on Escape, and restores its opener after discard', async ({ page }) => {
   await settings(page, 'commands');
   const create = page.getByRole('button', { name: 'New command…', exact: true });
   await create.click();
@@ -141,13 +141,33 @@ test('C4: command editor owns initial focus, wraps Tab, cancels on Escape, and r
   await expect(dialog.getByRole('button', { name: 'Save command', exact: true })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(first).toBeFocused();
-  await dialog.getByLabel('Voice command type', { exact: true }).selectOption('snippet');
-  await dialog.getByLabel('Voice command content', { exact: true }).fill('line one');
-  await page.keyboard.press('Shift+Enter');
-  await expect(dialog.getByLabel('Voice command content', { exact: true })).toHaveValue('line one\n');
+  // A pristine draft can still close directly and return to its real invoker.
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(create).toBeFocused();
+  await create.click();
+  await expect(first).toBeFocused();
+  await dialog.getByLabel('Voice command type', { exact: true }).selectOption('snippet');
+  await dialog.getByLabel('Voice command content', { exact: true }).fill('line one');
+  await page.keyboard.press('Shift+Enter');
+  const content = dialog.getByLabel('Voice command content', { exact: true });
+  await expect(content).toHaveValue('line one\n');
+  await page.keyboard.press('Escape');
+  const unsaved = dialog.getByRole('group', { name: 'Unsaved voice command changes', exact: true });
+  await expect(unsaved).toBeVisible();
+  await expect(unsaved.getByRole('button', { name: 'Keep editing', exact: true })).toBeFocused();
+  await expect(content).toHaveValue('line one\n');
+  await expect(unsaved.getByRole('button', { name: 'Discard changes', exact: true })).toBeVisible();
+  await unsaved.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(unsaved).toHaveCount(0);
+  await expect(content).toBeFocused();
+  await expect(content).toHaveValue('line one\n');
+  await page.keyboard.press('Escape');
+  await unsaved.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(create).toBeFocused();
+  await create.click();
+  await expect(dialog.getByLabel('Voice command content', { exact: true })).toHaveValue('');
 });
 
 test('C4: Knowledge confirmation traps focus and restores the overflow trigger without test focus calls', async ({ page }) => {
