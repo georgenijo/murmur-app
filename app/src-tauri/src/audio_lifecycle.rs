@@ -661,6 +661,14 @@ fn run_supervisor(
                         continue;
                     }
                     SupervisorMessage::ConfigureStandby(policy) => {
+                        tracing::info!(target: "audio",
+                            event_code = "audio.standby_policy_applied",
+                            enabled = policy.seconds > 0,
+                            standby_seconds = policy.seconds,
+                            pre_roll_ms = policy.pre_roll_ms,
+                            changed = standby_policy != policy,
+                            "microphone standby policy applied by audio supervisor"
+                        );
                         if standby_policy == policy {
                             continue;
                         }
@@ -1816,6 +1824,13 @@ fn handle_deadlines_at(
         current.standby_deadline =
             Some(now + Duration::from_secs(u64::from(current.standby_policy.seconds)));
         public.set_phase(PublicPhase::Standby);
+        tracing::info!(target: "audio",
+            event_code = "audio.standby_entered",
+            recording_id = current.owner.telemetry_id(),
+            standby_seconds = current.standby_policy.seconds,
+            pre_roll_ms = current.standby_policy.pre_roll_ms,
+            "microphone kept open for bounded standby"
+        );
         if let Some(response) = current.stop_response.take() {
             let result = convert_for_delivery(
                 raw,

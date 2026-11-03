@@ -722,6 +722,12 @@ minutes. The macOS microphone privacy indicator stays on throughout that window.
 Enabling the option does not open the microphone until an intentional dictation.
 The first dictation after launch or expiry still takes the ordinary cold path.
 
+Standby setting changes are sent to the native audio supervisor immediately;
+restarting is not required. The structured `audio.standby_policy_applied` event
+records the applied enabled state, timeout, pre-roll, and whether policy changed.
+`audio.standby_entered` records when a completed dictation keeps the microphone
+open and the timeout it starts. These events contain no audio or device identity.
+
 Standby keeps only a bounded 300 or 450 ms (default) rolling buffer in memory.
 Pressing again on the same input prepends that buffer to the new recording.
 Standby audio is never logged or written to disk; selected pre-roll is saved only

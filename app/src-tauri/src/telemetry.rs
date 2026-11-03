@@ -233,6 +233,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.capture_started" => Some("audio.capture_started"),
         "audio.fallback_started" => Some("audio.fallback_started"),
         "audio.capture_ready" => Some("audio.capture_ready"),
+        "audio.standby_policy_applied" => Some("audio.standby_policy_applied"),
+        "audio.standby_entered" => Some("audio.standby_entered"),
         "audio.capture_failed" => Some("audio.capture_failed"),
         "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
         "audio.permission_prompt_changed" => Some("audio.permission_prompt_changed"),
