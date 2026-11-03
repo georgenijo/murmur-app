@@ -16,6 +16,7 @@ interface Drag {
 
 export function useHomeSidebar(initialCollapsed = false, suspended = false) {
   const [narrow, setNarrow] = useState(() => window.matchMedia?.(HOME_SIDEBAR_QUERY).matches ?? false);
+  const narrowMode = useRef(narrow);
   const [desktopCollapsed, setDesktopCollapsed] = useState(initialCollapsed);
   const [narrowExpanded, setNarrowExpanded] = useState(false);
   const [expandedWidth, setExpandedWidth] = useState(HOME_SIDEBAR_MIN);
@@ -38,11 +39,17 @@ export function useHomeSidebar(initialCollapsed = false, suspended = false) {
     const media = window.matchMedia?.(HOME_SIDEBAR_QUERY);
     if (!media) return;
     const changed = () => {
+      // A queued initial/same-mode notification must not undo a user's narrow
+      // expansion. Only an actual breakpoint transition starts a new visit.
+      if (media.matches === narrowMode.current) return;
+      narrowMode.current = media.matches;
       finish(true);
       setNarrow(media.matches);
       setNarrowExpanded(false);
     };
     media.addEventListener('change', changed);
+    // Reconcile a resize between the initial render and this subscription.
+    changed();
     return () => media.removeEventListener('change', changed);
   }, [finish]);
 

@@ -159,3 +159,43 @@ test('default, minimum and small browser windows measure the real Home resize bo
     }
   }
 });
+
+test('a delayed initial narrow media notification preserves explicit expansion and resize geometry', async ({ page }) => {
+  await page.addInitScript(() => {
+    const matchMedia = window.matchMedia.bind(window);
+    const sidebarMedia: MediaQueryList[] = [];
+    Object.assign(window, { sidebarMedia });
+    window.matchMedia = (query) => {
+      const media = matchMedia(query);
+      if (query === '(max-width: 767px)') sidebarMedia.push(media);
+      return media;
+    };
+  });
+  await page.setViewportSize({ width: 720, height: 560 });
+  await page.goto(fixture());
+  const sidebar = page.locator('.home-sidebar');
+  await expect(sidebar).toHaveCSS('width', '48px');
+  await page.getByRole('button', { name: 'Expand sidebar' }).click();
+  const separator = page.getByRole('separator', { name: 'Sidebar width' });
+  await separator.focus();
+  await page.keyboard.press('End');
+  await expect(sidebar).toHaveCSS('width', '384px');
+  await page.keyboard.press('Home');
+  await expect(sidebar).toHaveCSS('width', '256px');
+  // Deliver the query's initial notification after the user's expansion and
+  // keyboard resize, exactly between the width check and workspace measurement.
+  await page.evaluate(() => {
+    const { sidebarMedia } = window as unknown as { sidebarMedia: MediaQueryList[] };
+    if (!sidebarMedia.length) throw new Error('Home media subscription was not created');
+    for (const media of sidebarMedia) {
+      media.dispatchEvent(new MediaQueryListEvent('change', { matches: media.matches, media: media.media }));
+    }
+  });
+  await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
+  await expect(sidebar).toHaveCSS('width', '256px');
+  await expect(separator).toHaveAttribute('aria-valuenow', '256');
+  const bounds = (await page.locator('.main-dashboard-workspace').boundingBox())!;
+  expect(bounds.x).toBe(256);
+  expect(bounds.width).toBe(464);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(720);
+});
