@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 241 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 243 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -429,6 +429,13 @@ without logging their content.
 | `set_overlay_expanded` | `expanded: bool`, `content?: OverlayContent`, `activity?: OverlayActivity`, `placement?: OverlayPlacement`, `defer_shrink?: bool` | `Result<AppliedSurface, String>` | Single acknowledged native surface writer. Applies layout on the main thread, publishes target `overlay-surface-changed` after successful setters, and returns actual bounds. `defer_shrink` retains larger old bounds during contraction; a later exact request releases the temporary hit area. Activity is idle/recording/processing; placement is notch/floating_pill (legacy `below_menu_bar` deserializes as the pill). |
 | `set_overlay_vertical_offset` | `offset: f64` | `Result<AppliedOverlayPosition, String>` | Clamps calibration to the current display/window's effective range within ±12 logical points, moves the native overlay, retains the session offset across native placement refreshes, and returns requested/applied offsets plus effective bounds. Durable persistence still occurs only on Save and inactive Reset. |
 | `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
+
+## Overlay material (`commands/overlay_material.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `set_overlay_material` | `shown: bool`, `expanded: bool`, `content?: OverlayContent`, `floating: bool` | `Result<bool, String>` | Places the floating pill's Bezel material (`NSVisualEffectView` HUD blur plus tint) behind the overlay webview, clipped to the capsule or expanded card that Rust derives from its own geometry, and lifts the Live Words material with it. Semantic state only; all view mutations run on the main thread. `floating: false` removes both materials. Returns whether the overlay material is installed (always `false` off macOS). |
+| `set_live_words_material` | `width: f64`, `height: f64` | `Result<bool, String>` | Clips the Live Words window's Bezel material to the card's laid-out size; Rust owns its position and lift. A zero size fades it out. Removes it unless the pill placement is active. Returns whether it is installed. |
 
 ## Dictation preview (`commands/dictation_preview.rs`)
 

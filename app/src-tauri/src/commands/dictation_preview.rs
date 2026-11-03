@@ -67,7 +67,18 @@ fn notch_height(app: &tauri::AppHandle) -> Option<f64> {
 /// Show the preview under the notch. Idempotent: repositioning a window that is
 /// already visible is how a display change is absorbed.
 pub(crate) fn show_internal(app: &tauri::AppHandle) -> Result<(), String> {
-    POPOVER.show(app, frame(app, notch_height(app)))
+    POPOVER.show(app, frame(app, notch_height(app)))?;
+    refit_material(app);
+    Ok(())
+}
+
+/// A clamped window height moves the card's bottom edge: re-fit its material
+/// in the same main-thread turn as the resize.
+fn refit_material(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    super::overlay_material::refit(app, super::overlay_material::LIVE_WORDS_LABEL);
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// Keep an already-visible preview attached to the overlay as its native frame
@@ -83,6 +94,7 @@ pub(crate) fn follow_overlay_if_visible(app: &tauri::AppHandle) {
     if let Err(error) = POPOVER.reposition(app, frame(app, notch_height(app))) {
         tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
     }
+    refit_material(app);
 }
 
 #[derive(Clone, Copy)]
