@@ -46,6 +46,20 @@ for (const appearance of ['dark', 'light'] as const) {
     expect(calibrate.bottom).toBeLessThanOrEqual(cal.bottom - 4);
   });
 
+  test(`${appearance} Delivery Advanced keeps the app-overrides button styling`, async ({ page }) => {
+    await open(page, appearance, 'settings', 'Delivery');
+    await page.locator('.settings-advanced-toggle').first().click();
+    const button = page.getByRole('button', { name: /Manage app overrides/ });
+    await expect(button).toBeVisible();
+    const style = await button.evaluate((e) => {
+      const s = getComputedStyle(e);
+      return { left: s.paddingLeft, right: s.paddingRight, top: s.borderTopWidth, bottom: s.borderBottomWidth };
+    });
+    expect(parseFloat(style.left)).toBeGreaterThan(0);
+    expect(parseFloat(style.right)).toBeGreaterThan(0);
+    expect(style.top).toBe(style.bottom);
+  });
+
   test(`${appearance} Smart Auto microphone list stays inside the Recording card`, async ({ page }) => {
     await open(page, appearance, 'settings-smart-auto', 'Recording');
     await page.getByRole('button', { name: 'Smart Auto microphones' }).click();

@@ -415,7 +415,9 @@
   .settings-row-controls > :not([role='switch']) { flex: 1; }
 }
 .settings-rows > .settings-dependent-branch { border-top: 0; padding: 0; }
-.settings-dependent-branch-content.settings-stack > * { margin: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-top: 1px solid var(--settings-divider); }
+/* Advanced stacks are excluded: their children keep their own box (calibration
+   card, quiet buttons). :where() keeps the specificity of the rules below. */
+.settings-dependent-branch-content.settings-stack:where(:not(.settings-advanced-stack > .settings-dependent-branch-clip > *)) > * { margin: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-top: 1px solid var(--settings-divider); }
 .settings-dependent-branch-content.settings-stack > .settings-dependent-branch { padding: 0; border: 0; }
 .settings-stack > .settings-dependent-branch { margin-top: 0; }
 .settings-advanced-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 20px; padding: 0; text-align: left; color: var(--murmur-on-surface); font-size: 14px; line-height: 20px; font-weight: 500; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
@@ -425,8 +427,6 @@
 /* Rows reach the card edge so their dividers do; stacks stay inside the row inset. */
 .settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
 .settings-advanced-stack .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
-/* Undo the branch row padding and divider so a child keeps its own box (e.g. the calibration card). */
-.settings-advanced-stack .settings-dependent-branch-content.settings-stack > * { padding: revert-layer; border-top: revert-layer; }
 .settings-advanced-stack .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
 .settings-advanced > .settings-row-description { margin-bottom: 0; }
 .settings-rows-nested { margin-top: var(--settings-row-pad); border-top: 1px solid var(--settings-divider); }
