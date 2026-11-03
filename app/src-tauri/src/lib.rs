@@ -576,6 +576,10 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             window_state::on_event(window, event);
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::Destroyed = event {
+                commands::overlay_material::window_destroyed(window.app_handle(), window.label());
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Hide instead of destroy for persistent windows
                 if window.label() == "main" || window.label() == "diagnostics" {
@@ -785,7 +789,8 @@ pub fn run() {
             // changes (monitor plug/unplug, lid open/close) to re-detect notch
             // info and reposition the overlay.
             commands::overlay::register_screen_change_observer(app.handle().clone());
-            commands::overlay_material::register_accessibility_observer();
+            #[cfg(target_os = "macos")]
+            commands::overlay_material::register_observers(app.handle().clone());
             audio_lifecycle::register_sleep_wake_observer();
             frontmost::register_delivery_transition_observers();
             commands::overlay::request_placement_refresh(

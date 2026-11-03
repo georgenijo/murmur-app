@@ -64,15 +64,15 @@
    webview draws no surface: Rust clips a behind-window blur, a 74-76% tint and
    a hairline to the same shape. Without it (browser fixtures, other platforms)
    the tone is drawn opaque, as macOS does under Reduce Transparency. Tokens
-   mirror src/lib/bezelPalette.ts. */
+   mirror src/lib/bezelPalette.ts. prefers-color-scheme here is the system's:
+   Rust pins both overlay windows to the system appearance, past Murmur's own
+   Light/Dark override, which the theme tokens alone follow. */
 .bezel {
   --bezel-solid: rgb(28, 28, 30);
   --bezel-line: rgba(255, 255, 255, 0.16);
   --bezel-ink: rgb(255, 255, 255);
   --bezel-sel: rgba(255, 255, 255, 0.1);
   --bezel-sel-strong: rgba(255, 255, 255, 0.18);
-  --bezel-on: #30d158;
-  --bezel-off: #ff453a;
   color: var(--bezel-ink);
   font-family: var(--ui-font-sans);
 }
@@ -83,8 +83,6 @@
     --bezel-ink: rgba(0, 0, 0, 0.87);
     --bezel-sel: rgba(0, 0, 0, 0.06);
     --bezel-sel-strong: rgba(0, 0, 0, 0.11);
-    --bezel-on: #248a3d;
-    --bezel-off: #d70015;
   }
 }
 .bezel-surface {
@@ -109,7 +107,7 @@
   background: var(--bezel-sel-strong);
 }
 .bezel-meeting-error {
-  color: var(--bezel-off);
+  color: var(--bezel-ink);
 }
 .bezel-row {
   display: flex;

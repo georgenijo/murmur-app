@@ -1,12 +1,18 @@
 //! Bezel material for the floating pill and its Live Words card.
 //!
 //! A transparent webview has nothing behind it to blur, so the material is
-//! native: a behind-window `NSVisualEffectView` (`.hudWindow`, active,
-//! appearance inherited from the system) sits below the WKWebView in the
-//! overlay and Live Words windows, inside a container clipped to the visible
-//! capsule, hover card, or Live Words card. A tint layer above the blur sets
-//! the material floor and a hairline traces the edge. The webview draws only
-//! the content on top.
+//! native: a behind-window `NSVisualEffectView` (`.hudWindow`, active) sits
+//! below the WKWebView in the overlay and Live Words windows, inside a
+//! container clipped to the visible capsule, hover card, or Live Words card. A
+//! tint layer above the blur sets the material floor and a hairline traces the
+//! edge. The webview draws only the content on top.
+//!
+//! Bezel follows the system appearance, not Murmur's own Light/Dark override,
+//! which `setTheme` applies app-wide. Both windows are pinned to the system
+//! appearance (`AppleInterfaceStyle`, re-read on
+//! `AppleInterfaceThemeChangedNotification`), so the material and the
+//! webview's `prefers-color-scheme` read the same source. Murmur's theme
+//! tokens are applied inline and still follow the override.
 //!
 //! Rust owns the shape. The overlay webview reports semantic state (shown,
 //! hover-expanded, content); the rect comes from the same geometry contract
@@ -14,7 +20,8 @@
 //! changes animate on the island's curve and duration; window resizes re-fit
 //! the container in the same main-thread turn as the resize. A Dock-follow
 //! move needs nothing: the container lives inside the window. The notch never
-//! gets a material: switching placement removes it from both windows.
+//! gets a material: switching placement removes it from both windows. Each
+//! command answers only to its own window.
 
 use super::overlay::{OverlayContent, OverlayGeometry};
 
@@ -138,6 +145,90 @@ pub(crate) fn frame_in(bounds: (f64, f64), shape: MaterialShape, flipped: bool) 
     [x, y, shape.width, shape.height]
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) enum Motion {
+    /// Follow the island: shape changes on its curve, visibility on its fade.
+    Island,
+    /// Track the webview without animation (Live Words words and resizes).
+    Instant,
+}
+
+/// How one layer of the material reaches its new frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) enum Step {
+    /// Leave it, including any animation still in flight.
+    Keep,
+    Snap,
+    Animate,
+}
+
+/// The material is two layers: the lift layer carries the rise clear of the
+/// hover card, and the card inside it carries the size and corner. They move
+/// independently, as the CSS card does: its transform transitions while its
+/// size follows the words at once. So a partial transcript that re-wraps the
+/// card mid-lift resizes it without snapping the lift ahead of the text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Plan {
+    pub(crate) lift: Step,
+    pub(crate) card: Step,
+}
+
+/// Plan the move from `previous` (the last applied shape, `None` when newly
+/// attached) to `next`. `was_visible`: the material is showing now.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn plan(
+    previous: Option<MaterialShape>,
+    next: MaterialShape,
+    motion: Motion,
+    was_visible: bool,
+) -> Plan {
+    match motion {
+        Motion::Instant => Plan {
+            lift: if previous.is_some_and(|p| p.lift == next.lift) {
+                Step::Keep
+            } else {
+                Step::Snap
+            },
+            card: Step::Snap,
+        },
+        // Hiding fades out in place, as the island does.
+        Motion::Island if !next.visible => Plan {
+            lift: Step::Keep,
+            card: Step::Keep,
+        },
+        // Appearing takes the current shape at once and fades in.
+        Motion::Island if !was_visible => Plan {
+            lift: Step::Snap,
+            card: Step::Snap,
+        },
+        Motion::Island => Plan {
+            lift: Step::Animate,
+            card: Step::Animate,
+        },
+    }
+}
+
+/// Each material belongs to one window: no other webview may move or remove
+/// it. Mirrors `show_dictation_preview`'s guard.
+pub(crate) fn require_owner(caller: &str, owner: &'static str) -> Result<(), String> {
+    if caller == owner {
+        Ok(())
+    } else {
+        Err(format!(
+            "overlay material for {owner} is restricted to its own window"
+        ))
+    }
+}
+
+/// `AppleInterfaceStyle` is `Dark` in Dark mode (including Auto while dark)
+/// and absent in Light mode.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn style_is_dark(style: Option<&str>) -> bool {
+    style.is_some_and(|style| style.eq_ignore_ascii_case("dark"))
+}
+
 /// Content the pill reports with its state. Absent means the controls.
 pub(crate) fn content_or_default(content: Option<OverlayContent>) -> OverlayContent {
     content.unwrap_or_default()
@@ -148,15 +239,15 @@ mod native {
     use super::*;
     use objc2::rc::Retained;
     use objc2::runtime::NSObject;
-    use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+    use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
     use objc2_app_kit::{
-        NSAnimatablePropertyContainer, NSAnimationContext, NSAppearanceCustomization,
+        NSAnimatablePropertyContainer, NSAnimationContext, NSAppearance, NSAppearanceCustomization,
         NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSAutoresizingMaskOptions, NSResponder,
         NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
         NSVisualEffectView, NSWindow, NSWindowOrderingMode, NSWorkspace,
     };
     use objc2_core_graphics::CGColor;
-    use objc2_foundation::{NSArray, NSPoint, NSRect, NSSize};
+    use objc2_foundation::{ns_string, NSArray, NSPoint, NSRect, NSSize, NSUserDefaults};
     use objc2_quartz_core::CAMediaTimingFunction;
     use std::cell::{OnceCell, RefCell};
     use std::collections::HashMap;
@@ -238,6 +329,9 @@ mod native {
     }
 
     struct Installed {
+        /// Full-window layer raised by the shape's lift.
+        lift: Retained<NSView>,
+        /// The clipped material, bottom-centred in `lift`.
         view: Retained<BezelMaterialView>,
         shape: Option<MaterialShape>,
     }
@@ -248,18 +342,43 @@ mod native {
         static LIVE_WORDS: RefCell<((f64, f64), f64)> = const { RefCell::new(((0.0, 0.0), 0.0)) };
     }
 
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Motion {
-        /// Follow the island: shape changes on its curve, visibility on its fade.
-        Island,
-        /// Track the webview without animation (Live Words words and resizes).
-        Instant,
+    fn ns_window(app: &tauri::AppHandle, label: &str) -> Option<Retained<NSWindow>> {
+        use tauri::Manager;
+        let ptr = app.get_webview_window(label)?.ns_window().ok()?;
+        let ns_window: &NSWindow = unsafe { &*(ptr.cast()) };
+        Some(ns_window.retain())
     }
 
-    fn content_view(window: &tauri::WebviewWindow) -> Option<Retained<NSView>> {
-        let ptr = window.ns_window().ok()?;
-        let ns_window: &NSWindow = unsafe { &*(ptr.cast()) };
-        ns_window.contentView()
+    fn content_view(app: &tauri::AppHandle, label: &str) -> Option<Retained<NSView>> {
+        ns_window(app, label)?.contentView()
+    }
+
+    fn system_dark() -> bool {
+        let style = NSUserDefaults::standardUserDefaults()
+            .stringForKey(ns_string!("AppleInterfaceStyle"))
+            .map(|style| style.to_string());
+        style_is_dark(style.as_deref())
+    }
+
+    /// Pin `label`'s window to the system appearance, so neither the material
+    /// nor the webview's `prefers-color-scheme` follows Murmur's app-wide
+    /// override. Installed materials restyle through their appearance change.
+    pub(crate) fn pin_system_appearance(app: &tauri::AppHandle, label: &str) {
+        let Some(window) = ns_window(app, label) else {
+            return;
+        };
+        let name = if system_dark() {
+            unsafe { NSAppearanceNameDarkAqua }
+        } else {
+            unsafe { NSAppearanceNameAqua }
+        };
+        if window
+            .appearance()
+            .is_some_and(|current| &*current.name() == name)
+        {
+            return;
+        }
+        window.setAppearance(NSAppearance::appearanceNamed(name).as_deref());
     }
 
     fn rect(frame: [f64; 4]) -> NSRect {
@@ -290,15 +409,45 @@ mod native {
         NSAnimationContext::runAnimationGroup(&block);
     }
 
-    /// Install (once) and move the material in `label`'s window to `shape`.
-    /// `None` removes it. Must run on the main thread.
+    fn attached(entry: &Installed, content: &NSView) -> bool {
+        // SAFETY: main thread; the superview is only compared, not kept.
+        unsafe { entry.lift.superview() }
+            .is_some_and(|superview| std::ptr::eq(&*superview, content))
+    }
+
+    fn new_installed(mtm: MainThreadMarker) -> Installed {
+        let zero = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+        let lift = NSView::initWithFrame(NSView::alloc(mtm), zero);
+        lift.setWantsLayer(true);
+        lift.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        let view = BezelMaterialView::new(mtm);
+        // Pinned bottom-centre in the (unflipped) lift layer: a window resize
+        // the fit below has not caught yet still keeps the island's anchor.
+        view.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewMinXMargin
+                | NSAutoresizingMaskOptions::ViewMaxXMargin
+                | NSAutoresizingMaskOptions::ViewMaxYMargin,
+        );
+        lift.addSubview(&view);
+        Installed {
+            lift,
+            view,
+            shape: None,
+        }
+    }
+
+    /// Install and move the material in `label`'s window to `shape`. `None`
+    /// removes it. A window recreated under the same label gets the material
+    /// re-attached. Must run on the main thread.
     pub(crate) fn apply(
         app: &tauri::AppHandle,
         label: &'static str,
         shape: Option<MaterialShape>,
         motion: Motion,
     ) {
-        use tauri::Manager;
         let Some(mtm) = MainThreadMarker::new() else {
             debug_assert!(false, "NSView mutation must run on the main thread");
             return;
@@ -307,84 +456,76 @@ mod native {
             remove(label);
             return;
         };
-        let Some(content) = app
-            .get_webview_window(label)
-            .and_then(|window| content_view(&window))
-        else {
+        let Some(content) = content_view(app, label) else {
             return;
         };
         INSTALLED.with_borrow_mut(|installed| {
-            let entry = installed.entry(label).or_insert_with(|| {
-                let view = BezelMaterialView::new(mtm);
-                // Pin to the bottom edge, centred: a window resize the fit
-                // below has not caught yet still keeps the island's anchor.
-                let bottom = if content.isFlipped() {
-                    NSAutoresizingMaskOptions::ViewMinYMargin
-                } else {
-                    NSAutoresizingMaskOptions::ViewMaxYMargin
-                };
-                view.setAutoresizingMask(
-                    NSAutoresizingMaskOptions::ViewMinXMargin
-                        | NSAutoresizingMaskOptions::ViewMaxXMargin
-                        | bottom,
+            let entry = installed.entry(label).or_insert_with(|| new_installed(mtm));
+            if !attached(entry, &content) {
+                entry.lift.removeFromSuperview();
+                content.addSubview_positioned_relativeTo(
+                    &entry.lift,
+                    NSWindowOrderingMode::Below,
+                    None,
                 );
-                content.addSubview_positioned_relativeTo(&view, NSWindowOrderingMode::Below, None);
-                Installed { view, shape: None }
-            });
+                entry.view.setAlphaValue(0.0);
+                entry.shape = None;
+            }
             let previous = entry.shape.replace(shape);
-            let view = entry.view.clone();
+            let (lift, view) = (entry.lift.clone(), entry.view.clone());
             let bounds = content.bounds().size;
-            let target = rect(frame_in(
-                (bounds.width, bounds.height),
-                shape,
+            let bounds = (bounds.width, bounds.height);
+            let lift_target = rect(frame_in(
+                bounds,
+                MaterialShape {
+                    width: bounds.0,
+                    height: bounds.1,
+                    ..shape
+                },
                 content.isFlipped(),
             ));
-            let corner = |view: &BezelMaterialView| {
+            let card_target = rect(frame_in(
+                bounds,
+                MaterialShape { lift: 0.0, ..shape },
+                false,
+            ));
+            let was_visible = previous.is_some_and(|p| p.visible) && view.alphaValue() > 0.0;
+            let plan = plan(previous, shape, motion, was_visible);
+            let reduce_motion =
+                NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+            let place = |layer: &Retained<NSView>, target: NSRect, step: Step| match step {
+                Step::Keep => {}
+                _ if same(layer.frame(), target) => {}
+                Step::Animate if !reduce_motion => {
+                    let moved = layer.clone();
+                    animate(SHAPE_SECONDS, SHAPE_EASE, move || {
+                        moved.animator().setFrame(target)
+                    });
+                }
+                _ => layer.setFrame(target),
+            };
+            place(&lift, lift_target, plan.lift);
+            place(&Retained::into_super(view.clone()), card_target, plan.card);
+            if plan.card != Step::Keep {
                 if let Some(layer) = view.layer() {
                     layer.setCornerRadius(shape.radius);
                 }
-            };
+            }
             let alpha = if shape.visible { 1.0 } else { 0.0 };
-            let was_visible = previous.is_some_and(|p| p.visible) && view.alphaValue() > 0.0;
-            let reduce_motion =
-                NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
-            if motion == Motion::Instant || !shape.visible || !was_visible {
-                // Appearing takes the current shape at once and fades in;
-                // hiding fades out in place, as the island does.
-                if shape.visible || motion == Motion::Instant {
-                    if !same(view.frame(), target) {
-                        view.setFrame(target);
-                    }
-                    corner(&view);
-                }
-                if (view.alphaValue() - alpha).abs() > f64::EPSILON {
-                    if motion == Motion::Instant {
-                        view.setAlphaValue(alpha);
+            if (view.alphaValue() - alpha).abs() > f64::EPSILON {
+                if motion == Motion::Instant {
+                    view.setAlphaValue(alpha);
+                } else {
+                    let seconds = if reduce_motion {
+                        REDUCED_FADE_SECONDS
                     } else {
-                        let seconds = if reduce_motion {
-                            REDUCED_FADE_SECONDS
-                        } else {
-                            FADE_SECONDS
-                        };
-                        let faded = view.clone();
-                        animate(seconds, FADE_EASE, move || {
-                            faded.animator().setAlphaValue(alpha)
-                        });
-                    }
+                        FADE_SECONDS
+                    };
+                    let faded = view.clone();
+                    animate(seconds, FADE_EASE, move || {
+                        faded.animator().setAlphaValue(alpha)
+                    });
                 }
-                return;
-            }
-            corner(&view);
-            if same(view.frame(), target) {
-                return;
-            }
-            if reduce_motion {
-                view.setFrame(target);
-            } else {
-                let moved = view.clone();
-                animate(SHAPE_SECONDS, SHAPE_EASE, move || {
-                    moved.animator().setFrame(target)
-                });
             }
         });
     }
@@ -402,13 +543,21 @@ mod native {
         }
     }
 
-    pub(crate) fn installed(label: &'static str) -> bool {
-        INSTALLED.with_borrow(|installed| installed.contains_key(label))
+    /// A material is attached to `label`'s current window.
+    pub(crate) fn installed(app: &tauri::AppHandle, label: &'static str) -> bool {
+        let Some(content) = content_view(app, label) else {
+            return false;
+        };
+        INSTALLED.with_borrow(|installed| {
+            installed
+                .get(label)
+                .is_some_and(|entry| attached(entry, &content))
+        })
     }
 
     pub(crate) fn remove(label: &'static str) {
         if let Some(installed) = INSTALLED.with_borrow_mut(|installed| installed.remove(label)) {
-            installed.view.removeFromSuperview();
+            installed.lift.removeFromSuperview();
         }
     }
 
@@ -418,11 +567,17 @@ mod native {
         LIVE_WORDS.set(((0.0, 0.0), 0.0));
     }
 
+    /// `label`'s window was destroyed: drop its material and, for Live Words,
+    /// the card measured in it. A recreated window starts fresh.
+    pub(crate) fn forget(label: &'static str) {
+        remove(label);
+        if label == LIVE_WORDS_LABEL {
+            LIVE_WORDS.with_borrow_mut(|state| state.0 = (0.0, 0.0));
+        }
+    }
+
     fn live_words_window_size(app: &tauri::AppHandle) -> Option<(f64, f64)> {
-        use tauri::Manager;
-        let window = app.get_webview_window(LIVE_WORDS_LABEL)?;
-        let content = content_view(&window)?;
-        let size = content.bounds().size;
+        let size = content_view(app, LIVE_WORDS_LABEL)?.bounds().size;
         Some((size.width, size.height))
     }
 
@@ -443,7 +598,8 @@ mod native {
             }
             *state
         });
-        if !installed(LIVE_WORDS_LABEL) && card == (0.0, 0.0) {
+        let present = INSTALLED.with_borrow(|installed| installed.contains_key(LIVE_WORDS_LABEL));
+        if !present && card == (0.0, 0.0) {
             return;
         }
         let Some(window) = live_words_window_size(app) else {
@@ -467,10 +623,14 @@ mod native {
         });
     }
 
-    /// Follow Reduce Transparency for the app's lifetime.
-    pub(crate) fn register_accessibility_observer() {
+    /// For the app's lifetime: pin both windows to the system appearance now
+    /// and whenever it changes, and follow Reduce Transparency.
+    pub(crate) fn register_observers(app: tauri::AppHandle) {
         use objc2_app_kit::NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification;
-        use objc2_foundation::{NSNotification, NSOperationQueue};
+        use objc2_foundation::{NSDistributedNotificationCenter, NSNotification, NSOperationQueue};
+        for label in [OVERLAY_LABEL, LIVE_WORDS_LABEL] {
+            pin_system_appearance(&app, label);
+        }
         let block = block2::RcBlock::new(|_notification: std::ptr::NonNull<NSNotification>| {
             restyle_all();
         });
@@ -485,11 +645,45 @@ mod native {
         };
         // App-lifetime observer — intentionally leak to avoid premature deallocation
         std::mem::forget(observer);
+        let block =
+            block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
+                for label in [OVERLAY_LABEL, LIVE_WORDS_LABEL] {
+                    pin_system_appearance(&app, label);
+                }
+            });
+        let observer = unsafe {
+            NSDistributedNotificationCenter::defaultCenter()
+                .addObserverForName_object_queue_usingBlock(
+                    Some(ns_string!("AppleInterfaceThemeChangedNotification")),
+                    None,
+                    Some(&NSOperationQueue::mainQueue()),
+                    &block,
+                )
+        };
+        // App-lifetime observer — intentionally leak to avoid premature deallocation
+        std::mem::forget(observer);
     }
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use native::register_accessibility_observer;
+pub(crate) use native::register_observers;
+
+/// `label`'s window was destroyed: a window recreated under the same label
+/// must get a fresh material, not the stale one.
+#[cfg(target_os = "macos")]
+pub(crate) fn window_destroyed(app: &tauri::AppHandle, label: &str) {
+    if let Some(label) = material_label(label) {
+        on_main(app, move |_| native::forget(label));
+    }
+}
+
+/// The material-bearing window `label` names, if any.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn material_label(label: &str) -> Option<&'static str> {
+    [OVERLAY_LABEL, LIVE_WORDS_LABEL]
+        .into_iter()
+        .find(|owner| *owner == label)
+}
 
 /// Run `f` on the main thread: at once when already there, so a refit lands
 /// in the same turn as the resize that caused it.
@@ -544,21 +738,24 @@ async fn on_main_acked(
 /// so the webview draws no surface of its own.
 #[tauri::command]
 pub async fn set_overlay_material(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     shown: bool,
     expanded: bool,
     content: Option<OverlayContent>,
     floating: bool,
 ) -> Result<bool, String> {
+    require_owner(window.label(), OVERLAY_LABEL)?;
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, shown, expanded, content, floating);
+        let _ = (window, shown, expanded, content, floating);
         Ok(false)
     }
     #[cfg(target_os = "macos")]
     {
+        use tauri::Manager;
         let content = content_or_default(content);
-        on_main_acked(&app, move |app| {
+        on_main_acked(window.app_handle(), move |app| {
+            native::pin_system_appearance(app, OVERLAY_LABEL);
             if !floating {
                 native::remove_all();
                 return false;
@@ -568,15 +765,15 @@ pub async fn set_overlay_material(
                 app,
                 OVERLAY_LABEL,
                 Some(pill_shape(&geometry, shown, expanded)),
-                native::Motion::Island,
+                Motion::Island,
             );
             native::apply_live_words(
                 app,
                 None,
                 Some(live_words_lift(&geometry, expanded)),
-                native::Motion::Island,
+                Motion::Island,
             );
-            native::installed(OVERLAY_LABEL)
+            native::installed(app, OVERLAY_LABEL)
         })
         .await
     }
@@ -587,24 +784,27 @@ pub async fn set_overlay_material(
 /// Resolves `true` while a native material backs the card.
 #[tauri::command]
 pub async fn set_live_words_material(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     width: f64,
     height: f64,
 ) -> Result<bool, String> {
+    require_owner(window.label(), LIVE_WORDS_LABEL)?;
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, width, height);
+        let _ = (window, width, height);
         Ok(false)
     }
     #[cfg(target_os = "macos")]
     {
-        on_main_acked(&app, move |app| {
+        use tauri::Manager;
+        on_main_acked(window.app_handle(), move |app| {
+            native::pin_system_appearance(app, LIVE_WORDS_LABEL);
             if !super::overlay::floating_pill_placed(app) {
                 native::remove(LIVE_WORDS_LABEL);
                 return false;
             }
-            native::apply_live_words(app, Some((width, height)), None, native::Motion::Instant);
-            native::installed(LIVE_WORDS_LABEL)
+            native::apply_live_words(app, Some((width, height)), None, Motion::Instant);
+            native::installed(app, LIVE_WORDS_LABEL)
         })
         .await
     }
@@ -709,5 +909,117 @@ mod tests {
             live_words_shape((200.0, 20.0), (460.0, 168.0), 0.0).radius,
             10.0
         );
+    }
+
+    fn card(width: f64, height: f64, lift: f64) -> MaterialShape {
+        MaterialShape {
+            width,
+            height,
+            radius: 14.0,
+            lift,
+            visible: true,
+        }
+    }
+
+    #[test]
+    fn a_rewrapping_partial_never_snaps_a_lift_in_flight() {
+        let keep_lift = Plan {
+            lift: Step::Keep,
+            card: Step::Snap,
+        };
+        // Hover opens: the lift animates up on the island's curve...
+        let resting = card(220.0, 20.0, 0.0);
+        let lifted = card(220.0, 20.0, 64.0);
+        assert_eq!(
+            plan(Some(resting), lifted, Motion::Island, true),
+            Plan {
+                lift: Step::Animate,
+                card: Step::Animate,
+            }
+        );
+        // ...and a partial re-wraps the card mid-flight: only its size snaps.
+        let wrapped = card(436.0, 40.0, 64.0);
+        assert_eq!(
+            plan(Some(lifted), wrapped, Motion::Instant, true),
+            keep_lift
+        );
+        // Hover closes, and another partial lands while the lift falls.
+        let falling = card(436.0, 40.0, 0.0);
+        assert_eq!(
+            plan(Some(wrapped), falling, Motion::Island, true).lift,
+            Step::Animate
+        );
+        assert_eq!(
+            plan(Some(falling), card(436.0, 60.0, 0.0), Motion::Instant, true),
+            keep_lift
+        );
+        // The card layer sits at the bottom of the lift layer, so its frame
+        // never carries the lift: resizing it cannot move it ahead.
+        let window = (460.0, 168.0);
+        let in_lift =
+            |shape: MaterialShape| frame_in(window, MaterialShape { lift: 0.0, ..shape }, false);
+        assert_eq!(in_lift(wrapped), [12.0, 0.0, 436.0, 40.0]);
+        assert_eq!(in_lift(wrapped)[1], in_lift(lifted)[1]);
+    }
+
+    #[test]
+    fn instant_updates_snap_a_lift_only_when_it_changed_or_is_new() {
+        let shape = card(200.0, 20.0, 64.0);
+        assert_eq!(plan(None, shape, Motion::Instant, false).lift, Step::Snap);
+        assert_eq!(
+            plan(Some(card(200.0, 20.0, 0.0)), shape, Motion::Instant, true).lift,
+            Step::Snap
+        );
+    }
+
+    #[test]
+    fn island_motion_fades_in_at_the_new_shape_and_out_in_place() {
+        let shape = card(200.0, 20.0, 64.0);
+        let snap = Plan {
+            lift: Step::Snap,
+            card: Step::Snap,
+        };
+        assert_eq!(plan(None, shape, Motion::Island, false), snap);
+        assert_eq!(
+            plan(Some(card(120.0, 34.0, 0.0)), shape, Motion::Island, false),
+            snap
+        );
+        let hidden = MaterialShape {
+            visible: false,
+            ..shape
+        };
+        assert_eq!(
+            plan(Some(shape), hidden, Motion::Island, true),
+            Plan {
+                lift: Step::Keep,
+                card: Step::Keep,
+            }
+        );
+    }
+
+    #[test]
+    fn each_material_command_answers_only_to_its_own_window() {
+        assert!(require_owner(OVERLAY_LABEL, OVERLAY_LABEL).is_ok());
+        assert!(require_owner(LIVE_WORDS_LABEL, LIVE_WORDS_LABEL).is_ok());
+        for caller in ["main", "diagnostics", "query-popover", LIVE_WORDS_LABEL] {
+            assert!(require_owner(caller, OVERLAY_LABEL).is_err(), "{caller}");
+        }
+        for caller in ["main", "diagnostics", "query-popover", OVERLAY_LABEL] {
+            assert!(require_owner(caller, LIVE_WORDS_LABEL).is_err(), "{caller}");
+        }
+    }
+
+    #[test]
+    fn destroying_either_material_window_forgets_its_material() {
+        assert_eq!(material_label("overlay"), Some(OVERLAY_LABEL));
+        assert_eq!(material_label("dictation-preview"), Some(LIVE_WORDS_LABEL));
+        assert_eq!(material_label("main"), None);
+    }
+
+    #[test]
+    fn system_style_reads_dark_only_from_apple_interface_style() {
+        assert!(style_is_dark(Some("Dark")));
+        assert!(!style_is_dark(None));
+        assert!(!style_is_dark(Some("Light")));
     }
 }

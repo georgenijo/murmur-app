@@ -153,7 +153,9 @@ export function OverlayDropdown({
 
   if (geometry.floating) {
     // Bezel: one segmented strip growing up out of the capsule, in the
-    // capsule's monochrome ink, with a one-line status beneath it.
+    // capsule's monochrome ink, with a one-line status beneath it. State is
+    // the label and the selected background, never a hue: only the recording
+    // dot carries colour.
     return (
       <div className="overlay-dropdown bezel-strip justify-center" role="group" aria-label="Quick settings"
         aria-hidden={!expanded} style={reveal}>
@@ -164,13 +166,13 @@ export function OverlayDropdown({
           </button>
           <button type="button" aria-label={disabled ? 'Enable Murmur' : 'Disable Murmur'} onClick={onToggleDisabled}
             className="bezel-segment">
-            <PowerIcon stroke={disabled ? 'var(--bezel-off)' : 'currentColor'} />
+            <PowerIcon stroke="currentColor" />
             <span>{disabled ? 'Off' : 'Power'}</span>
           </button>
           <button type="button" role="switch" aria-checked={effectiveAutoPaste} aria-label={autoPasteLabel}
             title={autoPasteLabel} onClick={onToggleAutoPaste} className="bezel-segment"
             style={{ opacity: disabled ? 0.35 : 1 }}>
-            <ClipboardPasteIcon stroke={effectiveAutoPaste ? 'var(--bezel-on)' : 'currentColor'} />
+            <ClipboardPasteIcon stroke="currentColor" />
             <span>{autoPastePaused ? 'Paused' : 'Paste'}</span>
           </button>
           <button type="button" aria-label="Open settings" onClick={onOpenSettings} className="bezel-segment">

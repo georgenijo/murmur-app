@@ -70,8 +70,11 @@ Words windows, inside a layer-masked container with a 1pt hairline. A tint of
 the same tone covers it, 74% (dark, `28/28/30`) or 76% (light, `246/246/248`)
 opaque, so 11pt labels keep at least 7:1 over a pure white or pure black
 backdrop and light waveform bars at least 3:1 over white (`bezelPalette.ts`
-tests lock the values in Rust, CSS and TypeScript). The material follows the
-view's effective appearance, and Reduce Transparency makes the tint opaque.
+tests lock the values in Rust, CSS and TypeScript). Both overlay windows are
+pinned to the system appearance, read from `AppleInterfaceStyle` and refreshed
+on `AppleInterfaceThemeChangedNotification`, independently of Murmur's app-wide
+appearance override. The native material and webview media query share this
+source. Reduce Transparency makes the tint opaque.
 
 The webview sends semantic state only (`set_overlay_material`: shown,
 expanded, content); Rust derives the capsule or card rect from the same
@@ -80,7 +83,11 @@ native resize and Dock move, so the material never lags the window. Shape
 changes animate on the island's 360ms curve, appearing and hiding fade in place
 (160ms under Reduce Motion), and Reduce Motion snaps the shape. Live Words
 reports its laid-out card size (`set_live_words_material`); Rust places and
-lifts it. Notch placement removes both materials. Once Rust acknowledges, the
+lifts it. Separate native lift and card layers let a wrapping partial resize
+the card without snapping an in-flight hover lift. Each command accepts only
+its owning window. Destroyed windows release their cached material, and reuse
+checks attachment to the current content view before acknowledging success.
+Notch placement removes both materials. Once Rust acknowledges, the
 surfaces mark `data-material="native"` and drop their CSS fill; until then (and
 in browser fixtures) they draw the same tone opaque. Because a native blur
 cannot follow a CSS scale, the Bezel pill fades without the notch's scale.
