@@ -424,6 +424,27 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
   await expect(page.getByRole('heading', { name: 'Text & vocabulary' })).toBeVisible();
 });
 
+test('settings search results keep their row layout instead of control-button chrome', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.locator('input[type=search]').fill('microphone');
+
+  const results = page.getByRole('region', { name: 'Settings search results' });
+  const rows = results.getByRole('button');
+  await expect(rows.first()).toBeVisible();
+  const controlHeight = await page.evaluate(() =>
+    parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-control-standard')));
+  for (const row of await rows.all()) {
+    const box = await row.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      const title = el.querySelector('span span')!.getBoundingClientRect();
+      return { height: rect.height, titleBottom: title.bottom, bottom: rect.bottom, radius: getComputedStyle(el).borderTopLeftRadius };
+    });
+    expect(box.height).toBeGreaterThan(controlHeight);
+    expect(box.titleBottom).toBeLessThanOrEqual(box.bottom);
+    expect(box.radius).toBe('0px');
+  }
+});
+
 test('recording settings make the live automatic microphone choice explicit', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
   await page.getByRole('button', { name: 'Recording', exact: true }).click();

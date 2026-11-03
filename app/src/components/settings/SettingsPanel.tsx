@@ -1055,7 +1055,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                         setCustomizationReturnFocus(null);
                         setShortcutReturnFocus(null);
                       }}
-                      className="flex w-full items-center gap-4 border-b border-outline-variant/15 px-4 py-3 text-left last:border-b-0 hover:bg-surface-container-low"
+                      className="settings-search-result flex w-full items-center gap-4 border-b border-outline-variant/15 px-4 py-3 text-left last:border-b-0 hover:bg-surface-container-low"
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-semibold text-on-surface">{highlightSettingsMatch(result.title, searchQuery)}</span>
