@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.59.2] - 2026-11-03
+
+### Changed
+
+- Shorten Settings descriptions to one-line blurbs while keeping standby, history, and routing details accurate (#907).
+
+### Fixed
+
+- Fix squashed Settings search result rows (#905).
+- Fix four Settings layout bugs: the Advanced inset, microphone list, disclosure row, and model card (#906).
+
 ## [0.59.1] - 2026-11-03
 
 ### Changed
