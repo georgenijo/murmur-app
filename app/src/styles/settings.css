@@ -505,10 +505,10 @@
 .settings-sidebar :is(nav, .settings-nav-tools) > * { margin-block: 0; }
 /* Legacy panes use native action elements. Keep their behavior while giving
    bordered actions the same geometry as the shared Base UI button. */
-.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not([aria-expanded]) {
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]) {
   min-height: var(--ui-control-standard); height: var(--ui-control-standard); padding: 0 calc(12px - 1px); border-width: 1px; border-style: solid; border-radius: var(--ui-radius-control); font-size: 14px; line-height: 20px; font-weight: 500; border-color: var(--ui-control-border);
 }
-.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
 
 .settings-title-description > p { font-size: 12px; line-height: 18px; text-wrap: balance; max-width: var(--settings-description-max); margin-top: var(--settings-copy-gap); }
 .ui-switch-thumb { transform: translateX(0); transform-origin: left center; transition: transform var(--ui-switch-knob-duration), scale 100ms; }

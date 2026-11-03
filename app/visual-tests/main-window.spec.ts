@@ -424,6 +424,36 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
   await expect(page.getByRole('heading', { name: 'Text & vocabulary' })).toBeVisible();
 });
 
+test('settings search results keep their row layout instead of control-button chrome', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.locator('input[type=search]').fill('microphone');
+
+  const results = page.getByRole('region', { name: 'Settings search results' });
+  const rows = results.getByRole('button');
+  await expect(rows.first()).toBeVisible();
+  // The token is in rem; resolve it to pixels through a probe element.
+  const controlHeight = await page.evaluate(() => {
+    const probe = document.createElement('div');
+    probe.style.height = 'var(--ui-control-standard)';
+    document.body.appendChild(probe);
+    const height = probe.getBoundingClientRect().height;
+    probe.remove();
+    return height;
+  });
+  expect(controlHeight).toBeGreaterThan(0);
+  for (const row of await rows.all()) {
+    const box = await row.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      const copy = el.querySelector('span')!.getBoundingClientRect();
+      return { height: rect.height, top: rect.top, bottom: rect.bottom, copyTop: copy.top, copyBottom: copy.bottom, radius: getComputedStyle(el).borderTopLeftRadius };
+    });
+    expect(box.height).toBeGreaterThan(controlHeight);
+    expect(box.copyTop).toBeGreaterThanOrEqual(box.top);
+    expect(box.copyBottom).toBeLessThanOrEqual(box.bottom);
+    expect(box.radius).toBe('0px');
+  }
+});
+
 test('recording settings make the live automatic microphone choice explicit', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
   await page.getByRole('button', { name: 'Recording', exact: true }).click();
