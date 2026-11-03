@@ -293,7 +293,7 @@ describe('SettingsPanel information architecture', () => {
     expect(document.activeElement).toBe(commandsRow());
   });
 
-  it('waits for a visible command switch and keeps its pending landing across unrelated settings updates', async () => {
+  it.each(['none', 'pointer', 'keyboard'] as const)('waits for the editor link destination, preserves it across updates, and cancels pending focus on %s interaction', async (interaction) => {
     const frames = new Map<number, FrameRequestCallback>();
     let frameId = 0;
     let rowVisible = false;
@@ -316,9 +316,13 @@ describe('SettingsPanel information architecture', () => {
       frames.clear();
       pending.forEach(callback => callback(performance.now()));
     });
-    const request: SettingsPageRequest = { page: 'text', target: 'voice-commands', token: 1 };
+    const settings = { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false };
+    const request: SettingsPageRequest = { page: 'text', editorTab: 'commands', token: 1 };
     try {
-      await act(async () => renderPanel(true, DEFAULT_SETTINGS, request));
+      await act(async () => renderPanel(true, settings, request));
+      const link = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+        .find(button => button.textContent === 'Open Voice commands & spoken formatting')!;
+      await act(async () => link.click());
       const row = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"]')!;
       const toggle = row.querySelector<HTMLElement>('[role="switch"]')!;
       const focus = vi.spyOn(toggle, 'focus');
@@ -330,10 +334,29 @@ describe('SettingsPanel information architecture', () => {
       await nextFrame();
       expect(row.classList.contains('settings-target-flash')).toBe(true);
       expect(focus).not.toHaveBeenCalled();
-      await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, soundCuesEnabled: !DEFAULT_SETTINGS.soundCuesEnabled }, request));
+      await act(async () => renderPanel(true, { ...settings, soundCuesEnabled: !settings.soundCuesEnabled }, request));
+      const elsewhere = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      if (interaction !== 'none') {
+        await act(async () => {
+          elsewhere.dispatchEvent(interaction === 'pointer'
+            ? new Event('pointerdown', { bubbles: true })
+            : new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+          elsewhere.focus();
+        });
+      }
       switchVisible = true;
       await nextFrame();
-      expect(document.activeElement).toBe(toggle);
+      if (interaction === 'none') {
+        expect(document.activeElement).toBe(toggle);
+        expect(focus).toHaveBeenCalledTimes(1);
+        elsewhere.focus();
+        await nextFrame();
+        expect(document.activeElement).toBe(elsewhere);
+        expect(focus).toHaveBeenCalledTimes(1);
+      } else {
+        expect(document.activeElement).toBe(elsewhere);
+        expect(focus).not.toHaveBeenCalled();
+      }
       expect(scrollIntoView.mock.instances).toContain(row);
       expect(onUpdateSettings).not.toHaveBeenCalled();
       focus.mockRestore();
@@ -342,6 +365,27 @@ describe('SettingsPanel information architecture', () => {
       requestFrame.mockRestore();
       cancelFrame.mockRestore();
     }
+  });
+
+  it('reveals Voice commands from external navigation and search without moving focus to its switch', async () => {
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'text', target: 'voice-commands', token: 1 }));
+    const toggle = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"] [role="switch"]')!;
+    expect(document.activeElement).not.toBe(toggle);
+    expect(toggle.closest('[data-setting-target]')?.classList.contains('settings-target-flash')).toBe(true);
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    search.focus();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'Voice commands');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent?.includes('Enable custom commands and spoken formatting tokens'))!;
+    expect(result).toBeDefined();
+    await act(async () => result.click());
+    const revealedRow = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"]')!;
+    expect(document.activeElement).not.toBe(revealedRow.querySelector('[role="switch"]'));
+    expect(revealedRow.classList.contains('settings-target-flash')).toBe(true);
+    expect(onUpdateSettings).not.toHaveBeenCalled();
   });
 
   it('shows Modes and browser site rules on their own page', async () => {
@@ -568,6 +612,42 @@ describe('SettingsPanel information architecture', () => {
     });
 
     expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 75 });
+  });
+
+  it('does not configure unchanged sensitivity on tab, pointer release, or blur', async () => {
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'recording', token: 1 }));
+    const slider = container.querySelector<HTMLInputElement>('[data-setting-target="voice-detection"] input[type="range"]')!;
+    await act(async () => {
+      slider.focus();
+      slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', bubbles: true }));
+      slider.dispatchEvent(new Event('pointerup', { bubbles: true }));
+      slider.blur();
+    });
+    expect(onUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  it.each(['pointerup', 'keyup', 'focusout'])('commits actual sensitivity changes via %s and allows retry after rollback', async (ending) => {
+    const request = { page: 'recording', token: 1 };
+    const initial = { ...DEFAULT_SETTINGS, vadSensitivity: 50 };
+    await act(async () => renderPanel(true, initial, request));
+    const slider = container.querySelector<HTMLInputElement>('[data-setting-target="voice-detection"] input[type="range"]')!;
+    const change = async () => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(slider, '75');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new Event(ending, { bubbles: true }));
+    });
+    await change();
+    expect(onUpdateSettings).toHaveBeenCalledExactlyOnceWith({ vadSensitivity: 75 });
+    await act(async () => renderPanel(true, { ...initial, vadSensitivity: 75 }, request));
+    await act(async () => {
+      slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', bubbles: true }));
+      slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1);
+    await act(async () => renderPanel(true, initial, request));
+    expect(slider.value).toBe('50');
+    await change();
+    expect(onUpdateSettings).toHaveBeenCalledTimes(2);
   });
 
   it.each([0, 75])('labels Sensitivity with understandable value text at %s', async (vadSensitivity) => {
@@ -1072,37 +1152,43 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('finds calibration and reopens General advanced settings for repeated searches', async () => {
-    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    const searchCalibration = async () => {
-      await act(async () => {
-        setter.call(input, 'Calibrate');
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-        (button) => button.textContent?.includes('Calibrate overlay position'),
-      ) as HTMLButtonElement;
-      expect(result).toBeDefined();
-      await act(async () => result.click());
-    };
+    // Count immediate landings, not deferred animation frames racing the test.
+    vi.useFakeTimers();
+    try {
+      const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      const searchCalibration = async () => {
+        await act(async () => {
+          setter.call(input, 'Calibrate');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+          (button) => button.textContent?.includes('Calibrate overlay position'),
+        ) as HTMLButtonElement;
+        expect(result).toBeDefined();
+        await act(async () => result.click());
+      };
 
-    scrollIntoView.mockClear();
-    await searchCalibration();
+      scrollIntoView.mockClear();
+      await searchCalibration();
 
-    const calibration = container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement;
-    const advanced = calibration.closest('.settings-advanced')?.querySelector('button') as HTMLButtonElement;
-    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
-    expect(advanced.getAttribute('aria-expanded')).toBe('true');
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
-    expect(calibration.classList.contains('settings-target-flash')).toBe(true);
+      const calibration = container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement;
+      const advanced = calibration.closest('.settings-advanced')?.querySelector('button') as HTMLButtonElement;
+      expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
+      expect(advanced.getAttribute('aria-expanded')).toBe('true');
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+      expect(calibration.classList.contains('settings-target-flash')).toBe(true);
 
-    // Searching unmounts General; selecting the same result must reveal the
-    // newly mounted, initially collapsed disclosure again.
-    await searchCalibration();
+      // Searching unmounts General; selecting the same result must reveal the
+      // newly mounted, initially collapsed disclosure again.
+      await searchCalibration();
 
-    expect((container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement)
-      .closest('.settings-advanced')?.querySelector('button')?.getAttribute('aria-expanded')).toBe('true');
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect((container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement)
+        .closest('.settings-advanced')?.querySelector('button')?.getAttribute('aria-expanded')).toBe('true');
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

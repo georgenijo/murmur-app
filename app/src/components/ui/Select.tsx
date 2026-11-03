@@ -61,6 +61,9 @@ export function Select<T extends string = string>({
     ? items.flatMap((g) => g.options)
     : items;
 
+  // Callers commonly rebuild items on render. Only real content changes should
+  // reconnect placement observers (including labels, badges, and group headings).
+  const placementContentKey = JSON.stringify(items);
   const selectedOption = flatOptions.find((o) => o.value === value);
   const displayLabel = selectedOption?.label ?? placeholder ?? '';
 
@@ -128,6 +131,7 @@ export function Select<T extends string = string>({
     window.addEventListener('scroll', place, true);
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
     const clippingObserver = new MutationObserver(place);
+    observer?.observe(triggerRef.current);
     // A folding ancestor can stop clipping without resizing the control row.
     // Observe its settled class/style as well as geometry while the menu is open.
     for (let parent = triggerRef.current.parentElement; parent; parent = parent.parentElement) {
@@ -140,7 +144,7 @@ export function Select<T extends string = string>({
       observer?.disconnect();
       clippingObserver.disconnect();
     };
-  }, [isOpen, items]);
+  }, [isOpen, placementContentKey, size]);
 
   // Scroll only the listbox, not its surrounding Settings pane.
   useLayoutEffect(() => {

@@ -118,6 +118,11 @@ for (const backdrop of ['black', 'white']) {
     const surface = page.locator('.transform-review-surface');
     await expect(surface).toHaveCSS('opacity', '1');
     await expect(surface).toHaveCSS('background-color', 'rgb(20, 20, 20)');
+    expect(await surface.evaluate(element => {
+      const style = getComputedStyle(element);
+      return style.backdropFilter === 'none' && !/blur/.test(style.getPropertyValue('-webkit-backdrop-filter'));
+    })).toBe(true);
+    await testInfo.attach(`opaque-rewrite-${backdrop}.png`, { body: await page.screenshot(), contentType: 'image/png' });
     const targets = [
       surface.getByText('On-device', { exact: true }),
       surface.getByText('⌘R', { exact: true }),

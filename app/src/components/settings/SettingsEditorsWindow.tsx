@@ -138,8 +138,10 @@ export function SettingsEditorsWindow({
   const [advancedOpen, setAdvancedOpen] = useSettingsAdvanced(initialTab);
   const titleId = useId();
   const navigatingToSettingsRef = useRef(false);
+  // A cross-page link owns its visible destination's focus in SettingsPanel.
+  // Closing this sheet must not compete with that landing or refocus a hidden switch.
   const dialogRef = useDialogFocus(onBack, () => navigatingToSettingsRef.current
-    ? document.querySelector<HTMLElement>('[data-setting-target="voice-commands"] [role="switch"]')
+    ? document.activeElement as HTMLElement | null
     : restoreFocus?.() ?? null, true);
   useLayoutEffect(() => {
     if (target?.id !== 'app-overrides-manual' || revealedTargetRef.current === target) return;

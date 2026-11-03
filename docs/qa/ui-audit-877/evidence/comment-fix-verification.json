@@ -1,0 +1,90 @@
+{
+  "baseline": "2c536cf2240d4bde497dd950e8fd9295534e5e90",
+  "scope": "Frontend-only PR-comment fixes; automated browser/component checks, no native desktop interaction, provider execution, clipboard or capture evidence. Installed audit build unchanged.",
+  "checks": {
+    "typescript": "passed",
+    "vitest": {
+      "files": 198,
+      "passed": 2063
+    },
+    "markdownLinks": {
+      "passed": true,
+      "maintainedDocuments": 76
+    }
+  },
+  "sources": {
+    "app/src/components/settings/SettingsPanel.tsx": "d52138a2e27397aec830e1cd610eb64dfb53d8a351f7fb113cd04638715b4b86",
+    "app/src/components/settings/SettingsEditorsWindow.tsx": "7829f57cada218c615769e7969acf2eb48ab61c9e40d63f377725910d4d31b20",
+    "app/src/components/ui/Select.tsx": "42475d52e52ab5d3cb72e73869af42d87bbe7e4163a75c9912596e80b842d492",
+    "app/src/components/transform-review/TransformReviewApp.tsx": "f633473783d5f559bd4b4878dc62dcde82a24384f53eba5a7923e9a1fb949781",
+    "app/src/components/settings/SettingsPanel.test.tsx": "fd1b1bea2ef7de728f4ad7df6d42313bac674190bec3d3b04e364df8def4d012",
+    "app/src/components/ui/Select.test.tsx": "d0845c701b2439403fb7a15bc4075b0c488d23839a8dbf983ed407b72dd6b1c0",
+    "app/src/components/transform-review/TransformReviewApp.test.tsx": "5b573343646952d00eae53e93c475c33d43b28713bdcfb91b7ff88d6ed325b98",
+    "app/visual-tests/editors-audit.spec.ts": "795934b8b71c4205265aec4ff4aa3136fa60ed002fa5749a175ee6aa2cf7a480",
+    "app/visual-tests/pr903-comments.spec.ts": "e2000c2ded24ba5b8210ced0a77309d808f78f8c77ba4e255672660738c22918"
+  },
+  "screenshots": [
+    {
+      "path": "browser-comment-fixes/opaque-rewrite-black.png",
+      "sha256": "03c9ec476083690acb3d178bce84bee264a3c0ffee874b01630845a669b172f1",
+      "classification": "Playwright WebKit synthetic/browser fixture, manually inspected; not native WKWebView"
+    },
+    {
+      "path": "browser-comment-fixes/opaque-rewrite-white.png",
+      "sha256": "c0ae88a9f494a9aa6e4f0d9190d6ea6d47f1868af3d4811a2ff53ee4fa7de7dc",
+      "classification": "Playwright WebKit synthetic/browser fixture, manually inspected; not native WKWebView"
+    },
+    {
+      "path": "browser-comment-fixes/sensitivity-dark.png",
+      "sha256": "9885528399ea2171312d7542c5980569e631bf6dff17f175aeebeea3720d13a8",
+      "classification": "Playwright WebKit synthetic/browser fixture, manually inspected; not native WKWebView"
+    },
+    {
+      "path": "browser-comment-fixes/sensitivity-light.png",
+      "sha256": "c79144c482e55ecf6e716ea213f55961080296e5ae2ca10c66bdad0f15eb35eb",
+      "classification": "Playwright WebKit synthetic/browser fixture, manually inspected; not native WKWebView"
+    },
+    {
+      "path": "browser-comment-fixes/voice-commands-dark.png",
+      "sha256": "85b8fb3592e7ace51709c0f50fab5f89cd32b87f430090347fdff29a0f5e37a5",
+      "classification": "Playwright WebKit synthetic/browser fixture, manually inspected; not native WKWebView"
+    },
+    {
+      "path": "browser-comment-fixes/voice-commands-light.png",
+      "sha256": "23f6bc2a515064eed904a51029171bae40f7e129a8d425c14b42259101d45605",
+      "classification": "Playwright WebKit synthetic/browser fixture, manually inspected; not native WKWebView"
+    }
+  ],
+  "reports": [
+    {
+      "original": "/tmp/murmur-pr903-reaudit-20261103/comment-fixes-darwin-verified.json",
+      "sha256": "47677d81351e4cf1e35336c7667977c33df7afb930816be2df5bdfac7b33bbbb",
+      "stats": {
+        "startTime": "2026-11-03T17:01:32.573Z",
+        "duration": 70228.689,
+        "expected": 392,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      }
+    },
+    {
+      "original": "/tmp/murmur-pr903-reaudit-20261103/comment-fixes-webkit-verified.json",
+      "sha256": "10548018323712b64b2966beae48e262c829ddea4c67106e8411f8fd9bec5217",
+      "stats": {
+        "startTime": "2026-11-03T17:00:48.151Z",
+        "duration": 7407.898,
+        "expected": 13,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      }
+    }
+  ],
+  "priorFailedAttempts": [
+    "One existing calibration immediate-scroll count raced a deferred frame under load; made that timing assertion deterministic with fake timers; all frontend tests passed afterward.",
+    "Initial new browser link selector was an incorrect exact accessible name; corrected it; both browser engines pass.",
+    "First full Darwin command used --browser=chromium, adding a project suffix absent from checked-in goldens: 220 missing-baseline failures, 172 passed. Reran original project identity without changing snapshots: 392/392 passed.",
+    "Initial Markdown validator used system Python without markdown_it; reran with existing isolated Python environment: passed."
+  ]
+}

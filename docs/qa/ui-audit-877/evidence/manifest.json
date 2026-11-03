@@ -1,0 +1,41 @@
+{
+  "scope": "Historical epic evidence copied without modification; not verification of PR-comment-fix revisions. Original snapshots may have stale status entries; README governs current limits.",
+  "files": [
+    {
+      "original": "/tmp/murmur-epic-877/acceptance-ledger.json",
+      "retained": "acceptance-ledger.json",
+      "sha256": "b45867215578e36369231a358b1a16cf8b68c32f52dcea46e1d89803c3d0509f",
+      "bytes": 42925
+    },
+    {
+      "original": "/tmp/murmur-epic-877/native-verification-progress.md",
+      "retained": "native-verification-progress.txt",
+      "sha256": "b3889699773465ce8511073daa00c452f4bcf2ebaac3dfaec74d646cb60a0271",
+      "bytes": 9366
+    },
+    {
+      "original": "/tmp/murmur-epic-877/review-delta-result.md",
+      "retained": "review-delta-result.txt",
+      "sha256": "1d0c57c50910a4ca658fa28fb1f4eb2c27079aef857344632c8a573a3038462e",
+      "bytes": 7875
+    },
+    {
+      "original": "/tmp/murmur-epic-877/theme-reset-review-result.md",
+      "retained": "theme-reset-review-result.txt",
+      "sha256": "23a6383790d258a2c8c71071f168f84a1363e7b5f9a99257a9aa26cf6efe4836",
+      "bytes": 2431
+    },
+    {
+      "original": "/tmp/murmur-epic-877/home-resize-review-result.md",
+      "retained": "home-resize-review-result.txt",
+      "sha256": "2c36a4bc7525495b059ff7dcc101daec6ed341d8b2c509a7efcf4fd85ae51ef3",
+      "bytes": 2331
+    },
+    {
+      "original": "/tmp/murmur-epic-877/linux-final-result.md",
+      "retained": "linux-final-result.txt",
+      "sha256": "9509a4ca90c71e4d07043d17148ea059cb64d897e94a27bc042917540018025d",
+      "bytes": 9408
+    }
+  ]
+}

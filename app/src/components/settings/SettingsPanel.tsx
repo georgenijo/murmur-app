@@ -178,6 +178,7 @@ function VadSensitivitySlider({
   const id = useId();
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
+  const commit = (next: number) => { if (next !== value) onCommit(next); };
   return (
     <div className="settings-field">
       <div className="flex items-center justify-between">
@@ -197,9 +198,9 @@ function VadSensitivitySlider({
           setDraft(next);
           onPreview(next);
         }}
-        onPointerUp={(event) => onCommit(Number(event.currentTarget.value))}
-        onKeyUp={(event) => onCommit(Number(event.currentTarget.value))}
-        onBlur={(event) => onCommit(Number(event.currentTarget.value))}
+        onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+        onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+        onBlur={(event) => commit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
       <p className="text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
@@ -264,10 +265,11 @@ const GENERAL_DETAIL_PAGES = ['shortcuts'] as const;
 
 interface SettingTargetRequest {
   id: string;
+  focusSwitch?: boolean;
 }
 
-function settingTargetRequest(id: string | undefined): SettingTargetRequest | null {
-  return id === undefined ? null : { id };
+function settingTargetRequest(id: string | undefined, focusSwitch = false): SettingTargetRequest | null {
+  return id === undefined ? null : { id, focusSwitch };
 }
 
 function customizationDestinationForRequest(
@@ -552,6 +554,18 @@ export const SettingsPanel = memo(function SettingsPanel({
     revealedTargetRef.current = targetRequest;
     // Wait for the folding clip to finish before centering the destination.
     let flashed: HTMLElement | null = null;
+    let focusPending = targetRequest.focusSwitch === true;
+    const cancelFocus = () => { focusPending = false; };
+    const focusSwitch = () => {
+      if (!focusPending) return;
+      const control = flashed?.querySelector<HTMLElement>('[role="switch"]');
+      if (!control || getComputedStyle(control).visibility === 'hidden') return;
+      focusPending = false;
+      control.focus({ preventScroll: true });
+    };
+    // Link-only focus is one-shot, and must not override a subsequent user action.
+    window.addEventListener('pointerdown', cancelFocus, true);
+    window.addEventListener('keydown', cancelFocus, true);
     const flash = () => {
       const target = Array.from(content.querySelectorAll<HTMLElement>('[data-setting-target]'))
         .find(element => element.dataset.settingTarget === id);
@@ -559,8 +573,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       if (!target || getComputedStyle(target).visibility === 'hidden') return;
       flashed = target;
       target.scrollIntoView({ block: 'center' });
-      const focusTarget = id === 'voice-commands' ? target.querySelector<HTMLElement>('[role="switch"]') : null;
-      if (focusTarget && getComputedStyle(focusTarget).visibility !== 'hidden') focusTarget.focus({ preventScroll: true });
+      focusSwitch();
       target.classList.remove('settings-target-flash');
       void target.offsetWidth;
       target.classList.add('settings-target-flash');
@@ -571,14 +584,12 @@ export const SettingsPanel = memo(function SettingsPanel({
     const layoutDeadline = performance.now() + 500;
     const landAfterLayout = () => {
       if (!flashed) flash();
-      const focusTarget = id === 'voice-commands' ? flashed?.querySelector<HTMLElement>('[role="switch"]') : null;
-      if ((!flashed || (focusTarget && getComputedStyle(focusTarget).visibility === 'hidden'))
-        && performance.now() < layoutDeadline) {
+      focusSwitch();
+      if ((!flashed || focusPending) && performance.now() < layoutDeadline) {
         layoutFrame = requestAnimationFrame(landAfterLayout);
         return;
       }
       flashed?.scrollIntoView({ block: 'center' });
-      if (focusTarget && getComputedStyle(focusTarget).visibility !== 'hidden') focusTarget.focus({ preventScroll: true });
     };
     let layoutFrame = requestAnimationFrame(() => {
       layoutFrame = requestAnimationFrame(landAfterLayout);
@@ -589,6 +600,8 @@ export const SettingsPanel = memo(function SettingsPanel({
     const timeout = window.setTimeout(() => flashed?.classList.remove('settings-target-flash'), 1300);
     return () => {
       cancelAnimationFrame(layoutFrame);
+      window.removeEventListener('pointerdown', cancelFocus, true);
+      window.removeEventListener('keydown', cancelFocus, true);
       if (reveal !== null) window.clearTimeout(reveal);
       window.clearTimeout(timeout);
       flashed?.classList.remove('settings-target-flash');
@@ -1699,7 +1712,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 setEditorTab(null);
                 setActiveCat('text');
                 setSearchQuery('');
-                setTargetRequest(settingTargetRequest('voice-commands'));
+                setTargetRequest(settingTargetRequest('voice-commands', true));
                 if (activeCat === 'customize') setCustomizationDetail('commands');
               }}
               restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="text-editors"] button, [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}

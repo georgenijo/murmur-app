@@ -45,6 +45,25 @@ These synthetic history fixtures test UI/backend behavior; they are not recordin
 
 ## Release policy
 
-George explicitly waived all benchmarks and hosted PR CI for this delivery. Neither is represented as passing. The signed release workflow, exact artifact/manifest verification, post-publication OTA canary, and installed-build checks remain required. This receipt does not claim release completion.
+The original epic delivery recorded a user waiver for benchmarks and hosted PR CI; neither was represented as passing. This historical waiver is **not** used to bypass latest-head CI for the PR comment-fix follow-up. Required checks and review must pass, and native limitations remain explicit. The signed release workflow, exact artifact/manifest verification, post-publication OTA canary, and installed-build checks remain required for any separately authorized release. This receipt does not claim merge or release completion.
 
-Detailed task-local reports, raw test results, hashes, synthetic fixture verification, and the 24-ticket/96-criterion ledger are retained in `/tmp/murmur-epic-877/` on the trusted Mac.
+## Durable evidence and provenance
+
+The small [curated evidence bundle](evidence/manifest.json) is checked into this repository, not dependent on `/tmp` surviving a reboot:
+
+- [24-ticket/96-criterion ledger](evidence/acceptance-ledger.json).
+- [Native build 2–7 observations and synthetic-host limits](evidence/native-verification-progress.txt).
+- [Initial-finding delta review](evidence/review-delta-result.txt), [theme-focus resolution](evidence/theme-reset-review-result.txt), and [Home delta approval](evidence/home-resize-review-result.txt).
+- [Final Linux verification receipt](evidence/linux-final-result.txt), including commands, environment, results, and source/snapshot hashes.
+
+These are **unaltered historical receipts**, not fresh execution or approval of later revisions. The manifest records original paths, exact SHA-256 hashes, and sizes. The ledger contains earlier synthesis fields as well as later criterion updates; it is not an assertion that every acceptance criterion is complete. Read it with the limits above and the later receipts, not as a blanket pass. Paths, running-process references, and authorization statements inside archived reports describe their original sessions and do not authorize new actions.
+
+Only these selected reports/ledger are durably preserved here. Their cited raw test artifacts, inline native screenshots, and supporting scratch files have **not** all been archived; remaining originals are task-local under `/tmp/murmur-epic-877/` and may disappear. No build caches, app bundles, databases, credentials, real audio, or private raw transcripts are included. Synthetic fixture observations remain distinct from real capture/provider/clipboard evidence.
+
+## PR comment-fix delta (2026-11-03)
+
+The follow-up skips unchanged sensitivity commits while preserving keyboard/pointer/blur changes and rollback retries; stabilizes Select placement subscriptions by content while retaining geometry/clipping observation; restricts switch focus to the editor's explicit navigation link, once, cancellable by later input; and removes backdrop blur from the already-opaque rewrite surface without changing its colors.
+
+Native delta verification is **not obtained**: the independently operated installed app remains pinned to `2c536cf2240d4bde497dd950e8fd9295534e5e90`. That audit is not proof of these subsequent product changes. Browser/component checks supplement, not replace, a built native delta check. The PR remains draft while native acceptance and latest-head CI gates are unresolved. No merge or release is authorized by this follow-up.
+
+Murmur Bench: N/A — this delta changes frontend interaction guards and presentation only; no recognition, delivered text, model runtime, capture, or benchmarked execution path changes.

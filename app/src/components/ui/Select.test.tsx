@@ -142,6 +142,65 @@ describe('Select', () => {
     expect(menu().style.maxHeight).toBe('154px');
   });
 
+  it('keeps observers across equivalent items and remeasures real content and geometry changes', async () => {
+    const resizeCallbacks: (() => void)[] = [];
+    const mutationCallbacks: (() => void)[] = [];
+    const resizeDisconnect = vi.fn();
+    const mutationDisconnect = vi.fn();
+    const observe = vi.fn();
+    const resize = vi.fn(function (callback: () => void) {
+      resizeCallbacks.push(callback);
+      return { observe, disconnect: resizeDisconnect };
+    });
+    const mutation = vi.fn(function (callback: () => void) {
+      mutationCallbacks.push(callback);
+      return { observe, disconnect: mutationDisconnect };
+    });
+    vi.stubGlobal('ResizeObserver', resize);
+    vi.stubGlobal('MutationObserver', mutation);
+    let triggerTop = 190;
+    let contentHeight = 60;
+    let clipBottom = 300;
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === 'scroll-pane') return rect(100, clipBottom);
+      if (this.getAttribute('role') === 'combobox') return rect(triggerTop, triggerTop + 32);
+      return original.call(this);
+    });
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => contentHeight);
+    const render = async (label = 'Languages', badge?: string) => act(async () => root.render(
+      <div data-testid="scroll-pane" style={{ overflowY: 'auto' }}>
+        <Select aria-label="Language" value="a" onChange={onChange}
+          items={[{ label, options: items.map(item => ({ ...item, badge })) }]} />
+      </div>,
+    ));
+    await render();
+    await act(async () => trigger().click());
+    expect(menu().dataset.side).toBe('bottom');
+    for (let i = 0; i < 3; i++) await render();
+    expect(resize).toHaveBeenCalledTimes(1);
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect(resizeDisconnect).not.toHaveBeenCalled();
+    expect(mutationDisconnect).not.toHaveBeenCalled();
+    expect(observe).toHaveBeenCalledWith(trigger());
+    // Same option count, different heading/badge wrapping and therefore height.
+    contentHeight = 180;
+    await render('Available languages', 'Recommended');
+    expect(resize).toHaveBeenCalledTimes(2);
+    expect(mutation).toHaveBeenCalledTimes(2);
+    expect(menu().dataset.side).toBe('top');
+    triggerTop = 110;
+    await act(async () => resizeCallbacks[resizeCallbacks.length - 1]());
+    expect(menu().dataset.side).toBe('bottom');
+    expect(menu().style.maxHeight).toBe('154px');
+    clipBottom = 250;
+    await act(async () => mutationCallbacks[mutationCallbacks.length - 1]());
+    expect(menu().style.maxHeight).toBe('104px');
+    await key('Escape');
+    expect(resizeDisconnect).toHaveBeenCalledTimes(2);
+    expect(mutationDisconnect).toHaveBeenCalledTimes(2);
+  });
+
   it('scrolls highlighted options only within the list, without scrolling Settings', async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: scrollIntoView, configurable: true });
