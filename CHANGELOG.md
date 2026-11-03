@@ -8,13 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- Clarify Settings navigation and privacy boundaries: Customize now documents independent destinations, Voice commands names its shared execution switch, onboarding distinguishes local processing from optional providers, and selected-text rewrite uses its current visible name (#877, #889, #893, #895, #896, #900).
+- Make Customize destinations independent and consistently named, simplify Voice Query and Knowledge help, and distinguish local dictation and rewriting from optional provider connections (#877, #889, #893, #895, #896, #900).
+- Add month and weekday labels, a visible date range, and an accessible Daily values table to the Insights activity calendar (#877, #898).
 
 ### Fixed
 
-- Update Voice Query and History documentation to describe the explicit confirmation dialog for deleting retained query history (#877, #884).
-- Correct onboarding documentation for the eight-step flow, optional Calendar step, and the General Settings location of Run setup assistant (#877, #895, #896).
-- Refresh chart and command-palette documentation for the current Insights labels and Settings destinations (#877, #898, #899).
+- Name settings controls for accessibility, keep menus usable near window edges and during disclosure animations, and preserve settings search targets and keyboard focus (#877, #878, #879, #885, #890, #891, #892).
+- Keep command drafts until explicitly discarded, restore dialog focus to the correct control, and keep editor actions visible in short windows, including after resetting a custom theme (#877, #880, #881, #901).
+- Require an explicit confirmation before deleting all Voice Query history, with safe cancellation and accurate busy and failure states (#877, #884).
+- Improve selected-text review contrast with an opaque surface and clearer labels, shortcuts, and diff colors (#877, #882).
+- Give meeting action items room to edit their task, owner, and due date in narrow panes (#877, #888).
+- Keep default command-palette groups together while preserving search ranking (#877, #899).
+- Bring Murmur's main window forward after an update restart (#902).
 
 ## [0.59.0] - 2026-11-03
 
