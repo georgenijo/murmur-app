@@ -66,8 +66,9 @@ export function SmartAutoStopSettings({
   };
 
   const ready = status?.state === 'ready';
-  // One rule for the whole feature: the model card dims with its parent row.
   const parentDisabled = isRecording || (!enabled && !silenceAutoStopOn);
+  // The model only matters while the feature is on, so its card reads as off otherwise.
+  const modelCardOff = parentDisabled || !enabled;
   const busy = operation !== 'idle' || status?.state === 'downloading';
 
   return (
@@ -80,7 +81,7 @@ export function SmartAutoStopSettings({
           onCheckedChange={() => onEnabledChange(!enabled)}
         />} />
 
-      <div data-smart-auto-model data-disabled={parentDisabled || undefined} className="settings-dependent-card flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-outline-variant/30 px-3 py-2.5">
+      <div data-smart-auto-model data-disabled={modelCardOff || undefined} className="settings-dependent-card flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-outline-variant/30 px-3 py-2.5">
         <div>
           <p className="text-xs font-semibold text-on-surface">End-of-turn model</p>
           <p className="mt-0.5 text-[11px] text-on-surface-variant">

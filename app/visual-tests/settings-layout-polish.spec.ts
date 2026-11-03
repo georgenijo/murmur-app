@@ -40,6 +40,10 @@ for (const appearance of ['dark', 'light'] as const) {
     expect(Math.abs(cal.x - t.x)).toBeLessThanOrEqual(1);
     expect(Math.abs(res.x - t.x)).toBeLessThanOrEqual(1);
     expect(res.y - cal.bottom).toBeGreaterThanOrEqual(8);
+    // The calibration card keeps its own padding, so its button sits inside it.
+    await expect(calibration).not.toHaveCSS('padding-top', '0px');
+    const calibrate = await box(calibration.getByRole('button', { name: 'Calibrate' }));
+    expect(calibrate.bottom).toBeLessThanOrEqual(cal.bottom - 4);
   });
 
   test(`${appearance} Smart Auto microphone list stays inside the Recording card`, async ({ page }) => {
@@ -97,5 +101,18 @@ for (const appearance of ['dark', 'light'] as const) {
     expect(await opacity(model)).toBe(await opacity(parentRow));
     expect(Number(await opacity(model))).toBeLessThan(1);
     await expect(smart.getByRole('button', { name: 'Remove model' })).toBeEnabled();
+  });
+
+  test(`${appearance} model card reads as off whenever Smart Auto-Stop is off`, async ({ page }) => {
+    await open(page, appearance, 'settings', 'Recording');
+    await page.locator('[data-setting-target="stop-on-silence"]').getByRole('button', { name: '1.5s' }).click();
+    await page.locator('.settings-advanced-toggle').first().click();
+    const smart = page.locator('[data-setting-target="smart-auto-stop"]');
+    const parentRow = smart.locator('.settings-setting-row').first();
+    const model = smart.locator('[data-smart-auto-model]');
+    await expect(parentRow).not.toHaveAttribute('data-disabled', /.*/);
+    await expect(model).toHaveAttribute('data-disabled', 'true');
+    await smart.getByRole('switch', { name: 'Smart Auto-Stop' }).click();
+    await expect(model).not.toHaveAttribute('data-disabled', /.*/);
   });
 }

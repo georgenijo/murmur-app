@@ -425,7 +425,8 @@
 /* Rows reach the card edge so their dividers do; stacks stay inside the row inset. */
 .settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
 .settings-advanced-stack .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
-.settings-advanced-stack .settings-dependent-branch-content.settings-stack > * { padding: 0; border-top: 0; }
+/* Undo the branch row padding and divider so a child keeps its own box (e.g. the calibration card). */
+.settings-advanced-stack .settings-dependent-branch-content.settings-stack > * { padding: revert-layer; border-top: revert-layer; }
 .settings-advanced-stack .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
 .settings-advanced > .settings-row-description { margin-bottom: 0; }
 .settings-rows-nested { margin-top: var(--settings-row-pad); border-top: 1px solid var(--settings-divider); }
