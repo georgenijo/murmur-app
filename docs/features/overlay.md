@@ -21,11 +21,17 @@ App → General → **Recording overlay** chooses one of two renditions:
   any activity widens it to `notchW + 56` without growing taller. The status
   indicator sits in the left wing and a 7-bar waveform in the right wing.
   External and unmeasured displays use a 185pt pretend notch.
-- **Floating pill**. A 112×34 dark-glass capsule bottom-centred 14pt above the
-  Dock (work area). It is fully hidden and click-through while idle, and fades
-  in with an 18-bar waveform when recording starts. The native window never
-  resizes between activities, so recording never waits on a native resize.
-  Hover controls grow it upward. The pill follows the Dock live (see
+- **Floating pill** ("Bezel"). A 120×34 capsule of the macOS HUD material,
+  bottom-centred 14pt above the Dock (work area). It follows the system
+  light/dark appearance and is monochrome except the red recording dot. Every
+  state pairs one shape with one word: a dot with the 18-bar waveform while
+  recording, a ring while connecting, a spinner while transcribing, a check
+  when done, a cross when cancelled, a triangle for errors. A delivery retry
+  is the word itself (`Paste`, `Try again`). It is fully hidden and
+  click-through while idle, and fades in when recording starts. The native
+  window never resizes between activities, so recording never waits on a
+  native resize. Hover controls grow it upward as one segmented strip (Mode,
+  Power, Paste, Settings) above a one-line status. The pill follows the Dock live (see
   [Dock tracking](#dock-tracking)): it rests low while an auto-hidden Dock is
   hidden and rises above the revealed Dock, including magnified icons and
   their name label. A Dock-only change never collapses the notch island.
@@ -57,7 +63,28 @@ magnified frames. Only frames are read (no titles, no screen capture).
   `largesize + 52pt` (absent `largesize` means 128).
 
 Neither rendition uses `backdrop-filter`: the transparent webview has nothing
-behind the island to blur. Older `below_menu_bar` settings migrate to the pill.
+behind the island to blur. Instead, while the pill placement is active,
+`overlay_material.rs` puts an `NSVisualEffectView` (`.hudWindow`,
+`.behindWindow`, always active) under the webview in the overlay and Live
+Words windows, inside a layer-masked container with a 1pt hairline. A tint of
+the same tone covers it, 74% (dark, `28/28/30`) or 76% (light, `246/246/248`)
+opaque, so 11pt labels keep at least 7:1 over a pure white or pure black
+backdrop and light waveform bars at least 3:1 over white (`bezelPalette.ts`
+tests lock the values in Rust, CSS and TypeScript). The material follows the
+view's effective appearance, and Reduce Transparency makes the tint opaque.
+
+The webview sends semantic state only (`set_overlay_material`: shown,
+expanded, content); Rust derives the capsule or card rect from the same
+geometry as the window and refits it in the same main-thread turn as every
+native resize and Dock move, so the material never lags the window. Shape
+changes animate on the island's 360ms curve, appearing and hiding fade in place
+(160ms under Reduce Motion), and Reduce Motion snaps the shape. Live Words
+reports its laid-out card size (`set_live_words_material`); Rust places and
+lifts it. Notch placement removes both materials. Once Rust acknowledges, the
+surfaces mark `data-material="native"` and drop their CSS fill; until then (and
+in browser fixtures) they draw the same tone opaque. Because a native blur
+cannot follow a CSS scale, the Bezel pill fades without the notch's scale.
+Older `below_menu_bar` settings migrate to the pill.
 
 Hidden WKWebViews can receive a generic settings event before their storage
 cache changes. Host persistence therefore sends targeted commit notifications:
@@ -159,10 +186,10 @@ feed `useOverlayGeometry`; successful native resize transactions separately emit
 Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
 
 - Island metrics: notch width/height, idle/active corners 8/12pt, and the
-  112×34 floating pill.
+  120×34 floating pill.
 - Notch mode is `notchH` tall for every activity. A measured 185×32 notch uses
   idle 185×32 and active 241×32. An external 30pt bar uses active 241×30.
-- The floating pill keeps one 112×34 window for idle, recording and
+- The floating pill keeps one 120×34 window for idle, recording and
   processing. Expanded controls reserve at least 241pt width and 64pt dropdown
   height. Meeting suggestions reserve 320pt width and a 136pt dropdown; their
   text/actions use the production component, not a stand-in.
@@ -257,9 +284,9 @@ belong to the visible island, not its transparent full-window wrapper.
 
 Notch width/height changes use a 360ms `cubic-bezier(0.34, 1.56, 0.64, 1)`
 transition (`OVERLAY_ISLAND_TRANSITION`); `OVERLAY_HEIGHT_MS` is 360 and
-`SHRINK_DELAY_MS` adds 20ms. The floating pill fades and scales with
-opacity/transform only (`OVERLAY_PILL_TRANSITION`, 180ms), which stays on the
-compositor. Its hover resize uses the same 360ms with a non-overshooting
+`SHRINK_DELAY_MS` adds 20ms. The floating pill fades with opacity only
+(`OVERLAY_PILL_TRANSITION`, 180ms), which stays on the compositor; its native
+material fades with it. Its hover resize uses the same 360ms with a non-overshooting
 `cubic-bezier(0.32, 0.72, 0, 1)`. The capsule's width follows `expanded`
 rather than the native window, which grows before the reveal and shrinks after
 the collapse, so width and height move together. Its rows sit in a centred,
@@ -326,10 +353,12 @@ When `hotkeyMissFeedback` is enabled and the backend emits `hotkey-tap-rejected`
 The idle dropdown omits shortcut guidance. Recording, connection, recovery,
 and hotkey-miss feedback use the separate status row.
 
-**Styling:** The island is intentionally dark in every theme: `rgba(20,20,20,0.92)`
-with rounded bottom corners in notch mode, and a `rgba(12,12,14,0.92)` capsule
-with a faint white hairline for the floating pill. Live words use the same
-always-dark card style.
+**Styling:** The notch island is intentionally dark in every theme:
+`rgba(20,20,20,0.92)` with rounded bottom corners, and its Live Words card
+matches. The floating pill and the Live Words card above it use the Bezel
+material instead (see [Placements](#placements)), which follows the system
+appearance rather than the app theme; the meeting suggestion inside the pill
+uses the Bezel ink with an inverted Accept.
 
 ## Reload recovery
 
@@ -413,7 +442,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
-- Calls: `get_status`, `get_overlay_geometry`, `set_overlay_expanded`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `retry_last_delivery`, `set_app_disabled`, `configure_dictation`.
+- Calls: `get_status`, `get_overlay_geometry`, `set_overlay_expanded`, `set_overlay_material`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `retry_last_delivery`, `set_app_disabled`, `configure_dictation`.
 - Listens: `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
