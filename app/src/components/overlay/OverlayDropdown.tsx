@@ -138,6 +138,63 @@ export function OverlayDropdown({
     && smartDestinationStatus
     ? smartDestinationLabel(smartDestinationStatus, smartDestinationAppName)
     : null;
+  const showStatus = status === 'recording' || (status === 'processing' && destinationLabel)
+    || status === 'starting' || status === 'recovering' || showTapMissed;
+  const statusQuiet = status === 'recording' && !showTapMissed;
+  const modeLabel = mode.pending ? `Next recording: ${mode.pending.name}. Current Mode: ${mode.name}` : `Mode: ${mode.name}. Click to cycle${mode.source === 'temporary' ? '; temporary override' : mode.source === 'site_binding' ? '; site binding' : ''}`;
+  const modeTitle = mode.pending ? `Next recording: ${mode.pending.name} · Once` : mode.source === 'temporary' ? `${mode.name} · Temporary` : mode.source === 'site_binding' ? `${mode.name} · Site` : mode.source === 'app_binding' ? `${mode.name} · App` : mode.name;
+  const reveal = {
+    height: geometry.dropdownH,
+    opacity: expanded ? 1 : 0,
+    pointerEvents: expanded ? 'auto' : 'none',
+    transition: 'opacity 200ms ease',
+    transitionDelay: expanded ? '100ms' : '0ms',
+  } as const;
+
+  if (geometry.floating) {
+    // Bezel: one segmented strip growing up out of the capsule, in the
+    // capsule's monochrome ink, with a one-line status beneath it.
+    return (
+      <div className="overlay-dropdown bezel-strip justify-center" role="group" aria-label="Quick settings"
+        aria-hidden={!expanded} style={reveal}>
+        <div className="bezel-segments" data-testid="overlay-controls-row">
+          <button type="button" aria-label={modeLabel} title={modeTitle} onClick={onCycleMode} className="bezel-segment">
+            <span className="bezel-segment-caption">{mode.pending ? 'Next' : 'Mode'}</span>
+            <span>{mode.pending ? mode.pending.name : mode.name}</span>
+          </button>
+          <button type="button" aria-label={disabled ? 'Enable Murmur' : 'Disable Murmur'} onClick={onToggleDisabled}
+            className="bezel-segment">
+            <PowerIcon stroke={disabled ? 'var(--bezel-off)' : 'currentColor'} />
+            <span>{disabled ? 'Off' : 'Power'}</span>
+          </button>
+          <button type="button" role="switch" aria-checked={effectiveAutoPaste} aria-label={autoPasteLabel}
+            title={autoPasteLabel} onClick={onToggleAutoPaste} className="bezel-segment"
+            style={{ opacity: disabled ? 0.35 : 1 }}>
+            <ClipboardPasteIcon stroke={effectiveAutoPaste ? 'var(--bezel-on)' : 'currentColor'} />
+            <span>{autoPastePaused ? 'Paused' : 'Paste'}</span>
+          </button>
+          <button type="button" aria-label="Open settings" onClick={onOpenSettings} className="bezel-segment">
+            <SlidersIcon stroke="currentColor" />
+            <span>Settings</span>
+          </button>
+        </div>
+        {showStatus && (
+          <span role={statusQuiet ? undefined : 'status'} aria-live={statusQuiet ? undefined : 'polite'}
+            className="bezel-status pointer-events-none">
+            {showTapMissed ? 'Tap missed'
+              : status === 'recording' ? (
+                <>
+                  <span className="tabular-nums">{formatElapsed(elapsed)}</span>
+                  {destinationLabel && <><span aria-hidden="true"> · </span>{destinationLabel}</>}
+                </>
+              ) : status === 'processing' ? destinationLabel
+                : status === 'starting' ? (stillConnecting ? 'Still connecting' : 'Connecting')
+                  : 'Audio recovering'}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -145,22 +202,15 @@ export function OverlayDropdown({
       role="group"
       aria-label="Quick settings"
       aria-hidden={!expanded}
-      style={{
-        height: geometry.dropdownH,
-        padding: '4px 8px 6px',
-        opacity: expanded ? 1 : 0,
-        pointerEvents: expanded ? 'auto' : 'none',
-        transition: 'opacity 200ms ease',
-        transitionDelay: expanded ? '100ms' : '0ms',
-      }}
+      style={{ ...reveal, padding: '4px 8px 6px' }}
     >
       <div className="flex w-full items-center justify-center gap-3" data-testid="overlay-controls-row">
       {/* Resolved Mode. The overlay window is non-activating, so cycling keeps
           keyboard focus in the user's target app. */}
       <button
         type="button"
-        aria-label={mode.pending ? `Next recording: ${mode.pending.name}. Current Mode: ${mode.name}` : `Mode: ${mode.name}. Click to cycle${mode.source === 'temporary' ? '; temporary override' : mode.source === 'site_binding' ? '; site binding' : ''}`}
-        title={mode.pending ? `Next recording: ${mode.pending.name} · Once` : mode.source === 'temporary' ? `${mode.name} · Temporary` : mode.source === 'site_binding' ? `${mode.name} · Site` : mode.source === 'app_binding' ? `${mode.name} · App` : mode.name}
+        aria-label={modeLabel}
+        title={modeTitle}
         onClick={onCycleMode}
         className="min-w-0 shrink max-w-[112px] truncate rounded-[9px] px-2 text-[10px] font-medium text-sky-200 transition-colors"
         style={{ height: 26, background: mode.pending || mode.source === 'temporary' ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)' }}
@@ -205,10 +255,10 @@ export function OverlayDropdown({
       </button>
       </div>
 
-      {(status === 'recording' || (status === 'processing' && destinationLabel) || status === 'starting' || status === 'recovering' || showTapMissed) && (
+      {showStatus && (
         <span
-          role={status === 'recording' && !showTapMissed ? undefined : 'status'}
-          aria-live={status === 'recording' && !showTapMissed ? undefined : 'polite'}
+          role={statusQuiet ? undefined : 'status'}
+          aria-live={statusQuiet ? undefined : 'polite'}
           className="max-w-full truncate text-center leading-none pointer-events-none"
         >
           {/* Priority mirrors deriveVisual's indicator: hotkey-miss beats recording. */}

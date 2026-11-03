@@ -141,3 +141,27 @@ it('shows the verified app name for a current or recent overlay destination', as
   expect(container.textContent).toContain('0:00 · To T3 Code');
   await act(async () => root.unmount());
 });
+
+it('grows the floating pill controls upward as one segmented strip', async () => {
+  const onToggleAutoPaste = vi.fn();
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const props = {
+    geometry: fixture.pillExpanded as OverlayGeometry, expanded: true,
+    status: 'idle' as const, stillConnecting: false, showTapMissed: false,
+    disabled: false, fileOutputEnabled: false,
+    onToggleDisabled: vi.fn(), onToggleAutoPaste, onOpenSettings: vi.fn(),
+  };
+  await act(async () => root.render(<OverlayDropdown {...props} autoPaste />));
+  const strip = container.querySelector<HTMLElement>('[role="group"][aria-label="Quick settings"]')!;
+  expect(strip.classList.contains('bezel-strip')).toBe(true);
+  expect(strip.querySelectorAll('[data-testid="overlay-controls-row"] .bezel-segment')).toHaveLength(4);
+  const paste = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+  expect(paste.getAttribute('aria-checked')).toBe('true');
+  expect(paste.textContent).toBe('Paste');
+  await act(async () => paste.click());
+  expect(onToggleAutoPaste).toHaveBeenCalledOnce();
+  await act(async () => root.render(<OverlayDropdown {...props} autoPaste={false} />));
+  expect(paste.getAttribute('aria-checked')).toBe('false');
+  await act(async () => root.unmount());
+});

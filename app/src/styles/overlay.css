@@ -1,6 +1,8 @@
-/* The overlay and live-words card are deliberately dark, independent of the
-   active theme. Neither uses backdrop-filter: both windows are transparent, so
-   there is nothing behind them in the webview to blur. */
+/* The notch island and its live-words card are deliberately dark, independent
+   of the active theme. The floating pill and its card use Bezel (below), which
+   follows the system appearance. Nothing uses backdrop-filter: both windows are
+   transparent, so there is nothing behind them in the webview to blur. The
+   pill's blur is native, drawn by overlay_material.rs behind the webview. */
 .overlay-waveform-bar {
   transform: scaleY(0.14);
   transform-origin: 50% 50%;
@@ -56,7 +58,162 @@
   overflow-wrap: anywhere;
 }
 .live-words-tentative { opacity: 0.7; }
+
+/* Bezel: a macOS HUD in system light/dark. Monochrome ink; the recording dot
+   is the only colour. With the native material ([data-material="native"]) the
+   webview draws no surface: Rust clips a behind-window blur, a 74-76% tint and
+   a hairline to the same shape. Without it (browser fixtures, other platforms)
+   the tone is drawn opaque, as macOS does under Reduce Transparency. Tokens
+   mirror src/lib/bezelPalette.ts. */
+.bezel {
+  --bezel-solid: rgb(28, 28, 30);
+  --bezel-line: rgba(255, 255, 255, 0.16);
+  --bezel-ink: rgb(255, 255, 255);
+  --bezel-sel: rgba(255, 255, 255, 0.1);
+  --bezel-sel-strong: rgba(255, 255, 255, 0.18);
+  --bezel-on: #30d158;
+  --bezel-off: #ff453a;
+  color: var(--bezel-ink);
+  font-family: var(--ui-font-sans);
+}
+@media (prefers-color-scheme: light) {
+  .bezel {
+    --bezel-solid: rgb(246, 246, 248);
+    --bezel-line: rgba(0, 0, 0, 0.14);
+    --bezel-ink: rgba(0, 0, 0, 0.87);
+    --bezel-sel: rgba(0, 0, 0, 0.06);
+    --bezel-sel-strong: rgba(0, 0, 0, 0.11);
+    --bezel-on: #248a3d;
+    --bezel-off: #d70015;
+  }
+}
+.bezel-surface {
+  border: 1px solid var(--bezel-line);
+  background: var(--bezel-solid);
+}
+.bezel-surface[data-material="native"] {
+  border-color: transparent;
+  background: transparent;
+}
+/* Meeting suggestion inside the pill: monochrome, the primary action inverted. */
+.bezel-meeting-accept {
+  background: var(--bezel-ink);
+  color: var(--bezel-solid);
+}
+.bezel-meeting-dismiss {
+  background: var(--bezel-sel);
+  color: var(--bezel-ink);
+  transition: background-color 150ms ease;
+}
+.bezel-meeting-dismiss:hover:not(:disabled) {
+  background: var(--bezel-sel-strong);
+}
+.bezel-meeting-error {
+  color: var(--bezel-off);
+}
+.bezel-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.bezel-glyph {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+}
+.bezel-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #ff453a;
+  animation: pulse 0.8s ease-in-out infinite;
+}
+.bezel-ring {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: pulse 1s ease-in-out infinite;
+}
+.bezel-spinner {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: bezel-spin 1s linear infinite;
+}
+@keyframes bezel-spin { to { transform: rotate(360deg); } }
+.bezel-retry {
+  padding: 3px 7px;
+  border-radius: 7px;
+  background: var(--bezel-sel);
+  font: inherit;
+  color: inherit;
+}
+.bezel-retry:hover { background: var(--bezel-sel-strong); }
+/* The hover strip: one segmented control above the capsule. */
+.bezel-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px 8px 3px;
+  box-sizing: border-box;
+}
+.bezel-segments {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--bezel-sel);
+}
+.bezel-segment {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 38px;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 13px;
+  transition: background-color 120ms ease-out;
+}
+.bezel-segment:hover,
+.bezel-segment[aria-checked="true"] { background: var(--bezel-sel-strong); }
+.bezel-segment > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bezel-segment-caption { font-weight: 400; }
+.bezel-status {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 13px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bezel .overlay-waveform-bar { background: currentColor; }
+.live-words-card.bezel-surface { color: var(--bezel-ink); }
+.live-words-card.bezel-surface .live-words-tentative { opacity: 0.74; }
 @media (prefers-reduced-motion: reduce) {
   .overlay-island { transition: opacity 160ms ease-out !important; }
   .live-words-card { transition: none !important; }
+  .bezel-segment, .bezel-meeting-dismiss { transition: none; }
 }

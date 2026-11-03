@@ -201,4 +201,30 @@ describe('DictationPreviewCard', () => {
     expect(container.querySelector<HTMLElement>('.live-words-card')!.style.transform).toBe('translateY(-64px)');
     await act(async () => root.unmount());
   });
+
+  it('wears the Bezel material above the pill and reports its size for the native clip', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const onCardSize = vi.fn();
+    await act(async () => root.render(<DictationPreviewCard text="words" above onCardSize={onCardSize} />));
+    const card = container.querySelector<HTMLElement>('.live-words-card')!;
+    expect(card.classList.contains('bezel-surface')).toBe(true);
+    expect(card.dataset.material).toBeUndefined();
+    expect(onCardSize).toHaveBeenLastCalledWith(card.offsetWidth, card.offsetHeight);
+    await act(async () => root.render(<DictationPreviewCard text="words" above material onCardSize={onCardSize} />));
+    expect(card.dataset.material).toBe('native');
+    await act(async () => root.render(<DictationPreviewCard text="" above material onCardSize={onCardSize} />));
+    expect(onCardSize).toHaveBeenLastCalledWith(0, 0);
+    await act(async () => root.unmount());
+  });
+
+  it('keeps the notch card off the Bezel material', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => root.render(<DictationPreviewCard text="words" material />));
+    const card = container.querySelector<HTMLElement>('.live-words-card')!;
+    expect(card.classList.contains('bezel-surface')).toBe(false);
+    expect(card.dataset.material).toBeUndefined();
+    await act(async () => root.unmount());
+  });
 });
