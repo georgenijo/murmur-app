@@ -76,7 +76,7 @@ Use these before creating a feature-local control or surface.
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
 | Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
 | Sidebar | Home uses 200px normally and 184px at widths of 760px or less. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, Assistant, and Insights; selection is a surface state, never elevation |
-| Customize | The gear and `⌘,` open one ordered five-row hub; detail pages expose Back to Customize and restore the originating row's focus |
+| Customize | The gear and `⌘,` open General; Customize is an unordered set of independent destinations, and detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses the 896px shell documented below |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | 5px list gap; cards use an 8px vertical inset |
@@ -87,7 +87,7 @@ Use these before creating a feature-local control or surface.
 | Secondary pages | Insights, Notetaker, and Assistant use one page header with a visible Back action that returns focus to Home navigation; Assistant retains legacy query history in Previous queries |
 | Assistant | Flat transparent reading surface, no nested message shading; one shared left text gutter across speaker labels, bodies, header and composer text. Compact thread rail uses an outlined selection; connection and delete controls live in keyboard-accessible disclosures. Escape dismisses an open disclosure before canceling a turn. |
 | Voice Query | Theme-aware flat popover, question then answer on one text gutter; compact state header with Close, bounded scrolling body and pinned actions. Technical summaries live in Details rather than the header or footer. Open in Assistant is one explicit handoff, not a nested save dialog. |
-| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, and tooltips never move the plot |
+| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels plus a Daily values disclosure |
 
 ## Input contracts
 

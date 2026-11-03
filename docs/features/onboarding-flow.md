@@ -11,7 +11,7 @@ row after Welcome: Back stays left, while an optional Skip and the primary
 action stay right. Back remains visible but disabled while a model download is
 active, because leaving the step cannot cancel the underlying download safely:
 
-1. **Welcome** — privacy pitch (local-only processing), what setup covers.
+1. **Welcome** — explains that dictation and selected-text rewrites run on this Mac, saved history and retained meeting audio stay local, and optional Voice Query or Assistant use a configured provider that may receive questions, context, and allowed files.
 2. **Microphone** — fires the *native* macOS permission dialog in-app via the
    `request_microphone_access` command (`AVCaptureDevice.requestAccessForMediaType`,
    fire-and-forget; never opens the device, so it can't duck other apps' audio —
@@ -71,13 +71,13 @@ click. The wishy-washy TCC states are handled explicitly:
   place → set the flag silently** so existing installs never see the wizard on
   upgrade. Anything missing → show `OnboardingFlow`.
 
-Settings → App → **Run Setup Assistant** clears the flag and relaunches the
+Settings → General → **Run setup assistant…** clears the flag and relaunches the
 wizard — the recovery path when a user revokes a permission and wants a guided
 re-grant instead of spelunking through System Settings.
 
 ## Post-setup discovery
 
-The wizard remains seven steps. After it finishes, Home shows a dismissible
+The wizard remains eight steps. After it finishes, Home shows a dismissible
 **Get more from Murmur** checklist for features that are useful after the first
 dictation: Command Palette, an app-bound Mode, selected-text Transform, Voice
 Query, meeting capture, Correct and Teach, and Keyboard Shortcuts. Settings →

@@ -61,6 +61,23 @@ describe('DayChart', () => {
     expect(container.querySelector('.ui-day-chart-tooltip')?.textContent).toContain('Focus a day');
   });
 
+  it('keeps both years visible across a calendar rollover and tolerates empty weeks', async () => {
+    const weeks = [[day(0, { date: new Date(2026, 11, 27) })], [day(1, { date: new Date(2027, 0, 3) })]];
+    await act(async () => root.render(
+      <DayChart kind="heatmap" metric="words" weeks={weeks} ariaLabel="Activity heatmap" />,
+    ));
+    const range = container.querySelector('.ui-day-chart-date-range')?.textContent;
+    expect(range).toContain('2026');
+    expect(range).toContain('2027');
+    expect([...container.querySelectorAll('.ui-day-chart-months span')].map((label) => label.textContent))
+      .toEqual(['Dec', 'Jan']);
+    await act(async () => root.render(
+      <DayChart kind="heatmap" metric="words" weeks={[]} ariaLabel="Activity heatmap" />,
+    ));
+    expect(container.querySelector('.ui-day-chart-date-range')).toBeNull();
+    expect(container.querySelectorAll('.ui-day-chart-heatmap button')).toHaveLength(0);
+  });
+
   it('makes every heatmap cell focusable with bounded intensity and exact values', async () => {
     const weeks = Array.from({ length: 8 }, (_, week) => (
       Array.from({ length: 7 }, (_, weekday) => day(week * 7 + weekday, {
@@ -74,6 +91,16 @@ describe('DayChart', () => {
 
     const cells = container.querySelectorAll('.ui-day-chart-heatmap button');
     expect(cells).toHaveLength(56);
+    expect(container.querySelector('.ui-day-chart-date-range')?.textContent).toContain('2026');
+    expect([...container.querySelectorAll('.ui-day-chart-months span')].map((label) => label.textContent))
+      .toEqual(['Jul', '', '', '', 'Aug', '', '', '']);
+    expect([...container.querySelectorAll('.ui-day-chart-weekdays span')].map((label) => label.textContent))
+      .toEqual(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+    expect(cells[10].getAttribute('aria-label')).toBe('Jul 15, 2026, 1,000 words, 10 recordings');
+    const table = container.querySelector('.ui-day-chart-values table');
+    expect(table?.querySelectorAll('tbody tr')).toHaveLength(56);
+    expect(table?.querySelectorAll('tbody tr')[10].textContent).toBe('Jul 15, 20261,00010');
+    expect(container.querySelector('.ui-day-chart-values summary')?.textContent).toBe('Daily values');
     expect(Array.from(cells).every((cell) => /^[0-4]$/.test((cell as HTMLElement).dataset.intensity ?? ''))).toBe(true);
     await act(async () => (cells[10] as HTMLButtonElement).click());
     const tooltip = container.querySelector('.ui-day-chart-tooltip')?.textContent ?? '';

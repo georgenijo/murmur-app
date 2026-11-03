@@ -81,6 +81,28 @@ describe('CommandPalette', () => {
     expect(onOpened).toHaveBeenCalledOnce();
   });
 
+  it('shows contiguous default groups and executes the visible keyboard selection', async () => {
+    const meeting = vi.fn();
+    const disable = vi.fn();
+    commands.splice(1, 0,
+      { id: 'meeting', title: 'Stop meeting capture', section: 'Meeting', run: meeting },
+      { id: 'disable', title: 'Disable Murmur', section: 'Recording', run: disable },
+    );
+    await render();
+    const headings = [...container.querySelectorAll('.dialog-eyebrow')].map((heading) => heading.textContent);
+    expect(headings).toEqual(['Recording', 'Meeting', 'Diagnostics', 'Settings']);
+    expect(rows().map((row) => row.id)).toEqual(['command-record', 'command-disable', 'command-meeting', 'command-logs', 'command-delivery']);
+    await press('ArrowDown');
+    expect(input().getAttribute('aria-activedescendant')).toBe('command-disable');
+    await press('Enter');
+    expect(disable).toHaveBeenCalledOnce();
+    expect(meeting).not.toHaveBeenCalled();
+    await type('meeting');
+    expect(rows().map((row) => row.id)).toEqual(['command-meeting']);
+    await press('Enter');
+    expect(meeting).toHaveBeenCalledOnce();
+  });
+
   it('filters as you type', async () => {
     await render();
     await type('log');

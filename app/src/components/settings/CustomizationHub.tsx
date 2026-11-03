@@ -19,7 +19,7 @@ const DESTINATIONS: ReadonlyArray<{
   },
   {
     id: 'styles',
-    title: 'Styles',
+    title: 'App overrides',
     description: 'Choose how Murmur writes and delivers text in each app',
   },
   {
@@ -29,7 +29,7 @@ const DESTINATIONS: ReadonlyArray<{
   },
   {
     id: 'transforms',
-    title: 'Transforms',
+    title: 'Selected-text rewrite',
     description: 'Configure on-device rewrites and saved instructions',
   },
 ];
@@ -49,11 +49,12 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
   return (
     <section aria-label="Customize Murmur">
 
-      <ol
+      <ul
+        role="list"
         aria-label="Customization destinations"
         className="settings-hub-list mt-6"
       >
-        {DESTINATIONS.map((destination, index) => (
+        {DESTINATIONS.map((destination) => (
           <li key={destination.id} className="settings-hub-card">
             <button
               ref={(node) => {
@@ -64,9 +65,6 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
               onClick={(event) => onOpen(destination.id, event.currentTarget)}
               className="group flex min-h-[76px] w-full items-center gap-4 px-4 py-3 text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:bg-surface-container-low focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
             >
-              <span className="w-6 shrink-0 font-mono text-[11px] font-semibold tabular-nums text-on-surface-variant">
-                {String(index + 1).padStart(2, '0')}
-              </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-semibold text-on-surface">{destination.title}</span>
                 <span className="mt-1 block text-xs leading-relaxed text-on-surface-variant">
@@ -79,7 +77,7 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
             </button>
           </li>
         ))}
-      </ol>
+      </ul>
     </section>
   );
 }

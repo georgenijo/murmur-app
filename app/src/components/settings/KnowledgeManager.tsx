@@ -218,6 +218,12 @@ export function KnowledgeManager({ active, profiles }: Props) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-sm font-medium text-on-surface">Personal knowledge</p>
+            <p className="mt-1 text-xs text-on-surface-variant">Manage saved terms, replacements, and snippets. Choose whether each entry applies everywhere, in one app, or in one project.</p>
+            <details className="mt-2 text-xs text-on-surface-variant">
+              <summary className="cursor-pointer font-medium">How matching entries are chosen</summary>
+              <p className="mt-1">When the same phrase has several matches, a project entry takes priority over an app entry, then an all-apps entry. Within the same scope, manually created entries take priority over imports, learned corrections, then code scans. Newer edits win remaining ties.</p>
+              <p className="mt-1">Voice Commands use entries saved as commands. Confirmed Correct and Teach replacements are used by Smart Correction. Other entries are kept here for the features that use them; saving an entry does not automatically change every dictation.</p>
+            </details>
           </div>
           <button type="button" onClick={() => setEditing(null)} disabled={unavailable || bulkBusy} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary disabled:opacity-40">Create knowledge…</button>
         </div>

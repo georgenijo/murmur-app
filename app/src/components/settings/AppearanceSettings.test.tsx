@@ -147,6 +147,17 @@ describe("AppearanceSettings", () => {
     expect(container.textContent).not.toContain("Choose dark style");
   });
 
+  it.each(['Create theme', 'Create theme from Sonic'])('restores the actual %s pointer opener after Done', async (name) => {
+    (container.querySelector('[role="radio"]') as HTMLElement).focus();
+    const opener = Array.from(container.querySelectorAll('button')).find(button =>
+      name === 'Create theme' ? button.textContent?.includes('Create theme') : button.getAttribute('aria-label') === name)!;
+    await act(async () => opener.click());
+    const done = Array.from(container.querySelectorAll('[role="dialog"] button')).find(button => button.textContent === 'Done') as HTMLButtonElement;
+    await act(async () => done.click());
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
   it("keeps System distinct from its resolved appearance and follows external changes", async () => {
     mocks.controller!.resolvedAppearance = "dark";
     await act(async () => root.render(<AppearanceSettings />));

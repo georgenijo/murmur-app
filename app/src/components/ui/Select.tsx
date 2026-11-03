@@ -1,4 +1,7 @@
-import { useState, useRef, useEffect, useId } from 'react';
+import { createContext, useContext, useState, useRef, useEffect, useLayoutEffect, useId } from 'react';
+
+/** Settings rows supply their visible title; standalone pickers supply an explicit name. */
+export const SelectLabelContext = createContext<string | undefined>(undefined);
 
 export interface SelectOption<T extends string = string> {
   value: T;
@@ -24,6 +27,7 @@ export interface SelectProps<T extends string = string> {
   size?: 'default' | 'sm' | 'xs';
   placeholder?: string;
   'aria-label'?: string;
+  'aria-labelledby'?: string;
   'aria-describedby'?: string;
 }
 
@@ -41,9 +45,13 @@ export function Select<T extends string = string>({
   size = 'default',
   placeholder,
   'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
   'aria-describedby': ariaDescribedBy,
 }: SelectProps<T>) {
   const id = useId();
+  const rowLabel = useContext(SelectLabelContext);
+  const labelledBy = ariaLabelledBy ?? (ariaLabel ? undefined : rowLabel);
+  const [placement, setPlacement] = useState({ side: 'bottom', maxHeight: 240 });
   const [isOpen, setIsOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -89,17 +97,72 @@ export function Select<T extends string = string>({
     return () => document.removeEventListener('mousedown', handleMouseDown);
   }, [isOpen]);
 
-  // Scroll highlighted option into view
+  // Keep the menu inside both the window and any clipping Settings pane.
+  useLayoutEffect(() => {
+    if (!isOpen || !triggerRef.current || !listboxRef.current) return;
+    const place = () => {
+      const trigger = triggerRef.current;
+      const listbox = listboxRef.current;
+      if (!trigger || !listbox) return;
+      const rect = trigger.getBoundingClientRect();
+      let top = 0;
+      let bottom = window.innerHeight;
+      for (let parent = trigger.parentElement; parent; parent = parent.parentElement) {
+        const { overflowY } = getComputedStyle(parent);
+        if (!/auto|scroll|hidden|clip/.test(overflowY)) continue;
+        const bounds = parent.getBoundingClientRect();
+        top = Math.max(top, bounds.top);
+        bottom = Math.min(bottom, bounds.bottom);
+      }
+      const above = Math.max(0, rect.top - top - 4);
+      const below = Math.max(0, bottom - rect.bottom - 4);
+      const desired = Math.min(240, listbox.scrollHeight);
+      const side = below < desired && above > below ? 'top' : 'bottom';
+      const maxHeight = Math.min(240, side === 'top' ? above : below);
+      setPlacement(previous => previous.side === side && previous.maxHeight === maxHeight
+        ? previous : { side, maxHeight });
+    };
+    place();
+    window.addEventListener('resize', place);
+    // Capturing observes nested pane scrolls without moving the pane itself.
+    window.addEventListener('scroll', place, true);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place);
+    const clippingObserver = new MutationObserver(place);
+    // A folding ancestor can stop clipping without resizing the control row.
+    // Observe its settled class/style as well as geometry while the menu is open.
+    for (let parent = triggerRef.current.parentElement; parent; parent = parent.parentElement) {
+      observer?.observe(parent);
+      clippingObserver.observe(parent, { attributes: true, attributeFilter: ['class', 'style'] });
+    }
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+      observer?.disconnect();
+      clippingObserver.disconnect();
+    };
+  }, [isOpen, items]);
+
+  // Scroll only the listbox, not its surrounding Settings pane.
+  useLayoutEffect(() => {
+    const listbox = listboxRef.current;
+    if (highlightedIndex < 0 || !listbox) return;
+    const option = listbox.querySelector<HTMLElement>(`[data-index="${highlightedIndex}"]`);
+    if (!option) return;
+    const bounds = listbox.getBoundingClientRect();
+    const rect = option.getBoundingClientRect();
+    if (rect.top < bounds.top) listbox.scrollTop -= bounds.top - rect.top;
+    else if (rect.bottom > bounds.bottom) listbox.scrollTop += rect.bottom - bounds.bottom;
+  }, [highlightedIndex, placement]);
+
   useEffect(() => {
-    if (highlightedIndex < 0 || !listboxRef.current) return;
-    const el = listboxRef.current.querySelector(
-      `[data-index="${highlightedIndex}"]`,
-    );
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [highlightedIndex]);
+    if (disabled) { setIsOpen(false); setHighlightedIndex(-1); }
+  }, [disabled]);
 
   const open = () => {
     if (disabled) return;
+    // WebKit does not focus buttons on pointer click; keyboard navigation and
+    // aria-activedescendant must still belong to the opened combobox.
+    triggerRef.current?.focus({ preventScroll: true });
     setIsOpen(true);
     const idx = flatOptions.findIndex((o) => o.value === value);
     setHighlightedIndex(idx >= 0 ? idx : 0);
@@ -247,6 +310,7 @@ export function Select<T extends string = string>({
             : undefined
         }
         aria-label={ariaLabel}
+        aria-labelledby={labelledBy}
         aria-describedby={ariaDescribedBy}
         disabled={disabled}
         onClick={() => (isOpen ? close() : open())}
@@ -280,7 +344,15 @@ export function Select<T extends string = string>({
           ref={listboxRef}
           role="listbox"
           id={`${id}-listbox`}
-          className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-(--ui-radius-popover) border border-(--ui-hairline-strong) bg-surface-container-lowest py-1 shadow-(--ui-shadow-3)"
+          aria-label={ariaLabel}
+          aria-labelledby={labelledBy}
+          data-side={placement.side}
+          style={{
+            top: placement.side === 'bottom' ? 'calc(100% + 4px)' : undefined,
+            bottom: placement.side === 'top' ? 'calc(100% + 4px)' : undefined,
+            maxHeight: placement.maxHeight,
+          }}
+          className="absolute z-10 w-full overflow-auto overscroll-contain rounded-(--ui-radius-popover) border border-(--ui-hairline-strong) bg-surface-container-lowest py-1 shadow-(--ui-shadow-3)"
         >
           {isGrouped(items)
             ? items.map((group, gi) => (

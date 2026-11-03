@@ -187,6 +187,16 @@ describe('OnboardingFlow', () => {
     return { row: row!, back: back!, actions: actions!, actionButtons };
   };
 
+  it('scopes local processing to dictation and rewrite while disclosing optional provider content', async () => {
+    await renderFlow();
+    const copy = container.textContent?.replace(/\s+/g, ' ');
+    expect(copy).toContain('Dictation and selected-text rewrites run on your Mac');
+    expect(copy).toContain('Saved history and retained meeting audio are stored locally');
+    expect(copy).toContain('Optional Voice Query and Assistant use a provider you configure');
+    expect(copy).toContain('may receive questions, context, and files you allow');
+    expect(copy).not.toContain('No cloud, no accounts');
+  });
+
   const goToSystemAudioStep = async () => {
     await renderFlow();
     await clickButton('Get started');
@@ -348,6 +358,8 @@ describe('OnboardingFlow', () => {
     expect(expectNavigation('Downloading…').back.disabled).toBe(true);
     await clickButton('Complete model download');
     expect(container.querySelector('h1')?.textContent).toContain('Recording shortcut');
+    expect(container.textContent).toContain('You can change both options later in Recording settings.');
+    expect(container.textContent).not.toContain('Dictation settings');
   });
 
   it('preserves native focus order and selected shortcut through Back and completion', async () => {

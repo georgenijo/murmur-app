@@ -72,8 +72,19 @@ export function scoreCommand(command: PaletteCommand, query: string): number | n
   return total - Math.min(command.title.length, 99) / 100;
 }
 
-/** Matching commands, best first; declaration order breaks ties. */
+/** Matching commands, best first; declaration order breaks ties within a search.
+ * The default list groups sections in first-seen order, retaining priority within each.
+ */
 export function filterCommands(commands: PaletteCommand[], query: string): PaletteCommand[] {
+  if (paletteTokens(query).length === 0) {
+    const sections = new Map<string, PaletteCommand[]>();
+    for (const command of commands) {
+      const section = sections.get(command.section);
+      if (section) section.push(command);
+      else sections.set(command.section, [command]);
+    }
+    return [...sections.values()].flat();
+  }
   return commands
     .map((command, index) => ({ command, index, score: scoreCommand(command, query) }))
     .filter((candidate): candidate is { command: PaletteCommand; index: number; score: number } =>

@@ -697,7 +697,19 @@ textarea {
 .ui-day-chart-line-targets button[data-active="true"] { background: var(--ui-dashboard-accent-subtle); }
 .ui-day-chart-line-targets button span { position: absolute; top: var(--day-chart-point); left: 50%; width: 0.4375rem; height: 0.4375rem; border: 1px solid var(--murmur-primary); border-radius: 999px; background: var(--murmur-surface-container-lowest); transform: translate(-50%, -50%); }
 .ui-day-chart-line-targets button[data-active="true"] span { background: var(--murmur-primary); }
+.ui-day-chart-calendar { display: grid; grid-template-columns: 2rem minmax(0, 16rem); gap: var(--ui-space-2); max-width: 18.5rem; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.ui-day-chart-date-range { grid-column: 1 / -1; }
+.ui-day-chart-months { grid-column: 2; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 3px; font-size: 0.625rem; }
+.ui-day-chart-weekdays { display: grid; grid-template-rows: repeat(7, minmax(0, 1fr)); gap: 3px; align-items: center; font-size: 0.625rem; }
 .ui-day-chart-heatmap { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); grid-template-rows: repeat(7, 1fr); gap: 3px; aspect-ratio: 8 / 7; max-width: 16rem; }
+.ui-day-chart-values { margin-top: var(--ui-space-3); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); }
+.ui-day-chart-values summary { width: fit-content; cursor: pointer; }
+.ui-day-chart-values summary:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
+.ui-day-chart-values > div { max-height: 12rem; overflow: auto; margin-top: var(--ui-space-2); }
+.ui-day-chart-values table { width: 100%; font-variant-numeric: tabular-nums; }
+.ui-day-chart-values th, .ui-day-chart-values td { padding: var(--ui-space-2); text-align: right; }
+.ui-day-chart-values th:first-child { text-align: left; }
+.ui-day-chart-values tbody th { font-weight: 400; }
 .ui-day-chart-heatmap button { min-width: 0; border-radius: 2px; background: var(--ui-chart-0); }
 .ui-day-chart-heatmap button[data-intensity="1"] { background: var(--ui-chart-1); }
 .ui-day-chart-heatmap button[data-intensity="2"] { background: var(--ui-chart-2); }
@@ -1391,6 +1403,12 @@ textarea {
 .meeting-audio-channel:disabled { opacity: 0.45; }
 .meeting-audio-note { flex-basis: 100%; color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: var(--ui-leading-micro); }
 .meeting-review-card { border: 1px solid color-mix(in srgb, var(--murmur-primary) 22%, var(--ui-hairline)); border-radius: var(--ui-radius-card); background: var(--ui-tint-accent-subtle); padding: var(--ui-space-6) var(--ui-space-7); }
+.meeting-review-card fieldset { min-width: 0; }
+.meeting-action-editor { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); align-items: end; gap: var(--ui-space-3); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-3); }
+.meeting-action-editor label { display: grid; min-width: 0; gap: var(--ui-space-2); font-size: var(--ui-font-caption); font-weight: var(--ui-weight-label); }
+.meeting-action-task { grid-column: 1 / -1; }
+.meeting-action-editor .meeting-field { min-width: 0; }
+.meeting-action-remove { justify-self: start; align-self: center; }
 .meeting-review-card-header { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3); }
 .meeting-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--ui-space-3); margin-left: auto; }
 .meeting-review-card .ui-dashboard-action[data-action] { height: 1.75rem; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }

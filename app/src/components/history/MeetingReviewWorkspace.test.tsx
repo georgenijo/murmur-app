@@ -730,6 +730,49 @@ describe('MeetingReviewWorkspace', () => {
     expect(JSON.stringify(saveReview.mock.calls[0][0].document)).not.toContain('sourceSegmentIds');
   });
 
+  it('edits, cancels, and saves action fields without changing canonical transcript evidence', async () => {
+    const document = {
+      ...detail.activeDocument!,
+      actionItems: [{ key: 'action-key', text: 'Send the original plan', owner: 'Casey', dueDate: '2026-11-05', sourceSegmentIds: [13] }],
+    };
+    const populated: MeetingDetail = { ...detail, activeDocument: document, review: { ...detail.review!, document } };
+    const before = JSON.stringify(populated);
+    const evidence = JSON.stringify(segments);
+    const saveReview = vi.fn().mockResolvedValue(true);
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: populated, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    const field = (label: string) => container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+    const transcript = () => [...container.querySelectorAll('.meeting-transcript-row')].map((row) => row.textContent);
+    const originalTranscript = transcript();
+
+    await clickInAct(getButton('Edit review…'));
+    await act(async () => {
+      setTextAreaValue(getTextArea('Action item 1'), 'Discard this draft');
+      setInputValue(field('Action owner 1'), 'Alex');
+      setInputValue(field('Action due date 1'), '2026-11-06');
+    });
+    await clickInAct(getButton('Cancel'));
+    expect(saveReview).not.toHaveBeenCalled();
+    await clickInAct(getButton('Edit review…'));
+    expect(getTextArea('Action item 1').value).toBe('Send the original plan');
+    expect(field('Action owner 1').value).toBe('Casey');
+    expect(field('Action due date 1').value).toBe('2026-11-05');
+    await act(async () => {
+      setTextAreaValue(getTextArea('Action item 1'), 'Send the reviewed plan\nInclude the milestones');
+      setInputValue(field('Action owner 1'), 'Alex');
+      setInputValue(field('Action due date 1'), '2026-11-07');
+    });
+    await clickInAct(getButton('Save review'));
+    expect(saveReview).toHaveBeenCalledOnce();
+    expect(saveReview).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'meeting',
+      document: expect.objectContaining({ actionItems: [{ key: 'action-key', text: 'Send the reviewed plan\nInclude the milestones', owner: 'Alex', dueDate: '2026-11-07' }] }),
+    }));
+    expect(transcript()).toEqual(originalTranscript);
+    expect(JSON.stringify(segments)).toBe(evidence);
+    expect(JSON.stringify(populated)).toBe(before);
+    expect(JSON.stringify(saveReview.mock.calls[0][0])).not.toContain('sourceSegmentIds');
+  });
+
   it('shows a clear notice and creates no claim when no transcript source is selected', async () => {
     const onNotice = vi.fn();
     const saveReview = vi.fn();

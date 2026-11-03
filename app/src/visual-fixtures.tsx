@@ -30,6 +30,7 @@ import { SettingsRow, SettingsCard, SettingsUnavailableGroup } from './component
 import { SettingToggle } from './components/settings/SettingToggle';
 import type { SettingsEditorTab } from './components/settings/SettingsEditorsWindow';
 import { SettingsPanel } from './components/settings/SettingsPanel';
+import { SettingsBranch } from './components/settings/SettingsBranch';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { UpdateModal } from './components/UpdateModal';
 import { Copy, Folder } from 'lucide-react';
@@ -939,6 +940,18 @@ function TypographyFixture() {
   );
 }
 
+function SelectFoldReviewFixture() {
+  const [open, setOpen] = React.useState(false);
+  const [value, setValue] = React.useState('30');
+  return <main style={{ width: 360, margin: '80px auto' }}>
+    <button type="button" onClick={() => setOpen(true)}>Expand timeout</button>
+    <SettingsBranch open={open}>
+      <SettingsRow title="Timeout" control={<Select value={value} onChange={setValue}
+        items={['30', '60', '120', '180', '300'].map(seconds => ({ value: seconds, label: `${seconds} seconds` }))} />} />
+    </SettingsBranch>
+  </main>;
+}
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     {requestedState === 'settings-geometry' ? (
@@ -966,6 +979,8 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       </div>
     ) : requestedState === 'update-flow' ? (
       <UpdateFlowFixture />
+    ) : requestedState === 'select-fold-review' ? (
+      <SelectFoldReviewFixture />
     ) : requestedState === 'voice-island' ? (
       <VoiceIslandFixture />
     ) : requestedState === 'dictation-preview' ? (

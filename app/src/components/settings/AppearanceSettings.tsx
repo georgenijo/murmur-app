@@ -145,12 +145,13 @@ function ColorControl({
   );
 }
 
-function ThemeEditorDialog({ onClose, contentRef, children }: {
+function ThemeEditorDialog({ onClose, contentRef, children, restoreFocus }: {
   onClose: () => void;
   contentRef: MutableRefObject<HTMLDivElement | null>;
   children: ReactNode;
+  restoreFocus: () => HTMLElement | null;
 }) {
-  const dialogRef = useDialogFocus(onClose);
+  const dialogRef = useDialogFocus(onClose, restoreFocus, true);
   useLayoutEffect(() => {
     contentRef.current = dialogRef.current;
     return () => { contentRef.current = null; };
@@ -158,7 +159,7 @@ function ThemeEditorDialog({ onClose, contentRef, children }: {
   return <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]"
     onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div ref={dialogRef} role="dialog" tabIndex={-1} onKeyDown={defaultButtonKeyDown} aria-modal="true"
-      aria-labelledby="theme-editor-title" className="dialog-popover max-h-[86vh] w-full max-w-lg overflow-y-auto p-5">
+      aria-labelledby="theme-editor-title" className="dialog-popover flex max-h-[86vh] w-full max-w-lg flex-col overflow-hidden p-5">
       {children}
     </div>
   </div>;
@@ -174,6 +175,7 @@ export function AppearanceSettings() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [communityOpen, setCommunityOpen] = useState(false);
   const [customEditorOpen, setCustomEditorOpen] = useState(false);
+  const editorOpenerRef = useRef<HTMLButtonElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const finishEditor = () => {
     const invalid = Array.from(editorRef.current?.querySelectorAll<HTMLInputElement>('input[pattern]') ?? [])
@@ -333,7 +335,7 @@ export function AppearanceSettings() {
       <ThemeLibrary
         onBrowse={() => setCommunityOpen(true)}
         onImport={() => void importTheme()}
-        onCustomize={() => setCustomEditorOpen(true)}
+        onCustomize={opener => { editorOpenerRef.current = opener; setCustomEditorOpen(true); }}
       />
 
       {(localError || appearance.error) && (
@@ -346,15 +348,15 @@ export function AppearanceSettings() {
       )}
 
       {customEditorOpen && (
-        <ThemeEditorDialog onClose={() => setCustomEditorOpen(false)} contentRef={editorRef}>
-            <div className="flex items-start justify-between gap-4">
+        <ThemeEditorDialog onClose={() => setCustomEditorOpen(false)} contentRef={editorRef} restoreFocus={() => editorOpenerRef.current}>
+            <div className="flex shrink-0 items-start justify-between gap-4">
               <div>
                 <h2 id="theme-editor-title" className="text-base font-semibold text-on-surface">Create theme</h2>
               </div>
               <button type="button" aria-label="Close theme editor" onClick={() => setCustomEditorOpen(false)} className="rounded-md px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>
             </div>
 
-            <div className="mt-5 space-y-5">
+            <div className="mt-5 min-h-0 flex-1 space-y-5 overflow-y-auto">
               <ColorControl
                 label="Accent"
                 description="Selected controls, progress, and focus"
@@ -414,7 +416,7 @@ export function AppearanceSettings() {
               )}
             </div>
 
-            <div className="mt-5 flex items-center justify-between gap-3 border-t border-outline-variant pt-4">
+            <div className="mt-5 flex shrink-0 items-center justify-between gap-3 border-t border-outline-variant pt-4">
               <button type="button" disabled={appearance.busy} onClick={() => runControllerAction(appearance.reset())} className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-50">Reset to Sonic</button>
               <div className="flex gap-2">
                 <button type="button" disabled={appearance.busy} onClick={() => void exportTheme()} className="rounded-(--ui-radius-pill) border border-(--ui-hairline) px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50">Export</button>

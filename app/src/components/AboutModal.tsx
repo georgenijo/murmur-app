@@ -2,6 +2,7 @@ import { defaultButtonKeyDown } from '../lib/defaultButton';
 import { useState, useEffect } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { motion, useReducedMotion } from 'motion/react';
+import { useDialogFocus } from '../lib/hooks/useDialogFocus';
 
 interface AboutModalProps {
   isOpen: boolean;
@@ -9,16 +10,17 @@ interface AboutModalProps {
 }
 
 export function AboutModal({ isOpen, onClose }: AboutModalProps) {
+  return isOpen ? <AboutDialog onClose={onClose} /> : null;
+}
+
+function AboutDialog({ onClose }: Pick<AboutModalProps, 'onClose'>) {
+  const dialogRef = useDialogFocus(onClose);
   const [version, setVersion] = useState<string>('…');
   const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
-    if (isOpen) {
-      getVersion().then(setVersion).catch(() => setVersion('—'));
-    }
-  }, [isOpen]);
-
-  if (!isOpen) return null;
+    getVersion().then(setVersion).catch(() => setVersion('—'));
+  }, []);
 
   return (
     <>
@@ -30,7 +32,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
 
       {/* Modal */}
       <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
-        <motion.div role="dialog" aria-modal="true" aria-label="About Murmur" onKeyDown={defaultButtonKeyDown}
+        <motion.div ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="About Murmur" onKeyDown={defaultButtonKeyDown}
           initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: shouldReduceMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}
@@ -52,7 +54,7 @@ export function AboutModal({ isOpen, onClose }: AboutModalProps) {
           </p>
 
           <p className="text-sm text-on-surface mb-4">
-            Privacy-first voice-to-text powered by local transcription models. Dictation is processed on this Mac, and audio never leaves it. Optional Voice Query providers may use their own network connection.
+            Private dictation with local transcription models, including Whisper and Parakeet. Dictation and selected-text rewriting run on this Mac. Optional Voice Query uses your configured CLI/provider, which may send questions, shared app context, and permitted files over its own network connection.
           </p>
 
           <p className="text-xs text-on-surface-variant">

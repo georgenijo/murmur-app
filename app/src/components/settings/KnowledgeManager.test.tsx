@@ -125,6 +125,13 @@ describe('KnowledgeManager', () => {
     await act(async () => setValue(type, 'snippet'));
     expect(container.querySelector('[aria-label="Snippet body"]')).not.toBeNull();
     expect(container.textContent).toContain('One project in one app');
+    expect(container.textContent).toContain('Make this entry available to features that use it');
+    expect(container.textContent).not.toContain('future repository lookups');
+    const help = container.querySelector('details')!;
+    expect(help.textContent).toContain('a project entry takes priority over an app entry');
+    expect(help.textContent).toContain('manually created entries take priority over imports');
+    expect(help.textContent).toContain('saving an entry does not automatically change every dictation');
+    expect(help.open).toBe(false);
   });
 
   it('previews import, exports, and requires typed DELETE before delete-all', async () => {

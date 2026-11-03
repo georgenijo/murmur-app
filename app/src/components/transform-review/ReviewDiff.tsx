@@ -8,7 +8,7 @@ interface ReviewDiffProps {
 
 function tokenClassName(kind: DiffToken['kind'], side: 'original' | 'proposed'): string {
   if (kind === 'same') return '';
-  if (kind === 'removed') return side === 'original' ? 'line-through text-red-400/80' : '';
+  if (kind === 'removed') return side === 'original' ? 'line-through text-red-300' : '';
   return side === 'proposed' ? 'text-emerald-400/90' : '';
 }
 

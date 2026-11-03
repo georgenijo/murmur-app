@@ -18,12 +18,12 @@ export function ReviewChip({ vm }: ReviewChipProps) {
     <div className="flex items-start gap-2 px-3 pt-3">
       <div className="flex-1 min-w-0">
         <div className="text-[13px] font-medium text-white/90 truncate">{vm.chipText}</div>
-        {vm.subText && <div className="text-[11px] text-white/50 mt-0.5">{vm.subText}</div>}
+        {vm.subText && <div className="text-[11px] text-white/70 mt-0.5">{vm.subText}</div>}
         {vm.statusText && (
-          <div className="text-[11px] text-white/50 mt-0.5 flex items-center gap-1.5">
+          <div className="text-[11px] text-white/70 mt-0.5 flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 border-[1.5px] border-white/20 border-t-white/70 rounded-full animate-spin inline-block shrink-0" />
             <span>{vm.statusText}</span>
-            {vm.showStillWorkingHint && <span className="text-white/35">· Still working…</span>}
+            {vm.showStillWorkingHint && <span className="text-white/70">· Still working…</span>}
           </div>
         )}
       </div>
@@ -45,7 +45,7 @@ export function ReviewChip({ vm }: ReviewChipProps) {
       )}
 
       {vm.showOnDeviceBadge && (
-        <span className="shrink-0 text-[9px] uppercase tracking-wide text-white/40 border border-white/15 rounded-full px-1.5 py-0.5 mt-0.5">
+        <span className="shrink-0 text-xs uppercase tracking-wide text-white/70 border border-white/15 rounded-full px-1.5 py-0.5 mt-0.5">
           On-device
         </span>
       )}

@@ -243,8 +243,8 @@ The Transcripts tab provides match highlighting and Mic/File filters over a
 rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
 sessions, supports copy/text export, and deletes one or all sessions locally.
 The Queries tab pages through the separate opt-in Voice Query store by provider
-and can purge it directly. Query context and teaching context are never
-exported.
+and can delete it after an explicit confirmation. Query context and teaching
+context are never exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings → General, and `⌘L` opens Settings → Performance.
@@ -253,10 +253,11 @@ exported.
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. Settings provides a native live calibration preview with one-point controls, explicit Save/Cancel, Reset, and a bounded ±12pt durable offset.
 
 ### Settings — [reference/settings.md](reference/settings.md)
-Settings opens on **General**. The **Customize** page is a compact, ordered hub for **Text &
-Vocabulary**, **Voice Commands**, **Styles**, **Modes**, and **Transforms**.
-Every hub destination has a visible route back. Returning restores keyboard
-focus to the row that opened it. The persistent Settings navigation also exposes
+Settings opens on **General**. The **Customize** page is a compact hub of
+independent destinations: **Text & vocabulary**, **Voice commands**, **App
+overrides**, **Modes**, and **Selected-text rewrite**. Every hub destination has
+a visible route back. Returning restores keyboard focus to the destination that
+opened it. The persistent Settings navigation also exposes
 Modes, General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
 Appearance, Performance Lab, and Diagnostics directly. Search spans those
 pages. Power-user controls live in Advanced disclosures.
@@ -286,7 +287,7 @@ redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 
-The seven-step first-launch assistant is followed by a dismissible Home
+The eight-step first-launch assistant is followed by a dismissible Home
 checklist for Command Palette, app-bound Modes, Transform, Voice Query,
 meetings, Correct and Teach, and shortcuts. Real local counters and explicit
 configuration complete operational rows. Four content-free, once-only hints
@@ -294,10 +295,10 @@ react to existing hotkey, history, browser teaching-context, and meeting events.
 Settings → General reopens the checklist; either setup-assistant entry point
 resets checklist and hint state.
 First-launch wizard: Welcome → Microphone → Accessibility → optional System
-Audio → Model download → Hotkey → Done. The mic step fires the native macOS
-prompt in-app; permission steps update when the user returns from System Settings;
-denied/stale-TCC states get inline reset-and-retry. Already-downloaded models are
-detected and badged. The chosen recording mode and trigger key are saved at
+Audio → optional Calendar → Model download → Hotkey → Done. The mic step fires
+the native macOS prompt in-app; permission steps update when the user returns
+from System Settings; denied/stale-TCC states get inline reset-and-retry.
+Already-downloaded models are detected and badged. The chosen recording mode and trigger key are saved at
 completion. Existing installs with permissions and a model are grandfathered.
 Re-runnable from Settings → App.
 

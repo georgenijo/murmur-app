@@ -16,9 +16,9 @@ emitted through `dictation-settings`.
 
 The native Settings workspace opens on **General**. The gear button, `⌘,`, and
 overlay Settings action all open this same page. **Customize** remains available
-in the sidebar as an ordered hub with five rows: **Text & Vocabulary**,
-**Voice Commands**, **Styles**, **Modes**, and **Transforms**.
-Each row opens the existing owning page or editor, shows **Back to Customize**,
+in the sidebar as a hub of independent destinations: **Text & vocabulary**,
+**Voice commands**, **App overrides**, **Modes**, and **Selected-text rewrite**.
+Each destination opens its owning page or editor, shows **Back to Customize**,
 and restores focus to its source row on return. Contextual links from Home use
 the same routes, so they cannot leave the user trapped in a detail page.
 
@@ -406,7 +406,14 @@ At recording start, the backend resolves one immutable context using global sett
 
 ## Voice Commands
 
-`voiceCommandsEnabled` remains the global execution switch. Legacy `voiceCommands` pairs in `dictation-settings` are migration-only compatibility input: Rust imports them once into the personal knowledge store as global `text_replacement` commands, while retaining the old in-memory path if the store is unavailable.
+`voiceCommandsEnabled` remains the global execution switch, shown in Settings as
+**Voice commands & spoken formatting** under Text → Advanced. It controls both
+custom commands and built-in spoken formatting tokens. When it is off, the Voice
+commands editor keeps commands saved but offers a direct route to that switch;
+the route does not enable it automatically. Legacy `voiceCommands` pairs in
+`dictation-settings` are migration-only compatibility input: Rust imports them
+once into the personal knowledge store as global `text_replacement` commands,
+while retaining the old in-memory path if the store is unavailable.
 
 New text replacements and snippets are Rust-owned knowledge records rather than localStorage settings. They support global/app scope, enabled state, multiline snippet bodies, deterministic `{{date}}` / `{{time}}`, and explicitly granted `{{clipboard}}`. See [Voice Commands 2.0](../features/voice-commands.md).
 

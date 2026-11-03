@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Clarify Settings navigation and privacy boundaries: Customize now documents independent destinations, Voice commands names its shared execution switch, onboarding distinguishes local processing from optional providers, and selected-text rewrite uses its current visible name (#877, #889, #893, #895, #896, #900).
+
+### Fixed
+
+- Update Voice Query and History documentation to describe the explicit confirmation dialog for deleting retained query history (#877, #884).
+- Correct onboarding documentation for the eight-step flow, optional Calendar step, and the General Settings location of Run setup assistant (#877, #895, #896).
+- Refresh chart and command-palette documentation for the current Insights labels and Settings destinations (#877, #898, #899).
+
 ## [0.59.0] - 2026-11-03
 
 ### Changed

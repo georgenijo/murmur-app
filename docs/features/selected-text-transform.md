@@ -147,7 +147,7 @@ no raw-content export action.
 
 ## Settings UI
 
-Settings → **Transform**:
+Settings → **Selected-text rewrite**:
 
 - Enable + hold-key picker (rejects dictation keys)
 - Model status / Download / Remove / Reset runtime
