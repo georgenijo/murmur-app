@@ -14,10 +14,10 @@ independent versioned active document under `murmur-appearance`, with saved
 themes in `murmur-theme-library`; neither is merged into this interface or
 emitted through `dictation-settings`.
 
-The native Settings workspace opens on **Customize**, an ordered hub with five
-rows: **Text & Vocabulary**, **Voice Commands**, **Styles**, **Modes**, and
-**Transforms**.
-The gear button, `⌘,`, and overlay Settings action all open this same overview.
+The native Settings workspace opens on **General**. The gear button, `⌘,`, and
+overlay Settings action all open this same page. **Customize** remains available
+in the sidebar as an ordered hub with five rows: **Text & Vocabulary**,
+**Voice Commands**, **Styles**, **Modes**, and **Transforms**.
 Each row opens the existing owning page or editor, shows **Back to Customize**,
 and restores focus to its source row on return. Contextual links from Home use
 the same routes, so they cannot leave the user trapped in a detail page.

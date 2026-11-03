@@ -208,14 +208,22 @@ describe('SettingsPanel information architecture', () => {
     container.remove();
   });
 
-  it('opens on a single customization hub before the direct settings destinations', () => {
+  it('opens on General and falls back to it for unknown pages', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
       'General', 'Recording', 'Customize', 'Delivery', 'Meetings', 'Text & vocabulary', 'AI & models', 'Modes', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
-    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('Customize');
-    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+    expect(nav.querySelector('[aria-current="page"]')?.textContent).toBe('General');
+    expect(container.querySelector('h1')?.textContent).toBe('General');
+    expect(resolvePage(undefined)).toBe('general');
+    expect(resolvePage('not-a-page')).toBe('general');
+  });
+
+  it('returns from every customization destination and restores focus to its row', async () => {
+    const customize = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
+      .find((button) => button.textContent === 'Customize')!;
+    await act(async () => customize.click());
     expect(Array.from(container.querySelectorAll('[aria-label="Customization destinations"] button')).map((button) => button.textContent)).toEqual([
       expect.stringContaining('Text & vocabulary'),
       expect.stringContaining('Voice commands'),
@@ -223,11 +231,6 @@ describe('SettingsPanel information architecture', () => {
       expect.stringContaining('Modes'),
       expect.stringContaining('Transforms'),
     ]);
-    expect(resolvePage(undefined)).toBe('customize');
-    expect(resolvePage('not-a-page')).toBe('customize');
-  });
-
-  it('returns from every customization destination and restores focus to its row', async () => {
     const hubButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
       .find((button) => button.textContent?.includes(label)) as HTMLButtonElement;
 
@@ -325,10 +328,6 @@ describe('SettingsPanel information architecture', () => {
       onDiscoveryChecklistReopen,
       onPageOpened,
     }));
-    onPageOpened.mockClear();
-    const general = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
-      .find((button) => button.textContent === 'General') as HTMLButtonElement;
-    await act(async () => general.click());
     expect(onPageOpened).toHaveBeenCalledWith('general');
     const show = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Show feature checklist') as HTMLButtonElement;

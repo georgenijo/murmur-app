@@ -248,7 +248,7 @@ export const SETTINGS_CATEGORIES = [
   { id: 'appearance', label: 'Appearance', icon: 'appearance' },
 ] as const;
 
-const DEFAULT_SETTINGS_PAGE = 'customize';
+const DEFAULT_SETTINGS_PAGE = 'general';
 
 export const SETTINGS_TOOLS = [
   { id: 'performance', label: 'Performance Lab', icon: 'performance' },
@@ -293,8 +293,8 @@ function customizationRoute(destination: CustomizationDestination): {
   }
 }
 
-/** Coerce a requested page id back to a real page — an unknown id opens the
- *  first page rather than rendering an empty pane. */
+/** Coerce a requested page id back to a real page — an unknown id opens
+ *  General rather than rendering an empty pane. */
 export function resolvePage(page: string | undefined): string {
   if (SETTINGS_CATEGORIES.some((category) => category.id === page)) return page as string;
   if (SETTINGS_TOOLS.some((tool) => tool.id === page)) return page as string;

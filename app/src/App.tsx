@@ -425,7 +425,7 @@ function App() {
   }, [updateStatus]);
 
   const [settingsPageRequest, setSettingsPageRequest] = useState<SettingsPageRequest | null>(null);
-  const settingsViewRef = useRef('settings.customize');
+  const settingsViewRef = useRef('settings.general');
   const settingsActiveRef = useRef(isSettingsOpen);
   settingsActiveRef.current = isSettingsOpen;
   useEffect(() => {
@@ -456,9 +456,9 @@ function App() {
 
   const openSettings = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     if (isSettingsOpen) return;
-    beginCurrentUiTransition('settings.customize', trigger);
+    beginCurrentUiTransition('settings.general', trigger);
     setSettingsPageRequest((previous) => ({
-      page: 'customize',
+      page: 'general',
       token: (previous?.token ?? 0) + 1,
     }));
     setIsSettingsOpen(true);

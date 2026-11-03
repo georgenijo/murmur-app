@@ -12,7 +12,7 @@ It dispatches navigation and explicit actions. Every row carries its own `run` c
 |------|--------|
 | `⌘K` | Toggle the palette |
 | `⌘F` | Focus the transcript search box |
-| `⌘,` | Open the Customize and Settings workspace |
+| `⌘,` | Open Settings on General |
 | `⌘L` | Open Settings → Performance |
 
 Control is accepted in place of Command for keyboard-only setups. Adding Option or Shift always passes the event through — those combinations belong to the focused control, and Murmur must not shadow text-editing shortcuts.
@@ -34,7 +34,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 
 Rows whose meaning depends on state are labelled with the state, not the toggle: while recording, the row reads *Stop recording*; while Murmur is disabled, *Enable Murmur*.
 
-Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to Customize instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, Modes, and Transforms requests retain a route back to that hub. The Keyboard Shortcuts command opens the read-only General detail page directly.
+Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to General instead of rendering an empty pane. Contextual Text, Voice Commands, Styles, Modes, and Transforms requests retain a route back to the Customize hub. The Keyboard Shortcuts command opens the read-only General detail page directly.
 
 The next-recording rows use the backend enabled-Mode catalog. They arm one in-memory
 selection and show a pending hint; opening Murmur to choose it does not bind it

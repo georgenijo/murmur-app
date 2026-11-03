@@ -372,6 +372,7 @@ test('update dialog keeps every action visible in a smaller window', async ({ pa
 
 test('customization hub stays legible and restores focus at native and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings&appearance=light');
+  await page.getByRole('navigation', { name: 'Settings pages' }).getByRole('button', { name: 'Customize', exact: true }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
