@@ -85,6 +85,42 @@ describe('useSettings configure rollback privacy', () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ['captureStandbyEnabled', true],
+    ['captureStandbySeconds', 60],
+    ['capturePreRollMs', 300],
+  ] as const)('sends a standalone %s change to native configuration', async (field, value) => {
+    await mountHarness();
+    mocks.configure.mockClear();
+
+    await act(async () => current.updateSettings({ [field]: value }));
+
+    expect(mocks.configure).toHaveBeenCalledTimes(1);
+    expect(mocks.configure).toHaveBeenCalledWith(expect.objectContaining({ [field]: value }));
+    expect(current.getConfirmedSettings()[field]).toBe(value);
+  });
+
+  it('disables native standby immediately and restores the confirmed policy if configuration fails', async () => {
+    await mountHarness();
+    await act(async () => current.updateSettings({ captureStandbyEnabled: true }));
+    expect(current.getConfirmedSettings().captureStandbyEnabled).toBe(true);
+    mocks.configure.mockClear();
+    mocks.configure.mockRejectedValueOnce(new Error('configuration unavailable'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await act(async () => current.updateSettings({ captureStandbyEnabled: false }));
+
+    expect(mocks.configure).toHaveBeenCalledWith(expect.objectContaining({ captureStandbyEnabled: false }));
+    expect(current.settings.captureStandbyEnabled).toBe(true);
+    expect(JSON.parse(localStorage.getItem('dictation-settings')!).captureStandbyEnabled).toBe(true);
+    expect(current.configureError).toContain('Previous settings were restored');
+
+    await act(async () => current.updateSettings({ captureStandbyEnabled: false }));
+    expect(current.getConfirmedSettings().captureStandbyEnabled).toBe(false);
+    expect(current.settings.captureStandbyEnabled).toBe(false);
+    expect(current.configureError).toBeNull();
+  });
+
   it('does not restore stale microphone approvals from overlay quick controls', async () => {
     await mountHarness();
     await act(async () => current.updateSettings({
