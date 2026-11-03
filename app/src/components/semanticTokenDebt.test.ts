@@ -564,7 +564,10 @@ describe("semantic theme token debt gate", () => {
     const liveWords = readFileSync('./src/styles/overlay.css', 'utf8');
     expect(liveWords).toContain('background: rgba(20, 20, 20, 0.95)');
     expect(liveWords).not.toContain('--murmur-');
-    expect(transform).toContain("background: 'rgba(20, 20, 20, 0.92)'");
+    // The window stays transparent; the inner review surface is opaque so
+    // text contrast does not depend on the desktop behind it.
+    expect(transform).toContain("background: 'rgb(20, 20, 20)'");
+    expect(transform).not.toContain("background: 'rgba(20, 20, 20,");
     expect(alwaysDarkSource).not.toContain("useAppearance");
     expect(alwaysDarkSource).not.toContain("appearance-changed");
     expect(alwaysDarkSource).not.toContain("--murmur-");

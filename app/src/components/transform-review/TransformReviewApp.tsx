@@ -157,10 +157,9 @@ export function TransformReviewApp() {
     <div
       className="transform-review-surface w-full h-full overflow-y-auto select-none"
       style={{
-        background: 'rgba(20, 20, 20, 0.92)',
+        // Opaque by design: text contrast must not depend on the desktop behind this window.
+        background: 'rgb(20, 20, 20)',
         borderRadius: 14,
-        backdropFilter: 'blur(40px)',
-        WebkitBackdropFilter: 'blur(40px)',
         opacity: dismissing ? 0 : mounted ? 1 : 0,
         transform: `scale(${scale})`,
         transition,

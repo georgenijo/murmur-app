@@ -175,12 +175,14 @@ function VadSensitivitySlider({
   onPreview: (value: number) => void;
   onCommit: (value: number) => void;
 }) {
+  const id = useId();
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
+  const commit = (next: number) => { if (next !== value) onCommit(next); };
   return (
     <div className="settings-field">
       <div className="flex items-center justify-between">
-        <label className="text-xs text-on-surface-variant">Sensitivity</label>
+        <label htmlFor={id} className="text-xs text-on-surface-variant">Sensitivity</label>
         <span className="text-xs font-medium text-on-surface">{draft === 0 ? 'Off' : `${draft}%`}</span>
       </div>
       <input
@@ -188,14 +190,17 @@ function VadSensitivitySlider({
         min={0}
         max={100}
         step={5}
+        id={id}
         value={draft}
+        aria-valuetext={draft === 0 ? 'Off' : `${draft} percent`}
         onChange={(event) => {
           const next = Number(event.target.value);
           setDraft(next);
           onPreview(next);
         }}
-        onPointerUp={(event) => onCommit(Number(event.currentTarget.value))}
-        onKeyUp={(event) => onCommit(Number(event.currentTarget.value))}
+        onPointerUp={(event) => commit(Number(event.currentTarget.value))}
+        onKeyUp={(event) => commit(Number(event.currentTarget.value))}
+        onBlur={(event) => commit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
       <p className="text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
@@ -260,10 +265,11 @@ const GENERAL_DETAIL_PAGES = ['shortcuts'] as const;
 
 interface SettingTargetRequest {
   id: string;
+  focusSwitch?: boolean;
 }
 
-function settingTargetRequest(id: string | undefined): SettingTargetRequest | null {
-  return id === undefined ? null : { id };
+function settingTargetRequest(id: string | undefined, focusSwitch = false): SettingTargetRequest | null {
+  return id === undefined ? null : { id, focusSwitch };
 }
 
 function customizationDestinationForRequest(
@@ -333,7 +339,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'fuzzy-correction', title: 'Correct close mishearings', detail: 'Match sounds against preferred spellings', keywords: 'smart correction fuzzy' },
   { page: 'text', target: 'homophone-context', title: 'Resolve homophones', detail: 'Use supported on-device context', keywords: 'experimental correction' },
   { page: 'text', target: 'smart-formatting', title: 'Structured writing', detail: 'Format spoken lists and symbols', keywords: 'smart formatting' },
-  { page: 'text', target: 'voice-commands', title: 'Spoken formatting', detail: 'Enable spoken formatting tokens', keywords: 'voice commands' },
+  { page: 'text', target: 'voice-commands', title: 'Voice commands & spoken formatting', detail: 'Enable custom commands and spoken formatting tokens', keywords: 'voice commands snippets replacement new line period scratch that' },
   { page: 'ai-transcription', target: 'model-idle-timeout', title: 'Release model after inactivity', detail: 'Free idle model memory', keywords: 'timeout power adapter' },
   { page: 'ai-query', target: 'query-key', title: 'Query shortcut', detail: 'Choose the dedicated Voice Query key', keywords: 'hotkey' },
   { page: 'ai-query', target: 'query-timeout', title: 'Query timeout', detail: 'Bound provider execution time', keywords: 'seconds minutes' },
@@ -517,6 +523,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
   const [compactSearchOpen, setCompactSearchOpen] = useState(false);
+  const searchId = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const railSearchRef = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -528,6 +535,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     backgroundRef.current?.toggleAttribute('inert', editorTab !== null);
   }, [editorTab]);
   useEffect(() => { void getVersion().then(setVersion); }, []);
+  const visibleTargetId = targetRequest ? visibleSettingsTarget(targetRequest.id, settings) : null;
   useLayoutEffect(() => {
     const content = contentRef.current;
     if (!content) return;
@@ -538,7 +546,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       return;
     }
     if (revealedTargetRef.current === targetRequest) return;
-    const id = visibleSettingsTarget(targetRequest.id, settings);
+    const id = visibleTargetId!;
     if (ADVANCED_TARGETS[activeCat]?.includes(id) && !advancedOpen) {
       setAdvancedOpen(true);
       return;
@@ -546,27 +554,59 @@ export const SettingsPanel = memo(function SettingsPanel({
     revealedTargetRef.current = targetRequest;
     // Wait for the folding clip to finish before centering the destination.
     let flashed: HTMLElement | null = null;
+    let focusPending = targetRequest.focusSwitch === true;
+    const cancelFocus = () => { focusPending = false; };
+    const focusSwitch = () => {
+      if (!focusPending) return;
+      const control = flashed?.querySelector<HTMLElement>('[role="switch"]');
+      if (!control || getComputedStyle(control).visibility === 'hidden') return;
+      focusPending = false;
+      control.focus({ preventScroll: true });
+    };
+    // Link-only focus is one-shot, and must not override a subsequent user action.
+    window.addEventListener('pointerdown', cancelFocus, true);
+    window.addEventListener('keydown', cancelFocus, true);
     const flash = () => {
       const target = Array.from(content.querySelectorAll<HTMLElement>('[data-setting-target]'))
         .find(element => element.dataset.settingTarget === id);
-      if (!target) return;
+      // Wait for the disclosure's visible layout before starting its pulse.
+      if (!target || getComputedStyle(target).visibility === 'hidden') return;
       flashed = target;
       target.scrollIntoView({ block: 'center' });
+      focusSwitch();
       target.classList.remove('settings-target-flash');
       void target.offsetWidth;
       target.classList.add('settings-target-flash');
     };
     flash();
+    // Folding children apply visibility in their own frame/layout update.
+    // Land after that commit even with Reduce Motion (no transition timer).
+    const layoutDeadline = performance.now() + 500;
+    const landAfterLayout = () => {
+      if (!flashed) flash();
+      focusSwitch();
+      if ((!flashed || focusPending) && performance.now() < layoutDeadline) {
+        layoutFrame = requestAnimationFrame(landAfterLayout);
+        return;
+      }
+      flashed?.scrollIntoView({ block: 'center' });
+    };
+    let layoutFrame = requestAnimationFrame(() => {
+      layoutFrame = requestAnimationFrame(landAfterLayout);
+    });
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     // Recenter after layout settles without restarting #848's two pulses.
     const reveal = reducedMotion ? null : window.setTimeout(() => flashed?.scrollIntoView({ block: 'center' }), 320);
     const timeout = window.setTimeout(() => flashed?.classList.remove('settings-target-flash'), 1300);
     return () => {
+      cancelAnimationFrame(layoutFrame);
+      window.removeEventListener('pointerdown', cancelFocus, true);
+      window.removeEventListener('keydown', cancelFocus, true);
       if (reveal !== null) window.clearTimeout(reveal);
       window.clearTimeout(timeout);
       flashed?.classList.remove('settings-target-flash');
     };
-  }, [activeCat, editorTab, targetRequest, advancedOpen, setAdvancedOpen, settings]);
+  }, [activeCat, editorTab, targetRequest, visibleTargetId, advancedOpen, setAdvancedOpen]);
   useLayoutEffect(() => {
     if (activeCat !== 'shortcuts' || shortcutReturnFocus === null) return;
     contentRef.current
@@ -906,13 +946,14 @@ export const SettingsPanel = memo(function SettingsPanel({
       <div ref={backgroundRef} className="flex min-h-0 min-w-0 flex-1 overflow-hidden" aria-hidden={editorTab ? true : undefined}>
       <aside data-search-open={compactSearchOpen || undefined} className="settings-sidebar flex min-h-0 shrink-0 flex-col overflow-hidden px-3 pb-3 pt-2">
         <button ref={railSearchRef} type="button" className="settings-rail-search" aria-label="Search settings" onClick={() => { setCompactSearchOpen(true); requestAnimationFrame(() => searchRef.current?.focus()); }}><Search aria-hidden="true" /></button>
-        <label className="settings-search relative mb-3 block w-full min-w-0 shrink-0">
-          <span className="sr-only">Search all settings</span>
+        <div className="settings-search relative mb-3 block w-full min-w-0 shrink-0">
+          <label htmlFor={searchId} className="sr-only">Search all settings</label>
           <svg className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
           </svg>
           <input
             ref={searchRef}
+            id={searchId}
             type="search"
             onKeyDown={(event) => { if (event.key === 'Escape') { setSearchQuery(''); setCompactSearchOpen(false); requestAnimationFrame(() => railSearchRef.current?.focus()); } }}
             value={searchQuery}
@@ -920,13 +961,13 @@ export const SettingsPanel = memo(function SettingsPanel({
               setEditorTab(null);
               setSearchQuery(event.target.value);
             }}
-            placeholder="Search settings"
+            placeholder="Search"
             className="h-9 w-full pl-9 pr-8 text-[13px] text-on-surface outline-none placeholder:text-on-surface-variant"
           />
           {searchQuery && (
-            <button type="button" onClick={() => setSearchQuery('')} aria-label="Clear settings search" className="absolute right-2 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-full text-on-surface-variant hover:bg-surface-container">×</button>
+            <button type="button" onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }} aria-label="Clear settings search" className="absolute right-2 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-full text-on-surface-variant hover:bg-surface-container">×</button>
           )}
-        </label>
+        </div>
         <nav aria-label="Settings pages" className="min-h-0 space-y-0.5 overflow-y-auto">
           {SETTINGS_CATEGORIES.map((category) => {
             const selected = navPageIsActive(category.id);
@@ -1386,7 +1427,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Use sentence context for confusable words only. Requires macOS 26+ and Apple Intelligence. Keeps deterministic text when unavailable or over the 150 ms budget." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
               <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
-              <SettingToggle targetId="voice-commands" title="Spoken formatting" label="Voice commands" description="Use spoken tokens such as “new line,” “period,” or “scratch that” before delivery" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
+              <SettingToggle targetId="voice-commands" title="Voice commands & spoken formatting" label="Voice commands & spoken formatting" description="Run your custom commands and use spoken tokens such as “new line,” “period,” or “scratch that” before delivery" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
             </SettingsDisclosure>
           </SettingsSection>
 
@@ -1666,6 +1707,14 @@ export const SettingsPanel = memo(function SettingsPanel({
               onScan={() => void runVocabScan(settings.codeVocabFolder)}
               onCancelScan={vocabScan.cancel}
               onBack={closeEditor}
+              onOpenVoiceCommandSettings={() => {
+                beginCurrentUiTransition('settings.text', 'pointer');
+                setEditorTab(null);
+                setActiveCat('text');
+                setSearchQuery('');
+                setTargetRequest(settingTargetRequest('voice-commands', true));
+                if (activeCat === 'customize') setCustomizationDetail('commands');
+              }}
               restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="text-editors"] button, [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
               backLabel={activeCat === 'customize' ? 'Back to Customize' : undefined}
             />

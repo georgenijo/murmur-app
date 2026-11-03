@@ -1,0 +1,17 @@
+# Focused Sol high recheck — theme reset focus restoration
+
+**Result: No findings.** The remaining P2 in `review-delta-result.md` is resolved.
+
+- Candidate: `b43481862ea81d92f7b4fdb3577ebde042bc4278`
+- Comparison: `da53e423e440a1418c7e5e6094ca10ab0342cc71` → candidate
+- Scope: disappearing **Edit Custom** opener after **Reset to Sonic**, and direct integration only.
+
+The candidate records a stable `createThemeRef` in `AppearanceSettings`, passes it through `ThemeLibrary`, and attaches it to the unconditional, enabled **Create theme** button. On dialog cleanup, the explicit restoration callback returns the recorded opener only while it is connected; otherwise it returns that stable fallback. The unchanged `useDialogFocus` reads the current callback during cleanup, so the Custom card's removal before dismissal is handled correctly. Existing connected openers retain their restoration behavior.
+
+The three added regressions apply a controller-mock reset and rerender the real components, assert that the original opener is disconnected, then assert dialog closure and fallback focus for **Done**, **Escape**, and **Close**. The real reset hook was also traced in the frozen source: it selects Sonic for both modes, matching the card-removal transition. These are component regressions with a mocked appearance controller, not execution of the real persistence hook.
+
+Verification: independently inspected the frozen commit delta and relevant candidate source/tests through Git object reads; no live source files were used. Parent-supplied evidence reports all three regressions failing before the fix and passing afterward, 17/17 AppearanceSettings tests, and TypeScript passing. Parent-supplied native build6 receipt (SHA-256 `5aa058505f8ca275c921fc9a7ac176d72f6efdc9c66d9da52e3856aecfad0685`) demonstrates creating accent `#123456`, Done, Edit Custom, Reset to Sonic, Done, Custom-card removal, and focus on Create theme. Tests and native operations were not rerun by this reviewer.
+
+No new full review or requirements for unchanged behavior were introduced. Prior review conclusions for unchanged behavior remain valid. This result closes only the specified P2; remaining checks and release operations belong to the parent. Benchmarks and hosted PR CI remain user-waived.
+
+No agents, source edits, Git mutations, UI actions, or release operations were performed. Only this requested review-result file was written.

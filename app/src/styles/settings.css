@@ -370,6 +370,8 @@
 .settings-nav-item[aria-current='page']::before { content: none; }
 .settings-search { margin: 0; }
 .settings-search input { height: 32px; border-radius: var(--settings-search-radius); font-size: 14px; }
+/* The named custom button is the sole clear action in WKWebView and Chromium. */
+.settings-search input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
 .settings-rail-search { display: none; }
 .settings-content-container { margin-inline: auto; width: 100%; max-width: var(--settings-content-max); padding: var(--settings-content-top) var(--settings-content-x) var(--settings-content-bottom); }
 .settings-content-topbar { flex: none; min-height: 44px; display: flex; align-items: center; padding: 8px var(--settings-content-x); border-bottom: 1px solid var(--settings-divider); }

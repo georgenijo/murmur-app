@@ -69,7 +69,11 @@ vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({
   },
 }));
 vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
-vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: () => <div>Voice commands editor</div> }));
+vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: ({ globallyEnabled, onOpenVoiceCommandSettings }: {
+  globallyEnabled: boolean; onOpenVoiceCommandSettings?: () => void;
+}) => <div>Voice commands editor{!globallyEnabled && <button type="button" onClick={onOpenVoiceCommandSettings}>
+  Open Voice commands &amp; spoken formatting
+</button>}</div> }));
 vi.mock('./TransformsManager', () => ({ TransformsManager: () => <div>Transforms manager</div> }));
 vi.mock('./VocabScanStrip', () => ({ VocabScanStrip: () => <div>Vocabulary scan</div> }));
 
@@ -227,9 +231,9 @@ describe('SettingsPanel information architecture', () => {
     expect(Array.from(container.querySelectorAll('[aria-label="Customization destinations"] button')).map((button) => button.textContent)).toEqual([
       expect.stringContaining('Text & vocabulary'),
       expect.stringContaining('Voice commands'),
-      expect.stringContaining('Styles'),
+      expect.stringContaining('App overrides'),
       expect.stringContaining('Modes'),
-      expect.stringContaining('Transforms'),
+      expect.stringContaining('Selected-text rewrite'),
     ]);
     const hubButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
       .find((button) => button.textContent?.includes(label)) as HTMLButtonElement;
@@ -237,9 +241,9 @@ describe('SettingsPanel information architecture', () => {
     for (const [label, heading] of [
       ['Text & vocabulary', 'Text & vocabulary'],
       ['Voice commands', 'Voice commands'],
-      ['Styles', 'Delivery'],
+      ['App overrides', 'Delivery'],
       ['Modes', 'Modes'],
-      ['Transforms', 'Selected-text rewrite'],
+      ['Selected-text rewrite', 'Selected-text rewrite'],
     ] as const) {
       const row = hubButton(label);
       await act(async () => row.click());
@@ -252,6 +256,136 @@ describe('SettingsPanel information architecture', () => {
       expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
       expect(document.activeElement).toBe(hubButton(label));
     }
+  });
+
+  it('presents Customize as independent named destinations rather than numbered steps', async () => {
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'customize', token: 1 }));
+    const list = container.querySelector('[aria-label="Customization destinations"]')!;
+    expect(list.tagName).toBe('UL');
+    expect(list.children).toHaveLength(5);
+    expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
+    expect(list.textContent).not.toMatch(/0[1-5]/);
+  });
+
+  it('closes the commands sheet and focuses the actual disabled switch without enabling it', async () => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false }, { page: 'customize', token: 1 }));
+    const commandsRow = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
+      .find(button => button.textContent?.includes('Voice commands'))!;
+    await act(async () => commandsRow().click());
+    const link = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+      .find(button => button.textContent === 'Open Voice commands & spoken formatting')!;
+    expect(link).toBeDefined();
+    await act(async () => link.click());
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.querySelector('h1')?.textContent).toBe('Text & vocabulary');
+    expect(container.querySelector('.settings-sidebar')?.closest('[inert]')).toBeNull();
+    const row = container.querySelector('[data-setting-target="voice-commands"]')!;
+    const toggle = row.querySelector('[role="switch"]')!;
+    expect(toggle.getAttribute('aria-label')).toBe('Voice commands & spoken formatting');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(row.textContent).toContain('Voice commands & spoken formatting');
+    expect(document.activeElement).toBe(toggle);
+    expect(row.classList.contains('settings-target-flash')).toBe(true);
+    expect(onUpdateSettings).not.toHaveBeenCalled();
+    const back = container.querySelector<HTMLButtonElement>('.settings-back-btn')!;
+    await act(async () => back.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+    expect(document.activeElement).toBe(commandsRow());
+  });
+
+  it.each(['none', 'pointer', 'keyboard'] as const)('waits for the editor link destination, preserves it across updates, and cancels pending focus on %s interaction', async (interaction) => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    let rowVisible = false;
+    let switchVisible = false;
+    const computedStyle = window.getComputedStyle.bind(window);
+    const styleSpy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
+      const visibility = element.matches('[data-setting-target="voice-commands"]') ? rowVisible
+        : element.matches('[role="switch"][aria-label="Voice commands & spoken formatting"]') ? switchVisible
+        : null;
+      return visibility === null ? computedStyle(element, pseudo)
+        : { visibility: visibility ? 'visible' : 'hidden' } as CSSStyleDeclaration;
+    });
+    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.set(++frameId, callback);
+      return frameId;
+    });
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { frames.delete(id); });
+    const nextFrame = async () => act(async () => {
+      const pending = Array.from(frames.values());
+      frames.clear();
+      pending.forEach(callback => callback(performance.now()));
+    });
+    const settings = { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false };
+    const request: SettingsPageRequest = { page: 'text', editorTab: 'commands', token: 1 };
+    try {
+      await act(async () => renderPanel(true, settings, request));
+      const link = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+        .find(button => button.textContent === 'Open Voice commands & spoken formatting')!;
+      await act(async () => link.click());
+      const row = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"]')!;
+      const toggle = row.querySelector<HTMLElement>('[role="switch"]')!;
+      const focus = vi.spyOn(toggle, 'focus');
+      await nextFrame();
+      await nextFrame();
+      expect(row.classList.contains('settings-target-flash')).toBe(false);
+      expect(focus).not.toHaveBeenCalled();
+      rowVisible = true;
+      await nextFrame();
+      expect(row.classList.contains('settings-target-flash')).toBe(true);
+      expect(focus).not.toHaveBeenCalled();
+      await act(async () => renderPanel(true, { ...settings, soundCuesEnabled: !settings.soundCuesEnabled }, request));
+      const elsewhere = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      if (interaction !== 'none') {
+        await act(async () => {
+          elsewhere.dispatchEvent(interaction === 'pointer'
+            ? new Event('pointerdown', { bubbles: true })
+            : new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+          elsewhere.focus();
+        });
+      }
+      switchVisible = true;
+      await nextFrame();
+      if (interaction === 'none') {
+        expect(document.activeElement).toBe(toggle);
+        expect(focus).toHaveBeenCalledTimes(1);
+        elsewhere.focus();
+        await nextFrame();
+        expect(document.activeElement).toBe(elsewhere);
+        expect(focus).toHaveBeenCalledTimes(1);
+      } else {
+        expect(document.activeElement).toBe(elsewhere);
+        expect(focus).not.toHaveBeenCalled();
+      }
+      expect(scrollIntoView.mock.instances).toContain(row);
+      expect(onUpdateSettings).not.toHaveBeenCalled();
+      focus.mockRestore();
+    } finally {
+      styleSpy.mockRestore();
+      requestFrame.mockRestore();
+      cancelFrame.mockRestore();
+    }
+  });
+
+  it('reveals Voice commands from external navigation and search without moving focus to its switch', async () => {
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'text', target: 'voice-commands', token: 1 }));
+    const toggle = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"] [role="switch"]')!;
+    expect(document.activeElement).not.toBe(toggle);
+    expect(toggle.closest('[data-setting-target]')?.classList.contains('settings-target-flash')).toBe(true);
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    search.focus();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'Voice commands');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent?.includes('Enable custom commands and spoken formatting tokens'))!;
+    expect(result).toBeDefined();
+    await act(async () => result.click());
+    const revealedRow = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"]')!;
+    expect(document.activeElement).not.toBe(revealedRow.querySelector('[role="switch"]'));
+    expect(revealedRow.classList.contains('settings-target-flash')).toBe(true);
+    expect(onUpdateSettings).not.toHaveBeenCalled();
   });
 
   it('shows Modes and browser site rules on their own page', async () => {
@@ -478,6 +612,75 @@ describe('SettingsPanel information architecture', () => {
     });
 
     expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 75 });
+  });
+
+  it('does not configure unchanged sensitivity on tab, pointer release, or blur', async () => {
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'recording', token: 1 }));
+    const slider = container.querySelector<HTMLInputElement>('[data-setting-target="voice-detection"] input[type="range"]')!;
+    await act(async () => {
+      slider.focus();
+      slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', bubbles: true }));
+      slider.dispatchEvent(new Event('pointerup', { bubbles: true }));
+      slider.blur();
+    });
+    expect(onUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  it.each(['pointerup', 'keyup', 'focusout'])('commits actual sensitivity changes via %s and allows retry after rollback', async (ending) => {
+    const request = { page: 'recording', token: 1 };
+    const initial = { ...DEFAULT_SETTINGS, vadSensitivity: 50 };
+    await act(async () => renderPanel(true, initial, request));
+    const slider = container.querySelector<HTMLInputElement>('[data-setting-target="voice-detection"] input[type="range"]')!;
+    const change = async () => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(slider, '75');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new Event(ending, { bubbles: true }));
+    });
+    await change();
+    expect(onUpdateSettings).toHaveBeenCalledExactlyOnceWith({ vadSensitivity: 75 });
+    await act(async () => renderPanel(true, { ...initial, vadSensitivity: 75 }, request));
+    await act(async () => {
+      slider.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', bubbles: true }));
+      slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(onUpdateSettings).toHaveBeenCalledTimes(1);
+    await act(async () => renderPanel(true, initial, request));
+    expect(slider.value).toBe('50');
+    await change();
+    expect(onUpdateSettings).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([0, 75])('labels Sensitivity with understandable value text at %s', async (vadSensitivity) => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, vadSensitivity }, { page: 'recording', token: 1 }));
+    const slider = container.querySelector<HTMLInputElement>('[data-setting-target="voice-detection"] input[type="range"]')!;
+    expect(slider.labels?.[0]?.textContent).toBe('Sensitivity');
+    expect(slider.getAttribute('aria-valuetext')).toBe(vadSensitivity === 0 ? 'Off' : '75 percent');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(slider, '85');
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+      slider.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(slider.getAttribute('aria-valuetext')).toBe('85 percent');
+    expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 85 });
+  });
+
+  it.each([
+    ['recording', ['Dictation trigger key', 'Microphone standby window', 'Pre-roll']],
+    ['ai-transcription', ['Transcription model', 'Language', 'Release model after inactivity']],
+    ['ai-query', ['Provider', 'Context shared with the CLI', 'Query shortcut', 'Timeout']],
+    ['ai-transform', ['Hold key']],
+  ])('names the shared selectors on %s and exposes their selected values', async (page, expected) => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, queryHotkey: 'shift_r', transformHoldKey: 'alt_r' }, { page, token: 1 }));
+    const advanced = container.querySelector<HTMLButtonElement>('.settings-advanced-toggle');
+    if (advanced && advanced.getAttribute('aria-expanded') === 'false') await act(async () => advanced.click());
+    const controls = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="combobox"]'));
+    const names = controls.map(control => {
+      const ids = control.getAttribute('aria-labelledby');
+      return ids ? ids.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' ') : control.getAttribute('aria-label');
+    });
+    expect(names).toEqual(expect.arrayContaining(expected));
+    expect(names.every(name => !!name?.trim())).toBe(true);
+    expect(controls.every(control => !!control.textContent?.trim())).toBe(true);
   });
 
   it('groups function keys in a compact keyboard-operable trigger picker', async () => {
@@ -753,31 +956,41 @@ describe('SettingsPanel information architecture', () => {
     scrollTo.mockClear();
     scrollIntoView.mockClear();
 
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
-      page: 'recording',
-      target: 'trigger-key',
-      token: 1,
-    }));
-    const target = container.querySelector('[data-setting-target="trigger-key"]') as HTMLElement;
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    expect(scrollTo).not.toHaveBeenCalled();
-    expect(target.classList.contains('settings-target-flash')).toBe(true);
+    // Keep deferred recentering frames from racing these immediate-landing checks.
+    vi.useFakeTimers();
+    try {
+      await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+        page: 'recording',
+        target: 'trigger-key',
+        token: 1,
+      }));
+      const target = container.querySelector('[data-setting-target="trigger-key"]') as HTMLElement;
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollTo).not.toHaveBeenCalled();
+      expect(target.classList.contains('settings-target-flash')).toBe(true);
 
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
-      page: 'recording',
-      target: 'trigger-key',
-      token: 2,
-    }));
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
-    expect(target.classList.contains('settings-target-flash')).toBe(true);
+      await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+        page: 'recording',
+        target: 'trigger-key',
+        token: 2,
+      }));
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(target.classList.contains('settings-target-flash')).toBe(true);
 
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
-      page: 'general',
-      token: 3,
-    }));
-    expect(container.querySelector('h1')?.textContent).toBe('General');
-    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
-    expect(target.classList.contains('settings-target-flash')).toBe(false);
+      await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+        page: 'general',
+        token: 3,
+      }));
+      expect(container.querySelector('h1')?.textContent).toBe('General');
+      expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+      expect(target.classList.contains('settings-target-flash')).toBe(false);
+
+      await act(async () => vi.advanceTimersByTime(2000));
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(target.classList.contains('settings-target-flash')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows hardware guidance and keeps a warned speech model selectable', async () => {
@@ -885,7 +1098,7 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     await act(async () => back.click());
     expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
-    expect(document.activeElement?.textContent).toContain('Transforms');
+    expect(document.activeElement?.textContent).toContain('Selected-text rewrite');
   });
 
   it('returns from an editor with Escape', async () => {
@@ -916,7 +1129,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('searches across tabs and routes a result to its owning tab', async () => {
-    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'appearance');
@@ -929,42 +1142,115 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Appearance settings');
   });
 
+  it('keeps the search name separate from its clear action and returns focus after clearing', async () => {
+    const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    expect(input.labels?.[0]?.textContent).toBe('Search all settings');
+    expect(input.placeholder).toBe('Search');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'overlay');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const clear = container.querySelector<HTMLButtonElement>('[aria-label="Clear settings search"]')!;
+    expect(clear.closest('label')).toBeNull();
+    expect(input.labels?.[0]?.textContent).toBe('Search all settings');
+    clear.focus();
+    await act(async () => clear.click());
+    expect(input.value).toBe('');
+    expect(document.activeElement).toBe(input);
+    expect(container.querySelector('[aria-label="Clear settings search"]')).toBeNull();
+    expect(container.querySelector('h1')?.textContent).toBe('General');
+  });
+
   it('finds calibration and reopens General advanced settings for repeated searches', async () => {
-    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    const searchCalibration = async () => {
+    // Count immediate landings, not deferred animation frames racing the test.
+    vi.useFakeTimers();
+    try {
+      const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      const searchCalibration = async () => {
+        await act(async () => {
+          setter.call(input, 'Calibrate');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+          (button) => button.textContent?.includes('Calibrate overlay position'),
+        ) as HTMLButtonElement;
+        expect(result).toBeDefined();
+        await act(async () => result.click());
+      };
+
+      scrollIntoView.mockClear();
+      await searchCalibration();
+
+      const calibration = container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement;
+      const advanced = calibration.closest('.settings-advanced')?.querySelector('button') as HTMLButtonElement;
+      expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
+      expect(advanced.getAttribute('aria-expanded')).toBe('true');
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
+      expect(calibration.classList.contains('settings-target-flash')).toBe(true);
+
+      // Searching unmounts General; selecting the same result must reveal the
+      // newly mounted, initially collapsed disclosure again.
+      await searchCalibration();
+
+      expect((container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement)
+        .closest('.settings-advanced')?.querySelector('button')?.getAttribute('aria-expanded')).toBe('true');
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['overlay', 'Calibrate overlay position', 'overlay-calibration', 'General'],
+    ['overlay position', 'Calibrate overlay position', 'overlay-calibration', 'General'],
+    ['paste delay', 'Paste delay', 'paste-delay', 'Delivery'],
+    ['sound cues', 'Sound cues', 'sound-cues', 'Recording'],
+  ])('searches for %s, opens its disclosure and preserves the target landing', async (query, title, targetId, heading) => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: true }));
+    vi.useFakeTimers();
+    try {
+      const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
       await act(async () => {
-        setter.call(input, 'Calibrate');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, query);
         input.dispatchEvent(new Event('input', { bubbles: true }));
       });
-      const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-        (button) => button.textContent?.includes('Calibrate overlay position'),
-      ) as HTMLButtonElement;
+      const result = Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Settings search results"] button'))
+        .find(button => button.textContent?.startsWith(title))!;
       expect(result).toBeDefined();
+      scrollTo.mockClear();
       await act(async () => result.click());
-    };
+      const target = container.querySelector<HTMLElement>(`[data-setting-target="${targetId}"]`)!;
+      expect(container.querySelector('h1')?.textContent).toBe(heading);
+      expect(target).not.toBeNull();
+      expect(target.closest('[aria-hidden="true"]')).toBeNull();
+      expect(target.classList.contains('settings-target-flash')).toBe(true);
+      expect(scrollIntoView.mock.instances).toContain(target);
+      await act(async () => vi.advanceTimersByTime(2000));
+      expect(scrollTo).not.toHaveBeenCalled();
+      expect(onUpdateSettings).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
 
-    scrollIntoView.mockClear();
-    await searchCalibration();
-
-    const calibration = container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement;
-    const advanced = calibration.closest('.settings-advanced')?.querySelector('button') as HTMLButtonElement;
-    expect(container.querySelector('nav [aria-current="page"]')?.textContent).toBe('General');
-    expect(advanced.getAttribute('aria-expanded')).toBe('true');
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
-    expect(calibration.classList.contains('settings-target-flash')).toBe(true);
-
-    // Searching unmounts General; selecting the same result must reveal the
-    // newly mounted, initially collapsed disclosure again.
-    await searchCalibration();
-
-    expect((container.querySelector('[data-setting-target="overlay-calibration"]') as HTMLElement)
-      .closest('.settings-advanced')?.querySelector('button')?.getAttribute('aria-expanded')).toBe('true');
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  it('keeps the App overrides destination centered after its highlight expires', async () => {
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'customize', token: 1 }));
+    const row = Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
+      .find(button => button.textContent?.includes('App overrides'))!;
+    vi.useFakeTimers();
+    try {
+      scrollTo.mockClear();
+      await act(async () => row.click());
+      const target = container.querySelector('[data-setting-target="app-overrides"]')!;
+      expect(target.closest('.settings-advanced')?.querySelector('button')?.getAttribute('aria-expanded')).toBe('true');
+      expect(scrollIntoView.mock.instances).toContain(target);
+      await act(async () => vi.advanceTimersByTime(2000));
+      expect(scrollTo).not.toHaveBeenCalled();
+      expect(container.querySelector('h1')?.textContent).toBe('Delivery');
+    } finally { vi.useRealTimers(); }
   });
 
   it('preserves the parent scroll while entering a sheet and restores its page on close', async () => {
-    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'vocabulary aliases');
@@ -1023,7 +1309,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('finds the Voice Query clipboard preference from settings search', async () => {
-    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'clipboard copy');
@@ -1042,7 +1328,7 @@ describe('SettingsPanel information architecture', () => {
   });
 
   it('opens diagnostics when the cross-tab result explicitly targets them', async () => {
-    const input = container.querySelector('input[placeholder="Search settings"]') as HTMLInputElement;
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       setter.call(input, 'diagnostics');
@@ -1547,8 +1833,9 @@ describe('SettingsPanel Voice Query async ownership', () => {
   it('shows custom-provider setup guidance and enable errors beside the toggle', async () => {
     await renderVoiceQuery({ queryExecutable: '', queryArguments: [] });
 
-    expect(container.textContent).toContain('For a local smoke test');
-    expect(container.textContent).toContain('/usr/bin/printf');
+    expect(container.textContent).toContain('Choose the command-line app that should answer your questions');
+    expect(container.textContent).not.toContain('smoke test');
+    expect(container.textContent).toContain('Install and sign in to that app before using it here');
     const enable = container.querySelector(
       '[role="switch"][aria-label="Enable Voice Query"]',
     ) as HTMLButtonElement;

@@ -88,6 +88,25 @@ describe('filterCommands', () => {
     expect(filterCommands(COMMANDS, '').map((c) => c.id)).toEqual(COMMANDS.map((c) => c.id));
   });
 
+  it('groups the default list by first-seen section without changing within-section priority', () => {
+    const interleaved = [
+      command('record', 'Start recording', 'Recording'),
+      command('meeting', 'Start meeting capture', 'Meeting'),
+      command('disable', 'Disable Murmur', 'Recording'),
+      command('file', 'Transcribe audio file', 'Recording'),
+      command('stop-meeting', 'Stop meeting capture', 'Meeting'),
+    ];
+    const before = [...interleaved];
+    expect(filterCommands(interleaved, '   ').map((entry) => entry.id))
+      .toEqual(['record', 'disable', 'file', 'meeting', 'stop-meeting']);
+    expect(interleaved).toEqual(before);
+    // A search is still ranked by relevance, not grouped by category.
+    expect(filterCommands(interleaved, 'start').map((entry) => entry.id))
+      .toEqual(['record', 'meeting']);
+    expect(filterCommands(interleaved, 'stop').map((entry) => entry.id))
+      .toEqual(['stop-meeting']);
+  });
+
   it('puts the best match first', () => {
     expect(filterCommands(COMMANDS, 'stop')[0].id).toBe('stop');
     expect(filterCommands(COMMANDS, 'log')[0].id).toBe('logs');

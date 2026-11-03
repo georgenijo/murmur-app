@@ -6,7 +6,7 @@ const panes = [
   ['Appearance'], ['Performance Lab'], ['Diagnostics'],
   ['AI & models', 'Speech-to-text'], ['AI & models', 'Voice Query'],
   ['AI & models', 'Selected-text rewrite'], ['Customize', 'Voice commands'],
-  ['Customize', 'Styles'], ['Customize', 'Transforms'],
+  ['Customize', 'App overrides'], ['Customize', 'Selected-text rewrite'],
   ['Text & vocabulary', 'Vocabulary'], ['Text & vocabulary', 'Aliases'],
   ['Text & vocabulary', 'Knowledge'], ['Text & vocabulary', 'Manage project scan'],
 ] as const;

@@ -32,8 +32,11 @@ Query includes **Keep Voice Query history on this Mac**. When enabled for a
 pass, Rust stores the original question and answer with bounded metadata in a
 separate local SQLite database. History → Queries loads at most 50 records at a
 time, filters by provider, searches saved questions and answers with a bounded
-case-insensitive substring, and offers **Delete all query history** with a
-second-click confirmation. Search, provider, pagination, and the matching total
+case-insensitive substring, and offers **Delete all query history** with an
+explicit confirmation dialog. The dialog explains that all retained query
+records will be removed, including records hidden by search or provider filters;
+Cancel leaves them intact, and dictation and meeting history are unaffected.
+Search, provider, pagination, and the matching total
 compose at the requester-gated Rust boundary. The store keeps at most 200 newest
 entries. Turning the toggle off affects new passes only; it never silently
 deletes old records. Every
@@ -179,7 +182,7 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 | `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
 | `app/src/components/history/HistoryFilterMenu.tsx` | The single Filter menu and its trigger label |
 | `app/src/lib/hooks/useQueryHistory.ts` | Active-workspace-only paged query-history reads, provider filter, live refresh, and purge |
-| `app/src/components/history/QueryHistoryPanel.tsx` | Local question/answer cards and one-click purge; no export or edit path |
+| `app/src/components/history/QueryHistoryPanel.tsx` | Local question/answer cards and explicit confirmation before purge; no export or edit path |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |
 
 ## Tests

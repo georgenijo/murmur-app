@@ -45,6 +45,7 @@ interface SettingsEditorsWindowProps {
   onScan: () => void;
   onCancelScan: () => void;
   onBack: () => void;
+  onOpenVoiceCommandSettings?: () => void;
   backLabel?: string;
   restoreFocus?: () => HTMLElement | null;
   target?: { id: string } | null;
@@ -128,6 +129,7 @@ export function SettingsEditorsWindow({
   onScan,
   onCancelScan,
   onBack,
+  onOpenVoiceCommandSettings,
   backLabel = 'Close editor',
   restoreFocus,
   target,
@@ -135,7 +137,12 @@ export function SettingsEditorsWindow({
   const revealedTargetRef = useRef<typeof target>(null);
   const [advancedOpen, setAdvancedOpen] = useSettingsAdvanced(initialTab);
   const titleId = useId();
-  const dialogRef = useDialogFocus(onBack, restoreFocus, true);
+  const navigatingToSettingsRef = useRef(false);
+  // A cross-page link owns its visible destination's focus in SettingsPanel.
+  // Closing this sheet must not compete with that landing or refocus a hidden switch.
+  const dialogRef = useDialogFocus(onBack, () => navigatingToSettingsRef.current
+    ? document.activeElement as HTMLElement | null
+    : restoreFocus?.() ?? null, true);
   useLayoutEffect(() => {
     if (target?.id !== 'app-overrides-manual' || revealedTargetRef.current === target) return;
     if (!advancedOpen) { setAdvancedOpen(true); return; }
@@ -183,6 +190,10 @@ export function SettingsEditorsWindow({
             active
             globallyEnabled={settings.voiceCommandsEnabled}
             profiles={settings.appProfiles}
+            onOpenVoiceCommandSettings={onOpenVoiceCommandSettings ? () => {
+              navigatingToSettingsRef.current = true;
+              onOpenVoiceCommandSettings();
+            } : undefined}
           />
         )}
         {initialTab === 'scan' && (

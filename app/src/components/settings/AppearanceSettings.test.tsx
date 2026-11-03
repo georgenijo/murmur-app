@@ -147,6 +147,44 @@ describe("AppearanceSettings", () => {
     expect(container.textContent).not.toContain("Choose dark style");
   });
 
+  it.each(['Create theme', 'Create theme from Sonic'])('restores the actual %s pointer opener after Done', async (name) => {
+    (container.querySelector('[role="radio"]') as HTMLElement).focus();
+    const opener = Array.from(container.querySelectorAll('button')).find(button =>
+      name === 'Create theme' ? button.textContent?.includes('Create theme') : button.getAttribute('aria-label') === name)!;
+    await act(async () => opener.click());
+    const done = Array.from(container.querySelectorAll('[role="dialog"] button')).find(button => button.textContent === 'Done') as HTMLButtonElement;
+    await act(async () => done.click());
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it.each(['Done', 'Escape', 'Close'])('restores Create theme after Reset removes the Custom opener (%s)', async (close) => {
+    mocks.controller!.document.theme = { version: 1, presetId: 'custom', accent: '#123456' };
+    await act(async () => root.render(<AppearanceSettings />));
+    const opener = container.querySelector<HTMLButtonElement>('[aria-label="Edit Custom"]')!;
+    expect(opener).not.toBeNull();
+    await act(async () => opener.click());
+    mocks.controller!.reset = vi.fn(async () => {
+      mocks.controller!.document.theme = { version: 1, presetId: 'sonic' };
+      root.render(<AppearanceSettings />);
+    });
+    const reset = Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'Reset to Sonic')!;
+    await act(async () => reset.click());
+    expect(opener.isConnected).toBe(false);
+    await act(async () => {
+      if (close === 'Escape') {
+        document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      } else if (close === 'Close') {
+        container.querySelector<HTMLButtonElement>('[aria-label="Close theme editor"]')!.click();
+      } else {
+        Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'Done')!.click();
+      }
+    });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const fallback = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('Create theme'));
+    expect(document.activeElement).toBe(fallback);
+  });
+
   it("keeps System distinct from its resolved appearance and follows external changes", async () => {
     mocks.controller!.resolvedAppearance = "dark";
     await act(async () => root.render(<AppearanceSettings />));

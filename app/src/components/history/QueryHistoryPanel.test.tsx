@@ -87,7 +87,7 @@ describe('QueryHistoryPanel', () => {
     expect(notices.every((notice) => !notice.classList.contains('text-error'))).toBe(true);
   });
 
-  it('filters by provider and requires a second click before purging', async () => {
+  it('filters by provider and requires an explicit scope-naming confirmation before purging', async () => {
     const state = history();
     const confirm = vi.spyOn(window, 'confirm');
     await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
@@ -106,14 +106,64 @@ describe('QueryHistoryPanel', () => {
 
     expect(state.setProvider).toHaveBeenCalledWith('codex');
     expect(state.clear).not.toHaveBeenCalled();
-    expect(purge.textContent).toBe('Confirm delete all');
+    const dialog = container.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('including entries hidden by search or provider filters');
+    expect(dialog.textContent).toContain('Dictation and meeting history are not affected');
+    expect(document.activeElement?.textContent).toBe('Cancel');
+    const confirmKey = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    await act(async () => dialog.querySelectorAll('button')[1].dispatchEvent(confirmKey));
+    expect(confirmKey.defaultPrevented).toBe(true);
+    expect(state.clear).not.toHaveBeenCalled();
     await act(async () => {
-      purge.click();
+      (dialog.querySelectorAll('button')[1] as HTMLButtonElement).click();
       await Promise.resolve();
     });
     expect(state.clear).toHaveBeenCalledOnce();
     expect(confirm).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Voice Query history deleted from this Mac.');
+  });
+
+  it('cancels with no clear call, restores focus, and supports Escape dismissal', async () => {
+    const state = history();
+    await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
+    const opener = container.querySelector('[aria-label="Delete all Voice Query history"]') as HTMLButtonElement;
+    (container.querySelector('input[type="search"]') as HTMLInputElement).focus();
+    await act(async () => opener.click());
+    await act(async () => (container.querySelector('[role="dialog"] button') as HTMLButtonElement).click());
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    await act(async () => opener.click());
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(state.clear).not.toHaveBeenCalled();
+  });
+
+  it('clears exactly once while pending, blocks busy dismissal, and reports failure without success', async () => {
+    let complete!: (value: boolean) => void;
+    const state = history({ clear: vi.fn(() => new Promise<boolean>(resolve => { complete = resolve; })) });
+    await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
+    await act(async () => (container.querySelector('[aria-label="Delete all Voice Query history"]') as HTMLButtonElement).click());
+    const confirm = container.querySelector('[role="dialog"] button:last-child') as HTMLButtonElement;
+    await act(async () => { confirm.click(); confirm.click(); });
+    expect(state.clear).toHaveBeenCalledOnce();
+    expect(confirm.disabled).toBe(true);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => complete(false));
+    expect(container.querySelector('[role="dialog"] [role="alert"]')?.textContent).toContain('Could not delete');
+    expect(container.textContent).not.toContain('history deleted from this Mac');
+    expect(confirm.disabled).toBe(false);
+    expect(container.textContent).toContain('What is private?');
+  });
+
+  it('does not open or dispatch clear while the history store is already busy', async () => {
+    const state = history({ clearing: true });
+    await act(async () => root.render(<QueryHistoryPanel history={state} retentionEnabled />));
+    const opener = container.querySelector('[aria-label="Delete all Voice Query history"]') as HTMLButtonElement;
+    expect(opener.disabled).toBe(true);
+    await act(async () => opener.click());
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(state.clear).not.toHaveBeenCalled();
   });
 
   it('searches questions and answers and offers a clear affordance', async () => {
@@ -171,7 +221,7 @@ describe('QueryHistoryPanel', () => {
     });
     expect(state.clear).not.toHaveBeenCalled();
     await act(async () => {
-      purge.click();
+      (container.querySelector('[role="dialog"] button:last-child') as HTMLButtonElement).click();
       await Promise.resolve();
     });
     expect(state.clear).toHaveBeenCalledOnce();

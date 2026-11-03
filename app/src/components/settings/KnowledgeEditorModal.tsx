@@ -278,7 +278,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
 
           <label className="flex items-center gap-2 text-sm text-on-surface">
             <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-primary" />
-            Enabled for future repository lookups
+            Make this entry available to features that use it
           </label>
 
           {entry?.voiceCommand && (

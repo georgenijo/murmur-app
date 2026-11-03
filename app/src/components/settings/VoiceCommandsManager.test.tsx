@@ -98,6 +98,55 @@ describe('VoiceCommandsManager', () => {
     expect(mocks.remove).toHaveBeenCalledWith(ENTRY);
   });
 
+  it('contains focus, preserves edited content on Escape, and restores the manager invoker', async () => {
+    const opener = button(container, 'New command…');
+    opener.focus();
+    await act(async () => opener.click());
+    const dialog = container.querySelector('[role="dialog"]') as HTMLElement;
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    const close = container.querySelector('[aria-label="Close voice command editor"]') as HTMLButtonElement;
+    expect(document.activeElement).toBe(close);
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+    expect(document.activeElement).toBe(button(container, 'Save command'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true })));
+    expect(document.activeElement).toBe(close);
+    const phrase = container.querySelector('[aria-label="Voice command phrase"]') as HTMLInputElement;
+    await act(async () => setValue(phrase, 'keep my draft'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container.textContent).toContain('Discard unsaved changes');
+    expect(phrase.value).toBe('keep my draft');
+    await act(async () => button(container, 'Keep editing').click());
+    expect(phrase.value).toBe('keep my draft');
+    await act(async () => button(container, 'Cancel').click());
+    await act(async () => button(container, 'Discard changes').click());
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each(['New command…', 'Edit', 'Duplicate'])('restores the actual %s pointer opener when WebKit does not focus it', async (name) => {
+    const previous = button(container, 'Load more') ?? button(container, 'Delete…');
+    previous.focus();
+    const opener = button(container, name);
+    await act(async () => opener.click());
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('names and links to the actual disabled setting without enabling commands', async () => {
+    const navigate = vi.fn();
+    await act(async () => root.render(<VoiceCommandsManager active globallyEnabled={false} profiles={[]} onOpenVoiceCommandSettings={navigate} />));
+    expect(container.textContent).toContain('Voice commands & spoken formatting');
+    await act(async () => button(container, 'Open Voice commands & spoken formatting').click());
+    expect(navigate).toHaveBeenCalledOnce();
+    expect(mocks.toggle).not.toHaveBeenCalled();
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    await act(async () => root.render(<VoiceCommandsManager active globallyEnabled profiles={[]} onOpenVoiceCommandSettings={navigate} />));
+    expect(container.textContent).not.toContain('Open Voice commands & spoken formatting');
+  });
+
   it('creates an app-scoped multiline snippet with explicit clipboard permission and preview', async () => {
     await act(async () => button(container, 'New command…').click());
     await act(async () => setValue(container.querySelector('[aria-label="Voice command type"]') as HTMLSelectElement, 'snippet'));

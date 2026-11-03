@@ -250,20 +250,56 @@ export function DayChart(props: DayChartProps) {
           markEvents={markEvents}
         />
       ) : (
-        <div className="ui-day-chart-heatmap" role="group" aria-label={props.ariaLabel}>
-          {props.weeks.map((week, weekIndex) => week.map((day) => (
-            <button
-              key={day.key}
-              type="button"
-              style={{ gridColumn: weekIndex + 1, gridRow: day.date.getDay() + 1 }}
-              data-intensity={intensity(day.words, peak)}
-              data-active={active?.key === day.key}
-              aria-label={markLabel(day, 'words')}
-              aria-describedby={tooltipId}
-              {...markEvents(day, 'words')}
-            />
-          )))}
+        <>
+        <div className="ui-day-chart-calendar">
+          {flatDays.length > 0 && (
+            <p className="ui-day-chart-date-range">
+              {dayLabel(flatDays[0])} – {dayLabel(flatDays[flatDays.length - 1])}
+            </p>
+          )}
+          <div className="ui-day-chart-months" aria-hidden="true">
+            {props.weeks.map((week, index) => (
+              <span key={index}>
+                {week[0] && (index === 0 || week[0].date.getMonth() !== props.weeks[index - 1]?.[0]?.date.getMonth())
+                  ? week[0].date.toLocaleDateString(undefined, { month: 'short' }) : ''}
+              </span>
+            ))}
+          </div>
+          <div className="ui-day-chart-weekdays" aria-hidden="true">
+            {Array.from({ length: 7 }, (_, weekday) => (
+              <span key={weekday}>{new Date(2026, 0, 4 + weekday).toLocaleDateString(undefined, { weekday: 'short' })}</span>
+            ))}
+          </div>
+          <div className="ui-day-chart-heatmap" role="group" aria-label={props.ariaLabel}>
+            {props.weeks.map((week, weekIndex) => week.map((day) => (
+              <button
+                key={day.key}
+                type="button"
+                style={{ gridColumn: weekIndex + 1, gridRow: day.date.getDay() + 1 }}
+                data-intensity={intensity(day.words, peak)}
+                data-active={active?.key === day.key}
+                aria-label={markLabel(day, 'words')}
+                aria-describedby={tooltipId}
+                {...markEvents(day, 'words')}
+              />
+            )))}
+          </div>
         </div>
+        {flatDays.length > 0 && (
+          <details className="ui-day-chart-values">
+            <summary>Daily values</summary>
+            <div>
+              <table>
+                <caption className="sr-only">{props.ariaLabel} daily values</caption>
+                <thead><tr><th scope="col">Date</th><th scope="col">Words</th><th scope="col">Recordings</th></tr></thead>
+                <tbody>{flatDays.map((day) => (
+                  <tr key={day.key}><th scope="row">{dayLabel(day)}</th><td>{day.words.toLocaleString()}</td><td>{day.recordings.toLocaleString()}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </details>
+        )}
+        </>
       )}
     </figure>
   );

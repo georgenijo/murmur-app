@@ -1,5 +1,5 @@
 import { save } from '@tauri-apps/plugin-dialog';
-import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useMemo, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
 import {
   availableThemeId,
   BUILTIN_THEME_LIBRARY_ENTRIES,
@@ -17,7 +17,8 @@ import { useAppearance } from '../../lib/hooks/useAppearance';
 interface Props {
   onBrowse: () => void;
   onImport: () => void;
-  onCustomize: () => void;
+  onCustomize: (opener: HTMLButtonElement) => void;
+  createThemeRef?: Ref<HTMLButtonElement>;
 }
 
 function SunIcon({ className = 'h-3 w-3' }: { className?: string }) {
@@ -222,7 +223,7 @@ function ModePreview({
 
 function ActionButton({ label, onClick, children, danger = false, disabled = false }: {
   label: string;
-  onClick: () => void;
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   children: React.ReactNode;
   danger?: boolean;
   disabled?: boolean;
@@ -235,7 +236,7 @@ function ActionButton({ label, onClick, children, danger = false, disabled = fal
       title={label}
       onClick={(event) => {
         event.stopPropagation();
-        onClick();
+        onClick(event);
       }}
       className={`grid h-6 w-6 place-items-center rounded-md outline-none hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary ${danger ? 'text-on-surface-variant hover:text-error' : 'text-on-surface-variant hover:text-on-surface'}`}
     >
@@ -263,7 +264,7 @@ function CollectionCard({
   selection: { light: string; dark: string };
   onApplyPair: (light: ThemeLibraryEntryV1 | null, dark: ThemeLibraryEntryV1 | null) => void;
   onApplyMode: (entry: ThemeLibraryEntryV1, mode: ResolvedAppearance) => void;
-  onCustomize?: () => void;
+  onCustomize?: (opener: HTMLButtonElement) => void;
   customizeAsCopy?: boolean;
   onExport?: (entry: ThemeLibraryEntryV1) => void;
   onDuplicate?: (entry: ThemeLibraryEntryV1) => void;
@@ -357,7 +358,7 @@ function CollectionCard({
         {(onCustomize || onDuplicate || onExport || onRemove) && (
           <div className="flex shrink-0 items-center gap-0.5">
             {onCustomize && (
-              <ActionButton label={customizeAsCopy ? `Create theme from ${label}` : `Edit ${label}`} onClick={onCustomize}>
+              <ActionButton label={customizeAsCopy ? `Create theme from ${label}` : `Edit ${label}`} onClick={event => onCustomize(event.currentTarget)}>
                 {customizeAsCopy ? <CopyIcon /> : <EditIcon />}
               </ActionButton>
             )}
@@ -371,7 +372,7 @@ function CollectionCard({
   );
 }
 
-export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
+export function ThemeLibrary({ onBrowse, onImport, onCustomize, createThemeRef }: Props) {
   const appearance = useAppearance();
   const selection = effectiveAppearanceSelection(
     appearance.document,
@@ -490,7 +491,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize }: Props) {
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 pt-1">
         <h2 id="themes-heading" className="text-sm font-medium text-on-surface">Themes</h2>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onCustomize} className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface">
+          <button ref={createThemeRef} type="button" onClick={event => onCustomize(event.currentTarget)} className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface">
             <span aria-hidden="true">＋</span> Create theme
           </button>
           <div

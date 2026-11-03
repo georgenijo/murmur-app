@@ -1,6 +1,8 @@
 import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import { useEffect, useId, useRef, useState } from 'react';
+import { noDefaultButtonKeyDown } from '../../lib/defaultButton';
+import { useDialogFocus } from '../../lib/hooks/useDialogFocus';
 import type { useQueryHistory } from '../../lib/hooks/useQueryHistory';
 import { QUERY_HISTORY_MAX_SEARCH_CHARS } from '../../lib/queryHistory';
 import { queryHistoryErrorMessage } from '../../lib/queryErrorPresentation';
@@ -44,39 +46,61 @@ const READY_DELIVERY_LABELS: Record<string, string> = {
   clipboard_unavailable: 'Clipboard unavailable',
 };
 
+function ClearQueryHistoryDialog({ busy, error, onCancel, onConfirm }: {
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useDialogFocus(() => { if (!busy) onCancel(); });
+  useEffect(() => {
+    if (busy) dialogRef.current?.focus();
+    else dialogRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
+  }, [busy, dialogRef]);
+  return <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5" onMouseDown={event => { if (event.target === event.currentTarget && !busy) onCancel(); }}>
+    <div ref={dialogRef} tabIndex={-1} role="dialog" onKeyDown={noDefaultButtonKeyDown} aria-modal="true" aria-labelledby="clear-query-history-title" aria-busy={busy} className="dialog-popover w-full max-w-sm p-5">
+      <h2 id="clear-query-history-title" className="text-base font-semibold text-on-surface">Delete all Voice Query history?</h2>
+      <p className="mt-3 text-sm text-on-surface-variant">This permanently deletes all retained questions and answers from this Mac, including entries hidden by search or provider filters. It cannot be undone. Dictation and meeting history are not affected.</p>
+      {error && <p role="alert" className="mt-3 text-sm text-error">{error}</p>}
+      <div className="mt-5 flex justify-end gap-2">
+        <button type="button" disabled={busy} onClick={onCancel} className="dialog-pill-btn px-3 py-2 text-xs">Cancel</button>
+        <button type="button" disabled={busy} onClick={onConfirm} className="dialog-pill-btn px-3 py-2 text-xs text-error">{busy ? 'Deleting…' : 'Delete all query history'}</button>
+      </div>
+    </div>
+  </div>;
+}
+
 export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPanelProps) {
   const searchInputId = useId();
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmPurge, setConfirmPurge] = useState(false);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-  }, []);
+  const purgeInFlight = useRef(false);
+  const [purging, setPurging] = useState(false);
+  const [purgeError, setPurgeError] = useState<string | null>(null);
+  const busy = purging || history.clearing;
 
   const purge = async () => {
-    setConfirmPurge(false);
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    confirmTimerRef.current = null;
+    if (purgeInFlight.current || history.clearing) return;
+    purgeInFlight.current = true;
+    setPurging(true);
+    setPurgeError(null);
     setNotice(null);
-    if (await history.clear()) setNotice('Voice Query history deleted from this Mac.');
-  };
-
-  const requestPurge = () => {
-    if (confirmPurge) {
-      void purge();
-      return;
+    try {
+      if (await history.clear()) {
+        setNotice('Voice Query history deleted from this Mac.');
+        setConfirmPurge(false);
+      } else setPurgeError('Could not delete Voice Query history. Try again.');
+    } catch {
+      setPurgeError('Could not delete Voice Query history. Try again.');
+    } finally {
+      purgeInFlight.current = false;
+      setPurging(false);
     }
-    setConfirmPurge(true);
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    confirmTimerRef.current = setTimeout(() => {
-      confirmTimerRef.current = null;
-      setConfirmPurge(false);
-    }, 4_000);
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {confirmPurge && <ClearQueryHistoryDialog busy={busy} error={purgeError} onCancel={() => setConfirmPurge(false)} onConfirm={() => void purge()} />}
       <div className="shrink-0 border-b border-[var(--ui-hairline)] px-4 py-3">
         <div className="flex flex-wrap items-end gap-3">
           <div className="min-w-0 flex-[1_1_16rem]">
@@ -140,12 +164,15 @@ export function QueryHistoryPanel({ history, retentionEnabled }: QueryHistoryPan
           </button>
           <button
             type="button"
-            onClick={requestPurge}
-            disabled={history.clearing}
-            aria-label={confirmPurge ? 'Confirm deletion of all Voice Query history' : 'Delete all Voice Query history'}
+            onClick={event => {
+              event.currentTarget.focus({ preventScroll: true });
+              setPurgeError(null); setConfirmPurge(true);
+            }}
+            disabled={busy}
+            aria-label="Delete all Voice Query history"
             className="dialog-pill-btn border-error/25 px-2.5 py-1.5 text-xs text-error hover:bg-error/10 disabled:opacity-50"
           >
-            {history.clearing ? 'Deleting…' : confirmPurge ? 'Confirm delete all' : 'Delete all query history'}
+            {busy ? 'Deleting…' : 'Delete all query history'}
           </button>
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-on-surface-variant">

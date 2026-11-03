@@ -31,7 +31,7 @@ export function ReviewActions({
           onClick={onApprove}
           className="px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 transition-colors"
         >
-          {approveLabel} <span className="text-white/40 ml-1">⏎</span>
+          {approveLabel} <span className="text-white/70 ml-1">⏎</span>
         </button>
       )}
       {retryEnabled && (
@@ -40,16 +40,16 @@ export function ReviewActions({
           onClick={onRetry}
           className="px-2 py-1 rounded-md bg-white/10 text-white/70 hover:bg-white/15 transition-colors"
         >
-          Retry <span className="text-white/40 ml-1">⌘R</span>
+          Retry <span className="text-white/70 ml-1">⌘R</span>
         </button>
       )}
       {cancelEnabled && (
         <button
           type="button"
           onClick={onCancel}
-          className="px-2 py-1 rounded-md text-white/50 hover:text-white/70 hover:bg-white/10 transition-colors ml-auto"
+          className="px-2 py-1 rounded-md text-white/70 hover:text-white/90 hover:bg-white/10 transition-colors ml-auto"
         >
-          Cancel <span className="text-white/40 ml-1">esc</span>
+          Cancel <span className="text-white/70 ml-1">esc</span>
         </button>
       )}
     </div>

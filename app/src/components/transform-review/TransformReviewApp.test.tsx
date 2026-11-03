@@ -56,6 +56,15 @@ describe('TransformReviewApp correction teaching gate', () => {
     hooks.driver.current = null;
   });
 
+  it.each(['connecting', 'recovering', 'listening', 'thinking', 'ready', 'applied', 'failed'] as const)('keeps the %s surface opaque without backdrop compositing', async (state) => {
+    hooks.driver.current = driver({ state });
+    await act(async () => root.render(<TransformReviewApp />));
+    const surface = container.querySelector<HTMLElement>('.transform-review-surface')!;
+    expect(surface.style.background).toBe('rgb(20, 20, 20)');
+    expect(surface.style.backdropFilter).toBeFalsy();
+    expect(surface.style.getPropertyValue('-webkit-backdrop-filter')).toBe('');
+  });
+
   it('hides "Remember this correction" until the pulled content has arrived', async () => {
     // The popover reaches `ready` on the state event; original/proposed text
     // is fetched separately. Offering teaching in that window would propose a

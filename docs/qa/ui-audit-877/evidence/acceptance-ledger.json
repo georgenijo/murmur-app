@@ -1,0 +1,935 @@
+{
+  "epic": 877,
+  "baseline": "fe6a1f4e3277fff9b08bf3244548e4fa8d72c4a4",
+  "releaseBaseline": "v0.59.0",
+  "synthesis": {
+    "currentSourceRevision": "683846d100edfe2da1aeab9637aec3b6d02b4f37",
+    "knownCommits": {
+      "integration": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "themeResetFocus": "b43481862ea81d92f7b4fdb3577ebde042bc4278",
+      "mainUpdaterForeground": "862307513d17611670a8c7d9ff9aad07a61d36f7",
+      "mainMerge": "2e2753f0",
+      "releaseDocs": "c2db9695f1719e20431c41598a7273bf55d728e0"
+    },
+    "nativeMinimum": "840x620",
+    "browserStressOnly": "720x560",
+    "classification": "Each criterionStatus array is aligned 1:1 with acceptance. Values are passednative, passedbrowser, passedcomponent-only, or unrun; evidence refs are intentionally concise.",
+    "explicitLimits": [
+      "No VoiceOver spoken-announcement claim: native AX names/values and keyboard observations are not VoiceOver speech evidence.",
+      "No native query/transform popover or real clipboard claim: those flows remain unrun.",
+      "Build 6 is the latest native receipt for theme/settings/Insights; query clear was observed at 0 records, epoch 1, with canonical meeting data unchanged.",
+      "Active Home worker owns useHomeSidebar; active Linux worker owns Linux PNGs. Incomplete worker output is not pass evidence.",
+      "Hosted PR CI and all benchmarks are USER_WAIVED; no pending benchmark gate. Merge/release was authorized but did not occur."
+    ],
+    "criterionStatus": {
+      "878": [
+        "passedcomponent-only:settings-result.md",
+        "unrun:VoiceOver speech not evidenced",
+        "passedbrowser:settings-result.md",
+        "passedcomponent-only:da53e423"
+      ],
+      "879": [
+        "passednative:native-build-6 AX name/value; native-paste-delay.md",
+        "unrun:spoken assistive-tech output",
+        "unrun:Sensitivity final native flow not separately evidenced",
+        "passedcomponent-only:settings-result.md"
+      ],
+      "880": [
+        "passednative:native-verification-progress.md build-3",
+        "passednative:native-verification-progress.md build-3",
+        "passednative:native-verification-progress.md build-3",
+        "passedcomponent-only:editors-result.md"
+      ],
+      "881": [
+        "unrun:optional/forced updater lifecycle",
+        "passednative:About Escape/dismiss",
+        "unrun:forced/busy updater states",
+        "passedcomponent-only:editors-result.md"
+      ],
+      "882": [
+        "passedbrowser:editors-result.md",
+        "passedbrowser:editors-contrast-evidence.json",
+        "unrun:native review popover",
+        "passedcomponent-only:review-delta-result.md"
+      ],
+      "883": [
+        "passednative:native-paste-delay.md",
+        "passednative:native-paste-delay.md",
+        "unrun:pointer relaunch persistence",
+        "passednative:native-paste-delay.md"
+      ],
+      "884": [
+        "passednative:native-verification-progress.md build-5",
+        "passednative:native-verification-progress.md build-5",
+        "unrun:empty/busy native states",
+        "passednative:native-verification-progress.md"
+      ],
+      "885": [
+        "passedbrowser:settings-result.md",
+        "passedbrowser:720x560 stress + 880x720",
+        "passedbrowser:settings-result.md",
+        "passedcomponent-only:review-delta-result.md"
+      ],
+      "886": [
+        "passedcomponent-only:layout-result.md",
+        "passedbrowser:layout-result.md",
+        "unrun:native display/nonactivation",
+        "passedcomponent-only:layout-result.md"
+      ],
+      "887": [
+        "passedbrowser:layout-result.md:720x560 stress",
+        "passedbrowser:layout-result.md",
+        "unrun:native workspace",
+        "passedcomponent-only:layout-result.md"
+      ],
+      "888": [
+        "passednative:native-verification-progress.md build-4",
+        "passednative:native-verification-progress.md build-4",
+        "passednative:native-verification-progress.md build-4 canonical unchanged",
+        "passednative:native-verification-progress.md"
+      ],
+      "889": [
+        "passednative:native-verification-progress.md build-3/6",
+        "passednative:native-verification-progress.md",
+        "unrun:complete enabled/disabled audit",
+        "passedbrowser:layout-result.md"
+      ],
+      "890": [
+        "unrun:all three named controls native",
+        "passednative:native-verification-progress.md build-6 App overrides",
+        "unrun:exhaustive omissions",
+        "passedbrowser:settings-result.md"
+      ],
+      "891": [
+        "passednative:native-search-result.md + build-2",
+        "passednative:native-build-2 at 840x620 light/dark",
+        "passednative:native-build-2",
+        "passednative:native-build-2 receipt"
+      ],
+      "892": [
+        "passednative:native-verification-progress.md build-6",
+        "passedbrowser:settings-result.md",
+        "passedcomponent-only:settings-result.md",
+        "unrun:complete native Back/focus"
+      ],
+      "893": [
+        "passednative:native-verification-progress.md build-6",
+        "passednative:native-verification-progress.md",
+        "passednative:native-verification-progress.md",
+        "passednative:native-verification-progress.md"
+      ],
+      "894": [
+        "unrun:native clipboard",
+        "unrun:native Copy/empty selection",
+        "unrun:real clipboard",
+        "passedcomponent-only:editors-result.md"
+      ],
+      "895": [
+        "passedbrowser:editors-result.md",
+        "passednative:native-verification-progress.md",
+        "passednative:native-verification-progress.md",
+        "passedbrowser:layout-result.md"
+      ],
+      "896": [
+        "passedbrowser:golden-tests-result.md",
+        "passedbrowser:golden-tests-result.md",
+        "passedbrowser:golden-tests-result.md",
+        "passedcomponent-only:editors-result.md"
+      ],
+      "897": [
+        "passednative:native-verification-progress.md build-6",
+        "passednative:native-verification-progress.md build-6",
+        "passedbrowser:layout-result.md",
+        "passedcomponent-only:layout-result.md"
+      ],
+      "898": [
+        "passedcomponent-only:golden-tests-result.md",
+        "passednative:native-verification-progress.md build-6",
+        "passednative:native-verification-progress.md build-6",
+        "passednative:native-verification-progress.md"
+      ],
+      "899": [
+        "passedbrowser:golden-tests-result.md",
+        "passedcomponent-only:golden-tests-result.md",
+        "passedbrowser:golden-tests-result.md",
+        "passedcomponent-only:golden-tests-result.md"
+      ],
+      "900": [
+        "passedcomponent-only:golden-tests-result.md",
+        "passednative:native-verification-progress.md build-6",
+        "passednative:native-verification-progress.md build-6",
+        "passednative:native-verification-progress.md"
+      ],
+      "901": [
+        "passednative:native-verification-progress.md build-3/6",
+        "passednative:native-verification-progress.md build-3/6",
+        "passednative:native-verification-progress.md build-6",
+        "passednative:native-verification-progress.md build-6"
+      ]
+    },
+    "reviewStatus": "All product deltas through ff9d0075 independently Sol-reviewed with no unresolved findings.",
+    "remainingNativeGaps": [
+      "VoiceOver spoken Select flow",
+      "Actual query/transform ready popover inspection and fragment/whole-answer clipboard behavior",
+      "Native overlay placement/nonactivation across display profiles",
+      "Optional/forced/busy updater runtime branches (covered by automated tests)"
+    ],
+    "permissions": "Isolated com.localdictation.epic877 microphone/Accessibility absent; explicit user authorization requested asynchronously, pending."
+  },
+  "tickets": [
+    {
+      "issue": 878,
+      "title": "# 878 [UI audit C01] Accessibility: give shared select controls accessible names",
+      "lane": "settings",
+      "acceptance": [
+        "Every shared Select call site that needs a field name has a nonempty, meaningful accessible name associated with its visible label.",
+        "Verify field purpose and current value in browser accessibility output and the supported native VoiceOver flow; distinguish exceptions already named correctly.",
+        "Pointer and keyboard choice/navigation behavior continues to work.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native AX names and keyboard navigation verified; VoiceOver spoken flow unrun",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "unrun",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 879,
+      "title": "# 879 [UI audit C02] Accessibility: label Sensitivity and Paste Delay sliders",
+      "lane": "settings",
+      "acceptance": [
+        "Sensitivity and Paste Delay each expose the field name and value/units through associated labels and appropriate value text.",
+        "Off/percentage/millisecond states are understandable through assistive technology.",
+        "Verify both affected sliders in the native app, preserving the already-correct Sound Cues volume label.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native AX Sensitivity50percent/Off and Paste Delay milliseconds verified",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-paste-delay.md (Paste Delay portion only)",
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 880,
+      "title": "# 880 [UI audit C03] Voice Commands: keep keyboard focus inside the editor",
+      "lane": "editors",
+      "acceptance": [
+        "Opening the editor moves focus inside; Tab/Shift+Tab stay inside; closing restores focus to the invoker.",
+        "Escape follows the editor\u2019s dismissal convention without silently losing edited content; Close and Cancel remain keyboard reachable.",
+        "Verify the real manager-owned open/close flow in the native build, using sibling dialog patterns where suitable.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native actual manager draft/save/focus flow passed",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 881,
+      "title": "# 881 [UI audit C04] Dialogs: add accessible lifecycle to About and optional Update prompts",
+      "lane": "editors",
+      "acceptance": [
+        "About and optional Update prompts expose named dialog semantics with initial focus, containment, and restoration.",
+        "Optional dismissible states respond to Escape and their visible dismissal actions.",
+        "Forced or busy updater states retain their intentional dismissal restrictions; all applicable actions remain keyboard reachable.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; About native flow evidenced, optional/forced updater branches incomplete",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passedcomponent-only",
+        "passedcomponent-only",
+        "passednative"
+      ],
+      "criterionNotes": {
+        "0": "About native pass; Update lifecycle/forced/busy branches component and browser evidence."
+      }
+    },
+    {
+      "issue": 882,
+      "title": "# 882 [UI audit C05] Review popovers: improve secondary-text contrast",
+      "lane": "editors",
+      "acceptance": [
+        "Record computed font size/weight and composited foreground/background for each affected label, shortcut, button and diff state.",
+        "Affected small regular text meets 4.5:1 on the supported surfaces; verify dark/light desktop or an opaque surface contract, not an unspecified fixture backdrop.",
+        "Check the built native popovers; do not equate CSS pixels with native-point minimums or treat class names as computed font values.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; browser/component contrast evidence, native popover inspection unrun",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "passedbrowser",
+        "unrun",
+        "passedbrowser"
+      ]
+    },
+    {
+      "issue": 883,
+      "title": "# 883 [UI audit H01] Delivery: persist Paste Delay changes made with the keyboard",
+      "lane": "settings",
+      "acceptance": [
+        "Arrow keys and other supported range-key interactions persist the displayed delay, not just a draft.",
+        "After navigation and reopening the app/settings, the native stored value matches the displayed value.",
+        "Pointer changes still persist and preview/commit behavior remains consistent.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "already resolved on current-main baseline; regression coverage retained",
+      "implementationRevision": "83383cac5ab7298283228b9b4701958692acd89c",
+      "nativeEvidence": [
+        "native-paste-delay.md",
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "unchangedBaselineFunction": {
+        "name": "PasteDelaySlider",
+        "sha256": "0c0edce8d2659562684363cfe36b4d76c1925dfd36a0a7f77b8d045b8a647ba5"
+      },
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 884,
+      "title": "# 884 [UI audit H02] Query history: confirm irreversible bulk deletion",
+      "lane": "editors",
+      "acceptance": [
+        "Cancel/dismiss performs no clear operation; the explicit confirmation identifies that all retained query history will be deleted.",
+        "The confirmed destructive action runs exactly once and reports success/failure accurately; preserve dictation/meeting history.",
+        "Verify the complete native UI flow with disposable synthetic history, including empty and busy states.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native synthetic clear/cancel evidence complete, empty/busy branches unrun",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ],
+      "criterionNotes": {
+        "2": "Native cancel/filter-hidden clear/empty state and epoch exactly once passed; busy/failure branches covered by component tests, not forced in native backend."
+      }
+    },
+    {
+      "issue": 885,
+      "title": "# 885 [UI audit H03] Menus: keep select choices visible near window edges",
+      "lane": "settings",
+      "acceptance": [
+        "Opening a select near the lower window edge makes its choices visible through collision-aware placement or an obvious bounded menu scroll area.",
+        "Verify at the current supported minimum and normal window sizes, including nested scrolling containers.",
+        "Preserve working Arrow/Home/End navigation, selection, dismissal and focus behavior; record that current options are recoverable by pane scrolling.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; browser collision/navigation evidence, native popup proof unrun",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passedbrowser",
+        "passednative"
+      ],
+      "criterionNotes": {
+        "2": "Native minimum840x620 lower-edge menu End/Home/Return pass;720x560 stress browser only."
+      }
+    },
+    {
+      "issue": 886,
+      "title": "# 886 [UI audit H04] Overlay: reserve space for status and mode at narrow widths",
+      "lane": "layout",
+      "acceptance": [
+        "At narrow supported widths, mode text/affordance is intelligible and status never overlays the mode or quick-action icons.",
+        "Exercise idle, starting/still-connecting, recording/timer and recovering states at representative notch and non-notch geometries.",
+        "Verify actual native placement on the targeted displays and preserve nonactivation/target-app focus; distinguish geometry_for(None) from detected display bounds.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "already resolved on current-main baseline; regression coverage retained",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "passedbrowser",
+        "unrun",
+        "passedbrowser"
+      ]
+    },
+    {
+      "issue": 887,
+      "title": "# 887 [UI audit H05] Diagnostics: keep stream filters visible at minimum window size",
+      "lane": "layout",
+      "acceptance": [
+        "All stream filters remain visible and pointer reachable at the supported 720\u00d7560 minimum, by wrapping or an explicit scroll affordance.",
+        "Pressed state, labels and keyboard traversal remain understandable.",
+        "Keep the already-scrollable diagnostics tabs working and verify the embedded workspace in the native build.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "already resolved on current-main baseline; regression coverage retained",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 888,
+      "title": "# 888 [UI audit H06] Meetings: keep action-item text editable in narrow review panes",
+      "lane": "layout",
+      "acceptance": [
+        "The action-task text retains a useful editable width in the narrow review pane; stack metadata when the pane is too narrow.",
+        "Task, owner, due date and Remove remain readable and usable at minimum and normal widths.",
+        "Verify edit/save/cancel with a synthetic populated meeting; canonical transcript evidence remains unchanged.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native build 4 meeting edit/save/cancel evidence",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 889,
+      "title": "# 889 [UI audit H07] Privacy copy: scope local-only promises to the relevant features",
+      "lane": "shared",
+      "acceptance": [
+        "Audit global sidebar, Settings, About and relevant setup copy for accurate feature-specific processing/storage scope.",
+        "Local dictation/rewrite/storage assurances remain accurate; optional CLI/provider network inference is clearly distinguished and retains its explicit disclosure.",
+        "Check all affected views with Voice Query enabled/disabled; do not imply a data leak was observed by this audit.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; browser and focused native copy evidence, full enabled/disabled audit bounded",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passedbrowser",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 890,
+      "title": "# 890 [UI audit M01] Settings search: index Overlay Position, Paste Delay, and Sound Cues",
+      "lane": "settings",
+      "acceptance": [
+        "Searches for Overlay Position/overlay, Paste Delay and Sound Cues reach their actual controls.",
+        "Selecting a result opens necessary disclosures and visibly lands on the target without a subsequent scroll reset.",
+        "Keep the search index maintainable and verify named omissions; do not claim exhaustive completeness without checking the remaining settings.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "already resolved on current-main baseline; regression coverage retained",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passedbrowser",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 891,
+      "title": "# 891 [UI audit M02] Settings search: verify duplicate clear controls and placeholder clipping in WKWebView",
+      "lane": "settings",
+      "acceptance": [
+        "First reproduce in the shipping WKWebView. If its search chrome already behaves correctly, close with native evidence instead of importing a Chromium-only fix.",
+        "Where reproduced, show one clear affordance and a readable concise placeholder at minimum width.",
+        "Clearing preserves expected input/focus behavior; check light/dark appearances and avoid regressing browser/native search behavior.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native single-clear/focus behavior verified at 840x620 light/dark",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-search-result.md",
+        "native-search-parent-addendum.md",
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 892,
+      "title": "# 892 [UI audit M03] Styles: preserve the requested section\u2019s scroll position",
+      "lane": "settings",
+      "acceptance": [
+        "The Styles/Modes entry opens the intended section and preserves its scroll position after the target request is cleared.",
+        "Verify direct navigation/search entry, expanded state, Back behavior and focus restoration.",
+        "Compare current main with completed #720/#769 work before changing routing; if already fixed, close with evidence.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native target landing evidence, direct/back/focus subflows bounded",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passedbrowser",
+        "passedbrowser",
+        "passednative"
+      ],
+      "criterionNotes": {
+        "1": "Native search target remains visible; direct/back/focus permutations covered by browser tests."
+      }
+    },
+    {
+      "issue": 893,
+      "title": "# 893 [UI audit M04] Voice Commands: connect the disabled-state warning to the correct switch",
+      "lane": "shared",
+      "acceptance": [
+        "The disabled-state message uses the actual visible setting name and offers a direct link/action to the relevant control.",
+        "Visible text and accessible naming are consistent and clearly distinguish custom commands from spoken formatting where appropriate.",
+        "Do not silently enable commands; verify enabled/disabled state, navigation and focus.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native disabled warning route focuses correct switch and remains off",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 894,
+      "title": "# 894 [UI audit M05] Voice Query: preserve selected-text Copy behavior",
+      "lane": "editors",
+      "acceptance": [
+        "With a nonempty selection, Command-C copies the selected fragment using expected native behavior.",
+        "The explicit Copy action still copies the entire answer; define and verify any empty-selection shortcut behavior.",
+        "Check the real native clipboard with disposable answer content and retain the never-auto-paste contract.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "already resolved on current-main baseline; regression coverage retained",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedcomponent-only",
+        "passedcomponent-only",
+        "unrun",
+        "passedcomponent-only"
+      ]
+    },
+    {
+      "issue": 895,
+      "title": "# 895 [UI audit M06] Copy: align feature names and refresh stale setup descriptions",
+      "lane": "shared",
+      "acceptance": [
+        "Decide/document which names are intentional umbrella/task names and which should be consistent across entry points and headings.",
+        "Update the stale visible Dictation settings reference to the current destination.",
+        "Make About accurately describe supported engines without implying Whisper is unsupported; verify affected labels/help in context.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native About copy/engine evidence and browser copy checks",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 896,
+      "title": "# 896 [UI audit M07] Copy: simplify internal terminology in setup and Knowledge help",
+      "lane": "shared",
+      "acceptance": [
+        "Replace internal phrases in primary help with user outcomes/examples, keeping necessary technical configuration in optional details or developer documentation.",
+        "Preserve precise capability, network/privacy, scope and precedence information where it affects user choice.",
+        "Review the rendered Voice Query and Knowledge wording for the intended audience; no backend behavior change is required by this ticket.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; browser/component wording evidence, native full wording audit bounded",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "passedbrowser",
+        "passedbrowser",
+        "passedbrowser"
+      ]
+    },
+    {
+      "issue": 897,
+      "title": "# 897 [UI audit M08] Home: show the complete styles setup prompt",
+      "lane": "layout",
+      "acceptance": [
+        "Show the complete meaningful prompt at tested 880px and minimum widths, using wrapping or concise copy.",
+        "Keep setup/dismiss actions readable and reachable without colliding with text.",
+        "Verify light/dark and avoid maintaining divergent important copy in CSS-generated content.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "already resolved on current-main baseline; regression coverage retained",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passedbrowser",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 898,
+      "title": "# 898 [UI audit M09] Insights: review activity heatmap scale and calendar labels",
+      "lane": "layout",
+      "acceptance": [
+        "Make an explicit product/design decision about calendar anchors and the heatmap\u2019s proportional size; record a before/after or retain-current rationale.",
+        "If changed, keep visible time context and per-cell accessible date/value information, plus existing interactive values.",
+        "Verify narrow/normal layouts and theme contrast without removing meaningful analytics or treating the current per-cell labels as missing.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native build 6 Insights evidence",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "passednative",
+        "passedbrowser",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 899,
+      "title": "# 899 [UI audit L01] Command palette: keep default command groups contiguous",
+      "lane": "layout",
+      "acceptance": [
+        "The default idle list groups Recording/Meeting entries coherently without redundant split headings.",
+        "Preserve intentional command priority, search ranking and active-meeting conditional commands.",
+        "Keep keyboard selection/execution working; category-badge removal is optional polish.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; browser/component grouping evidence, native palette flow unrun",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "passedbrowser",
+        "passedbrowser",
+        "passedbrowser"
+      ]
+    },
+    {
+      "issue": 900,
+      "title": "# 900 [UI audit L02] Customize: review ordinals on independent destinations",
+      "lane": "settings",
+      "acceptance": [
+        "Choose non-sequential presentation or document why the ordinals improve comprehension; this is a design decision.",
+        "Keep each destination independently reachable with correct names, focus and return behavior.",
+        "Verify the final Customize layout and list semantics; do not add decorative icons unless they aid recognition.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native Customize semantics/layout evidence",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passedbrowser",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    },
+    {
+      "issue": 901,
+      "title": "# 901 [UI audit L03] Editors: keep primary actions easy to find at minimum window height",
+      "lane": "editors",
+      "acceptance": [
+        "At minimum height, action discovery is clear while every field and keyboard-focus target remains reachable.",
+        "Preserve the real actions: Voice Command Save command/Cancel, Theme Export/Done/Reset to Sonic.",
+        "Preserve live-applied theme semantics; do not imply a Cancel rollback. A persistent footer is a proposal, not a mandatory HIG rule.",
+        "Record the tested revision, native/browser scope, and focused evidence. Follow repository verification/review requirements if implementation is later authorized."
+      ],
+      "disposition": "implemented; native command/theme footer evidence at minimum height",
+      "implementationRevision": "da53e423e440a1418c7e5e6094ca10ab0342cc71",
+      "nativeEvidence": [
+        "native-verification-progress.md"
+      ],
+      "testEvidence": [
+        "home-resize-result.md: integrated TypeScript, 2048 Vitest, 388 Darwin cases passed"
+      ],
+      "reviewEvidence": [
+        "review-initial-result.md",
+        "review-delta-result.md",
+        "theme-reset-review-result.md",
+        "home-resize-review-result.md"
+      ],
+      "criterionStatus": [
+        "passednative",
+        "passednative",
+        "passednative",
+        "passednative"
+      ]
+    }
+  ]
+}

@@ -75,6 +75,32 @@ describe('QueryReviewApp', () => {
     container.remove();
   });
 
+  it('leaves selected-fragment Copy to the native default, while button and empty-selection shortcuts copy the answer', async () => {
+    mocks.driver.state = 'ready';
+    mocks.driver.errorCode = null;
+    mocks.driver.answer = 'Release the disposable test answer.';
+    await act(async () => root.render(<QueryReviewApp />));
+    const answer = container.querySelector('.query-review-markdown p')!;
+    const range = document.createRange();
+    range.setStart(answer.firstChild!, 0);
+    range.setEnd(answer.firstChild!, 7);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(selection.toString()).toBe('Release');
+    const selectedCopy = new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true });
+    await act(async () => window.dispatchEvent(selectedCopy));
+    expect(selectedCopy.defaultPrevented).toBe(false);
+    expect(mocks.driver.copy).not.toHaveBeenCalled();
+    await act(async () => (container.querySelector('[aria-label="Copy answer"]') as HTMLButtonElement).click());
+    expect(mocks.driver.copy).toHaveBeenCalledOnce();
+    selection.removeAllRanges();
+    const wholeCopy = new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true, cancelable: true });
+    await act(async () => window.dispatchEvent(wholeCopy));
+    expect(wholeCopy.defaultPrevented).toBe(true);
+    expect(mocks.driver.copy).toHaveBeenCalledTimes(2);
+  });
+
   it('offers Ask follow-up only on Ready and invokes the explicit action', async () => {
     await act(async () => { root.render(<QueryReviewApp />); });
     expect(container.textContent).not.toContain('Ask follow-up');

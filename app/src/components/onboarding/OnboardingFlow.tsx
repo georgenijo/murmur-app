@@ -396,8 +396,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               Welcome to Murmur
             </h1>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
-              Voice-to-text that runs entirely on your Mac. No cloud, no accounts —
-              your audio never leaves this machine.
+              Dictation and selected-text rewrites run on your Mac. Saved history
+              and retained meeting audio are stored locally.
+            </p>
+            <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
+              Optional Voice Query and Assistant use a provider you configure, which
+              may receive questions, context, and files you allow.
             </p>
             <p className="mx-auto mb-8 max-w-md text-sm leading-relaxed text-on-surface-variant">
               Setup takes about a minute: core macOS permissions, optional System

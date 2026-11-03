@@ -45,7 +45,7 @@ export function VoiceQuerySettings({
       <SettingsCallout tone="warning" title="You control where the question goes">
         Murmur transcribes your question locally, then gives it to the exact CLI executable below.
         That CLI may send the question or answer to cloud services according to its own configuration, and may also send any optional app context you enable.
-        Murmur cannot verify or prevent that network egress.
+        Murmur cannot verify or prevent that CLI’s network activity.
       </SettingsCallout>
 
       <SettingsRow title={<>Provider</>} targetId="voice-query-provider" onReset={settings.queryProvider !== DEFAULT_SETTINGS.queryProvider ? () => { void vm.selectQueryProvider(DEFAULT_SETTINGS.queryProvider); } : undefined} control={<Select
@@ -75,8 +75,8 @@ export function VoiceQuerySettings({
         )}
 {settings.queryProvider === 'custom' && (
           <p className="text-xs text-on-surface-variant">
-            Choose an absolute executable and its fixed arguments below. For a local smoke test,
-            use <code>/usr/bin/printf</code> with one fixed argument: <code>%s</code>.
+            Choose the command-line app that should answer your questions, then enter its executable
+            path and any required arguments below. Install and sign in to that app before using it here.
           </p>
         )}</SettingsRow>
 
@@ -154,10 +154,16 @@ export function VoiceQuerySettings({
         <div className="settings-card p-3">
           <div className="flex items-center gap-3">
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-on-surface">Provider preflight</p>
+              <p className="text-sm font-medium text-on-surface">Test provider connection</p>
               <p className="mt-0.5 text-xs leading-relaxed text-on-surface-variant">
-                Runs the preset’s bounded authentication probe through the same direct-spawn and cleared-environment path as a query.
+                Validate the executable. Built-in providers also check CLI startup and sign-in.
               </p>
+              <details className="mt-2 text-xs text-on-surface-variant">
+                <summary>Technical details</summary>
+                <p>Built-in providers run the preset’s time-limited authentication check directly,
+                  without a shell, using the same restricted environment as a query.
+                  Custom providers only validate the executable; this test does not run it.</p>
+              </details>
             </div>
             <button
               type="button"
@@ -231,7 +237,7 @@ export function VoiceQuerySettings({
             {vm.selectedQueryPreset.permittedEnvironmentVariables.length > 0 && (
               <div className="settings-stack mt-3">
                 {vm.selectedQueryPreset.permittedEnvironmentVariables.map((name) => (
-                  <SettingsRow
+                  <SettingsRow key={name}
               title={<label htmlFor={`query-env-${name}`} className="block font-mono text-xs font-medium text-on-surface">
                       {name}{vm.configuredQueryEnvironment.includes(name) ? ' · configured' : ''}
                     </label>}

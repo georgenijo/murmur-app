@@ -47,6 +47,11 @@ export function UpdateModal({
 
     const previouslyFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => { if (previouslyFocused?.isConnected) previouslyFocused.focus(); };
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && canDismiss) {
         event.preventDefault();
@@ -85,7 +90,6 @@ export function UpdateModal({
     return () => {
       document.removeEventListener('keydown', onKeyDown);
       clearTimeout(focusTimer);
-      previouslyFocused?.focus();
     };
   }, [canDismiss, status.phase, visible]);
 

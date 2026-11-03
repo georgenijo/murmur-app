@@ -1,4 +1,5 @@
-import type { ReactNode, ComponentPropsWithoutRef } from 'react';
+import { useId, type ReactNode, type ComponentPropsWithoutRef } from 'react';
+import { SelectLabelContext } from '../ui/Select';
 import { Undo2, TriangleAlert } from 'lucide-react';
 import { Tooltip } from '@base-ui/react/tooltip';
 
@@ -34,18 +35,19 @@ export function SettingsRow({ title, description, control, children, onReset, di
   disabled?: boolean;
   targetId?: string;
 }) {
+  const titleId = useId();
   return (
     <div {...props} data-setting-target={targetId} data-disabled={disabled || undefined} className={`settings-setting-row ${className}`}>
       <div className="settings-row-layout">
         <div className="settings-title-description">
           <div className="settings-row-title">
-            <span>{title}</span>
+            <span id={titleId}>{title}</span>
             <SettingReset onReset={onReset} disabled={disabled} />
           </div>
           {description && <p className="settings-row-description">{description}</p>}
           {children}
         </div>
-        {control && <div className="settings-row-controls">{control}</div>}
+        {control && <SelectLabelContext.Provider value={titleId}><div className="settings-row-controls">{control}</div></SelectLabelContext.Provider>}
       </div>
     </div>
   );

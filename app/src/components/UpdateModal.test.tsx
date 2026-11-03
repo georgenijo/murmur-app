@@ -170,6 +170,31 @@ describe('UpdateModal', () => {
     expect(document.activeElement?.textContent).toBe('Restart now');
   });
 
+  it('restores the original invoker after available → busy → ready transitions', async () => {
+    vi.useFakeTimers();
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    await render({ phase: 'available', version: '0.58.1', notes: '', isForced: false });
+    await act(async () => vi.advanceTimersByTime(60));
+    expect(document.activeElement?.textContent).toBe('Download update');
+    await render({ phase: 'preparing', version: '0.58.1' });
+    await act(async () => vi.advanceTimersByTime(60));
+    expect(document.activeElement).toBe(container.querySelector('[role="dialog"]'));
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(callbacks.onDismiss).not.toHaveBeenCalled();
+    await render({ phase: 'ready', version: '0.58.1', isForced: false });
+    await act(async () => vi.advanceTimersByTime(60));
+    expect(document.activeElement?.textContent).toBe('Restart now');
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close update dialog');
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+    expect(document.activeElement?.textContent).toBe('Later');
+    await render({ phase: 'idle' });
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it('uses Quit for required updates and does not allow dismissal', async () => {
     await render({ phase: 'ready', version: '0.43.1', isForced: true });
 

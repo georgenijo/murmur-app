@@ -42,6 +42,12 @@ describe('HomeSidebar labeled navigation', () => {
     expect(onNavigate).toHaveBeenCalledTimes(4);
   });
 
+  it.each(['home', 'queries'] as const)('keeps the privacy assurance scoped to dictation on %s', async (active) => {
+    await act(async () => root.render(<HomeSidebar active={active} onNavigate={() => {}} />));
+    expect(container.querySelector('.home-privacy-note')?.textContent).toContain('Dictation stays on this Mac.');
+    expect(container.textContent).not.toContain('Everything stays');
+  });
+
   it('preserves the Home focus ref and exposes only the selected destination as current', async () => {
     const homeButtonRef = createRef<HTMLButtonElement>();
     await act(async () => root.render(

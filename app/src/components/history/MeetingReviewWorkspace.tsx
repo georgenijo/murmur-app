@@ -408,7 +408,24 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
           <fieldset disabled={saving} className="space-y-3">
           <label className="block text-xs font-semibold">Summary<textarea aria-label="Review summary" value={draft.summary.text} onChange={(event) => setDraft({ ...draft, summary: { ...draft.summary, text: event.target.value } })} className="meeting-field mt-1 min-h-20" /></label>
           {(['decisions', 'openQuestions'] as const).map((section) => <fieldset key={section} className="space-y-2"><legend className="text-xs font-semibold">{section === 'decisions' ? 'Decisions' : 'Open questions'}</legend>{draft[section].length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft[section].map((item, index) => <div key={item.key} className="flex gap-2"><textarea aria-label={`${section} ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, [section]: draft[section].map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="meeting-field min-h-14 flex-1" /><button type="button" aria-label={`Remove ${section} ${index + 1}`} onClick={() => setDraft({ ...draft, [section]: draft[section].filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>)}
-          <fieldset className="space-y-2"><legend className="text-xs font-semibold">Action items</legend>{draft.actionItems.length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}{draft.actionItems.map((item, index) => <div key={item.key} className="grid gap-2 rounded-[var(--ui-radius-control)] bg-surface-container-lowest p-2 sm:grid-cols-[minmax(0,1fr)_8rem_8rem_auto]"><input aria-label={`Action item ${index + 1}`} value={item.text} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="meeting-field" /><input aria-label={`Action owner ${index + 1}`} placeholder="Unknown owner" value={item.owner ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, owner: event.target.value || null } : entry) })} className="meeting-field" /><input aria-label={`Action due date ${index + 1}`} type="date" value={item.dueDate ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, dueDate: event.target.value || null } : entry) })} className="meeting-field" /><button type="button" aria-label={`Remove action item ${index + 1}`} onClick={() => setDraft({ ...draft, actionItems: draft.actionItems.filter((entry) => entry.key !== item.key) })} className="text-xs text-error">Remove</button></div>)}</fieldset>
+          <fieldset className="space-y-2">
+            <legend className="text-xs font-semibold">Action items</legend>
+            {draft.actionItems.length === 0 && <p className="text-xs text-on-surface-variant">None recorded.</p>}
+            {draft.actionItems.map((item, index) => (
+              <div key={item.key} className="meeting-action-editor">
+                <label className="meeting-action-task">Task
+                  <textarea aria-label={`Action item ${index + 1}`} rows={2} value={item.text} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, text: event.target.value } : entry) })} className="meeting-field" />
+                </label>
+                <label>Owner
+                  <input aria-label={`Action owner ${index + 1}`} placeholder="Unknown owner" value={item.owner ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, owner: event.target.value || null } : entry) })} className="meeting-field" />
+                </label>
+                <label>Due date
+                  <input aria-label={`Action due date ${index + 1}`} type="date" value={item.dueDate ?? ''} onChange={(event) => setDraft({ ...draft, actionItems: draft.actionItems.map((entry) => entry.key === item.key ? { ...entry, dueDate: event.target.value || null } : entry) })} className="meeting-field" />
+                </label>
+                <button type="button" aria-label={`Remove action item ${index + 1}`} onClick={() => setDraft({ ...draft, actionItems: draft.actionItems.filter((entry) => entry.key !== item.key) })} className="meeting-action-remove text-xs text-error">Remove</button>
+              </div>
+            ))}
+          </fieldset>
           {newClaims.length > 0 && <fieldset className="space-y-3"><legend className="text-xs font-semibold">New claims · unsaved</legend>{newClaims.map(({ id, claim }, index) => {
             const number = newClaims.slice(0, index).filter((entry) => entry.claim.kind === claim.kind).length + 1;
             const kindLabel = claim.kind === 'decision' ? 'New decision' : claim.kind === 'action_item' ? 'New action item' : 'New open question';

@@ -246,8 +246,11 @@ total compose at that same requester-gated boundary. Search text is never
 logged, exported, or included in telemetry. A failed record shows a readable
 explanation and a recovery step derived from its stable error code. Provider stderr remains
 ephemeral. A bounded partial answer remains available behind a disclosure. The
-**Delete all query history** action requires a second click within four seconds.
-Turning retention off stops future inserts but does not silently delete existing
+**Delete all query history** action opens an explicit confirmation dialog naming
+the Voice Query records that will be deleted; Cancel leaves them intact, and
+confirmation permanently clears all retained query records, including ones hidden
+by the current search or provider filter. Dictation and meeting history are not
+affected. Turning retention off stops future inserts but does not silently delete existing
 records. Query content is never mirrored into localStorage, dictation history,
 Correct and Teach, exports, logs, telemetry, stats, or the performance database.
 Insert and purge notifications contain only `inserted` or `cleared`.

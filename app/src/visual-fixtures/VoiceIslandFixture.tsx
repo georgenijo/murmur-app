@@ -12,6 +12,8 @@ import type { DictationStatus } from '../lib/types';
 const noop = () => {};
 const variants = ['idle', 'recording', 'processing', 'cancelled', 'secure', 'miss', 'microphone', 'delivery', 'expanded', 'meeting'] as const;
 type Variant = typeof variants[number];
+const controlsStates = ['idle', 'starting', 'still-connecting', 'recording', 'recovering'] as const;
+type ControlsState = typeof controlsStates[number];
 /** Fixed synthetic levels so recording screenshots are deterministic. */
 const SYNTHETIC_LEVELS = [0.3, 0.55, 0.8, 1, 0.7, 0.45, 0.6, 0.9, 0.5, 0.35, 0.75, 0.95, 0.65, 0.4, 0.85, 0.55, 0.3, 0.2];
 
@@ -23,17 +25,22 @@ function geometryKey(variant: Variant, pill: boolean, external: boolean): keyof 
   return `${activity}${external ? 'External' : 'Notched'}`;
 }
 
-function FixtureRow({ variant, pill, external, meetingOnly }: {
-  variant: Variant; pill: boolean; external: boolean; meetingOnly: boolean;
+function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsState, modeName }: {
+  variant: Variant; pill: boolean; external: boolean; fallback: boolean; meetingOnly: boolean;
+  controlsState: ControlsState; modeName: string;
 }) {
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   const meeting = variant === 'meeting';
   const expanded = meeting || variant === 'expanded';
   const idle = variant === 'idle';
   const recording = variant === 'recording';
-  const g: OverlayGeometry = geometry[geometryKey(variant, pill, external)];
-  const status: DictationStatus = recording || ['cancelled', 'secure', 'miss', 'microphone'].includes(variant)
-    ? 'recording' : variant === 'processing' ? 'processing' : 'idle';
+  const g: OverlayGeometry = variant === 'expanded' && !pill && (external || fallback)
+    ? geometry[fallback ? 'fallback' : 'external']
+    : geometry[geometryKey(variant, pill, external)];
+  const status: DictationStatus = variant === 'expanded'
+    ? controlsState === 'still-connecting' ? 'starting' : controlsState
+    : recording || ['cancelled', 'secure', 'miss', 'microphone'].includes(variant)
+      ? 'recording' : variant === 'processing' ? 'processing' : 'idle';
   const visual = deriveVisual(status, variant === 'cancelled', variant === 'miss', false, false,
     variant === 'secure', false, variant === 'microphone' ? 'chooseMicrophone' : null,
     false, false, 'idle', variant === 'delivery');
@@ -55,8 +62,9 @@ function FixtureRow({ variant, pill, external, meetingOnly }: {
           token: '88888888-8888-4888-8888-888888888888', title: 'Synthetic calendar: Product review', startMs: 1, endMs: 2,
         }} busy={false} error={null} onAccept={noop} onDismiss={noop} />
           // Production always mounts the dropdown, collapsed or not.
-          : <OverlayDropdown geometry={g} expanded={expanded} status="idle" stillConnecting={false}
+          : <OverlayDropdown geometry={g} expanded={expanded} status={status} stillConnecting={controlsState === 'still-connecting'}
             showTapMissed={false} disabled={false} autoPaste fileOutputEnabled={false}
+            mode={{ id: 'synthetic-mode', name: modeName, source: 'manual' }}
             onToggleDisabled={noop} onToggleAutoPaste={noop} onOpenSettings={noop} />}
       </OverlayIsland>
     </div>
@@ -69,11 +77,15 @@ export function VoiceIslandFixture({ meetingOnly = false }: { meetingOnly?: bool
   const query = new URLSearchParams(location.search);
   const pill = query.get('placement') === 'pill';
   const external = query.get('display') === 'external';
+  const fallback = query.get('display') === 'fallback';
+  const controlsState = controlsStates.find((state) => state === query.get('controls-state')) ?? 'idle';
+  const modeName = query.get('mode-name') ?? 'Everyday';
   const requested = query.get('variant');
   const rows = meetingOnly ? ['meeting' as const] : variants.filter(v => !requested || v === requested);
   return <main data-visual-ready="true" data-fixture-synthetic={meetingOnly ? 'meeting-suggestion' : 'voice-island'}
     style={{ minHeight: '100vh', padding: 24, background: 'linear-gradient(135deg, var(--murmur-surface-container-high), var(--murmur-background))', color: 'var(--murmur-on-surface)' }}>
-    {rows.map(variant => <FixtureRow key={variant} variant={variant} pill={pill} external={external} meetingOnly={meetingOnly} />)}
+    {rows.map(variant => <FixtureRow key={variant} variant={variant} pill={pill} external={external} fallback={fallback}
+      controlsState={controlsState} modeName={modeName} meetingOnly={meetingOnly} />)}
     {!requested && !meetingOnly && <section data-live-words style={{ width: 460, height: 104, maxWidth: '100%', margin: '6px auto 0' }}>
       <DictationPreviewCard above={pill} stableText="Synthetic stable context from an authoritative fixture only"
         text="synthetic provisional tail that wraps onto a second line when space runs out" />
