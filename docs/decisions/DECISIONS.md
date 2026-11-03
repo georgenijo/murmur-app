@@ -1,5 +1,27 @@
 # Decisions Log
 
+## 2026-11-02: Bezel floating pill on a native HUD material
+
+**Decision:** The floating pill and the Live Words card above it use a native
+`NSVisualEffectView` (`.hudWindow`, behind-window, always active) under the
+webview, with a 74–76% tint of the same tone and a 1pt hairline. It follows the
+system light/dark appearance, is monochrome except the red recording dot, and
+pairs every state with one shape and one word in a fixed 120×34 capsule. Rust
+owns the material's rect: the webview sends only semantic state (shown,
+expanded, content) or, for Live Words, the card's laid-out size. The notch
+island is unchanged.
+
+**Why:** `backdrop-filter` cannot see behind a transparent window, so a real
+blur has to be native. Sending semantic state instead of pixel rects keeps
+geometry in one place: Rust refits the mask in the same main-thread turn as each
+window resize and Dock move, so it never trails the window by a frame. The tint
+floor is what lets labels hold 7:1 over any wallpaper, including pure white and
+pure black, without an opaque slab; Reduce Transparency makes it opaque. A
+native layer cannot follow a CSS scale, so the Bezel pill fades without the
+notch's scale. Live Words size is measured by the webview because only it lays
+out the words; that costs one IPC round trip per resize. Details:
+[Overlay placements](../features/overlay.md#placements).
+
 ## 2026-10-29: No decode-time vocabulary biasing for Parakeet yet (#832)
 
 **Decision:** Keep vocabulary correction after recognition. Do not wire

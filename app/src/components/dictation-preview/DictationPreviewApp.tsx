@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useDictationPartial } from '../../lib/hooks/useDictationPartial';
 import { useQueryAppearance } from '../../lib/hooks/useQueryAppearance';
 import { parseSettingsBlob } from '../../lib/settings';
 import { LIVE_WORDS_LIFT_EVENT, LIVE_WORDS_LIFT_REQUEST_EVENT, liveWordsLiftTransition } from '../../lib/overlayMotion';
+import { useLiveWordsMaterial } from '../../lib/hooks/useOverlayMaterial';
 
 const MAX_VISIBLE_CHARS = 320;
 export function visiblePartial(text: string): string {
@@ -21,13 +22,32 @@ export function visiblePartial(text: string): string {
  * The card wraps up to three lines and keeps the newest words in view; `above`
  * bottom-aligns it so it hugs the floating pill beneath the window. It carries
  * no recording dot: the island already shows recording state. `lift` moves the
- * card clear of the island's hover dropdown, on the island's own curve. */
-export function DictationPreviewCard({ text, stableText = '', above = false, lift = 0 }: {
+ * card clear of the island's hover dropdown, on the island's own curve.
+ * Above the pill the card wears the pill's Bezel material: `onCardSize` hands
+ * its laid-out size to Rust, which clips the native blur to it, and
+ * `material` drops the webview's own fill once that blur is in place. */
+export function DictationPreviewCard({ text, stableText = '', above = false, lift = 0, material = false, onCardSize }: {
   text: string; stableText?: string; above?: boolean; lift?: number;
+  material?: boolean; onCardSize?: (width: number, height: number) => void;
 }) {
-  if (!text && !stableText) return null;
+  const card = useRef<HTMLDivElement>(null);
+  const visible = Boolean(text || stableText);
+  useLayoutEffect(() => {
+    const el = card.current;
+    if (!onCardSize) return;
+    if (!el) { onCardSize(0, 0); return; }
+    // Layout size: the lift transform belongs to Rust's placement.
+    const report = () => onCardSize(el.offsetWidth, el.offsetHeight);
+    report();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(report);
+    observer.observe(el);
+    return () => { observer.disconnect(); onCardSize(0, 0); };
+  }, [onCardSize, visible]);
+  if (!visible) return null;
   return <main className="live-words-window" data-above={above || undefined} aria-label="Live dictation preview">
-    <div className="live-words-card" style={{
+    <div ref={card} className={`live-words-card${above ? ' bezel bezel-surface' : ''}`}
+      data-material={above && material ? 'native' : undefined} style={{
       transform: lift ? `translateY(${above ? -lift : lift}px)` : undefined,
       transition: liveWordsLiftTransition(above),
     }}>
@@ -92,5 +112,7 @@ export function DictationPreviewApp() {
     }).catch(() => { if (!disposed) setEnabled(false); });
     return () => { disposed = true; revision++; unlisten?.(); };
   }, []);
-  return <DictationPreviewCard text={useDictationPartial(enabled)} above={above} lift={lift} />;
+  const material = useLiveWordsMaterial(above);
+  return <DictationPreviewCard text={useDictationPartial(enabled)} above={above} lift={lift}
+    material={material.native} onCardSize={material.report} />;
 }

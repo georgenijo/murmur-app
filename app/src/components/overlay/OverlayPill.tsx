@@ -2,8 +2,9 @@ import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
 import { NOTCH_BAR_COUNT, PILL_BAR_COUNT } from '../../lib/hooks/useWaveform';
 import type { OverlayDeliveryCue } from '../../lib/hooks/useOverlayRuntime';
-import type { OverlayVisual } from './deriveVisual';
+import type { OverlayIndicator, OverlayVisual } from './deriveVisual';
 import { PILL_BORDER } from './OverlayIsland';
+import { bezelCue, type BezelGlyph } from './bezelCue';
 
 interface OverlayPillProps {
   geometry: OverlayGeometry;
@@ -12,6 +13,8 @@ interface OverlayPillProps {
   barRefs: React.MutableRefObject<(HTMLDivElement | null)[]>;
   smartAutoSummary?: OverlaySmartAutoSummary | null;
   deliveryCue?: OverlayDeliveryCue | null;
+  /** The finish just landed (the floating pill shows a check for it). */
+  done?: boolean;
   onRetryDelivery?: () => void;
   onPauseDeliveryTimer?: () => void;
   onResumeDeliveryTimer?: () => void;
@@ -29,10 +32,11 @@ type RetryProps = Pick<OverlayPillProps, 'deliveryCue' | 'onRetryDelivery' | 'on
  * Top-bar content, purely presentational and driven by `deriveVisual`.
  *
  * Notch: the status indicator sits in the left wing and the waveform in the
- * right wing; the flex spacer is the notch-obscured centre. Floating pill: the
- * indicator and a wider waveform share one centred row inside the capsule.
- * Delivery cues keep their inline retry in both layouts. The parent owns the
- * island container, native sizing, and hover.
+ * right wing; the flex spacer is the notch-obscured centre. Floating pill
+ * (Bezel): one centred row pairs a monochrome shape with a word, or the red
+ * dot with the waveform while recording. Delivery cues keep their inline
+ * retry in both layouts. The parent owns the island container, native sizing,
+ * and hover.
  */
 export function OverlayPill({
   geometry,
@@ -41,6 +45,7 @@ export function OverlayPill({
   barRefs,
   smartAutoSummary = null,
   deliveryCue = null,
+  done = false,
   onRetryDelivery,
   onPauseDeliveryTimer,
   onResumeDeliveryTimer,
@@ -48,20 +53,27 @@ export function OverlayPill({
   const topH = geometry.collapsedH;
   const wingW = geometry.wingW;
   const delivery = visual.indicator.kind === 'clipboardOnly';
-  const indicator = <StatusIndicator visual={visual} smartAutoSummary={smartAutoSummary} deliveryCue={deliveryCue} />;
   const retryProps = { deliveryCue, onRetryDelivery, onPauseDeliveryTimer, onResumeDeliveryTimer };
 
   if (geometry.floating) {
+    const cue = bezelCue(visual.indicator, deliveryCue, done);
+    const a11y = indicatorA11y(visual.indicator, deliveryCue);
     return (
       // The capsule's hairline border takes layout space; centre the row inside it.
-      <div className="overlay-pill-row flex items-center justify-center gap-2.5 px-3" style={{ height: topH - 2 * PILL_BORDER }}>
-        <div className="shrink-0 flex items-center justify-center">{indicator}</div>
-        {delivery ? <DeliveryRetry {...retryProps} /> : (
+      <div className="overlay-pill-row bezel-row" style={{ height: topH - 2 * PILL_BORDER }}>
+        <span className="bezel-glyph" {...a11y}><Glyph glyph={cue.glyph} /></span>
+        {visual.indicator.kind === 'recording' ? (
           <Waveform barRefs={barRefs} count={PILL_BAR_COUNT} status={status} visible={visual.waveformVisible} height={16} />
-        )}
+        ) : cue.retry ? (
+          <RetryButton {...retryProps} label={cue.word} />
+        ) : cue.word ? (
+          <span aria-hidden={a11y['aria-label'] ? true : undefined}>{cue.word}</span>
+        ) : null}
       </div>
     );
   }
+
+  const indicator = <StatusIndicator visual={visual} smartAutoSummary={smartAutoSummary} deliveryCue={deliveryCue} />;
 
   return (
     // The native overlay is anchor-owned; this surface deliberately is not a
@@ -317,5 +329,86 @@ function DeliveryRetry({ deliveryCue = null, onRetryDelivery, onPauseDeliveryTim
         </button>
       )}
     </>
+  );
+}
+
+/** The notch indicator's accessible names, carried by the Bezel glyph. */
+function indicatorA11y(indicator: OverlayIndicator, deliveryCue: OverlayDeliveryCue | null): {
+  role?: 'img' | 'status'; 'aria-live'?: 'polite' | 'assertive'; 'aria-label'?: string;
+} {
+  switch (indicator.kind) {
+    case 'calibrating': return { role: 'img', 'aria-label': 'calibrating overlay' };
+    case 'starting': return { role: 'img', 'aria-label': indicator.slow ? 'still connecting microphone' : 'connecting microphone' };
+    case 'recording': return { role: 'img', 'aria-label': 'Recording' };
+    case 'meeting': return { role: 'img', 'aria-label': indicator.processing ? 'finishing meeting transcript' : 'meeting capture active' };
+    case 'recovering': return { role: 'img', 'aria-label': 'recovering microphone' };
+    case 'secureField': return { role: 'img', 'aria-label': 'secure field' };
+    case 'transformBusy': return { role: 'img', 'aria-label': 'transform busy' };
+    case 'microphoneFailure':
+      return {
+        role: 'status',
+        'aria-live': 'assertive',
+        'aria-label': indicator.failure === 'chooseMicrophone'
+          ? 'Selected microphone unavailable. Open settings to choose another.'
+          : indicator.failure === 'openMicrophoneSettings'
+            ? 'Microphone access denied. Open System Settings to grant access.'
+            : indicator.failure === 'waitForPartialTranscription'
+              ? 'Microphone capture was interrupted. Waiting for the partial transcription.'
+              : 'Microphone capture failed. Try recording again.',
+      };
+    case 'clipboardOnly':
+      return {
+        role: 'status',
+        'aria-live': 'polite',
+        'aria-label': deliveryCue?.message ?? 'Text copied to clipboard. Paste manually or try again.',
+      };
+    default: return {};
+  }
+}
+
+function Glyph({ glyph }: { glyph: BezelGlyph }) {
+  if (glyph === 'dot') return <span className="bezel-dot" />;
+  if (glyph === 'ring') return <span className="bezel-ring" />;
+  if (glyph === 'spinner') return <span className="bezel-spinner" />;
+  const stroke = { fill: 'none', stroke: 'currentColor', strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" strokeWidth={glyph === 'mic' || glyph === 'arrows' ? 2 : 2.6} {...stroke} aria-hidden="true">
+      {glyph === 'check' ? <path d="M5 12.5l4.5 4.5L19 7.5" />
+        : glyph === 'cross' ? <path d="M6 6l12 12M18 6L6 18" />
+          : glyph === 'warn' ? <><path d="M12 3.5L22 20.5H2z" /><path d="M12 10v4.5" /><path d="M12 17.6v.1" /></>
+            : glyph === 'arrows' ? <path d="M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4" />
+              : <><rect x="9" y="1" width="6" height="12" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><line x1="12" y1="17" x2="12" y2="21" /></>}
+    </svg>
+  );
+}
+
+/** The pill's delivery retry: a word-sized button inside the capsule. */
+function RetryButton({ deliveryCue = null, onRetryDelivery, onPauseDeliveryTimer, onResumeDeliveryTimer, label }: RetryProps & { label: string }) {
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      title={deliveryCue?.message}
+      aria-label="Try delivery again"
+      className="bezel-retry whitespace-nowrap"
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onPauseDeliveryTimer?.();
+      }}
+      onPointerLeave={onResumeDeliveryTimer}
+      onPointerCancel={onResumeDeliveryTimer}
+      onMouseDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onRetryDelivery?.();
+      }}
+    >
+      {label}
+    </button>
   );
 }

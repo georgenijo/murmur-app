@@ -50,13 +50,13 @@ describe('overlay geometry contract fixture', () => {
   });
 
   it('locks native island metrics and exact steady-state bounds', () => {
-    expect(fixture.notched.island).toEqual({ notchW: 185, notchH: 32, cornerIdle: 8, cornerActive: 12, pillW: 112, pillH: 34 });
+    expect(fixture.notched.island).toEqual({ notchW: 185, notchH: 32, cornerIdle: 8, cornerActive: 12, pillW: 120, pillH: 34 });
     // The notch wings stay inside the menu bar for every activity.
     expect([fixture.idleNotched.windowW, fixture.idleNotched.collapsedH]).toEqual([185, 32]);
     expect([fixture.recordingNotched.windowW, fixture.recordingNotched.collapsedH]).toEqual([241, 32]);
     // The floating pill never resizes between activities.
     for (const g of [fixture.pillIdle, fixture.pillRecording, fixture.pillProcessing]) {
-      expect([g.windowW, g.collapsedH, g.floating]).toEqual([112, 34, true]);
+      expect([g.windowW, g.collapsedH, g.floating]).toEqual([120, 34, true]);
     }
     for (const g of Object.values(fixture)) expect(isOverlayGeometry(g)).toBe(true);
     expect(isOverlayGeometry({ ...fixture.notched, island: { ...fixture.notched.island, extra: 1 } })).toBe(false);

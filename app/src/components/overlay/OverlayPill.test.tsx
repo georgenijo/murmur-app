@@ -149,6 +149,34 @@ describe('OverlayPill transient cues', () => {
     expect(Boolean(container.querySelector('[aria-label="Try delivery again"]'))).toBe(retryable);
   });
 
+  it('pairs a monochrome shape with a word in the floating pill', async () => {
+    await act(async () => root.render(<OverlayPill geometry={geometryFixture.pillProcessing} barRefs={barRefs}
+      visual={{ indicator: { kind: 'processing' }, showTapMissedLabel: false, waveformVisible: false }} status="processing" />));
+    const row = container.querySelector<HTMLElement>('.overlay-pill-row.bezel-row')!;
+    expect(row.querySelector('.bezel-spinner')).not.toBeNull();
+    expect(row.textContent).toBe('Transcribing…');
+    expect(row.querySelector('.overlay-waveform')).toBeNull();
+    await act(async () => root.render(<OverlayPill geometry={geometryFixture.pillProcessing} barRefs={barRefs} done
+      visual={{ indicator: { kind: 'idle', dimmed: false }, showTapMissedLabel: false, waveformVisible: false }} status="idle" />));
+    expect(container.querySelector('.overlay-pill-row')?.textContent).toBe('Done');
+  });
+
+  it('pairs the red dot with the waveform while the floating pill records', async () => {
+    await act(async () => root.render(<OverlayPill geometry={geometryFixture.pillRecording} barRefs={barRefs}
+      visual={{ indicator: { kind: 'recording' }, showTapMissedLabel: false, waveformVisible: true }} status="recording" />));
+    expect(container.querySelector('[role="img"][aria-label="Recording"] .bezel-dot')).not.toBeNull();
+    expect(container.querySelectorAll('.overlay-waveform-bar')).toHaveLength(PILL_BAR_COUNT);
+    expect(container.querySelector('.overlay-pill-row')?.textContent).toBe('');
+  });
+
+  it('offers a copied result as a paste retry in the floating pill', async () => {
+    await act(async () => root.render(<OverlayPill geometry={geometryFixture.pillProcessing} barRefs={barRefs}
+      visual={{ indicator: { kind: 'clipboardOnly' }, showTapMissedLabel: false, waveformVisible: false }} status="idle"
+      deliveryCue={{ kind: 'clipboard_only', message: 'Copied.' }} />));
+    expect(container.querySelector('[role="status"]')?.getAttribute('aria-label')).toBe('Copied.');
+    expect(container.querySelector('[aria-label="Try delivery again"]')?.textContent).toBe('Paste');
+  });
+
   it('spells out the retry inside the wider floating pill', async () => {
     await act(async () => root.render(<OverlayPill geometry={geometryFixture.pillProcessing} barRefs={barRefs}
       visual={{ indicator: { kind: 'clipboardOnly' }, showTapMissedLabel: false, waveformVisible: false }} status="idle"

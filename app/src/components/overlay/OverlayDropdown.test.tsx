@@ -141,3 +141,48 @@ it('shows the verified app name for a current or recent overlay destination', as
   expect(container.textContent).toContain('0:00 · To T3 Code');
   await act(async () => root.unmount());
 });
+
+it('grows the floating pill controls upward as one segmented strip', async () => {
+  const onToggleAutoPaste = vi.fn();
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const props = {
+    geometry: fixture.pillExpanded as OverlayGeometry, expanded: true,
+    status: 'idle' as const, stillConnecting: false, showTapMissed: false,
+    disabled: false, fileOutputEnabled: false,
+    onToggleDisabled: vi.fn(), onToggleAutoPaste, onOpenSettings: vi.fn(),
+  };
+  await act(async () => root.render(<OverlayDropdown {...props} autoPaste />));
+  const strip = container.querySelector<HTMLElement>('[role="group"][aria-label="Quick settings"]')!;
+  expect(strip.classList.contains('bezel-strip')).toBe(true);
+  expect(strip.querySelectorAll('[data-testid="overlay-controls-row"] .bezel-segment')).toHaveLength(4);
+  const paste = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+  expect(paste.getAttribute('aria-checked')).toBe('true');
+  expect(paste.textContent).toBe('Paste');
+  await act(async () => paste.click());
+  expect(onToggleAutoPaste).toHaveBeenCalledOnce();
+  await act(async () => root.render(<OverlayDropdown {...props} autoPaste={false} />));
+  expect(paste.getAttribute('aria-checked')).toBe('false');
+  await act(async () => root.unmount());
+});
+
+it('keeps the floating strip monochrome in every toggle state', async () => {
+  const container = document.createElement('div');
+  const root = createRoot(container);
+  const props = {
+    geometry: fixture.pillExpanded as OverlayGeometry, expanded: true,
+    status: 'idle' as const, stillConnecting: false, showTapMissed: false, fileOutputEnabled: false,
+    onToggleDisabled: vi.fn(), onToggleAutoPaste: vi.fn(), onOpenSettings: vi.fn(),
+  };
+  for (const [disabled, autoPaste] of [[false, true], [true, true], [false, false], [true, false]]) {
+    await act(async () => root.render(<OverlayDropdown {...props} disabled={disabled} autoPaste={autoPaste} />));
+    const strokes = [...container.querySelectorAll('[data-testid="overlay-controls-row"] [stroke]')]
+      .map(el => el.getAttribute('stroke'));
+    expect(strokes.length).toBeGreaterThan(0);
+    expect(new Set(strokes)).toEqual(new Set(['currentColor']));
+  }
+  // State reads from the label and the selected background, not a hue.
+  expect(container.querySelector('[aria-label="Enable Murmur"]')?.textContent).toBe('Off');
+  expect(container.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('false');
+  await act(async () => root.unmount());
+});

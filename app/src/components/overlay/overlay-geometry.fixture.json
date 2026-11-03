@@ -10,7 +10,7 @@
       "notchH": 32.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 320.0,
     "pillIdleW": 320.0,
@@ -30,7 +30,7 @@
       "notchH": 32.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 241.0,
@@ -50,7 +50,7 @@
       "notchH": 30.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 185.0,
@@ -70,7 +70,7 @@
       "notchH": 37.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 185.0,
@@ -90,7 +90,7 @@
       "notchH": 30.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 185.0,
     "pillIdleW": 185.0,
@@ -110,7 +110,7 @@
       "notchH": 32.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 185.0,
     "pillIdleW": 185.0,
@@ -130,7 +130,7 @@
       "notchH": 30.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 320.0,
     "pillIdleW": 185.0,
@@ -150,7 +150,7 @@
       "notchH": 37.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 320.0,
     "pillIdleW": 185.0,
@@ -170,7 +170,7 @@
       "notchH": 32.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 320.0,
     "pillIdleW": 185.0,
@@ -190,7 +190,7 @@
       "notchH": 32.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 185.0,
@@ -210,7 +210,7 @@
       "notchH": 0.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 241.0,
@@ -230,13 +230,13 @@
       "notchH": 0.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
-    "pillActiveW": 112.0,
-    "pillIdleW": 112.0,
+    "pillActiveW": 120.0,
+    "pillIdleW": 120.0,
     "pillMarginActive": 0.0,
     "pillMarginIdle": 0.0,
-    "windowW": 112.0,
+    "windowW": 120.0,
     "wingW": 28.0
   },
   "pillMeetingSuggestion": {
@@ -250,7 +250,7 @@
       "notchH": 0.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 320.0,
     "pillIdleW": 320.0,
@@ -270,13 +270,13 @@
       "notchH": 0.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
-    "pillActiveW": 112.0,
-    "pillIdleW": 112.0,
+    "pillActiveW": 120.0,
+    "pillIdleW": 120.0,
     "pillMarginActive": 0.0,
     "pillMarginIdle": 0.0,
-    "windowW": 112.0,
+    "windowW": 120.0,
     "wingW": 28.0
   },
   "pillRecording": {
@@ -290,13 +290,13 @@
       "notchH": 0.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
-    "pillActiveW": 112.0,
-    "pillIdleW": 112.0,
+    "pillActiveW": 120.0,
+    "pillIdleW": 120.0,
     "pillMarginActive": 0.0,
     "pillMarginIdle": 0.0,
-    "windowW": 112.0,
+    "windowW": 120.0,
     "wingW": 28.0
   },
   "processingExternal": {
@@ -310,7 +310,7 @@
       "notchH": 30.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 241.0,
@@ -330,7 +330,7 @@
       "notchH": 32.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 241.0,
@@ -350,7 +350,7 @@
       "notchH": 30.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 241.0,
@@ -370,7 +370,7 @@
       "notchH": 32.0,
       "notchW": 185.0,
       "pillH": 34.0,
-      "pillW": 112.0
+      "pillW": 120.0
     },
     "pillActiveW": 241.0,
     "pillIdleW": 241.0,

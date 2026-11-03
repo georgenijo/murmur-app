@@ -21,11 +21,14 @@ export function OverlayMeetingSuggestion({
   onDismiss,
 }: OverlayMeetingSuggestionProps) {
   const stopPointerEvent = (event: React.SyntheticEvent) => event.stopPropagation();
+  // The floating pill's Bezel follows the system appearance, so its card takes
+  // the Bezel ink; the notch island is always dark.
+  const bezel = geometry.floating;
   return (
     <section
       aria-hidden={!expanded}
       aria-label="Meeting suggestion"
-      className="overlay-dropdown flex flex-col justify-center gap-3 px-4 pb-3 pt-2 text-white"
+      className={`overlay-dropdown flex flex-col justify-center gap-3 px-4 pb-3 pt-2 ${bezel ? '' : 'text-white'}`}
       onMouseDown={stopPointerEvent}
       onClick={stopPointerEvent}
       onDoubleClick={stopPointerEvent}
@@ -44,7 +47,9 @@ export function OverlayMeetingSuggestion({
           type="button"
           disabled={busy}
           onClick={onAccept}
-          className="rounded-[9px] bg-cyan-300 px-4 py-1.5 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-200 disabled:cursor-wait disabled:opacity-60"
+          className={bezel
+            ? 'bezel-meeting-accept rounded-[9px] px-4 py-1.5 text-xs font-semibold disabled:cursor-wait disabled:opacity-60'
+            : 'rounded-[9px] bg-cyan-300 px-4 py-1.5 text-xs font-semibold text-slate-950 transition-colors hover:bg-cyan-200 disabled:cursor-wait disabled:opacity-60'}
         >
           {busy ? 'Working…' : 'Accept'}
         </button>
@@ -52,12 +57,14 @@ export function OverlayMeetingSuggestion({
           type="button"
           disabled={busy}
           onClick={onDismiss}
-          className="rounded-[9px] bg-white/10 px-4 py-1.5 text-xs font-medium text-white/85 transition-colors hover:bg-white/15 disabled:cursor-wait disabled:opacity-60"
+          className={bezel
+            ? 'bezel-meeting-dismiss rounded-[9px] px-4 py-1.5 text-xs font-medium disabled:cursor-wait disabled:opacity-60'
+            : 'rounded-[9px] bg-white/10 px-4 py-1.5 text-xs font-medium text-white/85 transition-colors hover:bg-white/15 disabled:cursor-wait disabled:opacity-60'}
         >
           Dismiss
         </button>
       </div>
-      {error && <p role="alert" className="text-center text-[10px] text-red-300">{error}</p>}
+      {error && <p role="alert" className={`text-center text-[10px] ${bezel ? 'bezel-meeting-error' : 'text-red-300'}`}>{error}</p>}
     </section>
   );
 }

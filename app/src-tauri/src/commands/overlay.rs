@@ -150,8 +150,10 @@ impl NotchInfo {
 // capsule whose window never resizes between idle, recording and processing.
 const WING: f64 = 28.0;
 const DROPDOWN_H: f64 = 64.0;
-const PILL_W: f64 = 112.0;
+const PILL_W: f64 = 120.0;
 const PILL_H: f64 = 34.0;
+#[cfg(target_os = "macos")]
+const OVERLAY_MATERIAL: &str = crate::commands::overlay_material::OVERLAY_LABEL;
 /// Distance between the pill and the bottom of the usable work area (Dock).
 const PILL_BOTTOM_GAP: f64 = 14.0;
 const PILL_EXPANDED_MIN_W: f64 = 241.0;
@@ -246,6 +248,33 @@ fn geometry_for_layout(
     g.pill_margin_active = 0.0;
     g.expanded_h = g.collapsed_h + g.dropdown_h;
     g
+}
+
+/// The floating pill's geometry for its native material, resolved from the
+/// current display for `expanded`/`content`. Placement comes from the caller:
+/// the material only exists while the pill is the selected placement.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn floating_pill_geometry(
+    app: &tauri::AppHandle,
+    content: OverlayContent,
+    expanded: bool,
+) -> OverlayGeometry {
+    let state = app.state::<State>();
+    let notch = *state.notch_info.lock_or_recover();
+    let mut layout = *state.overlay_layout.lock_or_recover();
+    layout.placement = OverlayPlacement::FloatingPill;
+    layout.expanded = expanded;
+    geometry_for_layout(notch, content, layout)
+}
+
+/// True while the stored layout places the overlay as the floating pill.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn floating_pill_placed(app: &tauri::AppHandle) -> bool {
+    app.state::<State>()
+        .overlay_layout
+        .lock_or_recover()
+        .placement
+        == OverlayPlacement::FloatingPill
 }
 
 /// The floating pill is the only surface that may be idle yet present: it is
@@ -1329,6 +1358,7 @@ pub(crate) fn position_overlay_default(
                     },
                     applied_position,
                 );
+                crate::commands::overlay_material::refit(app, OVERLAY_MATERIAL);
                 follow_dictation_preview(app);
             }
             let overlay = overlay.clone();
@@ -1576,6 +1606,13 @@ pub async fn set_overlay_expanded(
                 }
                 *state.overlay_layout.lock_or_recover() = layout;
                 let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
+                // The material re-fits in this same main-thread turn, so the
+                // grown or shrunk window never shows it off-centre for a frame.
+                if layout.placement == OverlayPlacement::FloatingPill {
+                    crate::commands::overlay_material::refit(&dispatch_app, OVERLAY_MATERIAL);
+                } else {
+                    crate::commands::overlay_material::remove_all();
+                }
                 follow_dictation_preview(&dispatch_app);
                 // Emitted only after native setters succeed; the webview can
                 // never reveal a larger surface before its native grow ack.
@@ -1935,8 +1972,8 @@ mod tests {
     fn notch_centres_on_the_display_while_the_pill_centres_on_the_work_area() {
         // 1512pt display with an 80pt left Dock: the pill shifts right, but the
         // notch (expanded, deferred-shrink, or idle) stays on the display centre.
-        let pill = pill_logical_position((80.0, 32.0, 1512.0, 982.0), (112.0, 34.0));
-        assert_eq!(pill.0, 740.0);
+        let pill = pill_logical_position((80.0, 32.0, 1512.0, 982.0), (120.0, 34.0));
+        assert_eq!(pill.0, 736.0);
         for width in [185.0, 241.0] {
             let (x, _) = centered_logical_position((0, 0), (3024, 1964), 2.0, width);
             assert_eq!(x + width / 2.0, 756.0);
@@ -2246,7 +2283,7 @@ mod tests {
         // Bottom Dock: work area ends at 1340 on a 1440pt display.
         assert_eq!(
             pill_logical_position((0.0, 24.0, 2560.0, 1340.0), (PILL_W, PILL_H)),
-            (1224.0, 1340.0 - PILL_BOTTOM_GAP - PILL_H),
+            (1220.0, 1340.0 - PILL_BOTTOM_GAP - PILL_H),
         );
         // Secondary display at a negative origin, side Dock narrowing the area.
         assert_eq!(
@@ -2293,7 +2330,7 @@ mod tests {
             Some((1000.0, 36.0, 44.0))
         );
         let pill_frame = OverlayFrame {
-            x: 1224.0,
+            x: 1220.0,
             y: 1352.0,
             width: PILL_W,
             height: PILL_H,

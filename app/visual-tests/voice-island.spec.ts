@@ -2,15 +2,17 @@ import { expect, test } from '@playwright/test';
 import geometry from '../src/components/overlay/overlay-geometry.fixture.json' with { type: 'json' };
 
 for (const placement of ['notch', 'pill'] as const) {
-  for (const appearance of ['light', 'dark']) {
+  for (const appearance of ['light', 'dark'] as const) {
     for (const motion of ['no-preference', 'reduce'] as const) {
       test(`${placement} ${appearance} ${motion} production island states`, async ({ page }) => {
-        await page.emulateMedia({ reducedMotion: motion });
+        const pill = placement === 'pill';
+        // Bezel follows the system appearance, as the native pill material does;
+        // the notch island is always dark and ignores it.
+        await page.emulateMedia({ reducedMotion: motion, colorScheme: pill ? appearance : null });
         await page.setViewportSize({ width: 680, height: 900 });
         await page.goto(`/visual-fixtures.html?state=voice-island&placement=${placement}&appearance=${appearance}`);
         const fixture = page.locator('[data-fixture-synthetic="voice-island"]');
         await expect(fixture).toBeVisible();
-        const pill = placement === 'pill';
         for (const [variant, key] of [
           ['idle', pill ? 'pillIdle' : 'idleNotched'],
           ['recording', pill ? 'pillRecording' : 'recordingNotched'],
@@ -24,7 +26,8 @@ for (const placement of ['notch', 'pill'] as const) {
           await expect(island).toHaveCSS('height',
             `${variant === 'expanded' || variant === 'meeting' ? g.expandedH : g.collapsedH}px`);
           await expect(island).toHaveCSS('background-color',
-            pill ? 'rgba(12, 12, 14, 0.92)' : 'rgba(20, 20, 20, 0.92)');
+            // Without the native material (as here) Bezel draws its tone opaque.
+            !pill ? 'rgba(20, 20, 20, 0.92)' : appearance === 'dark' ? 'rgb(28, 28, 30)' : 'rgb(246, 246, 248)');
         }
         if (pill) {
           // The always-mounted dropdown must not squeeze the collapsed status row,
@@ -39,7 +42,9 @@ for (const placement of ['notch', 'pill'] as const) {
         await expect(fixture.locator('[data-variant="recording"] .overlay-waveform-bar'))
           .toHaveCount(pill ? 18 : 7);
         for (const priority of ['cancelled', 'secure', 'miss', 'microphone']) {
-          await expect(fixture.locator(`[data-variant="${priority}"] .overlay-waveform`)).toHaveCSS('opacity', '0');
+          // The pill swaps the waveform for a word; the notch fades it out.
+          if (pill) await expect(fixture.locator(`[data-variant="${priority}"] .overlay-waveform`)).toHaveCount(0);
+          else await expect(fixture.locator(`[data-variant="${priority}"] .overlay-waveform`)).toHaveCSS('opacity', '0');
         }
         await expect(fixture.locator('[data-variant="delivery"] .overlay-waveform')).toHaveCount(0);
         await expect(fixture.locator('[data-variant="delivery"]').getByRole('button', { name: 'Try delivery again' })).toBeVisible();

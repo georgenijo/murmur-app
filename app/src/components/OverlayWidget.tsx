@@ -24,6 +24,7 @@ import type { OverlayContent } from '../lib/overlayGeometry';
 import { useApplySavedOverlayOffset } from '../lib/hooks/useApplySavedOverlayOffset';
 import { useWaveform } from '../lib/hooks/useWaveform';
 import { useLiveWordsLift } from '../lib/hooks/useLiveWordsLift';
+import { useOverlayMaterial } from '../lib/hooks/useOverlayMaterial';
 
 export function OverlayWidget() {
   const [calibrating, setCalibrating] = useState(false);
@@ -116,6 +117,11 @@ export function OverlayWidget() {
       activity, placement: settingsMirror.overlayPlacement, hoverEnabled: !pillHidden });
   const waveform = useWaveform(status);
   useLiveWordsLift(geometry, expanded);
+  // Rust shapes the pill's native Bezel material from this same state.
+  const material = useOverlayMaterial({
+    floating: settingsMirror.overlayPlacement === 'floating_pill',
+    shown: activity !== 'idle', expanded, content: overlayContent,
+  });
   const modeRuntime = useModeRuntime();
 
   const recordingControls = useRecordingControls({
@@ -242,6 +248,7 @@ export function OverlayWidget() {
         expanded={expanded}
         active={activity !== 'idle'}
         tapMissed={visual.showTapMissedLabel}
+        material={material}
         onMouseDown={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleMouseDown}
         onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleDoubleClick}
         onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleClick}
@@ -256,6 +263,7 @@ export function OverlayWidget() {
           barRefs={waveform.barRefs}
           smartAutoSummary={smartAutoSummary}
           deliveryCue={runtime.deliveryCue}
+          done={showDone}
           onRetryDelivery={runtime.retryDelivery}
           onPauseDeliveryTimer={runtime.pauseDeliveryTimer}
           onResumeDeliveryTimer={runtime.resumeDeliveryTimer}

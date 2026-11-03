@@ -59,6 +59,28 @@ describe('OverlayIsland floating pill', () => {
     expect(frame().style.display).toBe('contents');
   });
 
+  it('draws the Bezel surface itself until a native material backs it', async () => {
+    await render(pillRecording, false);
+    expect(island().classList.contains('bezel-surface')).toBe(true);
+    expect(island().dataset.material).toBeUndefined();
+    await act(async () => {
+      root.render(<OverlayIsland geometry={pillRecording} expanded={false} active={false} material><div /></OverlayIsland>);
+    });
+    // The native blur cannot scale with a CSS transform: hiding fades only.
+    expect(island().dataset.material).toBe('native');
+    expect(island().style.opacity).toBe('0');
+    expect(island().style.transform).toBe('none');
+  });
+
+  it('never gives the notch island the Bezel surface', async () => {
+    await act(async () => {
+      root.render(<OverlayIsland geometry={geometryFixture.recordingNotched as OverlayGeometry} expanded={false} active material><div /></OverlayIsland>);
+    });
+    expect(island().classList.contains('bezel-surface')).toBe(false);
+    expect(island().dataset.material).toBeUndefined();
+    expect(island().style.backgroundColor).toBe('rgba(20, 20, 20, 0.92)');
+  });
+
   it('keeps its rows mounted across a placement switch', async () => {
     await render(geometryFixture.recordingNotched as OverlayGeometry, false);
     const row = container.querySelector('[data-testid="row"]');

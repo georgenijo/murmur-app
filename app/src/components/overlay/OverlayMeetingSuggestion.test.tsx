@@ -58,4 +58,22 @@ describe('OverlayMeetingSuggestion', () => {
     expect(onDismiss).toHaveBeenCalledOnce();
     expect(container.textContent).toContain('Product review started. Start Notetaker?');
   });
+
+  it('takes the Bezel ink in the floating pill instead of the notch white', async () => {
+    const render = (g: OverlayGeometry) => act(async () => root.render(
+      <OverlayMeetingSuggestion geometry={g} expanded busy={false} error="Synthetic failure."
+        suggestion={{ token: '55555555-5555-4555-8555-555555555555', title: 'Product review', startMs: 1, endMs: 2 }}
+        onAccept={vi.fn()} onDismiss={vi.fn()} />,
+    ));
+    await render(geometryFixture.pillMeetingSuggestion as OverlayGeometry);
+    const section = container.querySelector('section')!;
+    expect(section.classList.contains('text-white')).toBe(false);
+    const [accept, dismiss] = Array.from(container.querySelectorAll('button'));
+    expect(accept.classList.contains('bezel-meeting-accept')).toBe(true);
+    expect(dismiss.classList.contains('bezel-meeting-dismiss')).toBe(true);
+    expect(container.querySelector('[role="alert"]')!.classList.contains('bezel-meeting-error')).toBe(true);
+    await render(geometry);
+    expect(section.classList.contains('text-white')).toBe(true);
+    expect(accept.classList.contains('bg-cyan-300')).toBe(true);
+  });
 });
