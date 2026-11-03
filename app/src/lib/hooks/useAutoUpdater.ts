@@ -121,6 +121,13 @@ export function useAutoUpdater(
             version: completed.version,
           });
           setCompletedUpdate(completed);
+          // A process relaunch can leave macOS focused on another app. Bring
+          // the confirmed update's window forward so What's New is visible.
+          void invoke('show_main_window').catch((err) => {
+            flog.warn('updater', 'could not focus the app after updating', {
+              error: String(err),
+            });
+          });
         }
       })
       .catch((err) => {
