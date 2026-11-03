@@ -279,7 +279,7 @@ function SmartAutoMicrophoneList({ devices, defaultInputId, disabled, smartAuto,
         <AnimatedSwitch size="sm" aria-label="Check included microphones in the background" checked={smartAuto.smartAutoProbeEnabled} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoProbeEnabled: checked })} />
         <span>
           <span className="block font-medium">Background signal checks</span>
-          <span className="block text-xs text-on-surface-variant">Optional. When off, Murmur chooses an included available microphone when recording starts. Checks never transcribe or save audio.</span>
+          <span className="block text-xs text-on-surface-variant">Pick the best mic ahead of time. Never transcribed or saved.</span>
         </span>
       </label>
     </fieldset>

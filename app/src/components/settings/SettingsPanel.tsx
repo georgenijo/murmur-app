@@ -161,7 +161,7 @@ function PasteDelaySlider({ value, onCommit }: { value: number; onCommit: (value
         }}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="text-xs text-on-surface-variant">Increase this only if paste lands in the wrong window.</p>
+      <p className="text-xs text-on-surface-variant">Raise if text lands in the wrong window.</p>
     </div>
   );
 }
@@ -203,7 +203,7 @@ function VadSensitivitySlider({
         onBlur={(event) => commit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="text-xs text-on-surface-variant">Off skips silence filtering for the lowest latency. Otherwise, higher keeps more audio.</p>
+      <p className="text-xs text-on-surface-variant">Higher keeps more audio. Off is fastest.</p>
     </div>
   );
 }
@@ -410,17 +410,17 @@ export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveT
 
 export function autoPasteDeliveryDescription(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): string {
   if (!settings.saveTranscript && !settings.saveAudio) {
-    return 'Paste the clipboard result into the active app (Accessibility permission required)';
+    return 'Paste into the active app';
   }
   return settings.autoPaste
-    ? 'Paused while file output is on. Your saved preference will resume when file output is off.'
-    : 'Unavailable while file output is on. Turn off file output to enable auto-paste.';
+    ? 'Paused while saving to file'
+    : 'Unavailable while saving to file';
 }
 
 export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPaste'>): string {
   return settings.autoPaste
-    ? 'Clipboard copying stays on; only automatic paste is paused.'
-    : 'Clipboard copying stays on; auto-paste remains off.';
+    ? 'Auto-paste is paused.'
+    : 'Auto-paste stays off.';
 }
 
 function highlightSettingsMatch(text: string, query: string) {
@@ -1182,7 +1182,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               />}><p className="text-xs text-on-surface-variant">{keyHelp}</p>
 {isFunctionDictationKey(settings.doubleTapKey) && (
                 <p className="text-xs text-on-surface-variant">
-                  On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur observes the key without suppressing its normal system or app action.
+                  May need Fn on Apple keyboards. The key keeps its normal action.
                 </p>
               )}</SettingsRow>
             <SettingsBranch open={isDoubleTap || isBoth}><SettingToggle targetId="hotkey-feedback" title="Hotkey timing feedback" description="Flash the overlay when a tap misses the double-tap window" checked={settings.hotkeyMissFeedback} defaultChecked={DEFAULT_SETTINGS.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} /></SettingsBranch>
@@ -1211,16 +1211,13 @@ export const SettingsPanel = memo(function SettingsPanel({
               </div>}
             >
               <p className="text-xs text-on-surface-variant">
-                Finish a recording automatically after this much quiet. Applies when you didn't
-                start by holding the key — a held recording ends when you let go. It only arms
-                once Murmur has heard you speak, so a silent start never stops itself, and you
-                can still stop manually at any time.
+                End hands-free recordings after a pause
               </p>
             </SettingsRow>
             <SettingsDisclosure title="Advanced" layout="rows">
             <SettingToggle
               targetId="standby" title="Warm microphone standby"
-              description="Keep the microphone open briefly after dictation to protect the first word on your next press. The macOS microphone indicator stays on during standby. Only the selected pre-roll enters your next recording; other standby audio stays in memory and is discarded."
+              description="Keep the mic ready between dictations; its indicator stays on. Only pre-roll joins the next recording."
               checked={settings.captureStandbyEnabled} defaultChecked={DEFAULT_SETTINGS.captureStandbyEnabled}
               onChange={() => onUpdateSettings({ captureStandbyEnabled: !settings.captureStandbyEnabled })}
               disabled={isRecording}
@@ -1236,7 +1233,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <>
               <SettingToggle
                 targetId="sound-cues" title="Sound cues"
-                description="Play local feedback when recording starts, stops, succeeds, or fails"
+                description="Play a sound when recording starts and stops"
                 checked={settings.soundCuesEnabled} defaultChecked={DEFAULT_SETTINGS.soundCuesEnabled}
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
@@ -1361,7 +1358,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               />}><p className="text-xs text-on-surface-variant">
                 {modelHardwareGuidance
                   ? modelGuidanceSummary(modelHardwareGuidance)
-                  : 'Larger models can be more accurate but use more storage and memory.'}
+                  : 'Larger models may improve accuracy but use more memory'}
               </p>
 {selectedModelMemoryWarning && (
                 <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-on-surface">
@@ -1383,9 +1380,9 @@ export const SettingsPanel = memo(function SettingsPanel({
               )}
 {modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}</SettingsRow>
             <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
-            <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'This model is English-only. Choose Whisper Large Turbo for other languages.' : 'Auto-detect lets Whisper identify the language for each recording'}</p></SettingsRow>
+            <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'English only — use Whisper Large Turbo for others' : 'Auto-detect picks the language each time'}</p></SettingsRow>
             <SettingsDisclosure title="Advanced" layout="rows">
-            <SettingsRow targetId="model-idle-timeout" title={<>Release model after inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Free memory by unloading an idle model. Never on power adapter keeps it ready while plugged in and unloads after 5 minutes on battery.</p></SettingsRow>
+            <SettingsRow targetId="model-idle-timeout" title={<>Release model after inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Unload an idle model to free memory</p></SettingsRow>
             </SettingsDisclosure>
           </SettingsSection>
 
@@ -1413,27 +1410,27 @@ export const SettingsPanel = memo(function SettingsPanel({
               ))}
             </div>
             <SettingsDisclosure title="Advanced" layout="rows">
-              <SettingToggle targetId="developer-terms" title="Developer terms" description="Make built-in development terms and an optional project scan available only to apps configured as Code / technical or with Local IDE project context" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+              <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in technical modes and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div data-setting-target="project-scan" className="settings-field">
                   <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.codeVocabFolder || 'No folder — built-in developer terms only'} /></p>
                   <button type="button" onClick={(event) => openEditor('scan', event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
-                  <p className="text-xs text-on-surface-variant">The selected folder is scanned locally; dependency and build folders are skipped. Unconfigured apps keep ordinary prose vocabulary.</p>
+                  <p className="text-xs text-on-surface-variant">Scanned locally. Build and dependency folders are skipped.</p>
                 </div>
               </SettingsBranch>
-              <SettingToggle targetId="smart-correction" title="Apply preferred spellings" label="Smart correction" description="Apply exact spoken aliases and supported vocabulary corrections after recognition on every model" checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
+              <SettingToggle targetId="smart-correction" title="Apply preferred spellings" label="Smart correction" description="Fix words using your aliases and vocabulary" checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
               <SettingsBranch open={settings.correctionEnabled}>
-                <SettingToggle targetId="fuzzy-correction" title="Correct close mishearings" label="Sounds-like matching" description="Recover close mishearings near your vocabulary; turn off if you see unwanted swaps" checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
-                <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Use sentence context for confusable words only. Requires macOS 26+ and Apple Intelligence. Keeps deterministic text when unavailable or over the 150 ms budget." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
+                <SettingToggle targetId="fuzzy-correction" title="Correct close mishearings" label="Sounds-like matching" description="Fix near-misses of your vocabulary words" checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
+                <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Choose their/there from context. Needs macOS 26+ and Apple Intelligence." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
-              <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Apply explicitly spoken lists, symbols, punctuation, and same-utterance corrections locally" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
-              <SettingToggle targetId="voice-commands" title="Voice commands & spoken formatting" label="Voice commands & spoken formatting" description="Run your custom commands and use spoken tokens such as “new line,” “period,” or “scratch that” before delivery" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
+              <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Format spoken lists, symbols, and corrections" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
+              <SettingToggle targetId="voice-commands" title="Voice commands & spoken formatting" label="Voice commands & spoken formatting" description="Say “new line,” “period,” or your own commands" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
             </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="delivery" activePage={activeCat} title="Delivery">
             <SettingsCallout title="Always copied to clipboard">
-              Auto-paste and file output happen afterward, so the finished text remains recoverable.
+              Paste and file saving happen after.
             </SettingsCallout>
             <SettingToggle targetId="auto-paste" title="Auto-paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} defaultChecked={DEFAULT_SETTINGS.autoPaste} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
             <SettingsBranch open={settings.autoPaste}>
@@ -1454,7 +1451,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <SettingToggle
                   targetId="smart-destination"
                   title="Smart destination"
-                  description="Keep dictation with your recent text field while using supported media controls, or after switching to an app without a focused text field. Delivery may briefly switch to that app. Elsewhere, dictation pastes normally. If a destination cannot be verified, text stays on the clipboard."
+                  description="Keep your recent text field after media controls or switching to an app without one"
                   checked={settings.smartDestinationEnabled} defaultChecked={DEFAULT_SETTINGS.smartDestinationEnabled}
                   disabled={!autoPasteOn}
                   onChange={() => onUpdateSettings({ smartDestinationEnabled: !settings.smartDestinationEnabled })}
@@ -1474,8 +1471,8 @@ export const SettingsPanel = memo(function SettingsPanel({
                 items={PASTE_LAST_SHORTCUT_OPTIONS}
               />}><p className="text-xs leading-relaxed text-on-surface-variant">
                 {settings.pasteLastShortcut === null
-                  ? 'Disabled. Choose a shortcut to retry the latest completed delivery from anywhere.'
-                  : `Active: ${pasteLastShortcutLabel(settings.pasteLastShortcut)}. Retried text uses the same secure target checks.`}
+                  ? 'Paste your latest dictation again from anywhere'
+                  : `Press ${pasteLastShortcutLabel(settings.pasteLastShortcut)} to paste your latest dictation again`}
               </p>
 {pasteLastShortcutError && <p role="alert" className="text-xs text-error">{pasteLastShortcutError}</p>}
 {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
@@ -1492,19 +1489,19 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <p className="text-xs text-on-surface-variant">Shared output folder</p>
                   <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.outputDir || 'Documents/Murmur (default)'} /></p>
                   <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
-                  <p className="text-xs text-on-surface-variant">Used by saved transcripts and audio. {fileOutputDeliveryDescription(settings)}</p>
+                  <p className="text-xs text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
                 </div>
               </SettingsBranch>
             </>
             <SettingToggle
               targetId="history"
               title="Save transcription history"
-              description="Keep completed microphone and file transcripts in Murmur on this Mac. Turning this off affects new transcripts; existing history remains until you clear it."
+              description="Save new transcripts on this Mac. Turning off keeps existing history."
               checked={settings.retainHistory} defaultChecked={DEFAULT_SETTINGS.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
-            {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in the NotchPill notch overlay. Stays on this Mac — only the final text is written locally." checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
-            <SettingsDisclosure title="Advanced" description="Override delivery and writing behavior for the frontmost macOS app" layout="stack" targetId="app-overrides">
+            {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in NotchPill" checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
+            <SettingsDisclosure title="Advanced" description="Per-app delivery and writing" layout="stack" targetId="app-overrides">
               <button type="button" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-quiet-btn flex w-full items-center justify-between text-left">Manage app overrides <span aria-hidden="true">›</span></button>
             </SettingsDisclosure>
           </SettingsSection>
@@ -1526,19 +1523,19 @@ export const SettingsPanel = memo(function SettingsPanel({
 
           <SettingsSection hideHeading pageId="meetings" activePage={activeCat} title="Meetings">
             <SettingsCallout title="Stored separately from dictation">
-              Meeting transcripts use the crash-safe local store and never appear in dictation history.
+              Meetings never appear in dictation history.
             </SettingsCallout>
             <div className="settings-stack">
               <SettingToggle
                 targetId="meeting-suggestions"
                 title="Suggest Notetaker for Calendar meetings"
-                description="While on, Murmur reads upcoming Calendar events and offers to start Notetaker when a supported meeting app is frontmost. Nothing records until you accept."
+                description="Reads your Calendar to offer notes when a meeting starts. Nothing records until you accept."
                 checked={settings.meetingSuggestionsEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSuggestionsEnabled}
                 onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
               />
               <SettingsBranch open={settings.meetingSuggestionsEnabled}>
               <div data-setting-target="meeting-calendar"><p className="text-xs leading-relaxed text-on-surface-variant">
-                Supports Zoom, Microsoft Teams, Slack, Webex, FaceTime, Safari, Chrome, Firefox, Edge, Brave, Arc, and Chromium. Browser suggestions cannot verify the active tab because Murmur does not read URLs or window titles.
+                Works with Zoom, Teams, Slack, Webex, FaceTime, and browsers. Murmur never reads URLs or window titles.
               </p>
               <button
                 type="button"
@@ -1561,7 +1558,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingToggle
               targetId="meeting-audio"
               title="Keep meeting audio"
-              description="When off, each private chunk WAV is deleted after its transcript commits"
+              description="Keep recordings after transcription"
               checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
               onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
             />
@@ -1573,7 +1570,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingToggle
               targetId="meeting-echo-cancellation"
               title="Reduce speaker echo"
-              description="Experimental. Removes speaker playback from the Me channel. If processing fails, Murmur keeps the original microphone audio."
+              description="Remove speaker audio from your mic. Experimental."
               checked={settings.meetingEchoCancellationEnabled} defaultChecked={DEFAULT_SETTINGS.meetingEchoCancellationEnabled}
               onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
             />
@@ -1648,20 +1645,20 @@ export const SettingsPanel = memo(function SettingsPanel({
             </button>
             <div data-setting-target="setup" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run setup assistant…</button>
-              <p className="text-xs text-on-surface-variant">Re-check permissions and model setup after a permission is revoked or stops working</p>
+              <p className="text-xs text-on-surface-variant">Re-check permissions and models</p>
             </div>
             {onDiscoveryChecklistReopen && (
               <div data-setting-target="discovery-checklist" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
                 <button type="button" onClick={onDiscoveryChecklistReopen} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Show feature checklist</button>
-                <p className="text-xs text-on-surface-variant">Return to Home and revisit Get more from Murmur.</p>
+                <p className="text-xs text-on-surface-variant">Show the getting-started list on Home</p>
               </div>
             )}
-            <SettingsRow targetId="overlay-placement" title="Recording overlay" description="The floating pill appears above the Dock only while recording"
+            <SettingsRow targetId="overlay-placement" title="Recording overlay" description="Shown only while recording"
               onReset={settings.overlayPlacement !== DEFAULT_SETTINGS.overlayPlacement ? () => onUpdateSettings({ overlayPlacement: DEFAULT_SETTINGS.overlayPlacement }) : undefined}
               control={<Select aria-label="Recording overlay placement" value={settings.overlayPlacement}
                 onChange={(overlayPlacement) => onUpdateSettings({ overlayPlacement })}
                 items={[{ value: 'notch', label: 'Notch island' }, { value: 'floating_pill', label: 'Floating pill' }]} />} />
-            <SettingToggle targetId="overlay-live-words" title="Live words" description="Show provisional words beside the overlay only while recording; never copied, saved, or logged" checked={settings.overlayLiveWords} defaultChecked={DEFAULT_SETTINGS.overlayLiveWords} onChange={() => onUpdateSettings({ overlayLiveWords: !settings.overlayLiveWords })} />
+            <SettingToggle targetId="overlay-live-words" title="Live words" description="Preview words as you speak" checked={settings.overlayLiveWords} defaultChecked={DEFAULT_SETTINGS.overlayLiveWords} onChange={() => onUpdateSettings({ overlayLiveWords: !settings.overlayLiveWords })} />
             <SettingsDisclosure title="Advanced" layout="stack">
               <OverlayCalibrationControl
                 targetId="overlay-calibration"
