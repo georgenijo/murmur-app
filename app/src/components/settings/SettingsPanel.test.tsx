@@ -1490,7 +1490,7 @@ describe('SettingsPanel information architecture', () => {
       expect(smartDestination.getAttribute('aria-checked')).toBe('true');
       expect(smartDestination.hasAttribute('data-disabled')).toBe(true);
       expect(container.textContent).toContain(
-        "Paste into your last text field if you've switched away",
+        'Keep your recent text field after media controls or switching to an app without one',
       );
       onUpdateSettings.mockClear();
       await act(async () => smartDestination.click());

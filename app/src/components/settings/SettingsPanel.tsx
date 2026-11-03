@@ -1217,7 +1217,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsDisclosure title="Advanced" layout="rows">
             <SettingToggle
               targetId="standby" title="Warm microphone standby"
-              description="Keep the mic open briefly so your next first word isn't clipped"
+              description="Keep the mic ready between dictations; its indicator stays on. Only pre-roll joins the next recording."
               checked={settings.captureStandbyEnabled} defaultChecked={DEFAULT_SETTINGS.captureStandbyEnabled}
               onChange={() => onUpdateSettings({ captureStandbyEnabled: !settings.captureStandbyEnabled })}
               disabled={isRecording}
@@ -1358,7 +1358,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               />}><p className="text-xs text-on-surface-variant">
                 {modelHardwareGuidance
                   ? modelGuidanceSummary(modelHardwareGuidance)
-                  : 'Larger models are more accurate but use more memory'}
+                  : 'Larger models may improve accuracy but use more memory'}
               </p>
 {selectedModelMemoryWarning && (
                 <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-on-surface">
@@ -1410,7 +1410,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               ))}
             </div>
             <SettingsDisclosure title="Advanced" layout="rows">
-              <SettingToggle targetId="developer-terms" title="Developer terms" description="Recognize code terms in apps set to Code mode" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+              <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in technical modes and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div data-setting-target="project-scan" className="settings-field">
                   <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.codeVocabFolder || 'No folder — built-in developer terms only'} /></p>
@@ -1421,7 +1421,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle targetId="smart-correction" title="Apply preferred spellings" label="Smart correction" description="Fix words using your aliases and vocabulary" checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
               <SettingsBranch open={settings.correctionEnabled}>
                 <SettingToggle targetId="fuzzy-correction" title="Correct close mishearings" label="Sounds-like matching" description="Fix near-misses of your vocabulary words" checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
-                <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Pick words like their/there from context. Needs Apple Intelligence." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
+                <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Choose their/there from context. Needs macOS 26+ and Apple Intelligence." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
               <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Format spoken lists, symbols, and corrections" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
               <SettingToggle targetId="voice-commands" title="Voice commands & spoken formatting" label="Voice commands & spoken formatting" description="Say “new line,” “period,” or your own commands" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
@@ -1451,7 +1451,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <SettingToggle
                   targetId="smart-destination"
                   title="Smart destination"
-                  description="Paste into your last text field if you've switched away"
+                  description="Keep your recent text field after media controls or switching to an app without one"
                   checked={settings.smartDestinationEnabled} defaultChecked={DEFAULT_SETTINGS.smartDestinationEnabled}
                   disabled={!autoPasteOn}
                   onChange={() => onUpdateSettings({ smartDestinationEnabled: !settings.smartDestinationEnabled })}
@@ -1496,7 +1496,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingToggle
               targetId="history"
               title="Save transcription history"
-              description="Keep past transcripts on this Mac"
+              description="Save new transcripts on this Mac. Turning off keeps existing history."
               checked={settings.retainHistory} defaultChecked={DEFAULT_SETTINGS.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
