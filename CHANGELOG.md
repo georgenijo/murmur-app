@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.59.1] - 2026-11-03
+
 ### Changed
 
 - Make Customize destinations independent and consistently named, simplify Voice Query and Knowledge help, and distinguish local dictation and rewriting from optional provider connections (#877, #889, #893, #895, #896, #900).
@@ -19,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Improve selected-text review contrast with an opaque surface and clearer labels, shortcuts, and diff colors (#877, #882).
 - Give meeting action items room to edit their task, owner, and due date in narrow panes (#877, #888).
 - Keep default command-palette groups together while preserving search ranking (#877, #899).
+- Apply microphone standby and pre-roll settings immediately without restarting Murmur (#904).
 - Bring Murmur's main window forward after an update restart (#902).
 
 ## [0.59.0] - 2026-11-03
