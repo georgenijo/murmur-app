@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-11-03
+
+### Changed
+
+- Redesign the floating recording pill with a native macOS HUD material, clearer state labels and waveform, and a segmented control strip that expands upward. The pill and Live Words follow the system’s Light or Dark appearance (#876).
+
+### Fixed
+
+- Keep the Live Words background aligned while text wraps during hover animations, and restore native material correctly when an overlay window is recreated (#876).
+- Open Settings on General by default (#875).
+
 ## [0.58.2] - 2026-11-02
 
 ### Fixed
