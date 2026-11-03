@@ -27,18 +27,20 @@ export function SettingReset({ onReset, disabled }: { onReset?: () => void; disa
   );
 }
 
-export function SettingsRow({ title, description, control, children, onReset, disabled = false, targetId, className = '', ...props }: Omit<ComponentPropsWithoutRef<'div'>, 'title'> & {
+export function SettingsRow({ title, description, control, children, onReset, disabled = false, targetId, align, className = '', ...props }: Omit<ComponentPropsWithoutRef<'div'>, 'title'> & {
   title: ReactNode;
   description?: ReactNode;
   control?: ReactNode;
   onReset?: () => void;
   disabled?: boolean;
   targetId?: string;
+  /** `start` top-aligns the title with a tall or growing control column. */
+  align?: 'start';
 }) {
   const titleId = useId();
   return (
     <div {...props} data-setting-target={targetId} data-disabled={disabled || undefined} className={`settings-setting-row ${className}`}>
-      <div className="settings-row-layout">
+      <div className="settings-row-layout" data-align={align}>
         <div className="settings-title-description">
           <div className="settings-row-title">
             <span id={titleId}>{title}</span>
