@@ -30,7 +30,10 @@ for (const appearance of appearances) {
       await expect(navigation).toBeVisible();
       await expect(navigation.getByRole('button')).toHaveText(navigationLabels);
 
+      await expect(navigation.getByRole('button', { name: 'General', exact: true })).toHaveAttribute('aria-current', 'page');
+      await expect(page.getByRole('heading', { name: 'General', exact: true, level: 1 })).toBeVisible();
       const customize = navigation.getByRole('button', { name: 'Customize', exact: true });
+      await customize.click();
       await expect(customize).toHaveAttribute('aria-current', 'page');
       await expect(page.getByRole('heading', { name: 'Customize Murmur', exact: true, level: 1 })).toBeVisible();
 
@@ -38,16 +41,8 @@ for (const appearance of appearances) {
       const modesIcon = navigation.getByRole('button', { name: 'Modes', exact: true }).locator('svg').evaluate((svg) => svg.innerHTML);
       expect(await customizeIcon).not.toBe(await modesIcon);
 
-      const selectedNavStyle = await customize.evaluate((element) => {
-        const style = getComputedStyle(element);
-        return {
-          borderTopWidth: style.borderTopWidth,
-          borderTopColor: style.borderTopColor,
-          backgroundColor: style.backgroundColor,
-        };
-      });
-      expect(selectedNavStyle.borderTopWidth).toBe('0px');
-      expect(selectedNavStyle.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+      await expect(customize).toHaveCSS('border-top-width', '0px');
+      await expect(customize).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
 
       await navigation.getByRole('button', { name: 'Modes', exact: true }).click();
       const modeList = page.getByRole('list', { name: 'Modes' });

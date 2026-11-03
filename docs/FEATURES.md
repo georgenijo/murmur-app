@@ -203,7 +203,7 @@ Double-tap a dedicated key, ask a question, and stream an answer from an explici
 ### Main window
 The native title row keeps app status, updates, and Settings aligned with the
 macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker,
-Queries, and Insights. A single gear/keyboard entry opens the Customize hub and
+Queries, and Insights. A single gear/keyboard entry opens General and
 the complete Settings workspace; customization no longer competes with the four
 primary destinations in the Home sidebar. Home uses
 one 64px row for the real recording state and configured shortcut, with this
@@ -247,13 +247,13 @@ and can purge it directly. Query context and teaching context are never
 exported.
 
 ### Command palette — [features/command-palette.md](features/command-palette.md)
-`⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens the Customize hub, and `⌘L` opens Settings → Performance.
+`⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings → General, and `⌘L` opens Settings → Performance.
 
 ### Overlay — [features/overlay.md](features/overlay.md)
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. Settings provides a native live calibration preview with one-point controls, explicit Save/Cancel, Reset, and a bounded ±12pt durable offset.
 
 ### Settings — [reference/settings.md](reference/settings.md)
-The default **Customize** page is a compact, ordered hub for **Text &
+Settings opens on **General**. The **Customize** page is a compact, ordered hub for **Text &
 Vocabulary**, **Voice Commands**, **Styles**, **Modes**, and **Transforms**.
 Every hub destination has a visible route back. Returning restores keyboard
 focus to the row that opened it. The persistent Settings navigation also exposes
