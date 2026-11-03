@@ -147,7 +147,9 @@ verified `min_version` (or no verifiable minimum policy is available):
    either operation. Installation failures retry installation using the retained
    bytes; relaunch failures retry only the relaunch.
 6. **What's New** — After the relaunched binary confirms the downloaded version,
-   a one-time modal shows that release's features, fixes, and other changes.
+   Murmur shows and focuses its main window. A one-time modal shows that release's
+   features, fixes, and other changes. Ordinary launches and background update
+   checks do not request focus through this handoff.
 
 The opt-in OTA canary explicitly runs both download and restart steps to retain
 its unattended six-stage verification. Ordinary updates always wait for the

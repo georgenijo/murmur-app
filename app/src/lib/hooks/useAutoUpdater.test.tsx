@@ -78,6 +78,53 @@ describe('useAutoUpdater presentation state', () => {
     vi.unstubAllGlobals();
   });
 
+  async function relaunchWithPendingUpdate(version: string) {
+    await act(async () => root.unmount());
+    localStorage.setItem('pending-update-release-notes', JSON.stringify({
+      version,
+      notes: 'Updated release notes',
+    }));
+    mocks.invoke.mockClear();
+    root = createRoot(container);
+    await act(async () => root.render(<Harness />));
+  }
+
+  it('shows and focuses the main window after confirming the installed update', async () => {
+    await relaunchWithPendingUpdate('0.22.1');
+
+    expect(current.completedUpdate).toEqual({ version: '0.22.1', notes: 'Updated release notes' });
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'show_main_window'))
+      .toHaveLength(1);
+
+    await act(async () => root.render(<Harness />));
+    await act(async () => current.dismissCompletedUpdate());
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'show_main_window'))
+      .toHaveLength(1);
+  });
+
+  it('does not request focus on an ordinary launch', () => {
+    expect(current.completedUpdate).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('show_main_window');
+  });
+
+  it('does not request focus when the pending update was not installed', async () => {
+    await relaunchWithPendingUpdate('0.23.0');
+
+    expect(current.completedUpdate).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalledWith('show_main_window');
+  });
+
+  it('keeps release notes available if native activation fails', async () => {
+    mocks.invoke.mockRejectedValueOnce(new Error('Focus unavailable'));
+    await relaunchWithPendingUpdate('0.22.1');
+
+    expect(current.completedUpdate?.version).toBe('0.22.1');
+    expect(mocks.flogWarn).toHaveBeenCalledWith(
+      'updater', 'could not focus the app after updating',
+      { error: 'Error: Focus unavailable' },
+    );
+  });
+
   it('keeps optional availability after Later and can reopen it from the pill', async () => {
     mocks.check.mockResolvedValue({
       available: true,
