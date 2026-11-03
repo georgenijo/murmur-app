@@ -22,7 +22,7 @@ On the integrated sources at `c2db9695` plus the unchanged Home delta subsequent
 - Reference documentation validation passed for 243 registered commands; Markdown links passed for 76 maintained documents.
 - Release workflow policy validation and 86 release artifact/version/policy tests passed.
 
-Linux snapshots are generated and inspected in the CI-matching amd64 Playwright 1.62.1 Noble image with Node 20, not copied from Darwin. Final Linux verification is pending at this receipt's revision.
+Linux snapshots are generated and inspected in the CI-matching amd64 Playwright 1.62.1 Noble image with Node 20, not copied from Darwin. The affected 219 cases and full 388-case Linux suite passed with zero skips or flakes after five further inspected Linux snapshots were reconciled. Product/test hashes were identical before and after the final run.
 
 ## Native evidence and scope
 
@@ -41,7 +41,7 @@ Observed with actual WKWebView accessibility, keyboard/pointer interaction, and 
 - Synthetic meeting Cancel retained original review values; Save durably changed task/owner/date and incremented review revision to 2. A hash over all canonical transcript columns remained unchanged.
 - Home checklist text, unnumbered Customize destinations, wrapped Diagnostics stream chips, onboarding privacy copy, Insights calendar anchors, and its accessible Daily values table were inspected at minimum size. Diagnostics filters were toggled and restored. Setup was completed using Skip for ungranted permissions.
 
-These synthetic history fixtures test UI/backend behavior; they are not recording or provider-execution evidence. Native AX evidence is not a VoiceOver spoken-announcement result. Actual ready query/rewrite popover clipboard/compositing checks and multi-display overlay placement remain pending. Optional/forced/busy updater and query-clear failure branches have automated coverage; they were not all forced in the native app. The isolated app has no microphone or Accessibility grants, and permission authorization was requested before further capture/selection testing.
+These synthetic history fixtures test UI/backend behavior; they are not recording or provider-execution evidence. Native AX evidence is not a VoiceOver spoken-announcement result. Actual ready query/rewrite popover clipboard/compositing checks and multi-display overlay placement remain pending. Optional/forced/busy updater and query-clear failure branches have automated coverage; they were not all forced in the native app. The isolated app has no microphone or Accessibility grants, and George approved microphone and Accessibility grants for this isolated app. The system microphone prompt is awaiting a manual click because Computer Use refuses access to the protected UserNotificationCenter app.
 
 ## Release policy
 
