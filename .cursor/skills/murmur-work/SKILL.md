@@ -1,7 +1,7 @@
 ---
 name: murmur-work
 description: >-
-  Prepares Murmur GitHub issue worktrees and loads prompts/PROMPT.md for
+  Prepares Murmur GitHub issue worktrees and the issue assignment for
   plan-first implementation. Use when running or mimicking the work command,
   starting an issue by number, creating an issue worktree, or loading issue
   context before coding.
@@ -10,7 +10,7 @@ disable-model-invocation: true
 
 # Murmur Work
 
-Use this skill when the user asks Cursor to run, mimic, port, or follow the `work` command; start work on a GitHub issue by number; create an issue worktree; or load the Murmur feature prompt plus issue context before implementation.
+Use this skill when the user asks Cursor to run, mimic, port, or follow the `work` command; start work on a GitHub issue by number; create an issue worktree; or load issue context before implementation.
 
 ## Goal
 
@@ -20,7 +20,6 @@ Reproduce George's shell `work issue-number` flow in Cursor:
 - Fetch the requested GitHub issue title and body.
 - Create or reuse a sibling worktree.
 - Create or reuse an issue branch.
-- Load `prompts/PROMPT.md`.
 - Begin from the repo's plan-first assignment.
 
 Do not launch Claude from Cursor. Prepare the worktree and follow the generated assignment yourself.
@@ -89,7 +88,7 @@ If the helper is unavailable, perform the same workflow manually.
 
 ## Assignment Shape
 
-Load `prompts/PROMPT.md` from the repo root if it exists, then append:
+Build this assignment:
 
 ```markdown
 ## Your Assignment
