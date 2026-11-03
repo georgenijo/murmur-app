@@ -703,8 +703,8 @@ describe('SettingsPanel information architecture', () => {
       picker?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(onUpdateSettings).toHaveBeenCalledWith({ doubleTapKey: 'f20' });
-    expect(container.textContent).toContain('F1–F12 may require Fn');
-    expect(container.textContent).toContain('without suppressing its normal system or app action');
+    expect(container.textContent).toContain('May need Fn on Apple keyboards');
+    expect(container.textContent).toContain('keeps its normal action');
   });
 
   it('updates and previews recording sound cues', async () => {
@@ -843,9 +843,9 @@ describe('SettingsPanel information architecture', () => {
       '[role="switch"][aria-label="Suggest Notetaker for Calendar meetings"]',
     );
     expect(toggle?.getAttribute('aria-checked')).toBe('false');
-    expect(container.textContent).toContain('reads upcoming Calendar events');
-    expect(container.textContent).toContain('Zoom, Microsoft Teams, Slack, Webex, FaceTime');
-    expect(container.textContent).toContain('does not read URLs or window titles');
+    expect(container.textContent).toContain('Reads your Calendar');
+    expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
+    expect(container.textContent).toContain('never reads URLs or window titles');
 
     await act(async () => toggle?.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSuggestionsEnabled: true });
@@ -1386,8 +1386,7 @@ describe('SettingsPanel information architecture', () => {
         configureError={null}
       />,
     ));
-    expect(container.textContent).toContain('Active: ⌘⌥V');
-    expect(container.textContent).toContain('secure target checks');
+    expect(container.textContent).toContain('Press ⌘⌥V to paste your latest dictation again');
   });
 
   it('keeps the last working Paste last value when native registration fails', async () => {
@@ -1491,7 +1490,7 @@ describe('SettingsPanel information architecture', () => {
       expect(smartDestination.getAttribute('aria-checked')).toBe('true');
       expect(smartDestination.hasAttribute('data-disabled')).toBe(true);
       expect(container.textContent).toContain(
-        'Keep dictation with your recent text field while using supported media controls, or after switching to an app without a focused text field. Delivery may briefly switch to that app. Elsewhere, dictation pastes normally. If a destination cannot be verified, text stays on the clipboard.',
+        "Paste into your last text field if you've switched away",
       );
       onUpdateSettings.mockClear();
       await act(async () => smartDestination.click());
@@ -2278,10 +2277,10 @@ describe('effectiveAutoPaste', () => {
     expect(fileOutputDeliveryDescription({ autoPaste: true })).toContain('paused');
 
     expect(autoPasteDeliveryDescription({ autoPaste: false, saveTranscript: false, saveAudio: true })).toBe(
-      'Unavailable while file output is on. Turn off file output to enable auto-paste.',
+      'Unavailable while saving to file',
     );
     expect(fileOutputDeliveryDescription({ autoPaste: false })).toBe(
-      'Clipboard copying stays on; auto-paste remains off.',
+      'Auto-paste stays off.',
     );
   });
 });

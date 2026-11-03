@@ -263,8 +263,8 @@ describe('MicrophoneInputTest', () => {
     expect(submenu.querySelector('.settings-microphone-active-badge')?.textContent).toBe('Candidate');
     const backgroundChecks = submenu.querySelector('[aria-label="Check included microphones in the background"]') as HTMLElement;
     expect(backgroundChecks.getAttribute('aria-checked')).toBe('false');
-    expect(submenu.textContent).toContain('When off, Murmur chooses an included available microphone when recording starts');
-    expect(submenu.textContent).toContain('never transcribe or save audio');
+    expect(submenu.textContent).toContain('Pick the best mic ahead of time');
+    expect(submenu.textContent).toContain('Never transcribed or saved');
     await act(async () => backgroundChecks.click());
     expect(handleSmartAutoChange).toHaveBeenCalledWith({ smartAutoProbeEnabled: true });
     const unavailableApproval = Array.from(submenu.querySelectorAll('label')).find((label) => label.textContent?.includes('saved preference'))?.querySelector('input') as HTMLInputElement;

@@ -551,7 +551,7 @@ test('recording settings keep Smart Auto ready when background checks are off', 
   await expect(submenu.getByRole('checkbox', { name: /MacBook Pro Microphone/ })).toBeChecked();
   await expect(submenu.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
   await expect(submenu.getByRole('switch', { name: 'Check included microphones in the background' })).not.toBeChecked();
-  await expect(submenu.getByText(/When off, Murmur chooses an included available microphone/)).toBeVisible();
+  await expect(submenu.getByText(/Pick the best mic ahead of time/)).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-no-probes.png');
 
   await disclosure.click();
