@@ -956,31 +956,41 @@ describe('SettingsPanel information architecture', () => {
     scrollTo.mockClear();
     scrollIntoView.mockClear();
 
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
-      page: 'recording',
-      target: 'trigger-key',
-      token: 1,
-    }));
-    const target = container.querySelector('[data-setting-target="trigger-key"]') as HTMLElement;
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
-    expect(scrollTo).not.toHaveBeenCalled();
-    expect(target.classList.contains('settings-target-flash')).toBe(true);
+    // Keep deferred recentering frames from racing these immediate-landing checks.
+    vi.useFakeTimers();
+    try {
+      await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+        page: 'recording',
+        target: 'trigger-key',
+        token: 1,
+      }));
+      const target = container.querySelector('[data-setting-target="trigger-key"]') as HTMLElement;
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollTo).not.toHaveBeenCalled();
+      expect(target.classList.contains('settings-target-flash')).toBe(true);
 
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
-      page: 'recording',
-      target: 'trigger-key',
-      token: 2,
-    }));
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
-    expect(target.classList.contains('settings-target-flash')).toBe(true);
+      await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+        page: 'recording',
+        target: 'trigger-key',
+        token: 2,
+      }));
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(target.classList.contains('settings-target-flash')).toBe(true);
 
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
-      page: 'general',
-      token: 3,
-    }));
-    expect(container.querySelector('h1')?.textContent).toBe('General');
-    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
-    expect(target.classList.contains('settings-target-flash')).toBe(false);
+      await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
+        page: 'general',
+        token: 3,
+      }));
+      expect(container.querySelector('h1')?.textContent).toBe('General');
+      expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+      expect(target.classList.contains('settings-target-flash')).toBe(false);
+
+      await act(async () => vi.advanceTimersByTime(2000));
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(target.classList.contains('settings-target-flash')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows hardware guidance and keeps a warned speech model selectable', async () => {
