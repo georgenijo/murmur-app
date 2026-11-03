@@ -431,16 +431,25 @@ test('settings search results keep their row layout instead of control-button ch
   const results = page.getByRole('region', { name: 'Settings search results' });
   const rows = results.getByRole('button');
   await expect(rows.first()).toBeVisible();
-  const controlHeight = await page.evaluate(() =>
-    parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-control-standard')));
+  // The token is in rem; resolve it to pixels through a probe element.
+  const controlHeight = await page.evaluate(() => {
+    const probe = document.createElement('div');
+    probe.style.height = 'var(--ui-control-standard)';
+    document.body.appendChild(probe);
+    const height = probe.getBoundingClientRect().height;
+    probe.remove();
+    return height;
+  });
+  expect(controlHeight).toBeGreaterThan(0);
   for (const row of await rows.all()) {
     const box = await row.evaluate((el) => {
       const rect = el.getBoundingClientRect();
-      const title = el.querySelector('span span')!.getBoundingClientRect();
-      return { height: rect.height, titleBottom: title.bottom, bottom: rect.bottom, radius: getComputedStyle(el).borderTopLeftRadius };
+      const copy = el.querySelector('span')!.getBoundingClientRect();
+      return { height: rect.height, top: rect.top, bottom: rect.bottom, copyTop: copy.top, copyBottom: copy.bottom, radius: getComputedStyle(el).borderTopLeftRadius };
     });
     expect(box.height).toBeGreaterThan(controlHeight);
-    expect(box.titleBottom).toBeLessThanOrEqual(box.bottom);
+    expect(box.copyTop).toBeGreaterThanOrEqual(box.top);
+    expect(box.copyBottom).toBeLessThanOrEqual(box.bottom);
     expect(box.radius).toBe('0px');
   }
 });
