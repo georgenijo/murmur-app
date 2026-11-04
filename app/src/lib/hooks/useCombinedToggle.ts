@@ -10,9 +10,9 @@ interface UseCombinedToggleProps {
   accessibilityGranted: boolean | null;
   triggerKey: DictationKey;
   status: DictationStatus;
-  onStart: () => void;
+  onStart: (gestureToken?: string) => void;
   onStop: () => void;
-  onToggle: () => void;
+  onToggle: (gestureToken?: string) => void;
 }
 
 export function useCombinedToggle({ enabled, initialized, accessibilityGranted, triggerKey, status, onStart, onStop, onToggle }: UseCombinedToggleProps) {
@@ -51,9 +51,9 @@ export function useCombinedToggle({ enabled, initialized, accessibilityGranted, 
     let cancelled = false;
 
     const setup = async () => {
-      unlistenStart = await listen('hold-down-start', () => {
+      unlistenStart = await listen<{ gestureToken?: string | null } | null>('hold-down-start', (event) => {
         holdActiveRef.current = true;
-        onStartRef.current();
+        onStartRef.current(event?.payload?.gestureToken ?? undefined);
       });
       if (cancelled) { unlistenStart(); return; }
 
@@ -70,9 +70,9 @@ export function useCombinedToggle({ enabled, initialized, accessibilityGranted, 
       });
       if (cancelled) { unlistenStart(); unlistenStop(); unlistenCancel(); return; }
 
-      unlistenToggle = await listen('double-tap-toggle', () => {
+      unlistenToggle = await listen<{ gestureToken?: string | null } | null>('double-tap-toggle', (event) => {
         holdActiveRef.current = false;
-        onToggleRef.current();
+        onToggleRef.current(event?.payload?.gestureToken ?? undefined);
       });
       if (cancelled) { unlistenStart(); unlistenStop(); unlistenCancel(); unlistenToggle(); return; }
 

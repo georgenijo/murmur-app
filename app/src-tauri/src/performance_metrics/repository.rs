@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 4;
+const LATEST_DB_SCHEMA_VERSION: u32 = 5;
 const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
@@ -672,16 +672,20 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
     } else if current < LATEST_DB_SCHEMA_VERSION {
-        // V2 only extends the versioned JSON payload with an optional,
-        // content-free Voice Query process summary. V3 adds the dictation
-        // `releaseToStop` and `releaseToPaste` stages (#826); older payloads
-        // stay readable and simply omit them. The relational shape and V1 run
-        // envelope remain unchanged, and the bump keeps older builds from
-        // decoding stages they do not know. V4 adds `homophoneContext` with
-        // the same additive-stage contract; old rows are not rewritten.
         let transaction = connection.transaction().map_err(db_error)?;
+        if current < 4 {
+            // V2 adds Voice Query process summaries, V3 adds release stages,
+            // and V4 (#919) adds homophoneContext. These additive V1 JSON
+            // changes preserve existing rows and the relational shape.
+            transaction
+                .pragma_update(None, "user_version", 4)
+                .map_err(db_error)?;
+        }
+        // V4 -> V5 adds the optional production capture.gesture measurements.
+        // Older strict companion decoders must refuse this database. Keep
+        // homophoneContext and all existing payload bytes unchanged.
         transaction
-            .pragma_update(None, "user_version", LATEST_DB_SCHEMA_VERSION)
+            .pragma_update(None, "user_version", 5)
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
     }
@@ -1553,7 +1557,7 @@ mod tests {
             .unwrap()
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         repository
             .begin(
                 PerformanceRunKindV1::Dictation,
@@ -1592,6 +1596,68 @@ mod tests {
                 .find(|entry| entry.stage == PerformanceStageV1::HomophoneContext),
             Some(&timing)
         );
+    }
+
+    #[test]
+    fn v4_homophone_rows_survive_v5_and_v3_path_preserves_payloads() {
+        for source_version in [3, 4] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("diagnostics");
+            let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
+            repository
+                .begin(
+                    PerformanceRunKindV1::Dictation,
+                    correlation(93),
+                    Vec::new(),
+                    ContentFreeInputSummaryV1::default(),
+                )
+                .unwrap();
+            let timing = StageTimingV1 {
+                stage: PerformanceStageV1::HomophoneContext,
+                duration_ms: MeasurementV1::measured(151),
+                outcome: StageOutcomeV1::Fallback,
+            };
+            let stages = if source_version == 4 {
+                vec![timing.clone()]
+            } else {
+                Vec::new()
+            };
+            let completed = repository
+                .complete(&correlation(93), RunOutcomeV1::Success, stages, None, None)
+                .unwrap()
+                .unwrap();
+            let connection = Connection::open(root.join(DB_FILE)).unwrap();
+            let before: String = connection
+                .query_row(
+                    "SELECT payload_json FROM completed_runs WHERE run_id = ?",
+                    [&completed.run_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            connection
+                .pragma_update(None, "user_version", source_version)
+                .unwrap();
+            drop(connection);
+            drop(repository);
+            let reopened = PerformanceRepository::initialize(root.clone()).unwrap().0;
+            assert_eq!(reopened.list(10).unwrap(), vec![completed.clone()]);
+            let connection = Connection::open(root.join(DB_FILE)).unwrap();
+            let version: u32 = connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 5);
+            let after: String = connection
+                .query_row(
+                    "SELECT payload_json FROM completed_runs WHERE run_id = ?",
+                    [&completed.run_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(before, after, "migration must preserve all payload bytes");
+            if source_version == 4 {
+                assert!(completed.stages.contains(&timing));
+            }
+        }
     }
 
     #[test]

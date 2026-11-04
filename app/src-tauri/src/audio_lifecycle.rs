@@ -1,3 +1,5 @@
+#[path = "audio_gesture.rs"]
+pub(crate) mod gesture;
 use crate::audio::{
     self, AudioCommand, AudioFailure, AudioFailureKind, AudioInitPhase, AudioWorkerEvent,
     AudioWorkerEventSender, AudioWorkerSpec,
@@ -434,6 +436,7 @@ impl LifecycleSink for ProductionLifecycleSink {
 }
 
 struct StartRequest {
+    gesture: gesture::StartGesture,
     caller_alive: Arc<AtomicBool>,
     owner: AudioOwner,
     app_handle: Option<tauri::AppHandle>,
@@ -503,6 +506,7 @@ struct Attempt {
     tcc_pending_since: Option<Instant>,
     tcc_paused_total: Duration,
     ready_at: Option<Instant>,
+    gesture: Option<gesture::AcceptedGesture>,
     stopping_started_at: Option<Instant>,
     still_connecting_emitted: bool,
     failure_reported: bool,
@@ -782,12 +786,32 @@ fn run_supervisor(
                             current.app_handle = request.app_handle;
                             current.origin = request.origin;
                             current.accepted_at = Instant::now();
+                            current.gesture = request.gesture.timing;
+                            sink.notify(
+                                current.app_handle.as_ref(),
+                                request.owner,
+                                AudioLifecycleEvent::StartupDiagnostic(
+                                    audio::AudioStartupDiagnostic::GestureAccepted {
+                                        gesture_expected: request.gesture.expected,
+                                        double_tap_expected: request.gesture.expected
+                                            && current.origin == "toggle",
+                                        press_to_accepted_ms: current.gesture.map(|g| {
+                                            gesture::millis(
+                                                g.accepted
+                                                    .saturating_duration_since(g.candidate.pressed),
+                                            )
+                                        }),
+                                        double_tap_gap_ms: current.gesture.and_then(|g| g.gap_ms),
+                                    },
+                                ),
+                            );
                             current.ready_at = Some(Instant::now());
                             current.standby_deadline = None;
                             current.phase = AttemptPhase::Recording;
                             current.active.store(true, Ordering::SeqCst);
                             public.set_owner(current.owner);
                             public.set_phase(PublicPhase::Recording);
+                            publish_gesture_ready(current, sink.as_ref());
                             sink.notify(
                                 current.app_handle.as_ref(),
                                 current.owner,
@@ -1081,6 +1105,7 @@ fn handle_start(
     let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (command_sender, command_receiver) = mpsc::channel();
     let spec = AudioWorkerSpec {
+        gesture: request.gesture.timing,
         owner: request.owner,
         command_receiver,
         shared: Arc::clone(&shared),
@@ -1163,6 +1188,7 @@ fn handle_start(
         tcc_pending_since: None,
         tcc_paused_total: Duration::ZERO,
         ready_at: None,
+        gesture: request.gesture.timing,
         stopping_started_at: None,
         still_connecting_emitted: false,
         failure_reported: false,
@@ -1180,6 +1206,23 @@ fn handle_start(
         sealed_delivery: false,
     });
     let current = attempt.as_ref().expect("accepted attempt was installed");
+    if owner.dictation_id().is_some() {
+        sink.notify(
+            current.app_handle.as_ref(),
+            owner,
+            AudioLifecycleEvent::StartupDiagnostic(
+                audio::AudioStartupDiagnostic::GestureAccepted {
+                    gesture_expected: request.gesture.expected,
+                    double_tap_expected: request.gesture.expected && current.origin == "toggle",
+                    press_to_accepted_ms: current.gesture.map(|g| {
+                        gesture::millis(g.accepted.saturating_duration_since(g.candidate.pressed))
+                    }),
+                    double_tap_gap_ms: current.gesture.and_then(|g| g.gap_ms),
+                },
+            ),
+        );
+    }
+
     if let Some(recording_id) = owner.dictation_id() {
         tracing::info!(
             target: "audio",
@@ -1212,6 +1255,22 @@ fn handle_start(
         {
             let _ = response.send(Ok(()));
         }
+    }
+}
+
+fn publish_gesture_ready(current: &Attempt, sink: &dyn LifecycleSink) {
+    if let Some(g) = current.gesture {
+        let ready = Instant::now();
+        sink.notify(
+            current.app_handle.as_ref(),
+            current.owner,
+            AudioLifecycleEvent::StartupDiagnostic(audio::AudioStartupDiagnostic::GestureReady {
+                press_to_ready_ms: gesture::millis(
+                    ready.saturating_duration_since(g.candidate.pressed),
+                ),
+                accepted_to_ready_ms: gesture::millis(ready.saturating_duration_since(g.accepted)),
+            }),
+        );
     }
 }
 
@@ -1398,6 +1457,7 @@ fn handle_worker_event(
                 public.still_connecting.store(false, Ordering::SeqCst);
                 current.phase = AttemptPhase::Recording;
                 public.set_phase(PublicPhase::Recording);
+                publish_gesture_ready(current, sink);
                 if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                     sink.notify(
                         current.app_handle.as_ref(),
@@ -2050,7 +2110,15 @@ fn send_start(
     origin: &str,
     wait_until_ready: bool,
 ) -> Result<(), AudioStartError> {
-    send_start_with_permit(owner, app_handle, device_id, origin, wait_until_ready, None)
+    send_start_with_permit(
+        owner,
+        app_handle,
+        device_id,
+        origin,
+        wait_until_ready,
+        None,
+        gesture::StartGesture::default(),
+    )
 }
 
 fn send_start_with_permit(
@@ -2060,12 +2128,14 @@ fn send_start_with_permit(
     origin: &str,
     wait_until_ready: bool,
     probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
+    gesture: gesture::StartGesture,
 ) -> Result<(), AudioStartError> {
     let (response_sender, response_receiver) = mpsc::channel();
     let caller_alive = Arc::new(AtomicBool::new(true));
     supervisor()
         .sender
         .send(SupervisorMessage::Start(StartRequest {
+            gesture,
             caller_alive: caller_alive.clone(),
             owner,
             app_handle,
@@ -2120,13 +2190,16 @@ pub(crate) fn start_dictation_recording(
     device_id: Option<String>,
     recording_id: u64,
     origin: &str,
+    gesture: gesture::StartGesture,
 ) -> Result<(), AudioStartError> {
-    send_start(
+    send_start_with_permit(
         AudioOwner::Dictation(recording_id),
         Some(app_handle),
         device_id,
         origin,
         false,
+        None,
+        gesture,
     )
 }
 
@@ -2187,6 +2260,7 @@ pub(crate) fn start_automatic_preview_recording(
         "automatic_preview",
         false,
         Some(permit),
+        gesture::StartGesture::default(),
     )
 }
 
@@ -2707,6 +2781,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Start(StartRequest {
+                gesture: gesture::StartGesture::default(),
                 caller_alive: Arc::new(AtomicBool::new(true)),
                 owner: AudioOwner::Preview(525),
                 app_handle: None,
@@ -3105,6 +3180,7 @@ mod tests {
                 let (response, _started) = mpsc::channel();
                 handle_start(
                     StartRequest {
+                        gesture: gesture::StartGesture::default(),
                         caller_alive: Arc::new(AtomicBool::new(true)),
                         owner,
                         app_handle: None,
@@ -3217,6 +3293,7 @@ mod tests {
         let (response, _started) = mpsc::channel();
         handle_start(
             StartRequest {
+                gesture: gesture::StartGesture::default(),
                 caller_alive: Arc::new(AtomicBool::new(true)),
                 owner,
                 app_handle: None,
@@ -4041,6 +4118,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Start(StartRequest {
+                gesture: gesture::StartGesture::default(),
                 caller_alive: Arc::new(AtomicBool::new(true)),
                 owner,
                 app_handle: None,

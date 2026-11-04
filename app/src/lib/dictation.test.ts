@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
-import { buildConfigureOptions, cancelRecording, stopRecording } from './dictation';
+import { buildConfigureOptions, cancelRecording, startRecording, stopRecording } from './dictation';
 import { DEFAULT_SETTINGS } from './settings';
 
 describe('buildConfigureOptions', () => {
@@ -49,6 +49,20 @@ describe('cancelRecording', () => {
     await cancelRecording(9);
     expect(invoke).toHaveBeenNthCalledWith(1, 'cancel_native_recording');
     expect(invoke).toHaveBeenNthCalledWith(2, 'cancel_native_recording', { expectedRecordingId: 9 });
+  });
+});
+
+describe('startRecording gesture correlation', () => {
+  it('carries only the originating keyboard token; a later toolbar call omits it', async () => {
+    invoke.mockClear();
+    await startRecording(undefined, 'toggle', null, '18446744073709551614');
+    await startRecording();
+    expect(invoke).toHaveBeenNthCalledWith(1, 'start_native_recording', {
+      deviceName: null, smartAuto: null, origin: 'toggle', gestureToken: '18446744073709551614',
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, 'start_native_recording', {
+      deviceName: null, smartAuto: null, origin: 'toggle',
+    });
   });
 });
 

@@ -1,5 +1,5 @@
 //! Bounded, content-free evidence for local production-version comparisons.
-use super::types::RunOutcomeV1;
+use super::types::{MeasurementV1, RunOutcomeV1, UnavailableReasonV1};
 use crate::audio::{AudioFailureKind, AudioStartupDiagnostic};
 use crate::dictation_context::{DictationContextSnapshot, VocabularySource};
 use murmur_capture_helper_protocol::CaptureBackend;
@@ -119,9 +119,57 @@ fn optional_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::
     }
 }
 
+/// Optional on historical V1 rows; every new duration has an explicit status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionGestureV1 {
+    pub press_to_accepted_ms: MeasurementV1<u64>,
+    pub double_tap_gap_ms: MeasurementV1<u64>,
+    pub press_to_first_pcm_ms: MeasurementV1<u64>,
+    pub accepted_to_first_pcm_ms: MeasurementV1<u64>,
+    pub press_to_ready_ms: MeasurementV1<u64>,
+    pub accepted_to_ready_ms: MeasurementV1<u64>,
+}
+impl ProductionGestureV1 {
+    fn new(
+        press: Option<u64>,
+        gap: Option<u64>,
+        expected: bool,
+        double_tap_expected: bool,
+    ) -> Self {
+        let pending = if expected {
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples,
+            }
+        } else {
+            MeasurementV1::NotApplicable
+        };
+        Self {
+            press_to_accepted_ms: press
+                .map(MeasurementV1::measured)
+                .unwrap_or_else(|| pending.clone()),
+            double_tap_gap_ms: gap.map(MeasurementV1::measured).unwrap_or_else(|| {
+                if double_tap_expected {
+                    MeasurementV1::Unavailable {
+                        reason: UnavailableReasonV1::NoSamples,
+                    }
+                } else {
+                    MeasurementV1::NotApplicable
+                }
+            }),
+            press_to_first_pcm_ms: pending.clone(),
+            accepted_to_first_pcm_ms: pending.clone(),
+            press_to_ready_ms: pending.clone(),
+            accepted_to_ready_ms: pending,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionCaptureV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gesture: Option<ProductionGestureV1>,
     #[serde(deserialize_with = "optional_duration")]
     pub helper_resolve_ms: Option<u64>,
     #[serde(deserialize_with = "optional_duration")]
@@ -149,6 +197,37 @@ pub struct ProductionCaptureV1 {
 impl ProductionCaptureV1 {
     pub(crate) fn observe(&mut self, event: AudioStartupDiagnostic) {
         match event {
+            AudioStartupDiagnostic::GestureAccepted {
+                gesture_expected,
+                double_tap_expected,
+                press_to_accepted_ms,
+                double_tap_gap_ms,
+            } => {
+                self.gesture = Some(ProductionGestureV1::new(
+                    press_to_accepted_ms,
+                    double_tap_gap_ms,
+                    gesture_expected,
+                    double_tap_expected,
+                ));
+            }
+            AudioStartupDiagnostic::GesturePcm {
+                press_to_first_pcm_ms,
+                accepted_to_first_pcm_ms,
+            } => {
+                if let Some(g) = self.gesture.as_mut() {
+                    g.press_to_first_pcm_ms = MeasurementV1::measured(press_to_first_pcm_ms);
+                    g.accepted_to_first_pcm_ms = MeasurementV1::measured(accepted_to_first_pcm_ms);
+                }
+            }
+            AudioStartupDiagnostic::GestureReady {
+                press_to_ready_ms,
+                accepted_to_ready_ms,
+            } => {
+                if let Some(g) = self.gesture.as_mut() {
+                    g.press_to_ready_ms = MeasurementV1::measured(press_to_ready_ms);
+                    g.accepted_to_ready_ms = MeasurementV1::measured(accepted_to_ready_ms);
+                }
+            }
             AudioStartupDiagnostic::BackendPlan { .. } => {
                 self.fallback_attempted = Some(false);
             }
@@ -314,7 +393,8 @@ impl ProductionAccumulator {
             return before != run.run.capture
                 && matches!(
                     event,
-                    AudioStartupDiagnostic::CycleReady { .. }
+                    AudioStartupDiagnostic::GestureReady { .. }
+                        | AudioStartupDiagnostic::CycleReady { .. }
                         | AudioStartupDiagnostic::WorkerStopped { .. }
                         | AudioStartupDiagnostic::WorkerInvariantViolation
                 );
@@ -698,5 +778,81 @@ mod tests {
                 0o600
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod gesture_contract_tests {
+    use super::*;
+    #[test]
+    fn zero_is_measured_and_missing_samples_are_unavailable() {
+        let mut capture = ProductionCaptureV1::default();
+        capture.observe(AudioStartupDiagnostic::GestureAccepted {
+            press_to_accepted_ms: Some(0),
+            double_tap_gap_ms: None,
+            gesture_expected: true,
+            double_tap_expected: false,
+        });
+        let g = capture.gesture.as_ref().unwrap();
+        assert_eq!(g.press_to_accepted_ms, MeasurementV1::measured(0));
+        assert_eq!(g.double_tap_gap_ms, MeasurementV1::NotApplicable);
+        assert_eq!(
+            g.press_to_first_pcm_ms,
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples
+            }
+        );
+        capture.observe(AudioStartupDiagnostic::GesturePcm {
+            press_to_first_pcm_ms: 163,
+            accepted_to_first_pcm_ms: 163,
+        });
+        capture.observe(AudioStartupDiagnostic::GestureReady {
+            press_to_ready_ms: 201,
+            accepted_to_ready_ms: 201,
+        });
+        let roundtrip: ProductionCaptureV1 =
+            serde_json::from_str(&serde_json::to_string(&capture).unwrap()).unwrap();
+        assert_eq!(
+            roundtrip.gesture.unwrap().press_to_ready_ms,
+            MeasurementV1::measured(201)
+        );
+    }
+    #[test]
+    fn historical_capture_without_gesture_is_readable() {
+        let capture = ProductionCaptureV1::default();
+        let value = serde_json::to_value(&capture).unwrap();
+        assert!(value.get("gesture").is_none());
+        assert_eq!(
+            serde_json::from_value::<ProductionCaptureV1>(value).unwrap(),
+            capture
+        );
+    }
+    #[test]
+    fn missing_keyboard_stamp_is_unavailable_not_a_toolbar_measurement() {
+        let g = ProductionGestureV1::new(None, None, true, true);
+        assert_eq!(
+            g.double_tap_gap_ms,
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples
+            }
+        );
+        assert_eq!(
+            g.press_to_accepted_ms,
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples
+            }
+        );
+        assert_eq!(
+            g.press_to_ready_ms,
+            MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::NoSamples
+            }
+        );
+    }
+    #[test]
+    fn non_keyboard_start_is_not_applicable() {
+        let g = ProductionGestureV1::new(None, None, false, false);
+        assert_eq!(g.press_to_first_pcm_ms, MeasurementV1::NotApplicable);
+        assert_eq!(g.press_to_ready_ms, MeasurementV1::NotApplicable);
     }
 }

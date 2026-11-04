@@ -21,12 +21,14 @@ export async function startRecording(
   deviceName?: string,
   origin: 'toggle' | 'hold' = 'toggle',
   smartAuto?: SmartAutoMicrophoneRequest | null,
+  gestureToken?: string,
 ): Promise<DictationResponse> {
   try {
     return await invoke('start_native_recording', {
       deviceName: smartAuto ? null : microphoneDeviceNameArg(deviceName),
       smartAuto: smartAuto ?? null,
       origin,
+      ...(gestureToken === undefined ? {} : { gestureToken }),
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
