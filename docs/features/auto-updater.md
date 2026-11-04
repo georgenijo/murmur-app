@@ -147,7 +147,7 @@ verified `min_version` (or no verifiable minimum policy is available):
    either operation. Installation failures retry installation using the retained
    bytes; relaunch failures retry only the relaunch.
 6. **What's New** — After the relaunched binary confirms the downloaded version,
-   Murmur shows and focuses its main window. A one-time modal shows that release's
+   Murmur shows and focuses its main window. A one-time modal shows all included releases’
    features, fixes, and other changes. Ordinary launches and background update
    checks do not request focus through this handoff.
 
@@ -220,6 +220,18 @@ The updater includes a semver parser (`updater.ts`) that:
 **Fail-safe:** If either version is unparseable, `isBelowMinVersion` returns `true`, forcing the update. This ensures that broken version strings do not allow users to skip required updates.
 
 ## Release Notes
+
+The modern manifest includes a `release_history` snapshot of all published stable
+GitHub releases, gathered with pagination during promotion, plus the candidate’s
+exact release notes. The app selects versions strictly newer than its installed
+version and no newer than the offered version. Multiple releases appear under
+version headings, newest first; the installed release is excluded. The selected
+Markdown is saved before download and reused after relaunch, so both dialogs show
+the same upgrade range. Ordinary single-release updates and older manifests keep
+the latest release’s notes. Drafts, prereleases, and future releases are excluded.
+The existing `notes` field still matches the GitHub release body for older clients.
+Older clients upgrading into the first build with this feature retain their old
+single-release behavior; cumulative notes apply to checks made by the new build.
 
 Release notes from the manifest are rendered as Markdown using `react-markdown` with `rehype-sanitize` (default sanitization schema). Custom HTML in release notes is stripped by the sanitizer.
 
