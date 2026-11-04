@@ -188,6 +188,13 @@ def validate_ci(ci: str) -> int:
     )
     assert rust_filter, "missing rust paths filter"
     assert "'rustfmt.toml'" in rust_filter.group("paths")
+    assert "'scripts/configure_ci_rust_library.py'" in rust_filter.group("paths")
+    cache_filter = re.search(
+        r"^            rust-cache:\n(?P<paths>(?:^              - .+\n)+)",
+        changes,
+        re.MULTILINE,
+    )
+    assert cache_filter and "'scripts/configure_ci_rust_library.py'" in cache_filter.group("paths")
     validation = named_step_block(policy, "Validate workflow policy", 6)
     for marker in (
         "python3 -m pip install -r requirements-test.txt",
@@ -197,6 +204,7 @@ def validate_ci(ci: str) -> int:
         "tests/test_release_artifacts.py",
         "tests/test_release_version.py",
         "tests/test_workflow_policy.py",
+        "tests/test_ci_rust_library.py",
         "tests/test_capture_agent_matrix.py",
         "tests/test_event_store.py",
     ):
@@ -224,6 +232,10 @@ def validate_ci(ci: str) -> int:
         assert (
             "save-if: ${{ github.ref == 'refs/heads/main' }}" in cache
         ), f"{job_name} must not save PR caches"
+    test_library = named_step_block(rust_macos, "Configure test-only Rust library", 6)
+    assert "python3 scripts/configure_ci_rust_library.py" in test_library
+    assert rust_macos.index("name: Configure test-only Rust library") < rust_macos.index("name: Cache Rust dependencies")
+    assert "configure_ci_rust_library.py" not in rust_lint
     nextest_install = named_step_block(rust_macos, "Install cargo-nextest", 6)
     assert "uses: taiki-e/install-action@v2" in nextest_install
     assert re.search(r"tool: cargo-nextest@[0-9]+\.[0-9]+\.[0-9]+\n", nextest_install)
@@ -295,6 +307,7 @@ def validate_ci(ci: str) -> int:
 
 
 def validate_release_build(workflow: str) -> int:
+    assert "configure_ci_rust_library.py" not in workflow, "release builds must keep all library outputs"
     assert "push:\n    branches: [main]" in workflow
     assert "\n  workflow_dispatch:" in workflow
     assert "pull_request" not in workflow

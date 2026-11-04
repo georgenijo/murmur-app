@@ -66,6 +66,7 @@ jobs:
               - 'app/src-tauri/capabilities/**'
             rust:
               - 'app/src-tauri/**'
+              - 'scripts/configure_ci_rust_library.py'
               - 'app/src-tauri/Cargo.toml'
               - 'app/src-tauri/Cargo.lock'
               - 'Cargo.toml'
@@ -74,6 +75,7 @@ jobs:
             github:
               - '.github/**'
             rust-cache:
+              - 'scripts/configure_ci_rust_library.py'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - 'rust-toolchain*'
@@ -107,6 +109,7 @@ jobs:
             tests/test_release_artifacts.py \
             tests/test_release_version.py \
             tests/test_workflow_policy.py \
+            tests/test_ci_rust_library.py \
             tests/test_capture_agent_matrix.py \
             tests/test_capture_worker_smoke.py \
             tests/test_capture_first_pcm.py \
@@ -282,6 +285,13 @@ jobs:
 
       - name: Install capture worker build tools
         run: brew install meson ninja pkg-config
+
+      - name: Configure test-only Rust library
+        # Tests need the Rust library, not the additional C/static packaging
+        # outputs. Modify only this job's checkout; releases use the manifest
+        # committed to the repository. Recipe metadata also refreshes the
+        # dependency cache when workflow/helper changes alter the build graph.
+        run: python3 scripts/configure_ci_rust_library.py
 
       - name: Cache Rust dependencies
         uses: swatinem/rust-cache@v2

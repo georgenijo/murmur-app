@@ -2,6 +2,7 @@ from pathlib import Path
 import unittest
 
 from scripts.validate_workflow_policy import (
+    named_step_block,
     release_tag_for_versions,
     should_auto_promote,
     tag_action,
@@ -17,6 +18,46 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_test_library_configuration_precedes_rust_cache(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        configured = workflow.replace(
+            "      - name: Configure test-only Rust library\n",
+            "      - name: Unrelated\n",
+            1,
+        )
+        self.assertNotEqual(workflow, configured)
+        with self.assertRaises(AssertionError):
+            validate_ci(configured)
+        step = named_step_block(workflow, "Configure test-only Rust library", 6)
+        late = workflow.replace(step, "", 1).replace(
+            "      - name: Build capture isolation helpers and stub local-LLM externalBin\n",
+            step + "      - name: Build capture isolation helpers and stub local-LLM externalBin\n",
+            1,
+        )
+        self.assertNotEqual(workflow, late)
+        with self.assertRaises(AssertionError):
+            validate_ci(late)
+        marker = "              - 'scripts/configure_ci_rust_library.py'\n"
+        self.assertEqual(workflow.count(marker), 2)
+        for index in range(2):
+            start = -1
+            for _ in range(index + 1):
+                start = workflow.index(marker, start + 1)
+            with self.subTest(path_filter=index):
+                with self.assertRaises(AssertionError):
+                    validate_ci(workflow[:start] + workflow[start + len(marker):])
+
+    def test_release_build_rejects_test_library_override(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        mutated = workflow.replace(
+            "    steps:\n",
+            "    steps:\n      - run: python3 scripts/configure_ci_rust_library.py\n",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_release_build(mutated)
+
     def test_release_build_concurrency_is_commit_scoped(self) -> None:
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
         group = "group: release-build-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}"
