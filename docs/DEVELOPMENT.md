@@ -181,6 +181,12 @@ Core ML models are managed by FluidAudio under
 
 ## CI and merging
 
+The Rust test job configures its own checkout to emit only the Rust library,
+avoiding the additional C-compatible dynamic and static libraries used for
+packaging. The committed manifest and release builds retain all output formats.
+The test-only adjustment runs before cache restore so the cache key describes
+the manifest actually built.
+
 `ci-pass` is the only required status check, and `main` requires branches to be
 up to date before merging (`strict`). Strict stays on: it catches PRs that are
 green alone but break together, such as one PR adding tests that build a struct
