@@ -165,8 +165,8 @@
      traffic lights instead of assuming AppKit contributes a top inset. */
   --ui-window-header-height: 2.625rem;
   --ui-window-content-offset-y: -0.125rem;
-  /* The native controls end around x=68px with the configured 10px inset.
-     Start web chrome at 80px to preserve a deliberate 12px wordmark gap. */
+  /* Native controls start at TRAFFIC_LIGHT_X = 16pt and span about 54pt.
+     Reserve 80pt, including at least 8pt of clearance, at every page zoom. */
   --ui-window-controls-inset: 5rem;
   --ui-record-width: 4.5rem;
   --ui-status-min-width: 4.5rem;
@@ -651,8 +651,8 @@ textarea {
 }
 
 .ui-main-nav-item:hover { background: color-mix(in srgb, var(--murmur-on-surface) 5%, transparent); color: var(--murmur-on-surface); }
-.ui-main-nav-item[aria-current="page"] { background: var(--ui-tint-raised); color: var(--murmur-on-surface); font-weight: var(--ui-weight-label); box-shadow: var(--ui-shadow-1); }
-.ui-main-nav-item[aria-current="page"]::before { position: absolute; left: 0; width: 3px; height: 1rem; border-radius: 999px; background: var(--murmur-primary); content: ''; }
+.ui-main-nav-item[aria-current="page"] { background: var(--ui-tint-raised); color: var(--murmur-on-surface); font-weight: var(--ui-weight-label); box-shadow: none; }
+.ui-main-nav-item[aria-current="page"]::before { position: absolute; top: 50%; transform: translateY(-50%); left: 0; width: 3px; height: 1rem; border-radius: 999px; background: var(--murmur-primary); content: ''; }
 .ui-main-nav-item[aria-current="page"] .home-nav-icon { color: var(--murmur-primary); }
 
 .ui-dashboard-section-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-4); }
@@ -989,7 +989,7 @@ textarea {
 .home-sidebar-heading { display: flex; flex-shrink: 0; align-items: center; gap: var(--ui-space-2); padding-bottom: var(--ui-space-5); }
 .home-sidebar-heading .home-brand { min-width: 0; flex: 1; padding-bottom: var(--ui-space-3); }
 .home-sidebar .home-brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.home-sidebar-toggle { --ui-control-compact: 2rem; }
+.home-sidebar-toggle { --ui-control-compact: 2rem; flex-shrink: 0; }
 .home-sidebar-resize { position: absolute; top: 0; right: 0; bottom: 0; z-index: 1; width: 8px; cursor: col-resize; touch-action: none; }
 .home-sidebar-resize::after { position: absolute; top: 0; right: 0; bottom: 0; width: 2px; background: transparent; content: ''; }
 .home-sidebar-resize:hover::after,
@@ -1000,6 +1000,7 @@ textarea {
 .home-sidebar[data-collapsed="true"] { padding-inline: 7px 8px; }
 .home-sidebar[data-collapsed="true"] .home-sidebar-heading { justify-content: center; }
 .home-sidebar[data-collapsed="true"] .home-brand { display: none; }
+.home-sidebar[data-collapsed="true"] .ui-main-nav-item[aria-current="page"]::before { content: none; }
 .home-sidebar[data-collapsed="true"] .ui-main-nav-item { width: 2rem; height: 2rem; min-height: 2rem; justify-content: center; padding: 0; }
 .home-sidebar[data-collapsed="true"] .home-nav-label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .home-sidebar[data-collapsed="true"] .home-privacy-note { justify-content: center; border: 0; padding: var(--ui-space-3) 0; }
@@ -1270,7 +1271,7 @@ textarea {
 .home-history .history-search:focus-within { width: auto; }
 .home-history .history-filtered-note { padding-inline: 0; }
 .home-history .history-list { flex: 1 0 auto; gap: 0; overflow: visible; padding-inline: 0; padding-bottom: var(--ui-space-2); }
-.home-history .history-date-label { display: block; padding: var(--ui-space-7) 0 var(--ui-space-3); color: var(--murmur-on-surface-variant); font-family: var(--home-font-mono); font-size: 0.6875rem; line-height: var(--ui-leading-micro); font-weight: 500; }
+.home-history .history-date-label { display: block; padding: var(--ui-space-7) 0 var(--ui-space-3); color: var(--murmur-on-surface-variant); font-family: var(--ui-font-sans); font-variant-numeric: tabular-nums; font-size: 0.6875rem; line-height: var(--ui-leading-micro); font-weight: 500; }
 .home-history .history-date-label:first-child { padding-top: 0; }
 /* Each day is one continuous surface: rows share side borders, are divided by
    hairlines, and only the first and last rows of a day are rounded. */
@@ -1319,11 +1320,11 @@ textarea {
   justify-content: space-between;
   gap: var(--ui-space-4);
 }
-.home-month-stat-value { min-width: 0; overflow: hidden; color: var(--murmur-on-surface-variant); font-family: var(--home-font-mono); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); text-overflow: ellipsis; white-space: nowrap; }
+.home-month-stat-value { min-width: 0; overflow: hidden; color: var(--murmur-on-surface-variant); font-family: var(--ui-font-sans); font-variant-numeric: tabular-nums; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); text-overflow: ellipsis; white-space: nowrap; }
 .home-month-stat-label { margin-right: var(--ui-space-5); }
 .home-history .history-search kbd { border-radius: var(--home-radius-key); }
 .home-history .transcript-meta .rounded-full { border-radius: var(--ui-radius-control); }
-.home-dashboard .dashboard-eyebrow { font-family: var(--home-font-mono); font-size: 0.6875rem; line-height: var(--ui-leading-micro); font-weight: 500; letter-spacing: 0; text-transform: none; }
+.home-dashboard .dashboard-eyebrow { font-family: var(--ui-font-sans); font-variant-numeric: tabular-nums; font-size: 0.6875rem; line-height: var(--ui-leading-micro); font-weight: 500; letter-spacing: 0; text-transform: none; }
 .home-month-stat-value strong { color: var(--murmur-on-surface); font-weight: 600; font-variant-numeric: tabular-nums; }
 .home-month-stat .ui-dashboard-action { flex-shrink: 0; min-height: 1.375rem; padding-block: 0; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
 .personalization-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--ui-space-5); }
@@ -1615,4 +1616,13 @@ body.overlay-window {
 .history-export-trigger svg.lucide {
   width: var(--ui-icon-size-compact);
   height: var(--ui-icon-size-compact);
+}
+
+/* Native controls keep their point width independently of navigation rails. */
+.main-app-shell[data-home-sidebar-collapsed="true"] > .ui-window-header:not(.settings-window-header) {
+  background-image: none;
+}
+@media (max-width: 767px) {
+  .main-app-shell > .settings-window-header,
+  .settings-window-header { background-image: none; }
 }

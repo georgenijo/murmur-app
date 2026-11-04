@@ -1,5 +1,6 @@
+import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
-import { useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
 import { listen } from '@tauri-apps/api/event';
 import { flog } from './lib/log';
@@ -123,7 +124,16 @@ function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [homeSidebarWidth, setHomeSidebarWidth] = useState(256);
+  const homeSidebar = useHomeSidebar(false, isSettingsOpen);
+  const homeNavId = useId();
+  const sidebarToggleRef = useRef<HTMLButtonElement>(null);
+  const separatorFocused = useRef(false);
+  useLayoutEffect(() => {
+    if (homeSidebar.collapsed && separatorFocused.current) {
+      separatorFocused.current = false;
+      sidebarToggleRef.current?.focus();
+    }
+  }, [homeSidebar.collapsed]);
 
   const { settings, getCurrentSettings, getConfirmedSettings, updateSettings, applyExternalSettings, configureError } = useSettings();
   const [querySetupStatus, setQuerySetupStatus] = useState<QuerySetupStatus | null>(null);
@@ -867,13 +877,14 @@ function App() {
   }
 
   return (
-    <AppSurface onKeyDown={defaultButtonKeyDown} surface="main" style={{ '--home-sidebar-width': `${homeSidebarWidth}px` } as CSSProperties} className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface">
+    <AppSurface data-home-sidebar-collapsed={homeSidebar.collapsed} onKeyDown={defaultButtonKeyDown} surface="main" style={{ '--home-sidebar-width': `${homeSidebar.width}px` } as CSSProperties} className="main-app-shell relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface">
       {import.meta.env.DEV && (
         <div className="absolute left-1/2 top-0 z-50 -translate-x-1/2 rounded-b-md bg-warning/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-warning select-none">
           Dev
         </div>
       )}
       <MainHeader
+        sidebar={{ collapsed: homeSidebar.collapsed, navId: homeNavId, toggle: homeSidebar.toggle, toggleRef: sidebarToggleRef }}
         status={status}
         initialized={initialized}
         recordingDuration={recordingDuration}
@@ -914,7 +925,9 @@ function App() {
         >
           <div className="flex min-h-0 flex-1 overflow-hidden">
             <HomeSidebar
-              onWidthChange={setHomeSidebarWidth}
+              sidebar={homeSidebar}
+              navId={homeNavId}
+              onSeparatorFocusChange={(focused) => { separatorFocused.current = focused; }}
               suspended={isSettingsOpen}
               active={mainDestination}
               homeButtonRef={homeNavigationRef}

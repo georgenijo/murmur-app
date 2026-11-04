@@ -4,11 +4,13 @@ import {
   type RecordingMode,
 } from '../lib/settings';
 import type { DictationStatus } from '../lib/types';
-import type { ReactNode } from 'react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import type { ReactNode, Ref } from 'react';
 import { WindowHeader } from './ui/WindowHeader';
 import type { MeetingRuntimePhase } from '../lib/meetings';
 
 interface MainHeaderProps {
+  sidebar?: { collapsed: boolean; navId: string; toggle: () => void; toggleRef: Ref<HTMLButtonElement> };
   status: DictationStatus;
   initialized: boolean;
   recordingDuration: number;
@@ -49,6 +51,7 @@ function formatTimer(seconds: number): string {
 }
 
 export function MainHeader({
+  sidebar,
   status,
   initialized,
   recordingDuration,
@@ -88,6 +91,14 @@ export function MainHeader({
       className={mode === 'settings' ? 'settings-window-header' : ''}
       showWordmark={mode === 'settings'}
     >
+      {mode === 'main' && sidebar && (
+        <button ref={sidebar.toggleRef} type="button" className="ui-icon-button home-sidebar-toggle"
+          aria-label={sidebar.collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={sidebar.collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-expanded={!sidebar.collapsed} aria-controls={sidebar.navId} onClick={sidebar.toggle}>
+          {sidebar.collapsed ? <PanelLeftOpen aria-hidden="true" size={16} /> : <PanelLeftClose aria-hidden="true" size={16} />}
+        </button>
+      )}
       {mode === 'main' && showStatusChip && (
         <div
           data-testid="main-status-chip"

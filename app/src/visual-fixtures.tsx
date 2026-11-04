@@ -1,3 +1,4 @@
+import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
@@ -622,7 +623,16 @@ function VisualFixture() {
     || requestedState === 'settings-transform-practice'
     || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
-  const [homeSidebarWidth, setHomeSidebarWidth] = React.useState(256);
+  const homeSidebar = useHomeSidebar(requestedState === 'home-sidebar-collapsed', settingsOpen);
+  const homeNavId = React.useId();
+  const sidebarToggleRef = React.useRef<HTMLButtonElement>(null);
+  const separatorFocused = React.useRef(false);
+  React.useLayoutEffect(() => {
+    if (homeSidebar.collapsed && separatorFocused.current) {
+      separatorFocused.current = false;
+      sidebarToggleRef.current?.focus();
+    }
+  }, [homeSidebar.collapsed]);
   const meetings = useMeetings(fixtureSettings);
   const [historyEntries, setHistoryEntries] = React.useState(entries);
   const [settings, setSettings] = React.useState<Settings>(fixtureSettings);
@@ -666,13 +676,15 @@ function VisualFixture() {
 
   return (
     <div
-      style={{ '--home-sidebar-width': `${homeSidebarWidth}px` } as React.CSSProperties}
+      style={{ '--home-sidebar-width': `${homeSidebar.width}px` } as React.CSSProperties}
+      data-home-sidebar-collapsed={homeSidebar.collapsed}
       data-appearance={appearance}
       data-theme-fixture={importedThemeFixture ?? 'sonic'}
       data-visual-ready="true"
       className="main-app-shell flex h-full min-h-0 w-full flex-col overflow-hidden bg-background text-on-surface"
     >
       <MainHeader
+        sidebar={{ collapsed: homeSidebar.collapsed, navId: homeNavId, toggle: homeSidebar.toggle, toggleRef: sidebarToggleRef }}
         status={status}
         initialized
         recordingDuration={12}
@@ -735,8 +747,9 @@ function VisualFixture() {
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <HomeSidebar
-            onWidthChange={setHomeSidebarWidth}
-            initialCollapsed={requestedState === 'home-sidebar-collapsed'}
+            sidebar={homeSidebar}
+            navId={homeNavId}
+            onSeparatorFocusChange={(focused) => { separatorFocused.current = focused; }}
             active={destination}
             homeButtonRef={homeNavigationRef}
             onNavigate={setDestination}
