@@ -289,7 +289,8 @@ jobs:
       - name: Configure test-only Rust library
         # Tests need the Rust library, not the additional C/static packaging
         # outputs. Modify only this job's checkout; releases use the manifest
-        # committed to the repository.
+        # committed to the repository. Recipe metadata also refreshes the
+        # dependency cache when workflow/helper changes alter the build graph.
         run: python3 scripts/configure_ci_rust_library.py
 
       - name: Cache Rust dependencies
