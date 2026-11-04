@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { surfaceCases } from './surface-matrix';
 
 const panes = ['general', 'recording', 'text', 'delivery', 'meetings', 'ai-transcription', 'ai-query', 'ai-transform'] as const;
 async function open(page: Page, pane: string, appearance = 'light', motion: 'reduce' | 'no-preference' = 'reduce') {
