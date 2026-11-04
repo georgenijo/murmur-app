@@ -809,7 +809,7 @@ mod tests {
         let next = BackoffEngine {
             engine: inner.clone(),
             state: first.state.clone(),
-            now: Box::new(Instant::now),
+            now: first.now,
         };
         assert_eq!(
             run_pass("the cue", &[], &[], &next).outcome,
