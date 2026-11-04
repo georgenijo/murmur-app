@@ -25,6 +25,13 @@ RELEASE_BUILD_GUARD = (
     '"${{ github.event_name == \'workflow_dispatch\' || '
     "startsWith(github.event.head_commit.message, 'chore: bump version') }}\""
 )
+CI_BUILD_JOBS = (
+    "typecheck",
+    "visual-linux",
+    "visual-regression",
+    "rust-lint",
+    "rust-macos",
+)
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
@@ -131,19 +138,24 @@ def validate_ci(ci: str) -> int:
     assert "push:\n    branches: [main]" in ci
     assert "\n  pull_request:" in ci
     changes = job_block(ci, "changes")
+    policy = job_block(ci, "policy")
+    rust_lint = job_block(ci, "rust-lint")
     rust_macos = job_block(ci, "rust-macos")
     dependency_audit = job_block(ci, "dependency-audit")
     ci_pass = job_block(ci, "ci-pass")
     assert scalar(changes, "if") == CI_GUARD
-    for job in ("typecheck", "visual-regression", "rust-macos"):
+    # Every build job waits on `changes`; validation belongs in `policy`.
+    assert "run:" not in changes, "changes must only filter paths"
+    assert scalar(policy, "if") == CI_GUARD
+    assert "needs:" not in policy, "policy must start without waiting"
+    for job in CI_BUILD_JOBS:
         assert scalar(job_block(ci, job), "needs") == "changes"
     assert scalar(dependency_audit, "if") == CI_GUARD
-    assert scalar(ci_pass, "needs") == (
-        "[changes, typecheck, visual-regression, rust-macos]"
-    )
+    assert scalar(ci_pass, "needs") == f"[changes, policy, {', '.join(CI_BUILD_JOBS)}]"
     assert scalar(ci_pass, "if") == CI_PASS_GUARD
     ci_pass_step = named_step_block(ci_pass, "Check CI result", 6)
-    assert "${{ needs.visual-regression.result }}" in ci_pass_step
+    for job in ("changes", "policy", *CI_BUILD_JOBS):
+        assert f"${{{{ needs.{job}.result }}}}" in ci_pass_step, job
     rust_filter = re.search(
         r"^            rust:\n(?P<paths>(?:^              - .+\n)+)",
         changes,
@@ -151,45 +163,64 @@ def validate_ci(ci: str) -> int:
     )
     assert rust_filter, "missing rust paths filter"
     assert "'rustfmt.toml'" in rust_filter.group("paths")
-    assert "scripts/validate_workflow_policy.py" in ci
-    assert "'scripts/validate_reference_docs.py'" in ci
-    assert "python3 scripts/validate_reference_docs.py" in ci
-    assert "'docs/reference/**'" in ci
-    assert "scripts/release_artifacts.py" in ci
-    assert "scripts/capture_agent_matrix.py" in ci
-    assert "'scripts/release_version.py'" in ci
-    assert "'requirements-test.txt'" in ci
-    assert "python3 -m pip install -r requirements-test.txt" in ci
-    assert "tests/test_release_artifacts.py" in ci
-    assert ci.count("tests/test_reference_docs.py") >= 2
-    assert "tests/test_release_version.py" in ci
-    assert "tests/test_workflow_policy.py" in ci
-    assert "tests/test_capture_agent_matrix.py" in ci
-    assert ci.count("tests/test_event_store.py") >= 2
+    validation = named_step_block(policy, "Validate workflow policy", 6)
+    for marker in (
+        "python3 -m pip install -r requirements-test.txt",
+        "python3 scripts/validate_workflow_policy.py",
+        "python3 scripts/validate_reference_docs.py",
+        "tests/test_reference_docs.py",
+        "tests/test_release_artifacts.py",
+        "tests/test_release_version.py",
+        "tests/test_workflow_policy.py",
+        "tests/test_capture_agent_matrix.py",
+        "tests/test_event_store.py",
+    ):
+        assert marker in validation, marker
     capture_build = named_step_block(
         rust_macos, "Build capture isolation helpers and stub local-LLM externalBin", 6
     )
-    rust_install = named_step_block(rust_macos, "Install Rust", 6)
+    assert "uses: dtolnay/rust-toolchain@1.96.0" in named_step_block(
+        rust_macos, "Install Rust", 6
+    )
+    rust_install = named_step_block(rust_lint, "Install Rust", 6)
     assert "uses: dtolnay/rust-toolchain@1.96.0" in rust_install
     assert "components: clippy, rustfmt" in rust_install
-    rust_format = named_step_block(rust_macos, "Check Rust formatting", 6)
+    rust_format = named_step_block(rust_lint, "Check Rust formatting", 6)
     assert "cargo fmt --all -- --check" in rust_format
-    rust_check = named_step_block(rust_macos, "Compile check", 6)
-    assert (
-        "cargo check --workspace --exclude murmur-llm-sidecar --all-targets"
-        in rust_check
-    )
-    rust_lint = named_step_block(rust_macos, "Lint Rust", 6)
+    # Clippy's --all-targets pass is the compile check for tests and examples.
+    lint_step = named_step_block(rust_lint, "Lint Rust", 6)
     assert (
         "cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings"
-        in rust_lint
+        in lint_step
     )
     assert "cargo clippy" not in capture_build
+    for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
+        cache = named_step_block(job, "Cache Rust dependencies", 6)
+        assert (
+            "save-if: ${{ github.ref == 'refs/heads/main' }}" in cache
+        ), f"{job_name} must not save PR caches"
+    nextest_install = named_step_block(rust_macos, "Install cargo-nextest", 6)
+    assert "uses: taiki-e/install-action@v2" in nextest_install
+    assert re.search(r"tool: cargo-nextest@[0-9]+\.[0-9]+\.[0-9]+\n", nextest_install)
     macos_lib_tests = named_step_block(rust_macos, "Run tests", 6)
+    # nextest runs each test in its own process, so shared process state stays
+    # isolated exactly as `cargo test -- --test-threads=1` guaranteed.
     assert (
-        "cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1"
+        "cargo nextest run --workspace --exclude murmur-llm-sidecar --lib"
         in macos_lib_tests
     )
+    # The prebuild must use the run steps' package selection and build the
+    # examples before the test targets, or the run steps recompile the app crate.
+    test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
+    example_build = test_build.find(
+        "cargo build --workspace --exclude murmur-llm-sidecar"
+        " --example mock_llm_helper --example murmur-eval"
+    )
+    test_prebuild = test_build.find(
+        "cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run --lib"
+        " --test llm_sidecar_integration --test transform_flow_integration"
+    )
+    assert 0 <= example_build < test_prebuild, "build examples, then every test target"
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build
@@ -203,8 +234,10 @@ def validate_ci(ci: str) -> int:
         dependency_audit, "Audit Rust dependencies (advisory)", 6
     )
     assert "continue-on-error: true" in rust_audit
-    assert "cargo install cargo-audit --locked --version 0.22.2" in rust_audit
     assert "cargo audit" in rust_audit
+    audit_install = named_step_block(dependency_audit, "Install cargo-audit", 6)
+    assert "uses: taiki-e/install-action@v2" in audit_install
+    assert "tool: cargo-audit@0.22.2" in audit_install
     npm_audit = named_step_block(
         dependency_audit, "Audit npm dependencies (advisory)", 6
     )

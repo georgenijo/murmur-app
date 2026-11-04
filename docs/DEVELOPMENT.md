@@ -44,6 +44,7 @@ cd app && npm run tauri build      # production .app and .dmg
 
 # Tests
 cd app/src-tauri && cargo test -- --test-threads=1   # Rust (timing-sensitive; keep single-threaded)
+cd app/src-tauri && cargo nextest run --workspace --exclude murmur-llm-sidecar --lib  # Rust unit tests, one process per test (exactly what CI runs)
 cd app && npm test                                   # frontend vitest
 cd app && npx tsc --noEmit                           # TypeScript
 ```

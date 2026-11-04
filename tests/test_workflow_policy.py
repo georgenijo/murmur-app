@@ -73,7 +73,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
     def test_ci_installs_pinned_python_test_dependencies(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for marker in (
-            "              - 'requirements-test.txt'\n",
             "          python3 -m pip install -r requirements-test.txt\n",
         ):
             with self.subTest(marker=marker.strip()):
@@ -89,9 +88,9 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "          components: clippy, rustfmt\n",
             "      - name: Check Rust formatting\n"
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
-            "        run: cd app/src-tauri && cargo check --workspace --exclude murmur-llm-sidecar --all-targets\n",
             "        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings\n",
-            "        run: cd app/src-tauri && cargo test --workspace --exclude murmur-llm-sidecar --lib -- --test-threads=1\n",
+            "        run: cd app/src-tauri && cargo nextest run --workspace --exclude murmur-llm-sidecar --lib\n",
+            "          tool: cargo-nextest@0.9.150\n",
         ):
             with self.subTest(policy=old.strip()):
                 mutated = workflow.replace(old, "", 1)
@@ -99,32 +98,24 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
-    def test_ci_clippy_and_check_cannot_drop_workspace_exclude(self) -> None:
+    def test_ci_clippy_and_tests_cannot_drop_workspace_exclude(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old, new in (
-            (
-                "cargo check --workspace --exclude murmur-llm-sidecar --all-targets",
-                "cargo check --all-targets",
-            ),
             (
                 "cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets",
                 "cargo clippy --all-targets",
             ),
             (
-                "cargo test --workspace --exclude murmur-llm-sidecar --lib",
-                "cargo test --lib",
-            ),
-            (
-                "cargo check --workspace --exclude murmur-llm-sidecar",
-                "cargo check --workspace",
+                "cargo nextest run --workspace --exclude murmur-llm-sidecar --lib",
+                "cargo nextest run --lib",
             ),
             (
                 "cargo clippy --workspace --exclude murmur-llm-sidecar",
                 "cargo clippy --workspace",
             ),
             (
-                "cargo test --workspace --exclude murmur-llm-sidecar",
-                "cargo test --workspace",
+                "cargo nextest run --workspace --exclude murmur-llm-sidecar",
+                "cargo nextest run --workspace",
             ),
         ):
             with self.subTest(rewrite=f"{old} -> {new}"):
@@ -190,6 +181,73 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "",
             1,
         )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_ci_pass_requires_every_parallel_job(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for job in ("policy", "visual-linux", "rust-lint"):
+            with self.subTest(job=job):
+                result = f'            "${{{{ needs.{job}.result }}}}"'
+                start = workflow.index(result)
+                end = workflow.index("\n", start) + 1
+                mutated = workflow[:start] + workflow[end:]
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+                needs = "needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos]"
+                dropped = workflow.replace(needs, needs.replace(f", {job}", ""), 1)
+                self.assertNotEqual(workflow, dropped)
+                with self.assertRaises(AssertionError):
+                    validate_ci(dropped)
+
+    def test_ci_changes_job_stays_filter_only(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace(
+            "  policy:\n",
+            "      - name: Slow validation\n"
+            "        run: python3 scripts/validate_workflow_policy.py\n\n"
+            "  policy:\n",
+            1,
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_rust_caches_are_saved_only_from_main(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        line = "          save-if: ${{ github.ref == 'refs/heads/main' }}\n"
+        self.assertEqual(workflow.count(line), 2)
+        for index in range(2):
+            with self.subTest(cache=index):
+                start = -1
+                for _ in range(index + 1):
+                    start = workflow.index(line, start + 1)
+                mutated = workflow[:start] + workflow[start + len(line):]
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
+
+    def test_cargo_audit_installs_pinned_prebuilt(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace(
+            "          tool: cargo-audit@0.22.2\n", "          tool: cargo-audit\n", 1
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_rust_test_prebuild_builds_examples_before_test_targets(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        examples = (
+            "          cargo build --workspace --exclude murmur-llm-sidecar\n"
+            "          --example mock_llm_helper --example murmur-eval &&\n"
+        )
+        tests = (
+            "          cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run\n"
+            "          --lib --test llm_sidecar_integration --test transform_flow_integration\n"
+        )
+        swapped = tests.rstrip("\n") + " &&\n" + examples.removesuffix(" &&\n") + "\n"
+        mutated = workflow.replace(examples + tests, swapped, 1)
         self.assertNotEqual(workflow, mutated)
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
