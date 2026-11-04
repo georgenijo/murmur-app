@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- Show changes from every release since the installed version in the update dialog and post-update What’s New (#939).
+
 ## [0.59.5] - 2026-11-04
 
 ### Changed

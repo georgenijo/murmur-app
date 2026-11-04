@@ -114,6 +114,34 @@ describe('useAutoUpdater presentation state', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith('show_main_window');
   });
 
+  it('preserves the cumulative upgrade range through download and relaunch', async () => {
+    mocks.getVersion.mockResolvedValue('0.59.1');
+    mocks.check.mockResolvedValue({
+      available: true, version: '0.59.5', body: 'Latest fix',
+      rawJson: { release_history: [
+        { version: '0.59.1', notes: 'Already installed' },
+        { version: '0.59.2', notes: 'Second fix' },
+        { version: '0.59.3', notes: 'Third fix' },
+        { version: '0.59.4', notes: 'Fourth fix' },
+      ] },
+      download: vi.fn().mockResolvedValue(undefined),
+    });
+    await act(async () => { root.render(<Harness />); });
+    await act(async () => { await current.checkForUpdate(); });
+    expect(current.updateStatus.phase).toBe('available');
+    const notes = current.updateStatus.phase === 'available' ? current.updateStatus.notes : '';
+    expect(notes).toContain('# v0.59.2');
+    expect(notes).toContain('# v0.59.5');
+    expect(notes).not.toContain('Already installed');
+    await act(async () => { await current.startDownload(); });
+    expect(JSON.parse(localStorage.getItem('pending-update-release-notes')!)).toEqual({ version: '0.59.5', notes });
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    mocks.getVersion.mockResolvedValue('0.59.5');
+    await act(async () => { root.render(<Harness />); });
+    expect(current.completedUpdate).toEqual({ version: '0.59.5', notes });
+  });
+
   it('keeps release notes available if native activation fails', async () => {
     mocks.invoke.mockRejectedValueOnce(new Error('Focus unavailable'));
     await relaunchWithPendingUpdate('0.22.1');
