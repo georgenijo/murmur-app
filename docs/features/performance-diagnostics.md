@@ -336,12 +336,15 @@ fallback attempt/result, and stable failure evidence. Readiness and stop/error
 checkpoints persist off the capture path. Completion records whether the actual
 retained sample array was empty; a missing measurement never becomes zero.
 The `audio.stop_tail_applied` log records the accepted stop trigger and applied
-`release_tail_ms` (0 for explicit toggle stops; 50 for held-key releases and
-conservative overlay/auto-stop/unknown sources). The supervisor owns that tail;
+`release_tail_ms` (0 for explicit toggle stops with standby disabled; 50 for
+all standby stops, held-key releases and conservative overlay/auto-stop/unknown
+sources). The supervisor owns that tail;
 helper stop-to-exit timing starts when the worker receives Stop and excludes it.
-On a validated complete drain, `audio.sealed_recording_delivered` marks the
-handoff before exit confirmation. `captureFinalization` then measures through
-sealed-sample delivery and resampling; exit confirmation and thread join may
+On the cold teardown path, a checked successful native stop and validated
+complete drain permit an early handoff: `audio.sealed_recording_delivered` marks
+the handoff before exit confirmation. Standby retains its 50 ms margin and
+does not use Stop/Stopped or the sealed-drain handoff. `captureFinalization`
+then measures through sealed-sample delivery and resampling; exit confirmation and thread join may
 continue concurrently with inference while capture ownership stays busy.
 The helper timing totals include observed attempts; stream-open and first-PCM
 measurements describe the successful/current attempt. A failed attempt remains

@@ -4862,6 +4862,28 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 );
             }
         }
+        AudioLifecycleEvent::CleanupFinished => {
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            if is_current() {
+                let _ = app_handle.emit(
+                    "recording-cleanup-finished",
+                    serde_json::json!({ "recordingId": recording_id }),
+                );
+                // A blocked start can show Recovering in a webview after ASR
+                // finished. Do not reset a pipeline still processing its result.
+                if matches!(
+                    dictation.status,
+                    DictationStatus::Idle | DictationStatus::Recovering
+                ) {
+                    transition_dictation_status(
+                        recording_id,
+                        &mut dictation,
+                        DictationStatus::Idle,
+                    );
+                    let _ = app_handle.emit("recording-status-changed", "idle");
+                }
+            }
+        }
         AudioLifecycleEvent::RecoveryStalled => {
             if is_current()
                 && app_handle
@@ -5193,6 +5215,23 @@ pub async fn start_native_recording(
                 }));
             }
             DictationStatus::Idle => {
+                if audio_lifecycle::is_dictation_cleanup_pending(
+                    state.app_state.recording_id.load(Ordering::SeqCst),
+                ) {
+                    // The result has finished, but its capture owner still
+                    // needs cleanup. Keep that generation for failure guidance
+                    // and let confirmed exit restore Idle independently.
+                    let recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
+                    transition_dictation_status(
+                        recording_id,
+                        &mut dictation,
+                        DictationStatus::Recovering,
+                    );
+                    let _ = app_handle.emit("recording-status-changed", "recovering");
+                    return Ok(
+                        serde_json::json!({ "type": "audio_recovering", "state": "recovering" }),
+                    );
+                }
                 // This is a cache-only policy read while the capture lifecycle
                 // is Idle. Its stable ID is passed to the supervisor below,
                 // which freezes it for the whole generation.

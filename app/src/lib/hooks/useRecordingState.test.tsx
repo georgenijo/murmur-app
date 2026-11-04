@@ -489,6 +489,45 @@ describe('useRecordingState transition ordering', () => {
     root = createRoot(container);
   });
 
+  it('keeps teardown guidance after final delivery and clears it independently of the result', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 20 } });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'processing' });
+      mocks.listeners.get('transcription-complete')?.({ payload: { text: 'Synthetic final result.', duration: 1 } });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+      mocks.listeners.get('recording-recovery-stalled')?.({ payload: {
+        recordingId: 20, statusCode: 'microphone_cleanup_stalled', actionCode: 'restart_app',
+      } });
+    });
+    expect(current.transcription).toBe('Synthetic final result.');
+    expect(current.error).toContain('Restarting Murmur');
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
+      mocks.listeners.get('recording-cleanup-finished')?.({ payload: { recordingId: 19 } });
+    });
+    expect(current.error).toContain('Restarting Murmur');
+    await act(async () => {
+      mocks.listeners.get('recording-cleanup-finished')?.({ payload: { recordingId: 20 } });
+    });
+    expect(current.error).toBe('');
+    expect(current.transcription).toBe('Synthetic final result.');
+    expect(current.status).toBe('idle');
+  });
+
+  it('cleanup completion preserves Processing and newer delivery errors', async () => {
+    await act(async () => {
+      mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 21 } });
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'processing' });
+      mocks.listeners.get('recording-recovery-stalled')?.({ payload: {
+        recordingId: 21, statusCode: 'microphone_cleanup_stalled', actionCode: 'restart_app',
+      } });
+      mocks.listeners.get('auto-paste-failed')?.({ payload: 'Synthetic paste failure.' });
+      mocks.listeners.get('recording-cleanup-finished')?.({ payload: { recordingId: 21 } });
+    });
+    expect(current.status).toBe('processing');
+    expect(current.error).toBe('Synthetic paste failure.');
+  });
+
   it('clears the matching cleanup notice when recovery returns to idle', async () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'audio_recovering',

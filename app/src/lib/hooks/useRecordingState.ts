@@ -304,6 +304,15 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
+    listen<unknown>('recording-cleanup-finished', (event) => {
+      if (cancelled) return;
+      const recordingId = recordingIdFromPayload(event.payload);
+      const current = currentErrorRef.current;
+      if (recordingId !== null && current?.kind === 'cleanup'
+        && current.recordingId === recordingId) clearError(current.id);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
     listen<unknown>('recording-interrupted', (event) => {
       if (cancelled) return;
       const presentation = interruptedPresentationFromPayload(event.payload);

@@ -3005,6 +3005,7 @@ pub(crate) fn handle_audio_lifecycle(
         crate::audio_lifecycle::AudioLifecycleEvent::Recovering { .. } => {
             fail_query(&app_handle, &state, query_pass_id, "audio_recovering");
         }
+        crate::audio_lifecycle::AudioLifecycleEvent::CleanupFinished => {}
         crate::audio_lifecycle::AudioLifecycleEvent::RecoveryStalled => {
             fail_query(&app_handle, &state, query_pass_id, "audio_recovery_stalled");
         }

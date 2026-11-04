@@ -336,16 +336,21 @@ Transcription processing is local. Network access occurs for model setup and may
   exclusive recovery and suppresses fallback and new starts.
 - Stop keeps the end of the utterance (#829). At the accepted stop, the
   typed `DictationStopTrigger` selects a 50 ms tail for hold-to-talk releases
-  and 0 ms for explicit hotkey toggle stops (including single-tap stop in
-  double-tap mode). A same-generation native release stamp takes precedence.
+  and 0 ms for explicit hotkey toggle stops with standby disabled (including
+  single-tap stop in double-tap mode). A same-generation native release stamp
+  takes precedence.
   Overlay, button, silence/limit auto-stop, chord stops, and legacy callers
   retain 50 ms: those triggers do not prove the last word has ended. The
   recording's start mode does not determine the stop policy, so releasing a
   promoted hold over a toggle recording still protects speech. The supervisor
-  applies this tail once for both cold capture and warm standby. The
-  content-free `audio.stop_tail_applied` event records `stop_trigger`,
-  `recording_id`, and `release_tail_ms`.
-- After the tail, the host sends `Stop`. The helper stops the stream, flushes
+  applies the tail once. All standby stops retain 50 ms, including toggles:
+  standby snapshots the live buffer without a helper drain/fence, so the margin
+  protects final PCM still in the helper ring, pipe, reader queue, or awaiting
+  the shared-buffer lock. It is a conservative timing margin, not a delivery
+  fence. The content-free `audio.stop_tail_applied` event records `stop_trigger`,
+  `recording_id`, `standby_enabled`, and `release_tail_ms`.
+- On the cold teardown path (no standby handoff), after the tail the host
+  sends `Stop`. The helper checks the native stream stop, flushes
   every sample left in its ring as ordinary PCM, and only then replies
   `Stopped`; the host keeps accepting PCM until that receipt (bounded by the
   250 ms cooperative-stop grace). A dictation whose final retained-sample
@@ -354,12 +359,20 @@ Transcription processing is local. Network access occurs for model setup and may
   thread join. `audio.sealed_recording_delivered` records that handoff with
   `exit_confirmed=false`. The supervisor remains publicly **Stopping**, with
   the exact microphone owner retained and all new captures refused, until
-  process exit is confirmed and the thread joins. Late teardown never emits
-  Idle or resets an already delivered recording's Processing state. Other
-  owners, incomplete/malformed drains, and sample-count mismatches retain
+  process exit is confirmed and the thread joins. Native stop errors send the
+  existing `Failure` frame instead of `Stopped`; they cannot claim an early
+  seal. Unconfirmed exit or a long stop publishes existing cleanup-stalled
+  restart guidance and marks the public capture state **Recovering** without
+  discarding the delivered result or resetting its Processing state. Confirmed
+  exit emits `recording-cleanup-finished` to clear only that owner's cleanup
+  notice. A new dictation cannot advance its generation while the old capture
+  is stopping/recovering. Other owners, incomplete/malformed drains, and
+  sample-count mismatches retain
   the exit-before-delivery path. The post-exit stop log carries
   `stop_drain_ms`, `stop_drain`, `unreceived_samples`, and `stop_to_exit_ms`
-  (from worker Stop receipt, excluding the supervisor's tail).
+  (from worker Stop receipt, excluding the supervisor's tail). Standby does
+  not send `Stop` or receive `Stopped`; after its 50 ms tail it snapshots the
+  current recording and retains the live worker for bounded pre-roll.
   `audio::release_tail_tests` holds the deterministic drain tests and the
   opt-in `release_tail_sweep` harness (`cargo test --lib release_tail_sweep --
   --ignored --nocapture`), which replays synthetic `say` speech with the
