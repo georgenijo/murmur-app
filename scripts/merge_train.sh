@@ -19,7 +19,8 @@ if git show-ref --quiet "refs/heads/$branch"; then
   echo "$branch already exists; delete it (git branch -D $branch) to rebuild the train" >&2
   exit 1
 fi
-start=$(git rev-parse --abbrev-ref HEAD)
+start=$(git symbolic-ref --quiet --short HEAD) \
+  || { echo "check out a branch first; cleanup returns to it on failure" >&2; exit 1; }
 git fetch --quiet origin main
 git switch --quiet --create "$branch" origin/main
 # Until the push, the train is local and disposable: on any failure, return to
