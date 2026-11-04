@@ -472,7 +472,20 @@ export function useSettings() {
             throw new Error('The selected transcription model is not installed.');
           }
           const next = { ...settingsRef.current, ...choices };
-          await configure(buildConfigureOptions(next));
+          await configure(buildConfigureOptions(next), {
+            // Publish the acknowledgment inside the serialized configure job,
+            // before a queued startup configure reads the confirmed snapshot.
+            onSuccess: () => {
+              if (expired || version !== configureVersionRef.current) return;
+              const confirmed = { ...settingsRef.current, ...choices };
+              confirmedConfigureSettingsRef.current = { ...confirmedConfigureSettingsRef.current, ...choices };
+              settingsRef.current = confirmed;
+              setSettings(confirmed);
+              persistSettings(confirmed);
+              setConfigureError(null);
+              void emit('settings-changed').catch(() => {});
+            },
+          });
         })(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
@@ -482,13 +495,6 @@ export function useSettings() {
         }),
       ]);
       if (version !== configureVersionRef.current) throw new Error('Settings changed during setup. Retry with the selected model.');
-      const next = { ...settingsRef.current, ...choices };
-      confirmedConfigureSettingsRef.current = { ...confirmedConfigureSettingsRef.current, ...choices };
-      settingsRef.current = next;
-      setSettings(next);
-      persistSettings(next);
-      setConfigureError(null);
-      void emit('settings-changed').catch(() => {});
     } finally {
       clearTimeout(timer);
     }

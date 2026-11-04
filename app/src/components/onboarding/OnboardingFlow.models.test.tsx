@@ -6,6 +6,7 @@ import { ModelDownloader } from '../ModelDownloader';
 import { useSettings } from '../../lib/hooks/useSettings';
 import { DEFAULT_SETTINGS, type ModelOption } from '../../lib/settings';
 import { isOnboardingComplete, markOnboardingComplete } from '../../lib/onboarding';
+import { buildConfigureOptions, configure } from '../../lib/dictation';
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(async () => () => {}), emit: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke, isTauri: () => false }));
@@ -198,6 +199,21 @@ describe('onboarding model state with native IPC boundaries', () => {
     await click('Retry');
     expect(completed).toHaveBeenCalledWith('base.en', 'double_tap', 'f12');
     expect(isOnboardingComplete()).toBe(true);
+  });
+
+  it('publishes acknowledged choices before a queued startup configure reads them (#951)', async () => {
+    const pending = deferred<unknown>();
+    const implementation = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, ...args) => command === 'configure_dictation' ? pending.promise : implementation(command, ...args));
+    await mount();
+    await select('base.en');
+    await done();
+    const startup = configure(() => buildConfigureOptions(settings.getConfirmedSettings()));
+    await act(async () => { pending.resolve({ type: 'configured' }); await startup; });
+    const writes = native.invoke.mock.calls.filter(([command]) => command === 'configure_dictation');
+    expect(writes).toHaveLength(2);
+    expect(writes[1][1].options.model).toBe('base.en');
+    expect(completed).toHaveBeenCalledWith('base.en', 'double_tap', 'f12');
   });
 
   it('rechecks the chosen model at completion (#945)', async () => {
