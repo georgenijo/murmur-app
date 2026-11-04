@@ -536,15 +536,17 @@ export const SettingsPanel = memo(function SettingsPanel({
   }, [editorTab]);
   useEffect(() => { void getVersion().then(setVersion); }, []);
   const visibleTargetId = targetRequest ? visibleSettingsTarget(targetRequest.id, settings) : null;
+  // Reset for navigation only; disclosure changes must preserve the reader's place.
+  useLayoutEffect(() => {
+    if (editorTab || targetRequest) return;
+    revealedTargetRef.current = null;
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [activeCat, editorTab, targetRequest]);
   useLayoutEffect(() => {
     const content = contentRef.current;
     if (!content) return;
     if (editorTab) return;
-    if (!targetRequest) {
-      revealedTargetRef.current = null;
-      content.scrollTo({ top: 0 });
-      return;
-    }
+    if (!targetRequest) return;
     if (revealedTargetRef.current === targetRequest) return;
     const id = visibleTargetId!;
     if (ADVANCED_TARGETS[activeCat]?.includes(id) && !advancedOpen) {
