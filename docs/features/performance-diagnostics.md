@@ -29,7 +29,7 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 5`; the v2 migration adds
+The database currently uses SQLite `user_version = 6`; the v2 migration adds
 Voice Query support and the v3 migration adds the dictation `releaseToStop`
 and `releaseToPaste` stages, neither changing tables. Run and resource JSON records
 remain backward-compatible at `schemaVersion: 1`. V4 adds `homophoneContext`
@@ -38,7 +38,9 @@ without rewriting old JSON or changing tables. Historical runs omit this stage;
 new readers preserve that absence. V5 adds optional production physical-gesture
 capture timing in a separate 4 → 5 metadata migration. The v3 → v5 path applies
 v4 then v5 in one transaction, preserving existing JSON bytes, including v4
-homophoneContext rows. Older builds refuse the newer database. A
+homophoneContext rows. V6 adds the optional stream-open split and
+`helperPreparation` capture fields in a 5 → 6 metadata step with the same
+byte-preserving guarantees. Older builds refuse the newer database. A
 database created by a newer Murmur build is preserved and treated as unavailable rather than rewritten. Unknown
 record versions are not decoded as V1.
 
@@ -481,8 +483,11 @@ Each duration is a `MeasurementV1`: measured zero is valid; tokenless
 non-keyboard starts have `notApplicable`; keyboard measurements that cannot be
 correlated and a startup failing/cancelling before PCM or readiness have
 `unavailable { reason: noSamples }`. Hold gestures have no double-tap gap.
-Older records omit `gesture` entirely. There are no helper-preparation outcomes:
-no speculative helper/capture work occurs during a tap or hold arming.
+Older records omit `gesture` entirely.
+
+A cancelled run whose `pressToAcceptedMs` is close to 200 ms is usually a
+Both-mode hold promotion (`MAX_HOLD_DURATION_MS` is 200), not a single tap. A
+`doubleTapGapMs` of `notApplicable` distinguishes a hold from a double tap.
 
 Correlation uses an opaque decimal-text token emitted with the keyboard event,
 passed through the webview's keyboard start request, and claimed at native
@@ -495,15 +500,103 @@ requests without assigning timing by the next recording ID. No key, token,
 transcript, audio, device UID, or content-derived hash is persisted.
 
 `audio.gesture_start_timing` logs `GestureAccepted`, `GesturePcm`, and
-`GestureReady` with the recording ID and content-free durations. A first tap in Double Tap mode or an unpromoted Both-mode press
-produces no capture/helper-start event. Existing `readyMs` retains its
-supervisor-acceptance origin and must not be relabeled as physical press latency.
+`GestureReady` with the recording ID and content-free durations. Existing
+`readyMs` retains its supervisor-acceptance origin and must not be relabeled as
+physical press latency.
+
+### Clean taps and silent first-tap helper preparation
+
+A tap is clean only when no other key (modifiers included), mouse button, or
+scroll-wheel event occurs during either press. Any of those cancels the tap.
+Pointer movement alone does not.
+
+In Double Tap or Both mode, a first clean release of the double-tap key may
+silently prepare an idle capture helper. Preparation verifies its signature,
+spawns it, completes hello, then sends a distinct `PrepareInput` command for
+bounded, nonopening HAL input-UID/default lookup. Both host and helper require
+an existing microphone grant; neither requests permission. No Audio Unit is
+created, configured, initialized, or started, no Start is sent, and no PCM or
+Murmur UI exists before confirmation. The contract is indicator- and prompt-free;
+final native interaction on the rebuilt signed helper must verify that contract.
+Preparation runs only while audio is idle, with no dictation starting/recording
+and no live standby. Admission and the preparation-slot claim hold the same
+`recording_transition` as capture claims. Every launch still verifies the signature.
+
+The confirmed start must match gesture token, listener, input topology, and
+settings generation. Device/Smart Auto settings writes revoke preparation even
+without a topology notification. At Start the helper rechecks the current default,
+exact selected UID, and input capability before reusing its passive resolution;
+a mismatch uses ordinary post-confirmation resolution, never a different default
+for a pinned input. CPAL keeps its existing confirmed-start resolution path.
+
+Second-tap expiry, chords, mode/key/settings/topology changes, and another
+feature's capture claim invalidate preparation immediately, before asynchronous
+context capture or native setup. Expiry is identity-scoped so a delayed timer
+cannot kill a newer gesture. The 1.5 s deadline starts at the request, including
+spawn, hello, and passive resolution. In-flight pipe reads poll cancellation;
+creation rechecks cancellation after signature verification and before spawn.
+One single-flight preparation worker owns any child through confirmed teardown,
+including failed hello, invalidation during spawn, or delayed termination. No new
+preparation is launched while that worker is cleaning up; cleanup never hands a
+child to a fallibly spawned detached thread.
+
+Each dictation's first capture attempt records `capture.helperPreparation`:
+`adopted`, `notPrepared`, `stillPreparing`, `identityMismatch`, or `expired`.
+An adopted attempt sends no `HelperReady`, because helper resolve, signature,
+and spawn were paid before acceptance. Its `helperResolveMs`,
+`helperSignatureMs`, and `helperSpawnMs` remain null. An expired or abandoned
+preparation has no run record. Those outcomes appear only as content-free
+`audio.helper_prepare_*` event codes (`audio.helper_prepared`,
+`audio.helper_prepare_adopted`, `audio.helper_prepare_expired`,
+`audio.helper_prepare_abandoned`, `audio.helper_prepare_skipped`,
+`audio.helper_prepare_failed`, and
+`audio.helper_prepare_termination_unconfirmed`). The comparison's
+**Prepared helper adopted** observation counts hits. Runs without an outcome
+are counted as unavailable, and the observation never raises a warning.
+
+### Stream-open split
+
+`streamOpenMs` stays the host-observed stream-build phase. New records also
+split it using host-observed Entered → Completed helper setup brackets:
+
+- `deviceResolutionMs`: `DeviceResolution`;
+- `audioUnitNewMs`: AUHAL component lookup/instance creation (`AudioUnitNew`);
+- `audioUnitInitializeMs`: the separate AUHAL `AudioUnitInitialize` call;
+  both AUHAL-only fields are absent for CPAL;
+- `streamConfigureMs`: sum of the configuration steps between creation and
+  start (`EnableInputIo`, `DisableOutputIo`, `SetCurrentDevice`,
+  `FormatConfiguration`, `CallbackInstallation`, or CPAL `DefaultConfig` and
+  `StreamBuild`);
+- `streamStartMs`: `StreamStart` (`AudioOutputUnitStart` or cpal `play`).
+
+Like `streamOpenMs`, these describe the latest capture attempt. A new attempt
+clears them, so a fallback never mixes steps from two backends. The helper
+duration fields still sum across attempts. Older records omit these five fields
+and `helperPreparation`. A missing value is unavailable, never zero.
+
+All AUHAL brackets run after confirmed Start. Creation uses the pinned safe
+owning `coreaudio-rs 0.14.2` uninitialized constructor; its separate `initialize`
+call immediately follows, preserving the old new → initialize → IO/device/format
+configuration → callback → start order. The legacy HAL inventory helpers stay
+on their existing dependency. No raw instance is transmuted into the older
+wrapper's private layout, and an initialization failure still disposes its owner.
+
+The local signed stopped-AUHAL experiment for #933 did **not** justify shipping
+speculative configuration or a reorder: setting CurrentDevice with undetermined
+TCC prompted even without Start. In 20 granted trials configure-before-initialize
+had new-to-first-callback p50 33.58 ms versus 34.59 ms for the old order (~1 ms);
+initialization was ~3.9 ms, and pre-initialize/hold delayed the later start.
+RunningSomewhere stayed zero and callbacks absent during holds, but visual
+orange-indicator proof was incomplete. These scratch observations are not a
+production latency gain or an indicator-free proof. Therefore only passive lookup
+is prepared; configuration, initialization, and capture remain post-confirmation.
 
 SQLite `user_version = 5` reserves the optional gesture companion separately
 from #919's v4 `homophoneContext` stage. The transactional 4 → 5 metadata step
 preserves tables and historical V1 JSON; v3 → v5 applies both additive steps.
 Run and companion `schemaVersion` remain 1. Rust and TypeScript accept absent
 historical `gesture` fields and validate all durations/statuses when present.
+The 5 → 6 step does the same for the stream-open split and `helperPreparation`.
 
 ## Launch milestones
 

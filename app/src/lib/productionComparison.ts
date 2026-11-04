@@ -17,6 +17,11 @@ type CaptureMetricKey = keyof Pick<ProductionRunV1['capture'],
     | 'helperSignatureMs'
     | 'helperSpawnMs'
     | 'streamOpenMs'
+    | 'deviceResolutionMs'
+    | 'audioUnitNewMs'
+    | 'audioUnitInitializeMs'
+    | 'streamConfigureMs'
+    | 'streamStartMs'
     | 'firstCallbackWaitMs'
     | 'firstPcmMs'
     | 'readyMs'
@@ -44,6 +49,11 @@ export const PRODUCTION_COMPARISON_METRICS: readonly ProductionMetricDefinition[
   { key: 'helperSignatureMs', label: 'Helper signature', source: 'capture' },
   { key: 'helperSpawnMs', label: 'Helper spawn', source: 'capture' },
   { key: 'streamOpenMs', label: 'Stream open', source: 'capture' },
+  { key: 'deviceResolutionMs', label: 'Stream open · device resolution', source: 'capture' },
+  { key: 'audioUnitNewMs', label: 'Stream open · audio unit new', source: 'capture' },
+  { key: 'audioUnitInitializeMs', label: 'Stream open · audio unit initialize', source: 'capture' },
+  { key: 'streamConfigureMs', label: 'Stream open · configure', source: 'capture' },
+  { key: 'streamStartMs', label: 'Stream open · start', source: 'capture' },
   { key: 'firstCallbackWaitMs', label: 'First callback wait', source: 'capture' },
   { key: 'firstPcmMs', label: 'First PCM', source: 'capture' },
   { key: 'readyMs', label: 'Capture ready', source: 'capture' },
@@ -189,7 +199,8 @@ export type VersionObservationKey =
   | 'fallbackAttempted'
   | 'captureFailure'
   | 'zeroSampleSuccess'
-  | 'workerInvariantViolation';
+  | 'workerInvariantViolation'
+  | 'helperPreparationAdopted';
 
 export interface VersionObservation {
   key: VersionObservationKey;
@@ -453,6 +464,9 @@ function observationValue(
   if (key === 'fallbackAttempted') return capture.fallbackAttempted;
   if (key === 'captureFailure') return capture.failureKind === null ? null : true;
   if (key === 'zeroSampleSuccess') return capture.zeroSampleSuccess;
+  if (key === 'helperPreparationAdopted') {
+    return capture.helperPreparation == null ? null : capture.helperPreparation === 'adopted';
+  }
   return capture.workerInvariantViolation;
 }
 
@@ -463,7 +477,14 @@ const observationLabels: Record<VersionObservationKey, string> = {
   captureFailure: 'Capture failure recorded',
   zeroSampleSuccess: 'Zero-sample success',
   workerInvariantViolation: 'Worker invariant violation',
+  helperPreparationAdopted: 'Prepared helper adopted',
 };
+
+/** Outcome counts that are not anomalies, so they never raise a warning. */
+const nonAnomalyObservations = new Set<VersionObservationKey>([
+  'success',
+  'helperPreparationAdopted',
+]);
 
 function observations(
   baseline: readonly PerformanceRunV1[],
@@ -476,13 +497,14 @@ function observations(
     'captureFailure',
     'zeroSampleSuccess',
     'workerInvariantViolation',
+    'helperPreparationAdopted',
   ];
   return keys.map(key => {
     const baselineValues = baseline.map(run => observationValue(run, key));
     const candidateValues = candidate.map(run => observationValue(run, key));
     const baselineCount = baselineValues.filter(value => value === true).length;
     const candidateCount = candidateValues.filter(value => value === true).length;
-    const anomaly = key !== 'success';
+    const anomaly = !nonAnomalyObservations.has(key);
     return {
       key,
       label: observationLabels[key],

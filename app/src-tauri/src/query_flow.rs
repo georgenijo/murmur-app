@@ -2916,6 +2916,7 @@ async fn start_query_capture_internal(
         context.transcription.model_name.clone(),
     );
 
+    crate::audio::prepare::capture_claimed(crate::audio::prepare::CaptureClaim::Query);
     // Context is frozen once, before microphone capture can become Listening.
     // The query-review window learns only that a summary is ready and pulls the
     // bounded summary through its requester-gated content command.

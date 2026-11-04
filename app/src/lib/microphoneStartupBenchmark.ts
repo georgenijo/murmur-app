@@ -152,7 +152,7 @@ const FAILURE_PHASES = new Set<MicrophoneStartupFailurePhase>([
   'device_enumeration', 'stream_build', 'first_buffer_wait', 'runtime',
 ]);
 const SETUP_STEPS = new Set([
-  'device_resolution', 'audio_unit_creation', 'audio_unit_new', 'enable_input_io',
+  'device_resolution', 'audio_unit_creation', 'audio_unit_new', 'audio_unit_initialize', 'enable_input_io',
   'disable_output_io', 'set_current_device', 'format_configuration',
   'callback_installation', 'default_config', 'stream_build', 'stream_start',
   'awaiting_first_callback', 'system_tap_create', 'aggregate_device_create',

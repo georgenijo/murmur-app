@@ -117,6 +117,8 @@ pub enum StartupSetupStep {
     DeviceResolution,
     AudioUnitCreation,
     AudioUnitNew,
+    #[serde(rename = "audio_unit_initialize")]
+    AudioUnitInit,
     EnableInputIo,
     DisableOutputIo,
     SetCurrentDevice,
@@ -463,6 +465,7 @@ fn startup_setup_step(value: CaptureSetupStep) -> StartupSetupStep {
         CaptureSetupStep::DeviceResolution => StartupSetupStep::DeviceResolution,
         CaptureSetupStep::AudioUnitCreation => StartupSetupStep::AudioUnitCreation,
         CaptureSetupStep::AudioUnitNew => StartupSetupStep::AudioUnitNew,
+        CaptureSetupStep::AudioUnitInit => StartupSetupStep::AudioUnitInit,
         CaptureSetupStep::EnableInputIo => StartupSetupStep::EnableInputIo,
         CaptureSetupStep::DisableOutputIo => StartupSetupStep::DisableOutputIo,
         CaptureSetupStep::SetCurrentDevice => StartupSetupStep::SetCurrentDevice,
@@ -528,6 +531,8 @@ impl CycleAccumulator {
             | AudioStartupDiagnostic::WorkerInvariantViolation
             | AudioStartupDiagnostic::RecordingStopIssued
             | AudioStartupDiagnostic::HelperReady { .. }
+            | AudioStartupDiagnostic::HelperPreparation { .. }
+            | AudioStartupDiagnostic::SetupStepDuration { .. }
             | AudioStartupDiagnostic::WorkerStopped { .. }
             | AudioStartupDiagnostic::PhaseDuration { .. } => {}
             AudioStartupDiagnostic::BackendPlan {

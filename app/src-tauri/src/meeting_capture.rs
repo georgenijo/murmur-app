@@ -281,6 +281,7 @@ impl MeetingCoordinator {
         repository: MeetingRepository,
         config: MeetingCaptureConfig,
     ) -> Result<(), String> {
+        crate::audio::prepare::invalidate(crate::audio::prepare::InvalidateReason::CaptureClaimed);
         let (command_sender, command_receiver) = mpsc::channel();
         let completion = Arc::new(CompletionState::default());
         {

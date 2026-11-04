@@ -230,6 +230,9 @@ pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, Strin
 
 #[tauri::command]
 pub fn save_settings_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
+    // Conservatively revoke passive input resolution for every persisted
+    // settings update, including device/Smart Auto edits that do not change HAL topology.
+    crate::audio::prepare::configuration_changed();
     write_blob(&data_dir(&app)?, SETTINGS, &blob)?;
     notify_settings_committed(&app, &blob);
     Ok(())

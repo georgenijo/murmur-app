@@ -238,6 +238,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.capture_started" => Some("audio.capture_started"),
         "audio.fallback_started" => Some("audio.fallback_started"),
         "audio.capture_ready" => Some("audio.capture_ready"),
+        "audio.recording_status_timing" => Some("audio.recording_status_timing"),
+        "audio.recording_context_ready" => Some("audio.recording_context_ready"),
         "audio.standby_policy_applied" => Some("audio.standby_policy_applied"),
         "audio.standby_entered" => Some("audio.standby_entered"),
         "audio.capture_failed" => Some("audio.capture_failed"),
@@ -3682,6 +3684,39 @@ mod tests {
         assert_eq!(data["sample_count"], 16000);
         assert!(!encoded.contains("SENTINEL"));
         assert_eq!(data.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn release_pipeline_preserves_content_free_recording_timings() {
+        for code in [
+            "audio.recording_status_timing",
+            "audio.recording_context_ready",
+        ] {
+            let mut data = serde_json::json!({
+                "event_code": code,
+                "recording_id": 9,
+                "context_ready": true,
+                "ready_to_status_emit_ms": 2,
+                "context_resolution_ms": 17,
+                "error": "PRIVATE_SENTINEL",
+                "transcript": "PRIVATE_SENTINEL"
+            });
+
+            sanitize_event_data("pipeline", &mut data, false);
+
+            assert_eq!(data["event_code"], code);
+            assert_eq!(data["recording_id"], 9);
+            assert_eq!(data["context_ready"], true);
+            assert_eq!(data["ready_to_status_emit_ms"], 2);
+            assert_eq!(data["context_resolution_ms"], 17);
+            assert!(!serde_json::to_string(&data)
+                .unwrap()
+                .contains("PRIVATE_SENTINEL"));
+            assert_eq!(
+                sanitized_summary("pipeline", Some("PRIVATE_SENTINEL".into()), &data, false),
+                code
+            );
+        }
     }
 
     #[test]

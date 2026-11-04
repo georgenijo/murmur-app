@@ -55,6 +55,9 @@ function rawValues(metric: ProductionMetricComparison): string {
 
 function observationEvidence(observation: VersionObservation): string {
   if (observation.key === 'success') return 'Version-wide outcome count';
+  if (observation.key === 'helperPreparationAdopted') {
+    return `First-tap preparation hits · ${observation.baselineUnavailable} baseline and ${observation.candidateUnavailable} candidate without an outcome`;
+  }
   const finding = observation.newlyObserved
     ? 'New in candidate'
     : observation.candidateObserved

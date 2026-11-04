@@ -29,6 +29,9 @@ block2 = "0.6"
 libc = "0.2"
 mach2 = "0.6"
 coreaudio-rs = "0.11.3"
+# Keep the existing passive HAL helpers, but use the safe owning constructor
+# that separates component creation from initialization for AUHAL timing.
+coreaudio-unit = { package = "coreaudio-rs", version = "=0.14.2" }
 core-foundation-sys = "0.8"
 core-graphics = { version = "0.25", features = ["elcapitan"] }
 objc2 = "0.6"
