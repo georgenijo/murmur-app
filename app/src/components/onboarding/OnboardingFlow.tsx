@@ -114,6 +114,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   // Monotonic sequence so an interval probe overlapping a focus probe can't
   // apply an older TCC result over a newer one.
   const pollSeq = useRef(0);
+  const systemAudioProbeSeq = useRef(0);
   const calendarProbeSeq = useRef(0);
   const calendarMutationSeq = useRef(0);
   const refreshPermissions = useCallback(async () => {
@@ -147,7 +148,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
   useEffect(() => {
     if (step !== 'systemAudio') return;
-    void getSystemAudioPermissionStatus().then(setSystemAudioStatus).catch(() => {});
+    const seq = ++systemAudioProbeSeq.current;
+    void getSystemAudioPermissionStatus().then((status) => {
+      if (seq === systemAudioProbeSeq.current) setSystemAudioStatus(status);
+    }).catch(() => {});
+    return () => { ++systemAudioProbeSeq.current; };
   }, [step]);
 
   // Calendar access is optional. Keep even its passive permission probe out of
@@ -273,6 +278,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   const handleRequestSystemAudio = async () => {
+    ++systemAudioProbeSeq.current;
     setSystemAudioError(null);
     setSystemAudioBusy(true);
     try {
@@ -526,7 +532,17 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             />
 
             {systemAudioStatus === 'granted' ? (
-              <GrantedCard label="System audio access granted" />
+              <div className="mb-6">
+                <GrantedCard label="System audio access granted" />
+                <button
+                  type="button"
+                  disabled={systemAudioBusy}
+                  onClick={() => void handleRequestSystemAudio()}
+                  className="dialog-pill-btn w-full px-4 py-2 text-[length:var(--ui-font-body)] font-semibold text-on-surface disabled:cursor-wait disabled:opacity-60"
+                >
+                  {systemAudioBusy ? 'Waiting for macOS…' : 'Re-check system audio access'}
+                </button>
+              </div>
             ) : systemAudioStatus === 'unsupported' ? (
               <div className="dialog-card mb-6 border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
                 Meeting capture requires macOS 14.2 or newer. Dictation is still available.

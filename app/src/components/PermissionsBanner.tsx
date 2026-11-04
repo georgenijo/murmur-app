@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
@@ -9,7 +9,7 @@ import {
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../lib/dictation';
-import { openSystemAudioPreferences, type SystemAudioPermissionState } from '../lib/meetings';
+import { openSystemAudioPreferences, type SystemAudioAccess, type SystemAudioPermissionState } from '../lib/meetings';
 
 interface PermissionStatus {
   microphone: MicPermissionStatus;
@@ -39,7 +39,10 @@ export function PermissionsBanner() {
   const [micResetError, setMicResetError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
 
+  const systemAudioRevision = useRef(0);
+
   const checkPermissions = useCallback(async () => {
+    const revision = systemAudioRevision.current;
     setChecking(true);
     try {
       // Check accessibility permission via Tauri command
@@ -62,11 +65,11 @@ export function PermissionsBanner() {
         micStatus = 'unknown';
       }
 
-      setPermissions({
+      setPermissions((current) => ({
         microphone: micStatus,
         accessibility: hasAccessibility ? 'granted' : 'denied',
-        systemAudio,
-      });
+        systemAudio: revision === systemAudioRevision.current ? systemAudio : current.systemAudio,
+      }));
     } catch (error) {
       console.error('Failed to check permissions:', error);
     } finally {
@@ -85,9 +88,10 @@ export function PermissionsBanner() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    listen<SystemAudioPermissionState>('system-audio-permission-changed', (event) => {
-      setPermissions((current) => ({ ...current, systemAudio: event.payload }));
-      if (event.payload === 'denied') setDismissed(false);
+    listen<SystemAudioAccess>('system-audio-permission-changed', (event) => {
+      ++systemAudioRevision.current;
+      setPermissions((current) => ({ ...current, systemAudio: event.payload.permission }));
+      if (event.payload.permission === 'denied') setDismissed(false);
     }).then((fn) => {
       if (disposed) fn(); else unlisten = fn;
     }).catch(() => {

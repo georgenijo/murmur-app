@@ -390,7 +390,10 @@ function App() {
     onSetupStatusChange: handleQuerySetupStatusChange,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
-  const updater = useAutoUpdater({ automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD });
+  const updater = useAutoUpdater({
+    automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD,
+    setupComplete: onboardingState === 'done' && modelReady === true,
+  });
 
   const {
     checkForUpdate,

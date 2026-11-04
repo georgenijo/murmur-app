@@ -2189,6 +2189,25 @@ fn render_meeting_text(segments: &[MeetingSegment]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn system_audio_permission_event_matches_frontend_contract() {
+        let payload = SystemAudioAccess {
+            permission: SystemAudioPermissionState::Denied,
+            capture_ready: false,
+            audio_flowing: false,
+            needs_relaunch: true,
+        };
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../src/lib/fixtures/system-audio-access.json"
+        ))
+        .unwrap();
+        assert_eq!(serde_json::to_value(payload).unwrap(), fixture);
+        assert_eq!(
+            serde_json::from_value::<SystemAudioAccess>(fixture).unwrap(),
+            payload
+        );
+    }
+
     fn granted(audio_flowing: bool) -> SystemAudioAccess {
         SystemAudioAccess {
             permission: SystemAudioPermissionState::Granted,
