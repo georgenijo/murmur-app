@@ -41,6 +41,13 @@ the macOS traffic-light inset and fixes the height and typography used by the
 main window, onboarding, and Settings editors. Production never renders fake
 traffic lights.
 
+`lib/windowLifecycle.tsx` owns each workspace webview's `data-fullscreen`
+attribute, initialized from the native window and refreshed on native resize.
+In fullscreen, `windowLifecycle.css` sets `--ui-window-controls-inset` to zero;
+ordinary windows retain the zoom-compensated inset. AppKit owns the hover-reveal
+strip and restores the real controls on exit. Main and Diagnostics mount the
+lifecycle in React so every native resize subscription is disposed on unmount.
+
 `components/ui/DashboardPrimitives.tsx` owns bounded variants for dashboard
 surfaces, actions, navigation rows, section headings, statistic groups, and
 secondary-page headers. Feature callers choose a named variant and cannot pass

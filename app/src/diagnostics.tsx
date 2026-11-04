@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { DiagnosticsWindowApp } from './components/log-viewer/DiagnosticsWindowApp';
 import { hydrateSettingsFromDisk } from './lib/settings';
+import { NativeWindowLifecycle } from './lib/windowLifecycle';
 import './styles.css';
 
 const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
@@ -10,7 +11,9 @@ const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement)
 hydrateSettingsFromDisk().finally(() => {
   root.render(
     <React.StrictMode>
-      <DiagnosticsWindowApp />
+      <NativeWindowLifecycle showAfterPaint={false}>
+        <DiagnosticsWindowApp />
+      </NativeWindowLifecycle>
     </React.StrictMode>,
   );
 });
