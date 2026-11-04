@@ -373,7 +373,7 @@ pub(crate) enum AudioWorkerEvent {
     },
 }
 
-/// Content-free observations from the production capture worker. These are
+/// Content-free observations from the production capture worker and supervisor. These are
 /// retained for the bounded startup benchmark and production dictation diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioStartupDiagnostic {
@@ -392,6 +392,8 @@ pub(crate) enum AudioStartupDiagnostic {
         accepted_to_ready_ms: u64,
     },
     WorkerInvariantViolation,
+    /// Supervisor-only marker for this logical recording's own issued Stop.
+    RecordingStopIssued,
     HelperReady {
         resolve_ms: u64,
         signature_ms: u64,

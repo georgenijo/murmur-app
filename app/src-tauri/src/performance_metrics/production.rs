@@ -351,7 +351,8 @@ impl ProductionCaptureV1 {
                 }
                 _ => {}
             },
-            AudioStartupDiagnostic::SetupStep { .. } => {}
+            AudioStartupDiagnostic::SetupStep { .. }
+            | AudioStartupDiagnostic::RecordingStopIssued => {}
             AudioStartupDiagnostic::SetupStepDuration { step, elapsed_ms } => match step {
                 CaptureSetupStep::DeviceResolution => {
                     self.device_resolution_ms = Some(elapsed_ms);
@@ -390,6 +391,8 @@ impl ProductionCaptureV1 {
 
 struct PendingProduction {
     run: ProductionRunV1,
+    completed_run_id: Option<String>,
+    recording_stop_issued: bool,
     context_key: Option<String>,
     backend_plan: Option<String>,
     samples_empty: Option<bool>,
@@ -425,13 +428,29 @@ impl ProductionAccumulator {
         let Some(machine_id) = self.machine_id.clone() else {
             return;
         };
-        // Delayed persistence must not let old operations grow this map forever.
-        while self.runs.len() >= 8 {
-            self.runs.pop_first();
+        // Bound unfinished observations independently of delivered rows so a
+        // quick next recording cannot evict a queued teardown checkpoint.
+        while self
+            .runs
+            .values()
+            .filter(|run| run.completed_run_id.is_none())
+            .count()
+            >= 8
+        {
+            let Some(id) = self
+                .runs
+                .iter()
+                .find_map(|(id, run)| run.completed_run_id.is_none().then_some(*id))
+            else {
+                break;
+            };
+            self.runs.remove(&id);
         }
         self.runs.insert(
             recording_id,
             PendingProduction {
+                completed_run_id: None,
+                recording_stop_issued: false,
                 context_key: None,
                 backend_plan: None,
                 samples_empty: None,
@@ -467,6 +486,16 @@ impl ProductionAccumulator {
     }
     pub(crate) fn observe(&mut self, id: u64, event: AudioStartupDiagnostic) -> bool {
         if let Some(run) = self.runs.get_mut(&id) {
+            if matches!(event, AudioStartupDiagnostic::RecordingStopIssued) {
+                // A completed standby run cannot acquire a stop binding later.
+                if run.completed_run_id.is_none() {
+                    run.recording_stop_issued = true;
+                }
+                return false;
+            }
+            if run.completed_run_id.is_some() && !run.recording_stop_issued {
+                return false;
+            }
             if let AudioStartupDiagnostic::BackendPlan {
                 primary,
                 fallback,
@@ -485,12 +514,21 @@ impl ProductionAccumulator {
                         | AudioStartupDiagnostic::CycleReady { .. }
                         | AudioStartupDiagnostic::WorkerStopped { .. }
                         | AudioStartupDiagnostic::WorkerInvariantViolation
+                        | AudioStartupDiagnostic::AttemptFailed {
+                            failure_kind: AudioFailureKind::TerminationUnconfirmed,
+                            ..
+                        }
                 );
         }
         false
     }
     pub(crate) fn failure(&mut self, id: u64, kind: AudioFailureKind) -> bool {
         if let Some(run) = self.runs.get_mut(&id) {
+            // InitializationFailed can be forwarded after standby delivery.
+            // Only an in-flight run or its own bound cold Stop owns failures.
+            if run.completed_run_id.is_some() && !run.recording_stop_issued {
+                return false;
+            }
             if run.run.capture.failure_kind == Some(kind) {
                 return false;
             }
@@ -516,10 +554,49 @@ impl ProductionAccumulator {
     }
 
     pub(crate) fn active_snapshot(&self, id: u64) -> Option<ProductionRunV1> {
-        self.runs.get(&id).map(|pending| pending.run.clone())
+        let pending = self.runs.get(&id)?;
+        pending
+            .completed_run_id
+            .is_none()
+            .then(|| pending.run.clone())
     }
-    pub(crate) fn remove(&mut self, id: u64) {
-        self.runs.remove(&id);
+    pub(crate) fn persistence_snapshot(
+        &self,
+        id: u64,
+    ) -> Option<(ProductionRunV1, Option<String>)> {
+        let pending = self.runs.get(&id)?;
+        // Recheck after the async continuation acquires the operation lock:
+        // an in-flight checkpoint can become a completed standby checkpoint.
+        if pending.completed_run_id.is_some() && !pending.recording_stop_issued {
+            return None;
+        }
+        Some((pending.run.clone(), pending.completed_run_id.clone()))
+    }
+    pub(crate) fn completed(&mut self, id: u64, run: &super::PerformanceRunV1) {
+        if let Some(pending) = self.runs.get_mut(&id) {
+            // Freeze the delivered outcome's derived fields (including real
+            // zero-sample evidence), and bind every late write to this UUID.
+            if let Some(production) = &run.production {
+                pending.run.capture.zero_sample_success = production.capture.zero_sample_success;
+            }
+            pending.completed_run_id = Some(run.run_id.clone());
+        }
+        while self
+            .runs
+            .values()
+            .filter(|run| run.completed_run_id.is_some())
+            .count()
+            > super::repository::MAX_COMPLETED_RUNS
+        {
+            let Some(id) = self
+                .runs
+                .iter()
+                .find_map(|(id, run)| run.completed_run_id.is_some().then_some(*id))
+            else {
+                break;
+            };
+            self.runs.remove(&id);
+        }
     }
     pub(crate) fn clear(&mut self) {
         self.runs.clear();

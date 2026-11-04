@@ -169,19 +169,27 @@ impl PerformanceMetrics {
             .production
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .active_snapshot(id);
-        let Some(snapshot) = snapshot else {
+            .persistence_snapshot(id);
+        let Some((snapshot, completed_run_id)) = snapshot else {
             return Ok(());
         };
         let result = self
             .repository(PerformanceStoreOperationV1::Update)
             .and_then(|repository| {
+                if let Some(run_id) = &completed_run_id {
+                    return repository.update_completed_capture(run_id, id, &snapshot.capture);
+                }
                 repository.update_active(
                     &RunCorrelationV1::Dictation { recording_id: id },
                     |active| active.production = Some(snapshot.clone()),
                 )
             });
         self.observe(result).map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush_production_for_test(&self, id: u64) {
+        self.persist_production(id).unwrap();
     }
 
     pub(crate) fn health(&self) -> PerformanceStoreHealthV1 {
@@ -475,11 +483,13 @@ impl PerformanceMetrics {
                     }
                     let completed =
                         repository.complete(correlation, outcome, stages, input, runtimes)?;
-                    if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                    if let (RunCorrelationV1::Dictation { recording_id }, Some(run)) =
+                        (correlation, &completed)
+                    {
                         self.production
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .remove(*recording_id);
+                            .completed(*recording_id, run);
                     }
                     Ok(completed)
                 });
@@ -1118,6 +1128,326 @@ mod production_persistence_tests {
         );
         metrics.begin_dictation(id, Vec::new()).unwrap();
     }
+
+    fn finish(metrics: &PerformanceMetrics, id: u64) -> PerformanceRunV1 {
+        metrics.production_sample_count(id, 16_000);
+        metrics
+            .complete(
+                &RunCorrelationV1::Dictation { recording_id: id },
+                RunOutcomeV1::Success,
+                vec![StageTimingV1::measured(
+                    PerformanceStageV1::TotalProcessing,
+                    10,
+                )],
+                Some(ContentFreeInputSummaryV1::audio(1_000)),
+                None,
+            )
+            .unwrap()
+            .unwrap()
+    }
+
+    fn observe_and_persist(metrics: &PerformanceMetrics, id: u64, event: AudioStartupDiagnostic) {
+        metrics.observe_production_capture(id, event);
+        // Deterministically exercise the same off-path continuation without
+        // depending on thread-pool scheduling or sleeping in the test.
+        metrics.persist_production(id).unwrap();
+    }
+
+    #[test]
+    fn late_worker_exit_atomically_amends_only_delivered_capture_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 18);
+        metrics.observe_production_capture(18, AudioStartupDiagnostic::RecordingStopIssued);
+        let mut expected = finish(&metrics, 18);
+        assert_eq!(
+            metrics.get(&expected.run_id).unwrap(),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            expected
+                .production
+                .as_ref()
+                .unwrap()
+                .capture
+                .stop_to_worker_exit_ms,
+            None
+        );
+        observe_and_persist(
+            &metrics,
+            18,
+            AudioStartupDiagnostic::WorkerStopped { elapsed_ms: 212 },
+        );
+        let capture = &mut expected.production.as_mut().unwrap().capture;
+        capture.stop_to_worker_exit_ms = Some(212);
+        capture.worker_invariant_violation = Some(false);
+        // Outcome, timestamps, delivery stages, resources, cohort and sample
+        // evidence all remain byte-for-byte equivalent after JSON roundtrip.
+        assert_eq!(
+            metrics.get(&expected.run_id).unwrap(),
+            Some(expected.clone())
+        );
+        let restarted = PerformanceMetrics::default();
+        restarted
+            .initialize(temp.path().to_path_buf(), None)
+            .unwrap();
+        assert_eq!(restarted.get(&expected.run_id).unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn never_finishing_teardown_is_durable_immediately_and_survives_shutdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let run = {
+            let metrics = PerformanceMetrics::default();
+            metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+            begin(&metrics, 18);
+            finish(&metrics, 18)
+            // No WorkerStopped, cleanup event, or timeout callback ever runs.
+        };
+        let restarted = PerformanceMetrics::default();
+        restarted
+            .initialize(temp.path().to_path_buf(), None)
+            .unwrap();
+        assert_eq!(restarted.get(&run.run_id).unwrap(), Some(run.clone()));
+        let capture = &run.production.as_ref().unwrap().capture;
+        assert_eq!(capture.stop_to_worker_exit_ms, None);
+        assert_eq!(capture.worker_invariant_violation, None);
+        assert_eq!(run.outcome, RunOutcomeV1::Success);
+    }
+
+    #[test]
+    fn late_unconfirmed_termination_and_invariants_survive_later_healthy_exit() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        for id in 1..=3 {
+            begin(&metrics, id);
+            metrics.observe_production_capture(id, AudioStartupDiagnostic::RecordingStopIssued);
+            let run = finish(&metrics, id);
+            if id == 1 {
+                metrics.production_capture_failure(
+                    id,
+                    crate::audio::AudioFailureKind::TerminationUnconfirmed,
+                );
+            } else if id == 2 {
+                metrics.observe_production_capture(
+                    id,
+                    AudioStartupDiagnostic::WorkerInvariantViolation,
+                );
+            } else {
+                // The worker's typed failure observation must also schedule a
+                // checkpoint, including after completion.
+                assert!(metrics.production.lock().unwrap().observe(
+                    id,
+                    AudioStartupDiagnostic::AttemptFailed {
+                        backend: CaptureBackend::Auhal,
+                        resolution_pass: 1,
+                        attempt_index: 1,
+                        failure_kind: crate::audio::AudioFailureKind::TerminationUnconfirmed,
+                        active_elapsed_ms: 20,
+                        failure_phase: crate::audio::AudioInitPhase::Runtime,
+                    }
+                ));
+            }
+            metrics.persist_production(id).unwrap();
+            assert_eq!(
+                metrics
+                    .get(&run.run_id)
+                    .unwrap()
+                    .unwrap()
+                    .production
+                    .unwrap()
+                    .capture
+                    .worker_invariant_violation,
+                Some(true)
+            );
+            observe_and_persist(
+                &metrics,
+                id,
+                AudioStartupDiagnostic::WorkerStopped { elapsed_ms: 250 },
+            );
+            let stored = metrics.get(&run.run_id).unwrap().unwrap();
+            let capture = &stored.production.as_ref().unwrap().capture;
+            assert_eq!(capture.worker_invariant_violation, Some(true));
+            assert_eq!(capture.stop_to_worker_exit_ms, Some(250));
+        }
+    }
+
+    #[test]
+    fn quick_next_recording_keeps_each_late_exit_on_its_own_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 18);
+        metrics.observe_production_capture(18, AudioStartupDiagnostic::RecordingStopIssued);
+        let previous = finish(&metrics, 18);
+        begin(&metrics, 19);
+        metrics.observe_production_capture(19, AudioStartupDiagnostic::RecordingStopIssued);
+        observe_and_persist(
+            &metrics,
+            18,
+            AudioStartupDiagnostic::WorkerStopped { elapsed_ms: 212 },
+        );
+        let next = finish(&metrics, 19);
+        assert_eq!(
+            next.production
+                .as_ref()
+                .unwrap()
+                .capture
+                .stop_to_worker_exit_ms,
+            None
+        );
+        // Delivered rows have their own bounded retention; the ninth quick
+        // follow-up must not evict this older run's pending teardown evidence.
+        for id in 20..=28 {
+            begin(&metrics, id);
+            finish(&metrics, id);
+        }
+        observe_and_persist(
+            &metrics,
+            18,
+            AudioStartupDiagnostic::WorkerInvariantViolation,
+        );
+        observe_and_persist(
+            &metrics,
+            19,
+            AudioStartupDiagnostic::WorkerStopped { elapsed_ms: 3 },
+        );
+        let previous = metrics
+            .get(&previous.run_id)
+            .unwrap()
+            .unwrap()
+            .production
+            .unwrap()
+            .capture;
+        let next = metrics
+            .get(&next.run_id)
+            .unwrap()
+            .unwrap()
+            .production
+            .unwrap()
+            .capture;
+        assert_eq!(previous.stop_to_worker_exit_ms, Some(212));
+        assert_eq!(previous.worker_invariant_violation, Some(true));
+        assert_eq!(next.stop_to_worker_exit_ms, Some(3));
+        assert_eq!(next.worker_invariant_violation, Some(false));
+    }
+
+    #[test]
+    fn clear_and_reused_recording_id_cannot_resurrect_or_amend_the_wrong_uuid() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 18);
+        let old = finish(&metrics, 18);
+        metrics.clear().unwrap();
+        observe_and_persist(
+            &metrics,
+            18,
+            AudioStartupDiagnostic::WorkerStopped { elapsed_ms: 212 },
+        );
+        assert!(metrics.list(200).unwrap().runs.is_empty());
+        begin(&metrics, 18);
+        let new = finish(&metrics, 18);
+        let capture = production::ProductionCaptureV1 {
+            stop_to_worker_exit_ms: Some(999),
+            worker_invariant_violation: Some(true),
+            ..Default::default()
+        };
+        let repository = metrics
+            .repository(PerformanceStoreOperationV1::Update)
+            .unwrap();
+        assert!(!repository
+            .update_completed_capture(&old.run_id, 18, &capture)
+            .unwrap());
+        assert!(!repository
+            .update_completed_capture(&new.run_id, 19, &capture)
+            .unwrap());
+        assert_eq!(metrics.get(&new.run_id).unwrap(), Some(new));
+    }
+
+    #[test]
+    fn normal_exit_before_delivery_and_standby_missing_exit_are_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        for (id, exit) in [(1, Some(20)), (2, None)] {
+            begin(&metrics, id);
+            if let Some(elapsed_ms) = exit {
+                observe_and_persist(
+                    &metrics,
+                    id,
+                    AudioStartupDiagnostic::WorkerStopped { elapsed_ms },
+                );
+            }
+            let run = finish(&metrics, id);
+            metrics.persist_production(id).unwrap();
+            assert_eq!(metrics.get(&run.run_id).unwrap(), Some(run.clone()));
+            assert_eq!(run.production.unwrap().capture.stop_to_worker_exit_ms, exit);
+        }
+    }
+
+    #[test]
+    fn completed_standby_rejects_failure_routes_and_cannot_acquire_a_late_stop_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 18);
+        let completed = finish(&metrics, 18);
+        for late_binding in [false, true] {
+            if late_binding {
+                metrics.observe_production_capture(18, AudioStartupDiagnostic::RecordingStopIssued);
+            }
+            metrics.production_capture_failure(
+                18,
+                crate::audio::AudioFailureKind::TerminationUnconfirmed,
+            );
+            metrics
+                .observe_production_capture(18, AudioStartupDiagnostic::WorkerInvariantViolation);
+            metrics.persist_production(18).unwrap();
+            assert_eq!(
+                metrics.get(&completed.run_id).unwrap(),
+                Some(completed.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn queued_failure_checkpoint_rechecks_standby_completion_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 18);
+        let completed = {
+            // Exercise the interleaving between the SQLite completion and the
+            // accumulator's completion marker. The queued async write cannot
+            // acquire the operation lock until the transition is published.
+            let _operation = metrics.operation_lock.lock().unwrap();
+            let repository = metrics
+                .repository(PerformanceStoreOperationV1::Complete)
+                .unwrap();
+            let completed = repository
+                .complete(
+                    &RunCorrelationV1::Dictation { recording_id: 18 },
+                    RunOutcomeV1::Success,
+                    Vec::new(),
+                    None,
+                    None,
+                )
+                .unwrap()
+                .unwrap();
+            metrics.production_capture_failure(
+                18,
+                crate::audio::AudioFailureKind::TerminationUnconfirmed,
+            );
+            metrics.production.lock().unwrap().completed(18, &completed);
+            completed
+        };
+        metrics.persist_production(18).unwrap();
+        assert_eq!(metrics.get(&completed.run_id).unwrap(), Some(completed));
+    }
+
     #[test]
     fn production_capture_survives_restart_and_clear_discards_delayed_updates() {
         let temp = tempfile::tempdir().unwrap();

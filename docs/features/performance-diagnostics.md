@@ -341,7 +341,7 @@ companion versions, unknown fields, invalid identifiers, or invalid measurements
 fail closed. The companion lives in the same active/completed run JSON, so the
 existing 200-run retention, restart interruption, Clear epoch, and recovery
 rules apply. Clear also drops pending in-memory observations; delayed updates
-only update an existing active row and cannot recreate a cleared observation.
+only update an existing row and cannot recreate a cleared observation.
 
 The capture worker sends bounded typed observations through the supervisor's
 exact `AudioOwner::Dictation(recording_id)` checks. These preserve helper
@@ -366,9 +366,57 @@ The helper timing totals include observed attempts; stream-open and first-PCM
 measurements describe the successful/current attempt. A failed attempt remains
 visible even if fallback later succeeds. Stale-owner events and unconfirmed
 termination mark worker-invariant evidence when their run is still retained in
-the bounded pending set. A confirmed normal helper stop supplies healthy
+the bounded pending set and is in flight or bound to its own cold Stop.
+A confirmed normal helper stop supplies healthy
 termination evidence; unobserved invariants remain unavailable. This is not an
 OS-wide count of arbitrary processes.
+
+Delivery still completes and persists the performance run immediately, without
+waiting for helper teardown. Alongside at most eight unfinished observations,
+the accumulator retains up to 200 completed dictations, each bound to its exact
+recording ID and completed run UUID. The supervisor separately binds the exact
+logical recording owner when that recording's own cold stop actually sends
+`Stop`, after its release tail. Only a `WorkerStopped` belonging to this bound
+stop is forwarded to diagnostics. Standby handoff does not acquire the binding;
+later standby disable, expiry, or recovery Stops cannot supply exit timing or
+healthy termination evidence for the already delivered dictation. Resuming a
+worker clears the binding before accepting the next recording owner, so that
+owner's later cold stop can amend only its own run. Unconfirmed standby
+retirement also cannot supply an invariant observation for the delivered run.
+The supervisor sends an in-memory `RecordingStopIssued` observation at the same
+accepted cold Stop. The diagnostics accumulator can acquire this binding only
+before run completion. Both typed capture observations and
+`InitializationFailed` → `production_capture_failure` reject completed runs
+without it. The async persistence continuation rechecks the same eligibility
+after acquiring the operation lock, so an in-flight checkpoint that races
+standby completion cannot write later. Standby failures still reach ordinary
+recovery/presentation handling; they cannot change the completed dictation's
+`failureKind` or invariant evidence through either diagnostics route. This
+binding is ephemeral and adds no persisted JSON field or schema version.
+A late recording-stop `WorkerStopped` or worker-invariant observation schedules
+an off-path SQLite transaction that rereads that UUID and
+checks its dictation recording ID before updating only capture teardown
+evidence. A confirmed exit fills `stopToWorkerExitMs` and sets
+`workerInvariantViolation` to false unless a true violation was already
+observed. Unconfirmed recording teardown forwards an invariant observation even
+after sealed delivery; a subsequent confirmed exit cannot erase it. The transaction
+preserves the original outcome, timestamps, stage durations, sample evidence,
+resources, and retention order. It only updates existing rows, so Clear, pruning,
+and store recovery cannot resurrect old diagnostics. Reopening or refreshing
+Runs reads the amended evidence; the original completion event describes the
+evidence available at delivery.
+
+Atomic amendment keeps the completed result durable even if teardown never
+finishes or Murmur quits before an exit event/persistence task runs. There is no
+deferred completion to flush or timeout to wait for: `stopToWorkerExitMs: null`
+and `workerInvariantViolation: null` retain the existing unknown/missing
+semantics until evidence is observed and persisted. A quit can lose an
+as-yet-unwritten late observation, but cannot lose the already completed run.
+Eviction or restart leaves the last durable evidence intact. No synthetic zero,
+healthy termination inference, new JSON field, schema migration, or SQLite
+`user_version` change is introduced. Standby snapshots still have no
+per-recording helper exit measurement; ordinary exit-before-delivery runs
+persist their exit evidence at completion as before.
 
 Compatibility matches local installation identity, numeric OS version,
 architecture, release/development mode, microphone selection and cached device

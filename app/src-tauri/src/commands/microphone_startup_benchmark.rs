@@ -526,6 +526,7 @@ impl CycleAccumulator {
             | AudioStartupDiagnostic::GesturePcm { .. }
             | AudioStartupDiagnostic::GestureReady { .. }
             | AudioStartupDiagnostic::WorkerInvariantViolation
+            | AudioStartupDiagnostic::RecordingStopIssued
             | AudioStartupDiagnostic::HelperReady { .. }
             | AudioStartupDiagnostic::HelperPreparation { .. }
             | AudioStartupDiagnostic::SetupStepDuration { .. }
