@@ -7,6 +7,7 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 840, h
     test('Voice commands search reveals without switch focus; editor handoff focuses once', async ({ page }, testInfo) => {
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&appearance=${appearance}`);
       const search = page.getByRole('searchbox', { name: 'Search all settings' });
+      if (width < 768) await page.getByRole('button', { name: 'Search settings', exact: true }).click();
       await search.fill('Voice commands');
       await page.getByRole('button', { name: /Voice commands & spoken formatting.*Enable custom commands/ }).click();
       const toggle = page.getByRole('switch', { name: 'Voice commands & spoken formatting', exact: true });
@@ -19,6 +20,7 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 840, h
       await expect(toggle).toBeFocused();
       await expect(toggle).toHaveAttribute('aria-checked', 'false');
       await testInfo.attach(`voice-commands-${appearance}.png`, { body: await page.screenshot(), contentType: 'image/png' });
+      if (width < 768) await page.getByRole('button', { name: 'Search settings', exact: true }).click();
       await search.click();
       // Outlast the bounded reveal retry, so a delayed refocus would be detected.
       await page.waitForTimeout(550);
