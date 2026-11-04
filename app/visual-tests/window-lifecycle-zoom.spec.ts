@@ -1,3 +1,4 @@
+import { expectNativeChromeClearance } from './native-chrome';
 import { expect, test } from '@playwright/test';
 
 for (const appearance of ['light', 'dark']) {
@@ -69,5 +70,48 @@ for (const appearance of ['light', 'dark']) {
       await page.keyboard.press('Control++');
       await expect(header).toHaveCSS('padding-left', '70px');
     });
+  }
+}
+
+for (const appearance of ['light', 'dark']) {
+  for (const workspace of ['Home expanded', 'Home collapsed', 'Settings', 'Diagnostics']) {
+    for (const zoom of [0.5, 1, 1.1, 1.2]) {
+      test(`${workspace} native chrome clearance at ${zoom} zoom (${appearance})`, async ({ page }) => {
+        await page.goto(`/visual-fixtures.html?state=${workspace.startsWith('Home') ? 'idle' : 'settings'}&appearance=${appearance}&checklist=hidden`);
+        await expect(page.locator('[data-visual-ready="true"]')).toBeVisible();
+        if (workspace === 'Diagnostics') {
+          await page.evaluate(async () => {
+            const paths = ['/node_modules/.vite/deps/react.js', '/node_modules/.vite/deps/react-dom_client.js', '/src/components/log-viewer/DiagnosticsWindowApp.tsx'];
+            const [{ default: React }, { default: ReactDOM }, { DiagnosticsWindowApp }] = await Promise.all(paths.map(path => import(path)));
+            document.getElementById('root')!.style.display = 'none';
+            const host = document.createElement('div');
+            host.id = 'zoom-diagnostics';
+            document.body.append(host);
+            ReactDOM.createRoot(host).render(React.createElement(DiagnosticsWindowApp));
+          });
+          await expect(page.locator('#zoom-diagnostics .ui-window-header')).toContainText('Diagnostics');
+        }
+        await page.evaluate(async () => {
+          const path = '/src/lib/windowLifecycle.tsx';
+          const { startWindowLifecycle } = await import(path);
+          startWindowLifecycle(async () => {}, false);
+        });
+        for (let count = 0; count < Math.abs(Math.round((zoom - 1) * 10)); count++) {
+          await page.keyboard.press(zoom < 1 ? 'Control+-' : 'Control++');
+        }
+        await page.setViewportSize({ width: Math.round(840 / zoom), height: Math.round(620 / zoom) });
+        if (workspace.startsWith('Home')) {
+          await expect(page.locator('.home-sidebar')).toHaveAttribute('data-collapsed', String(zoom > 1));
+          const collapse = workspace === 'Home collapsed';
+          const action = page.getByRole('button', { name: collapse ? 'Collapse sidebar' : 'Expand sidebar', exact: true });
+          if (await action.count()) await action.click();
+          await expect(page.locator('.home-sidebar')).toHaveAttribute('data-collapsed', String(collapse));
+        }
+        const header = page.locator(workspace === 'Diagnostics' ? '#zoom-diagnostics .ui-window-header' : '#root .ui-window-header');
+        expect(await header.evaluate(el => parseFloat(getComputedStyle(el).paddingLeft))).toBeCloseTo(80 / zoom, 2);
+        await expectNativeChromeClearance(page, header, zoom, workspace.startsWith('Home') ? workspace === 'Home expanded' : undefined);
+        if (workspace === 'Settings' && zoom === 1.1) await expect(page.locator('.settings-sidebar')).toHaveCSS('width', '56px');
+      });
+    }
   }
 }
