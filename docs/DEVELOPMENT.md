@@ -49,9 +49,10 @@ cd app && npm test                                   # frontend vitest
 cd app && npx tsc --noEmit                           # TypeScript
 ```
 
-CI runs `cargo check`, `cargo test`, `npx tsc --noEmit`, **and** `npm test` on
-every push to main and on PRs. A tsc-only check is not sufficient verification —
-several regressions have shipped past it.
+CI runs clippy, the nextest unit suite, `npx tsc --noEmit`, **and** `npm test`
+on PRs and on pushes to main (see [CI and merging](#ci-and-merging)). A
+tsc-only check is not sufficient verification — several regressions have
+shipped past it.
 
 Model-backed integration tests are opt-in so CI never downloads hundreds of
 megabytes:
@@ -177,6 +178,31 @@ Use the in-app setup assistant. If you are placing files manually, Whisper
 
 Core ML models are managed by FluidAudio under
 `~/Library/Application Support/FluidAudio/Models/`.
+
+## CI and merging
+
+`ci-pass` is the only required status check, and `main` requires branches to be
+up to date before merging (`strict`). Strict stays on: it catches PRs that are
+green alone but break together, such as one PR adding tests that build a struct
+while another adds a required field to it.
+
+- **Push to main skips an already-verified tree.** `scripts/ci_verified_tree.sh`
+  finds the PR whose merge commit was pushed. If the commit's tree matches that
+  PR head and the head's latest `ci-pass` succeeded, CI skips the tests and
+  `ci-pass` passes with that reason in its log. Admin merges over a stale,
+  pending, or red PR, conflict resolutions, and direct pushes run the full
+  suite. When the push changes Cargo manifests or `ci.yml`, the Rust jobs still
+  build, without running tests, to refresh the Rust caches. Only `main` saves
+  those caches.
+- **Merge trains instead of a rerun cascade.** Every merge makes the other open
+  PRs `BEHIND`. Instead of updating and retesting each one, combine the green
+  PRs: `scripts/merge_train.sh 918 919 921` merges their heads onto current
+  `main` in a `train/…` branch and opens one PR. CI runs once on the
+  combination. Merge that PR with `gh pr merge --merge`, not a squash, so GitHub
+  marks every constituent PR merged and the push to `main` is skipped as
+  verified. If a PR conflicts, the train stops; update that PR and rerun.
+  GitHub's merge queue would automate this, but it is unavailable for
+  personal-account repositories.
 
 ## Release
 

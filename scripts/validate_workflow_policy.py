@@ -32,6 +32,12 @@ CI_BUILD_JOBS = (
     "rust-lint",
     "rust-macos",
 )
+CI_RUST_TEST_STEPS = (
+    "Run tests",
+    "Run capture worker unit tests",
+    "Run hardware-free integration suites",
+    "Run deterministic dictation evaluation",
+)
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
@@ -144,8 +150,27 @@ def validate_ci(ci: str) -> int:
     dependency_audit = job_block(ci, "dependency-audit")
     ci_pass = job_block(ci, "ci-pass")
     assert scalar(changes, "if") == CI_GUARD
-    # Every build job waits on `changes`; validation belongs in `policy`.
-    assert "run:" not in changes, "changes must only filter paths"
+    # Every build job waits on `changes`; validation belongs in `policy`. The
+    # one exception is the push-only verified-tree lookup, a few API calls.
+    verified = named_step_block(
+        changes, "Check whether this tree already passed on its PR", 6
+    )
+    assert "if: github.event_name == 'push'" in verified
+    assert "run: bash scripts/ci_verified_tree.sh" in verified
+    assert changes.count("run:") == 1, "changes must only filter paths"
+    assert (
+        "verified: ${{ steps.verified.outputs.verified == 'true' }}" in changes
+    )
+    # A verified push skips tests, never `ci-pass` itself.
+    for job_name, job, steps in (
+        ("rust-lint", rust_lint, ("Check Rust formatting",)),
+        ("rust-macos", rust_macos, CI_RUST_TEST_STEPS),
+    ):
+        for step in steps:
+            assert (
+                "if: needs.changes.outputs.verified != 'true'"
+                in named_step_block(job, step, 6)
+            ), f"{job_name}: {step} must skip on a verified push"
     assert scalar(policy, "if") == CI_GUARD
     assert "needs:" not in policy, "policy must start without waiting"
     for job in CI_BUILD_JOBS:

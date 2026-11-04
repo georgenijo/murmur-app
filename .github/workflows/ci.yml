@@ -10,17 +10,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Path filtering only. Keep this job seconds-long: every build job waits on
-  # it, so validation work belongs in `policy`, which runs alongside the builds.
+  # Path filtering only, plus the push-to-main verified-tree lookup. Keep this
+  # job seconds-long: every build job waits on it, so validation work belongs
+  # in `policy`, which runs alongside the builds.
   changes:
     if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    # A verified push skips the frontend jobs and every Rust test step. The
+    # Rust jobs still run, build-only, when dependency manifests or this
+    # workflow changed, because only main saves the Rust caches PRs restore.
     outputs:
-      frontend: ${{ steps.filter.outputs.frontend }}
-      rust: ${{ steps.filter.outputs.rust }}
-      github: ${{ steps.filter.outputs.github }}
+      verified: ${{ steps.verified.outputs.verified == 'true' }}
+      frontend: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}
+      rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}
+      github: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check whether this tree already passed on its PR
+        id: verified
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: bash scripts/ci_verified_tree.sh
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -55,6 +73,12 @@ jobs:
               - 'rustfmt.toml'
             github:
               - '.github/**'
+            rust-cache:
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+              - '.github/workflows/ci.yml'
 
   policy:
     if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
@@ -197,6 +221,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Check Rust formatting
+        if: needs.changes.outputs.verified != 'true'
         run: cd app/src-tauri && cargo fmt --all -- --check
 
       - name: Install capture worker build tools
@@ -307,6 +332,7 @@ jobs:
           --lib --test llm_sidecar_integration --test transform_flow_integration
 
       - name: Run tests
+        if: needs.changes.outputs.verified != 'true'
         # --workspace --lib covers protocol crate unit tests. The capture helper
         # is bin-only, so its tests stay in the following dedicated step.
         # nextest gives every test its own process, so tests that share process
@@ -315,9 +341,11 @@ jobs:
         run: cd app/src-tauri && cargo nextest run --workspace --exclude murmur-llm-sidecar --lib
 
       - name: Run capture worker unit tests
+        if: needs.changes.outputs.verified != 'true'
         run: cd app/src-tauri && cargo test -p murmur-capture-helper
 
       - name: Run hardware-free integration suites
+        if: needs.changes.outputs.verified != 'true'
         # These two drive the real supervisors against mock helpers — no model,
         # no microphone, no permissions. The remaining suites in `tests/` need
         # hardware or downloaded models and stay out of CI deliberately.
@@ -328,6 +356,7 @@ jobs:
           -- --test-threads=1
 
       - name: Run deterministic dictation evaluation
+        if: needs.changes.outputs.verified != 'true'
         run: >-
           cd app/src-tauri &&
           target/debug/examples/murmur-eval deterministic
@@ -391,4 +420,8 @@ jobs:
             fi
           done
 
-          echo "CI passed"
+          if [ "${{ needs.changes.outputs.verified }}" = "true" ]; then
+            echo "CI passed: this tree already passed ci-pass on its PR head; tests skipped"
+          else
+            echo "CI passed"
+          fi

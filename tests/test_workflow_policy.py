@@ -86,7 +86,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         for old in (
             "        uses: dtolnay/rust-toolchain@1.96.0\n",
             "          components: clippy, rustfmt\n",
-            "      - name: Check Rust formatting\n"
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
             "        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings\n",
             "        run: cd app/src-tauri && cargo nextest run --workspace --exclude murmur-llm-sidecar --lib\n",
@@ -166,6 +165,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(
             "      - name: Run capture worker unit tests\n"
+            "        if: needs.changes.outputs.verified != 'true'\n"
             "        run: cd app/src-tauri && cargo test -p murmur-capture-helper\n\n",
             "",
             1,
@@ -213,6 +213,29 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         self.assertNotEqual(workflow, mutated)
         with self.assertRaises(AssertionError):
             validate_ci(mutated)
+
+    def test_verified_push_skips_tests_but_not_ci_pass(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in (
+            ("        if: github.event_name == 'push'\n", ""),
+            ("        run: bash scripts/ci_verified_tree.sh\n", "        run: true\n"),
+            ("      verified: ${{ steps.verified.outputs.verified == 'true' }}\n", ""),
+            (
+                "      - name: Run tests\n"
+                "        if: needs.changes.outputs.verified != 'true'\n",
+                "      - name: Run tests\n",
+            ),
+            (
+                "      - name: Run deterministic dictation evaluation\n"
+                "        if: needs.changes.outputs.verified != 'true'\n",
+                "      - name: Run deterministic dictation evaluation\n",
+            ),
+        ):
+            with self.subTest(policy=old.strip()):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
 
     def test_rust_caches_are_saved_only_from_main(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
