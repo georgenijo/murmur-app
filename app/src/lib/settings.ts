@@ -698,6 +698,7 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export const STORAGE_KEY = 'dictation-settings';
+export const ONBOARDING_KEY = 'murmur_onboarding_complete';
 export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
 export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
 export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
@@ -769,6 +770,7 @@ export function clampOverlayVerticalOffset(value: unknown): number {
 
 type PersistedSettings = Omit<Partial<Settings>, 'overlayPlacement'> & {
   settingsVersion?: unknown;
+  launchOnboardingComplete?: unknown;
   /** v6 and earlier also stored `below_menu_bar`, migrated to `floating_pill`. */
   overlayPlacement?: string;
   /** @deprecated v6 and earlier. Belonged to the removed dot field. */
@@ -799,9 +801,26 @@ function writePersistedSettings(settings: Settings): void {
   const blob = JSON.stringify({
     ...settings,
     settingsVersion: SETTINGS_VERSION,
+    launchOnboardingComplete: localStorage.getItem(ONBOARDING_KEY) === 'true',
   });
   localStorage.setItem(STORAGE_KEY, blob);
   mirrorToDisk(blob);
+}
+
+/** Mirror only the onboarding gate; preserve the exact current settings blob.
+ * Native setup uses it on later launches. Capture still waits for configure.
+ */
+export function persistOnboardingComplete(complete: boolean): void {
+  try {
+    const cached = localStorage.getItem(STORAGE_KEY);
+    if (cached === null) return;
+    const value: unknown = JSON.parse(cached);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    if ((value as { launchOnboardingComplete?: unknown }).launchOnboardingComplete === complete) return;
+    const blob = JSON.stringify({ ...value, launchOnboardingComplete: complete });
+    localStorage.setItem(STORAGE_KEY, blob);
+    mirrorToDisk(blob);
+  } catch { /* An unavailable mirror falls back to frontend-driven startup. */ }
 }
 
 // Only the main window rewrites a migrated snapshot or seeds a fresh install.
@@ -828,6 +847,14 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
       // `loadSettings()` re-runs the full validation gauntlet over whatever is
       // in here, so no schema work belongs on this path.
       localStorage.setItem(STORAGE_KEY, blob);
+      // The durable gate survives WebKit eviction with the same settings.
+      // Legacy snapshots retain the existing local flag and get mirrored by
+      // App's onboarding decision; Rust falls back for that first launch.
+      const gate = (JSON.parse(blob) as { launchOnboardingComplete?: unknown }).launchOnboardingComplete;
+      if (ownsSettingsMigrations && typeof gate === 'boolean') {
+        if (gate) localStorage.setItem(ONBOARDING_KEY, 'true');
+        else localStorage.removeItem(ONBOARDING_KEY);
+      }
       return;
     }
     // No durable copy: either a first run, or an existing install whose
@@ -1005,6 +1032,7 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
           ? parsed.settingsVersion
           : 0;
       delete parsed.settingsVersion;
+      delete parsed.launchOnboardingComplete; // Launch metadata is not capture configuration.
 
       // v2: the original overlay calibration preview moved only DOM content,
       // committed on pointer-up, and could persist a +48pt launch displacement.

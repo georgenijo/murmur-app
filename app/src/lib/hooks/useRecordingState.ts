@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { cancelRecording, startRecording, stopRecording } from '../dictation';
+import { cancelRecording, startRecording, stopRecording, type DictationStopTrigger } from '../dictation';
 import type { SmartAutoMicrophoneRequest } from '../settings';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
@@ -304,6 +304,15 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
+    listen<unknown>('recording-cleanup-finished', (event) => {
+      if (cancelled) return;
+      const recordingId = recordingIdFromPayload(event.payload);
+      const current = currentErrorRef.current;
+      if (recordingId !== null && current?.kind === 'cleanup'
+        && current.recordingId === recordingId) clearError(current.id);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
     listen<unknown>('recording-interrupted', (event) => {
       if (cancelled) return;
       const presentation = interruptedPresentationFromPayload(event.payload);
@@ -531,7 +540,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   const handleStart = useCallback(() => beginRecording('toggle'), [beginRecording]);
   const handleHoldStart = useCallback((gestureToken?: string) => beginRecording('hold', gestureToken), [beginRecording]);
 
-  const handleStop = useCallback(async () => {
+  const handleStop = useCallback(async (stopTrigger: DictationStopTrigger = 'other') => {
     flog.info('recording', 'handleStop called', {
       isStopping: isStoppingRef.current, status: statusRef.current,
       recordingStartTime: recordingStartTimeRef.current,
@@ -571,7 +580,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
       flog.info('recording', 'computed duration', { duration });
       statusRef.current = 'processing';
       setStatus('processing');
-      const res = await stopRecording();
+      const res = await stopRecording(stopTrigger);
       if (res.text) {
         setTranscription(res.text);
         // addEntry/updateStats handled by transcription-complete event listener
@@ -602,7 +611,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     flog.info('recording', 'toggleRecording', { status: statusRef.current });
     if (statusRef.current === 'processing' || statusRef.current === 'recovering') return;
     if (statusRef.current === 'recording' || statusRef.current === 'starting') {
-      await handleStop();
+      await handleStop('toggle');
     } else {
       await beginRecording('toggle', gestureToken);
     }

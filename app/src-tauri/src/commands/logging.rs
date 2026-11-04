@@ -21,6 +21,10 @@ pub fn log_frontend(
     // event boundary receives only a constant summary; stable event_code and
     // numeric correlation fields carry the operational meaning.
     drop(message);
+    if event_code.as_deref() == Some("system.launch_frontend_hydrated") {
+        crate::launch::frontend_hydrated();
+        return;
+    }
     let event_code = event_code
         .as_deref()
         .and_then(crate::telemetry::canonical_event_code);

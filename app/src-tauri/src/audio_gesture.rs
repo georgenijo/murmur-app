@@ -134,8 +134,9 @@ mod tests {
     fn rejected_busy_transcribing_file_request_clears_its_stamp() {
         clear_pending();
         let token = emit(Candidate::new(), false);
-        let start = claim(Some(&token)); // same entry operation, before the busy guard
-        drop(start); // command returns busy_transcribing_file without accepting
+        // Same entry operation, before the busy guard; the command then returns
+        // busy_transcribing_file without accepting.
+        let _ = claim(Some(&token));
         assert!(PENDING.lock_or_recover().is_empty());
         let toolbar = claim(None).accepted(false);
         assert!(!toolbar.expected);
@@ -150,8 +151,7 @@ mod tests {
         let toolbar = claim(None).accepted(false); // toolbar wins native admission
         assert!(!toolbar.expected);
         assert!(toolbar.timing.is_none());
-        let keyboard_request = claim(Some(&token)); // now rejected as already starting
-        drop(keyboard_request);
+        let _ = claim(Some(&token)); // now rejected as already starting
         assert!(PENDING.lock_or_recover().is_empty());
         assert!(claim(None).accepted(false).timing.is_none());
     }

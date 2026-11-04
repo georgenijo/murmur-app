@@ -494,6 +494,7 @@ pub(crate) fn handle_audio_lifecycle(
         AudioLifecycleEvent::InitializationFailed { error, .. } => {
             emit_status(&app_handle, "error", Some(&error));
         }
+        AudioLifecycleEvent::CleanupFinished => {}
         AudioLifecycleEvent::RecoveryStalled => emit_status(
             &app_handle,
             "error",

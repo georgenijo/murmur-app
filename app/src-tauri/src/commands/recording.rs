@@ -3563,6 +3563,7 @@ pub async fn configure_dictation(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    crate::launch::frontend_configuring();
     let log_metadata = ConfigurationLogMetadata::from_options(&options);
     tracing::info!(
         target: "pipeline",
@@ -4614,9 +4615,14 @@ pub(crate) fn handle_audio_lifecycle(
         |app_handle, recording_id| {
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<State>();
-                if stop_native_recording_for(app_handle.clone(), state, Some(recording_id))
-                    .await
-                    .is_err()
+                if stop_native_recording_for(
+                    app_handle.clone(),
+                    state,
+                    Some(recording_id),
+                    audio_lifecycle::DictationStopTrigger::Other,
+                )
+                .await
+                .is_err()
                 {
                     tracing::error!(
                         target: "pipeline",
@@ -4868,6 +4874,17 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 );
             }
         }
+        AudioLifecycleEvent::CleanupFinished => {
+            complete_dictation_capture_cleanup(&state.app_state, recording_id, |restore_idle| {
+                let _ = app_handle.emit(
+                    "recording-cleanup-finished",
+                    serde_json::json!({ "recordingId": recording_id }),
+                );
+                if restore_idle {
+                    let _ = app_handle.emit("recording-status-changed", "idle");
+                }
+            });
+        }
         AudioLifecycleEvent::RecoveryStalled => {
             if is_current()
                 && app_handle
@@ -5008,6 +5025,28 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
     }
+}
+
+/// Capture completion is independent of ASR completion and stall guidance.
+/// Hold the generation/status lock through publication so a newer recording
+/// cannot be reset by the old owner's trailing unscoped Idle event.
+pub(crate) fn complete_dictation_capture_cleanup(
+    app_state: &AppState,
+    recording_id: u64,
+    publish: impl FnOnce(bool),
+) {
+    let mut dictation = app_state.dictation.lock_or_recover();
+    if app_state.recording_id.load(Ordering::SeqCst) != recording_id {
+        return;
+    }
+    let restore_idle = matches!(
+        dictation.status,
+        DictationStatus::Idle | DictationStatus::Recovering
+    );
+    if restore_idle {
+        transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
+    }
+    publish(restore_idle);
 }
 
 fn publish_recording_ready_if_audio_ready(
@@ -5203,6 +5242,23 @@ pub async fn start_native_recording(
                 }));
             }
             DictationStatus::Idle => {
+                if audio_lifecycle::is_dictation_cleanup_pending(
+                    state.app_state.recording_id.load(Ordering::SeqCst),
+                ) {
+                    // The result has finished, but its capture owner still
+                    // needs cleanup. Keep that generation for failure guidance
+                    // and let confirmed exit restore Idle independently.
+                    let recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
+                    transition_dictation_status(
+                        recording_id,
+                        &mut dictation,
+                        DictationStatus::Recovering,
+                    );
+                    let _ = app_handle.emit("recording-status-changed", "recovering");
+                    return Ok(
+                        serde_json::json!({ "type": "audio_recovering", "state": "recovering" }),
+                    );
+                }
                 // This is a cache-only policy read while the capture lifecycle
                 // is Idle. Its stable ID is passed to the supervisor below,
                 // which freezes it for the whole generation.
@@ -5512,8 +5568,9 @@ pub async fn start_native_recording(
 pub async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
+    stop_trigger: Option<audio_lifecycle::DictationStopTrigger>,
 ) -> Result<serde_json::Value, String> {
-    stop_native_recording_for(app_handle, state, None).await
+    stop_native_recording_for(app_handle, state, None, stop_trigger.unwrap_or_default()).await
 }
 
 fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u64>) -> bool {
@@ -5527,6 +5584,7 @@ async fn stop_native_recording_for(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     expected_recording_id: Option<u64>,
+    stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
@@ -5602,6 +5660,9 @@ async fn stop_native_recording_for(
     // Claim the release at the accepted transition, before teardown, so a
     // later release queued behind this stop cannot replace it.
     let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
+    // A matching rdev release takes precedence even if another stop arrived
+    // through the webview at the same time. Unknown sources retain speech.
+    let stop_trigger = stop_trigger.resolve(hotkey_release);
     if status == DictationStatus::Starting {
         drop(transition);
         // Cancel the exact owner even if readiness races with this command
@@ -5679,7 +5740,7 @@ async fn stop_native_recording_for(
     let samples = if let Some(capture) = interrupted_capture {
         capture.samples
     } else {
-        audio_lifecycle::stop_dictation_recording(rid).map_err(|e| {
+        audio_lifecycle::stop_dictation_recording(rid, stop_trigger).map_err(|e| {
             emit_dictation_terminal(
                 &state,
                 rid,
@@ -7053,6 +7114,23 @@ pub(crate) mod tests {
         assert!(stop_owner_matches(41, None));
         assert!(stop_owner_matches(41, Some(41)));
         assert!(!stop_owner_matches(42, Some(41)));
+    }
+
+    #[test]
+    fn capture_cleanup_completion_preserves_processing_and_rejects_old_generations() {
+        let state = AppState::default();
+        state.recording_id.store(710, Ordering::SeqCst);
+        state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        complete_dictation_capture_cleanup(&state, 710, |restore_idle| assert!(!restore_idle));
+        assert_eq!(
+            state.dictation.lock_or_recover().status,
+            DictationStatus::Processing
+        );
+        complete_dictation_capture_cleanup(&state, 709, |_| panic!("stale cleanup cannot publish"));
+        assert_eq!(
+            state.dictation.lock_or_recover().status,
+            DictationStatus::Processing
+        );
     }
 
     #[test]

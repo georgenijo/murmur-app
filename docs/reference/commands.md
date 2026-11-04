@@ -16,7 +16,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `get_status` | — | `Result<JSON, String>` | Current status, model name, and language. |
 | `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Pushes settings into `DictationState`: model, language, auto-paste and delay (clamped 10–500), VAD sensitivity (0–100), punctuation, file output, vocabulary entries, voice commands, app profiles, cleanup/formatting/correction toggles, code-vocab folder, idle timeout. A model change reselects the runtime backend, deferring across an active recording generation. Rejects conflicting vocabulary/command configurations without mutating prior state. |
 | `start_native_recording` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>`, `origin: Option<String>`, `gesture_token: Option<String>` | `Result<JSON, String>` | Consumes the originating keyboard gesture token at entry (omitted for toolbar/overlay), then resolves the immutable context, claims the single audio owner, starts model preparation, emits `starting`, and returns `{"type":"recording_starting","state":"starting","recordingId":N}` without waiting for Core Audio. Readiness later emits `recording`. |
-| `stop_native_recording` | — | `Result<JSON, String>` | Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
+| `stop_native_recording` | `stopTrigger?: "hold_release" \| "toggle" \| "overlay" \| "auto_stop" \| "other"` | `Result<JSON, String>` | Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
 | `cancel_native_recording` | `expected_recording_id: Option<u64>` | `Result<(), String>` | With an expected ID, acts only when that generation still owns dictation. Cancels initialization or capture through a brief `recovering` transition to `idle`, or discards a processing run without delivery. Detached audio cleanup continues asynchronously. |
 | `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
@@ -173,7 +173,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Starts the rdev listener in `hold_down`, `double_tap`, or `both`. Validates mode and the modifier/F1–F20 key allowlist; requires Accessibility. |
+| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Synchronizes Rust-owned listener registration in `hold_down`, `double_tap`, or `both`; identical registration preserves detector state and reuses a thread prepared by native setup. Validates mode and the modifier/F1–F20 key allowlist; requires Accessibility. |
 | `stop_keyboard_listener` | — | `()` | Stops processing key events; the thread stays alive. |
 | `update_keyboard_key` | `hotkey: String` | `Result<(), String>` | Validates and changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
 | `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
@@ -381,7 +381,7 @@ frontend.
 |---------|-----------|---------|-------------|
 | `get_log_contents` | `lines: usize` | `String` | Last N lines of the pretty log file. |
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
-| `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>` | `()` | Routes a frontend message through Rust tracing with `source="frontend"`, optionally correlated to a transform pass. |
+| `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>`, `event_code: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code, optionally correlated to a transform pass. The main hydration code records native monotonic launch time once. Message contents are discarded. |
 
 ## Mode file exchange (`commands/mode_exchange.rs`)
 

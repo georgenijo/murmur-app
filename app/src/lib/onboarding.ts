@@ -1,3 +1,4 @@
+import { ONBOARDING_KEY, persistOnboardingComplete } from './settings';
 import { resetDiscovery } from './discovery';
 
 /**
@@ -7,10 +8,9 @@ import { resetDiscovery } from './discovery';
  * installs are grandfathered at mount: if the mic + accessibility permissions
  * and any model are already in place, App sets the flag silently so upgrades
  * never see the wizard. Stored in localStorage alongside settings,
- * stats, and history.
+ * stats, and history. The main window mirrors the completion gate into durable
+ * settings for conservative native launch preparation on the next boot.
  */
-
-const ONBOARDING_KEY = 'murmur_onboarding_complete';
 
 export function isOnboardingComplete(): boolean {
   try {
@@ -25,6 +25,7 @@ export function isOnboardingComplete(): boolean {
 export function markOnboardingComplete(): void {
   try {
     localStorage.setItem(ONBOARDING_KEY, 'true');
+    persistOnboardingComplete(true);
   } catch {
     // Non-fatal: the wizard will show again next launch.
   }
@@ -34,6 +35,7 @@ export function markOnboardingComplete(): void {
 export function resetOnboarding(): void {
   try {
     localStorage.removeItem(ONBOARDING_KEY);
+    persistOnboardingComplete(false);
   } catch {
     // Non-fatal.
   }

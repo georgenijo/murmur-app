@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 
-import { buildConfigureOptions, cancelRecording, startRecording } from './dictation';
+import { buildConfigureOptions, cancelRecording, startRecording, stopRecording } from './dictation';
 import { DEFAULT_SETTINGS } from './settings';
 
 describe('buildConfigureOptions', () => {
@@ -63,5 +63,14 @@ describe('startRecording gesture correlation', () => {
     expect(invoke).toHaveBeenNthCalledWith(2, 'start_native_recording', {
       deviceName: null, smartAuto: null, origin: 'toggle',
     });
+  });
+});
+
+describe('stopRecording', () => {
+  it('sends the stop trigger explicitly and keeps legacy callers conservative', async () => {
+    await stopRecording('toggle');
+    expect(invoke).toHaveBeenLastCalledWith('stop_native_recording', { stopTrigger: 'toggle' });
+    await stopRecording();
+    expect(invoke).toHaveBeenLastCalledWith('stop_native_recording', { stopTrigger: 'other' });
   });
 });

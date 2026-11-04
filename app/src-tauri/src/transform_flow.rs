@@ -1360,6 +1360,7 @@ pub(crate) fn handle_audio_lifecycle(
                 .emit_state(ReviewState::Recovering, None);
             }
         }
+        crate::audio_lifecycle::AudioLifecycleEvent::CleanupFinished => {}
         crate::audio_lifecycle::AudioLifecycleEvent::RecoveryStalled => {
             if matches!(
                 state.app_state.transform_status(),

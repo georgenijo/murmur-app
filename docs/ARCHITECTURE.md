@@ -50,7 +50,9 @@ invoke('start_native_recording')
     |-- immutable DictationContextSnapshot resolved (global settings + per-app profile)
     +-- spawn_model_preparation() warms the model *concurrently with speech*
     |
-invoke('stop_native_recording') --> audio thread joins, samples resampled to 16kHz mono
+invoke('stop_native_recording') --> trigger-selected tail, drain, samples resampled to 16kHz mono
+    |-- cold teardown: checked native stop + drained seal may deliver before helper exit/join
+    |-- standby: retain 50 ms before live-buffer snapshot; capture ownership stays with the worker
     |
 Silero VAD trims silence (NoSpeech short-circuits the whole pipeline)
     |
@@ -485,6 +487,43 @@ Four SQLite databases and the Assistant mirror, all stored locally:
 Transform diagnostic captures (explicitly consented, content-bearing) live under `diagnostics/transforms/transform-captures/` in a `0700` directory with `0600` files: max 3 retained, 7-day expiry, symlink targets refused, no export path.
 
 ---
+
+## Launch preparation
+
+`main.rs` anchors a monotonic clock at process entry. After telemetry becomes
+available, Rust setup reads the same bounded, quarantine-aware `settings.json`
+as `load_settings_blob`. Native preparation requires settings schema version 7,
+an explicitly completed durable onboarding gate, valid model/key/mode IDs,
+Accessibility permission, and `disabled: false`. Missing, unreadable, legacy,
+or ambiguous settings retain the frontend-driven startup path.
+
+`launch.rs` starts the single shared rdev thread before unrelated store setup
+and prepares models with the catalog's existing `warm_on_startup` policy on a
+blocking worker. `set_is_main_thread(false)` still precedes `rdev::listen`.
+Detectors remain disarmed until the frontend has configured capture and
+subscribed; setup never opens a microphone or applies partial capture settings.
+Identical frontend listener registration is idempotent in Rust. A stopped or
+changed registration still resets the detectors normally. Frontend confirmation
+preserves the already warmed model. A native worker rechecks launch ownership
+under the backend lock so it cannot replace a newer frontend model selection.
+
+The main window mirrors onboarding completion/reset in the settings blob as
+`launchOnboardingComplete`; this metadata is excluded from capture settings.
+Durable gate hydration precedes App mounting. Legacy local flags migrate on the
+first frontend boot, so upgrades use the frontend fallback once. Native startup
+does not reproduce the permission/model checks used to grandfather old installs.
+
+This change retains the main window's pre-render history/stats/theme hydration.
+History mutations use React snapshots; stats use synchronous read/modify/write;
+theme startup can repair and persist a library and reconcile active selections.
+Deferring only the reads could overwrite durable data with empty or stale
+snapshots. A later change needs mutation replay and a theme readiness boundary.
+Native stores also remain synchronous: knowledge feeds the frozen recording
+context, while Assistant, Query, diagnostics, and meeting recovery currently
+assume initialization before their commands run. No webview declarations change.
+
+Content-free `system.launch_*` events carry `launch_elapsed_ms` in the structured
+log/event ring; see [Performance diagnostics](features/performance-diagnostics.md#launch-milestones).
 
 ## Frontend (`app/src/`)
 

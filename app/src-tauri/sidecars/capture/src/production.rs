@@ -190,6 +190,31 @@ fn flush_stopped_ring(
     }
 }
 
+/// A Stopped receipt seals PCM only after a successful native stop and flush.
+/// A native stop failure reports the existing content-free Failure frame;
+/// the host must retain ownership and confirm process exit before delivery.
+fn finish_dictation_stop<W: Write>(
+    writer: &mut W,
+    capture_id: u64,
+    nonce: SessionNonce,
+    backend: CaptureBackend,
+    retained_before_stop: u64,
+    stop: impl FnOnce() -> Result<(), FailureCode>,
+    flush: impl FnOnce(&mut W) -> Result<u64, ()>,
+) -> Result<(), ()> {
+    let message = match stop() {
+        Ok(()) => ProductionHelperMessage::Stopped {
+            retained_samples: flush(writer)?,
+        },
+        Err(code) => ProductionHelperMessage::Failure {
+            code,
+            backend,
+            retained_samples: retained_before_stop,
+        },
+    };
+    write_production_control(writer, capture_id, nonce, &message).map_err(|_| ())
+}
+
 pub(super) struct SpscRing {
     slots: Box<[UnsafeCell<f32>]>,
     head: AtomicUsize,
@@ -837,13 +862,13 @@ pub(super) enum MicrophoneSetupObservation {
 
 impl CaptureStream {
     pub(super) fn stop(&mut self) {
+        let _ = self.stop_checked();
+    }
+
+    fn stop_checked(&mut self) -> Result<(), FailureCode> {
         match self {
-            Self::Cpal(stream) => {
-                let _ = stream.pause();
-            }
-            Self::Auhal(unit) => {
-                let _ = unit.stop();
-            }
+            Self::Cpal(stream) => stream.pause().map_err(|_| FailureCode::StreamError),
+            Self::Auhal(unit) => unit.stop().map_err(|_| FailureCode::StreamError),
         }
     }
 }
@@ -2672,6 +2697,51 @@ mod tests {
     }
 
     #[test]
+    fn native_stop_failure_cannot_emit_stopped_or_flush_unsealed_pcm() {
+        let nonce = [7_u8; 16];
+        let mut wire = Vec::new();
+        finish_dictation_stop(
+            &mut wire,
+            9,
+            nonce,
+            CaptureBackend::Auhal,
+            100,
+            || Err(FailureCode::StreamError),
+            |_| panic!("failed native stop must not drain a still-producing ring"),
+        )
+        .unwrap();
+        let mut reader = wire.as_slice();
+        assert!(matches!(
+            read_production_frame::<ProductionHelperMessage>(&mut reader, 9, nonce).unwrap(),
+            ProductionFrame::Control(ProductionHelperMessage::Failure {
+                code: FailureCode::StreamError,
+                retained_samples: 100,
+                ..
+            })
+        ));
+        assert!(
+            reader.is_empty(),
+            "a failed native stop must never append Stopped"
+        );
+    }
+
+    #[test]
+    fn failed_final_flush_cannot_emit_stopped() {
+        let mut wire = Vec::new();
+        assert!(finish_dictation_stop(
+            &mut wire,
+            9,
+            [7_u8; 16],
+            CaptureBackend::Auhal,
+            100,
+            || Ok(()),
+            |_| Err(()),
+        )
+        .is_err());
+        assert!(wire.is_empty());
+    }
+
+    #[test]
     fn stop_flushes_every_ring_sample_before_stopped() {
         loom::model(|| {
             let nonce = [7_u8; 16];
@@ -2685,17 +2755,28 @@ mod tests {
             let mut scratch = [0.0_f32; 16];
             let mut sequence = 3;
             let mut retained = 100;
-            flush_stopped_ring(
-                &ring,
+            finish_dictation_stop(
                 &mut wire,
                 9,
                 nonce,
-                48_000,
-                0,
-                &mut scratch,
-                &mut sequence,
-                &mut retained,
                 CaptureBackend::Auhal,
+                retained,
+                || Ok(()),
+                |writer| {
+                    flush_stopped_ring(
+                        &ring,
+                        writer,
+                        9,
+                        nonce,
+                        48_000,
+                        0,
+                        &mut scratch,
+                        &mut sequence,
+                        &mut retained,
+                        CaptureBackend::Auhal,
+                    )?;
+                    Ok(retained)
+                },
             )
             .unwrap();
             assert_eq!(ring.len(), 0);
@@ -2711,6 +2792,15 @@ mod tests {
                         assert_eq!((pcm.sequence, pcm.sample_offset), expected);
                         expected = (expected.0 + 1, expected.1 + pcm.samples.len() as u64);
                         samples.extend(pcm.samples);
+                    }
+                    ProductionFrame::Control(ProductionHelperMessage::Stopped {
+                        retained_samples,
+                    }) => {
+                        assert_eq!(retained_samples, 140);
+                        assert!(
+                            reader.is_empty(),
+                            "Stopped must follow every final PCM frame"
+                        );
                     }
                     ProductionFrame::Control(_) => panic!("retained capture repeats Active"),
                 }
@@ -3372,30 +3462,32 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                 }
                 match control_rx.try_recv() {
                     Ok(control @ (ProductionHostMessage::Stop | ProductionHostMessage::Cancel)) => {
-                        stream.stop();
-                        if matches!(control, ProductionHostMessage::Stop) {
-                            flush_stopped_ring(
-                                &ring,
-                                &mut stdout,
-                                capture_id,
-                                nonce,
-                                sample_rate,
-                                started_at.elapsed().as_nanos().min(u64::MAX as u128) as u64,
-                                &mut scratch,
-                                &mut sequence,
-                                &mut retained,
-                                backend,
-                            )?;
-                        }
-                        write_production_control(
+                        finish_dictation_stop(
                             &mut stdout,
                             capture_id,
                             nonce,
-                            &ProductionHelperMessage::Stopped {
-                                retained_samples: retained,
+                            backend,
+                            retained,
+                            || stream.stop_checked(),
+                            |writer| {
+                                if matches!(control, ProductionHostMessage::Stop) {
+                                    flush_stopped_ring(
+                                        &ring,
+                                        writer,
+                                        capture_id,
+                                        nonce,
+                                        sample_rate,
+                                        started_at.elapsed().as_nanos().min(u64::MAX as u128)
+                                            as u64,
+                                        &mut scratch,
+                                        &mut sequence,
+                                        &mut retained,
+                                        backend,
+                                    )?;
+                                }
+                                Ok(retained)
                             },
-                        )
-                        .map_err(|_| ())?;
+                        )?;
                         return Ok(());
                     }
                     Ok(_) => return Err(()),

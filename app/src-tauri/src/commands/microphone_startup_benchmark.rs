@@ -747,6 +747,7 @@ pub(crate) fn handle_audio_lifecycle(
         AudioLifecycleEvent::InitializationFailed { kind, .. } => Some(CycleEvent::Failed {
             kind: startup_failure_kind(kind),
         }),
+        AudioLifecycleEvent::CleanupFinished => return,
         AudioLifecycleEvent::Recovering { .. } | AudioLifecycleEvent::RecoveryStalled => {
             Some(CycleEvent::Recovering)
         }

@@ -348,6 +348,18 @@ start-to-first-retained-PCM, total readiness, confirmed stop-to-helper-exit,
 fallback attempt/result, and stable failure evidence. Readiness and stop/error
 checkpoints persist off the capture path. Completion records whether the actual
 retained sample array was empty; a missing measurement never becomes zero.
+The `audio.stop_tail_applied` log records the accepted stop trigger and applied
+`release_tail_ms` (0 for explicit toggle stops with standby disabled; 50 for
+all standby stops, held-key releases and conservative overlay/auto-stop/unknown
+sources). The supervisor owns that tail;
+helper stop-to-exit timing starts when the worker receives Stop and excludes it.
+On the cold teardown path, a checked successful native stop and validated
+complete drain permit an early handoff: `audio.sealed_recording_delivered` marks
+the handoff before exit confirmation. Standby retains its 50 ms margin and
+does not use Stop/Stopped or the sealed-drain handoff. The unchanged timed
+standby snapshot is not a delivery fence for PCM delayed beyond 50 ms. `captureFinalization`
+then measures through sealed-sample delivery and resampling; exit confirmation and thread join may
+continue concurrently with inference while capture ownership stays busy.
 The helper timing totals include observed attempts; stream-open and first-PCM
 measurements describe the successful/current attempt. A failed attempt remains
 visible even if fallback later succeeds. Stale-owner events and unconfirmed
@@ -444,3 +456,27 @@ from #919's v4 `homophoneContext` stage. The transactional 4 → 5 metadata step
 preserves tables and historical V1 JSON; v3 → v5 applies both additive steps.
 Run and companion `schemaVersion` remain 1. Rust and TypeScript accept absent
 historical `gesture` fields and validate all durations/statuses when present.
+
+## Launch milestones
+
+The structured event log and Diagnostics event ring contain five content-free
+launch milestones, with monotonic `launch_elapsed_ms` measured from executable
+`main` entry (or `run` entry on mobile). The process-start event is emitted once
+telemetry is initialized, with elapsed zero; its log timestamp is the later
+emission time. Use the elapsed field for launch comparisons.
+
+| Event code | Boundary |
+|------------|----------|
+| `system.launch_process_start` | Clock origin at executable entry; backfilled after telemetry setup |
+| `system.launch_native_setup_done` | Rust setup, including stores and tray, returned successfully |
+| `system.launch_listener_armed` | Shared keyboard thread initialized and entering rdev; detectors still require frontend configuration/subscription |
+| `system.launch_model_ready` | First ready ASR runtime, including frontend/recording fallback |
+| `system.launch_frontend_hydrated` | Main settings, history/stats, and theme caches settled, immediately before React root rendering |
+
+The listener event marks entry into the blocking rdev listener, not a verified
+macOS event-tap receipt. `keyboard.listener_failed` reports a later start failure;
+actual shortcut interaction establishes working input. A disabled app, incomplete
+onboarding, unavailable Accessibility, missing settings, or a model without the
+catalog startup-warm policy may omit early listener/model milestones. Failures
+use the existing frontend path. There is no new SQLite run kind or retained
+content; the telemetry boundary permits only the fixed code and elapsed integer.

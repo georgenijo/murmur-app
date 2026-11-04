@@ -55,7 +55,7 @@ const DEVICE_RERESOLUTION_MAX_PASSES: usize = 3;
 const COOPERATIVE_STOP_GRACE: Duration = Duration::from_millis(250);
 /// Audio kept after a dictation stop request before the helper is told to
 /// stop, because a key release often lands while the last word is still
-/// sounding (#829). Zero restores the pre-tail behavior.
+/// sounding (#829). The supervisor selects zero for explicit toggle stops.
 pub(crate) const DICTATION_RELEASE_TAIL: Duration = Duration::from_millis(50);
 const CAPTURE_TERMINATION_BUDGET: Duration = Duration::from_secs(2);
 const CAPTURE_PROTOCOL_RESERVE: Duration = Duration::from_secs(2);
@@ -355,6 +355,11 @@ pub(crate) enum AudioWorkerEvent {
     RuntimeFailed {
         owner: crate::audio_lifecycle::AudioOwner,
         failure: AudioFailure,
+    },
+    /// Final PCM and Stopped validated. The helper may still own the device;
+    /// only ThreadExited releases the supervisor's capture ownership.
+    RecordingSealed {
+        owner: crate::audio_lifecycle::AudioOwner,
     },
     StreamStopped {
         owner: crate::audio_lifecycle::AudioOwner,
@@ -1252,14 +1257,14 @@ pub fn start_query_capture_audio(
     crate::audio_lifecycle::start_query_recording(app_handle, device_id, query_pass_id)
 }
 
-enum HelperRead {
+pub(crate) enum HelperRead {
     Frame(ProductionFrame<ProductionHelperMessage>),
     Invalid,
 }
 
 /// What ended a read of helper frames after a stop request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StopReadOutcome {
+pub(crate) enum StopReadOutcome {
     /// The read window (release tail or drain budget) elapsed.
     Deadline,
     /// The helper flushed its ring and confirmed the stop.
@@ -1269,8 +1274,15 @@ enum StopReadOutcome {
     Ended,
 }
 
+impl StopReadOutcome {
+    fn fully_drained(self, received_samples: u64) -> bool {
+        matches!(self, Self::Stopped { retained_samples } if retained_samples == received_samples)
+    }
+}
+
 /// Accepts valid microphone PCM until `deadline` or a terminal frame. Used
-/// for the dictation release tail and for the post-`Stop` ring drain (#829).
+/// for the post-`Stop` ring drain (#829). The supervisor retains the release
+/// tail through normal live capture before sending Stop.
 fn read_stopping_frames(
     reader_rx: &mpsc::Receiver<HelperRead>,
     deadline: Instant,
@@ -1308,6 +1320,29 @@ fn read_stopping_frames(
             Err(RecvTimeoutError::Timeout) => return StopReadOutcome::Deadline,
         }
     }
+}
+
+/// Production drain-to-supervisor handoff. Only validated final PCM followed
+/// by an exact Stopped receipt may seal the recording before process exit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn drain_stopping_recording(
+    reader: &Receiver<HelperRead>,
+    deadline: Instant,
+    sequence: &mut u64,
+    sample_rate: Option<u32>,
+    owner: crate::audio_lifecycle::AudioOwner,
+    events: &AudioWorkerEventSender,
+    received: &mut u64,
+    accept: &mut impl FnMut(&[f32]),
+) -> StopReadOutcome {
+    let outcome = read_stopping_frames(reader, deadline, sequence, sample_rate, &mut |samples| {
+        *received += samples.len() as u64;
+        accept(samples);
+    });
+    if owner.dictation_id().is_some() && outcome.fully_drained(*received) {
+        let _ = events.send(AudioWorkerEvent::RecordingSealed { owner });
+    }
+    outcome
 }
 
 enum AttemptResult {
@@ -2326,7 +2361,7 @@ fn run_backend(
             };
         }
         match command_receiver.try_recv() {
-            command @ (Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected)) => {
+            Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 let stop_started = Instant::now();
                 end_permission_prompt_pause(
                     &mut permission_prompt_started,
@@ -2337,7 +2372,6 @@ fn run_backend(
                 );
                 let retains_samples = owner.retains_samples();
                 let mut accept = |samples: &[f32]| {
-                    received_samples += samples.len() as u64;
                     if retains_samples {
                         shared
                             .lock()
@@ -2345,53 +2379,40 @@ fn run_backend(
                             .append_pcm(samples, sample_rate.unwrap_or(16_000));
                     }
                 };
-                let tail = if command.is_ok() && owner.dictation_id().is_some() {
-                    DICTATION_RELEASE_TAIL
-                } else {
-                    Duration::ZERO
-                };
-                let tail_outcome = if tail.is_zero() {
-                    StopReadOutcome::Deadline
-                } else {
-                    read_stopping_frames(
-                        &reader_rx,
-                        stop_started + tail,
-                        &mut expected_sequence,
-                        sample_rate,
-                        &mut accept,
-                    )
-                };
                 // Keep reading after Stop: the helper flushes its ring as PCM
                 // before Stopped, and frames already in the pipe are the last
                 // audio of the recording.
                 let drain_started = Instant::now();
-                let drain_outcome = if tail_outcome == StopReadOutcome::Deadline
-                    && write_production_control(
-                        &mut input,
-                        capture_id,
-                        nonce,
-                        &ProductionHostMessage::Stop,
-                    )
-                    .is_ok()
+                let drain_outcome = if write_production_control(
+                    &mut input,
+                    capture_id,
+                    nonce,
+                    &ProductionHostMessage::Stop,
+                )
+                .is_ok()
                 {
-                    read_stopping_frames(
+                    drain_stopping_recording(
                         &reader_rx,
                         drain_started + COOPERATIVE_STOP_GRACE,
                         &mut expected_sequence,
                         sample_rate,
+                        owner,
+                        event_sender,
+                        &mut received_samples,
                         &mut accept,
                     )
                 } else {
                     StopReadOutcome::Ended
                 };
                 let drain_elapsed = drain_started.elapsed();
-                let stop_sent = tail_outcome == StopReadOutcome::Deadline;
+                // The drain handoff has sealed only a successful complete
+                // recording. No more PCM is accepted while confirming exit.
                 let terminated = terminate_helper_within(
                     child,
                     Some(input),
                     capture_id,
                     nonce,
-                    (!stop_sent).then_some(ProductionHostMessage::Stop),
+                    None,
                     drain_started,
                 );
                 let terminated = match terminated {
@@ -2414,7 +2435,6 @@ fn run_backend(
                         target: "audio",
                         capture_id,
                         stop_to_exit_ms = stop_started.elapsed().as_millis() as u64,
-                        release_tail_ms = tail.as_millis() as u64,
                         stop_drain_ms = drain_elapsed.as_millis() as u64,
                         stop_drain = drain,
                         unreceived_samples,

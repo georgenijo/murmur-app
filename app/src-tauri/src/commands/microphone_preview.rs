@@ -56,6 +56,7 @@ pub(crate) fn handle_audio_lifecycle(
         AudioLifecycleEvent::InitializationFailed { error, kind, .. } => {
             preview.set_error_if(preview_id, kind.as_str(), error)
         }
+        AudioLifecycleEvent::CleanupFinished => false,
         AudioLifecycleEvent::RecoveryStalled => preview.set_error_if(
             preview_id,
             "stop_timeout",

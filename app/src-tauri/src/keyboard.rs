@@ -1518,6 +1518,12 @@ fn handle_paste_last_chord(event_type: &EventType) -> bool {
     false
 }
 
+/// Registration must re-arm detectors after an rdev error, even when the
+/// frontend confirms the same shortcut as before.
+pub(crate) fn dictation_listener_active() -> bool {
+    LISTENER_ACTIVE.load(Ordering::SeqCst)
+}
+
 /// Start the keyboard listener. Spawns the rdev listener thread if not already running.
 /// If already running, just updates the target key, mode, and re-enables.
 ///
@@ -1638,6 +1644,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 "rdev listener thread started"
             );
 
+            crate::launch::milestone("system.launch_listener_armed");
             let mut shortcut_modifiers = ShortcutModifierState::default();
             let mut pressed_function_keys = PressedFunctionKeys::default();
             let callback = move |event: Event| {

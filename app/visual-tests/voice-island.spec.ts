@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { surfaceCases } from './surface-matrix';
 import geometry from '../src/components/overlay/overlay-geometry.fixture.json' with { type: 'json' };
 
 for (const placement of ['notch', 'pill'] as const) {
@@ -89,3 +90,53 @@ test('placement and live words live in general settings', async ({ page }) => {
   await expect(live).not.toBeChecked();
   await expect(page.getByRole('combobox', { name: 'Processing animation', exact: true })).toHaveCount(0);
 });
+
+
+for (const { appearance, width, height, label } of surfaceCases()) {
+  test.describe(`Voice overlay controls ${label}`, () => {
+    test.use({ viewport: { width, height }, colorScheme: appearance });
+    for (const geometry of ['notched', 'external', 'fallback', 'pill']) {
+      for (const state of ['idle', 'starting', 'still-connecting', 'recording', 'recovering']) {
+        test(`Expanded ${geometry} ${state} reserves status separately from Mode and quick actions`, async ({ page }) => {
+          await page.emulateMedia({ reducedMotion: 'reduce' });
+          const placement = geometry === 'pill' ? 'pill' : 'notch';
+          await page.goto(`/visual-fixtures.html?state=voice-island&variant=expanded&placement=${placement}&display=${geometry}&controls-state=${state}&appearance=${appearance}`);
+          const controls = page.getByRole('group', { name: 'Quick settings' });
+          await expect(controls).toBeVisible();
+          const row = controls.locator('[data-testid="overlay-controls-row"]');
+          await page.evaluate(() => document.fonts.ready);
+          await expect(row).toHaveCSS('display', 'flex');
+          const mode = row.getByRole('button', { name: /Mode: Everyday/ });
+          const modeSize = await mode.boundingBox();
+          expect(modeSize!.width).toBeGreaterThan(45);
+          await expect(mode).toContainText('Everyday');
+          const positions = await row.locator('button').evaluateAll(elements => elements.map(element => {
+            const { x, right, y, bottom } = element.getBoundingClientRect();
+            return { x, right, y, bottom };
+          }));
+          expect(positions).toHaveLength(4);
+          for (let index = 1; index < positions.length; index++) expect(positions[index].x).toBeGreaterThanOrEqual(positions[index - 1].right);
+          const frame = await page.locator('[data-native-frame]').boundingBox();
+          expect(frame!.width).toBe(241);
+          for (const box of positions) {
+            expect(box.x).toBeGreaterThanOrEqual(frame!.x);
+            expect(box.right).toBeLessThanOrEqual(frame!.x + frame!.width);
+          }
+          if (state !== 'idle') {
+            const status = row.locator('..').locator(':scope > span').last();
+            const statusLayout = await status.evaluate(element => {
+              const statusRect = element.getBoundingClientRect();
+              const row = element.previousElementSibling!;
+              const controlsBottom = Math.max(...[...row.querySelectorAll('button')].map(button => button.getBoundingClientRect().bottom));
+              const frame = element.closest('[data-native-frame]')!.getBoundingClientRect();
+              return { top: statusRect.top, bottom: statusRect.bottom, controlsBottom, frameBottom: frame.bottom };
+            });
+            expect(statusLayout.top).toBeGreaterThanOrEqual(statusLayout.controlsBottom);
+            expect(statusLayout.bottom).toBeLessThanOrEqual(statusLayout.frameBottom + 1);
+            expect(await status.textContent()).toBe(state === 'recording' ? '0:00' : state === 'recovering' ? 'Audio recovering' : state === 'starting' ? 'Connecting' : 'Still connecting');
+          }
+        });
+      }
+    }
+  });
+}
