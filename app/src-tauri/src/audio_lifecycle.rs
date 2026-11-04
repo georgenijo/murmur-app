@@ -495,6 +495,9 @@ struct Attempt {
     standby_policy: StandbyPolicy,
     standby_deadline: Option<Instant>,
     tail_deadline: Option<Instant>,
+    // Logical recording generation whose own stop issued the worker Stop.
+    // Standby retirement/recovery Stops never acquire this binding.
+    recording_stop_owner: Option<AudioOwner>,
     probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
     probe_deadline: Option<Instant>,
     owner: AudioOwner,
@@ -783,6 +786,7 @@ fn run_supervisor(
                                 .resume();
                             public.clear_owner(current.owner);
                             current.owner = request.owner;
+                            current.recording_stop_owner = None;
                             current.app_handle = request.app_handle;
                             current.origin = request.origin;
                             current.accepted_at = Instant::now();
@@ -1174,6 +1178,7 @@ fn handle_start(
         standby_policy: StandbyPolicy::default(),
         standby_deadline: None,
         tail_deadline: None,
+        recording_stop_owner: None,
         probe_deadline: request
             .probe_permit
             .as_ref()
@@ -1388,13 +1393,15 @@ fn handle_worker_event(
         AudioWorkerEvent::TerminationUnconfirmed { failure, .. } => {
             // Delivery may already be complete. Preserve teardown evidence for
             // this exact owner independently of presentation/recovery gates.
-            sink.notify(
-                current.app_handle.as_ref(),
-                owner,
-                AudioLifecycleEvent::StartupDiagnostic(
-                    audio::AudioStartupDiagnostic::WorkerInvariantViolation,
-                ),
-            );
+            if current.standby_deadline.is_none() {
+                sink.notify(
+                    current.app_handle.as_ref(),
+                    owner,
+                    AudioLifecycleEvent::StartupDiagnostic(
+                        audio::AudioStartupDiagnostic::WorkerInvariantViolation,
+                    ),
+                );
+            }
             if current.phase == AttemptPhase::Stopping {
                 // A sealed result is final, but failed teardown is a separate
                 // capture failure. Keep the stop response/pipeline intact.
@@ -1414,6 +1421,15 @@ fn handle_worker_event(
             );
         }
         AudioWorkerEvent::StartupDiagnostic { diagnostic, .. } => {
+            if matches!(
+                diagnostic,
+                audio::AudioStartupDiagnostic::WorkerStopped { .. }
+            ) && current.recording_stop_owner != Some(current.owner)
+            {
+                // Worker identity alone cannot correlate a stop: standby can
+                // retire long after its last dictation has been delivered.
+                return;
+            }
             sink.notify(
                 current.app_handle.as_ref(),
                 current.owner,
@@ -1982,7 +1998,9 @@ fn handle_deadlines_at(
             || current.input_topology_generation
                 != INPUT_TOPOLOGY_GENERATION.load(Ordering::Acquire)
         {
-            let _ = current.command_sender.send(AudioCommand::Stop);
+            if current.command_sender.send(AudioCommand::Stop).is_ok() {
+                current.recording_stop_owner = Some(current.owner);
+            }
             return;
         }
         // Preserve the pre-optimization standby handoff: a 50 ms margin
@@ -4212,6 +4230,10 @@ mod tests {
 
     mod capture_standby_tests {
         include!("capture_standby_tests.rs");
+    }
+
+    mod stop_diagnostics_tests {
+        include!("capture_stop_diagnostics_tests.rs");
     }
 
     #[test]

@@ -387,7 +387,9 @@ Transcription processing is local. Network access occurs for model setup and may
   (from worker Stop receipt, excluding the supervisor's tail). Teardown does
   not delay performance-run completion: late worker exit/invariant evidence
   atomically amends the exact completed dictation's capture diagnostics off the
-  delivery path. See [performance diagnostics](performance-diagnostics.md#production-app-version-comparisons)
+  delivery path, bound to that recording's own issued Stop. Later standby
+  retirement Stops supply no exit timing for the delivered recording.
+  See [performance diagnostics](performance-diagnostics.md#production-app-version-comparisons)
   for persistence, missing-evidence, and shutdown semantics. Standby does
   not send `Stop` or receive `Stopped`; after its 50 ms tail it snapshots the
   current recording and retains the live worker for bounded pre-roll.

@@ -371,13 +371,22 @@ OS-wide count of arbitrary processes.
 Delivery still completes and persists the performance run immediately, without
 waiting for helper teardown. Alongside at most eight unfinished observations,
 the accumulator retains up to 200 completed dictations, each bound to its exact
-recording ID and completed run UUID. A late `WorkerStopped` or worker-invariant
-observation schedules an off-path SQLite transaction that rereads that UUID and
+recording ID and completed run UUID. The supervisor separately binds the exact
+logical recording owner when that recording's own cold stop actually sends
+`Stop`, after its release tail. Only a `WorkerStopped` belonging to this bound
+stop is forwarded to diagnostics. Standby handoff does not acquire the binding;
+later standby disable, expiry, or recovery Stops cannot supply exit timing or
+healthy termination evidence for the already delivered dictation. Resuming a
+worker clears the binding before accepting the next recording owner, so that
+owner's later cold stop can amend only its own run. Unconfirmed standby
+retirement also cannot supply an invariant observation for the delivered run.
+A late recording-stop `WorkerStopped` or worker-invariant observation schedules
+an off-path SQLite transaction that rereads that UUID and
 checks its dictation recording ID before updating only capture teardown
 evidence. A confirmed exit fills `stopToWorkerExitMs` and sets
 `workerInvariantViolation` to false unless a true violation was already
-observed. Unconfirmed termination forwards an invariant observation even after
-sealed delivery; a subsequent confirmed exit cannot erase it. The transaction
+observed. Unconfirmed recording teardown forwards an invariant observation even
+after sealed delivery; a subsequent confirmed exit cannot erase it. The transaction
 preserves the original outcome, timestamps, stage durations, sample evidence,
 resources, and retention order. It only updates existing rows, so Clear, pruning,
 and store recovery cannot resurrect old diagnostics. Reopening or refreshing
