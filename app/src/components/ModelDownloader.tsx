@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { cn } from '../lib/sona-utils';
 import { downloadModel } from '../lib/dictation';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
+import { preferredInstalledModel, useInstalledModels } from '../lib/hooks/useInstalledModels';
 import {
   correlatedModelDownloadAttempt,
   modelDownloadLabel,
@@ -24,8 +25,7 @@ const MODEL_DESCRIPTIONS: Record<string, string> = {
 
 /**
  * Subset of models shown on the initial download screen (first = default).
- * Exported so embedders (the onboarding wizard) can probe exactly the rows
- * the panel renders for on-disk existence.
+ * Installed models outside this curated list are also offered.
  */
 export const DOWNLOAD_MODEL_KEYS: ModelOption[] = [
   'parakeet-tdt-0.6b-v3-coreml',
@@ -33,11 +33,9 @@ export const DOWNLOAD_MODEL_KEYS: ModelOption[] = [
   'large-v3-turbo',
   'base.en',
 ];
-const MODELS = DOWNLOAD_MODEL_KEYS.map((key) => {
-  const opt = AVAILABLE_MODEL_OPTIONS.find((m) => m.value === key);
-  if (!opt) return null;
-  return { name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[key] ?? '' };
-}).filter((model): model is NonNullable<typeof model> => model !== null);
+const MODELS = AVAILABLE_MODEL_OPTIONS.map((opt) => ({
+  name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[opt.value] ?? '',
+}));
 
 interface Props {
   initialModel: ModelOption;
@@ -77,8 +75,12 @@ export function ModelDownloadPanel({
   renderPrimaryAction,
 }: Props) {
   const hardwareGuidance = useModelHardwareGuidance();
+  const offeredModels = [
+    ...DOWNLOAD_MODEL_KEYS,
+    ...MODELS.filter((model) => !DOWNLOAD_MODEL_KEYS.includes(model.name) && installedModels?.[model.name]).map((model) => model.name),
+  ].map((name) => MODELS.find((model) => model.name === name)!);
   const [selected, setSelected] = useState<ModelOption>(
-    MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
+    offeredModels.some((model) => model.name === initialModel) ? initialModel : offeredModels[0].name
   );
   const [downloadState, setDownloadState] = useState<DownloadState>({ phase: 'idle' });
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
@@ -190,7 +192,7 @@ export function ModelDownloadPanel({
         </p>
       )}
       <div className="space-y-2 mb-6">
-          {MODELS.map((model) => (
+          {offeredModels.map((model) => (
             <button
               key={model.name}
               id={`download-model-${model.name}`}
@@ -327,6 +329,7 @@ export function ModelDownloadPanel({
  * onboarding has already completed (e.g. the model file was deleted).
  */
 export function ModelDownloader({ initialModel, onComplete }: Props) {
+  const { installedModels, error, retry } = useInstalledModels();
   return (
     <div className="h-full min-h-0 bg-background flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
@@ -334,9 +337,18 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
           Download a Model
         </h1>
         <p className="text-sm text-on-surface-variant mb-6">
-          A model file is required for transcription. Choose one to download.
+          A model file is required for transcription. Choose an installed model or download one.
         </p>
-        <ModelDownloadPanel initialModel={initialModel} onComplete={onComplete} />
+        {error ? (
+          <div role="alert">
+            <p>Could not check installed models.</p>
+            <button type="button" onClick={retry} className="dialog-pill-btn mt-3 px-4 py-2">Retry</button>
+          </div>
+        ) : installedModels === null ? (
+          <p role="status">Checking installed models…</p>
+        ) : (
+          <ModelDownloadPanel initialModel={preferredInstalledModel(initialModel, installedModels)} installedModels={installedModels} onComplete={onComplete} />
+        )}
       </div>
     </div>
   );

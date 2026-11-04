@@ -11,8 +11,8 @@ import {
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../../lib/dictation';
-import { getModelRuntimeCatalog } from '../../lib/modelRuntime';
-import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
+import { preferredInstalledModel, useInstalledModels } from '../../lib/hooks/useInstalledModels';
+import { ModelDownloadPanel } from '../ModelDownloader';
 import { WindowHeader } from '../ui/WindowHeader';
 import {
   DICTATION_KEY_OPTION_GROUPS,
@@ -64,7 +64,7 @@ interface Props {
   recordingMode: RecordingMode;
   triggerKey: DictationKey;
   /** Called when the user finishes the wizard with the selected local setup. */
-  onComplete: (model: ModelOption, recordingMode: RecordingMode, triggerKey: DictationKey) => void;
+  onComplete: (model: ModelOption, recordingMode: RecordingMode, triggerKey: DictationKey) => void | Promise<void>;
 }
 
 /**
@@ -98,15 +98,16 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [calendarStatus, setCalendarStatus] = useState<CalendarPermissionState>('notDetermined');
   const [calendarBusy, setCalendarBusy] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
-  // Per-model on-disk status for every option the download panel offers.
-  // null = not probed yet; the model step shows a spinner-less blank until known.
-  const [installedModels, setInstalledModels] = useState<Partial<Record<ModelOption, boolean>> | null>(null);
+  const { installedModels, error: modelCatalogError, retry: retryModelCatalog } = useInstalledModels(step === 'model');
   // Whether the model step finished with a model on disk (Continue or download);
   // drives the done-step summary row.
   const [modelInstalled, setModelInstalled] = useState(false);
   const [installedModel, setInstalledModel] = useState<ModelOption>(initialModel);
   const [selectedRecordingMode, setSelectedRecordingMode] = useState(recordingMode);
   const [selectedTriggerKey, setSelectedTriggerKey] = useState(triggerKey);
+  const [completing, setCompleting] = useState(false);
+  const [completionError, setCompletionError] = useState(false);
+  const completionPending = useRef(false);
   // Lock Back while a download is in flight: unmounting the panel wouldn't stop
   // the Rust download_model command, and re-entering the step could start a
   // second concurrent download of the same file.
@@ -146,37 +147,6 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     };
   }, [refreshPermissions]);
 
-  // Probe every offered model when entering the model step (re-run of the
-  // wizard, or a fresh webview data store next to an installed app), so any
-  // already-downloaded model shows as Installed instead of just the settings
-  // default (#240).
-  useEffect(() => {
-    if (step !== 'model') return;
-    let stale = false;
-    getModelRuntimeCatalog().then((catalog) => {
-      if (!stale) {
-        const byName = new Map(catalog.map((model) => [model.modelName, model]));
-        const entries = DOWNLOAD_MODEL_KEYS.map((model) => [
-          model,
-          byName.get(model)?.installState === 'installed',
-        ] as const);
-        setInstalledModels(Object.fromEntries(entries) as Partial<Record<ModelOption, boolean>>);
-      }
-    }, () => {
-      if (!stale) {
-        // Preserve the previous fail-open onboarding behavior if the status
-        // command itself is unavailable; genuine missing models are reported
-        // as notInstalled rather than rejecting the request.
-        setInstalledModels(Object.fromEntries(
-          DOWNLOAD_MODEL_KEYS.map((model) => [model, true]),
-        ) as Partial<Record<ModelOption, boolean>>);
-      }
-    });
-    return () => {
-      stale = true;
-    };
-  }, [step]);
-
   useEffect(() => {
     if (step !== 'systemAudio') return;
     void getSystemAudioPermissionStatus().then(setSystemAudioStatus).catch(() => {});
@@ -211,12 +181,24 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     };
   }, [step]);
 
-  // If the settings model is missing but another offered model is on disk,
-  // pre-select an installed one so the primary action is Continue, not Download.
-  const preferredModel =
-    installedModels === null || installedModels[initialModel]
-      ? initialModel
-      : DOWNLOAD_MODEL_KEYS.find((model) => installedModels[model]) ?? initialModel;
+  const preferredModel = modelInstalled
+    ? installedModel
+    : preferredInstalledModel(initialModel, installedModels);
+
+  const finishSetup = async () => {
+    if (completionPending.current) return;
+    completionPending.current = true;
+    setCompleting(true);
+    setCompletionError(false);
+    try {
+      await onComplete(installedModel, selectedRecordingMode, selectedTriggerKey);
+    } catch {
+      setCompletionError(true);
+    } finally {
+      completionPending.current = false;
+      setCompleting(false);
+    }
+  };
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const goNext = () => setStep(STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)]);
@@ -679,7 +661,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               runs offline.
             </p>
 
-            {installedModels === null ? (
+            {modelCatalogError ? (
+              <>
+                <p role="alert" className="mb-4 text-[length:var(--ui-font-body)] text-error">Could not check installed models. Retry to continue setup.</p>
+                <WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" />
+              </>
+            ) : installedModels === null ? (
               <>
                 <div className="h-24" />
                 <WizardNavigationRow
@@ -817,11 +804,17 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </p>
             </div>
 
+            {completionError && (
+              <p role="alert" className="mb-4 text-[length:var(--ui-font-body)] text-error">
+                Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model.
+              </p>
+            )}
             <WizardNavigationRow
               onBack={goBack}
-              onNext={() => onComplete(installedModel, selectedRecordingMode, selectedTriggerKey)}
-              nextEnabled
-              nextLabel="Start using Murmur"
+              backDisabled={completing}
+              onNext={() => void finishSetup()}
+              nextEnabled={!completing}
+              nextLabel={completing ? 'Configuring model…' : completionError ? 'Retry' : 'Start using Murmur'}
             />
           </div>
         )}
