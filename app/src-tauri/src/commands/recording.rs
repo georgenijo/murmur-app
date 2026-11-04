@@ -2220,14 +2220,16 @@ fn transcript_stage_timing(
     report: &crate::transcript_transform::StageReport,
 ) -> Option<StageTimingV1> {
     use crate::transcript_transform::{
-        StageOutcome, CLEANUP_STAGE, CLI_COMMAND_STAGE, IDE_CONTEXT_STAGE, SMART_CORRECTION_STAGE,
-        SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE, SPOKEN_STRUCTURE_STAGE, VOICE_COMMANDS_STAGE,
+        StageOutcome, CLEANUP_STAGE, CLI_COMMAND_STAGE, HOMOPHONE_CONTEXT_STAGE, IDE_CONTEXT_STAGE,
+        SMART_CORRECTION_STAGE, SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE,
+        SPOKEN_STRUCTURE_STAGE, VOICE_COMMANDS_STAGE,
     };
 
     let stage = match report.stage {
         CLEANUP_STAGE => PerformanceStageV1::Cleanup,
         VOICE_COMMANDS_STAGE => PerformanceStageV1::VoiceCommands,
         SMART_CORRECTION_STAGE => PerformanceStageV1::SmartCorrection,
+        HOMOPHONE_CONTEXT_STAGE => PerformanceStageV1::HomophoneContext,
         SMART_FORMATTING_STAGE => PerformanceStageV1::SmartFormatting,
         SPOKEN_STRUCTURE_STAGE => PerformanceStageV1::SpokenStructure,
         SPOKEN_NUMBERS_STAGE => PerformanceStageV1::SpokenNumbers,
@@ -2659,7 +2661,7 @@ async fn run_transcription_pipeline(
         cli_lexicon,
         ide_context_index: transformations.ide_context_index.clone(),
         voice_command_runtime: None,
-        homophone_engine: None,
+        homophone_engine: context.homophone_engine.clone(),
     };
     let transform_started = std::time::Instant::now();
     performance_guard.enter(PerformanceStageV1::TranscriptTransform);
@@ -5351,12 +5353,20 @@ pub async fn start_native_recording(
         &state.app_state,
         app_identity.bundle_id.as_deref(),
     );
-    let context = resolve_recording_context(
+    let mut context = resolve_recording_context(
         &state.app_state,
         &state.knowledge,
         destination,
         session_overrides,
     );
+    // Install the resource in the immutable recording snapshot before publishing
+    // it. Preparation starts only after this generation wins Activate below.
+    if context.transformations.correction_enabled
+        && context.transformations.homophone_context_enabled
+    {
+        Arc::make_mut(&mut context).homophone_engine =
+            Some(crate::homophone_context::system_engine());
+    }
     if smart_enabled && capture_is_current {
         emit_smart_destination(
             &app_handle,
@@ -5453,6 +5463,12 @@ pub async fn start_native_recording(
             || context.context_capture.local_project_index,
         "dictation context resolved"
     );
+    if let Some(engine) = &context.homophone_engine {
+        // Still under recording_transition and after the exact-owner Activate
+        // check. Swift returns immediately; async publication is confined to
+        // this context's disposable owner, never app-wide recording state.
+        engine.prewarm();
+    }
     publish_recording_ready_if_audio_ready(&app_handle, rid);
     spawn_model_preparation(
         app_handle.clone(),
@@ -8488,6 +8504,45 @@ pub(crate) mod tests {
             timing.duration_ms,
             crate::performance_metrics::MeasurementV1::measured(4)
         );
+    }
+
+    #[test]
+    fn homophone_stage_timing_preserves_fallback_zero_and_disabled_semantics() {
+        use crate::performance_metrics::MeasurementV1;
+        use crate::transcript_transform::{StageOutcome, HOMOPHONE_CONTEXT_STAGE};
+        for (outcome, micros, expected_duration, expected_outcome) in [
+            (
+                StageOutcome::Fallback,
+                150_900,
+                MeasurementV1::measured(150),
+                StageOutcomeV1::Fallback,
+            ),
+            (
+                StageOutcome::Fallback,
+                30,
+                MeasurementV1::measured(0),
+                StageOutcomeV1::Fallback,
+            ),
+            (
+                StageOutcome::Applied,
+                90_000,
+                MeasurementV1::measured(90),
+                StageOutcomeV1::Completed,
+            ),
+            (
+                StageOutcome::Skipped,
+                0,
+                MeasurementV1::NotApplicable,
+                StageOutcomeV1::Skipped,
+            ),
+        ] {
+            let timing =
+                transcript_stage_timing(&stage_report(HOMOPHONE_CONTEXT_STAGE, outcome, micros))
+                    .unwrap();
+            assert_eq!(timing.stage, PerformanceStageV1::HomophoneContext);
+            assert_eq!(timing.duration_ms, expected_duration);
+            assert_eq!(timing.outcome, expected_outcome);
+        }
     }
 
     #[test]

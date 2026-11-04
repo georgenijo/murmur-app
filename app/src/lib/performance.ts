@@ -42,6 +42,7 @@ export type PerformanceStageV1 =
   | 'cleanup'
   | 'voiceCommands'
   | 'smartCorrection'
+  | 'homophoneContext'
   | 'smartFormatting'
   | 'spokenStructure'
   | 'spokenNumbers'
@@ -299,7 +300,7 @@ const unavailableReasons = new Set<UnavailableReasonV1>([
 export const PERFORMANCE_STAGES_V1: readonly PerformanceStageV1[] = [
   'captureFinalization', 'fileDecode', 'vad', 'modelQueue', 'modelLoad',
   'inferenceQueue', 'inferenceDecode', 'transcriptTransform', 'cleanup', 'voiceCommands',
-  'smartCorrection', 'smartFormatting', 'spokenStructure', 'spokenNumbers',
+  'smartCorrection', 'homophoneContext', 'smartFormatting', 'spokenStructure', 'spokenNumbers',
   'ideContext', 'cliCommand',
   'fileOutput', 'clipboardPaste', 'fileReturn', 'totalProcessing',
   'selectedTextCapture', 'instructionCapture', 'instructionAsr',
@@ -310,7 +311,7 @@ const performanceStages = new Set<PerformanceStageV1>(PERFORMANCE_STAGES_V1);
 // Stages added after the first v1 records shipped. Historical records omit
 // them; that absence must not be read as a measured zero.
 const ADDITIVE_STAGES_V1 = new Set<PerformanceStageV1>([
-  'inferenceQueue', 'releaseToStop', 'releaseToPaste',
+  'inferenceQueue', 'releaseToStop', 'releaseToPaste', 'homophoneContext',
 ]);
 const sizeBuckets = new Set<SizeBucketV1>([
   'empty', 'tiny', 'small', 'medium', 'large', 'extraLarge',
@@ -692,7 +693,7 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));
-  // inferenceQueue, releaseToStop, and releaseToPaste are additive:
+  // inferenceQueue, release timing, and homophoneContext are additive:
   // historical v1 records did not measure them. Accept those absent stages,
   // without accepting missing legacy stages or inventing a zero-duration
   // measurement for an older run.

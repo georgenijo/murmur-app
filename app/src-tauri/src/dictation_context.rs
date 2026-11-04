@@ -119,6 +119,8 @@ pub struct DeliverySettings {
 
 #[derive(Clone)]
 pub struct DictationContextSnapshot {
+    /// Ephemeral, one-recording session owner; never serialized or reused.
+    pub(crate) homophone_engine: Option<Arc<dyn crate::homophone_context::HomophoneEngine>>,
     pub app: ActiveAppIdentity,
     pub matched_profile: Option<MatchedAppProfile>,
     /// A project is teachable only when the explicitly opted-in matching
@@ -566,6 +568,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     );
 
     DictationContextSnapshot {
+        homophone_engine: None,
         app: ActiveAppIdentity {
             bundle_id: inputs.bundle_id.map(str::to_string),
             process_id: None,

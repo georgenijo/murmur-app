@@ -796,6 +796,7 @@ impl TranscriptTransform for HomophoneContextStage {
         tracing::info!(
             target: "pipeline",
             session_id = context.session_id,
+            event_code = "homophone_context.pass",
             outcome = result.outcome.as_str(),
             flagged = result.flagged,
             engine_us = result.engine_us,

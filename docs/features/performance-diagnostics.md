@@ -29,11 +29,14 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 3`; the v2 migration adds
+The database currently uses SQLite `user_version = 4`; the v2 migration adds
 Voice Query support and the v3 migration adds the dictation `releaseToStop`
 and `releaseToPaste` stages, neither changing tables. Run and resource JSON records
-remain backward-compatible at `schemaVersion: 1`. A database created by a newer Murmur
-build is preserved and treated as unavailable rather than rewritten. Unknown
+remain backward-compatible at `schemaVersion: 1`. V4 adds `homophoneContext`
+using the same additive-stage migration: a transaction updates `user_version`
+without rewriting old JSON or changing tables. Historical runs omit this stage;
+new readers preserve that absence. Older builds refuse the newer database. A
+database created by a newer Murmur build is preserved and treated as unavailable rather than rewritten. Unknown
 record versions are not decoded as V1.
 
 SQLite failures use a bounded taxonomy: `busyLocked`, `storageFull`,
@@ -96,8 +99,15 @@ The contract never uses numeric zero as a missing-data sentinel.
   unrecorded measurement rather than displaying a measured zero;
 - inference/decode;
 - aggregate deterministic transcript transformation and the existing
-  content-free cleanup, Voice Commands, Smart Correction, Smart Formatting,
-  IDE context, and CLI stage outcomes;
+  content-free cleanup, Voice Commands, Smart Correction, homophone context,
+  Smart Formatting, IDE context, and CLI stage outcomes;
+- `homophoneContext` measures the optional tier's complete wall time, with
+  `completed` or `fallback` outcomes (including timeout, unavailable model,
+  rejected answer, and adaptive cooldown). A cooldown fallback records its
+  actual short duration, including a legitimate measured 0 ms after rounding;
+  disabled/non-live runs use `notApplicable`. An unavailable timing uses the
+  existing `unavailable { reason }` contract, never a synthetic zero. This row
+  is included in `transcriptTransform`, not additional time to add to it;
 - optional file output;
 - clipboard/paste;
 - total post-stop processing;

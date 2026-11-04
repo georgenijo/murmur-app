@@ -20,6 +20,15 @@ describe('performance contracts', () => {
     expect(isPerformanceRunV1({ ...run, stages: [...run.stages, run.stages[0]] })).toBe(false);
   });
 
+  it('accepts homophone fallback timing and historical runs without that measurement', () => {
+    const run = makeRun();
+    run.stages = run.stages.map(timing => timing.stage === 'homophoneContext'
+      ? { ...timing, durationMs: { status: 'measured', value: 151 }, outcome: 'fallback' }
+      : timing);
+    expect(isPerformanceRunV1(run)).toBe(true);
+    expect(isPerformanceRunV1({ ...run, stages: run.stages.filter(timing => timing.stage !== 'homophoneContext') })).toBe(true);
+  });
+
   it('accepts historical v1 runs without release timing stages, but not other gaps', () => {
     const run = makeRun();
     const additive = new Set(['inferenceQueue', 'releaseToStop', 'releaseToPaste']);
