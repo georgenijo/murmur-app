@@ -5,6 +5,7 @@ import App from './App';
 import { DEFAULT_SETTINGS, ONBOARDING_KEY, STORAGE_KEY } from './lib/settings';
 import { IDLE_MEETING_STATUS, IDLE_MEETING_SUMMARY_STATUS } from './lib/meetings';
 import type { ModelRuntimeSnapshot } from './lib/modelRuntime';
+import type { DictationResponse } from './lib/dictation';
 
 // Keep App, its UI, and all capture hooks real. Only native IPC is replaced.
 const native = vi.hoisted(() => ({
@@ -35,6 +36,13 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
 
 let container: HTMLDivElement;
 let root: Root;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((accept, fail) => { resolve = accept; reject = fail; });
+  return { promise, resolve, reject };
+}
 
 function modelSnapshot(): ModelRuntimeSnapshot {
   return {
@@ -241,6 +249,79 @@ describe('App setup capture safety', () => {
     expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
     await emit('escape-cancel', { transformPassId: null, queryPassId: null });
     expect(native.invoke).toHaveBeenCalledWith('cancel_native_recording');
+  });
+
+  it.each(['hold_down', 'double_tap', 'both'])('treats an unconfirmed %s start as busy after an idle ownership snapshot', async (recordingMode) => {
+    await mount({ recordingMode });
+    const ownership = deferred<boolean>();
+    const start = deferred<DictationResponse>();
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_meeting_audio_capture_busy') return ownership.promise;
+      if (command === 'start_native_recording') return start.promise;
+      return response(command);
+    });
+    await rerun('settings');
+    await emit(recordingMode === 'hold_down' ? 'hold-down-start' : 'double-tap-toggle', null);
+    expect(native.invoke).toHaveBeenCalledWith('start_native_recording', expect.any(Object));
+
+    // Neither native confirmation nor a lifecycle event has reached JS yet.
+    await act(async () => ownership.resolve(false));
+    expectMain();
+    expect(container.textContent).toContain('Stop recording first');
+    expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
+
+    await emit('recording-status-changed', 'starting');
+    await act(async () => start.resolve({ type: 'recording_starting', state: 'starting', recordingId: 1 }));
+    await emit('recording-status-changed', 'recording');
+    await emit('escape-cancel', { transformPassId: null, queryPassId: null });
+    expect(native.invoke).toHaveBeenCalledWith('cancel_native_recording');
+  });
+
+  it.each(['rejected', 'refused', 'confirmed'] as const)('settles pending admission when a start is %s', async (outcome) => {
+    await mount();
+    const start = deferred<DictationResponse>();
+    native.invoke.mockImplementation(async (command: string) => command === 'start_native_recording'
+      ? start.promise : response(command));
+    await emit('double-tap-toggle', null);
+    await act(async () => {
+      if (outcome === 'rejected') start.reject(new Error('start failed'));
+      else start.resolve(outcome === 'refused'
+        ? { type: 'error', error: 'start refused' }
+        : { type: 'recording_starting', state: 'starting', recordingId: 1 });
+    });
+    await rerun('settings');
+    if (outcome === 'confirmed') {
+      expectMain();
+      expect(container.textContent).toContain('Stop recording first');
+    } else {
+      expect(container.querySelector('.main-first-run-onboarding')).not.toBeNull();
+    }
+  });
+
+  it.each(['hold_down', 'double_tap', 'both'])('ignores a queued %s start once setup is admitted, then rearms after completion', async (recordingMode) => {
+    await mount({ recordingMode });
+    const ownership = deferred<boolean>();
+    native.invoke.mockImplementation(async (command: string) => command === 'get_meeting_audio_capture_busy'
+      ? ownership.promise : response(command));
+    const event = recordingMode === 'hold_down' ? 'hold-down-start' : 'double-tap-toggle';
+    const queuedCallbacks = [...native.listeners.get(event)!];
+    expect(queuedCallbacks.length).toBeGreaterThan(0);
+    await rerun('settings');
+    await act(async () => {
+      ownership.resolve(false);
+      // Let admission settle while React still batches the setup render. The
+      // queued callback retains the main surface's currently armed handler.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(localStorage.getItem(ONBOARDING_KEY)).toBeNull();
+      expect(container.querySelector('.main-app-shell')).not.toBeNull();
+      for (const callback of queuedCallbacks) callback({ payload: null });
+    });
+    expect(container.querySelector('.main-first-run-onboarding')).not.toBeNull();
+    for (const callback of queuedCallbacks) callback({ payload: null });
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'start_native_recording')).toEqual([]);
+    await finishSetup();
+    await emit(event, null);
+    expect(native.invoke).toHaveBeenCalledWith('start_native_recording', expect.any(Object));
   });
 
   it.each([',', 'k', 'open-settings'])('ignores %s during setup and finishes on Home', async (action) => {

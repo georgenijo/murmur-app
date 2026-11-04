@@ -125,6 +125,10 @@ function App() {
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   const mainAppReady = onboardingState === 'done' && modelReady === true;
+  const mainAppReadyRef = useRef(mainAppReady);
+  mainAppReadyRef.current = mainAppReady;
+  const setupAdmittedRef = useRef(false);
+  const canStartRecording = useCallback(() => mainAppReadyRef.current && !setupAdmittedRef.current, []);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const homeSidebar = useHomeSidebar(false, isSettingsOpen);
   const homeNavId = useId();
@@ -232,6 +236,7 @@ function App() {
     recordingMode: typeof settings.recordingMode,
     doubleTapKey: typeof settings.doubleTapKey,
   ) => {
+    setupAdmittedRef.current = false;
     markOnboardingComplete();
     initializeDiscoveryAfterSetup(discoveryEvidence(settings, loadStats()));
     updateSettings({ recordingMode, doubleTapKey });
@@ -305,7 +310,7 @@ function App() {
   }, []);
   const { historyEntries, addEntry, updateEntry, togglePinned, deleteEntries, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
-    status, recordingDuration, error: recordingError,
+    status, isCaptureBusy, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
     handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
@@ -314,6 +319,7 @@ function App() {
     addEntry,
     microphone: settings.microphone,
     smartAuto: smartAutoMicrophoneRequest(settings),
+    canStart: canStartRecording,
   });
   const combinedStatsVersion = useLocalStats();
   const discovery = useDiscovery({
@@ -532,7 +538,7 @@ function App() {
       // This native ownership check also covers transform/Voice Query capture
       // and startup before the main window receives its lifecycle event.
       const nativeBusy = await getMeetingAudioCaptureBusy();
-      if (nativeBusy || captureBusyRef.current) {
+      if (nativeBusy || captureBusyRef.current || isCaptureBusy()) {
         presentDeliveryRecoveryNotice({ message: 'Stop recording first before running setup.', retryable: false });
         return;
       }
@@ -542,11 +548,14 @@ function App() {
     } finally {
       setupRequestPendingRef.current = false;
     }
+    // Close admission synchronously, before React commits setup and removes
+    // the hotkey listeners: an already queued callback must not start capture.
+    setupAdmittedRef.current = true;
     setIsSettingsOpen(false);
     setIsPaletteOpen(false);
     resetOnboarding();
     setOnboardingState('needed');
-  }, [presentDeliveryRecoveryNotice]);
+  }, [presentDeliveryRecoveryNotice, isCaptureBusy]);
 
   // ---- Command palette (⌘K) ----------------------------------------------
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
