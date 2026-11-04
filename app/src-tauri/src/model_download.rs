@@ -122,15 +122,41 @@ fn content_range(value: &str) -> Option<(u64, u64, u64)> {
     (start <= end && end < total).then_some((start, end, total))
 }
 
+/// Each body read owns a fresh idle interval; there is no cumulative deadline.
+async fn next_chunk<S: futures_util::Stream + Unpin>(
+    stream: &mut S,
+    cancel: &Cancellation,
+    idle: Duration,
+) -> Result<Option<S::Item>, String> {
+    use futures_util::StreamExt;
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(CANCELLED.to_string()),
+        chunk = tokio::time::timeout(idle, stream.next()) => chunk
+            .map_err(|_| "Download stalled: no data received. Retry to resume.".to_string()),
+    }
+}
+
 pub(crate) async fn transfer(
     url: &str,
     dest: &Path,
     cancel: &Cancellation,
     idle: Duration,
     staging_bytes: u64,
-    mut progress: impl FnMut(u64, u64),
+    progress: impl FnMut(u64, u64),
 ) -> Result<u64, String> {
-    use futures_util::StreamExt;
+    transfer_with_space_check(url, dest, cancel, idle, staging_bytes, progress, preflight).await
+}
+
+async fn transfer_with_space_check(
+    url: &str,
+    dest: &Path,
+    cancel: &Cancellation,
+    idle: Duration,
+    staging_bytes: u64,
+    mut progress: impl FnMut(u64, u64),
+    mut check_space: impl FnMut(&Path, u64) -> Result<(), String>,
+) -> Result<u64, String> {
     use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, ETAG, IF_RANGE, RANGE};
     use tokio::io::AsyncWriteExt;
     cancel.check()?;
@@ -221,8 +247,24 @@ pub(crate) async fn transfer(
     } else {
         response.content_length().unwrap_or(0)
     };
+    cancel.check()?;
+    if offset == 0 {
+        // A full response cannot reuse the retained bytes. Release their disk
+        // allocation before measuring free space, without creating a new file
+        // before preflight. Keep old validator metadata until truncation has
+        // succeeded; a crash now can only leave a zero-length partial.
+        match tokio::fs::OpenOptions::new().write(true).open(dest).await {
+            Ok(file) => file
+                .set_len(0)
+                .await
+                .map_err(|e| format!("Failed to reset partial download: {e}"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Failed to reset partial download: {error}")),
+        }
+        let _ = tokio::fs::remove_file(&metadata_path).await;
+    }
     // Unknown lengths use the catalog preflight plus incremental write checks.
-    preflight(
+    check_space(
         dest,
         total
             .saturating_sub(offset)
@@ -275,22 +317,24 @@ pub(crate) async fn transfer(
     let mut stream = response.bytes_stream();
     let result = async {
         loop {
-            let chunk = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Err(CANCELLED.to_string()),
-                chunk = tokio::time::timeout(idle, stream.next()) => chunk
-                    .map_err(|_| "Download stalled: no data received. Retry to resume.".to_string())?,
+            let chunk = next_chunk(&mut stream, cancel, idle).await?;
+            let Some(chunk) = chunk else {
+                break;
             };
-            let Some(chunk) = chunk else { break; };
             let chunk = chunk.map_err(|e| format!("Download interrupted. Retry to resume: {e}"))?;
             cancel.check()?;
-            if total == 0 { preflight(dest, chunk.len() as u64 + staging_bytes + RESERVE)?; }
-            file.write_all(&chunk).await.map_err(|e| format!("Failed to write model: {e}"))?;
+            if total == 0 {
+                check_space(dest, chunk.len() as u64 + staging_bytes + RESERVE)?;
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("Failed to write model: {e}"))?;
             received += chunk.len() as u64;
             progress(received, total);
         }
         Ok::<(), String>(())
-    }.await;
+    }
+    .await;
     // Drain tokio file writes even on cancellation before another owner resumes.
     file.flush()
         .await
@@ -354,20 +398,67 @@ mod tests {
         format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n")
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn slow_progress_can_outlive_many_idle_intervals() {
+        let cancel = Cancellation::default();
+        let mut stream = Box::pin(futures_util::stream::unfold(0, |n| async move {
+            if n == 16 {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_secs(90)).await;
+            Some((n, n + 1))
+        }));
+        let started = tokio::time::Instant::now();
+        let mut received = Vec::new();
+        while let Some(chunk) = next_chunk(&mut stream, &cancel, IDLE_TIMEOUT)
+            .await
+            .unwrap()
+        {
+            received.push(chunk);
+        }
+        // 24 virtual minutes of progress must survive the former 15-minute
+        // total deadline. No sockets, OS scheduling, or real-time margins are
+        // involved: this exercises the same idle read used by transfer().
+        assert_eq!(received, (0..16).collect::<Vec<_>>());
+        assert_eq!(started.elapsed(), Duration::from_secs(24 * 60));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_body_expires_after_one_idle_interval() {
+        let mut stream = futures_util::stream::pending::<()>();
+        let started = tokio::time::Instant::now();
+        let error = next_chunk(&mut stream, &Cancellation::default(), IDLE_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert!(error.contains("Download stalled"));
+        assert_eq!(started.elapsed(), IDLE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_interrupts_an_idle_read_before_its_timeout() {
+        let cancel = Cancellation::default();
+        let mut stream = futures_util::stream::pending::<()>();
+        let started = tokio::time::Instant::now();
+        let (result, ()) = tokio::join!(next_chunk(&mut stream, &cancel, IDLE_TIMEOUT), async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            cancel.cancel();
+        },);
+        assert_eq!(result, Err(CANCELLED.to_string()));
+        assert_eq!(started.elapsed(), Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn http_body_is_written_and_reports_progress() {
         let root = tempfile::tempdir().unwrap();
         let dest = root.path().join("model.tmp");
-        let (url, requests, worker) =
-            server(vec![(ok(8), (0..8).map(|_| (35, vec![b'x'])).collect())]);
-        let start = std::time::Instant::now();
+        let (url, requests, worker) = server(vec![(ok(8), vec![(0, b"xxxxxxxx".to_vec())])]);
         let mut updates = Vec::new();
         assert_eq!(
             transfer(
                 &url,
                 &dest,
                 &Cancellation::default(),
-                Duration::from_millis(150),
+                Duration::from_secs(30),
                 0,
                 |n, _| updates.push(n)
             )
@@ -375,7 +466,6 @@ mod tests {
             .unwrap(),
             8
         );
-        assert!(start.elapsed() > Duration::from_millis(250));
         assert_eq!(std::fs::read(dest).unwrap(), b"xxxxxxxx");
         assert_eq!(updates.last(), Some(&8));
         assert!(!requests.recv().unwrap().contains("range:"));
@@ -511,6 +601,71 @@ mod tests {
             }
             worker.join().unwrap();
         }
+    }
+
+    // Scale the review's 1 GB partial + 1 GB free example to bytes; retain the
+    // real reserve and derive simulated free space from the real file length.
+    // This proves truncation happens before preflight, not just that retries
+    // eventually produce the right bytes on an unconstrained test volume.
+    async fn constrained_full_restart(has_validator: bool) {
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("model.tmp");
+        std::fs::write(&dest, b"new").unwrap();
+        let (url, requests, worker) = server(vec![(ok(8), vec![(0, b"newbytes".to_vec())])]);
+        if has_validator {
+            std::fs::write(
+                resume_path(&dest),
+                serde_json::to_vec(&Resume {
+                    url: url.clone(),
+                    validator: "\"v1\"".to_string(),
+                    total: 8,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let mut checked = false;
+        transfer_with_space_check(
+            &url,
+            &dest,
+            &Cancellation::default(),
+            Duration::from_secs(30),
+            0,
+            |_, _| {},
+            |path, required| {
+                let retained = std::fs::metadata(path).unwrap().len();
+                assert_eq!(
+                    retained, 0,
+                    "unusable partial must be truncated before checking space"
+                );
+                assert!(
+                    !resume_path(path).exists(),
+                    "old metadata must be cleared after truncation"
+                );
+                checked = true;
+                check_available(required, RESERVE + 5 + (3 - retained))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(checked);
+        assert_eq!(std::fs::read(&dest).unwrap(), b"newbytes");
+        let metadata: Resume =
+            serde_json::from_slice(&std::fs::read(resume_path(&dest)).unwrap()).unwrap();
+        assert_eq!(metadata.validator, "\"v1\"");
+        let request = requests.recv().unwrap();
+        assert_eq!(request.contains("range: bytes=3-"), has_validator);
+        worker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn ignored_range_reclaims_partial_space_before_full_restart_preflight() {
+        constrained_full_restart(true).await;
+    }
+
+    #[tokio::test]
+    async fn missing_validator_reclaims_partial_space_before_full_restart_preflight() {
+        constrained_full_restart(false).await;
     }
 
     #[tokio::test]
