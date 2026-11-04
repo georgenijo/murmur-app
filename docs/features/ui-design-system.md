@@ -117,8 +117,11 @@ CSS custom-property definitions, tests, and visual fixtures are exempt. This is
 a static source scan; constructed runtime classes are not fully evaluated.
 
 The committed `app/src/test-utils/design-lint-baseline.json` identifies each
-legacy violation by file, rule, pattern, and occurrence within that pattern.
-Line shifts do not change identity. New violations fail with their file and
+legacy violation by file, rule, pattern, structural context, and occurrence
+within that context. TSX context includes enclosing component/binding names,
+element ancestry, stable attributes, and non-violating class neighbours; CSS
+context includes resolved nested selectors and enclosing at-rules. Line shifts
+do not change identity, and moving a violation to a different context fails. New violations fail with their file and
 rule; removing a violation also fails until its stale baseline entry is removed.
 After fixing violations, run `(cd app && npm run design-lint:shrink)` and commit
 the baseline diff with the fix. Regeneration must **only shrink**: this command
