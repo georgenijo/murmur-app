@@ -120,8 +120,9 @@ Meeting startup resolves Auto before pruning or creating a session or claiming
 meeting ownership. A failed meeting supervisor also revokes its input evidence
 before releasing the meeting's active flags.
 
-Selecting **Smart Auto** opens its microphone controls for setup. An independent
-**Smart Auto microphones** disclosure expands or collapses these controls.
+Selecting **Smart Auto** opens its microphone controls for setup. A full-width
+**Smart Auto microphones** disclosure below the picker, which shows how many
+inputs are included, expands or collapses these controls.
 Previously configured inputs start collapsed; collapsing changes no recording
 settings and leaves the current microphone preview active. Each detected
 input has an Included or Excluded state. Saved IDs remain in the submenu when

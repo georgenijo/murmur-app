@@ -1,5 +1,6 @@
 import { SettingsRow } from './SettingsRow';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { Popover } from '@base-ui/react/popover';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioDeviceDescriptor, AudioInputLidState } from '../../lib/audioDevices';
@@ -75,10 +76,13 @@ interface MicrophonePickerProps {
   onSelectManual: (deviceId: string) => void;
   onSmartAutoChange: NonNullable<MicrophoneInputTestProps['onSmartAutoChange']>;
   describedBy?: string;
-  /** The inclusion list renders full-width below the row; the picker only toggles it. */
-  smartAutoControlsOpen: boolean;
-  smartAutoControlsId: string;
+  /** The inclusion list and its disclosure render full-width below the row;
+   *  choosing Smart Auto here only opens it for setup. */
   onSmartAutoControlsOpenChange: (open: boolean) => void;
+}
+
+function smartAutoIncludedSummary(count: number): string {
+  return count === 0 ? 'None included' : `${count} included`;
 }
 
 function microphoneAvailabilityReason(device: AudioDeviceDescriptor, defaultInputId: string | null, lidState: AudioInputLidState, allowContinuity: boolean): string {
@@ -94,7 +98,7 @@ function microphoneAvailabilityReason(device: AudioDeviceDescriptor, defaultInpu
   return 'Available';
 }
 
-function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smartAuto, smartAutoSelection, onSelectManual, onSmartAutoChange, describedBy, smartAutoControlsOpen, smartAutoControlsId, onSmartAutoControlsOpenChange }: MicrophonePickerProps) {
+function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smartAuto, smartAutoSelection, onSelectManual, onSmartAutoChange, describedBy, onSmartAutoControlsOpenChange }: MicrophonePickerProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -143,65 +147,49 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
   };
 
   return (
-    <>
-      <Popover.Root
-        open={open}
-        onOpenChange={setOpen}
-        onOpenChangeComplete={(nextOpen) => {
-          if (!nextOpen && !disabled && restoreFocusWhenEnabledRef.current) {
-            restoreFocusWhenEnabledRef.current = false;
-            triggerRef.current?.focus();
-          }
-        }}
-      >
-        <Popover.Trigger ref={triggerRef} aria-label="Microphone input" aria-describedby={describedBy} disabled={disabled} className="ui-select-trigger group flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
-          <span className="truncate">{selectedLabel}</span>
-          <svg className="ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform group-data-[popup-open]:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-        </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Positioner side="bottom" align="start" sideOffset={4} collisionPadding={8} className="z-50 w-(--anchor-width)">
-            <Popover.Popup
-              ref={popupRef}
-              aria-label="Choose microphone mode"
-              initialFocus={selectedRadioRef}
-              className="ui-popover max-h-[min(26rem,var(--available-height))] w-(--anchor-width) p-2 motion-reduce:duration-0"
-            >
-              <fieldset>
-                <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Input mode</legend>
-                <label className="settings-microphone-choice">
-                  <input ref={smartAutoActive ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={smartAutoActive} disabled={disabled} readOnly onClick={selectSmartAuto} />
-                  <span><span className="block font-medium">Smart Auto</span><span className="block text-xs text-on-surface-variant">Choose from microphones you allow</span></span>
+    <Popover.Root
+      open={open}
+      onOpenChange={setOpen}
+      onOpenChangeComplete={(nextOpen) => {
+        if (!nextOpen && !disabled && restoreFocusWhenEnabledRef.current) {
+          restoreFocusWhenEnabledRef.current = false;
+          triggerRef.current?.focus();
+        }
+      }}
+    >
+      <Popover.Trigger ref={triggerRef} aria-label="Microphone input" aria-describedby={describedBy} disabled={disabled} className="ui-select-trigger group flex h-8 w-full items-center justify-between rounded-(--ui-radius-control) border border-(--ui-hairline) bg-(--ui-tint-raised) px-3 text-left text-sm text-on-surface shadow-(--ui-shadow-1) transition-colors focus-visible:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-50">
+        <span className="truncate">{selectedLabel}</span>
+        <svg className="ml-2 h-4 w-4 shrink-0 text-on-surface-variant transition-transform group-data-[popup-open]:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner side="bottom" align="start" sideOffset={4} collisionPadding={8} className="z-50 w-(--anchor-width)">
+          <Popover.Popup
+            ref={popupRef}
+            aria-label="Choose microphone mode"
+            initialFocus={selectedRadioRef}
+            className="ui-popover max-h-[min(26rem,var(--available-height))] w-(--anchor-width) p-2 motion-reduce:duration-0"
+          >
+            <fieldset>
+              <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Input mode</legend>
+              <label className="settings-microphone-choice">
+                <input ref={smartAutoActive ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={smartAutoActive} disabled={disabled} readOnly onClick={selectSmartAuto} />
+                <span><span className="block font-medium">Smart Auto</span><span className="block text-xs text-on-surface-variant">Choose from microphones you allow</span></span>
+              </label>
+              <label className="settings-microphone-choice">
+                <input ref={!smartAutoActive && microphone === 'system_default' ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} disabled={disabled} readOnly onClick={() => selectManual('system_default')} />
+                <span><span className="block font-medium">Follow macOS default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
+              </label>
+              {manualDevices.map((device) => (
+                <label key={`manual-${device.id}`} className="settings-microphone-choice">
+                  <input ref={!smartAutoActive && microphone === device.id ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} disabled={disabled} readOnly onClick={() => selectManual(device.id)} />
+                  <span><span className="block font-medium">{deviceLabel(device)}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
                 </label>
-                <label className="settings-microphone-choice">
-                  <input ref={!smartAutoActive && microphone === 'system_default' ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === 'system_default'} disabled={disabled} readOnly onClick={() => selectManual('system_default')} />
-                  <span><span className="block font-medium">Follow macOS default</span><span className="block text-xs text-on-surface-variant">{manualDevices.find((device) => device.id === defaultInputId)?.name ?? 'No default reported'}</span></span>
-                </label>
-                {manualDevices.map((device) => (
-                  <label key={`manual-${device.id}`} className="settings-microphone-choice">
-                    <input ref={!smartAutoActive && microphone === device.id ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} disabled={disabled} readOnly onClick={() => selectManual(device.id)} />
-                    <span><span className="block font-medium">{deviceLabel(device)}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
-                  </label>
-                ))}
-              </fieldset>
-            </Popover.Popup>
-          </Popover.Positioner>
-        </Popover.Portal>
-      </Popover.Root>
-      {smartAutoActive && (
-        <button
-          type="button"
-          aria-expanded={smartAutoControlsOpen}
-          aria-controls={smartAutoControlsId}
-          onClick={() => onSmartAutoControlsOpenChange(!smartAutoControlsOpen)}
-          className="mt-2 inline-flex items-center gap-1.5 rounded-(--ui-radius-control) px-1.5 py-1 text-left text-[11px] font-medium text-on-surface-variant transition-colors hover:bg-surface-container focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          <span>Smart Auto microphones</span>
-          <svg aria-hidden="true" viewBox="0 0 20 20" className={`h-4 w-4 shrink-0 text-on-surface-variant transition-transform ${smartAutoControlsOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="m5 7.5 5 5 5-5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      )}
-    </>
+              ))}
+            </fieldset>
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -232,8 +220,7 @@ function SmartAutoMicrophoneList({ devices, defaultInputId, disabled, smartAuto,
     });
   };
   return (
-    <fieldset aria-label="Smart Auto microphone inclusion" className="rounded-(--ui-radius-control) border border-outline-variant/25 bg-surface-container-lowest p-2">
-      <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Smart Auto microphones</legend>
+    <fieldset aria-label="Smart Auto microphone inclusion" className="settings-microphone-panel">
       {approvalDevices.map((device) => {
         const approved = smartAuto.smartAutoApprovedDeviceIds.includes(device.id);
         const previewCandidate = smartAutoSelection?.device.id === device.id;
@@ -248,7 +235,7 @@ function SmartAutoMicrophoneList({ devices, defaultInputId, disabled, smartAuto,
                   <span className={`settings-microphone-inclusion-state ${approved ? 'settings-microphone-inclusion-state-on' : ''}`}>{approved ? 'Included' : 'Excluded'}</span>
                   {previewCandidate && <span className="settings-microphone-active-badge">Candidate</span>}
                 </span>
-                <span className="block text-xs text-on-surface-variant">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
+                <span className="settings-microphone-detail">{microphoneAvailabilityReason(device, defaultInputId, lidState, smartAuto.smartAutoAllowContinuity)}</span>
               </span>
             </label>
             <button type="button" disabled={disabled || !approved} aria-label={`Prefer ${deviceLabel(device)} for Smart Auto`} aria-pressed={preferred} onClick={() => setPreferred(device.id)} className="settings-microphone-preference">
@@ -262,24 +249,24 @@ function SmartAutoMicrophoneList({ devices, defaultInputId, disabled, smartAuto,
           <input type="checkbox" checked disabled={disabled} onChange={() => setApproved(id, false)} />
           <span>
             <span className="flex items-center gap-2"><span className="font-medium">Disconnected microphone {index + 1}</span><span className="settings-microphone-inclusion-state settings-microphone-inclusion-state-on">Included</span></span>
-            <span className="block text-xs text-on-surface-variant">Its saved preference is kept. Uncheck to forget it.</span>
+            <span className="settings-microphone-detail">Its saved preference is kept. Uncheck to forget it.</span>
           </span>
         </label>
       ))}
       {smartAuto.smartAutoApprovedDeviceIds.length === 0 ? (
-        <p className="mx-2 my-1 rounded-lg bg-warning/10 px-2 py-1.5 text-xs text-warning" role="status">No microphones are included. Include at least one available input for Smart Auto.</p>
+        <p className="settings-microphone-warning" role="status">No microphones are included. Include at least one available input for Smart Auto.</p>
       ) : smartAutoSelection === null ? (
-        <p className="mx-2 my-1 rounded-lg bg-warning/10 px-2 py-1.5 text-xs text-warning" role="status">None of the included microphones are available right now. Smart Auto will wait instead of choosing another input.</p>
+        <p className="settings-microphone-warning" role="status">None of the included microphones are available right now. Smart Auto will wait instead of choosing another input.</p>
       ) : null}
       <label className="settings-microphone-choice mt-1 border-t border-outline-variant/15 pt-2">
         <AnimatedSwitch size="sm" aria-label="Allow approved iPhone Continuity Camera microphones" checked={smartAuto.smartAutoAllowContinuity} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoAllowContinuity: checked })} />
-        <span><span className="block font-medium">Allow iPhone microphones</span><span className="block text-xs text-on-surface-variant">Only approved Continuity Camera inputs</span></span>
+        <span><span className="block font-medium">Allow iPhone microphones</span><span className="settings-microphone-detail">Only approved Continuity Camera inputs</span></span>
       </label>
       <label className="settings-microphone-choice">
         <AnimatedSwitch size="sm" aria-label="Check included microphones in the background" checked={smartAuto.smartAutoProbeEnabled} disabled={disabled} onCheckedChange={(checked) => onSmartAutoChange({ smartAutoProbeEnabled: checked })} />
         <span>
           <span className="block font-medium">Background signal checks</span>
-          <span className="block text-xs text-on-surface-variant">Pick the best mic ahead of time. Never transcribed or saved.</span>
+          <span className="settings-microphone-detail">Pick the best mic ahead of time. Never transcribed or saved.</span>
         </span>
       </label>
     </fieldset>
@@ -306,6 +293,7 @@ export function MicrophoneInputTest({
   const selectorHelperId = useId();
   const smartAutoControlsId = useId();
   const [smartAutoControlsOpen, setSmartAutoControlsOpen] = useState(false);
+  const smartAutoDisclosureRef = useRef<HTMLButtonElement>(null);
   const monitoringActive = active && surfaceActive;
   const [status, setStatus] = useState<MicrophonePreviewStatus>(IDLE_MICROPHONE_PREVIEW);
   const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
@@ -724,8 +712,6 @@ export function MicrophoneInputTest({
           smartAutoSelection={smartAutoSelection}
           lidState={lidState}
           describedBy={describedBy}
-          smartAutoControlsOpen={smartAutoControlsOpen}
-          smartAutoControlsId={smartAutoControlsId}
           onSmartAutoControlsOpenChange={setSmartAutoControlsOpen}
           onSmartAutoChange={onSmartAutoChange}
           onSelectManual={(next) => {
@@ -803,23 +789,37 @@ export function MicrophoneInputTest({
         null
       )}
       </SettingsRow>
+      {smartAuto && onSmartAutoChange && smartAutoActive && (
+        <button
+          ref={smartAutoDisclosureRef}
+          type="button"
+          aria-expanded={smartAutoControlsOpen}
+          aria-controls={smartAutoControlsId}
+          onClick={() => setSmartAutoControlsOpen(!smartAutoControlsOpen)}
+          className="settings-microphone-disclosure"
+        >
+          <span>Smart Auto microphones</span>
+          <span className="settings-microphone-disclosure-summary">{smartAutoIncludedSummary(smartAuto.smartAutoApprovedDeviceIds.length)}</span>
+          <ChevronDown aria-hidden="true" className="settings-advanced-chevron" />
+        </button>
+      )}
       {smartAuto && onSmartAutoChange && (
-        <div id={smartAutoControlsId}>
-          <SettingsBranch
-            open={smartAutoActive && smartAutoControlsOpen}
-            className={smartAutoActive && smartAutoControlsOpen ? 'mt-2' : ''}
-          >
-            <SmartAutoMicrophoneList
-              devices={devices}
-              defaultInputId={defaultInputId}
-              disabled={busy || !inventoryAvailable}
-              smartAuto={smartAuto}
-              smartAutoSelection={smartAutoSelection}
-              lidState={lidState}
-              onSmartAutoChange={onSmartAutoChange}
-            />
-          </SettingsBranch>
-        </div>
+        <SettingsBranch
+          id={smartAutoControlsId}
+          open={smartAutoActive && smartAutoControlsOpen}
+          className="settings-branch-stack"
+          restoreFocus={() => smartAutoDisclosureRef.current}
+        >
+          <SmartAutoMicrophoneList
+            devices={devices}
+            defaultInputId={defaultInputId}
+            disabled={busy || !inventoryAvailable}
+            smartAuto={smartAuto}
+            smartAutoSelection={smartAutoSelection}
+            lidState={lidState}
+            onSmartAutoChange={onSmartAutoChange}
+          />
+        </SettingsBranch>
       )}
       <div className="settings-meter-card">
         <div className="flex items-center gap-3">
