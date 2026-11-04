@@ -67,6 +67,27 @@ describe('MeetingDiarizationSettings', () => {
     expect(onEnabledChange).toHaveBeenCalledWith(true);
   });
 
+  it('folds the model, disclosure and status errors with its parent', async () => {
+    meetingMocks.getStatus.mockRejectedValue(new Error('Model status unavailable'));
+    const onEnabledChange = vi.fn();
+    const render = (enabled: boolean) => act(async () => root.render(
+      <MeetingDiarizationSettings enabled={enabled} onEnabledChange={onEnabledChange} />,
+    ));
+    await render(false);
+    const branch = container.querySelector('.settings-dependent-branch')!;
+    expect(branch.getAttribute('aria-hidden')).toBe('true');
+    expect(branch.hasAttribute('inert')).toBe(true);
+    expect(branch.textContent).toContain('Remote speaker model');
+    expect(branch.textContent).toContain('Labels stay on this Mac');
+    expect(branch.querySelector('[role="alert"]')?.textContent).toContain('Model status unavailable');
+    await render(true);
+    expect(branch.getAttribute('aria-hidden')).toBe('false');
+    expect(branch.hasAttribute('inert')).toBe(false);
+    await render(false);
+    expect(branch.getAttribute('aria-hidden')).toBe('true');
+    expect(branch.hasAttribute('inert')).toBe(true);
+  });
+
   it.each([true, false])('resets remote-speaker labeling through its owner and respects supported=%s', async (supported) => {
     meetingMocks.getStatus.mockResolvedValue({ supported, installed: false, installing: false, bytes: 21_599_417 });
     const onEnabledChange = vi.fn();
@@ -105,6 +126,12 @@ describe('MeetingDiarizationSettings', () => {
       received: 10_000_000, total: 20_000_000, phase: 'downloading',
     } }));
     expect(container.textContent).toContain('Downloading… 50%');
+    await act(async () => root.render(<MeetingDiarizationSettings enabled={false} onEnabledChange={() => {}} />));
+    const progressBranch = container.querySelector('[role="status"]')!.closest('.settings-dependent-branch')!;
+    expect(progressBranch.getAttribute('aria-hidden')).toBe('true');
+    expect(progressBranch.hasAttribute('inert')).toBe(true);
+    await act(async () => root.render(<MeetingDiarizationSettings enabled onEnabledChange={() => {}} />));
+    expect(progressBranch.getAttribute('aria-hidden')).toBe('false');
     await act(async () => finishDownload?.());
 
     expect(meetingMocks.download).toHaveBeenCalledOnce();

@@ -78,7 +78,7 @@ describe('ModesManager', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       browserSiteRules: [expect.objectContaining({ host: 'docs.github.com' })],
     }));
-    await act(async () => (container.querySelector('[aria-label="Enable github.com"]') as HTMLInputElement).click());
+    await act(async () => (container.querySelector('[role="switch"][aria-label="Enable github.com"]') as HTMLElement).click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       browserSiteRules: [expect.objectContaining({ enabled: false })],
     }));
@@ -86,7 +86,7 @@ describe('ModesManager', () => {
     expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ browserSiteRules: [] }));
     await act(async () => (container.querySelector('[aria-label="Confirm remove github.com…"]') as HTMLButtonElement).click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ browserSiteRules: [] }));
-    await act(async () => (container.querySelector('[aria-label="Use browser site mode rules"]') as HTMLInputElement).click());
+    await act(async () => (container.querySelector('[role="switch"][aria-label="Use browser site mode rules"]') as HTMLElement).click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ siteModeLookupEnabled: false }));
   });
 
@@ -118,14 +118,15 @@ describe('ModesManager', () => {
     await act(async () => root.render(<ModesManager modes={[mode]} profiles={[profile]} siteLookupEnabled={false} siteRules={[]} onChange={onChange} onModeBound={onModeBound} />));
     const focus = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('Focus'))!;
     await act(async () => focus.click());
-    const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    await act(async () => checkbox.click());
+    const bindSwitch = container.querySelector('[role="switch"][aria-label="Bind Editor"]') as HTMLElement;
+    await act(async () => bindSwitch.click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       appProfiles: [expect.objectContaining({ modeId: 'mode.focus' })],
     }));
     expect(onModeBound).toHaveBeenCalledOnce();
-    const disable = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Disable')!;
-    await act(async () => disable.click());
+    const enabled = container.querySelector('[role="switch"][aria-label="Enable mode"]') as HTMLElement;
+    expect(enabled.getAttribute('aria-checked')).toBe('true');
+    await act(async () => enabled.click());
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       modes: [expect.objectContaining({ enabled: false })],
     }));
@@ -148,5 +149,28 @@ describe('ModesManager', () => {
     expect(container.textContent).toContain('then choose its Mode here');
     await act(async () => addApp.click());
     expect(onAddAppProfile).toHaveBeenCalledWith('builtin.everyday', addApp);
+  });
+  it('groups the page into shared headed cards and deletes only after confirmation', async () => {
+    const onChange = vi.fn();
+    const rule = { id: 'github', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'mode.focus', enabled: true };
+    await act(async () => root.render(<ModesManager modes={[mode]} profiles={[{ ...profile, modeId: 'mode.focus' }]} siteLookupEnabled={false} siteRules={[rule]} onChange={onChange} initialSelectedId="mode.focus" />));
+    expect([...container.querySelectorAll('h2.settings-section-title')].map((heading) => heading.textContent))
+      .toEqual(['Library', 'Selected mode', 'Where it applies', 'Before / after test']);
+    expect(container.querySelectorAll('.settings-card.settings-rows')).toHaveLength(4);
+    for (const label of ['Mode name', 'Writing style', 'Mode model', 'Mode language', 'Vocabulary policy', 'Use browser site mode rules']) {
+      expect(container.querySelector(`[aria-label="${label}"]`)).not.toBeNull();
+    }
+    expect(container.querySelector('select, input[type="checkbox"]:not([aria-hidden="true"]), fieldset')).toBeNull();
+    expect(container.querySelector('[data-setting-target="browser-sites"] [role="switch"]')).not.toBeNull();
+    expect(container.querySelector('[data-setting-target="browser-site-rules"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="mode-preview"]')?.textContent).toBe('draft a concise project update');
+
+    const button = (label: string) => [...container.querySelectorAll('button')].find((item) => item.textContent === label)!;
+    await act(async () => button('Delete…').click());
+    expect(onChange).not.toHaveBeenCalled();
+    await act(async () => button('Confirm delete…').click());
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      modes: [], browserSiteRules: [], appProfiles: [expect.objectContaining({ modeId: null })],
+    }));
   });
 });

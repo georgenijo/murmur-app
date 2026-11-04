@@ -66,7 +66,7 @@ for (const appearance of ['light', 'dark'] as const) {
 
     const card = page.locator('[data-theme-collection="OpenCode"]');
     await expect(card).toHaveCSS('width', '208px');
-    await expect(card).toHaveCSS('height', '94px');
+    await expect(card).toHaveCSS('height', '106px');
     await expect(card.getByRole('button', { name: 'Use OpenCode for light mode' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Use OpenCode for dark mode' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Export OpenCode' })).toBeVisible();
