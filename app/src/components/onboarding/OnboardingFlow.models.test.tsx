@@ -216,6 +216,26 @@ describe('onboarding model state with native IPC boundaries', () => {
     expect(completed).toHaveBeenCalledWith('base.en', 'double_tap', 'f12');
   });
 
+  it('keeps the acknowledged model when overlay auto-paste changes during setup (#951)', async () => {
+    const pending = deferred<unknown>();
+    const implementation = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, ...args) => command === 'configure_dictation' ? pending.promise : implementation(command, ...args));
+    await mount();
+    await select('base.en');
+    await done();
+    await act(async () => settings.applyExternalSettings({ autoPaste: true }));
+    expect(isOnboardingComplete()).toBe(false);
+    await act(async () => pending.resolve({ type: 'configured' }));
+    const writes = native.invoke.mock.calls.filter(([command]) => command === 'configure_dictation');
+    expect(writes).toHaveLength(2);
+    expect(writes[1][1].options).toEqual({ autoPaste: true });
+    expect(settings.getConfirmedSettings()).toMatchObject({ model: 'base.en', autoPaste: true });
+    expect(settings.settings).toMatchObject({ model: 'base.en', autoPaste: true });
+    expect(JSON.parse(localStorage.getItem('dictation-settings')!)).toMatchObject({ model: 'base.en', autoPaste: true });
+    expect(isOnboardingComplete()).toBe(true);
+    expect(completed).toHaveBeenCalledWith('base.en', 'double_tap', 'f12');
+  });
+
   it('preserves rollback of an earlier failed edit before configuring setup choices (#951)', async () => {
     const pending = deferred<unknown>();
     const implementation = native.invoke.getMockImplementation()!;

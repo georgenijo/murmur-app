@@ -446,16 +446,21 @@ export function useSettings() {
       confirmedConfigureSettingsRef.current = {
         ...confirmedConfigureSettingsRef.current, autoPaste: fresh.autoPaste,
       };
-      const nativeModeVersion = nativeModeVersionRef.current;
-      void configure(buildConfigureOptions(next), {
-        onSuccess: () => { confirmConfigured(next, nativeModeVersion); },
+      // This queue entry owns auto-paste only. A full snapshot captured here
+      // could restore the old model after pending setup configuration succeeds.
+      void configure({ autoPaste: fresh.autoPaste }, {
+        onSuccess: () => {
+          confirmedConfigureSettingsRef.current = {
+            ...confirmedConfigureSettingsRef.current, autoPaste: fresh.autoPaste,
+          };
+        },
         onError: () => {
           console.error('Failed to configure externally changed settings.');
           setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
         },
       }).catch(() => {});
     }
-  }, [confirmConfigured]);
+  }, []);
 
   // Setup is acknowledged before publishing any of its choices. Unlike normal
   // Settings edits, a failed or timed-out attempt must leave the wizard open.
