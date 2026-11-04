@@ -117,6 +117,7 @@ pub(crate) struct InstallFailure {
 impl InstallFailure {
     pub(crate) fn user_message(self) -> String {
         let detail = match self.code {
+            "cancelled" => crate::model_download::CANCELLED,
             "installer_timeout" => {
                 "Core ML setup stopped after reaching its time limit. No installer was left running."
             }
@@ -437,6 +438,7 @@ fn supervise_process<F>(
     arguments: &[&str],
     environment: &[(String, String)],
     timeout: Duration,
+    cancel: &crate::model_download::Cancellation,
     mut on_progress: F,
 ) -> Result<InstallReceipt, InstallFailure>
 where
@@ -448,6 +450,14 @@ where
             repaired_cache: false,
             repeated_repair: false,
             termination_confirmed: false,
+        });
+    }
+    if cancel.is_cancelled() {
+        return Err(InstallFailure {
+            code: "cancelled",
+            repaired_cache: false,
+            repeated_repair: false,
+            termination_confirmed: true,
         });
     }
     let (mut child, child_stdin, stdout) =
@@ -470,11 +480,15 @@ where
     let mut last_phase = None;
     loop {
         let now = Instant::now();
-        if now >= deadline {
+        if cancel.is_cancelled() || now >= deadline {
             let confirmed = terminate_or_retain(child);
             return Err(InstallFailure {
                 code: if confirmed {
-                    "installer_timeout"
+                    if cancel.is_cancelled() {
+                        "cancelled"
+                    } else {
+                        "installer_timeout"
+                    }
                 } else {
                     "termination_unconfirmed"
                 },
@@ -602,6 +616,7 @@ pub(crate) fn configured_install_timeout() -> Duration {
 pub(crate) fn install<F>(
     model_name: &str,
     timeout: Duration,
+    cancel: &crate::model_download::Cancellation,
     on_progress: F,
 ) -> Result<InstallReceipt, InstallFailure>
 where
@@ -631,7 +646,14 @@ where
     };
     #[cfg(not(debug_assertions))]
     let environment: Vec<(String, String)> = Vec::new();
-    supervise_process(&executable, &arguments, &environment, timeout, on_progress)
+    supervise_process(
+        &executable,
+        &arguments,
+        &environment,
+        timeout,
+        cancel,
+        on_progress,
+    )
 }
 
 #[cfg(all(test, unix))]
@@ -651,6 +673,7 @@ mod tests {
             &["-c", script],
             &[],
             timeout,
+            &crate::model_download::Cancellation::default(),
             |phase, repeated| phases.push((phase, repeated)),
         );
         (result, phases)
@@ -738,6 +761,27 @@ mod tests {
                 (InstallPhase::Initializing, false),
             ]
         );
+    }
+
+    #[test]
+    fn cancellation_kills_worker_and_descendants_before_returning() {
+        let cancel = crate::model_download::Cancellation::default();
+        let script = protocol_script(
+            &[r#"{"type":"phase","phase":"preparing","repeatedRepair":false}"#],
+            "sleep 30 & wait",
+        );
+        let result = supervise_process(
+            Path::new("/bin/sh"),
+            &["-c", &script],
+            &[],
+            Duration::from_secs(5),
+            &cancel,
+            |_, _| cancel.cancel(),
+        )
+        .unwrap_err();
+        assert_eq!(result.code, "cancelled");
+        assert!(result.termination_confirmed);
+        assert!(UNCONFIRMED_INSTALLER.lock().unwrap().is_none());
     }
 
     #[test]

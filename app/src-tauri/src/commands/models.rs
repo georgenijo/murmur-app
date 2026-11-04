@@ -1,3 +1,4 @@
+use crate::model_download::{self, Cancellation};
 use crate::model_runtime::{self, InstallKind, InstallState};
 use crate::transcriber::{self, TranscriptionBackend};
 use crate::vad;
@@ -10,10 +11,160 @@ static VAD_INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 static MODEL_INSTALL_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
+// Register ownership before waiting on any install lock. Cancellation targets
+// a caller-generated identity, never whichever install happens to be current.
+struct InstallOwner {
+    cancel: std::sync::Arc<Cancellation>,
+    finished: std::sync::atomic::AtomicBool,
+    termination_confirmed: std::sync::atomic::AtomicBool,
+    done: tokio::sync::Notify,
+}
+impl Default for InstallOwner {
+    fn default() -> Self {
+        Self {
+            cancel: Default::default(),
+            finished: false.into(),
+            termination_confirmed: true.into(),
+            done: Default::default(),
+        }
+    }
+}
+fn confirm_installer_cleanup() -> bool {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        crate::coreml_installer::clear_quarantined_installer()
+    }
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    {
+        true
+    }
+}
+#[derive(Default)]
+struct InstallOwners {
+    active: std::collections::HashMap<String, (String, std::sync::Arc<InstallOwner>)>,
+    early_cancels: std::collections::VecDeque<(String, String)>,
+}
+static INSTALL_OWNERS: LazyLock<std::sync::Mutex<InstallOwners>> =
+    LazyLock::new(|| std::sync::Mutex::new(InstallOwners::default()));
+
+struct InstallGuard {
+    model: String,
+    request: String,
+    owner: std::sync::Arc<InstallOwner>,
+}
+impl InstallGuard {
+    fn register(model: &str, request: String) -> Result<Self, String> {
+        if request.is_empty() || request.len() > 128 {
+            return Err("Invalid install request ID".to_string());
+        }
+        let mut owners = INSTALL_OWNERS.lock_or_recover();
+        if let Some((_, previous)) = owners.active.get(model) {
+            if previous.finished.load(Ordering::SeqCst)
+                && !previous.termination_confirmed.load(Ordering::SeqCst)
+            {
+                if !confirm_installer_cleanup() {
+                    return Err(
+                        "Wait for installer cleanup, then retry Cancel or Download.".to_string()
+                    );
+                }
+                owners.active.remove(model);
+            }
+        }
+        if owners.active.contains_key(model) {
+            return Err(
+                "This model is already installing. Cancel it or wait for it to finish.".to_string(),
+            );
+        }
+        let owner = std::sync::Arc::new(InstallOwner::default());
+        if let Some(index) = owners
+            .early_cancels
+            .iter()
+            .position(|key| key == &(model.to_string(), request.clone()))
+        {
+            owners.early_cancels.remove(index);
+            owner.cancel.cancel();
+        }
+        owners
+            .active
+            .insert(model.to_string(), (request.clone(), owner.clone()));
+        Ok(Self {
+            model: model.to_string(),
+            request,
+            owner,
+        })
+    }
+}
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        let mut owners = INSTALL_OWNERS.lock_or_recover();
+        if self.owner.termination_confirmed.load(Ordering::SeqCst)
+            && owners
+                .active
+                .get(&self.model)
+                .is_some_and(|(request, _)| request == &self.request)
+        {
+            owners.active.remove(&self.model);
+        }
+        self.owner.finished.store(true, Ordering::SeqCst);
+        self.owner.done.notify_waiters();
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_model_download(model_name: String, request_id: String) -> Result<(), String> {
+    model_runtime::model_definition(&model_name)?;
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("Invalid install request ID".to_string());
+    }
+    let owner = {
+        let mut owners = INSTALL_OWNERS.lock_or_recover();
+        match owners.active.get(&model_name) {
+            Some((request, owner)) if request == &request_id => Some(owner.clone()),
+            _ => {
+                // IPC cancellation can arrive before its start command is polled.
+                // Bound these tombstones and never cancel a different owner.
+                if owners.early_cancels.len() >= 128 {
+                    owners.early_cancels.pop_front();
+                }
+                owners
+                    .early_cancels
+                    .push_back((model_name.clone(), request_id));
+                None
+            }
+        }
+    };
+    if let Some(owner) = owner {
+        owner.cancel.cancel();
+        let done = owner.done.notified();
+        tokio::pin!(done);
+        done.as_mut().enable();
+        if !owner.finished.load(Ordering::SeqCst) {
+            done.await;
+        }
+        if !owner.termination_confirmed.load(Ordering::SeqCst) {
+            if !confirm_installer_cleanup() {
+                return Err("Installer termination is not yet confirmed. Retry Cancel before leaving setup.".to_string());
+            }
+            let mut owners = INSTALL_OWNERS.lock_or_recover();
+            if owners
+                .active
+                .get(&model_name)
+                .is_some_and(|(_, active)| std::sync::Arc::ptr_eq(active, &owner))
+            {
+                owner.termination_confirmed.store(true, Ordering::SeqCst);
+                owners.active.remove(&model_name);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct DownloadProgressContext<'a> {
     model_name: &'a str,
     attempt_id: u64,
+    cancel: &'a Cancellation,
+    request_id: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -51,11 +202,15 @@ fn emit_download_progress(
     phase: &str,
     repeated_repair: bool,
 ) {
+    if context.cancel.is_cancelled() {
+        return;
+    }
     let _ = app_handle.emit(
         "download-progress",
         serde_json::json!({
             "modelName": context.model_name,
             "attemptId": context.attempt_id,
+            "requestId": context.request_id,
             "received": received,
             "total": total,
             "phase": phase,
@@ -275,6 +430,7 @@ pub async fn download_model(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     model_name: String,
+    request_id: Option<String>,
 ) -> Result<(), String> {
     if model_name == crate::diarization_model::MODEL_ID {
         return crate::diarization_model::download(&app_handle).await;
@@ -286,8 +442,19 @@ pub async fn download_model(
 
     // The entire existence-check/download/install transaction is single-flight
     // per model. Different models may still download concurrently.
+    let owner = InstallGuard::register(
+        &model_name,
+        request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+    )?;
+    let cancel = owner.owner.cancel.clone();
+    cancel.check()?;
     let install_lock = state.app_state.model_runtime.install_lock(&model_name)?;
-    let _install_guard = install_lock.lock().await;
+    let _install_guard = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(model_download::CANCELLED.to_string()),
+        guard = install_lock.lock() => guard,
+    };
+    cancel.check()?;
     if !state
         .app_state
         .model_runtime
@@ -301,6 +468,8 @@ pub async fn download_model(
     let progress_context = DownloadProgressContext {
         model_name: &model_name,
         attempt_id,
+        cancel: &cancel,
+        request_id: &owner.request,
     };
     tracing::info!(
         target: "system",
@@ -322,21 +491,41 @@ pub async fn download_model(
             .await
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
+        let storage = if definition.install_kind == InstallKind::Coreml {
+            dirs::data_dir().ok_or("Could not locate Core ML storage")?.join("FluidAudio/Models")
+        } else { models_dir.clone() };
+        let retained = match definition.install_kind {
+            InstallKind::Whisper => std::fs::metadata(models_dir.join(format!("ggml-{model_name}.bin.tmp"))).map(|m| m.len()).unwrap_or(0),
+            InstallKind::Parakeet => {
+                let (_, bundle) = transcriber::parakeet::download_spec(&model_name).ok_or("Unknown Parakeet model")?;
+                [format!("{bundle}.tar.bz2"), format!("{bundle}.tar.bz2.download"), format!("{bundle}.tar.bz2.tmp")]
+                    .iter().filter_map(|name| std::fs::metadata(models_dir.join(name)).ok().map(|m| m.len())).max().unwrap_or(0).min(1_200_000_000)
+            }
+            InstallKind::Coreml => 0,
+        };
+        model_download::preflight(&storage, model_download::install_bytes(&model_name).saturating_sub(retained))?;
+        if definition.install_kind == InstallKind::Coreml { model_download::preflight(&models_dir, model_download::RESERVE + 2_000_000)?; }
+        cancel.check()?;
         if definition.install_kind == InstallKind::Coreml {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
                 let worker_model = model_name.clone();
                 let progress_app = app_handle.clone();
+                let worker_cancel = cancel.clone();
+                let worker_request = owner.request.clone();
                 let worker_result = tokio::task::spawn_blocking(move || {
                     crate::coreml_installer::install(
                         &worker_model,
                         crate::coreml_installer::configured_install_timeout(),
+                        &worker_cancel,
                         |phase, repeated_repair| {
                             emit_download_progress(
                                 &progress_app,
                                 DownloadProgressContext {
                                     model_name: &worker_model,
                                     attempt_id,
+                                    cancel: &worker_cancel,
+                                    request_id: &worker_request,
                                 },
                                 0,
                                 0,
@@ -391,6 +580,7 @@ pub async fn download_model(
             download_whisper_model(&app_handle, &model_name, &models_dir, progress_context).await?;
         }
 
+        cancel.check()?;
         state.app_state.model_runtime.set_install_state(
             Some(&app_handle),
             &model_name,
@@ -411,6 +601,7 @@ pub async fn download_model(
             tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
         }
 
+        cancel.check()?;
         Ok(())
     }
     .await;
@@ -430,10 +621,26 @@ pub async fn download_model(
             result
         }
         Err(error) => {
+            owner
+                .owner
+                .termination_confirmed
+                .store(terminal_evidence.termination_confirmed, Ordering::SeqCst);
+            if cancel.is_cancelled() && terminal_evidence.termination_confirmed {
+                terminal_evidence.outcome_code = "cancelled";
+            }
+            let final_state = if cancel.is_cancelled() {
+                if model_runtime::model_installed(&model_name) {
+                    InstallState::Installed
+                } else {
+                    InstallState::NotInstalled
+                }
+            } else {
+                InstallState::Invalid
+            };
             let _ = state.app_state.model_runtime.set_install_state(
                 Some(&app_handle),
                 &model_name,
-                InstallState::Invalid,
+                final_state,
             );
             log_install_terminal(attempt_id, install_kind, terminal_evidence);
             Err(error)
@@ -453,6 +660,88 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("murmur-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    #[tokio::test]
+    async fn owned_cancel_waits_for_cleanup_and_never_cancels_a_different_attempt() {
+        let guard = InstallGuard::register("tiny.en", "cancel-owner-test".to_string()).unwrap();
+        let token = guard.owner.cancel.clone();
+        cancel_model_download("tiny.en".to_string(), "stale-request".to_string())
+            .await
+            .unwrap();
+        assert!(!token.is_cancelled());
+        assert!(InstallGuard::register("tiny.en", "duplicate".to_string()).is_err());
+        let cancel = tokio::spawn(cancel_model_download(
+            "tiny.en".to_string(),
+            "cancel-owner-test".to_string(),
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), token.cancelled())
+            .await
+            .unwrap();
+        assert!(
+            !cancel.is_finished(),
+            "navigation must wait for the owner to stop"
+        );
+        drop(guard);
+        cancel.await.unwrap().unwrap();
+        let replacement = InstallGuard::register("tiny.en", "replacement".to_string()).unwrap();
+        assert!(!replacement.owner.cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn unconfirmed_termination_retains_exact_owner_until_cleanup_is_confirmed() {
+        let model = transcriber::COREML_MODEL_NAME;
+        let guard = InstallGuard::register(model, "unconfirmed-owner".to_string()).unwrap();
+        guard
+            .owner
+            .termination_confirmed
+            .store(false, Ordering::SeqCst);
+        drop(guard);
+        cancel_model_download(model.to_string(), "stale-cancel".to_string())
+            .await
+            .unwrap();
+        assert!(INSTALL_OWNERS.lock_or_recover().active.contains_key(model));
+        cancel_model_download(model.to_string(), "unconfirmed-owner".to_string())
+            .await
+            .unwrap();
+        assert!(!INSTALL_OWNERS.lock_or_recover().active.contains_key(model));
+    }
+
+    #[tokio::test]
+    async fn cancel_before_command_admission_is_not_lost() {
+        cancel_model_download("base.en".to_string(), "early-request".to_string())
+            .await
+            .unwrap();
+        let guard = InstallGuard::register("base.en", "early-request".to_string()).unwrap();
+        assert_eq!(
+            guard.owner.cancel.check(),
+            Err(model_download::CANCELLED.to_string())
+        );
+    }
+
+    #[test]
+    fn cancelled_extraction_preserves_archive_and_does_not_publish() {
+        let root = tempfile::tempdir().unwrap();
+        let model = model_runtime::PARAKEET_CPU_MODEL;
+        let (_, bundle) = transcriber::parakeet::download_spec(model).unwrap();
+        let archive = root.path().join("archive.tar.bz2");
+        write_parakeet_archive(&archive, &bundle, true);
+        let token = Cancellation::default();
+        token.cancel();
+        let error =
+            extract_parakeet_archive_cancellable(&archive, root.path(), model, &bundle, &token)
+                .unwrap_err();
+        assert_eq!(error.to_string(), model_download::CANCELLED);
+        assert!(!should_discard_archive(&error));
+        assert!(archive.exists());
+        assert!(!root.path().join(&bundle).exists());
+        assert!(!root.path().join(format!(".{bundle}.extracting")).exists());
+        let mut reader = CancelReader {
+            inner: std::io::Cursor::new(b"bytes"),
+            cancel: &token,
+        };
+        assert!(std::io::Read::read(&mut reader, &mut [0; 3]).is_err());
+        assert_eq!(reader.inner.position(), 0);
     }
 
     #[test]
@@ -702,7 +991,7 @@ async fn download_whisper_model(
     let dest_path = models_dir.join(&filename);
     let temp_path = models_dir.join(format!("{}.tmp", filename));
 
-    let received = stream_download(app_handle, &url, &temp_path, Some(progress_context)).await?;
+    let received = stream_download(app_handle, &url, &temp_path, Some(progress_context), 0).await?;
     if let Err(error) = crate::model_artifact::validate_binary_model(
         &temp_path,
         crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
@@ -712,6 +1001,7 @@ async fn download_whisper_model(
         return Err(error);
     }
 
+    progress_context.cancel.check()?;
     tokio::fs::rename(&temp_path, &dest_path)
         .await
         .map_err(|e| {
@@ -719,6 +1009,7 @@ async fn download_whisper_model(
             format!("Failed to finalize download: {}", e)
         })?;
 
+    let _ = tokio::fs::remove_file(model_download::resume_path(&temp_path)).await;
     tracing::info!(target: "system", "Model downloaded: {} ({} bytes)", filename, received);
     Ok(())
 }
@@ -731,6 +1022,7 @@ async fn download_parakeet_model(
     models_dir: &std::path::Path,
     progress_context: DownloadProgressContext<'_>,
 ) -> Result<(), String> {
+    let cancel = install_cancellation(model_name)?;
     let (url, dir_name) = transcriber::parakeet::download_spec(model_name)
         .ok_or_else(|| format!("Unknown Parakeet model '{}'", model_name))?;
     if transcriber::parakeet::specific_model_exists_in(model_name, models_dir) {
@@ -748,7 +1040,8 @@ async fn download_parakeet_model(
         let root = models_dir.to_path_buf();
         let model = model_name.to_string();
         let bundle = dir_name.clone();
-        match extract_parakeet_archive_on_worker(archive, root, model, bundle).await {
+        match extract_parakeet_archive_on_worker(archive, root, model, bundle, cancel.clone()).await
+        {
             Ok(()) => {
                 let _ = tokio::fs::remove_file(&legacy_temp_path).await;
                 let _ = tokio::fs::remove_file(&archive_path).await;
@@ -770,14 +1063,22 @@ async fn download_parakeet_model(
         // downloaded once more in the same attempt.
         if !archive_path.is_file() {
             let download_path = models_dir.join(format!("{}.tar.bz2.download", dir_name));
-            let received =
-                stream_download(app_handle, &url, &download_path, Some(progress_context)).await?;
+            let received = stream_download(
+                app_handle,
+                &url,
+                &download_path,
+                Some(progress_context),
+                model_download::PARAKEET_STAGING,
+            )
+            .await?;
+            cancel.check()?;
             tokio::fs::rename(&download_path, &archive_path)
                 .await
                 .map_err(|e| {
                     let _ = std::fs::remove_file(&download_path);
                     format!("Failed to finalize Parakeet archive: {}", e)
                 })?;
+            let _ = tokio::fs::remove_file(model_download::resume_path(&download_path)).await;
             downloaded_this_attempt = true;
             tracing::info!(target: "system", "Parakeet archive downloaded: {} ({} bytes)", dir_name, received);
         }
@@ -788,6 +1089,7 @@ async fn download_parakeet_model(
             models_dir.to_path_buf(),
             model_name.to_string(),
             dir_name.clone(),
+            cancel.clone(),
         )
         .await;
 
@@ -834,9 +1136,16 @@ async fn extract_parakeet_archive_on_worker(
     models_dir: std::path::PathBuf,
     model_name: String,
     dir_name: String,
+    cancel: std::sync::Arc<Cancellation>,
 ) -> Result<(), ParakeetInstallError> {
     tokio::task::spawn_blocking(move || {
-        extract_parakeet_archive(&archive_path, &models_dir, &model_name, &dir_name)
+        extract_parakeet_archive_cancellable(
+            &archive_path,
+            &models_dir,
+            &model_name,
+            &dir_name,
+            &cancel,
+        )
     })
     .await
     .map_err(|error| {
@@ -848,12 +1157,35 @@ fn emit_installing(app_handle: &tauri::AppHandle, progress_context: DownloadProg
     emit_download_progress(app_handle, progress_context, 0, 0, "installing", false);
 }
 
+#[cfg(test)]
 fn extract_parakeet_archive(
     archive_path: &std::path::Path,
     models_dir: &std::path::Path,
     model_name: &str,
     dir_name: &str,
 ) -> Result<(), ParakeetInstallError> {
+    extract_parakeet_archive_cancellable(
+        archive_path,
+        models_dir,
+        model_name,
+        dir_name,
+        &Cancellation::default(),
+    )
+}
+
+fn extract_parakeet_archive_cancellable(
+    archive_path: &std::path::Path,
+    models_dir: &std::path::Path,
+    model_name: &str,
+    dir_name: &str,
+    cancel: &Cancellation,
+) -> Result<(), ParakeetInstallError> {
+    cancel.check().map_err(ParakeetInstallError::Installation)?;
+    model_download::preflight(
+        models_dir,
+        model_download::PARAKEET_STAGING + model_download::RESERVE,
+    )
+    .map_err(ParakeetInstallError::Installation)?;
     let final_dir = models_dir.join(dir_name);
     let staging_root = models_dir.join(format!(".{}.extracting", dir_name));
     let staged_dir = staging_root.join(dir_name);
@@ -880,16 +1212,35 @@ fn extract_parakeet_archive(
         let file = std::fs::File::open(archive_path).map_err(|e| {
             ParakeetInstallError::Installation(format!("Failed to open archive: {}", e))
         })?;
-        let decompressor = bzip2::read::BzDecoder::new(file);
-        let mut archive = tar::Archive::new(decompressor);
-        archive
-            .unpack(&staging_root)
-            .map_err(classify_archive_unpack_error)?;
+        let decompressor = bzip2::read::BzDecoder::new(CancelReader {
+            inner: file,
+            cancel,
+        });
+        let mut archive = tar::Archive::new(CancelReader {
+            inner: decompressor,
+            cancel,
+        });
+        let mut expanded = 0_u64;
+        for entry in archive.entries().map_err(classify_archive_unpack_error)? {
+            cancel.check().map_err(ParakeetInstallError::Installation)?;
+            let mut entry = entry.map_err(classify_archive_unpack_error)?;
+            expanded = expanded.saturating_add(entry.size());
+            if expanded > model_download::PARAKEET_STAGING {
+                return Err(ParakeetInstallError::InvalidArchive(
+                    "Parakeet archive exceeds its staging space budget".to_string(),
+                ));
+            }
+            entry
+                .unpack_in(&staging_root)
+                .map_err(classify_archive_unpack_error)?;
+        }
+        cancel.check().map_err(ParakeetInstallError::Installation)?;
         if !transcriber::parakeet::specific_model_exists_in(model_name, &staging_root) {
             return Err(ParakeetInstallError::InvalidArchive(
                 "Extracted Parakeet bundle is incomplete".to_string(),
             ));
         }
+        cancel.check().map_err(ParakeetInstallError::Installation)?;
         std::fs::rename(&staged_dir, &final_dir).map_err(|e| {
             ParakeetInstallError::Installation(format!(
                 "Failed to publish Parakeet model bundle: {}",
@@ -900,7 +1251,33 @@ fn extract_parakeet_archive(
     })();
 
     let _ = std::fs::remove_dir_all(&staging_root);
+    // tar may wrap an interrupted read as an invalid-archive error. Cancellation
+    // never makes a previously valid retained archive eligible for deletion.
+    if cancel.is_cancelled() {
+        return Err(ParakeetInstallError::Installation(
+            model_download::CANCELLED.to_string(),
+        ));
+    }
     extraction
+}
+
+struct CancelReader<'a, R> {
+    inner: R,
+    cancel: &'a Cancellation,
+}
+impl<R: std::io::Read> std::io::Read for CancelReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.cancel.check().map_err(std::io::Error::other)?;
+        self.inner.read(bytes)
+    }
+}
+fn install_cancellation(model: &str) -> Result<std::sync::Arc<Cancellation>, String> {
+    INSTALL_OWNERS
+        .lock_or_recover()
+        .active
+        .get(model)
+        .map(|(_, owner)| owner.cancel.clone())
+        .ok_or("Model install owner is no longer active".to_string())
 }
 
 fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError {
@@ -909,7 +1286,11 @@ fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError 
     if matches!(
         error.kind(),
         std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
-    ) || normalized.contains("data integrity")
+    ) || error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<bzip2::Error>())
+        .is_some_and(|error| matches!(error, bzip2::Error::Data | bzip2::Error::DataMagic))
+        || normalized.contains("data integrity")
         || normalized.contains("corrupt")
         || normalized.contains("failed to iterate over archive")
     {
@@ -930,7 +1311,16 @@ async fn ensure_vad_model_with_progress(
     app_handle: &tauri::AppHandle,
     progress_context: Option<DownloadProgressContext<'_>>,
 ) -> Result<(), String> {
-    let _install_guard = VAD_INSTALL_LOCK.lock().await;
+    let fallback = Cancellation::default();
+    let cancel = progress_context
+        .map(|context| context.cancel)
+        .unwrap_or(&fallback);
+    let _install_guard = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(model_download::CANCELLED.to_string()),
+        guard = VAD_INSTALL_LOCK.lock() => guard,
+    };
+    cancel.check()?;
     if vad::vad_model_exists() {
         return Ok(());
     }
@@ -948,8 +1338,14 @@ async fn ensure_vad_model_with_progress(
     tracing::info!(target: "system", "VAD model not found, downloading...");
 
     let temp_path = models_dir.join(format!("{}.tmp", vad::VAD_MODEL_FILENAME));
-    let received =
-        stream_download(app_handle, vad::VAD_MODEL_URL, &temp_path, progress_context).await?;
+    let received = stream_download(
+        app_handle,
+        vad::VAD_MODEL_URL,
+        &temp_path,
+        progress_context,
+        0,
+    )
+    .await?;
     if let Err(error) = crate::model_artifact::validate_binary_model(
         &temp_path,
         crate::model_artifact::MIN_VAD_MODEL_BYTES,
@@ -959,6 +1355,7 @@ async fn ensure_vad_model_with_progress(
         return Err(error);
     }
 
+    cancel.check()?;
     tokio::fs::rename(&temp_path, &model_path)
         .await
         .map_err(|e| {
@@ -966,6 +1363,7 @@ async fn ensure_vad_model_with_progress(
             format!("Failed to finalize VAD model download: {}", e)
         })?;
 
+    let _ = tokio::fs::remove_file(model_download::resume_path(&temp_path)).await;
     tracing::info!(target: "system", "VAD model downloaded: {} ({} bytes)", vad::VAD_MODEL_FILENAME, received);
     Ok(())
 }
@@ -976,66 +1374,32 @@ async fn stream_download(
     url: &str,
     dest: &std::path::Path,
     progress_context: Option<DownloadProgressContext<'_>>,
+    staging_bytes: u64,
 ) -> Result<u64, String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(15 * 60))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Download request failed: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "Download failed with status: {}",
-            response.status()
-        ));
-    }
-
-    let total = response.content_length().unwrap_or(0);
-    let mut received: u64 = 0;
-
-    use tokio::io::AsyncWriteExt;
-    let mut file = tokio::fs::File::create(dest)
-        .await
-        .map_err(|e| format!("Failed to create temp file: {}", e))?;
-
-    let mut stream = response.bytes_stream();
-    use futures_util::StreamExt;
-    let stream_result = async {
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| format!("Failed to write to file: {}", e))?;
-            received += chunk.len() as u64;
+    let fallback = Cancellation::default();
+    let cancel = progress_context
+        .map(|context| context.cancel)
+        .unwrap_or(&fallback);
+    model_download::transfer(
+        url,
+        dest,
+        cancel,
+        model_download::IDLE_TIMEOUT,
+        staging_bytes,
+        |received, total| {
             if let Some(context) = progress_context {
-                emit_download_progress(app_handle, context, received, total, "downloading", false);
+                if !cancel.is_cancelled() {
+                    emit_download_progress(
+                        app_handle,
+                        context,
+                        received,
+                        total,
+                        "downloading",
+                        false,
+                    );
+                }
             }
-        }
-        file.flush()
-            .await
-            .map_err(|e| format!("Failed to flush file: {}", e))?;
-        Ok::<(), String>(())
-    }
-    .await;
-
-    if let Err(e) = stream_result {
-        let _ = tokio::fs::remove_file(dest).await;
-        return Err(e);
-    }
-
-    if total > 0 && received != total {
-        let _ = tokio::fs::remove_file(dest).await;
-        return Err(format!(
-            "Download ended early: received {} of {} bytes",
-            received, total
-        ));
-    }
-
-    Ok(received)
+        },
+    )
+    .await
 }

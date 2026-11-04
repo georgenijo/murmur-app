@@ -108,9 +108,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [completing, setCompleting] = useState(false);
   const [completionError, setCompletionError] = useState(false);
   const completionPending = useRef(false);
-  // Lock Back while a download is in flight: unmounting the panel wouldn't stop
-  // the Rust download_model command, and re-entering the step could start a
-  // second concurrent download of the same file.
+  // Cancel in the model panel confirms native termination before releasing Back.
   const [modelDownloading, setModelDownloading] = useState(false);
 
   // Monotonic sequence so an interval probe overlapping a focus probe can't

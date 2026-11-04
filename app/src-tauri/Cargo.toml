@@ -93,8 +93,8 @@ test = false
 
 [dev-dependencies]
 tempfile = "3"
-# Async test harness for the local-LLM supervisor integration tests.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# Async supervisors and paused-clock model-download timeout tests.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
 # "test" feature only -- enables tauri::test::mock_app() for the headless
 # benchmark runner (tests/headless_benchmark.rs). Dev-dependency only: does
 # not affect release builds.
