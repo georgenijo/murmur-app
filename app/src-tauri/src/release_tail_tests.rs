@@ -38,6 +38,24 @@ fn control(message: ProductionHelperMessage) -> HelperRead {
 }
 
 #[test]
+fn early_delivery_requires_stopped_and_exact_final_sample_count() {
+    assert!(StopReadOutcome::Stopped {
+        retained_samples: 1124
+    }
+    .fully_drained(1124));
+    assert!(!StopReadOutcome::Stopped {
+        retained_samples: 1124
+    }
+    .fully_drained(1024));
+    assert!(!StopReadOutcome::Stopped {
+        retained_samples: 1024
+    }
+    .fully_drained(1124));
+    assert!(!StopReadOutcome::Deadline.fully_drained(1124));
+    assert!(!StopReadOutcome::Ended.fully_drained(1124));
+}
+
+#[test]
 fn stop_drain_keeps_in_flight_and_flushed_audio_through_stopped() {
     let (sender, receiver) = mpsc::channel();
     // Two callbacks were in the pipe when the stop landed, then the helper

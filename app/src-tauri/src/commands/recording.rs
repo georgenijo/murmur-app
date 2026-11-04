@@ -4612,9 +4612,14 @@ pub(crate) fn handle_audio_lifecycle(
         |app_handle, recording_id| {
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<State>();
-                if stop_native_recording_for(app_handle.clone(), state, Some(recording_id))
-                    .await
-                    .is_err()
+                if stop_native_recording_for(
+                    app_handle.clone(),
+                    state,
+                    Some(recording_id),
+                    audio_lifecycle::DictationStopTrigger::Other,
+                )
+                .await
+                .is_err()
                 {
                     tracing::error!(
                         target: "pipeline",
@@ -5480,8 +5485,9 @@ pub async fn start_native_recording(
 pub async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
+    stop_trigger: Option<audio_lifecycle::DictationStopTrigger>,
 ) -> Result<serde_json::Value, String> {
-    stop_native_recording_for(app_handle, state, None).await
+    stop_native_recording_for(app_handle, state, None, stop_trigger.unwrap_or_default()).await
 }
 
 fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u64>) -> bool {
@@ -5495,6 +5501,7 @@ async fn stop_native_recording_for(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     expected_recording_id: Option<u64>,
+    stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
@@ -5570,6 +5577,9 @@ async fn stop_native_recording_for(
     // Claim the release at the accepted transition, before teardown, so a
     // later release queued behind this stop cannot replace it.
     let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
+    // A matching rdev release takes precedence even if another stop arrived
+    // through the webview at the same time. Unknown sources retain speech.
+    let stop_trigger = stop_trigger.resolve(hotkey_release);
     if status == DictationStatus::Starting {
         drop(transition);
         // Cancel the exact owner even if readiness races with this command
@@ -5647,7 +5657,7 @@ async fn stop_native_recording_for(
     let samples = if let Some(capture) = interrupted_capture {
         capture.samples
     } else {
-        audio_lifecycle::stop_dictation_recording(rid).map_err(|e| {
+        audio_lifecycle::stop_dictation_recording(rid, stop_trigger).map_err(|e| {
             emit_dictation_terminal(
                 &state,
                 rid,

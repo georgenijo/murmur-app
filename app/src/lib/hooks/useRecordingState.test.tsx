@@ -283,6 +283,21 @@ describe('useRecordingState transition ordering', () => {
     expect(current.recordingDuration).toBe(2);
   });
 
+  it('passes an explicit toggle trigger only for a hotkey toggle stop', async () => {
+    mocks.stopRecording.mockResolvedValueOnce({ type: 'transcription', state: 'idle' })
+      .mockResolvedValueOnce({ type: 'transcription', state: 'idle' });
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+    });
+    await act(async () => current.toggleRecording());
+    expect(mocks.stopRecording).toHaveBeenLastCalledWith('toggle');
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
+    });
+    await act(async () => current.handleStop());
+    expect(mocks.stopRecording).toHaveBeenLastCalledWith('other');
+  });
+
   it('records history and stats exactly once from the final completion event', async () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'recording_starting',

@@ -50,7 +50,8 @@ invoke('start_native_recording')
     |-- immutable DictationContextSnapshot resolved (global settings + per-app profile)
     +-- spawn_model_preparation() warms the model *concurrently with speech*
     |
-invoke('stop_native_recording') --> audio thread joins, samples resampled to 16kHz mono
+invoke('stop_native_recording') --> trigger-selected tail, drain, samples resampled to 16kHz mono
+    |-- sealed dictation may deliver before helper exit/join; capture ownership stays busy until join
     |
 Silero VAD trims silence (NoSpeech short-circuits the whole pipeline)
     |

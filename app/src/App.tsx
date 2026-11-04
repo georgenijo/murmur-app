@@ -337,7 +337,7 @@ function App() {
     status,
     silenceMs: settings.autoStopSilenceMs,
     smartEnabled: settings.smartAutoStopEnabled,
-    onAutoStop: handleStop,
+    onAutoStop: () => handleStop('auto_stop'),
   });
   // Independent AX-selection transform hotkey (issue #312). Enabled only when
   // the user has configured a transform key; drives capture -> instruction ->

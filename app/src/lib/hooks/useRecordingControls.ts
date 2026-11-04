@@ -116,7 +116,7 @@ export function useRecordingControls({
       if (currentStatus === 'recording') {
         try {
           flog.info('overlay', 'invoking stop_native_recording');
-          const res = await invoke('stop_native_recording');
+          const res = await invoke('stop_native_recording', { stopTrigger: 'overlay' });
           flog.info('overlay', 'stop_native_recording result', { res: res as Record<string, unknown> });
         } catch (err) {
           flog.error('overlay', 'stop_native_recording error', { error: String(err) });
@@ -149,7 +149,7 @@ export function useRecordingControls({
       } else if (statusRef.current === 'recording') {
         setLockedMode(false);
         try {
-          await invoke('stop_native_recording');
+          await invoke('stop_native_recording', { stopTrigger: 'overlay' });
         } catch {
           // status will sync via event
         }

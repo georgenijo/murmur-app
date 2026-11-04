@@ -55,7 +55,7 @@ const DEVICE_RERESOLUTION_MAX_PASSES: usize = 3;
 const COOPERATIVE_STOP_GRACE: Duration = Duration::from_millis(250);
 /// Audio kept after a dictation stop request before the helper is told to
 /// stop, because a key release often lands while the last word is still
-/// sounding (#829). Zero restores the pre-tail behavior.
+/// sounding (#829). The supervisor selects zero for explicit toggle stops.
 pub(crate) const DICTATION_RELEASE_TAIL: Duration = Duration::from_millis(50);
 const CAPTURE_TERMINATION_BUDGET: Duration = Duration::from_secs(2);
 const CAPTURE_PROTOCOL_RESERVE: Duration = Duration::from_secs(2);
@@ -355,6 +355,11 @@ pub(crate) enum AudioWorkerEvent {
     RuntimeFailed {
         owner: crate::audio_lifecycle::AudioOwner,
         failure: AudioFailure,
+    },
+    /// Final PCM and Stopped validated. The helper may still own the device;
+    /// only ThreadExited releases the supervisor's capture ownership.
+    RecordingSealed {
+        owner: crate::audio_lifecycle::AudioOwner,
     },
     StreamStopped {
         owner: crate::audio_lifecycle::AudioOwner,
@@ -1252,6 +1257,12 @@ enum StopReadOutcome {
     /// An invalid or failure frame, or a closed pipe. Audio already retained
     /// is kept and the helper is terminated as before.
     Ended,
+}
+
+impl StopReadOutcome {
+    fn fully_drained(self, received_samples: u64) -> bool {
+        matches!(self, Self::Stopped { retained_samples } if retained_samples == received_samples)
+    }
 }
 
 /// Accepts valid microphone PCM until `deadline` or a terminal frame. Used
@@ -2310,7 +2321,7 @@ fn run_backend(
             };
         }
         match command_receiver.try_recv() {
-            command @ (Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected)) => {
+            Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
                 let stop_started = Instant::now();
                 end_permission_prompt_pause(
                     &mut permission_prompt_started,
@@ -2329,34 +2340,17 @@ fn run_backend(
                             .append_pcm(samples, sample_rate.unwrap_or(16_000));
                     }
                 };
-                let tail = if command.is_ok() && owner.dictation_id().is_some() {
-                    DICTATION_RELEASE_TAIL
-                } else {
-                    Duration::ZERO
-                };
-                let tail_outcome = if tail.is_zero() {
-                    StopReadOutcome::Deadline
-                } else {
-                    read_stopping_frames(
-                        &reader_rx,
-                        stop_started + tail,
-                        &mut expected_sequence,
-                        sample_rate,
-                        &mut accept,
-                    )
-                };
                 // Keep reading after Stop: the helper flushes its ring as PCM
                 // before Stopped, and frames already in the pipe are the last
                 // audio of the recording.
                 let drain_started = Instant::now();
-                let drain_outcome = if tail_outcome == StopReadOutcome::Deadline
-                    && write_production_control(
-                        &mut input,
-                        capture_id,
-                        nonce,
-                        &ProductionHostMessage::Stop,
-                    )
-                    .is_ok()
+                let drain_outcome = if write_production_control(
+                    &mut input,
+                    capture_id,
+                    nonce,
+                    &ProductionHostMessage::Stop,
+                )
+                .is_ok()
                 {
                     read_stopping_frames(
                         &reader_rx,
@@ -2369,13 +2363,17 @@ fn run_backend(
                     StopReadOutcome::Ended
                 };
                 let drain_elapsed = drain_started.elapsed();
-                let stop_sent = tail_outcome == StopReadOutcome::Deadline;
+                // No PCM is accepted after this point. Stopped follows stream
+                // stop + final ring flush, but does not prove process exit.
+                if owner.dictation_id().is_some() && drain_outcome.fully_drained(received_samples) {
+                    let _ = event_sender.send(AudioWorkerEvent::RecordingSealed { owner });
+                }
                 let terminated = terminate_helper_within(
                     child,
                     Some(input),
                     capture_id,
                     nonce,
-                    (!stop_sent).then_some(ProductionHostMessage::Stop),
+                    None,
                     drain_started,
                 );
                 let terminated = match terminated {
@@ -2398,7 +2396,6 @@ fn run_backend(
                         target: "audio",
                         capture_id,
                         stop_to_exit_ms = stop_started.elapsed().as_millis() as u64,
-                        release_tail_ms = tail.as_millis() as u64,
                         stop_drain_ms = drain_elapsed.as_millis() as u64,
                         stop_drain = drain,
                         unreceived_samples,
