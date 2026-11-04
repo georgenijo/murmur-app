@@ -29,13 +29,16 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 4`; the v2 migration adds
+The database currently uses SQLite `user_version = 5`; the v2 migration adds
 Voice Query support and the v3 migration adds the dictation `releaseToStop`
 and `releaseToPaste` stages, neither changing tables. Run and resource JSON records
 remain backward-compatible at `schemaVersion: 1`. V4 adds `homophoneContext`
 using the same additive-stage migration: a transaction updates `user_version`
 without rewriting old JSON or changing tables. Historical runs omit this stage;
-new readers preserve that absence. Older builds refuse the newer database. A
+new readers preserve that absence. V5 adds optional production physical-gesture
+capture timing in a separate 4 → 5 metadata migration. The v3 → v5 path applies
+v4 then v5 in one transaction, preserving existing JSON bytes, including v4
+homophoneContext rows. Older builds refuse the newer database. A
 database created by a newer Murmur build is preserved and treated as unavailable rather than rewritten. Unknown
 record versions are not decoded as V1.
 
@@ -399,3 +402,45 @@ For an explicitly requested comparison whose retained baseline predates this
 companion, use the manual read-only procedure in `prompts/PROMPT_RELEASE.md`.
 The in-app comparison becomes authoritative only when both selected cohorts
 carry the required evidence. Release requests do not imply a performance study.
+
+## Physical gesture startup timing
+
+New dictation production companions optionally include `capture.gesture`:
+
+- `pressToAcceptedMs`: first trigger press received by rdev to the command's
+  accepted Idle → Starting transition (including detector arming and IPC);
+- `doubleTapGapMs`: first release to toggle emission after the second release,
+  including the second tap's hold; not the narrower up-to-down gap;
+- `pressToFirstPcmMs` and `acceptedToFirstPcmMs`: first validated, retained,
+  nonempty PCM at the host worker, including any fallback;
+- `pressToReadyMs` and `acceptedToReadyMs`: native supervisor first-buffer
+  readiness publication, including supervisor dispatch delay. This is capture
+  readiness, not later context/model/UI readiness.
+
+Each duration is a `MeasurementV1`: measured zero is valid; tokenless
+non-keyboard starts have `notApplicable`; keyboard measurements that cannot be
+correlated and a startup failing/cancelling before PCM or readiness have
+`unavailable { reason: noSamples }`. Hold gestures have no double-tap gap.
+Older records omit `gesture` entirely. There are no helper-preparation outcomes:
+no speculative helper/capture work occurs during a tap or hold arming.
+
+Correlation uses an opaque decimal-text token emitted with the keyboard event,
+passed through the webview's keyboard start request, and claimed at native
+command entry before every rejection or await. Tokenless toolbar/overlay starts
+cannot claim a queued keyboard stamp. Rejected requests discard their own
+claimed stamp, including busy file transcription. Accepted timestamps are
+passed directly into the audio supervisor for that exact recording owner.
+Eight bounded pending stamps and a two-second validity window handle interleaved
+requests without assigning timing by the next recording ID. No key, token,
+transcript, audio, device UID, or content-derived hash is persisted.
+
+`audio.gesture_start_timing` logs `GestureAccepted`, `GesturePcm`, and
+`GestureReady` with the recording ID and content-free durations. A first tap in Double Tap mode or an unpromoted Both-mode press
+produces no capture/helper-start event. Existing `readyMs` retains its
+supervisor-acceptance origin and must not be relabeled as physical press latency.
+
+SQLite `user_version = 5` reserves the optional gesture companion separately
+from #919's v4 `homophoneContext` stage. The transactional 4 → 5 metadata step
+preserves tables and historical V1 JSON; v3 → v5 applies both additive steps.
+Run and companion `schemaVersion` remain 1. Rust and TypeScript accept absent
+historical `gesture` fields and validate all durations/statuses when present.

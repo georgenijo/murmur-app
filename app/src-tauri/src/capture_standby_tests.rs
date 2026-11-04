@@ -190,6 +190,7 @@ fn timed_out_handoff_never_spawns_after_blocked_teardown_completes() {
     let lease = Arc::new(AtomicBool::new(true));
     let (response, result) = mpsc::channel();
     supervisor.sender.send(SupervisorMessage::Start(StartRequest {
+        gesture: gesture::StartGesture::default(),
         caller_alive: lease.clone(), owner: AudioOwner::Transform(2),
         app_handle: None, device_id: None, origin: "transform".into(),
         wait_until_ready: false, response, probe_permit: None,

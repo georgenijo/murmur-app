@@ -10,7 +10,7 @@ interface UseDoubleTapToggleProps {
   accessibilityGranted: boolean | null;
   doubleTapKey: DictationKey;
   status: DictationStatus;
-  onToggle: () => void;
+  onToggle: (gestureToken?: string) => void;
 }
 
 export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted, doubleTapKey, status, onToggle }: UseDoubleTapToggleProps) {
@@ -34,8 +34,8 @@ export function useDoubleTapToggle({ enabled, initialized, accessibilityGranted,
 
     const setup = async () => {
       // Listen for double-tap events from the Rust backend
-      unlisten = await listen('double-tap-toggle', () => {
-        onToggleRef.current();
+      unlisten = await listen<{ gestureToken?: string | null } | null>('double-tap-toggle', (event) => {
+        onToggleRef.current(event?.payload?.gestureToken ?? undefined);
       });
 
       if (cancelled) {

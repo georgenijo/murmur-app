@@ -14,6 +14,7 @@
 //!
 //! Both modes reject trigger-key combos (for example Shift+A or F8+A).
 
+use crate::audio_lifecycle::gesture::Candidate;
 use crate::MutexExt;
 #[cfg(target_os = "macos")]
 use rdev::set_is_main_thread;
@@ -76,6 +77,8 @@ impl RejectionReason {
 }
 
 struct DoubleTapDetector {
+    candidate: Option<Candidate>,
+    fired_candidate: Option<Candidate>,
     state: DetectorState,
     target_key: Option<Key>,
     recording: bool,
@@ -87,6 +90,8 @@ struct DoubleTapDetector {
 impl DoubleTapDetector {
     fn new() -> Self {
         Self {
+            candidate: None,
+            fired_candidate: None,
             state: DetectorState::Idle,
             target_key: None,
             recording: false,
@@ -102,6 +107,7 @@ impl DoubleTapDetector {
     }
 
     fn reset(&mut self) {
+        self.candidate = None;
         self.state = DetectorState::Idle;
         self.state_entered_at = Instant::now();
     }
@@ -190,6 +196,7 @@ impl DoubleTapDetector {
             DetectorState::Idle => {
                 if let EventType::KeyPress(key) = event_type {
                     if is_target_key(*key, target) {
+                        self.candidate = Some(Candidate::new());
                         self.transition(DetectorState::WaitingFirstUp);
                     }
                 }
@@ -201,10 +208,14 @@ impl DoubleTapDetector {
                     EventType::KeyRelease(key) if is_target_key(*key, target) => {
                         if self.elapsed_ms() <= MAX_HOLD_DURATION_MS {
                             if self.recording {
+                                self.fired_candidate = None;
                                 // Single tap to stop — fire immediately
                                 self.last_fired_at = Some(Instant::now());
                                 self.reset();
                                 return true;
+                            }
+                            if let Some(candidate) = self.candidate.as_mut() {
+                                candidate.released = Some(Instant::now());
                             }
                             self.transition(DetectorState::WaitingSecondDown);
                         } else {
@@ -261,6 +272,7 @@ impl DoubleTapDetector {
                 match event_type {
                     EventType::KeyRelease(key) if is_target_key(*key, target) => {
                         if self.elapsed_ms() <= MAX_HOLD_DURATION_MS {
+                            self.fired_candidate = self.candidate;
                             // Double-tap detected!
                             self.last_fired_at = Some(Instant::now());
                             self.reset();
@@ -683,6 +695,31 @@ fn emit_hotkey_rejection(
             "reason": reason.as_str(),
             "mode": mode.as_str(),
         }),
+    );
+}
+
+fn current_gesture() -> Option<Candidate> {
+    DOUBLE_TAP_DETECTOR
+        .lock_or_recover()
+        .as_ref()
+        .and_then(|d| d.candidate)
+}
+fn emit_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
+    let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, true));
+    let _ = handle.emit(
+        "hold-down-start",
+        serde_json::json!({ "gestureToken": token }),
+    );
+}
+fn emit_dictation_toggle(handle: &tauri::AppHandle) {
+    let candidate = DOUBLE_TAP_DETECTOR
+        .lock_or_recover()
+        .as_mut()
+        .and_then(|d| d.fired_candidate.take());
+    let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, false));
+    let _ = handle.emit(
+        "double-tap-toggle",
+        serde_json::json!({ "gestureToken": token }),
     );
 }
 
@@ -1206,6 +1243,11 @@ fn schedule_hold_promotion(
     press_id: u64,
     delay_ms: u128,
 ) {
+    let candidate = if mode == DetectorMode::Both {
+        current_gesture()
+    } else {
+        Some(Candidate::new())
+    };
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms as u64));
         // Never hold the promotion lock while acquiring the backend dictation
@@ -1233,7 +1275,7 @@ fn schedule_hold_promotion(
                         mode = mode.as_str(),
                         "hold timer promoted to hold-down-start"
                     );
-                    let _ = app_handle.emit("hold-down-start", ());
+                    emit_hold_start(&app_handle, candidate);
                 }
             },
         );
@@ -1267,6 +1309,7 @@ pub fn set_processing(processing: bool) {
         "set_processing"
     );
     if !was_processing && processing {
+        crate::audio_lifecycle::gesture::clear_pending();
         // Entering processing: invalidate any pending hold-promotion timer
         // so it can't fire hold-down-start during active processing.
         HOLD_PROMOTION.invalidate();
@@ -1315,6 +1358,7 @@ pub fn is_processing() -> bool {
 /// resets both detectors and invalidates any pending hold-promotion timer so
 /// re-enabling doesn't produce phantom events.
 pub fn set_app_disabled(disabled: bool) {
+    crate::audio_lifecycle::gesture::clear_pending();
     let was_disabled = APP_DISABLED.swap(disabled, Ordering::SeqCst);
     if !was_disabled && disabled {
         // Transitioning false → true: clean up any partial detector state
@@ -1479,6 +1523,7 @@ fn handle_paste_last_chord(event_type: &EventType) -> bool {
 ///
 /// `mode` should be `"double_tap"`, `"hold_down"`, or `"both"`.
 pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
+    crate::audio_lifecycle::gesture::clear_pending();
     HOLD_PROMOTION.invalidate();
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let target = hotkey_to_rdev_key(hotkey);
@@ -1915,7 +1960,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             );
                         }
                         if fired {
-                            let _ = handle.emit("double-tap-toggle", ());
+                            emit_dictation_toggle(&handle);
                         }
                     }
                     DetectorMode::HoldDown => {
@@ -1940,7 +1985,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             &event.event_type,
                             |signal| match signal {
                                 HoldDownSignal::Start => {
-                                    let _ = handle.emit("hold-down-start", ());
+                                    emit_hold_start(&handle, Some(Candidate::new()));
                                 }
                                 HoldDownSignal::Stop => {
                                     stamp_hold_release(&handle, &event.event_type);
@@ -2081,7 +2126,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                         true
                                     } else if dtap_fired {
                                         tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle");
-                                        let _ = handle.emit("double-tap-toggle", ());
+                                        emit_dictation_toggle(&handle);
                                         true
                                     } else {
                                         false
@@ -2100,7 +2145,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             HoldDownEvent::None => {
                                 if dtap_fired {
                                     tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle (hold=None)");
-                                    let _ = handle.emit("double-tap-toggle", ());
+                                    emit_dictation_toggle(&handle);
                                 }
                             }
                         }
@@ -2258,6 +2303,7 @@ fn transform_escape_target_pass_id(
 
 /// Stop processing keyboard events (the thread stays alive but idle).
 pub fn stop_listener() {
+    crate::audio_lifecycle::gesture::clear_pending();
     LISTENER_ACTIVE.store(false, Ordering::SeqCst);
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
 
@@ -2282,6 +2328,7 @@ pub fn stop_listener() {
 /// Update the target key without stopping/restarting the listener.
 /// Returns `true` if a hold-down stop event should be emitted (key changed while held).
 pub fn set_target_key(hotkey: &str) -> bool {
+    crate::audio_lifecycle::gesture::clear_pending();
     HOLD_PROMOTION.invalidate();
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let target = hotkey_to_rdev_key(hotkey);
@@ -2582,6 +2629,7 @@ mod tests {
         // First tap: press then release quickly
         assert!(!d.handle_event(&press(Key::ShiftLeft)));
         assert_eq!(d.state, DetectorState::WaitingFirstUp);
+        let first_press = d.candidate.unwrap();
 
         assert!(!d.handle_event(&release(Key::ShiftLeft)));
         assert_eq!(d.state, DetectorState::WaitingSecondDown);
@@ -2592,6 +2640,11 @@ mod tests {
 
         assert!(d.handle_event(&release(Key::ShiftLeft)));
         assert_eq!(d.state, DetectorState::Idle);
+        let fired = d.fired_candidate.unwrap();
+        assert_eq!(fired.token, first_press.token);
+        assert_eq!(fired.pressed, first_press.pressed);
+        assert!(fired.released.is_some());
+        assert!(d.candidate.is_none());
     }
 
     #[test]

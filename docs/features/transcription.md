@@ -812,3 +812,36 @@ JSON manifest of `{id, wav, reference}` rows via
 trials per clip. Score the private text with `scripts/murmur_accuracy.py`.
 These are final-decode timings after replay, not native release-to-paste timing;
 full native capture and the personal accuracy corpus remain separate evidence.
+
+## Gesture-to-microphone-ready diagnostics
+
+Dictation measures the first trigger press received by rdev through native
+start acceptance, first retained nonempty PCM, and native capture readiness.
+Double-tap timing also records first release → toggle emission (including the
+second tap's hold). Both-mode hold arming is included in press-to-accepted time.
+These measurements add visibility; microphone/helper startup continues to begin
+only after recording is accepted. A first tap or an arming press creates no
+speculative helper or AudioUnit and captures no audio.
+
+The native keyboard event carries an opaque decimal-text `gestureToken`.
+Double-tap, Both, and hold hooks pass it through the recording request; a button
+or overlay request omits it. The backend consumes only the matching stamp at
+`start_native_recording` entry, before busy checks or awaits. A rejected start
+(for example `busy_transcribing_file`) drops that claimed stamp immediately.
+A toolbar request racing a queued keyboard event neither reads nor consumes its
+stamp. Accepted timing travels directly with the recording's audio owner, so
+subsequent requests and recordings cannot inherit it. At most eight pending
+stamps exist and tokens expire after two seconds; interleaved events cannot
+overwrite one another. Tokens, keys, audio, device identifiers, and text are not
+persisted in these diagnostics.
+
+`production.capture.gesture` uses explicit measured/notApplicable/unavailable
+statuses. Tokenless toolbar/overlay starts have notApplicable physical timings;
+an expired or missing keyboard token is unavailable rather than borrowing
+another request's timing. A failed/cancelled startup has unavailable/noSamples
+for PCM and ready. Hold starts have no double-tap gap. Existing `readyMs`
+retains its supervisor-acceptance origin, while the new press-to-ready fields
+include detector wait and webview IPC. Capture readiness is native first-buffer
+publication, not model/context/UI readiness; warm standby can publish readiness
+without a newly measured first-PCM event. See
+[performance diagnostics](performance-diagnostics.md#physical-gesture-startup-timing).

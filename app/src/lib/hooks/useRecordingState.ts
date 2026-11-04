@@ -441,7 +441,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     return () => { cancelled = true; unlisten?.(); };
   }, [addEntry]);
 
-  const beginRecording = useCallback(async (origin: 'toggle' | 'hold') => {
+  const beginRecording = useCallback(async (origin: 'toggle' | 'hold', gestureToken?: string) => {
     flog.info('recording', 'handleStart called', {
       isStarting: isStartingRef.current, status: statusRef.current, origin,
     });
@@ -454,7 +454,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
     const operation = (async () => {
       const producerEpoch = beginErrorProducer();
       try {
-        const res = await startRecording(microphoneRef.current, origin, smartAutoRef.current);
+        const res = await startRecording(microphoneRef.current, origin, smartAutoRef.current, gestureToken);
         const stopRequested = stopRequestedDuringStartRef.current;
         stopRequestedDuringStartRef.current = false;
         // These two responses may describe a transform-owned supervisor
@@ -529,7 +529,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   }, [beginErrorProducer, presentError]);
 
   const handleStart = useCallback(() => beginRecording('toggle'), [beginRecording]);
-  const handleHoldStart = useCallback(() => beginRecording('hold'), [beginRecording]);
+  const handleHoldStart = useCallback((gestureToken?: string) => beginRecording('hold', gestureToken), [beginRecording]);
 
   const handleStop = useCallback(async () => {
     flog.info('recording', 'handleStop called', {
@@ -598,15 +598,15 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   }, [presentError]);
 
   // Stable toggle for hotkey use — reads status from ref
-  const toggleRecording = useCallback(async () => {
+  const toggleRecording = useCallback(async (gestureToken?: string) => {
     flog.info('recording', 'toggleRecording', { status: statusRef.current });
     if (statusRef.current === 'processing' || statusRef.current === 'recovering') return;
     if (statusRef.current === 'recording' || statusRef.current === 'starting') {
       await handleStop();
     } else {
-      await handleStart();
+      await beginRecording('toggle', gestureToken);
     }
-  }, [handleStart, handleStop]);
+  }, [beginRecording, handleStop]);
 
   // Side effects must live outside the setLockedMode updater to avoid double-firing in StrictMode
   const toggleLockedMode = useCallback(async () => {

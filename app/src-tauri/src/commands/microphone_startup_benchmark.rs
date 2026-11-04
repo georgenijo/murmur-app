@@ -522,7 +522,10 @@ impl CycleAccumulator {
 
     fn observe(&mut self, diagnostic: AudioStartupDiagnostic) {
         match diagnostic {
-            AudioStartupDiagnostic::WorkerInvariantViolation
+            AudioStartupDiagnostic::GestureAccepted { .. }
+            | AudioStartupDiagnostic::GesturePcm { .. }
+            | AudioStartupDiagnostic::GestureReady { .. }
+            | AudioStartupDiagnostic::WorkerInvariantViolation
             | AudioStartupDiagnostic::HelperReady { .. }
             | AudioStartupDiagnostic::WorkerStopped { .. }
             | AudioStartupDiagnostic::PhaseDuration { .. } => {}

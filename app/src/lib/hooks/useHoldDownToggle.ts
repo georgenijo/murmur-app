@@ -8,7 +8,7 @@ interface UseHoldDownToggleProps {
   initialized: boolean;
   accessibilityGranted: boolean | null;
   holdDownKey: DictationKey;
-  onStart: () => void;
+  onStart: (gestureToken?: string) => void;
   onStop: () => void;
 }
 
@@ -27,8 +27,8 @@ export function useHoldDownToggle({ enabled, initialized, accessibilityGranted, 
     let cancelled = false;
 
     const setup = async () => {
-      unlistenStart = await listen('hold-down-start', () => {
-        onStartRef.current();
+      unlistenStart = await listen<{ gestureToken?: string | null } | null>('hold-down-start', (event) => {
+        onStartRef.current(event?.payload?.gestureToken ?? undefined);
       });
       if (cancelled) { unlistenStart(); return; }
 

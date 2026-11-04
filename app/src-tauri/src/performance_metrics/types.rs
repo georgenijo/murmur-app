@@ -136,7 +136,7 @@ pub enum UnavailableReasonV1 {
     DependencyPending,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum MeasurementV1<T> {
     Measured { value: T },

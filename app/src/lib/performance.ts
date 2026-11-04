@@ -121,6 +121,15 @@ export type ProductionCaptureFailureKindV1 =
   | 'worker_panicked'
   | 'signature_invalid';
 
+export interface ProductionGestureV1 {
+  pressToAcceptedMs: MeasurementV1<number>;
+  doubleTapGapMs: MeasurementV1<number>;
+  pressToFirstPcmMs: MeasurementV1<number>;
+  acceptedToFirstPcmMs: MeasurementV1<number>;
+  pressToReadyMs: MeasurementV1<number>;
+  acceptedToReadyMs: MeasurementV1<number>;
+}
+
 export interface ProductionRunV1 {
   schemaVersion: 1;
   cohort: {
@@ -133,6 +142,7 @@ export interface ProductionRunV1 {
     configurationKey: string | null;
   };
   capture: {
+    gesture?: ProductionGestureV1;
     helperResolveMs: number | null;
     helperSignatureMs: number | null;
     helperSpawnMs: number | null;
@@ -611,6 +621,7 @@ function isProductionRunV1(value: unknown): value is ProductionRunV1 {
       'firstCallbackWaitMs', 'firstPcmMs', 'readyMs', 'stopToWorkerExitMs',
       'backend', 'fallbackAttempted', 'fallbackSucceeded', 'failureKind',
       'workerInvariantViolation', 'zeroSampleSuccess',
+      ...('gesture' in value.capture ? ['gesture'] : []),
     ])) {
     return false;
   }
@@ -624,7 +635,8 @@ function isProductionRunV1(value: unknown): value is ProductionRunV1 {
     value.capture.readyMs,
     value.capture.stopToWorkerExitMs,
   ];
-  return durations.every(duration => duration === null || isNonNegativeSafeInteger(duration))
+  return (value.capture.gesture === undefined || isProductionGestureV1(value.capture.gesture))
+    && durations.every(duration => duration === null || isNonNegativeSafeInteger(duration))
     && (value.capture.backend === null || (
       typeof value.capture.backend === 'string'
       && productionCaptureBackends.has(value.capture.backend)
@@ -641,6 +653,14 @@ function isProductionRunV1(value: unknown): value is ProductionRunV1 {
         value.capture.failureKind,
       )
     ));
+}
+
+function isProductionGestureV1(value: unknown): value is ProductionGestureV1 {
+  if (!isRecord(value)) return false;
+  const durations = ['pressToAcceptedMs', 'doubleTapGapMs', 'pressToFirstPcmMs',
+    'acceptedToFirstPcmMs', 'pressToReadyMs', 'acceptedToReadyMs'];
+  return hasExactKeys(value, durations)
+    && durations.every(key => isMeasurementV1(value[key], isNonNegativeSafeInteger));
 }
 
 function isRunCorrelation(value: unknown, kind: PerformanceRunKindV1): value is RunCorrelationV1 {

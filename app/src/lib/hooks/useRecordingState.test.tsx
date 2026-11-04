@@ -209,6 +209,33 @@ describe('useRecordingState transition ordering', () => {
     expect(mocks.cancelRecording).not.toHaveBeenCalled();
   });
 
+  it('does not reuse a rejected keyboard token on the next toolbar start', async () => {
+    mocks.startRecording.mockResolvedValueOnce({ type: 'busy_transcribing_file', state: 'idle' });
+    await act(async () => current.toggleRecording('keyboard-42'));
+    expect(mocks.startRecording).toHaveBeenNthCalledWith(1, 'system_default', 'toggle', null, 'keyboard-42');
+    expect(current.status).toBe('idle');
+    mocks.startRecording.mockResolvedValueOnce({ type: 'recording_starting', state: 'starting', recordingId: 43 });
+    await act(async () => current.handleStart());
+    expect(mocks.startRecording).toHaveBeenNthCalledWith(2, 'system_default', 'toggle', null, undefined);
+  });
+
+  it('a toolbar start racing a queued keyboard callback never acquires its token', async () => {
+    const toolbar = deferred<{ type: string; state: string; recordingId: number }>();
+    mocks.startRecording.mockReturnValueOnce(toolbar.promise);
+    let toolbarStart!: Promise<void>;
+    let keyboardStart!: Promise<void>;
+    await act(async () => {
+      toolbarStart = current.handleStart();
+      keyboardStart = current.toggleRecording('queued-keyboard-44');
+    });
+    expect(mocks.startRecording).toHaveBeenCalledExactlyOnceWith('system_default', 'toggle', null, undefined);
+    await act(async () => {
+      toolbar.resolve({ type: 'recording_starting', state: 'starting', recordingId: 44 });
+      await Promise.all([toolbarStart, keyboardStart]);
+    });
+    expect(mocks.startRecording).toHaveBeenCalledOnce();
+  });
+
   it('surfaces a reason for every busy refusal instead of failing silently', async () => {
     const refusals = [
       'busy_benchmarking',

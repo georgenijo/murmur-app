@@ -245,6 +245,22 @@ describe('performance contracts', () => {
       },
     };
     expect(isPerformanceRunV1({ ...base, production })).toBe(true);
+    const gesture = {
+      pressToAcceptedMs: { status: 'measured', value: 160 },
+      doubleTapGapMs: { status: 'measured', value: 124 },
+      pressToFirstPcmMs: { status: 'measured', value: 330 },
+      acceptedToFirstPcmMs: { status: 'measured', value: 170 },
+      pressToReadyMs: { status: 'unavailable', reason: 'noSamples' },
+      acceptedToReadyMs: { status: 'notApplicable' },
+    };
+    const withGesture = (change: object) => ({ ...base, production: {
+      ...production, capture: { ...production.capture, gesture: { ...gesture, ...change } },
+    } });
+    expect(isPerformanceRunV1(withGesture({}))).toBe(true);
+    expect(isPerformanceRunV1(withGesture({ pressToAcceptedMs: { status: 'measured', value: -1 } }))).toBe(false);
+    expect(isPerformanceRunV1(withGesture({ pressToAcceptedMs: { status: 'measured', value: 0 } }))).toBe(true);
+    expect(isPerformanceRunV1(withGesture({ transcript: 'reject unknown content' }))).toBe(false);
+
     expect(isPerformanceRunV1({ ...base, production: null })).toBe(true);
     expect(isPerformanceRunV1({
       ...base,

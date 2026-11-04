@@ -4650,6 +4650,15 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
 
     match event {
         AudioLifecycleEvent::StartupDiagnostic(diagnostic) => {
+            if matches!(
+                diagnostic,
+                audio::AudioStartupDiagnostic::GestureAccepted { .. }
+                    | audio::AudioStartupDiagnostic::GesturePcm { .. }
+                    | audio::AudioStartupDiagnostic::GestureReady { .. }
+            ) {
+                tracing::info!(target: "audio", event_code = "audio.gesture_start_timing", recording_id,
+                    timing = ?diagnostic, "content-free physical gesture startup timing");
+            }
             state
                 .performance
                 .observe_production_capture(recording_id, diagnostic);
@@ -5037,7 +5046,10 @@ pub async fn start_native_recording(
     device_name: Option<String>,
     smart_auto: Option<SmartAutoRequest>,
     origin: Option<String>,
+    gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // Consume only this request's stamp before every await or rejected start.
+    let gesture_claim = audio_lifecycle::gesture::claim(gesture_token.as_deref());
     // This lock covers only the synchronous ownership transition. Core Audio
     // initialization happens on the supervisor and never waits under it.
     let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
@@ -5093,6 +5105,7 @@ pub async fn start_native_recording(
     // critical section so no concurrent cancel/start can slip between them.
     let (
         rid,
+        gesture,
         performance_started_at_ms,
         smart_enabled,
         delivery_target,
@@ -5223,6 +5236,7 @@ pub async fn start_native_recording(
                 // pending undo still needs.
                 crate::transform_apply::clear_session(&state.app_state);
                 let rid = state.app_state.next_recording_id();
+                let gesture = gesture_claim.accepted(origin == "hold");
                 let performance_started_at_ms =
                     accept_live_dictation_request(rid, &mut dictation, |status_at_acceptance| {
                         debug_assert_eq!(status_at_acceptance, DictationStatus::Idle);
@@ -5249,6 +5263,7 @@ pub async fn start_native_recording(
                     .flatten();
                 (
                     rid,
+                    gesture,
                     performance_started_at_ms,
                     smart_destination_eligible(&dictation),
                     delivery_target,
@@ -5288,6 +5303,7 @@ pub async fn start_native_recording(
         selected_device_name,
         rid,
         origin,
+        gesture,
     ) {
         dictation_performance_begins().abort(rid);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);

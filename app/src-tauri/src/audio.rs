@@ -368,6 +368,20 @@ pub(crate) enum AudioWorkerEvent {
 /// retained for the bounded startup benchmark and production dictation diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AudioStartupDiagnostic {
+    GestureAccepted {
+        gesture_expected: bool,
+        double_tap_expected: bool,
+        press_to_accepted_ms: Option<u64>,
+        double_tap_gap_ms: Option<u64>,
+    },
+    GesturePcm {
+        press_to_first_pcm_ms: u64,
+        accepted_to_first_pcm_ms: u64,
+    },
+    GestureReady {
+        press_to_ready_ms: u64,
+        accepted_to_ready_ms: u64,
+    },
     WorkerInvariantViolation,
     HelperReady {
         resolve_ms: u64,
@@ -449,6 +463,7 @@ impl AudioWorkerEventSender {
 }
 
 pub(crate) struct AudioWorkerSpec {
+    pub gesture: Option<crate::audio_lifecycle::gesture::AcceptedGesture>,
     pub probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
     pub owner: crate::audio_lifecycle::AudioOwner,
     pub command_receiver: Receiver<AudioCommand>,
@@ -2067,6 +2082,7 @@ fn run_backend(
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
     probe_permit: Option<&crate::smart_auto_probe::ProbePermit>,
+    gesture: Option<crate::audio_lifecycle::gesture::AcceptedGesture>,
 ) -> AttemptResult {
     // Close the retry-delay timeout boundary before permission probing or a
     // new helper spawn. A Stop queued as the wait expires must own the next
@@ -2725,6 +2741,19 @@ fn run_backend(
                             },
                         });
                     }
+                    if let Some(g) = gesture {
+                        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                            owner,
+                            diagnostic: AudioStartupDiagnostic::GesturePcm {
+                                press_to_first_pcm_ms: crate::audio_lifecycle::gesture::millis(
+                                    g.candidate.pressed.elapsed(),
+                                ),
+                                accepted_to_first_pcm_ms: crate::audio_lifecycle::gesture::millis(
+                                    g.accepted.elapsed(),
+                                ),
+                            },
+                        });
+                    }
                     if probe_permit.is_none() && should_update_capture_memo(owner) {
                         note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
                     }
@@ -3306,6 +3335,7 @@ fn run_capture_backend_sequence(
 
 fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSender) {
     let AudioWorkerSpec {
+        gesture,
         probe_permit,
         owner,
         command_receiver,
@@ -3369,6 +3399,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                 &app_handle,
                 event_sender,
                 probe_permit.as_deref(),
+                gesture,
             )
         },
     );
@@ -4137,6 +4168,7 @@ mod tests {
                     &None,
                     &events,
                     Some(&permit),
+                    None,
                 )
             },
         );
