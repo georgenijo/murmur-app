@@ -35,4 +35,3 @@ export async function readableText(locator: Locator) {
     };
   });
 }
-
