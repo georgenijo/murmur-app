@@ -88,7 +88,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "          components: clippy, rustfmt\n",
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
             "        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings\n",
-            "        run: cd app/src-tauri && cargo nextest run --workspace --exclude murmur-llm-sidecar --lib\n",
+            "          --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'\n",
             "          tool: cargo-nextest@0.9.150\n",
         ):
             with self.subTest(policy=old.strip()):
@@ -105,16 +105,16 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 "cargo clippy --all-targets",
             ),
             (
-                "cargo nextest run --workspace --exclude murmur-llm-sidecar --lib",
-                "cargo nextest run --lib",
+                "cargo nextest list --workspace --exclude murmur-llm-sidecar",
+                "cargo nextest list",
             ),
             (
                 "cargo clippy --workspace --exclude murmur-llm-sidecar",
                 "cargo clippy --workspace",
             ),
             (
-                "cargo nextest run --workspace --exclude murmur-llm-sidecar",
-                "cargo nextest run --workspace",
+                "cargo nextest list --workspace --exclude murmur-llm-sidecar",
+                "cargo nextest list --workspace",
             ),
         ):
             with self.subTest(rewrite=f"{old} -> {new}"):
@@ -163,16 +163,22 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_ci_runs_capture_worker_unit_tests(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace(
-            "      - name: Run capture worker unit tests\n"
-            "        if: needs.changes.outputs.verified != 'true'\n"
-            "        run: cd app/src-tauri && cargo test -p murmur-capture-helper\n\n",
-            "",
-            1,
-        )
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
+        for old, new in (
+            # Dropping the step or skipping binary reuse loses coverage or
+            # recompiles native dependencies.
+            ("      - name: Run capture worker unit tests\n", "      - name: Unrelated\n"),
+            (
+                "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
+                "          --binaries-metadata target/ci-test-binaries.json\n"
+                "          -E 'package(=murmur-capture-helper)'\n\n",
+                "          cargo test -p murmur-capture-helper\n\n",
+            ),
+        ):
+            with self.subTest(policy=old.strip()):
+                mutated = workflow.replace(old, new, 1)
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_ci(mutated)
 
     def test_ci_pass_requires_visual_regression_result(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -266,8 +272,11 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "          --example mock_llm_helper --example murmur-eval &&\n"
         )
         tests = (
-            "          cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run\n"
-            "          --lib --test llm_sidecar_integration --test transform_flow_integration\n"
+            "          cargo nextest list --workspace --exclude murmur-llm-sidecar\n"
+            "          --lib --bin murmur-capture-helper --test topology_watch\n"
+            "          --test llm_sidecar_integration --test transform_flow_integration\n"
+            "          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&\n"
+            "          cargo metadata --format-version 1 > target/ci-cargo-metadata.json\n"
         )
         swapped = tests.rstrip("\n") + " &&\n" + examples.removesuffix(" &&\n") + "\n"
         mutated = workflow.replace(examples + tests, swapped, 1)
