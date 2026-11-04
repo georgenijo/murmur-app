@@ -63,6 +63,19 @@ function closingParen(value: string, open: number): number {
   return value.length - 1;
 }
 
+// Color-function arguments with custom-property names removed. Fallbacks stay,
+// so `rgb(var(--x, 255 0 0))` still exposes its literal channels.
+function channelText(args: string): string {
+  let channels = '';
+  for (let i = 0; i < args.length; i++) {
+    if (!args.slice(i).startsWith('var(')) { channels += args[i]; continue; }
+    const end = closingParen(args, i + 3);
+    channels += ` ${channelText(splitOutside(args.slice(i + 4, end), /,/).slice(1).join(','))} `;
+    i = end;
+  }
+  return channels;
+}
+
 function colors(value: string, includeNames: boolean): string[] {
   const literals: string[] = [];
   let plain = '';
@@ -86,13 +99,8 @@ function colors(value: string, includeNames: boolean): string[] {
         // Token-supplied channels are semantic paint; nested literal fallbacks
         // (and explicit channels alongside tokens) must still be inspected.
         literals.push(...colors(args, includeNames));
-        if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)$/.test(name)) {
-          let channels = '';
-          for (let j = 0; j < args.length; j++) {
-            if (args.slice(j).startsWith('var(')) j = closingParen(args, j + 3);
-            else channels += args[j];
-          }
-          if (/\d/.test(channels)) literals.push(value.slice(i, end + 1));
+        if (/^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)$/.test(name) && /\d/.test(channelText(args))) {
+          literals.push(value.slice(i, end + 1));
         }
       }
     }
@@ -273,7 +281,10 @@ export function scanDesignSource(file: string, source: string): DesignViolation[
           const name = attr.name.getText(ast);
           const value = literal(attr.initializer);
           if (value === undefined) return [];
-          if (['id', 'name', 'data-testid'].includes(name)) return [`${name}=${JSON.stringify(value)}`];
+          // Static identity and accessible labels separate same-tag siblings
+          // without depending on position. Visible text is left out so copy
+          // edits do not churn the baseline.
+          if (['id', 'name', 'data-testid', 'key', 'aria-label', 'title', 'href', 'htmlFor'].includes(name)) return [`${name}=${JSON.stringify(value)}`];
           if (name !== 'className') return [];
           // Use non-violating neighbour classes as anchors. Fixing one utility
           // must not change the identity of other violations on that element.

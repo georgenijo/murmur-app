@@ -73,6 +73,8 @@ describe('design lint rules', () => {
     expect(scan('.x { color: rgb(var(--theme-primary-rgb)); background: var(--brand-red, var(--murmur-primary)); }', 'x.css')).toEqual([]);
     const entries = scan('.x { color: var(--brand-red, var(--other, red)); background: var(--brand, rgb(1 2 3)); border-color: var(--border, #abc); }', 'x.css');
     expect(entries.map(v => v.pattern)).toEqual(['.x | color: red', '.x | background: rgb(1 2 3)', '.x | border-color: #abc']);
+    const channels = scan('.x { color: rgb(var(--theme-primary-rgb, 255 0 0)); background: hsl(var(--theme-primary-hsl, 120 50% 50%)); }', 'x.css');
+    expect(channels.map(v => v.pattern)).toEqual(['.x | color: rgb(var(--theme-primary-rgb, 255 0 0))', '.x | background: hsl(var(--theme-primary-hsl, 120 50% 50%))']);
   });
 
   it('limits literal colors to style declarations and styling attributes', () => {
@@ -125,6 +127,10 @@ describe('location-aware design ratchet', () => {
     expect(() => assertDesignBaseline(scan('<><div className="header" /><div className="footer text-sm" /></>'), scan(neighbours))).toThrow('New violations');
     expect(() => assertDesignBaseline(scan('function Footer() { return <div className="text-sm" />; }'), scan('function Header() { return <div className="text-sm" />; }'))).toThrow('New violations');
     expect(() => assertDesignBaseline(scan('.footer { @apply text-sm; }', 'x.css'), scan('.header { @apply text-sm; }', 'x.css'))).toThrow('New violations');
+    const siblings = '<nav><button aria-label="Back" className="text-sm">Back</button><button aria-label="Next">Next</button></nav>';
+    const moved = '<nav><button aria-label="Back">Back</button><button aria-label="Next" className="text-sm">Next</button></nav>';
+    expect(() => assertDesignBaseline(scan(moved), scan(siblings))).toThrow('New violations');
+    expect(() => assertDesignBaseline(scan(moved), scan(siblings), true)).toThrow('New violations');
   });
 
   it('fails stale entries when a baselined occurrence is removed', () => {
