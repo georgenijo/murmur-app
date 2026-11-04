@@ -217,6 +217,7 @@ pub enum PerformanceStageV1 {
     Cleanup,
     VoiceCommands,
     SmartCorrection,
+    HomophoneContext,
     SmartFormatting,
     SpokenStructure,
     SpokenNumbers,

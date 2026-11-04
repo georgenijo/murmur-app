@@ -58,10 +58,72 @@ private final class InferenceSlot: @unchecked Sendable {
     }
 }
 
+private final class PreparedSession<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+    private var session: Value?
+
+    func publish(_ session: Value) {
+        lock.lock()
+        defer { lock.unlock() }
+        // Release/cancellation can win while the async preparation is running.
+        if valid { self.session = session }
+    }
+
+    func take() -> Value? {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = session
+        session = nil
+        valid = false
+        return result
+    }
+
+    func invalidate() {
+        lock.lock()
+        valid = false
+        session = nil
+        lock.unlock()
+    }
+}
+
+/// Returns immediately. Only static instructions enter preparation; a session
+/// belongs to one recording and is consumed before any transcript is supplied.
+@_cdecl("murmur_fm_prepare")
+public func murmur_fm_prepare(_ instructions: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
+    #if canImport(FoundationModels) && !MURMUR_FM_STUB
+    if #available(macOS 26.0, *) {
+        guard InferenceSlot.shared.claim() else { return nil }
+        let box = PreparedSession<LanguageModelSession>()
+        let instructionText = String(cString: instructions)
+        Task.detached {
+            defer { InferenceSlot.shared.release() }
+            guard case .available = SystemLanguageModel.default.availability else { return }
+            let session = LanguageModelSession(instructions: instructionText)
+            session.prewarm()
+            box.publish(session)
+        }
+        return Unmanaged.passRetained(box).toOpaque()
+    }
+    #endif
+    return nil
+}
+
+@_cdecl("murmur_fm_release_prepared")
+public func murmur_fm_release_prepared(_ handle: UnsafeMutableRawPointer?) {
+    #if canImport(FoundationModels) && !MURMUR_FM_STUB
+    if #available(macOS 26.0, *), let handle {
+        let box = Unmanaged<PreparedSession<LanguageModelSession>>.fromOpaque(handle).takeRetainedValue()
+        box.invalidate()
+    }
+    #endif
+}
+
 /// Runs one bounded request. On success `*out` receives a malloc'd UTF-8
 /// answer that the caller must release with `murmur_fm_free`.
 @_cdecl("murmur_fm_choose")
 public func murmur_fm_choose(
+    _ prepared: UnsafeMutableRawPointer?,
     _ instructions: UnsafePointer<CChar>,
     _ prompt: UnsafePointer<CChar>,
     _ timeoutMs: UInt32,
@@ -75,6 +137,9 @@ public func murmur_fm_choose(
         guard InferenceSlot.shared.claim() else { return statusFailed }
         let instructionText = String(cString: instructions)
         let promptText = String(cString: prompt)
+        let preparedBox = prepared.map {
+            Unmanaged<PreparedSession<LanguageModelSession>>.fromOpaque($0).takeUnretainedValue()
+        }
         let box = AnswerBox()
         let done = DispatchSemaphore(value: 0)
         let task = Task.detached {
@@ -88,7 +153,7 @@ public func murmur_fm_choose(
                     return
                 }
                 try Task.checkCancellation()
-                let session = LanguageModelSession(instructions: instructionText)
+                let session = preparedBox?.take() ?? LanguageModelSession(instructions: instructionText)
                 let response = try await session.respond(
                     to: promptText,
                     options: GenerationOptions(

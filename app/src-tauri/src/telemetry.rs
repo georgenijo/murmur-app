@@ -255,6 +255,10 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.delivery_target_verified" => Some("pipeline.delivery_target_verified"),
         "pipeline.smart_destination_delivery" => Some("pipeline.smart_destination_delivery"),
         "pipeline.paste_safety" => Some("pipeline.paste_safety"),
+        "homophone_context.backoff_entered" => Some("homophone_context.backoff_entered"),
+        "homophone_context.backoff_exited" => Some("homophone_context.backoff_exited"),
+        "homophone_context.prewarm_requested" => Some("homophone_context.prewarm_requested"),
+        "homophone_context.pass" => Some("homophone_context.pass"),
         "performance.store_operation_failed" => Some("performance.store_operation_failed"),
         "system.startup_baseline" => Some("system.startup_baseline"),
         "system.model_install_started" => Some("system.model_install_started"),
@@ -1281,6 +1285,54 @@ fn sanitize_delivery_target_verification_event(
     }
 }
 
+fn is_homophone_context_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some(
+            "homophone_context.backoff_entered"
+                | "homophone_context.backoff_exited"
+                | "homophone_context.prewarm_requested"
+                | "homophone_context.pass"
+        )
+    )
+}
+
+fn sanitize_homophone_context_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => value.as_str().is_some_and(|code| {
+            matches!(
+                code,
+                "homophone_context.backoff_entered"
+                    | "homophone_context.backoff_exited"
+                    | "homophone_context.prewarm_requested"
+                    | "homophone_context.pass"
+            )
+        }),
+        "session_id"
+        | "consecutive_failures"
+        | "cooldown_ms"
+        | "flagged"
+        | "engine_us"
+        | "budget_ms" => value.as_u64().is_some(),
+        "scheduled" => value.is_boolean(),
+        "outcome" => value.as_str().is_some_and(|outcome| {
+            matches!(
+                outcome,
+                "not_triggered"
+                    | "bounded_skip"
+                    | "unchanged"
+                    | "accepted"
+                    | "rejected"
+                    | "timeout"
+                    | "unavailable"
+                    | "failed"
+                    | "backoff"
+            )
+        }),
+        _ => false,
+    });
+}
+
 fn is_performance_store_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
     data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("performance.store_operation_failed")
@@ -1434,6 +1486,11 @@ fn sanitized_summary(
         // Event codes carry the useful lifecycle meaning. Keep the JSONL/UI
         // summary constant so formatted content cannot leak from a call site.
         "Meeting event".to_string()
+    } else if data.as_object().is_some_and(is_homophone_context_event) {
+        data["event_code"]
+            .as_str()
+            .unwrap_or("Structured event")
+            .to_string()
     } else if !debug_build {
         // Release summaries must never depend on caller-provided text. Retain
         // useful semantics only through the exact event-code allowlist.
@@ -1816,6 +1873,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         // only bounded equality facts and stable outcome/source codes so app,
         // process, window, path, content, and native error detail cannot leak.
         sanitize_delivery_target_verification_event(obj);
+        return;
+    }
+    if is_homophone_context_event(obj) {
+        sanitize_homophone_context_event(obj);
         return;
     }
     if is_performance_store_event(obj) {
@@ -4880,6 +4941,47 @@ mod tests {
             assert_eq!(data["recovery_max_attempts"], 3);
             assert!(!encoded.contains("SENTINEL"));
             assert!(!encoded.contains("/Users/private"));
+        }
+    }
+
+    #[test]
+    fn homophone_events_keep_only_content_free_fields_in_all_builds() {
+        for debug_build in [true, false] {
+            for code in [
+                "homophone_context.pass",
+                "homophone_context.backoff_entered",
+                "homophone_context.backoff_exited",
+                "homophone_context.prewarm_requested",
+            ] {
+                let mut data = serde_json::json!({
+                    "event_code": code, "session_id": 7, "flagged": 1,
+                    "engine_us": 151_000, "budget_ms": 150, "outcome": "backoff",
+                    "consecutive_failures": 3, "cooldown_ms": 300_000, "scheduled": true,
+                    "prompt": "SENTINEL PRIVATE", "answer": {"nested": "SENTINEL"},
+                    "transcript": "SENTINEL PRIVATE", "error": "/Users/private/path"
+                });
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(data["event_code"], code);
+                assert_eq!(data["outcome"], "backoff");
+                assert_eq!(data["engine_us"], 151_000);
+                assert_eq!(
+                    sanitized_summary(
+                        "pipeline",
+                        Some("SENTINEL PRIVATE".into()),
+                        &data,
+                        debug_build
+                    ),
+                    code
+                );
+                let encoded = data.to_string();
+                assert!(!encoded.contains("SENTINEL"));
+                assert!(!encoded.contains("/Users/private"));
+                data["outcome"] = serde_json::json!("SENTINEL PRIVATE");
+                data["engine_us"] = serde_json::json!({"nested": "SENTINEL"});
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert!(data.get("outcome").is_none());
+                assert!(data.get("engine_us").is_none());
+            }
         }
     }
 

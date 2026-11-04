@@ -683,15 +683,38 @@ learned replacements remain authoritative: their output spans are protected, and
 already canonical vocabulary spellings are skipped. Multiword aliases continue
 through deterministic correction; this tier does not rewrite phrases.
 
-No trigger means zero model calls, availability queries, or warming. Trigger
-scanning still has a small CPU cost. More than six flags or 1,200 characters skips
+Recording start prepares a fresh, one-use FoundationModels session only when the
+frozen Smart Correction and homophone settings enable this tier. Preparation
+runs asynchronously with static instructions and no transcript. Its owner lives
+in that recording's immutable snapshot; stale work can publish only into that
+disposable owner. Generation consumes the session exactly once, so no prior
+transcript or response can enter another dictation. If preparation is still
+running, the tier refuses immediately rather than waiting behind it. Without a
+trigger there is no generation request; scanning still has a small CPU cost.
+[Apple's prewarm guidance](https://developer.apple.com/documentation/foundationmodels/languagemodelsession/prewarm%28promptprefix%3A%29)
+suggests at least a second before generation and makes no loading guarantee,
+particularly in the background. This is best effort, not evidence of sub-budget
+answers; the generation deadline remains unchanged. More than six flags or 1,200 characters skips
 inference. A fresh session chooses only among each flag's options, keeping its
 original on doubt; Rust rejects malformed answers and verifies that punctuation,
 spacing, and every unflagged token remain byte-identical. The Swift bridge waits
 at most 150 ms, cancels overdue work, and refuses another request until that task
-exits. Unavailable models, errors, late answers and failed validation use the
+exits. Three consecutive timeouts or model-unavailable results pause inference
+and preparation for five minutes of monotonic time. The next eligible attempt
+then retries; an engine success resets the failure count (including an
+unchanged spelling). Other engine failures also break the consecutive streak.
+The cooldown is app-lifetime memory shared across recording sessions, resets
+on relaunch, and does not depend on wall-clock changes. It leaves deterministic
+text byte-for-byte unchanged. Content-free structured events
+`homophone_context.backoff_entered` / `homophone_context.backoff_exited` mark
+transitions; `homophone_context.pass` reports `outcome=backoff` for skipped
+inference. Unavailable models, errors, late answers and failed validation use the
 pipeline's optional-fallback policy and deliver deterministic text. Stage timing
 and pass outcomes/counts are content-free; neither prompt nor answer is logged.
+Performance runs persist the separate `homophoneContext` duration/outcome inside
+the aggregate transcript-transform span; timeout/backoff uses `fallback`, while
+a disabled tier is `notApplicable`. A measured sub-millisecond pass may be 0 ms;
+that is an actual measurement, never a missing-data sentinel.
 
 CI uses floating `macos-latest` (observed image 20261013.0424: macOS 26 ARM64,
 default Xcode 26.6 with macOS SDK 26.5). `canImport` gates the

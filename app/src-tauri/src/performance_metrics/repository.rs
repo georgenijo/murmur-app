@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 3;
+const LATEST_DB_SCHEMA_VERSION: u32 = 4;
 const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
@@ -677,7 +677,8 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         // `releaseToStop` and `releaseToPaste` stages (#826); older payloads
         // stay readable and simply omit them. The relational shape and V1 run
         // envelope remain unchanged, and the bump keeps older builds from
-        // decoding stages they do not know.
+        // decoding stages they do not know. V4 adds `homophoneContext` with
+        // the same additive-stage contract; old rows are not rewritten.
         let transaction = connection.transaction().map_err(db_error)?;
         transaction
             .pragma_update(None, "user_version", LATEST_DB_SCHEMA_VERSION)
@@ -767,6 +768,7 @@ const ALL_STAGES: &[PerformanceStageV1] = &[
     PerformanceStageV1::Cleanup,
     PerformanceStageV1::VoiceCommands,
     PerformanceStageV1::SmartCorrection,
+    PerformanceStageV1::HomophoneContext,
     PerformanceStageV1::SmartFormatting,
     PerformanceStageV1::SpokenStructure,
     PerformanceStageV1::SpokenNumbers,
@@ -1508,6 +1510,91 @@ mod tests {
     }
 
     #[test]
+    fn v3_migration_preserves_absent_homophone_stage_and_persists_new_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+        let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(91),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let mut legacy = repository
+            .complete(
+                &correlation(91),
+                RunOutcomeV1::Success,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        legacy
+            .stages
+            .retain(|timing| timing.stage != PerformanceStageV1::HomophoneContext);
+        let connection = Connection::open(root.join(DB_FILE)).unwrap();
+        connection
+            .execute(
+                "UPDATE completed_runs SET payload_json = ? WHERE run_id = ?",
+                params![serde_json::to_string(&legacy).unwrap(), legacy.run_id],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
+        drop(connection);
+        drop(repository);
+
+        let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
+        assert_eq!(repository.list(10).unwrap(), vec![legacy.clone()]);
+        let version: u32 = repository
+            .open()
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(92),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let timing = StageTimingV1 {
+            stage: PerformanceStageV1::HomophoneContext,
+            duration_ms: MeasurementV1::measured(151),
+            outcome: StageOutcomeV1::Fallback,
+        };
+        let completed = repository
+            .complete(
+                &correlation(92),
+                RunOutcomeV1::Success,
+                vec![timing.clone()],
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        drop(repository);
+        let reopened = PerformanceRepository::initialize(root).unwrap().0;
+        let runs = reopened.list(10).unwrap();
+        assert!(runs.contains(&legacy));
+        let stored = runs
+            .iter()
+            .find(|run| run.run_id == completed.run_id)
+            .unwrap();
+        assert_eq!(
+            stored
+                .stages
+                .iter()
+                .find(|entry| entry.stage == PerformanceStageV1::HomophoneContext),
+            Some(&timing)
+        );
+    }
+
+    #[test]
     fn v2_database_migrates_and_keeps_runs_without_release_timing() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("diagnostics");
@@ -1560,7 +1647,7 @@ mod tests {
             .unwrap()
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, LATEST_DB_SCHEMA_VERSION);
         let runs = migrated.list(10).unwrap();
         assert_eq!(runs, vec![stored]);
 
@@ -1711,7 +1798,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(run.schema_version, 1);
-        assert_eq!(run.stages.len(), 30);
+        assert_eq!(run.stages.len(), 31);
         assert_eq!(
             run.query_process,
             Some(QueryProcessSummaryV1 {

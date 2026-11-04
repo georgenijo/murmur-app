@@ -14,13 +14,15 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::correction::{levenshtein, phonetic_key};
 
 /// Hard end-to-end engine budget per dictation.
 pub(crate) const ENGINE_BUDGET: Duration = Duration::from_millis(150);
+const BACKOFF_FAILURE_LIMIT: u32 = 3;
+const BACKOFF_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 /// More flagged words than this skips the pass instead of asking the engine.
 const MAX_FLAGGED: usize = 6;
 /// Longer transcripts skip the pass; the prompt stays small and fast.
@@ -373,11 +375,15 @@ pub(crate) enum EngineError {
     Unavailable,
     Timeout,
     Failed,
+    Backoff,
 }
 
 /// The local language model. Production uses [`FoundationModelsEngine`];
 /// tests inject fakes.
 pub(crate) trait HomophoneEngine: Send + Sync {
+    /// Best effort only: never wait for preparation on the delivery path.
+    fn prewarm(&self) {}
+
     fn choose(
         &self,
         instructions: &str,
@@ -385,6 +391,83 @@ pub(crate) trait HomophoneEngine: Send + Sync {
         budget: Duration,
         max_tokens: u32,
     ) -> Result<String, EngineError>;
+}
+
+#[derive(Default)]
+struct BackoffState {
+    consecutive_failures: u32,
+    retry_at: Option<Instant>,
+}
+
+impl BackoffState {
+    fn should_skip(&mut self, now: Instant) -> bool {
+        match self.retry_at {
+            Some(retry_at) if now < retry_at => true,
+            Some(_) => {
+                self.retry_at = None;
+                self.consecutive_failures = 0;
+                tracing::info!(target: "pipeline", event_code = "homophone_context.backoff_exited", "homophone_context.backoff_exited");
+                false
+            }
+            None => false,
+        }
+    }
+
+    fn observe(&mut self, result: &Result<String, EngineError>, now: Instant) {
+        if matches!(result, Err(EngineError::Timeout | EngineError::Unavailable)) {
+            self.consecutive_failures += 1;
+            if self.consecutive_failures >= BACKOFF_FAILURE_LIMIT && self.retry_at.is_none() {
+                self.retry_at = Some(now + BACKOFF_COOLDOWN);
+                tracing::info!(
+                    target: "pipeline",
+                    event_code = "homophone_context.backoff_entered",
+                    consecutive_failures = self.consecutive_failures,
+                    cooldown_ms = BACKOFF_COOLDOWN.as_millis() as u64,
+                    "homophone_context.backoff_entered"
+                );
+            }
+        } else {
+            self.consecutive_failures = 0;
+        }
+    }
+}
+
+/// App-lifetime health, shared by fresh recording-owned engines. The injected
+/// monotonic clock makes cooldown tests independent of wall time and sleeping.
+struct BackoffEngine {
+    engine: Arc<dyn HomophoneEngine>,
+    state: Arc<Mutex<BackoffState>>,
+    now: Box<dyn Fn() -> Instant + Send + Sync>,
+}
+
+impl HomophoneEngine for BackoffEngine {
+    fn prewarm(&self) {
+        use crate::MutexExt;
+        if !self.state.lock_or_recover().should_skip((self.now)()) {
+            self.engine.prewarm();
+        }
+    }
+
+    fn choose(
+        &self,
+        instructions: &str,
+        prompt: &str,
+        budget: Duration,
+        max_tokens: u32,
+    ) -> Result<String, EngineError> {
+        use crate::MutexExt;
+        if self.state.lock_or_recover().should_skip((self.now)()) {
+            return Err(EngineError::Backoff);
+        }
+        let started = Instant::now();
+        let mut result = self.engine.choose(instructions, prompt, budget, max_tokens);
+        // Count a late successful response as a timeout, like run_pass does.
+        if result.is_ok() && started.elapsed() > budget {
+            result = Err(EngineError::Timeout);
+        }
+        self.state.lock_or_recover().observe(&result, (self.now)());
+        result
+    }
 }
 
 /// Content-free outcome of one pass, for logs and tests.
@@ -401,6 +484,7 @@ pub(crate) enum PassOutcome {
     Timeout,
     Unavailable,
     Failed,
+    Backoff,
 }
 
 impl PassOutcome {
@@ -414,6 +498,7 @@ impl PassOutcome {
             Self::Timeout => "timeout",
             Self::Unavailable => "unavailable",
             Self::Failed => "failed",
+            Self::Backoff => "backoff",
         }
     }
 
@@ -422,7 +507,7 @@ impl PassOutcome {
     pub(crate) fn is_fallback(self) -> bool {
         matches!(
             self,
-            Self::Rejected | Self::Timeout | Self::Unavailable | Self::Failed
+            Self::Rejected | Self::Timeout | Self::Unavailable | Self::Failed | Self::Backoff
         )
     }
 }
@@ -431,7 +516,7 @@ pub(crate) struct PassResult {
     pub text: String,
     pub outcome: PassOutcome,
     pub flagged: usize,
-    /// Wall time spent in the engine; zero when it was not called.
+    /// Wall time at the engine boundary, including the adaptive backoff gate.
     pub engine_us: u64,
     /// Substitutions in original-text byte order. Empty unless accepted.
     pub replacements: Vec<Replacement>,
@@ -474,6 +559,9 @@ pub(crate) fn run_pass(
             return unchanged(PassOutcome::Timeout, flags.len(), engine_us)
         }
         Err(EngineError::Failed) => return unchanged(PassOutcome::Failed, flags.len(), engine_us),
+        Err(EngineError::Backoff) => {
+            return unchanged(PassOutcome::Backoff, flags.len(), engine_us)
+        }
     };
     // A late answer is still a budget miss.
     if Duration::from_micros(engine_us) > ENGINE_BUDGET {
@@ -524,7 +612,10 @@ mod ffi {
     use std::os::raw::c_char;
 
     extern "C" {
+        pub fn murmur_fm_prepare(instructions: *const c_char) -> *mut std::ffi::c_void;
+        pub fn murmur_fm_release_prepared(handle: *mut std::ffi::c_void);
         pub fn murmur_fm_choose(
+            prepared: *mut std::ffi::c_void,
             instructions: *const c_char,
             prompt: *const c_char,
             timeout_ms: u32,
@@ -537,10 +628,48 @@ mod ffi {
 
 /// Apple FoundationModels on-device engine (macOS 26+), via the in-process
 /// Swift bridge in `macos/FoundationModelsBridge.swift`.
-pub(crate) struct FoundationModelsEngine;
+#[derive(Default)]
+pub(crate) struct FoundationModelsEngine {
+    #[cfg(target_os = "macos")]
+    prepared: OnceLock<PreparedSession>,
+}
+
+#[cfg(target_os = "macos")]
+struct PreparedSession(*mut std::ffi::c_void);
+
+// The opaque Swift owner synchronizes publication, one-time take, and release
+// internally. Rust only borrows it while its owning engine Arc is alive.
+#[cfg(target_os = "macos")]
+unsafe impl Send for PreparedSession {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for PreparedSession {}
+
+#[cfg(target_os = "macos")]
+impl Drop for PreparedSession {
+    fn drop(&mut self) {
+        // SAFETY: the bridge accepts null and consumes this retained owner once.
+        unsafe { ffi::murmur_fm_release_prepared(self.0) };
+    }
+}
 
 #[cfg(target_os = "macos")]
 impl HomophoneEngine for FoundationModelsEngine {
+    fn prewarm(&self) {
+        self.prepared.get_or_init(|| {
+            let instructions = std::ffi::CString::new(INSTRUCTIONS).expect("static instructions");
+            // SAFETY: the bridge copies instructions before returning and
+            // returns immediately with a retained, thread-safe session owner.
+            let session = PreparedSession(unsafe { ffi::murmur_fm_prepare(instructions.as_ptr()) });
+            tracing::info!(
+                target: "pipeline",
+                event_code = "homophone_context.prewarm_requested",
+                scheduled = !session.0.is_null(),
+                "homophone_context.prewarm_requested"
+            );
+            session
+        });
+    }
+
     fn choose(
         &self,
         instructions: &str,
@@ -555,6 +684,9 @@ impl HomophoneEngine for FoundationModelsEngine {
         // the bridge writes either null or a malloc'd string it owns to `answer`.
         let status = unsafe {
             ffi::murmur_fm_choose(
+                self.prepared
+                    .get()
+                    .map_or(std::ptr::null_mut(), |session| session.0),
                 instructions.as_ptr(),
                 prompt.as_ptr(),
                 budget.as_millis().min(u32::MAX as u128) as u32,
@@ -580,7 +712,14 @@ impl HomophoneEngine for FoundationModelsEngine {
 }
 
 pub(crate) fn system_engine() -> Arc<dyn HomophoneEngine> {
-    Arc::new(FoundationModelsEngine)
+    static STATE: OnceLock<Arc<Mutex<BackoffState>>> = OnceLock::new();
+    Arc::new(BackoffEngine {
+        engine: Arc::new(FoundationModelsEngine::default()),
+        state: STATE
+            .get_or_init(|| Arc::new(Mutex::new(BackoffState::default())))
+            .clone(),
+        now: Box::new(Instant::now),
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -594,7 +733,140 @@ impl HomophoneEngine for FoundationModelsEngine {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+
+    struct SequenceEngine {
+        answers: Mutex<std::collections::VecDeque<Result<String, EngineError>>>,
+        calls: AtomicUsize,
+        prewarms: AtomicUsize,
+    }
+
+    impl HomophoneEngine for SequenceEngine {
+        fn prewarm(&self) {
+            self.prewarms.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn choose(&self, _: &str, _: &str, _: Duration, _: u32) -> Result<String, EngineError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected engine call")
+        }
+    }
+
+    fn backoff_engine(
+        answers: Vec<Result<String, EngineError>>,
+    ) -> (BackoffEngine, Arc<SequenceEngine>, Arc<AtomicUsize>) {
+        let engine = Arc::new(SequenceEngine {
+            answers: Mutex::new(answers.into()),
+            calls: AtomicUsize::new(0),
+            prewarms: AtomicUsize::new(0),
+        });
+        let elapsed_ms = Arc::new(AtomicUsize::new(0));
+        let clock = elapsed_ms.clone();
+        let origin = Instant::now();
+        let backoff = BackoffEngine {
+            engine: engine.clone(),
+            state: Arc::new(Mutex::new(BackoffState::default())),
+            now: Box::new(move || {
+                origin + Duration::from_millis(clock.load(Ordering::SeqCst) as u64)
+            }),
+        };
+        (backoff, engine, elapsed_ms)
+    }
+
+    #[test]
+    fn consecutive_timeouts_and_unavailability_skip_engine_and_prewarm() {
+        let (engine, inner, _) = backoff_engine(vec![
+            Err(EngineError::Timeout),
+            Err(EngineError::Unavailable),
+            Err(EngineError::Timeout),
+        ]);
+        let text = "Put it in the cue.  ";
+        for expected in [
+            PassOutcome::Timeout,
+            PassOutcome::Unavailable,
+            PassOutcome::Timeout,
+            PassOutcome::Backoff,
+        ] {
+            let result = run_pass(text, &[], &[], &engine);
+            assert_eq!(result.outcome, expected);
+            assert_eq!(result.text, text);
+            assert!(result.replacements.is_empty());
+        }
+        engine.prewarm();
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(inner.prewarms.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn backoff_is_shared_across_fresh_recording_engines() {
+        let (first, inner, _) = backoff_engine(vec![Err(EngineError::Unavailable); 3]);
+        for _ in 0..3 {
+            run_pass("the cue", &[], &[], &first);
+        }
+        let next = BackoffEngine {
+            engine: inner.clone(),
+            state: first.state.clone(),
+            now: Box::new(Instant::now),
+        };
+        assert_eq!(
+            run_pass("the cue", &[], &[], &next).outcome,
+            PassOutcome::Backoff
+        );
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn successful_answer_resets_consecutive_failures() {
+        let (engine, inner, _) = backoff_engine(vec![
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Ok("1=cue".into()),
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Ok("1=queue".into()),
+        ]);
+        for expected in [
+            PassOutcome::Timeout,
+            PassOutcome::Timeout,
+            PassOutcome::Unchanged,
+            PassOutcome::Timeout,
+            PassOutcome::Timeout,
+            PassOutcome::Accepted,
+        ] {
+            assert_eq!(run_pass("the cue", &[], &[], &engine).outcome, expected);
+        }
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn cooldown_expiry_retries_without_sleeping_and_can_reenter_backoff() {
+        let (engine, inner, clock) = backoff_engine(vec![Err(EngineError::Timeout); 6]);
+        for _ in 0..3 {
+            run_pass("the cue", &[], &[], &engine);
+        }
+        clock.store(BACKOFF_COOLDOWN.as_millis() as usize - 1, Ordering::SeqCst);
+        assert_eq!(
+            run_pass("the cue", &[], &[], &engine).outcome,
+            PassOutcome::Backoff
+        );
+        clock.fetch_add(1, Ordering::SeqCst);
+        engine.prewarm();
+        assert_eq!(inner.prewarms.load(Ordering::SeqCst), 1);
+        for _ in 0..3 {
+            assert_eq!(
+                run_pass("the cue", &[], &[], &engine).outcome,
+                PassOutcome::Timeout
+            );
+        }
+        assert_eq!(
+            run_pass("the cue", &[], &[], &engine).outcome,
+            PassOutcome::Backoff
+        );
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 6);
+    }
 
     struct FakeEngine {
         answer: Result<String, EngineError>,
@@ -854,7 +1126,7 @@ mod tests {
         let (mut triggered, mut improved, mut regressions) = (0, 0, 0);
         for (text, expected) in cases {
             let started = Instant::now();
-            let result = run_pass(text, &[], &[], &FoundationModelsEngine);
+            let result = run_pass(text, &[], &[], &FoundationModelsEngine::default());
             elapsed.push(started.elapsed().as_micros() as u64);
             *outcomes.entry(result.outcome.as_str()).or_insert(0) += 1;
             triggered += usize::from(result.flagged > 0);

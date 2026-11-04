@@ -25,6 +25,19 @@ describe('performance presentation semantics', () => {
     expect(orderedStages(run).some(timing => timing.stage === 'inferenceQueue')).toBe(false);
   });
 
+  it('shows homophone cost and outcome without inventing a legacy measurement', () => {
+    const run = makeRun();
+    run.stages = run.stages.map(timing => timing.stage === 'homophoneContext'
+      ? { ...timing, durationMs: measured(151), outcome: 'fallback' }
+      : timing);
+    expect(stageLabel('homophoneContext', 'dictation')).toBe('Homophone context');
+    expect(orderedStages(run).find(timing => timing.stage === 'homophoneContext')).toMatchObject({
+      durationMs: measured(151), outcome: 'fallback',
+    });
+    run.stages = run.stages.filter(timing => timing.stage !== 'homophoneContext');
+    expect(orderedStages(run).some(timing => timing.stage === 'homophoneContext')).toBe(false);
+  });
+
   it('keeps measured zero, unavailable, and not-applicable distinct', () => {
     expect(formatMeasurement(measured(0), value => `${value} ms`)).toEqual({
       text: '0 ms',
@@ -95,6 +108,7 @@ describe('performance presentation semantics', () => {
       'cleanup',
       'voiceCommands',
       'smartCorrection',
+      'homophoneContext',
       'smartFormatting',
       'spokenStructure',
       'spokenNumbers',
