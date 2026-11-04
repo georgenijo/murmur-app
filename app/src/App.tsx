@@ -88,6 +88,7 @@ import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { INTERNAL_BENCHMARK_BUILD } from './lib/buildFlavor';
 import { cancelMicrophonePreview } from './lib/microphonePreview';
+import { getMeetingAudioCaptureBusy } from './lib/meetingAudio';
 import {
   canRetryDelivery,
   retryLastDelivery,
@@ -123,6 +124,7 @@ function App() {
 
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
+  const mainAppReady = onboardingState === 'done' && modelReady === true;
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const homeSidebar = useHomeSidebar(false, isSettingsOpen);
   const homeNavId = useId();
@@ -331,10 +333,10 @@ function App() {
     if (next.state === 'ready') completeChecklistItem('voice_query');
     if (next.state === 'failed') updateSettings({ queryHotkey: null });
   }, [updateSettings]);
-  // Keep the global hotkeys disarmed until onboarding completes — accessibility
+  // Keep the global hotkeys disarmed until onboarding and model setup complete — accessibility
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
   // behind the OnboardingFlow screen.
-  const hotkeysArmed = onboardingState === 'done';
+  const hotkeysArmed = mainAppReady;
   useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleHoldStart, onStop: handleStop });
   useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
   useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleHoldStart, onStop: handleStop, onToggle: toggleRecording });
@@ -466,14 +468,14 @@ function App() {
   }, [isSettingsOpen, mainDestination]);
 
   const openSettings = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
-    if (isSettingsOpen) return;
+    if (!mainAppReady || isSettingsOpen) return;
     beginCurrentUiTransition('settings.general', trigger);
     setSettingsPageRequest((previous) => ({
       page: 'general',
       token: (previous?.token ?? 0) + 1,
     }));
     setIsSettingsOpen(true);
-  }, [isSettingsOpen]);
+  }, [mainAppReady, isSettingsOpen]);
 
   const navigateMain = useCallback((destination: MainDestination, trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
@@ -520,11 +522,31 @@ function App() {
   const openSettingsFromOverlay = useCallback(() => openSettings('programmatic'), [openSettings]);
   useOpenSettingsListener(openSettingsFromOverlay);
 
-  const rerunSetup = useCallback(() => {
+  const captureBusyRef = useRef(false);
+  captureBusyRef.current = status !== 'idle' || !['idle', 'failed'].includes(meetings.status.phase);
+  const setupRequestPendingRef = useRef(false);
+  const rerunSetup = useCallback(async () => {
+    if (setupRequestPendingRef.current) return;
+    setupRequestPendingRef.current = true;
+    try {
+      // This native ownership check also covers transform/Voice Query capture
+      // and startup before the main window receives its lifecycle event.
+      const nativeBusy = await getMeetingAudioCaptureBusy();
+      if (nativeBusy || captureBusyRef.current) {
+        presentDeliveryRecoveryNotice({ message: 'Stop recording first before running setup.', retryable: false });
+        return;
+      }
+    } catch {
+      presentDeliveryRecoveryNotice({ message: 'Could not check recording state. Try running setup again.', retryable: false });
+      return;
+    } finally {
+      setupRequestPendingRef.current = false;
+    }
     setIsSettingsOpen(false);
+    setIsPaletteOpen(false);
     resetOnboarding();
     setOnboardingState('needed');
-  }, []);
+  }, [presentDeliveryRecoveryNotice]);
 
   // ---- Command palette (⌘K) ----------------------------------------------
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
@@ -536,13 +558,14 @@ function App() {
     }));
   }, [modeRuntime.setNext, presentDeliveryRecoveryNotice]);
   const openSettingsTarget = useCallback((target: Omit<SettingsPageRequest, 'token'>) => {
+    if (!mainAppReady) return;
     beginCurrentUiTransition(settingsLatencyView(target.page), 'programmatic');
     setSettingsPageRequest((previous) => ({
       ...target,
       token: (previous?.token ?? 0) + 1,
     }));
     setIsSettingsOpen(true);
-  }, []);
+  }, [mainAppReady]);
   const openSettingsPage = useCallback((page: string) => {
     openSettingsTarget({ page });
   }, [openSettingsTarget]);
@@ -595,6 +618,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!mainAppReady) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const shortcut = mainWindowShortcut(event, isEditableTarget(event.target));
       if (!shortcut) return;
@@ -606,7 +630,7 @@ function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [focusHistorySearch, openSettings, openSettingsPage]);
+  }, [mainAppReady, focusHistorySearch, openSettings, openSettingsPage]);
 
   const commands = useMemo<PaletteCommand[]>(() => {
     const isRecording = status === 'recording' || status === 'starting';
@@ -778,7 +802,7 @@ function App() {
         title: 'Re-run setup assistant',
         section: 'App',
         keywords: ['onboarding', 'permissions', 'wizard'],
-        run: () => { setIsSettingsOpen(false); resetOnboarding(); setOnboardingState('needed'); },
+        run: rerunSetup,
       },
     ];
     return items;
@@ -788,7 +812,7 @@ function App() {
     settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
     updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickMediaFiles,
-    meetings, presentDeliveryRecoveryNotice,
+    meetings, presentDeliveryRecoveryNotice, rerunSetup,
     modeRuntime.status, setNextRecordingMode,
   ]);
 
