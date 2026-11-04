@@ -2,7 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act, StrictMode } from 'react';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
-import { NativeWindowLifecycle, startWindowLifecycle } from './windowLifecycle';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { NativeWindowLifecycle, startWindowFullscreen, startWindowLifecycle } from './windowLifecycle';
+
+vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: vi.fn() }));
+
+function nativeWindow(fullscreen = false) {
+  let resize: () => void;
+  const stop = vi.fn();
+  const window = {
+    isFullscreen: vi.fn().mockResolvedValue(fullscreen),
+    onResized: vi.fn().mockImplementation((handler: () => void) => {
+      resize = handler;
+      return Promise.resolve(stop);
+    }),
+  };
+  return { window, stop, resize: () => resize() };
+}
 
 let callbacks = new Map<number, FrameRequestCallback>();
 let id = 0;
@@ -22,6 +38,7 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({ addEventListener: vi.fn(), removeEventListener: vi.fn() }));
   vi.stubGlobal('isTauri', true);
   vi.stubGlobal('__TAURI_INTERNALS__', { metadata: {} });
+  vi.mocked(getCurrentWindow).mockReturnValue(nativeWindow().window as unknown as ReturnType<typeof getCurrentWindow>);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callbacks.set(++id, callback); return id; });
   vi.stubGlobal('cancelAnimationFrame', (key: number) => callbacks.delete(key));
   // jsdom does not lay out CSS; browser tests cover the real token measurement.
@@ -37,10 +54,13 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.removeAttribute('style');
+  document.documentElement.removeAttribute('data-fullscreen');
 });
 
 describe('workspace window lifecycle', () => {
   it('waits for a committed React tree and two frames before revealing', async () => {
+    const native = nativeWindow();
+    vi.mocked(getCurrentWindow).mockReturnValue(native.window as unknown as ReturnType<typeof getCurrentWindow>);
     const send = vi.fn().mockResolvedValue(undefined);
     mockIPC((command, args) => { if (command === 'sync_window_chrome') send(args); });
     const host = document.createElement('div');
@@ -54,6 +74,28 @@ describe('workspace window lifecycle', () => {
     await step();
     await settle();
     expect(send.mock.calls.map(([args]) => args.ready)).toEqual([false, true]);
+    expect(document.documentElement.dataset.fullscreen).toBe('false');
+    expect(native.window.onResized).toHaveBeenCalledTimes(2);
+    expect(native.stop).toHaveBeenCalledTimes(1);
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(native.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it('mounts diagnostics without revealing it and cleans up its native listener', async () => {
+    const native = nativeWindow(true);
+    vi.mocked(getCurrentWindow).mockReturnValue(native.window as unknown as ReturnType<typeof getCurrentWindow>);
+    const send = vi.fn();
+    mockIPC((command, args) => { if (command === 'sync_window_chrome') send(args); });
+    root = createRoot(document.createElement('div'));
+    await act(async () => root!.render(<NativeWindowLifecycle showAfterPaint={false}>Diagnostics</NativeWindowLifecycle>));
+    await step(); await step(); await settle();
+    expect(document.documentElement.dataset.fullscreen).toBe('true');
+    expect(send.mock.calls.every(([args]) => args.ready === false)).toBe(true);
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(native.stop).toHaveBeenCalledOnce();
+    expect(document.documentElement.hasAttribute('data-fullscreen')).toBe(false);
   });
 
   it('synchronizes exact light, dark and custom theme colors without re-showing diagnostics', async () => {
@@ -152,5 +194,87 @@ describe('workspace window lifecycle', () => {
     await settle(); await step(); await step(); await settle();
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][1]).toBe(false);
+  });
+});
+
+describe('per-window fullscreen layout', () => {
+  it.each([false, true])('reads initial fullscreen=%s and tracks transitions both ways', async (initial) => {
+    const native = nativeWindow(initial);
+    cleanup = startWindowFullscreen(native.window);
+    await settle();
+    expect(document.documentElement.dataset.fullscreen).toBe(String(initial));
+    for (const fullscreen of [!initial, initial]) {
+      native.window.isFullscreen.mockResolvedValue(fullscreen);
+      native.resize(); await settle();
+      expect(document.documentElement.dataset.fullscreen).toBe(String(fullscreen));
+    }
+  });
+
+  it('rechecks after asynchronous registration to cover an initial-read gap', async () => {
+    let registered!: (stop: () => void) => void;
+    const native = nativeWindow();
+    native.window.onResized.mockReturnValue(new Promise(resolve => { registered = resolve; }));
+    cleanup = startWindowFullscreen(native.window);
+    await settle();
+    expect(document.documentElement.dataset.fullscreen).toBe('false');
+    native.window.isFullscreen.mockResolvedValue(true);
+    registered(native.stop); await settle();
+    expect(document.documentElement.dataset.fullscreen).toBe('true');
+  });
+
+  it('ignores out-of-order fullscreen replies', async () => {
+    const native = nativeWindow();
+    cleanup = startWindowFullscreen(native.window);
+    await settle();
+    let oldReply!: (fullscreen: boolean) => void;
+    native.window.isFullscreen.mockReturnValueOnce(new Promise(resolve => { oldReply = resolve; }));
+    native.resize();
+    native.window.isFullscreen.mockResolvedValue(true);
+    native.resize(); await settle();
+    oldReply(false); await settle();
+    expect(document.documentElement.dataset.fullscreen).toBe('true');
+  });
+
+  it('disposes a listener registered after unmount and ignores pending reads', async () => {
+    let registered!: (stop: () => void) => void;
+    let read!: (fullscreen: boolean) => void;
+    const native = nativeWindow();
+    native.window.onResized.mockReturnValue(new Promise(resolve => { registered = resolve; }));
+    native.window.isFullscreen.mockReturnValue(new Promise(resolve => { read = resolve; }));
+    document.documentElement.dataset.fullscreen = 'previous';
+    const stop = startWindowFullscreen(native.window);
+    stop(); registered(native.stop); read(true); await settle();
+    expect(native.stop).toHaveBeenCalledOnce();
+    expect(document.documentElement.dataset.fullscreen).toBe('previous');
+  });
+
+  it('keeps main and diagnostics subscriptions independent', async () => {
+    const main = nativeWindow();
+    const diagnostics = nativeWindow(true);
+    const mainRoot = document.createElement('html');
+    const diagnosticsRoot = document.createElement('html');
+    const stopMain = startWindowFullscreen(main.window, mainRoot);
+    const stopDiagnostics = startWindowFullscreen(diagnostics.window, diagnosticsRoot);
+    await settle(); stopMain();
+    expect(main.stop).toHaveBeenCalledOnce();
+    expect(diagnostics.stop).not.toHaveBeenCalled();
+    main.window.isFullscreen.mockResolvedValue(true);
+    main.resize();
+    diagnostics.window.isFullscreen.mockResolvedValue(false);
+    diagnostics.resize(); await settle();
+    expect(mainRoot.hasAttribute('data-fullscreen')).toBe(false);
+    expect(diagnosticsRoot.dataset.fullscreen).toBe('false');
+    stopDiagnostics();
+    expect(diagnostics.stop).toHaveBeenCalledOnce();
+    expect(diagnosticsRoot.hasAttribute('data-fullscreen')).toBe(false);
+  });
+
+  it('preserves the last layout when a fullscreen query fails', async () => {
+    const native = nativeWindow(true);
+    cleanup = startWindowFullscreen(native.window);
+    await settle();
+    native.window.isFullscreen.mockRejectedValue(new Error('window closed'));
+    native.resize(); await settle();
+    expect(document.documentElement.dataset.fullscreen).toBe('true');
   });
 });

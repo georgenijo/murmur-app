@@ -1,5 +1,6 @@
 import { useEffect, type PropsWithChildren } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow, type Window as TauriWindow } from '@tauri-apps/api/window';
 import './windowLifecycle.css';
 
 export interface WindowAppearance {
@@ -96,12 +97,53 @@ export function startWindowLifecycle(send: Send, showAfterPaint: boolean): () =>
   };
 }
 
-export function startNativeWindowLifecycle(showAfterPaint: boolean): () => void {
-  if (!isTauri()) return () => {};
-  return startWindowLifecycle((appearance, ready) => invoke('sync_window_chrome', { ...appearance, ready }), showAfterPaint);
+/** Each webview owns its fullscreen attribute and native resize subscription.
+ * Ignore stale IPC replies, including replies from a StrictMode unmount. */
+export function startWindowFullscreen(
+  window: Pick<TauriWindow, 'isFullscreen' | 'onResized'>,
+  element: HTMLElement = document.documentElement,
+): () => void {
+  let disposed = false;
+  let sequence = 0;
+  let unlisten: (() => void) | undefined;
+  const previous = element.getAttribute('data-fullscreen');
+  const sync = async () => {
+    const request = ++sequence;
+    try {
+      const fullscreen = await window.isFullscreen();
+      if (!disposed && request === sequence) element.dataset.fullscreen = String(fullscreen);
+    } catch {
+      // Keep the last known layout if the window is closing or IPC fails.
+    }
+  };
+  void window.onResized(sync).then(stop => {
+    if (disposed) stop();
+    else {
+      unlisten = stop;
+      // Cover a transition between the initial read and listener registration.
+      void sync();
+    }
+  }).catch(() => {});
+  void sync();
+  return () => {
+    disposed = true;
+    unlisten?.();
+    if (previous === null) element.removeAttribute('data-fullscreen');
+    else element.setAttribute('data-fullscreen', previous);
+  };
 }
 
-export function NativeWindowLifecycle({ children }: PropsWithChildren) {
-  useEffect(() => startNativeWindowLifecycle(true), []);
+export function startNativeWindowLifecycle(showAfterPaint: boolean): () => void {
+  if (!isTauri()) return () => {};
+  const stopFullscreen = startWindowFullscreen(getCurrentWindow());
+  const stopAppearance = startWindowLifecycle((appearance, ready) => invoke('sync_window_chrome', { ...appearance, ready }), showAfterPaint);
+  return () => {
+    stopFullscreen();
+    stopAppearance();
+  };
+}
+
+export function NativeWindowLifecycle({ children, showAfterPaint = true }: PropsWithChildren<{ showAfterPaint?: boolean }>) {
+  useEffect(() => startNativeWindowLifecycle(showAfterPaint), [showAfterPaint]);
   return children;
 }
