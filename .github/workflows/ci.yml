@@ -425,3 +425,4 @@ jobs:
           else
             echo "CI passed"
           fi
+# CI timing probe for #926; never merged.
