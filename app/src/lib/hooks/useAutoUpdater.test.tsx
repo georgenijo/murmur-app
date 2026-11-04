@@ -83,10 +83,11 @@ describe('useAutoUpdater presentation state', () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
     mocks.getVersion.mockResolvedValue('0.22.1');
     const oldDownload = vi.fn();
+    const oldClose = vi.fn().mockRejectedValue(new Error('close failed'));
     const newDownload = vi.fn().mockResolvedValue(undefined);
     const newInstall = vi.fn().mockResolvedValue(undefined);
     mocks.check.mockResolvedValueOnce({
-      available: true, version: '0.23.0', body: 'Old notes', rawJson: {}, download: oldDownload,
+      available: true, version: '0.23.0', body: 'Old notes', rawJson: {}, download: oldDownload, close: oldClose,
     }).mockResolvedValueOnce({
       available: true, version: '0.24.0', body: 'New notes',
       rawJson: { min_version: '0.23.0', release_history: [{ version: '0.23.0', notes: 'Old notes' }] },
@@ -96,6 +97,7 @@ describe('useAutoUpdater presentation state', () => {
     now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS + 1);
     await act(async () => current.startDownload());
     expect(oldDownload).not.toHaveBeenCalled();
+    expect(oldClose).toHaveBeenCalledOnce();
     expect(newDownload).toHaveBeenCalledOnce();
     expect(current.updateStatus).toEqual({ phase: 'ready', version: '0.24.0', isForced: true });
     expect(JSON.parse(localStorage.getItem('pending-update-release-notes')!)).toEqual({
@@ -107,6 +109,25 @@ describe('useAutoUpdater presentation state', () => {
     });
     await act(async () => current.restartUpdate());
     expect(newInstall).toHaveBeenCalledOnce();
+  });
+
+  it('forces and downloads the fresh update when the installed version is unavailable', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const oldDownload = vi.fn();
+    const newDownload = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValueOnce({
+      available: true, version: '0.23.0', rawJson: {}, download: oldDownload,
+      close: vi.fn().mockResolvedValue(undefined),
+    }).mockResolvedValueOnce({
+      available: true, version: '0.24.0', rawJson: { min_version: '0.23.0' }, download: newDownload,
+    });
+    await act(async () => current.checkForUpdate());
+    mocks.getVersion.mockRejectedValue(new Error('installed version unavailable'));
+    now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS + 1);
+    await act(async () => current.startDownload());
+    expect(oldDownload).not.toHaveBeenCalled();
+    expect(newDownload).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({ phase: 'ready', version: '0.24.0', isForced: true });
   });
 
   it('uses the retained update if a stale update refresh fails', async () => {
@@ -127,7 +148,7 @@ describe('useAutoUpdater presentation state', () => {
     expect(install).toHaveBeenCalledOnce();
   });
 
-  it.each([null, { available: true, version: '0.22.0' }])(
+  it.each([null, { available: true, version: '0.22.0', close: vi.fn().mockResolvedValue(undefined) }])(
     'uses the retained update when a stale refresh returns no newer version', async (result) => {
       const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
       const download = vi.fn().mockResolvedValue(undefined);
@@ -138,6 +159,7 @@ describe('useAutoUpdater presentation state', () => {
       now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS + 1);
       await act(async () => current.startDownload());
       expect(download).toHaveBeenCalledOnce();
+      if (result) expect(result.close).toHaveBeenCalledOnce();
       expect(current.updateStatus).toMatchObject({ phase: 'ready', version: '0.23.0' });
     },
   );

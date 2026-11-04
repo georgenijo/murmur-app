@@ -354,7 +354,7 @@ export function useAutoUpdater(
           }
           let currentVersion = 'unknown';
           if (policy.status === 'present') {
-            currentVersion = await getVersion();
+            currentVersion = await getVersion().catch(() => 'unknown');
           } else if (Array.isArray(freshUpdate.rawJson?.release_history)) {
             currentVersion = await getVersion().catch(() => 'unknown');
           }
@@ -362,12 +362,16 @@ export function useAutoUpdater(
           releaseNotesRef.current = getUpdateReleaseNotes(
             freshUpdate.rawJson, currentVersion, freshUpdate.version, freshUpdate.body ?? '',
           );
+          const retainedUpdate = update;
+          void Promise.resolve().then(() => retainedUpdate.close()).catch(() => {});
           update = freshUpdate;
           updateRef.current = freshUpdate;
           updateDiscoveredAtRef.current = Date.now();
           selection = 'fresh_check';
           flog.info('updater', 'update available', { event_code: 'updater.update_available', version: update.version });
           setUpdateStatus({ phase: 'preparing', version: update.version });
+        } else if (freshUpdate) {
+          void Promise.resolve().then(() => freshUpdate.close()).catch(() => {});
         }
       } catch (err) {
         flog.warn('updater', 'freshness check failed; using retained update', {
