@@ -107,6 +107,25 @@ without a pointer drag persist immediately.
 
 ## Review and verification
 
+`npm test` runs the UI design ratchet in `app/src/styles.test.ts`. It scans
+production `.tsx` and `.css` under `app/src` for literal colors (including
+Tailwind palette utilities), font sizes outside `var(--ui-font-*)`, arbitrary
+pixel Tailwind values, and prose monospace. Use semantic colors and type tokens;
+statistics use sans with `tabular-nums`. Monospace is permitted on `code`, `pre`,
+`kbd`, and `samp` and their descendants. Other existing uses remain baselined.
+CSS custom-property definitions, tests, and visual fixtures are exempt. This is
+a static source scan; constructed runtime classes are not fully evaluated.
+
+The committed `app/src/test-utils/design-lint-baseline.json` identifies each
+legacy violation by file, rule, pattern, and occurrence within that pattern.
+Line shifts do not change identity. New violations fail with their file and
+rule; removing a violation also fails until its stale baseline entry is removed.
+After fixing violations, run `(cd app && npm run design-lint:shrink)` and commit
+the baseline diff with the fix. Regeneration must **only shrink**: this command
+refuses new violations rather than accepting them. Never add entries to silence
+a failure. Inspect the baseline diff, then run the normal tests without the env
+flag. The initial baseline records existing debt without changing rendered UI.
+
 Every main-dashboard change should be checked at the native 1120×820 default,
 the 880×720 golden size, and the compact 720×560 target in both appearance modes. Home and Insights must also
 be checked with the low-contrast and high-saturation imported-theme fixtures.
