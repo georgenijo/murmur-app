@@ -2,8 +2,14 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HomeRecordingBar } from './HomeRecordingBar';
-import { HomeSidebar } from './HomeSidebar';
+import { HomeSidebar as ControlledHomeSidebar } from './HomeSidebar';
+import { useHomeSidebar } from '../../lib/hooks/useHomeSidebar';
 import { PersonalizationCard } from './PersonalizationCard';
+
+function HomeSidebar(props: Pick<React.ComponentProps<typeof ControlledHomeSidebar>, 'active' | 'onNavigate'>) {
+  const sidebar = useHomeSidebar();
+  return <ControlledHomeSidebar {...props} sidebar={sidebar} navId="dashboard-nav" onSeparatorFocusChange={() => {}} />;
+}
 
 describe('home dashboard interactions', () => {
   let container: HTMLDivElement;

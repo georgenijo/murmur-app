@@ -1,15 +1,15 @@
-import { useId, useLayoutEffect, useRef, type Ref } from 'react';
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import type { Ref } from 'react';
 import { FluidTooltip } from '../ui/fluid-tooltip/fluid-tooltip';
-import { HOME_SIDEBAR_MIN, HOME_SIDEBAR_MAX, useHomeSidebar } from '../../lib/hooks/useHomeSidebar';
+import { HOME_SIDEBAR_MIN, HOME_SIDEBAR_MAX, type useHomeSidebar } from '../../lib/hooks/useHomeSidebar';
 import type { MainDestination } from '../../lib/homeDashboard';
 import { MainNavItem } from '../ui/DashboardPrimitives';
 
 interface HomeSidebarProps {
   active: MainDestination;
-  initialCollapsed?: boolean;
+  sidebar: ReturnType<typeof useHomeSidebar>;
+  navId: string;
+  onSeparatorFocusChange: (focused: boolean) => void;
   suspended?: boolean;
-  onWidthChange?: (width: number) => void;
   homeButtonRef?: Ref<HTMLButtonElement>;
   onNavigate: (destination: MainDestination) => void;
 }
@@ -30,18 +30,7 @@ function NavIcon({ name }: { name: IconName }) {
   );
 }
 
-export function HomeSidebar({ active, homeButtonRef, onNavigate, initialCollapsed, suspended, onWidthChange }: HomeSidebarProps) {
-  const sidebar = useHomeSidebar(initialCollapsed, suspended);
-  const navId = useId();
-  const toggleRef = useRef<HTMLButtonElement>(null);
-  const resizeFocused = useRef(false);
-  useLayoutEffect(() => {
-    if (sidebar.collapsed && resizeFocused.current) {
-      resizeFocused.current = false;
-      toggleRef.current?.focus();
-    }
-  }, [sidebar.collapsed]);
-  useLayoutEffect(() => { onWidthChange?.(sidebar.width); }, [sidebar.width, onWidthChange]);
+export function HomeSidebar({ active, homeButtonRef, onNavigate, sidebar, navId, suspended, onSeparatorFocusChange }: HomeSidebarProps) {
   const destinations = [
     { id: 'home', label: 'Home', icon: 'home' },
     { id: 'meetings', label: 'Notetaker', icon: 'meeting' },
@@ -57,12 +46,6 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate, initialCollapse
           </span>
           <span className="home-brand-name">Murmur</span>
         </div>
-        <button ref={toggleRef} type="button" className="ui-icon-button home-sidebar-toggle"
-          aria-label={sidebar.collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={sidebar.collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-expanded={!sidebar.collapsed} aria-controls={navId} onClick={sidebar.toggle}>
-          {sidebar.collapsed ? <PanelLeftOpen aria-hidden="true" size={16} /> : <PanelLeftClose aria-hidden="true" size={16} />}
-        </button>
       </div>
 
       <FluidTooltip.Group orientation="vertical" disabled={suspended}>
@@ -89,7 +72,7 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate, initialCollapse
         aria-label="Sidebar width" aria-orientation="vertical" aria-controls={navId}
         aria-valuemin={HOME_SIDEBAR_MIN} aria-valuemax={HOME_SIDEBAR_MAX} aria-valuenow={sidebar.width}
         aria-valuetext={`${sidebar.width} pixels`} title="Drag to resize sidebar; use Left/Right arrows, Home or End"
-        onFocus={() => { resizeFocused.current = true; }} onBlur={() => { resizeFocused.current = false; }}
+        onFocus={() => onSeparatorFocusChange(true)} onBlur={() => onSeparatorFocusChange(false)}
         {...sidebar.resizeProps} />}
     </aside>
   );

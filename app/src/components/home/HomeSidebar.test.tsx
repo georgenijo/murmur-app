@@ -1,7 +1,13 @@
 import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HomeSidebar } from './HomeSidebar';
+import { HomeSidebar as ControlledHomeSidebar } from './HomeSidebar';
+import { useHomeSidebar } from '../../lib/hooks/useHomeSidebar';
+
+function HomeSidebar(props: Omit<React.ComponentProps<typeof ControlledHomeSidebar>, 'sidebar' | 'navId' | 'onSeparatorFocusChange'>) {
+  const sidebar = useHomeSidebar(false, props.suspended);
+  return <ControlledHomeSidebar {...props} sidebar={sidebar} navId="test-main-nav" onSeparatorFocusChange={() => {}} />;
+}
 
 describe('HomeSidebar labeled navigation', () => {
   let container: HTMLDivElement;
@@ -32,6 +38,8 @@ describe('HomeSidebar labeled navigation', () => {
     expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(labels);
     expect(buttons.map((button) => button.querySelector('.home-nav-label')?.textContent)).toEqual(labels);
     expect(buttons).toHaveLength(4);
+    expect(container.querySelector('nav')?.id).toBe('test-main-nav');
+    expect(container.querySelector('.home-sidebar-heading button')).toBeNull();
 
     for (const [index, destination] of ['home', 'meetings', 'queries', 'insights'].entries()) {
       expect(buttons[index].type).toBe('button');
