@@ -384,7 +384,11 @@ Transcription processing is local. Network access occurs for model setup and may
   sample-count mismatches retain
   the exit-before-delivery path. The post-exit stop log carries
   `stop_drain_ms`, `stop_drain`, `unreceived_samples`, and `stop_to_exit_ms`
-  (from worker Stop receipt, excluding the supervisor's tail). Standby does
+  (from worker Stop receipt, excluding the supervisor's tail). Teardown does
+  not delay performance-run completion: late worker exit/invariant evidence
+  atomically amends the exact completed dictation's capture diagnostics off the
+  delivery path. See [performance diagnostics](performance-diagnostics.md#production-app-version-comparisons)
+  for persistence, missing-evidence, and shutdown semantics. Standby does
   not send `Stop` or receive `Stopped`; after its 50 ms tail it snapshots the
   current recording and retains the live worker for bounded pre-roll.
   `audio::release_tail_tests` holds the deterministic drain tests and the

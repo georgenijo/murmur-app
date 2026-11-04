@@ -1386,6 +1386,15 @@ fn handle_worker_event(
             }
         }
         AudioWorkerEvent::TerminationUnconfirmed { failure, .. } => {
+            // Delivery may already be complete. Preserve teardown evidence for
+            // this exact owner independently of presentation/recovery gates.
+            sink.notify(
+                current.app_handle.as_ref(),
+                owner,
+                AudioLifecycleEvent::StartupDiagnostic(
+                    audio::AudioStartupDiagnostic::WorkerInvariantViolation,
+                ),
+            );
             if current.phase == AttemptPhase::Stopping {
                 // A sealed result is final, but failed teardown is a separate
                 // capture failure. Keep the stop response/pipeline intact.
@@ -3711,6 +3720,18 @@ mod tests {
                     Err(AudioStartError::AudioRecovering)
                 );
                 assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
+                assert!(sink
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(event_owner, event)| {
+                        *event_owner == owner
+                            && *event
+                                == AudioLifecycleEvent::StartupDiagnostic(
+                                    audio::AudioStartupDiagnostic::WorkerInvariantViolation,
+                                )
+                    }));
                 assert!(sink
                     .events
                     .lock()
