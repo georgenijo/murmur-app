@@ -216,6 +216,27 @@ describe('onboarding model state with native IPC boundaries', () => {
     expect(completed).toHaveBeenCalledWith('base.en', 'double_tap', 'f12');
   });
 
+  it('preserves rollback of an earlier failed edit before configuring setup choices (#951)', async () => {
+    const pending = deferred<unknown>();
+    const implementation = native.invoke.getMockImplementation()!;
+    let configurations = 0;
+    native.invoke.mockImplementation((command, ...args) => {
+      if (command === 'configure_dictation' && ++configurations === 1) return pending.promise;
+      return implementation(command, ...args);
+    });
+    await mount();
+    await act(async () => settings.updateSettings({ language: 'fr' }));
+    await select('base.en');
+    await done();
+    expect(isOnboardingComplete()).toBe(false);
+    await act(async () => pending.reject(new Error('backend busy')));
+    const writes = native.invoke.mock.calls.filter(([command]) => command === 'configure_dictation');
+    expect(writes).toHaveLength(2);
+    expect(writes[1][1].options).toMatchObject({ model: 'base.en', language: DEFAULT_SETTINGS.language });
+    expect(settings.getConfirmedSettings()).toMatchObject({ model: 'base.en', language: DEFAULT_SETTINGS.language });
+    expect(isOnboardingComplete()).toBe(true);
+  });
+
   it('rechecks the chosen model at completion (#945)', async () => {
     await mount();
     catalog = [];

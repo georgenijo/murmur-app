@@ -462,7 +462,7 @@ export function useSettings() {
   const configureOnboarding = useCallback(async (choices: Pick<Settings, 'model' | 'recordingMode' | 'doubleTapKey'>) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
-    const version = ++configureVersionRef.current;
+    const version = configureVersionRef.current;
     try {
       await Promise.race([
         (async () => {
@@ -471,8 +471,7 @@ export function useSettings() {
           if (!catalog.some((model) => model.modelName === choices.model && model.installState === 'installed')) {
             throw new Error('The selected transcription model is not installed.');
           }
-          const next = { ...settingsRef.current, ...choices };
-          await configure(buildConfigureOptions(next), {
+          await configure(() => buildConfigureOptions({ ...settingsRef.current, ...choices }), {
             // Publish the acknowledgment inside the serialized configure job,
             // before a queued startup configure reads the confirmed snapshot.
             onSuccess: () => {
