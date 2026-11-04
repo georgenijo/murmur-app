@@ -23,6 +23,8 @@ function write(level: string, tag: string, message: string, data?: Record<string
     message: line,
     transformPassId,
     eventCode,
+    updaterVersion: tag === 'updater' && typeof data?.version === 'string' ? data.version : null,
+    updaterSelection: tag === 'updater' && typeof data?.selection === 'string' ? data.selection : null,
   }).catch(() => {});
 }
 

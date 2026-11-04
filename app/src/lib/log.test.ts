@@ -30,6 +30,8 @@ describe('flog event codes', () => {
         '[updater] no update available {"event_code":"updater.check_current"}',
       transformPassId: null,
       eventCode: 'updater.check_current',
+      updaterVersion: null,
+      updaterSelection: null,
     });
   });
 
@@ -46,6 +48,17 @@ describe('flog event codes', () => {
         : '[updater] check failed',
       transformPassId: null,
       eventCode: null,
+      updaterVersion: null,
+      updaterSelection: null,
     });
+  });
+
+  it('forwards updater version and selection as separate structured fields', () => {
+    flog.info('updater', 'starting download', {
+      event_code: 'updater.download_starting', version: '0.24.0', selection: 'fresh_check',
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith('log_frontend', expect.objectContaining({
+      updaterVersion: '0.24.0', updaterSelection: 'fresh_check',
+    }));
   });
 });

@@ -295,8 +295,24 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "updater.install_blocked" => Some("updater.install_blocked"),
         "updater.install_ready" => Some("updater.install_ready"),
         "updater.install_failed" => Some("updater.install_failed"),
+        "updater.restart_failed" => Some("updater.restart_failed"),
+        "updater.update_available" => Some("updater.update_available"),
+        "updater.freshness_check_failed" => Some("updater.freshness_check_failed"),
+        "updater.download_starting" => Some("updater.download_starting"),
+        "updater.download_started" => Some("updater.download_started"),
+        "updater.download_finished" => Some("updater.download_finished"),
+        "updater.download_ready" => Some("updater.download_ready"),
         _ => None,
     }
+}
+
+pub(crate) fn is_safe_updater_version(version: &str) -> bool {
+    let version = version.strip_prefix('v').unwrap_or(version);
+    version.len() <= 32
+        && version.split('.').count() == 3
+        && version
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn is_model_install_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
@@ -1823,6 +1839,21 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     if obj
         .get("event_code")
         .and_then(serde_json::Value::as_str)
+        .is_some_and(|code| code.starts_with("updater.") && canonical_event_code(code).is_some())
+    {
+        obj.retain(|key, value| match key.as_str() {
+            "event_code" => value.as_str().and_then(canonical_event_code).is_some(),
+            "version" => value.as_str().is_some_and(is_safe_updater_version),
+            "selection" => value
+                .as_str()
+                .is_some_and(|s| matches!(s, "retained" | "fresh_check" | "none")),
+            _ => false,
+        });
+        return;
+    }
+    if obj
+        .get("event_code")
+        .and_then(serde_json::Value::as_str)
         .is_some_and(is_launch_event_code)
     {
         obj.retain(|key, value| match key.as_str() {
@@ -2565,6 +2596,37 @@ pub fn clear_event_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn updater_events_keep_only_bounded_operational_fields() {
+        for debug_build in [false, true] {
+            let mut data = serde_json::json!({
+                "event_code": "updater.download_starting",
+                "version": "0.24.0",
+                "selection": "fresh_check",
+                "message": "private content",
+            });
+            sanitize_event_data("system", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({
+                    "event_code": "updater.download_starting",
+                    "version": "0.24.0",
+                    "selection": "fresh_check",
+                })
+            );
+            let mut invalid = serde_json::json!({
+                "event_code": "updater.download_starting",
+                "version": "1.2.3-private",
+                "selection": "private content",
+            });
+            sanitize_event_data("system", &mut invalid, debug_build);
+            assert_eq!(
+                invalid,
+                serde_json::json!({ "event_code": "updater.download_starting" })
+            );
+        }
+    }
 
     fn rotation_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("murmur_telemetry_rotation_{name}"));

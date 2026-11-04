@@ -138,14 +138,18 @@ verified `min_version` (or no verifiable minimum policy is available):
    and keeps both update controls available. Releases are no longer skippable.
 2. **Preparing** — A single updater owner verifies the install location. Duplicate
    actions and background checks cannot enter while an update is downloading,
-   ready, or restarting.
+   ready, or restarting. If the retained update was discovered more than five
+   minutes ago, Murmur checks again before downloading and selects a newer
+   available version, including its policy and cumulative release notes. If
+   the check fails or finds nothing newer, it uses the retained signed update.
 3. **Downloading** — A compact progress dialog shows a percentage and progress
    bar. The header shows a progress ring. Unknown download sizes use indeterminate
    progress. Tauri's `Update.download()` verifies and retains the downloaded bytes.
 4. **Ready** — The dialog offers **Restart Now** and **Later**. Later keeps Murmur
    running and leaves the header and Settings restart controls available. The
    download stays in memory for this app session. Quitting before installing
-   requires downloading again on a later launch.
+   requires downloading again on a later launch. Restart uses those ready bytes
+   without another freshness check, preserving the restart-later and retry flows.
 5. **Restarting** — **Restart Now** installs the retained download with
    `Update.install()` and relaunches Murmur. Repeated clicks cannot duplicate
    either operation. Installation failures retry installation using the retained
