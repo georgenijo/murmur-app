@@ -173,7 +173,11 @@ On first launch (the selected model is not present), a full-screen download view
 
 Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model through the runtime manager. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Selection is disabled only while an exact correlated attempt is live. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose byte progress, but it reports Preparing, Repairing, Initializing, and Validating phases. On terminal Core ML failure, Retry and explicit Whisper Base / CPU Parakeet fallbacks become immediately available.
 
-The main app controls are gated on `initialized` (which requires a model to exist), so the download screen blocks all other interaction.
+`init_dictation` acknowledges initialization with `{type: "initialized", state:
+"idle"}` without checking for or loading a model. `App.tsx` gates the main UI
+separately on `modelReady`, derived from the selected model's install state in
+the runtime catalog. A missing model shows the standalone download screen after
+onboarding; initialization success alone does not establish model readiness.
 
 ## Download Pipeline
 

@@ -86,6 +86,10 @@ interface Props {
  */
 export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComplete }: Props) {
   const [step, setStep] = useState<Step>('welcome');
+  const stepContentRef = useRef<HTMLDivElement>(null);
+  const previousStepRef = useRef(step);
+  const permissionOwner = import.meta.env.DEV ? 'your terminal app' : 'Murmur';
+
   const [micStatus, setMicStatus] = useState<MicPermissionStatus>('unknown');
   const [micRequested, setMicRequested] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
@@ -111,6 +115,14 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   // the Rust download_model command, and re-entering the step could start a
   // second concurrent download of the same file.
   const [modelDownloading, setModelDownloading] = useState(false);
+
+  useEffect(() => {
+    // Leave initial focus alone, including StrictMode's effect replay. Only
+    // navigation moves focus; permission polling must preserve the active control.
+    if (previousStepRef.current === step) return;
+    previousStepRef.current = step;
+    stepContentRef.current?.querySelector('h1')?.focus();
+  }, [step]);
 
   // Monotonic sequence so an interval probe overlapping a focus probe can't
   // apply an older TCC result over a newer one.
@@ -359,11 +371,22 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     }
   };
 
+  const permissionStatusMessage = step === 'microphone'
+    ? `Microphone access ${micGranted ? 'granted' : micDenied ? 'denied' : micRequested ? 'waiting for your answer in the macOS dialog' : 'not yet granted'}.`
+    : step === 'accessibility'
+    ? `Accessibility access ${axGranted === true ? 'granted' : axGranted === null ? 'being checked' : 'not granted'}.`
+    : step === 'systemAudio'
+    ? `System audio access ${systemAudioBusy ? 'waiting for macOS' : systemAudioStatus}.`
+    : step === 'calendar'
+    ? `Calendar access ${calendarBusy ? 'waiting for macOS' : calendarStatus === 'notDetermined' ? 'not yet requested' : calendarStatus}.`
+    : '';
+
   return (
     <AppSurface data-default-scope onKeyDown={defaultButtonKeyDown} surface="onboarding" className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
-      <div className="w-full max-w-lg">
+      <div ref={stepContentRef} className="w-full max-w-lg">
+        <p role="status" aria-atomic="true" className="sr-only">{permissionStatusMessage}</p>
         {/* Persistent wizard progress */}
         <div className="mb-10 flex items-center justify-center">
           <div
@@ -392,7 +415,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'welcome' && (
           <div className="text-center">
-            <h1 className="mb-3 text-2xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
+            <h1 tabIndex={-1} className="mb-3 text-2xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Welcome to Murmur
             </h1>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
@@ -429,7 +452,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             ) : micDenied ? (
               <div className="dialog-card mb-6 space-y-3 border-error/30 bg-error/10 px-4 py-3">
                 <p className="text-sm text-error">
-                  Microphone access is denied. Enable Murmur under Privacy &amp;
+                  Microphone access is denied. Enable {permissionOwner} under Privacy &amp;
                   Security → Microphone, then come back — this screen updates
                   automatically.
                 </p>
@@ -439,7 +462,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 >
                   Open System Settings…
                 </button>
-                <div>
+                {import.meta.env.DEV ? <DevPermissionHelp /> : <div>
                   <button
                     onClick={handleResetMic}
                     className="text-xs text-error underline hover:no-underline"
@@ -450,7 +473,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                     Clears Murmur's stale Microphone entry so macOS can ask fresh —
                     useful when the toggle is on but recording still fails.
                   </p>
-                </div>
+                </div>}
               </div>
             ) : (
               <div className="mb-6">
@@ -469,7 +492,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             {micError && (
-              <p className="mb-4 text-xs text-error">{micError}</p>
+              <p role="alert" className="mb-4 text-xs text-error">{micError}</p>
             )}
 
             <WizardNavigationRow
@@ -502,11 +525,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   Grant accessibility access…
                 </button>
                 <p className="text-xs text-on-surface-variant text-center">
-                  macOS opens System Settings — turn on <strong>Murmur</strong> in the
+                  macOS opens System Settings — turn on <strong>{permissionOwner}</strong> in the
                   list, then come back. This screen updates automatically.
                 </p>
                 {axRequested && (
-                  <div className="pt-1">
+                  import.meta.env.DEV ? <DevPermissionHelp /> : <div className="pt-1">
                     <button
                       onClick={handleResetAx}
                       className="text-xs text-on-surface-variant underline hover:no-underline"
@@ -523,7 +546,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             {axError && (
-              <p className="mb-4 text-xs text-error">{axError}</p>
+              <p role="alert" className="mb-4 text-xs text-error">{axError}</p>
             )}
 
             <WizardNavigationRow
@@ -576,7 +599,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </div>
             )}
 
-            {systemAudioError && <p className="mb-4 text-xs text-error">{systemAudioError}</p>}
+            {systemAudioError && <p role="alert" className="mb-4 text-xs text-error">{systemAudioError}</p>}
             <WizardNavigationRow
               onBack={goBack}
               onNext={goNext}
@@ -601,7 +624,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             ) : calendarStatus === 'denied' ? (
               <div className="dialog-card mb-6 space-y-3 border-error/30 bg-error/10 px-4 py-3">
                 <p className="text-sm text-error">
-                  Calendar access is denied. You can still name meetings manually, or enable Murmur under Privacy &amp; Security → Calendars.
+                  Calendar access is denied. You can still name meetings manually, or enable {permissionOwner} under Privacy &amp; Security → Calendars.
                 </p>
                 <button
                   type="button"
@@ -610,7 +633,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 >
                   Open System Settings…
                 </button>
-                <div>
+                {import.meta.env.DEV ? <DevPermissionHelp /> : <div>
                   <button
                     type="button"
                     disabled={calendarBusy}
@@ -622,7 +645,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   <p className="mt-1 text-xs text-error">
                     Clears Murmur's Calendar entry so macOS can ask again the next time you allow access.
                   </p>
-                </div>
+                </div>}
               </div>
             ) : calendarStatus === 'restricted' ? (
               <div className="dialog-card mb-6 space-y-3 border-warning/30 bg-warning/10 px-4 py-3">
@@ -657,7 +680,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </div>
             )}
 
-            {calendarError && <p className="mb-4 text-xs text-error">{calendarError}</p>}
+            {calendarError && <p role="alert" className="mb-4 text-xs text-error">{calendarError}</p>}
             <WizardNavigationRow
               onBack={goBack}
               onNext={goNext}
@@ -671,7 +694,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'model' && (
           <div>
-            <h1 className="mb-1 text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
+            <h1 tabIndex={-1} className="mb-1 text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Transcription model
             </h1>
             <p className="text-sm text-on-surface-variant mb-6">
@@ -784,7 +807,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'done' && (
           <div>
-            <h1 className="mb-1 text-center text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
+            <h1 tabIndex={-1} className="mb-1 text-center text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               You're all set
             </h1>
             <p className="text-sm text-on-surface-variant mb-6 text-center">
@@ -831,11 +854,21 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   );
 }
 
+function DevPermissionHelp() {
+  return (
+    <p className="mt-1 text-[length:var(--ui-font-caption)] leading-[var(--ui-leading-caption)] text-on-surface-variant">
+      In this development session, grant access to the terminal app that launched
+      Murmur, then restart the dev server. If access stays stale, turn that
+      terminal's permission off and on in System Settings.
+    </p>
+  );
+}
+
 function StepHeading({ title, subtitle, granted }: { title: string; subtitle: string; granted: boolean }) {
   return (
     <div className="mb-6">
       <div className="flex items-center gap-2 mb-1">
-        <h1 className="text-xl font-semibold text-on-surface">{title}</h1>
+        <h1 tabIndex={-1} className="text-xl font-semibold text-on-surface">{title}</h1>
         {granted && <CheckIcon />}
       </div>
       <p className="text-sm text-on-surface-variant">{subtitle}</p>
@@ -930,7 +963,7 @@ function WizardNavigationRow({
 
 function CheckIcon() {
   return (
-    <svg className="w-4 h-4 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+    <svg aria-hidden="true" className="w-4 h-4 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
     </svg>
   );

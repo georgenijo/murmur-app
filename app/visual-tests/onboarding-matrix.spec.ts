@@ -33,9 +33,14 @@ for (const { appearance, width, height, label } of surfaceCases()) {
           }
           if (permission === 'loading' && ['Microphone access', 'Accessibility access'].includes(title)) {
             await page.getByRole('button', { name: title === 'Microphone access' ? 'Allow microphone access…' : 'Grant accessibility access…', exact: true }).click();
-            await expect(page.getByText(title === 'Microphone access'
-              ? 'Waiting for your answer in the macOS dialog…'
-              : 'Murmur is listed and enabled, but still not detected? Reset the permission', { exact: true })).toBeVisible();
+            if (title === 'Microphone access') {
+              await expect(page.getByText('Waiting for your answer in the macOS dialog…', { exact: true })).toBeVisible();
+            } else {
+              // The visual fixture runs on Vite's dev server, so recovery must
+              // guide the launching terminal rather than reset Murmur's bundle.
+              await expect(page.getByText(/^In this development session, grant access to the terminal app/)).toBeVisible();
+              await expect(page.getByRole('button', { name: /Reset the permission/ })).toHaveCount(0);
+            }
             await assertPrimary();
           }
           const back = page.getByRole('button', { name: 'Go back to the previous setup step' });

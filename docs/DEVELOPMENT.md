@@ -73,6 +73,12 @@ depends on how you are running it:
   binary itself is futile. Restart the dev server after granting.
 - **A built `.app`** — grant them to the app itself.
 
+The setup assistant hides its Microphone, Accessibility, and Calendar Reset
+buttons under `tauri:dev`: their `tccutil` commands target the running bundle
+identifier, which is not the terminal's permission identity. Recovery guidance
+instead points to the launching terminal in System Settings. For a built
+`.app`, the Reset actions remain available and target that app only.
+
 ## Project Structure
 
 ```text
@@ -136,7 +142,11 @@ entries.
 ### Permission prompt on every rebuild
 
 Dev builds get a different signature each time. Grant Accessibility to your
-terminal app instead of the dev binary.
+terminal app instead of the dev binary. If its grant is stale, turn the
+terminal's permission off and on under Privacy & Security, then restart the dev
+server. Use the same terminal identity for Microphone and optional Calendar
+access. The wizard's bundle-targeted Reset actions are hidden in development;
+resetting `com.localdictation.dev` would not reset the terminal's permission.
 
 ### Accessibility silently broken after a local production build
 
