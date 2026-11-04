@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.59.5] - 2026-11-04
+
+### Changed
+
+- Use shared settings cards and controls in Modes, and place theme variant labels below their color orbs with badges separated from option counts (#937).
+- Reuse prebuilt Rust test binaries in CI, include capture-helper tests in the workspace selection, and use two workers per macOS visual-test job (#936).
+
+### Fixed
+
+- Keep expanded Advanced settings rows aligned with their card edges, and fold Smart Auto-Stop and remote-speaker model details with their parent toggles (#937).
+
 ## [0.59.4] - 2026-11-04
 
 ### Fixed

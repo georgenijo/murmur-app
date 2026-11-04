@@ -10,6 +10,7 @@ import {
   type SmartTurnModelStatus,
 } from '../../lib/smartTurn';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
+import { SettingsBranch } from './SettingsBranch';
 
 interface SmartAutoStopSettingsProps {
   enabled: boolean;
@@ -67,8 +68,6 @@ export function SmartAutoStopSettings({
 
   const ready = status?.state === 'ready';
   const parentDisabled = isRecording || (!enabled && !silenceAutoStopOn);
-  // The model only matters while the feature is on, so its card reads as off otherwise.
-  const modelCardOff = parentDisabled || !enabled;
   const busy = operation !== 'idle' || status?.state === 'downloading';
 
   return (
@@ -81,29 +80,32 @@ export function SmartAutoStopSettings({
           onCheckedChange={() => onEnabledChange(!enabled)}
         />} />
 
-      <div data-smart-auto-model data-disabled={modelCardOff || undefined} className="settings-dependent-card flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-outline-variant/30 px-3 py-2.5">
+      {/* The model only matters while the feature is on, so it folds away otherwise. */}
+      <SettingsBranch open={enabled} className="settings-branch-stack">
+      <div data-smart-auto-model data-disabled={parentDisabled || undefined} className="settings-dependent-card flex flex-wrap items-center justify-between gap-3 rounded-[var(--ui-radius-control)] border border-outline-variant/30 px-3 py-2.5">
         <div>
-          <p className="text-xs font-semibold text-on-surface">End-of-turn model</p>
-          <p className="mt-0.5 text-[11px] text-on-surface-variant">
+          <p className="text-[length:var(--ui-font-caption)] font-semibold text-on-surface">End-of-turn model</p>
+          <p className="mt-0.5 text-[length:var(--ui-font-caption)] text-on-surface-variant">
             {!status
               ? 'Checking this Mac…'
               : ready
                 ? `Installed locally, ${SMART_TURN_MODEL_SIZE_LABEL}`
                 : `Optional download, ${SMART_TURN_MODEL_SIZE_LABEL}`}
           </p>
-          <p className="mt-1 text-[10px] text-on-surface-variant">
+          <p className="mt-1 text-[length:var(--ui-font-caption)] text-on-surface-variant">
             Smart Turn v3.2 by <a href="https://huggingface.co/pipecat-ai/smart-turn-v3" target="_blank" rel="noreferrer" className="underline hover:text-primary">Pipecat</a>, licensed <a href="https://opensource.org/license/bsd-2-clause" target="_blank" rel="noreferrer" className="underline hover:text-primary">BSD 2-Clause</a>. Audio never leaves this Mac.
           </p>
         </div>
         {ready ? (
-          <ConfirmActionButton label="Remove model" confirmLabel="Confirm remove" disabled={busy || isRecording} onConfirm={() => void run('removing', removeSmartTurnModel)} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-xs font-semibold text-error disabled:opacity-40" />
+          <ConfirmActionButton label="Remove model" confirmLabel="Confirm remove" disabled={busy || isRecording} onConfirm={() => void run('removing', removeSmartTurnModel)} className="rounded-[var(--ui-radius-control)] px-3 py-1.5 text-[length:var(--ui-font-caption)] font-semibold text-error disabled:opacity-40" />
         ) : (
-          <button type="button" disabled={busy || !status} onClick={() => void run('downloading', downloadSmartTurnModel)} className="dialog-pill-btn px-3 py-1.5 text-xs font-semibold text-primary disabled:opacity-40">
+          <button type="button" disabled={busy || !status} onClick={() => void run('downloading', downloadSmartTurnModel)} className="dialog-pill-btn px-3 py-1.5 text-[length:var(--ui-font-caption)] font-semibold text-primary disabled:opacity-40">
             {busy ? 'Downloading…' : 'Download model'}
           </button>
         )}
       </div>
-      {error && <p role="alert" className="text-xs text-error">{error}</p>}
+      {error && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{error}</p>}
+      </SettingsBranch>
     </div>
   );
 }

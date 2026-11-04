@@ -1,6 +1,8 @@
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { Button } from '../ui/FormControls';
+import { SettingsRow } from './SettingsRow';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   commitModeImport, exportModeFile, modeSettingsSnapshot, parseModeFile, previewModeImport,
@@ -71,24 +73,25 @@ export function ModeFileActions({ settings, onChange }: {
     } finally { busy.current = false; }
   };
   const stale = state.kind === 'preview' && state.preview.baseline !== modeSettingsSnapshot(settings);
-  return <div className="mt-3 space-y-2">
-    <div className="flex flex-wrap gap-2">
-      <button type="button" disabled={state.kind === 'busy'} onClick={() => void exportFile()} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs disabled:opacity-50">Export custom modes…</button>
-      <button type="button" disabled={state.kind === 'busy'} onClick={() => void importFile()} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs disabled:opacity-50">Import modes…</button>
-    </div>
-    {state.kind === 'busy' && <p role="status" className="text-xs text-on-surface-variant">Opening mode file…</p>}
-    {state.kind === 'message' && <p role="status" className="text-xs text-on-surface-variant">{state.message}</p>}
-    {state.kind === 'error' && <p role="alert" className="text-xs text-error">{state.message}</p>}
-    {state.kind === 'preview' && <div data-default-scope onKeyDown={defaultButtonKeyDown} role="region" aria-label="Mode import preview" className="space-y-2 rounded-lg border border-outline-variant p-3 text-xs">
+  const busyNow = state.kind === 'busy';
+  return <SettingsRow title="Import and export" description="Share custom modes with their app and site bindings as a JSON file"
+    control={<div className="settings-modes-actions">
+      <Button size="sm" disabled={busyNow} onClick={() => void importFile()}>Import modes…</Button>
+      <Button size="sm" disabled={busyNow} onClick={() => void exportFile()}>Export custom modes…</Button>
+    </div>}>
+    {busyNow && <p role="status" className="settings-modes-note">Opening mode file…</p>}
+    {state.kind === 'message' && <p role="status" className="settings-modes-note">{state.message}</p>}
+    {state.kind === 'error' && <p role="alert" className="settings-modes-note settings-modes-error">{state.message}</p>}
+    {state.kind === 'preview' && <div data-default-scope onKeyDown={defaultButtonKeyDown} role="region" aria-label="Mode import preview" className="settings-callout settings-modes-import">
       <p>{state.preview.counts.modes} new modes, {state.preview.counts.bindings} app bindings, {state.preview.counts.sites} site rules.</p>
       <p>{state.preview.counts.duplicates} exact duplicates skipped. {state.preview.counts.missingApps} bindings skipped because the app has no local profile.</p>
       <p>Existing app profiles keep their fine-tuning and project roots. Browser-site activation stays {settings.siteModeLookupEnabled ? 'on' : 'off'}.</p>
-      {state.preview.kind === 'conflict' && <><p role="alert" className="text-error">{state.preview.conflicts.length} conflicts. Nothing will be imported.</p><ul className="list-inside list-disc">{state.preview.conflicts.map((conflict, index) => <li key={index}>{conflict}</li>)}</ul></>}
-      {stale && <p role="alert" className="text-error">Modes or bindings changed. Choose the file again to review a fresh preview.</p>}
-      <div className="flex gap-2">
-        <button type="button" disabled={stale || state.preview.kind === 'conflict'} onClick={confirm} data-default-button className="rounded-lg bg-surface-container-high px-3 py-2 font-semibold text-on-surface disabled:opacity-50">Confirm import</button>
-        <button type="button" onClick={() => setState({ kind: 'idle' })} className="rounded-lg bg-surface-container-high px-3 py-2">Cancel import</button>
+      {state.preview.kind === 'conflict' && <><p role="alert" className="settings-modes-error">{state.preview.conflicts.length} conflicts. Nothing will be imported.</p><ul className="list-inside list-disc">{state.preview.conflicts.map((conflict, index) => <li key={index}>{conflict}</li>)}</ul></>}
+      {stale && <p role="alert" className="settings-modes-error">Modes or bindings changed. Choose the file again to review a fresh preview.</p>}
+      <div className="settings-modes-actions">
+        <Button size="sm" disabled={stale || state.preview.kind === 'conflict'} onClick={confirm} data-default-button>Confirm import</Button>
+        <Button size="sm" onClick={() => setState({ kind: 'idle' })}>Cancel import</Button>
       </div>
     </div>}
-  </div>;
+  </SettingsRow>;
 }

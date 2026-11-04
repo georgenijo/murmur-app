@@ -230,10 +230,11 @@ def validate_ci(ci: str) -> int:
     macos_lib_tests = named_step_block(rust_macos, "Run tests", 6)
     # nextest runs each test in its own process, so shared process state stays
     # isolated exactly as `cargo test -- --test-threads=1` guaranteed.
-    assert (
-        "cargo nextest run --workspace --exclude murmur-llm-sidecar --lib"
-        in macos_lib_tests
+    nextest_reuse = (
+        "cargo nextest run --cargo-metadata target/ci-cargo-metadata.json"
+        " --binaries-metadata target/ci-test-binaries.json"
     )
+    assert nextest_reuse + " -E 'kind(lib)'" in " ".join(macos_lib_tests.split())
     # The prebuild must use the run steps' package selection and build the
     # examples before the test targets, or the run steps recompile the app crate.
     test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
@@ -242,10 +243,16 @@ def validate_ci(ci: str) -> int:
         " --example mock_llm_helper --example murmur-eval"
     )
     test_prebuild = test_build.find(
-        "cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run --lib"
+        "cargo nextest list --workspace --exclude murmur-llm-sidecar --lib"
+        " --bin murmur-capture-helper --test topology_watch"
         " --test llm_sidecar_integration --test transform_flow_integration"
     )
     assert 0 <= example_build < test_prebuild, "build examples, then every test target"
+    assert (
+        "--message-format json --list-type binaries-only > target/ci-test-binaries.json"
+        in test_build
+    )
+    assert "cargo metadata --format-version 1 > target/ci-cargo-metadata.json" in test_build
     assert "swiftc -warnings-as-errors" in capture_build
     assert "sidecars/capture-agent/main.swift" in capture_build
     assert "cargo build -p murmur-capture-helper" in capture_build
@@ -254,7 +261,10 @@ def validate_ci(ci: str) -> int:
     assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
     capture_tests = named_step_block(rust_macos, "Run capture worker unit tests", 6)
-    assert "cargo test -p murmur-capture-helper" in capture_tests
+    assert (
+        nextest_reuse + " -E 'package(=murmur-capture-helper)'"
+        in " ".join(capture_tests.split())
+    )
     rust_audit = named_step_block(
         dependency_audit, "Audit Rust dependencies (advisory)", 6
     )

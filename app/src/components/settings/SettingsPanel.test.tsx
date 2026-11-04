@@ -395,9 +395,8 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => modes.click());
 
     expect(container.querySelector('h1')?.textContent).toBe('Modes');
-    const browserSites = Array.from(container.querySelectorAll('legend'))
-      .find((legend) => legend.textContent === 'Browser sites');
-    expect(browserSites).toBeDefined();
+    const browserSites = container.querySelector('[data-setting-target="browser-sites"]');
+    expect(browserSites?.querySelector('.settings-row-title')?.textContent).toBe('Browser sites');
     expect(browserSites?.closest('details')).toBeNull();
   });
 

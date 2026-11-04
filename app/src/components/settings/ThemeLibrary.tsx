@@ -145,9 +145,11 @@ function ModePreview({
   const displayLabel = selectedLabel.split(/\s+/)[0] ?? selectedLabel;
   const preview = (
     <>
-      <ThemeOrb tokens={selected.tokens} mode={mode} />
-      <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full border border-(--ui-hairline-strong) bg-background text-on-surface shadow-(--ui-shadow-1)">
-        {mode === 'light' ? <SunIcon className="h-2.5 w-2.5" /> : <MoonIcon className="h-2.5 w-2.5" />}
+      <span className="relative block h-9 w-9">
+        <ThemeOrb tokens={selected.tokens} mode={mode} />
+        <span className="pointer-events-none absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-(--ui-hairline-strong) bg-background text-on-surface shadow-(--ui-shadow-1)">
+          {mode === 'light' ? <SunIcon className="h-2.5 w-2.5" /> : <MoonIcon className="h-2.5 w-2.5" />}
+        </span>
       </span>
     </>
   );
@@ -175,12 +177,12 @@ function ModePreview({
       </button>
       {showLabel && (
         <span
-          className="pointer-events-none absolute bottom-0 left-1/2 inline-flex max-w-20 -translate-x-1/2 items-center gap-1 text-[10px] font-medium text-on-surface"
+          className="pointer-events-none absolute left-1/2 top-13 inline-flex h-4 max-w-17 -translate-x-1/2 items-center gap-1 text-[length:var(--ui-font-caption)] font-medium leading-4 text-on-surface"
           style={{ marginLeft: offset }}
         >
           <span className="truncate">{displayLabel}</span>
           {options.length > 1 && (
-            <span className="shrink-0 rounded-full bg-surface-container-high px-1 text-[9px] text-on-surface-variant">
+            <span className="shrink-0 rounded-full bg-surface-container-high px-1 text-[length:var(--ui-font-caption)] leading-4 text-on-surface-variant">
               +{options.length - 1}
             </span>
           )}
@@ -300,7 +302,7 @@ function CollectionCard({
       data-theme-collection={label}
       data-active={activeNow ? "true" : undefined}
       onClick={handleCardClick}
-      className={`h-[94px] w-52 max-w-full cursor-pointer overflow-hidden rounded-(--ui-radius-card) border bg-surface-container-lowest shadow-(--ui-shadow-1) transition-colors hover:bg-surface-container-low ${
+      className={`h-26.5 w-52 max-w-full cursor-pointer overflow-hidden rounded-(--ui-radius-card) border bg-surface-container-lowest shadow-(--ui-shadow-1) transition-colors hover:bg-surface-container-low ${
         activeNow
           ? 'border-primary ring-2 ring-primary/35'
           : 'border-(--ui-hairline-strong)'
@@ -309,7 +311,7 @@ function CollectionCard({
       <div
         role="group"
         aria-label={`${label} light and dark styles`}
-        className="relative h-14"
+        className="relative h-17"
         onMouseLeave={() => setRadialOpen(null)}
         onBlurCapture={(event) => {
           const next = event.relatedTarget;
