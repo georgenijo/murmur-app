@@ -123,7 +123,7 @@ describe('MicrophoneInputTest', () => {
 
   function smartAutoDisclosure(): HTMLButtonElement {
     const disclosure = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.trim() === 'Smart Auto microphones');
+      .find((button) => button.getAttribute('aria-controls') && button.textContent?.startsWith('Smart Auto microphones'));
     if (!disclosure) throw new Error('Missing Smart Auto microphone disclosure');
     return disclosure;
   }
@@ -244,6 +244,8 @@ describe('MicrophoneInputTest', () => {
     const disclosure = smartAutoDisclosure();
     const controlledRegion = document.getElementById(disclosure.getAttribute('aria-controls') ?? '');
     expect(disclosure.tagName).toBe('BUTTON');
+    expect(disclosure.textContent).toBe('Smart Auto microphones3 included');
+    expect(disclosure.closest('.settings-picker')).toBeNull();
     expect(disclosure.getAttribute('aria-expanded')).toBe('false');
     expect(controlledRegion).toBeTruthy();
     const submenu = container.querySelector('[aria-label="Smart Auto microphone inclusion"]') as HTMLFieldSetElement;
@@ -442,6 +444,7 @@ describe('MicrophoneInputTest', () => {
 
     expect(container.textContent).toContain('Built-in MicrophoneExcluded');
     expect(container.textContent).toContain('USB MicrophoneExcluded');
+    expect(smartAutoDisclosure().textContent).toBe('Smart Auto microphonesNone included');
     expect(container.textContent).toContain('No microphones are included. Include at least one available input for Smart Auto.');
     expect(container.textContent).not.toContain('Retry background checks');
     expect(mocks.invoke).not.toHaveBeenCalledWith('start_microphone_preview', expect.anything());

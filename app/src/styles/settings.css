@@ -245,6 +245,62 @@
  * immediately; controls are already inert and AX-hidden. */
 .settings-dependent-branch-settled { overflow: visible; }
 
+/* Smart Auto setup: a full-width disclosure under the Microphone row (styled
+   like the Advanced toggle) and a flat sunken panel, so it never reads as a
+   second dropdown or a raised card. */
+.settings-microphone-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 20px;
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--murmur-on-surface);
+  font-size: var(--ui-font-body);
+  line-height: var(--ui-leading-body);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.settings-microphone-disclosure:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
+.settings-microphone-disclosure[aria-expanded='true'] .settings-advanced-chevron { transform: rotate(180deg); }
+.settings-microphone-disclosure-summary {
+  margin-left: auto;
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+  line-height: var(--ui-leading-caption);
+  font-weight: 400;
+}
+
+.settings-microphone-panel {
+  border-radius: var(--settings-radius-control);
+  background: var(--settings-tint-sunken);
+  padding: 4px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.settings-microphone-detail {
+  display: block;
+  color: var(--murmur-on-surface-variant);
+  font-size: var(--ui-font-caption);
+  line-height: var(--ui-leading-caption);
+}
+.settings-microphone-warning {
+  margin: 4px 8px;
+  border-radius: var(--settings-radius-control);
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--murmur-warning) 10%, transparent);
+  color: var(--murmur-warning);
+  font-size: var(--ui-font-caption);
+  line-height: var(--ui-leading-caption);
+}
+
 .settings-microphone-choice {
   display: flex;
   min-height: 2.5rem;
@@ -376,6 +432,8 @@
 .settings-rail-search { display: none; }
 .settings-content-container { margin-inline: auto; width: 100%; max-width: var(--settings-content-max); padding: var(--settings-content-top) var(--settings-content-x) var(--settings-content-bottom); }
 .settings-content-topbar { flex: none; min-height: 44px; display: flex; align-items: center; padding: 8px var(--settings-content-x); border-bottom: 1px solid var(--settings-divider); }
+/* Reserve the scrollbar so expanding a fold never changes the content width. */
+.settings-workspace main > .settings-content-topbar + .overflow-y-auto { scrollbar-gutter: stable; }
 .settings-content-topbar h1 { font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: var(--ui-track-title); }
 .settings-section { margin: 0 0 var(--settings-section-gap); }
 .settings-section:last-child { margin-bottom: 0; }
@@ -530,7 +588,7 @@
 .ui-switch[data-size='lg'][data-checked] .ui-switch-thumb { transform: translateX(24px); }
 .ui-switch:active:not([data-disabled]) .ui-switch-thumb { scale: 1.1 1; }
 
-.settings-picker { min-width: 0; width: var(--settings-control-max); }
+.settings-picker { min-width: 0; width: var(--settings-control-max); user-select: none; -webkit-user-select: none; }
 .settings-page .settings-page-title { font-size: 16px; line-height: 24px; font-weight: 600; letter-spacing: 0; }
 .settings-rows > .transform-practice { margin-top: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; box-shadow: none; border-inline: 0; border-bottom: 0; }
 @media (max-width: 767px) { .settings-tools-eyebrow { display: none; } }
