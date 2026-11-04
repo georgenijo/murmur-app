@@ -258,3 +258,32 @@ test('enabled feature navigation has exactly one current page', async ({ page })
     await expect(nav.getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'page');
   }
 });
+
+
+for (const { appearance, width, height, label } of surfaceCases()) {
+  test.describe(`Settings folding ${label}`, () => {
+    test.use({ viewport: { width, height }, colorScheme: appearance });
+    test('Select recovers usable height when its opening ancestor stops clipping', async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+      await page.goto(`/visual-fixtures.html?state=select-fold-review&appearance=${appearance}`);
+      const trigger = page.getByRole('combobox', { name: 'Timeout' });
+      await page.getByRole('button', { name: 'Expand timeout' }).click();
+      // Invoke the real trigger during the fold, without Playwright waiting for
+      // animation stability and thereby skipping the failing lifecycle window.
+      const duringFold = await trigger.evaluate(element => {
+        const clip = element.closest('.settings-dependent-branch-clip')!;
+        const folding = !clip.classList.contains('settings-dependent-branch-settled');
+        (element as HTMLButtonElement).click();
+        return folding;
+      });
+      expect(duringFold).toBe(true);
+      await expect(page.locator('.settings-dependent-branch-clip')).toHaveClass(/settings-dependent-branch-settled/);
+      const menu = page.getByRole('listbox', { name: 'Timeout' });
+      await expect.poll(async () => (await menu.boundingBox())?.height ?? 0).toBeGreaterThan(120);
+      await page.keyboard.press('End');
+      await page.keyboard.press('Enter');
+      await expect(trigger).toHaveText('300 seconds');
+      await expect(menu).toHaveCount(0);
+    });
+  });
+}
