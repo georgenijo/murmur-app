@@ -6,9 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-11-04
+
 ### Added
 
 - Show changes from every release since the installed version in the update dialog and post-update What’s New (#939).
+
+### Fixed
+
+- Preserve the current scroll position when opening or closing Advanced settings (#941).
 
 ## [0.59.5] - 2026-11-04
 
