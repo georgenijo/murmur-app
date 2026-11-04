@@ -1,8 +1,8 @@
 //! Bounded, content-free evidence for local production-version comparisons.
 use super::types::{MeasurementV1, RunOutcomeV1, UnavailableReasonV1};
-use crate::audio::{AudioFailureKind, AudioStartupDiagnostic};
+use crate::audio::{AudioFailureKind, AudioStartupDiagnostic, HelperPreparationOutcome};
 use crate::dictation_context::{DictationContextSnapshot, VocabularySource};
-use murmur_capture_helper_protocol::CaptureBackend;
+use murmur_capture_helper_protocol::{CaptureBackend, CaptureSetupStep};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -165,6 +165,28 @@ impl ProductionGestureV1 {
     }
 }
 
+/// First-attempt silent first-tap helper preparation outcome (#933).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HelperPreparationV1 {
+    Adopted,
+    NotPrepared,
+    StillPreparing,
+    IdentityMismatch,
+    Expired,
+}
+impl From<HelperPreparationOutcome> for HelperPreparationV1 {
+    fn from(outcome: HelperPreparationOutcome) -> Self {
+        match outcome {
+            HelperPreparationOutcome::Adopted => Self::Adopted,
+            HelperPreparationOutcome::NotPrepared => Self::NotPrepared,
+            HelperPreparationOutcome::StillPreparing => Self::StillPreparing,
+            HelperPreparationOutcome::IdentityMismatch => Self::IdentityMismatch,
+            HelperPreparationOutcome::Expired => Self::Expired,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProductionCaptureV1 {
@@ -178,6 +200,41 @@ pub struct ProductionCaptureV1 {
     pub helper_spawn_ms: Option<u64>,
     #[serde(deserialize_with = "optional_duration")]
     pub stream_open_ms: Option<u64>,
+    // Split of the latest attempt's stream open (#933), absent on older rows.
+    // `streamConfigureMs` sums every configuration step between unit/stream
+    // creation and start; each value describes the latest attempt only.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_duration"
+    )]
+    pub device_resolution_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_duration"
+    )]
+    pub audio_unit_new_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_duration"
+    )]
+    pub audio_unit_initialize_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_duration"
+    )]
+    pub stream_configure_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_duration"
+    )]
+    pub stream_start_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helper_preparation: Option<HelperPreparationV1>,
     #[serde(deserialize_with = "optional_duration")]
     pub first_callback_wait_ms: Option<u64>,
     #[serde(deserialize_with = "optional_duration")]
@@ -235,6 +292,12 @@ impl ProductionCaptureV1 {
                 if attempt_index > 1 {
                     self.fallback_attempted = Some(true);
                 }
+                // The split describes the latest attempt, like streamOpenMs.
+                self.device_resolution_ms = None;
+                self.audio_unit_new_ms = None;
+                self.audio_unit_initialize_ms = None;
+                self.stream_configure_ms = None;
+                self.stream_start_ms = None;
             }
             AudioStartupDiagnostic::FirstPcm {
                 backend,
@@ -297,6 +360,39 @@ impl ProductionCaptureV1 {
             },
             AudioStartupDiagnostic::SetupStep { .. }
             | AudioStartupDiagnostic::RecordingStopIssued => {}
+            AudioStartupDiagnostic::SetupStepDuration { step, elapsed_ms } => match step {
+                CaptureSetupStep::DeviceResolution => {
+                    self.device_resolution_ms = Some(elapsed_ms);
+                }
+                CaptureSetupStep::AudioUnitNew => self.audio_unit_new_ms = Some(elapsed_ms),
+                CaptureSetupStep::AudioUnitInit => self.audio_unit_initialize_ms = Some(elapsed_ms),
+                CaptureSetupStep::EnableInputIo
+                | CaptureSetupStep::DisableOutputIo
+                | CaptureSetupStep::SetCurrentDevice
+                | CaptureSetupStep::FormatConfiguration
+                | CaptureSetupStep::CallbackInstallation
+                | CaptureSetupStep::DefaultConfig
+                | CaptureSetupStep::StreamBuild => {
+                    self.stream_configure_ms = Some(
+                        self.stream_configure_ms
+                            .unwrap_or(0)
+                            .saturating_add(elapsed_ms),
+                    );
+                }
+                CaptureSetupStep::StreamStart => self.stream_start_ms = Some(elapsed_ms),
+                // The legacy coarse bracket overlaps the split steps; the first
+                // callback wait is already firstCallbackWaitMs.
+                CaptureSetupStep::AudioUnitCreation
+                | CaptureSetupStep::AwaitingFirstCallback
+                | CaptureSetupStep::SystemTapCreate
+                | CaptureSetupStep::AggregateDeviceCreate
+                | CaptureSetupStep::IoProcCreate
+                | CaptureSetupStep::IoProcStart => {}
+            },
+            AudioStartupDiagnostic::HelperPreparation { outcome } => {
+                // Recorded once, for the dictation's first capture attempt.
+                self.helper_preparation.get_or_insert(outcome.into());
+            }
         }
     }
 }
@@ -931,5 +1027,135 @@ mod gesture_contract_tests {
         let g = ProductionGestureV1::new(None, None, false, false);
         assert_eq!(g.press_to_first_pcm_ms, MeasurementV1::NotApplicable);
         assert_eq!(g.press_to_ready_ms, MeasurementV1::NotApplicable);
+    }
+}
+
+#[cfg(test)]
+mod stream_open_split_tests {
+    use super::*;
+
+    fn step(step: CaptureSetupStep, elapsed_ms: u64) -> AudioStartupDiagnostic {
+        AudioStartupDiagnostic::SetupStepDuration { step, elapsed_ms }
+    }
+    fn attempt(attempt_index: u8) -> AudioStartupDiagnostic {
+        AudioStartupDiagnostic::AttemptStarted {
+            backend: CaptureBackend::Auhal,
+            resolution_pass: 1,
+            attempt_index,
+            attempt_budget_ms: 1000,
+        }
+    }
+
+    #[test]
+    fn setup_steps_split_stream_open_for_the_latest_attempt() {
+        let mut capture = ProductionCaptureV1::default();
+        capture.observe(attempt(1));
+        for (s, ms) in [
+            (CaptureSetupStep::DeviceResolution, 2),
+            (CaptureSetupStep::AudioUnitNew, 116),
+            (CaptureSetupStep::AudioUnitInit, 4),
+            (CaptureSetupStep::EnableInputIo, 1),
+            (CaptureSetupStep::DisableOutputIo, 1),
+            (CaptureSetupStep::SetCurrentDevice, 9),
+            (CaptureSetupStep::FormatConfiguration, 3),
+            (CaptureSetupStep::CallbackInstallation, 1),
+            (CaptureSetupStep::StreamStart, 30),
+            (CaptureSetupStep::AwaitingFirstCallback, 13),
+            (CaptureSetupStep::AudioUnitCreation, 500),
+        ] {
+            capture.observe(step(s, ms));
+        }
+        assert_eq!(capture.device_resolution_ms, Some(2));
+        assert_eq!(capture.audio_unit_new_ms, Some(116));
+        assert_eq!(capture.audio_unit_initialize_ms, Some(4));
+        let roundtrip: ProductionCaptureV1 =
+            serde_json::from_value(serde_json::to_value(&capture).unwrap()).unwrap();
+        assert_eq!(roundtrip.audio_unit_initialize_ms, Some(4));
+        assert_eq!(capture.stream_configure_ms, Some(15));
+        assert_eq!(capture.stream_start_ms, Some(30));
+
+        // A fallback CPAL attempt replaces the split rather than adding to it.
+        capture.observe(attempt(2));
+        assert_eq!(capture.stream_configure_ms, None);
+        for (s, ms) in [
+            (CaptureSetupStep::DeviceResolution, 0),
+            (CaptureSetupStep::DefaultConfig, 4),
+            (CaptureSetupStep::StreamBuild, 6),
+            (CaptureSetupStep::StreamStart, 7),
+        ] {
+            capture.observe(step(s, ms));
+        }
+        assert_eq!(capture.device_resolution_ms, Some(0), "zero is measured");
+        assert_eq!(capture.audio_unit_new_ms, None);
+        assert_eq!(capture.audio_unit_initialize_ms, None);
+        assert_eq!(capture.stream_configure_ms, Some(10));
+        assert_eq!(capture.stream_start_ms, Some(7));
+    }
+
+    #[test]
+    fn first_attempt_preparation_outcome_is_kept() {
+        let mut capture = ProductionCaptureV1::default();
+        capture.observe(AudioStartupDiagnostic::HelperPreparation {
+            outcome: HelperPreparationOutcome::Adopted,
+        });
+        capture.observe(AudioStartupDiagnostic::HelperPreparation {
+            outcome: HelperPreparationOutcome::NotPrepared,
+        });
+        assert_eq!(
+            capture.helper_preparation,
+            Some(HelperPreparationV1::Adopted)
+        );
+        let value = serde_json::to_value(&capture).unwrap();
+        assert_eq!(value["helperPreparation"], serde_json::json!("adopted"));
+        for (outcome, text) in [
+            (HelperPreparationOutcome::NotPrepared, "notPrepared"),
+            (HelperPreparationOutcome::StillPreparing, "stillPreparing"),
+            (
+                HelperPreparationOutcome::IdentityMismatch,
+                "identityMismatch",
+            ),
+            (HelperPreparationOutcome::Expired, "expired"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(HelperPreparationV1::from(outcome)).unwrap(),
+                serde_json::json!(text)
+            );
+        }
+    }
+
+    #[test]
+    fn historical_rows_without_split_fields_parse_and_new_fields_validate() {
+        let historical = serde_json::json!({
+            "helperResolveMs": 1,
+            "helperSignatureMs": 15,
+            "helperSpawnMs": 6,
+            "streamOpenMs": 165,
+            "firstCallbackWaitMs": 13,
+            "firstPcmMs": 190,
+            "readyMs": 218,
+            "stopToWorkerExitMs": null,
+            "backend": null,
+            "fallbackAttempted": false,
+            "fallbackSucceeded": null,
+            "failureKind": null,
+            "workerInvariantViolation": null,
+            "zeroSampleSuccess": null
+        });
+        let parsed: ProductionCaptureV1 = serde_json::from_value(historical.clone()).unwrap();
+        assert_eq!(parsed.stream_open_ms, Some(165));
+        assert_eq!(parsed.audio_unit_new_ms, None);
+        assert_eq!(parsed.audio_unit_initialize_ms, None);
+        assert_eq!(parsed.helper_preparation, None);
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), historical);
+
+        let mut bad = historical.clone();
+        bad["audioUnitNewMs"] = serde_json::json!(u64::MAX);
+        assert!(serde_json::from_value::<ProductionCaptureV1>(bad).is_err());
+        let mut bad = historical.clone();
+        bad["audioUnitInitializeMs"] = serde_json::json!(u64::MAX);
+        assert!(serde_json::from_value::<ProductionCaptureV1>(bad).is_err());
+        let mut bad = historical;
+        bad["helperPreparation"] = serde_json::json!("private");
+        assert!(serde_json::from_value::<ProductionCaptureV1>(bad).is_err());
     }
 }

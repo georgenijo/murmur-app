@@ -85,6 +85,20 @@ struct DoubleTapDetector {
     state_entered_at: Instant,
     last_fired_at: Option<Instant>,
     last_rejection: Option<RejectionReason>,
+    /// A first clean tap that may silently prepare a capture helper (#933).
+    prepare_request: Option<Candidate>,
+    /// The gesture token whose preparation is outstanding until this sequence
+    /// fires or is abandoned.
+    prepared_token: Option<u64>,
+}
+
+/// What the listener must do with silent first-tap preparation after one
+/// detector event.
+#[derive(Debug, Clone, Copy)]
+enum PrepareSignal {
+    None,
+    Request(Candidate),
+    Abandon,
 }
 
 impl DoubleTapDetector {
@@ -98,6 +112,33 @@ impl DoubleTapDetector {
             state_entered_at: Instant::now(),
             last_fired_at: None,
             last_rejection: None,
+            prepare_request: None,
+            prepared_token: None,
+        }
+    }
+
+    /// Drain this event's preparation transition. A fired double tap leaves
+    /// the prepared helper for the confirmed start to adopt; any other exit
+    /// from the second-tap phases abandons it.
+    fn take_prepare_signal(&mut self, fired: bool) -> PrepareSignal {
+        if let Some(candidate) = self.prepare_request.take() {
+            self.prepared_token = Some(candidate.token);
+            return PrepareSignal::Request(candidate);
+        }
+        let in_second_phase = matches!(
+            self.state,
+            DetectorState::WaitingSecondDown | DetectorState::WaitingSecondUp
+        );
+        match self.prepared_token {
+            Some(_) if fired => {
+                self.prepared_token = None;
+                PrepareSignal::None
+            }
+            Some(_) if !in_second_phase => {
+                self.prepared_token = None;
+                PrepareSignal::Abandon
+            }
+            _ => PrepareSignal::None,
         }
     }
 
@@ -110,6 +151,17 @@ impl DoubleTapDetector {
         self.candidate = None;
         self.state = DetectorState::Idle;
         self.state_entered_at = Instant::now();
+    }
+
+    fn preparation_candidate_matches(&self, token: u64) -> bool {
+        self.prepared_token == Some(token)
+            && self
+                .candidate
+                .is_some_and(|candidate| candidate.token == token)
+            && matches!(
+                self.state,
+                DetectorState::WaitingSecondDown | DetectorState::WaitingSecondUp
+            )
     }
 
     fn transition(&mut self, new_state: DetectorState) {
@@ -217,6 +269,7 @@ impl DoubleTapDetector {
                             if let Some(candidate) = self.candidate.as_mut() {
                                 candidate.released = Some(Instant::now());
                             }
+                            self.prepare_request = self.candidate;
                             self.transition(DetectorState::WaitingSecondDown);
                         } else {
                             // Held too long — not a tap
@@ -232,8 +285,11 @@ impl DoubleTapDetector {
                             self.reset();
                         }
                     }
-                    EventType::KeyPress(key) if !is_modifier(*key) => {
-                        // User is typing a combo like Shift+A
+                    EventType::KeyPress(_)
+                    | EventType::ButtonPress(_)
+                    | EventType::Wheel { .. } => {
+                        // Not a clean tap: a combo like Shift+A or Cmd+Shift+4,
+                        // or a mouse button/wheel while the trigger is down.
                         self.log_rejection(RejectionReason::ComboCancelled, event_type);
                         self.reset();
                     }
@@ -289,8 +345,10 @@ impl DoubleTapDetector {
                             self.reset();
                         }
                     }
-                    EventType::KeyPress(key) if !is_modifier(*key) => {
-                        // Combo like Shift+A on second press
+                    EventType::KeyPress(_)
+                    | EventType::ButtonPress(_)
+                    | EventType::Wheel { .. } => {
+                        // Combo, other modifier, or mouse input on second press
                         self.log_rejection(RejectionReason::ComboCancelled, event_type);
                         self.reset();
                     }
@@ -324,6 +382,7 @@ impl DoubleTapDetector {
 
         let elapsed_ms = self.elapsed_ms() as u64;
         self.reset();
+        self.prepared_token = None;
         Some(elapsed_ms)
     }
 }
@@ -634,7 +693,11 @@ impl HoldDownDetector {
                         // Key repeat — ignore, stay held
                         HoldDownEvent::None
                     }
-                    EventType::KeyPress(_) if self.is_arming() => {
+                    EventType::KeyPress(_)
+                    | EventType::ButtonPress(_)
+                    | EventType::Wheel { .. }
+                        if self.is_arming() =>
+                    {
                         // Shift+letter or Shift+Command: ordinary typing, not
                         // dictation. Ends the hold before the listener commits
                         // a start; the caller logs it without the key.
@@ -723,6 +786,85 @@ fn emit_dictation_toggle(handle: &tauri::AppHandle) {
     );
 }
 
+fn invalidate_preparation(reason: crate::audio::prepare::InvalidateReason) {
+    crate::audio::prepare::invalidate(reason);
+}
+
+/// The dictation listener generation a silent first-tap preparation is bound
+/// to; a restart, key change, or stop makes older preparations unadoptable.
+pub(crate) fn listener_generation() -> u64 {
+    LISTENER_GENERATION.load(Ordering::SeqCst)
+}
+
+/// Act on a first clean tap (#933): silently prepare an idle capture helper,
+/// or abandon one whose sequence ended without firing. Admission runs on the
+/// preparation thread and only spawns when the shared dictation start would
+/// be admitted, microphone access is already granted (never prompting), and
+/// no capture or standby owns the microphone.
+fn apply_prepare_signal(
+    handle: &tauri::AppHandle,
+    signal: PrepareSignal,
+    mode: DetectorMode,
+    listener_generation: u64,
+) {
+    match signal {
+        PrepareSignal::None => {}
+        PrepareSignal::Abandon => {
+            invalidate_preparation(crate::audio::prepare::InvalidateReason::SequenceAbandoned);
+        }
+        PrepareSignal::Request(candidate) => {
+            let revocation_generation = crate::audio::prepare::revocation_generation();
+            let identity = crate::audio::prepare::PrepareIdentity {
+                token: candidate.token,
+                listener_generation,
+                topology_generation: crate::audio_lifecycle::input_topology_generation(),
+                configuration_generation: crate::audio::prepare::configuration_generation(),
+            };
+            let handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let Some(state) = handle.try_state::<crate::State>() else {
+                    return;
+                };
+                // Same transition as toolbar, query, transform, meeting, and
+                // preview claims. Keep it through the preparation slot claim.
+                let Some(_transition) = crate::audio::prepare::admission_transition(
+                    &state.app_state.recording_transition,
+                    || {
+                        listener_context_matches(mode, listener_generation)
+                            && !IS_PROCESSING.load(Ordering::SeqCst)
+                            && !APP_DISABLED.load(Ordering::SeqCst)
+                            && crate::commands::permissions::check_microphone_permission_status()
+                                == "granted"
+                            && DOUBLE_TAP_DETECTOR
+                                .lock_or_recover()
+                                .as_ref()
+                                .is_some_and(|d| d.preparation_candidate_matches(identity.token))
+                            && crate::commands::recording::dictation_prepare_admitted(&state)
+                            && identity.topology_generation
+                                == crate::audio_lifecycle::input_topology_generation()
+                            && identity.configuration_generation
+                                == crate::audio::prepare::configuration_generation()
+                    },
+                )
+                .await
+                else {
+                    return;
+                };
+                // Keep the detector identity stable through the slot claim;
+                // a chord/expiry that already ran cannot be resurrected by a
+                // queued async admission continuation.
+                let detector = DOUBLE_TAP_DETECTOR.lock_or_recover();
+                if detector
+                    .as_ref()
+                    .is_some_and(|d| d.preparation_candidate_matches(identity.token))
+                {
+                    crate::audio::prepare::request(identity, revocation_generation);
+                }
+            });
+        }
+    }
+}
+
 fn schedule_second_tap_expiry(
     app_handle: tauri::AppHandle,
     mode: DetectorMode,
@@ -738,11 +880,22 @@ fn schedule_second_tap_expiry(
             return;
         }
 
-        let elapsed_ms = {
+        let expired = {
             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
-            det.as_mut()
-                .and_then(|d| d.expire_second_tap_wait(started_at))
+            det.as_mut().and_then(|d| {
+                let token = d.prepared_token;
+                d.expire_second_tap_wait(started_at)
+                    .map(|elapsed| (elapsed, token))
+            })
         };
+        if let Some((_, Some(token))) = expired {
+            crate::audio::prepare::invalidate_token(
+                token,
+                listener_generation,
+                crate::audio::prepare::InvalidateReason::SecondTapExpired,
+            );
+        }
+        let elapsed_ms = expired.map(|(elapsed, _)| elapsed);
 
         if let Some(elapsed_ms) =
             elapsed_ms.filter(|_| listener_context_matches(mode, listener_generation))
@@ -1101,7 +1254,7 @@ impl HoldArming {
     /// The hold's duration when `event_type` (which ended an unpromoted hold)
     /// was another key press rather than the trigger's own release.
     fn cancelled_by(self, event_type: &EventType) -> Option<u64> {
-        (self.window_ms > 0 && matches!(event_type, EventType::KeyPress(_))).then_some(self.held_ms)
+        (self.window_ms > 0 && is_unclean_tap_input(event_type)).then_some(self.held_ms)
     }
 }
 
@@ -1169,7 +1322,17 @@ fn arming_combo_resets_double_tap(
     hold_result: HoldDownEvent,
     event_type: &EventType,
 ) -> bool {
-    was_arming && hold_result == HoldDownEvent::Stop && matches!(event_type, EventType::KeyPress(_))
+    was_arming && hold_result == HoldDownEvent::Stop && is_unclean_tap_input(event_type)
+}
+
+/// Input that makes a held trigger key not a clean tap or arming hold: any
+/// other key (modifiers included), a mouse button, or the wheel. Pointer
+/// movement alone is clean.
+fn is_unclean_tap_input(event_type: &EventType) -> bool {
+    matches!(
+        event_type,
+        EventType::KeyPress(_) | EventType::ButtonPress(_) | EventType::Wheel { .. }
+    )
 }
 
 /// One content-free record per modifier hold that ended before its recording
@@ -1310,6 +1473,7 @@ pub fn set_processing(processing: bool) {
     );
     if !was_processing && processing {
         crate::audio_lifecycle::gesture::clear_pending();
+        invalidate_preparation(crate::audio::prepare::InvalidateReason::Processing);
         // Entering processing: invalidate any pending hold-promotion timer
         // so it can't fire hold-down-start during active processing.
         HOLD_PROMOTION.invalidate();
@@ -1360,6 +1524,9 @@ pub fn is_processing() -> bool {
 pub fn set_app_disabled(disabled: bool) {
     crate::audio_lifecycle::gesture::clear_pending();
     let was_disabled = APP_DISABLED.swap(disabled, Ordering::SeqCst);
+    if disabled {
+        invalidate_preparation(crate::audio::prepare::InvalidateReason::Disabled);
+    }
     if !was_disabled && disabled {
         // Transitioning false → true: clean up any partial detector state
         HOLD_PROMOTION.invalidate();
@@ -1530,8 +1697,9 @@ pub(crate) fn dictation_listener_active() -> bool {
 /// `mode` should be `"double_tap"`, `"hold_down"`, or `"both"`.
 pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
     crate::audio_lifecycle::gesture::clear_pending();
-    HOLD_PROMOTION.invalidate();
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
+    invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
+    HOLD_PROMOTION.invalidate();
     let target = hotkey_to_rdev_key(hotkey);
 
     let detector_mode = match mode {
@@ -1760,6 +1928,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     };
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTION.invalidate();
+                    invalidate_preparation(crate::audio::prepare::InvalidateReason::Escape);
 
                     tracing::info!(
                         target: "keyboard",
@@ -1938,7 +2107,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
 
                 match mode {
                     DetectorMode::DoubleTap => {
-                        let (fired, rejection, wait_started_at) = {
+                        let (fired, rejection, wait_started_at, prepare) = {
                             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
                                 let previous_wait = d.second_tap_wait_started_at();
@@ -1950,11 +2119,17 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                 let wait_started_at = d
                                     .second_tap_wait_started_at()
                                     .filter(|started_at| Some(*started_at) != previous_wait);
-                                (fired, d.take_rejection(), wait_started_at)
+                                (
+                                    fired,
+                                    d.take_rejection(),
+                                    wait_started_at,
+                                    d.take_prepare_signal(fired),
+                                )
                             } else {
-                                (false, None, None)
+                                (false, None, None, PrepareSignal::None)
                             }
                         };
+                        apply_prepare_signal(&handle, prepare, mode, listener_generation);
                         if let Some(reason) = rejection {
                             emit_hotkey_rejection(&handle, reason, mode);
                         }
@@ -2068,7 +2243,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         };
 
                         // Always feed double-tap
-                        let (dtap_fired, rejection, wait_started_at) = {
+                        let (dtap_fired, rejection, wait_started_at, prepare) = {
                             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
                                 if arming_combo_resets_double_tap(
@@ -2077,7 +2252,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     &event.event_type,
                                 ) {
                                     d.reset();
-                                    (false, None, None)
+                                    (false, None, None, d.take_prepare_signal(false))
                                 } else {
                                     let previous_wait = d.second_tap_wait_started_at();
                                     let fired = d.handle_event_with_context(
@@ -2088,12 +2263,18 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     let wait_started_at = d
                                         .second_tap_wait_started_at()
                                         .filter(|started_at| Some(*started_at) != previous_wait);
-                                    (fired, d.take_rejection(), wait_started_at)
+                                    (
+                                        fired,
+                                        d.take_rejection(),
+                                        wait_started_at,
+                                        d.take_prepare_signal(fired),
+                                    )
                                 }
                             } else {
-                                (false, None, None)
+                                (false, None, None, PrepareSignal::None)
                             }
                         };
+                        apply_prepare_signal(&handle, prepare, mode, listener_generation);
                         if let Some(reason) = rejection {
                             emit_hotkey_rejection(&handle, reason, mode);
                         }
@@ -2313,6 +2494,7 @@ pub fn stop_listener() {
     crate::audio_lifecycle::gesture::clear_pending();
     LISTENER_ACTIVE.store(false, Ordering::SeqCst);
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
+    invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
 
     // Reset both detectors and Both-mode state
     {
@@ -2336,8 +2518,9 @@ pub fn stop_listener() {
 /// Returns `true` if a hold-down stop event should be emitted (key changed while held).
 pub fn set_target_key(hotkey: &str) -> bool {
     crate::audio_lifecycle::gesture::clear_pending();
-    HOLD_PROMOTION.invalidate();
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
+    invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
+    HOLD_PROMOTION.invalidate();
     let target = hotkey_to_rdev_key(hotkey);
     let mode = {
         let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
@@ -2652,6 +2835,170 @@ mod tests {
         assert_eq!(fired.pressed, first_press.pressed);
         assert!(fired.released.is_some());
         assert!(d.candidate.is_none());
+    }
+
+    fn assert_tap_cancelled_by(during_first: bool, interrupt: EventType) {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        if !during_first {
+            d.handle_event(&release(Key::ShiftLeft));
+            d.handle_event(&press(Key::ShiftLeft));
+        }
+        assert!(!d.handle_event(&interrupt));
+        assert_eq!(d.state, DetectorState::Idle, "{interrupt:?}");
+        assert!(!d.handle_event(&release(Key::ShiftLeft)));
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(!d.handle_event(&release(Key::ShiftLeft)));
+    }
+
+    #[test]
+    fn other_modifier_mouse_button_or_wheel_during_either_press_is_not_a_clean_tap() {
+        for during_first in [true, false] {
+            for interrupt in [
+                press(Key::MetaLeft),
+                press(Key::Alt),
+                press(Key::ShiftRight),
+                EventType::ButtonPress(rdev::Button::Left),
+                EventType::Wheel {
+                    delta_x: 0,
+                    delta_y: 1,
+                },
+            ] {
+                assert_tap_cancelled_by(during_first, interrupt);
+            }
+        }
+    }
+
+    #[test]
+    fn pointer_movement_does_not_break_a_clean_double_tap() {
+        let mut d = make_detector(Key::ShiftLeft);
+        let moved = EventType::MouseMove { x: 1.0, y: 2.0 };
+        d.handle_event(&press(Key::ShiftLeft));
+        d.handle_event(&moved);
+        d.handle_event(&release(Key::ShiftLeft));
+        d.handle_event(&moved);
+        d.handle_event(&press(Key::ShiftLeft));
+        d.handle_event(&moved);
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+    }
+
+    #[test]
+    fn command_shift_four_during_recording_does_not_stop_it() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.recording = true;
+        for event in [
+            press(Key::MetaLeft),
+            press(Key::ShiftLeft),
+            press(Key::Num4),
+            release(Key::Num4),
+            release(Key::ShiftLeft),
+            release(Key::MetaLeft),
+        ] {
+            assert!(!d.handle_event(&event), "{event:?}");
+        }
+        for event in [
+            press(Key::ShiftLeft),
+            press(Key::MetaLeft),
+            press(Key::Num4),
+            release(Key::Num4),
+            release(Key::MetaLeft),
+            release(Key::ShiftLeft),
+        ] {
+            assert!(!d.handle_event(&event), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn first_clean_release_requests_preparation_and_fire_keeps_it_for_adoption() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        assert!(matches!(d.take_prepare_signal(false), PrepareSignal::None));
+        let token = d.candidate.unwrap().token;
+        d.handle_event(&release(Key::ShiftLeft));
+        assert!(matches!(
+            d.take_prepare_signal(false),
+            PrepareSignal::Request(candidate) if candidate.token == token
+        ));
+        d.handle_event(&press(Key::ShiftLeft));
+        assert!(matches!(d.take_prepare_signal(false), PrepareSignal::None));
+        let fired = d.handle_event(&release(Key::ShiftLeft));
+        assert!(fired);
+        assert!(matches!(d.take_prepare_signal(fired), PrepareSignal::None));
+        assert_eq!(d.fired_candidate.unwrap().token, token);
+        assert!(d.prepared_token.is_none());
+    }
+
+    #[test]
+    fn abandoned_sequence_signals_preparation_teardown() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        d.handle_event(&release(Key::ShiftLeft));
+        assert!(matches!(
+            d.take_prepare_signal(false),
+            PrepareSignal::Request(_)
+        ));
+        d.handle_event(&press(Key::KeyA));
+        assert!(matches!(
+            d.take_prepare_signal(false),
+            PrepareSignal::Abandon
+        ));
+        assert!(matches!(d.take_prepare_signal(false), PrepareSignal::None));
+    }
+
+    #[test]
+    fn lifecycle_reset_rejects_signal_resumed_before_its_generation_snapshot() {
+        for revoke_and_resume in [
+            (|| {
+                set_app_disabled(true);
+                set_app_disabled(false);
+            }) as fn(),
+            || {
+                set_processing(true);
+                set_processing(false);
+            },
+        ] {
+            let mut detector = make_detector(Key::ShiftLeft);
+            detector.handle_event(&press(Key::ShiftLeft));
+            detector.handle_event(&release(Key::ShiftLeft));
+            let PrepareSignal::Request(candidate) = detector.take_prepare_signal(false) else {
+                panic!("first clean tap must request preparation");
+            };
+            let saved = DOUBLE_TAP_DETECTOR.lock_or_recover().replace(detector);
+            // The signal exists, but apply_prepare_signal has not sampled
+            // revocation yet. A complete disable/enable cycle happens first.
+            revoke_and_resume();
+            let _fresh_generation = crate::audio::prepare::revocation_generation();
+            let mut detector = DOUBLE_TAP_DETECTOR.lock_or_recover();
+            assert!(!detector
+                .as_ref()
+                .unwrap()
+                .preparation_candidate_matches(candidate.token));
+            *detector = saved;
+        }
+    }
+
+    #[test]
+    fn single_tap_stop_while_recording_never_prepares() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.recording = true;
+        d.handle_event(&press(Key::ShiftLeft));
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        assert!(matches!(d.take_prepare_signal(true), PrepareSignal::None));
+    }
+
+    #[test]
+    fn second_tap_expiry_clears_preparation_ownership() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        d.handle_event(&release(Key::ShiftLeft));
+        assert!(matches!(
+            d.take_prepare_signal(false),
+            PrepareSignal::Request(_)
+        ));
+        let started = d.second_tap_wait_started_at().unwrap();
+        d.state_entered_at = started - Duration::from_millis(DOUBLE_TAP_WINDOW_MS as u64 + 1);
+        assert!(d.expire_second_tap_wait(d.state_entered_at).is_some());
+        assert!(d.prepared_token.is_none());
     }
 
     #[test]
@@ -3929,6 +4276,26 @@ mod tests {
             })
         ));
         assert!(!signals.contains(&HoldDownSignal::Start));
+    }
+
+    #[test]
+    fn hold_down_mouse_click_or_wheel_while_arming_never_starts_recording() {
+        for interrupt in [
+            EventType::ButtonPress(rdev::Button::Left),
+            EventType::Wheel {
+                delta_x: 0,
+                delta_y: -1,
+            },
+        ] {
+            let promotion = HoldPromotion::new();
+            let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::ShiftLeft);
+            let mut signals = Vec::new();
+            hold_down_step(&mut hold, &promotion, &press(Key::ShiftLeft), &mut signals);
+            hold_down_step(&mut hold, &promotion, &interrupt, &mut signals);
+            assert_eq!(hold.state, HoldState::Idle);
+            assert!(!fire_arming_timer(&hold, &promotion, &mut signals));
+            assert!(!signals.contains(&HoldDownSignal::Start));
+        }
     }
 
     #[test]

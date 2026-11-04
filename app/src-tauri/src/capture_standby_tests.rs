@@ -13,7 +13,7 @@ impl WorkerFactory for StandbyFactory {
         let teardown = self.teardown.clone();
         Ok(std::thread::spawn(move || {
             spec.shared.lock().unwrap().append_pcm(&[0.25; 160], 16_000);
-            events.send(AudioWorkerEvent::FirstBuffer { owner: spec.owner, sample_rate: 16_000 }).unwrap();
+            events.send(AudioWorkerEvent::FirstBuffer { owner: spec.owner, sample_rate: 16_000, sent_at: std::time::Instant::now() }).unwrap();
             spec.command_receiver.recv().unwrap();
             if let Some(gate) = teardown { gate.wait(); }
             events.send(AudioWorkerEvent::ThreadExited { owner: spec.owner }).unwrap();

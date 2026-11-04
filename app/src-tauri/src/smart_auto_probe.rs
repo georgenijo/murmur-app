@@ -516,6 +516,7 @@ async fn run(app: tauri::AppHandle) {
             wait(Next::Park).await;
             continue;
         };
+        crate::audio::prepare::capture_claimed(crate::audio::prepare::CaptureClaim::Preview);
         preview.bind_signal_evidence(
             preview_id,
             crate::audio_inventory::signal_evidence_key(Some(&device_id)),

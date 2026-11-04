@@ -59,6 +59,7 @@ impl WorkerFactory for StopFactory {
                 .send(AudioWorkerEvent::FirstBuffer {
                     owner: spec.owner,
                     sample_rate: WHISPER_SAMPLE_RATE,
+                    sent_at: Instant::now(),
                 })
                 .unwrap();
             spec.command_receiver.recv().unwrap();

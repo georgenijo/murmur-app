@@ -1999,6 +1999,7 @@ async fn start_capture_inner(
             Err("query_busy")
         } else {
             // Atomic Idle -> Capturing under the dictation lock.
+            crate::audio::prepare::capture_claimed(crate::audio::prepare::CaptureClaim::Transform);
             claim_transform_start_status(&state.app_state, transform_pass_id)
         }
     };
@@ -2837,6 +2838,7 @@ pub(crate) async fn retry_transform_instruction(
         return Ok(());
     }
 
+    crate::audio::prepare::capture_claimed(crate::audio::prepare::CaptureClaim::Transform);
     fx.set_expanded(false);
     fx.set_focusable(false);
     fx.emit_state(ReviewState::Connecting, None);

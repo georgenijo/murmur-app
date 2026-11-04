@@ -121,6 +121,13 @@ export type ProductionCaptureFailureKindV1 =
   | 'worker_panicked'
   | 'signature_invalid';
 
+export type ProductionHelperPreparationV1 =
+  | 'adopted'
+  | 'notPrepared'
+  | 'stillPreparing'
+  | 'identityMismatch'
+  | 'expired';
+
 export interface ProductionGestureV1 {
   pressToAcceptedMs: MeasurementV1<number>;
   doubleTapGapMs: MeasurementV1<number>;
@@ -147,6 +154,14 @@ export interface ProductionRunV1 {
     helperSignatureMs: number | null;
     helperSpawnMs: number | null;
     streamOpenMs: number | null;
+    /** Latest-attempt split of streamOpenMs; absent on older records. */
+    deviceResolutionMs?: number | null;
+    audioUnitNewMs?: number | null;
+    audioUnitInitializeMs?: number | null;
+    streamConfigureMs?: number | null;
+    streamStartMs?: number | null;
+    /** First-attempt silent first-tap preparation outcome; absent on older records. */
+    helperPreparation?: ProductionHelperPreparationV1 | null;
     firstCallbackWaitMs: number | null;
     firstPcmMs: number | null;
     readyMs: number | null;
@@ -355,6 +370,13 @@ const productionMicrophoneKinds = new Set<string>([
   'builtIn', 'external', 'bluetooth', 'virtual', 'continuity',
 ]);
 const productionCaptureBackends = new Set<string>(['auhal', 'cpal']);
+const productionHelperPreparations = new Set<string>([
+  'adopted', 'notPrepared', 'stillPreparing', 'identityMismatch', 'expired',
+]);
+const optionalProductionCaptureKeys = [
+  'gesture', 'deviceResolutionMs', 'audioUnitNewMs', 'audioUnitInitializeMs', 'streamConfigureMs', 'streamStartMs',
+  'helperPreparation',
+] as const;
 const productionCaptureFailureKinds = new Set<string>([
   'permission_denied', 'device_unavailable', 'host_unavailable', 'invalid_input',
   'resource_exhausted', 'stream_invalidated', 'unsupported_config', 'backend_error',
@@ -621,7 +643,7 @@ function isProductionRunV1(value: unknown): value is ProductionRunV1 {
       'firstCallbackWaitMs', 'firstPcmMs', 'readyMs', 'stopToWorkerExitMs',
       'backend', 'fallbackAttempted', 'fallbackSucceeded', 'failureKind',
       'workerInvariantViolation', 'zeroSampleSuccess',
-      ...('gesture' in value.capture ? ['gesture'] : []),
+      ...optionalProductionCaptureKeys.filter(key => key in (value.capture as object)),
     ])) {
     return false;
   }
@@ -634,9 +656,19 @@ function isProductionRunV1(value: unknown): value is ProductionRunV1 {
     value.capture.firstPcmMs,
     value.capture.readyMs,
     value.capture.stopToWorkerExitMs,
+    value.capture.deviceResolutionMs,
+    value.capture.audioUnitNewMs,
+    value.capture.audioUnitInitializeMs,
+    value.capture.streamConfigureMs,
+    value.capture.streamStartMs,
   ];
+  const preparation = value.capture.helperPreparation;
   return (value.capture.gesture === undefined || isProductionGestureV1(value.capture.gesture))
-    && durations.every(duration => duration === null || isNonNegativeSafeInteger(duration))
+    && durations.every(duration =>
+      duration === null || duration === undefined || isNonNegativeSafeInteger(duration))
+    && (preparation === undefined || preparation === null || (
+      typeof preparation === 'string' && productionHelperPreparations.has(preparation)
+    ))
     && (value.capture.backend === null || (
       typeof value.capture.backend === 'string'
       && productionCaptureBackends.has(value.capture.backend)

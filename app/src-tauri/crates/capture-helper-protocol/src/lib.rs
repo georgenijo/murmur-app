@@ -182,6 +182,9 @@ pub struct ProductionDevice {
 pub enum ProductionHostMessage {
     Hello,
     Enumerate,
+    /// Bounded passive HAL input lookup only, under an existing microphone
+    /// grant. Creates no Audio Unit and must be followed by a separate Start.
+    PrepareInput,
     /// Installs passive Core Audio topology/default-input listeners in the
     /// isolated worker. Listener callbacks never enumerate or open devices.
     WatchInputTopology,
@@ -218,6 +221,8 @@ pub enum ProductionHostMessage {
 )]
 pub enum ProductionHelperMessage {
     HelloAck,
+    /// Passive lookup finished; no device identity or PCM is exposed.
+    InputPrepared,
     Devices {
         devices: Vec<ProductionDevice>,
         default_input_id: Option<String>,
@@ -310,9 +315,8 @@ pub enum SystemAudioPermissionStatus {
 /// that hung. Step names are content-free: no device identity ever rides on
 /// this message. AUHAL steps map to native Core Audio calls as follows:
 ///
-/// - `AudioUnitNew`: `AudioComponentFindNext`, `AudioComponentInstanceNew`,
-///   and `AudioUnitInitialize` (one bracket; the safe wrapper creates and
-///   initializes in a single call)
+/// - `AudioUnitNew`: `AudioComponentFindNext`, `AudioComponentInstanceNew`
+/// - `AudioUnitInit`: `AudioUnitInitialize`, after confirmed Start only
 /// - `EnableInputIo` / `DisableOutputIo`:
 ///   `AudioUnitSetProperty(kAudioOutputUnitProperty_EnableIO)` on the input /
 ///   output element
@@ -334,6 +338,8 @@ pub enum CaptureSetupStep {
     DeviceResolution,
     AudioUnitCreation,
     AudioUnitNew,
+    #[serde(rename = "audioUnitInitialize")]
+    AudioUnitInit,
     EnableInputIo,
     DisableOutputIo,
     SetCurrentDevice,
@@ -355,6 +361,7 @@ impl CaptureSetupStep {
             Self::DeviceResolution => "device_resolution",
             Self::AudioUnitCreation => "audio_unit_creation",
             Self::AudioUnitNew => "audio_unit_new",
+            Self::AudioUnitInit => "audio_unit_initialize",
             Self::EnableInputIo => "enable_input_io",
             Self::DisableOutputIo => "disable_output_io",
             Self::SetCurrentDevice => "set_current_device",
@@ -997,6 +1004,52 @@ mod tests {
             ),
             Err(FrameError::InvalidPcm)
         ));
+    }
+
+    #[test]
+    fn passive_preparation_is_not_start_and_auhal_brackets_are_distinct() {
+        let nonce = [8; 16];
+        let mut bytes = Vec::new();
+        write_production_control(&mut bytes, 7, nonce, &ProductionHostMessage::PrepareInput)
+            .unwrap();
+        assert_eq!(
+            read_production_frame::<ProductionHostMessage>(&mut bytes.as_slice(), 7, nonce)
+                .unwrap(),
+            ProductionFrame::Control(ProductionHostMessage::PrepareInput)
+        );
+        assert_eq!(
+            serde_json::to_string(&ProductionHostMessage::PrepareInput).unwrap(),
+            r#"{"type":"prepareInput"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ProductionHelperMessage::InputPrepared).unwrap(),
+            r#"{"type":"inputPrepared"}"#
+        );
+        for (step, name) in [
+            (CaptureSetupStep::AudioUnitNew, "audio_unit_new"),
+            (CaptureSetupStep::AudioUnitInit, "audio_unit_initialize"),
+            (CaptureSetupStep::StreamStart, "stream_start"),
+        ] {
+            assert_eq!(step.as_str(), name);
+            for transition in [SetupTransition::Entered, SetupTransition::Completed] {
+                let message = ProductionHelperMessage::SetupStep {
+                    backend: CaptureBackend::Auhal,
+                    step,
+                    transition,
+                };
+                let mut bytes = Vec::new();
+                write_production_control(&mut bytes, 7, nonce, &message).unwrap();
+                assert_eq!(
+                    read_production_frame::<ProductionHelperMessage>(
+                        &mut bytes.as_slice(),
+                        7,
+                        nonce
+                    )
+                    .unwrap(),
+                    ProductionFrame::Control(message)
+                );
+            }
+        }
     }
 
     #[test]

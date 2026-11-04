@@ -220,6 +220,19 @@ describe('microphone startup benchmark boundary', () => {
     expect(parseMicrophoneStartupBenchmarkProgress({ ...progress, unexpected: true })).toBeNull();
   });
 
+  it('accepts initialization progress and a failed initialization retained after fallback', () => {
+    const progress = {
+      schemaVersion: 1, runId: RUN_ID, benchmarkRunId: 7,
+      completedCycles: 0, totalCycles: 2, currentCycle: 1,
+      phase: 'capturing', backend: 'auhal', fallbackOccurred: false,
+      lastSetupStep: 'audio_unit_initialize', lastSetupTransition: 'entered',
+    };
+    expect(parseMicrophoneStartupBenchmarkProgress(progress)).toEqual(progress);
+    const fallback = report();
+    fallback.cycles[1].attempts[0].lastSetupStep = 'audio_unit_initialize';
+    expect(parseMicrophoneStartupBenchmarkReport(fallback)).toEqual(fallback);
+  });
+
   it('retains only valid newest reports within the bounded local dashboard', () => {
     const reports = Array.from({ length: MAX_SAVED_MICROPHONE_STARTUP_REPORTS + 3 }, (_, index) => report({
       runId: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
