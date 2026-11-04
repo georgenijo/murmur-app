@@ -118,6 +118,34 @@ describe('automatic update checks during first-run setup', () => {
     expect(native.sendNotification).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('notifies a previously suppressed update after setup completes, once per version (forced: %s)', async (forced) => {
+    const response = deferred<Update | null>();
+    const update = await native.check();
+    update.rawJson = forced ? { min_version: '0.60.0' } : {};
+    native.check.mockClear().mockReturnValueOnce(response.promise);
+    await act(async () => root.render(<Harness ready />));
+    expect(native.check).toHaveBeenCalledOnce();
+
+    await act(async () => root.render(<Harness ready={false} />));
+    await act(async () => response.resolve(update));
+    expect(current.updateStatus).toMatchObject({ phase: 'available', isForced: forced });
+    expect(current.isUpdateDialogOpen).toBe(false);
+    expect(native.sendNotification).not.toHaveBeenCalled();
+
+    await act(async () => root.render(<Harness ready />));
+    await act(async () => vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + CHECK_TIMER_TICK_MS));
+    expect(native.check).toHaveBeenCalledTimes(2);
+    expect(native.sendNotification).toHaveBeenCalledOnce();
+    expect(native.sendNotification).toHaveBeenCalledWith({
+      title: 'Update Available', body: 'Murmur v0.60.0 is ready to install.',
+    });
+    expect(current.isUpdateDialogOpen).toBe(forced);
+
+    await act(async () => vi.advanceTimersByTimeAsync(CHECK_INTERVAL_MS + CHECK_TIMER_TICK_MS));
+    expect(native.check).toHaveBeenCalledTimes(3);
+    expect(native.sendNotification).toHaveBeenCalledOnce();
+  });
+
   it('rechecks readiness after waiting for native notification permission', async () => {
     const permission = deferred<boolean>();
     native.isPermissionGranted.mockReturnValueOnce(permission.promise);

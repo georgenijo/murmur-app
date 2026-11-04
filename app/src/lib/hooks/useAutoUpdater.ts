@@ -104,6 +104,9 @@ export function useAutoUpdater(
   const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const updateRef = useRef<Update | null>(null);
+  // Availability may be discovered while setup suppresses presentation. Only
+  // a posted notification consumes this version's background notification.
+  const notifiedVersionRef = useRef<string | null>(null);
   const operationRef = useRef<UpdaterOperation>('idle');
   // Resolves when the in-flight check settles, so an Install click that races
   // a background check waits instead of being silently dropped.
@@ -198,6 +201,7 @@ export function useAutoUpdater(
       if (!update?.available || !update.version) {
         const hadKnownUpdate = updateRef.current !== null;
         updateRef.current = null;
+        notifiedVersionRef.current = null;
         hasDownloadedUpdateRef.current = false;
         hasInstalledUpdateRef.current = false;
         isForcedRef.current = false;
@@ -237,7 +241,6 @@ export function useAutoUpdater(
       }
       setLastCheckTimestamp(Date.now());
 
-      const wasAlreadyAvailable = updateRef.current?.version === update.version;
       updateRef.current = update;
       hasDownloadedUpdateRef.current = false;
       hasInstalledUpdateRef.current = false;
@@ -251,7 +254,11 @@ export function useAutoUpdater(
       setIsUpdateDialogOpen(shouldPresentManualResult() || (isForced && automaticChecksEnabledRef.current));
 
       // Background check: fire macOS notification
-      if (opts.isBackground && !opts.canary && !wasAlreadyAvailable && automaticChecksEnabledRef.current) {
+      if (
+        opts.isBackground && !opts.canary
+        && notifiedVersionRef.current !== update.version
+        && automaticChecksEnabledRef.current
+      ) {
         try {
           let permGranted = await isPermissionGranted();
           if (!permGranted && automaticChecksEnabledRef.current) {
@@ -263,6 +270,7 @@ export function useAutoUpdater(
               title: 'Update Available',
               body: `Murmur v${update.version} is ready to install.`,
             });
+            notifiedVersionRef.current = update.version;
           }
         } catch (err) {
           flog.warn('updater', 'notification failed', { error: String(err) });
