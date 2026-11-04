@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { compile } from 'tailwindcss';
+import { assertDesignBaseline, scanDesignTree, serializeDesignBaseline } from './test-utils/designLint';
+import type { DesignViolation } from './test-utils/designLint';
 
 const css = readFileSync('./src/styles.css', 'utf8');
+
+describe('UI design ratchet', () => {
+  it('permits only the committed legacy violations and requires fixed entries to shrink', () => {
+    const baselinePath = resolve('src/test-utils/design-lint-baseline.json');
+    const baseline: DesignViolation[] = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    const actual = scanDesignTree(resolve('src'));
+    const shrink = process.env.DESIGN_LINT_SHRINK === '1';
+    assertDesignBaseline(actual, baseline, shrink);
+    if (shrink) writeFileSync(baselinePath, serializeDesignBaseline(actual));
+  });
+});
 
 const lightTheme = {
   background: '#f7fafc',

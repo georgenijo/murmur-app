@@ -15,6 +15,7 @@
     "tauri:bench:build": "VITE_MURMUR_INTERNAL_BENCHMARK=1 tauri build --features internal-benchmark --config src-tauri/tauri.bench.conf.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "design-lint:shrink": "DESIGN_LINT_SHRINK=1 vitest run src/styles.test.ts",
     "audit:dead-code": "node ../scripts/audit_frontend_dead_code.mjs",
     "test:visual": "playwright test"
   },
@@ -49,6 +50,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "jsdom": "^28.1.0",
+    "postcss": "8.5.26",
     "typescript": "~5.6.2",
     "vite": "^6.0.1",
     "vitest": "^4.0.18"
