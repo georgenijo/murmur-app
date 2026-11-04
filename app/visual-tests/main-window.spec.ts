@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { surfaceCases } from './surface-matrix';
 
 test.use({ timezoneId: 'America/New_York' });
 
@@ -1076,5 +1077,78 @@ for (const width of [720, 800, 880] as const) {
     const input = page.getByLabel('Me speaker label');
     const inputBox = await input.boundingBox();
     expect(inputBox!.x).toBeGreaterThanOrEqual(paneBox!.x);
+  });
+}
+
+
+for (const { appearance, width, height, label } of surfaceCases([{ width: 720, height: 560 }, { width: 880, height: 820 }, { width: 1120, height: 820 }])) {
+  test.describe(`Insights ${label}`, () => {
+    test.use({ viewport: { width, height }, colorScheme: appearance });
+    test('Calendar dates, exact values and bounded proportions survive keyboard dismissal and disclosure', async ({ page }, testInfo) => {
+      await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
+      const chart = page.getByRole('figure', { name: 'Words per day heatmap', exact: true });
+      const grid = chart.locator('.ui-day-chart-heatmap');
+      await grid.scrollIntoViewIfNeeded();
+      await expect(chart.locator('.ui-day-chart-date-range')).toContainText(/\d{4}/);
+      await expect(chart.locator('.ui-day-chart-weekdays span')).toHaveCount(7);
+      await expect(grid.getByRole('button')).toHaveCount(56);
+      const bounds = await chart.evaluate(element => {
+        const plot = element.querySelector('.ui-day-chart-heatmap')!.getBoundingClientRect();
+        const calendar = element.querySelector('.ui-day-chart-calendar')!.getBoundingClientRect();
+        const cell = element.querySelector('.ui-day-chart-heatmap button')!.getBoundingClientRect();
+        return { height: plot.height, width: plot.width, cellWidth: cell.width, calendarRight: calendar.right, overflow: element.scrollWidth - element.clientWidth };
+      });
+      expect(bounds.width).toBeLessThanOrEqual(256);
+      expect(bounds.height).toBeLessThanOrEqual(224);
+      expect(bounds.cellWidth).toBeGreaterThanOrEqual(16);
+      expect(bounds.calendarRight).toBeLessThanOrEqual(width);
+      expect(bounds.overflow).toBeLessThanOrEqual(1);
+      const cell = grid.getByRole('button', { name: /760 words, 6 recordings/ });
+      await cell.focus();
+      await expect(chart.getByRole('status')).toContainText('760 words · 6 recordings');
+      await page.keyboard.press('Escape');
+      await expect(chart.getByRole('status')).toContainText('Focus a day');
+      if (width !== 1120) await page.screenshot({ path: testInfo.outputPath('insights-calendar.png') });
+      await chart.getByText('Daily values', { exact: true }).click();
+      await expect(chart.getByRole('table')).toBeVisible();
+      await expect(chart.locator('tbody tr')).toHaveCount(56);
+      await expect(chart.locator('tbody')).toContainText('760');
+    });
+  });
+}
+
+for (const { appearance, width, height, label } of surfaceCases()) {
+  test.describe(`Home setup ${label}`, () => {
+    test.use({ viewport: { width, height }, colorScheme: appearance });
+    test('Source-owned checklist copy fits beside pointer actions', async ({ page }) => {
+      await page.goto(`/visual-fixtures.html?state=idle&appearance=${appearance}`);
+      const checklist = page.locator('.discovery-checklist');
+      await expect(checklist).toBeVisible();
+      await expect(checklist.locator('li')).toHaveCount(7);
+      const labels = checklist.locator('strong, small');
+      for (const label of await labels.all()) {
+        const fit = await label.evaluate(element => ({
+          overflow: element.scrollWidth - element.clientWidth,
+          ellipsis: getComputedStyle(element).textOverflow,
+          before: getComputedStyle(element, '::before').content,
+          after: getComputedStyle(element, '::after').content,
+        }));
+        expect(fit.overflow).toBeLessThanOrEqual(1);
+        expect(fit.ellipsis).not.toBe('ellipsis');
+        expect(['none', 'normal']).toContain(fit.before);
+        expect(['none', 'normal']).toContain(fit.after);
+      }
+      for (const row of await checklist.locator('li').all()) {
+        const action = row.getByRole('button');
+        await action.scrollIntoViewIfNeeded();
+        const copyBounds = await row.locator('small').boundingBox();
+        const actionBounds = await action.boundingBox();
+        expect(copyBounds!.x + copyBounds!.width).toBeLessThanOrEqual(actionBounds!.x);
+        await expect(action).toBeInViewport();
+      }
+      await checklist.getByRole('button', { name: 'Dismiss Get more from Murmur' }).click();
+      // The fixture's dismiss callback is a no-op; component coverage verifies
+      // callback delivery, while this check establishes the pointer target fits.
+    });
   });
 }

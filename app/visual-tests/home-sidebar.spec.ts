@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { expectNativeChromeClearance } from './native-chrome';
 
 const fixture = (appearance = 'light', state = 'idle') => `/visual-fixtures.html?state=${state}&appearance=${appearance}&checklist=hidden`;
 
@@ -15,7 +16,24 @@ for (const appearance of ['light', 'dark']) {
       const collapsed = state !== 'expanded';
       await expect(sidebar).toHaveCSS('width', collapsed ? '48px' : '256px');
       await expect(sidebar).toHaveAttribute('data-collapsed', String(collapsed));
-      await expect(sidebar.getByRole('button', { name: collapsed ? 'Expand sidebar' : 'Collapse sidebar' })).toHaveAttribute('aria-expanded', String(!collapsed));
+      await expect(page.locator('.ui-window-header').getByRole('button', { name: collapsed ? 'Expand sidebar' : 'Collapse sidebar' })).toHaveAttribute('aria-expanded', String(!collapsed));
+      await expectNativeChromeClearance(page, page.locator('.ui-window-header'), 1, !collapsed);
+      const selected = sidebar.locator('[aria-current="page"]');
+      await expect(selected).toHaveCSS('box-shadow', 'none');
+      const indicator = await selected.evaluate(el => { const style = getComputedStyle(el, '::before'); return { content: style.content, top: style.top, height: style.height, transform: style.transform }; });
+      if (collapsed) expect(indicator.content).toBe('none');
+      else {
+        const height = (await selected.boundingBox())!.height;
+        expect(parseFloat(indicator.top)).toBeCloseTo(height / 2, 1);
+        expect(indicator.transform).not.toBe('none');
+      }
+      for (const selector of ['.home-month-stat-value', '.home-dashboard .dashboard-eyebrow', '.history-date-label']) {
+        const text = page.locator(selector).first();
+        if (await text.count()) {
+          await expect(text).toHaveCSS('font-variant-numeric', 'tabular-nums');
+          expect(await text.evaluate(el => getComputedStyle(el).fontFamily)).toBe(await page.locator('html').evaluate(el => getComputedStyle(el).fontFamily));
+        }
+      }
       for (const label of ['Home', 'Notetaker', 'Assistant', 'Insights']) {
         const item = sidebar.getByRole('button', { name: label, exact: true });
         await expect(item).toBeVisible();
@@ -75,6 +93,9 @@ test('keyboard toggle, bounded separator and collapsed navigation keep accessibl
   await page.keyboard.press('Enter');
   await expect(sidebar).toHaveCSS('width', '48px');
   await expect(page.getByRole('separator')).toHaveCount(0);
+  // Header actions precede navigation now that the toggle lives in native chrome.
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Open customization and settings' })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(page.getByRole('button', { name: 'Home', exact: true })).toBeFocused();
   await page.keyboard.press('Tab');

@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { compile } from 'tailwindcss';
+import { assertDesignBaseline, scanDesignTree, serializeDesignBaseline } from './test-utils/designLint';
+import type { DesignViolation } from './test-utils/designLint';
 
 const css = readFileSync('./src/styles.css', 'utf8');
+
+describe('UI design ratchet', () => {
+  it('permits only the committed legacy violations and requires fixed entries to shrink', () => {
+    const baselinePath = resolve('src/test-utils/design-lint-baseline.json');
+    const baseline: DesignViolation[] = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    const actual = scanDesignTree(resolve('src'));
+    const shrink = process.env.DESIGN_LINT_SHRINK === '1';
+    assertDesignBaseline(actual, baseline, shrink);
+    if (shrink) writeFileSync(baselinePath, serializeDesignBaseline(actual));
+  });
+});
 
 const lightTheme = {
   background: '#f7fafc',
@@ -104,6 +117,14 @@ describe('Sonic Canvas semantic color tokens', () => {
 });
 
 describe('Murmur layout contracts', () => {
+  it('reserves the native traffic lights plus a gap from the Rust inset', () => {
+    const native = readFileSync('./src-tauri/src/window_state.rs', 'utf8');
+    const x = Number(native.match(/TRAFFIC_LIGHT_X:\s*f64\s*=\s*([\d.]+)/)![1]);
+    const inset = css.match(/--ui-window-controls-inset:\s*([\d.]+)(rem|px)/)!;
+    const pixels = Number(inset[1]) * (inset[2] === 'rem' ? 16 : 1);
+    expect(pixels).toBeGreaterThanOrEqual(x + 54 + 8);
+  });
+
   it('locks the compact chrome and history geometry to shared tokens', () => {
     expect(css).toContain('--ui-font-caption: 0.75rem;');
     expect(css).toContain('--ui-font-label: 0.8125rem;');
@@ -116,13 +137,13 @@ describe('Murmur layout contracts', () => {
     expect(css).toContain('--ui-history-card-y: 0.5rem;');
   });
 
-  it('derives dashboard states from the soft Sona hairline/shadow ramp, with selection carrying its own raised elevation', () => {
+  it('derives dashboard states from the soft Sona hairline/shadow ramp, with flat navigation selection', () => {
     expect(css).toContain('--ui-dashboard-border: var(--ui-hairline);');
     expect(css).toContain('--ui-dashboard-hover: var(--murmur-surface-container);');
     expect(css).toContain('--ui-dashboard-selected: var(--murmur-surface-container-lowest);');
     expect(css).toContain('--ui-dashboard-shadow: var(--ui-shadow-2);');
     expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*background:\s*var\(--ui-tint-raised\);[^}]*\}/s);
-    expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*box-shadow:\s*var\(--ui-shadow-1\);[^}]*\}/s);
+    expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*box-shadow:\s*none;[^}]*\}/s);
     expect(css).toMatch(/\.ui-dashboard-action:disabled\s*\{[^}]*cursor:\s*not-allowed;[^}]*color:\s*var\(--ui-dashboard-disabled\);/s);
   });
 
