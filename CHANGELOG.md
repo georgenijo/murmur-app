@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.59.4] - 2026-11-04
+
+### Fixed
+
+- Preserve microphone helper shutdown timing in the correct recording’s diagnostics, even when shutdown finishes after the result is delivered (#928).
+
 ## [0.59.3] - 2026-11-04
 
 ### Changed
