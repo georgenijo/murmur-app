@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAutoUpdater } from './useAutoUpdater';
 import { CHECK_INTERVAL_MS, CHECK_TIMER_TICK_MS } from '../updater';
+import type { Update } from '@tauri-apps/plugin-updater';
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(), check: vi.fn(), isPermissionGranted: vi.fn(),
@@ -24,6 +25,12 @@ vi.mock('@tauri-apps/plugin-notification', () => ({
   requestPermission: native.requestPermission,
   sendNotification: native.sendNotification,
 }));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 describe('automatic update checks during first-run setup', () => {
   let root: Root;
@@ -83,6 +90,57 @@ describe('automatic update checks during first-run setup', () => {
   it('preserves explicit manual update checks while setup defers background work', async () => {
     await act(async () => root.render(<Harness ready={false} />));
     await act(async () => current.checkForUpdate());
+    expect(native.check).toHaveBeenCalledOnce();
+    expect(current.isUpdateDialogOpen).toBe(true);
+    expect(native.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('keeps an in-flight background result quiet after setup restarts (forced: %s)', async (forced) => {
+    const response = deferred<Update | null>();
+    const update = await native.check();
+    update.rawJson = forced ? { min_version: '0.60.0' } : {};
+    native.check.mockClear().mockReturnValueOnce(response.promise);
+    await act(async () => root.render(<Harness ready />));
+    expect(native.check).toHaveBeenCalledOnce();
+
+    await act(async () => root.render(<Harness ready={false} />));
+    await act(async () => response.resolve(update));
+
+    expect(current.updateStatus).toMatchObject({ phase: 'available', isForced: forced });
+    expect(current.isUpdateDialogOpen).toBe(false);
+    expect(native.isPermissionGranted).not.toHaveBeenCalled();
+    expect(native.requestPermission).not.toHaveBeenCalled();
+    expect(native.sendNotification).not.toHaveBeenCalled();
+
+    // An explicit manual request still presents the result during setup.
+    await act(async () => current.checkForUpdate());
+    expect(current.isUpdateDialogOpen).toBe(true);
+    expect(native.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it('rechecks readiness after waiting for native notification permission', async () => {
+    const permission = deferred<boolean>();
+    native.isPermissionGranted.mockReturnValueOnce(permission.promise);
+    await act(async () => root.render(<Harness ready />));
+    expect(native.isPermissionGranted).toHaveBeenCalledOnce();
+
+    await act(async () => root.render(<Harness ready={false} />));
+    await act(async () => permission.resolve(true));
+
+    expect(native.requestPermission).not.toHaveBeenCalled();
+    expect(native.sendNotification).not.toHaveBeenCalled();
+    expect(current.isUpdateDialogOpen).toBe(false);
+  });
+
+  it('honors a manual request joining a background check after setup restarts', async () => {
+    const response = deferred<Update | null>();
+    const update = await native.check();
+    native.check.mockClear().mockReturnValueOnce(response.promise);
+    await act(async () => root.render(<Harness ready />));
+    await act(async () => root.render(<Harness ready={false} />));
+    await act(async () => current.checkForUpdate());
+    await act(async () => response.resolve(update));
+
     expect(native.check).toHaveBeenCalledOnce();
     expect(current.isUpdateDialogOpen).toBe(true);
     expect(native.sendNotification).not.toHaveBeenCalled();

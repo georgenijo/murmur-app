@@ -96,6 +96,10 @@ export function useAutoUpdater(
 ): UseAutoUpdaterReturn {
   const automaticChecksEnabled = (options.automaticChecksEnabled ?? !import.meta.env.DEV)
     && (options.setupComplete ?? true);
+  // A request can finish after setup is reopened. Presentation must use the
+  // current gate rather than the render that started the background check.
+  const automaticChecksEnabledRef = useRef(automaticChecksEnabled);
+  automaticChecksEnabledRef.current = automaticChecksEnabled;
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' });
   const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
@@ -244,17 +248,17 @@ export function useAutoUpdater(
         notes: update.body ?? '',
         isForced,
       });
-      setIsUpdateDialogOpen(isForced || shouldPresentManualResult());
+      setIsUpdateDialogOpen(shouldPresentManualResult() || (isForced && automaticChecksEnabledRef.current));
 
       // Background check: fire macOS notification
-      if (opts.isBackground && !opts.canary && !wasAlreadyAvailable) {
+      if (opts.isBackground && !opts.canary && !wasAlreadyAvailable && automaticChecksEnabledRef.current) {
         try {
           let permGranted = await isPermissionGranted();
-          if (!permGranted) {
+          if (!permGranted && automaticChecksEnabledRef.current) {
             const perm = await requestPermission();
             permGranted = perm === 'granted';
           }
-          if (permGranted) {
+          if (permGranted && automaticChecksEnabledRef.current) {
             sendNotification({
               title: 'Update Available',
               body: `Murmur v${update.version} is ready to install.`,
