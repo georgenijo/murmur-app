@@ -135,7 +135,7 @@ function App() {
     }
   }, [homeSidebar.collapsed]);
 
-  const { settings, getCurrentSettings, getConfirmedSettings, updateSettings, applyExternalSettings, configureError } = useSettings();
+  const { settings, getCurrentSettings, getConfirmedSettings, updateSettings, configureOnboarding, applyExternalSettings, configureError } = useSettings();
   const [querySetupStatus, setQuerySetupStatus] = useState<QuerySetupStatus | null>(null);
   useEffect(() => {
     setQuerySetupStatus(null);
@@ -225,22 +225,21 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const completeOnboarding = useCallback((
+  const completeOnboarding = useCallback(async (
     model: typeof settings.model,
     recordingMode: typeof settings.recordingMode,
     doubleTapKey: typeof settings.doubleTapKey,
   ) => {
+    await configureOnboarding({ model, recordingMode, doubleTapKey });
     markOnboardingComplete();
     initializeDiscoveryAfterSetup(discoveryEvidence(settings, loadStats()));
-    updateSettings({ recordingMode, doubleTapKey });
-    markModelReady(model);
+    setModelReady(true);
     setOnboardingState('done');
   }, [
-    markModelReady,
+    configureOnboarding,
     settings.appProfiles,
     settings.queryExecutable,
     settings.queryHotkey,
-    updateSettings,
   ]);
 
   // Keep settings in sync when the overlay's quick controls change them.

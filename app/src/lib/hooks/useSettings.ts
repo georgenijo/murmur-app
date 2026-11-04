@@ -19,6 +19,7 @@ import {
   requestCalendarPermission,
 } from '../calendar';
 import { configureMeetingSuggestions } from '../meetingSuggestions';
+import { getModelRuntimeCatalog } from '../modelRuntime';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
 
@@ -456,11 +457,49 @@ export function useSettings() {
     }
   }, [confirmConfigured]);
 
+  // Setup is acknowledged before publishing any of its choices. Unlike normal
+  // Settings edits, a failed or timed-out attempt must leave the wizard open.
+  const configureOnboarding = useCallback(async (choices: Pick<Settings, 'model' | 'recordingMode' | 'doubleTapKey'>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let expired = false;
+    const version = ++configureVersionRef.current;
+    try {
+      await Promise.race([
+        (async () => {
+          const catalog = await getModelRuntimeCatalog();
+          if (expired) return;
+          if (!catalog.some((model) => model.modelName === choices.model && model.installState === 'installed')) {
+            throw new Error('The selected transcription model is not installed.');
+          }
+          const next = { ...settingsRef.current, ...choices };
+          await configure(buildConfigureOptions(next));
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            expired = true;
+            reject(new Error('Transcription model configuration timed out.'));
+          }, 30_000);
+        }),
+      ]);
+      if (version !== configureVersionRef.current) throw new Error('Settings changed during setup. Retry with the selected model.');
+      const next = { ...settingsRef.current, ...choices };
+      confirmedConfigureSettingsRef.current = { ...confirmedConfigureSettingsRef.current, ...choices };
+      settingsRef.current = next;
+      setSettings(next);
+      persistSettings(next);
+      setConfigureError(null);
+      void emit('settings-changed').catch(() => {});
+    } finally {
+      clearTimeout(timer);
+    }
+  }, [persistSettings]);
+
   return {
     settings,
     getCurrentSettings: () => settingsRef.current,
     getConfirmedSettings: () => confirmedConfigureSettingsRef.current,
     updateSettings,
+    configureOnboarding,
     applyExternalSettings,
     configureError: probeConfigureError ?? configureError,
   };
