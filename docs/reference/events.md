@@ -60,7 +60,14 @@ sanitized, and the fleet log shipper drops the entire `meeting` stream.
 | `meeting-suggestion-changed` | `{token, title, startMs, endMs} \| null` | `meeting_suggestions.rs` | A consented Calendar suggestion appears, expires, is invalidated, or is dismissed. Sent only to main and overlay; contains a private event title and must never be logged. | Main and overlay suggestion hooks. |
 | `accept-meeting-suggestion` | `{token}` | Overlay frontend, targeted to main | Explicit Accept click. Carries no title or attendee override and starts no capture itself. | Main routes the token through `useMeetings.start` to normal `start_meeting` admission. |
 | `meeting-audio-invalidated` | `{sessionId: string \| null}` | `meeting_audio.rs`, called by meeting deletion and pruning | Before retained audio for the selected session may be removed. Pruning, including meeting-start retention, emits only for sessions selected for removal; no-op pruning emits nothing. A null session ID is reserved for Delete all. Pending byte reads are also revoked. Sent only to main. | Main playback hook stops sources and discards stale reads and decodes. |
-| `system-audio-permission-changed` | `"unknown" \| "granted" \| "denied" \| "unsupported"` | `commands/meeting.rs` | After the user explicitly runs the short-lived permission probe. | Main permission banner and `useMeetings`. |
+| `system-audio-permission-changed` | `SystemAudioAccess {permission, captureReady, audioFlowing, needsRelaunch}` | `commands/meeting.rs` | After the user explicitly runs the short-lived permission probe. `permission` is `"unknown" \| "granted" \| "denied" \| "unsupported"`; the other fields are booleans. | Main permission banner (consumer contract alignment and `useMeetings` subscription tracked in #953). |
+
+`system-audio-permission-changed` carries the full access object, not a bare
+permission string. Consumers must read `payload.permission`; `captureReady`
+describes tap readiness, `audioFlowing` may be false on a silent Mac even with
+permission granted, and `needsRelaunch` indicates a grant has not reached the
+current session. Issue #953 tracks aligning the permission banner and adding
+the `useMeetings` subscription to this emitted contract.
 
 ## Models
 
