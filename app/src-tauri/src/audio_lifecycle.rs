@@ -78,6 +78,47 @@ impl AudioOwner {
     }
 }
 
+/// Resolved at the accepted stop, never inferred from the recording's start mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictationStopTrigger {
+    HoldRelease,
+    Toggle,
+    Overlay,
+    AutoStop,
+    /// Button, chord stops, and legacy callers.
+    #[default]
+    Other,
+}
+
+impl DictationStopTrigger {
+    pub(crate) fn resolve(self, release: Option<crate::hotkey_release::HotkeyRelease>) -> Self {
+        if release.is_some() {
+            Self::HoldRelease
+        } else {
+            self
+        }
+    }
+
+    fn release_tail(self, owner: AudioOwner, standby_enabled: bool) -> Duration {
+        if owner.dictation_id().is_none() || (self == Self::Toggle && !standby_enabled) {
+            Duration::ZERO
+        } else {
+            audio::DICTATION_RELEASE_TAIL
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::HoldRelease => "hold_release",
+            Self::Toggle => "toggle",
+            Self::Overlay => "overlay",
+            Self::AutoStop => "auto_stop",
+            Self::Other => "other",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioCancelReason {
     User,
@@ -116,6 +157,8 @@ pub(crate) enum AudioLifecycleEvent {
         recovery_reason: Option<AudioCancelReason>,
     },
     RecoveryStalled,
+    /// Capture cleanup finished independently of an already delivered result.
+    CleanupFinished,
     Interrupted {
         reason: AudioCancelReason,
         delivered_samples: u64,
@@ -407,6 +450,7 @@ struct StartRequest {
 enum SupervisorMessage {
     Start(StartRequest),
     Stop {
+        trigger: DictationStopTrigger,
         owner: Option<AudioOwner>,
         response: Sender<Result<Vec<f32>, String>>,
     },
@@ -473,6 +517,7 @@ struct Attempt {
     sample_rate: u32,
     start_response: Option<Sender<Result<(), AudioStartError>>>,
     stop_response: Option<Sender<Result<Vec<f32>, String>>>,
+    sealed_delivery: bool,
 }
 
 impl Attempt {
@@ -645,10 +690,11 @@ fn run_supervisor(
                         let _ = response.send(Ok(true));
                         continue;
                     }
-                    SupervisorMessage::Stop { owner, response }
-                        if pending_start
-                            .as_ref()
-                            .is_some_and(|r| owner.is_none_or(|o| o == r.owner)) =>
+                    SupervisorMessage::Stop {
+                        owner, response, ..
+                    } if pending_start
+                        .as_ref()
+                        .is_some_and(|r| owner.is_none_or(|o| o == r.owner)) =>
                     {
                         let request = pending_start.take().unwrap();
                         let _ = request.response.send(Err(AudioStartError::Cancelled));
@@ -861,7 +907,11 @@ fn handle_message(
         SupervisorMessage::Start(request) => {
             handle_start(request, attempt, worker_event_sender, factory, sink, public);
         }
-        SupervisorMessage::Stop { owner, response } => {
+        SupervisorMessage::Stop {
+            trigger,
+            owner,
+            response,
+        } => {
             let Some(current) = attempt.as_ref() else {
                 let _ = response.send(Ok(Vec::new()));
                 return;
@@ -882,12 +932,21 @@ fn handle_message(
                         permit.revoke();
                     }
                     current.active.store(false, Ordering::SeqCst);
-                    if current.owner.dictation_id().is_some()
-                        && current.standby_policy.seconds > 0
-                        && !crate::keyboard::is_app_disabled()
-                    {
-                        current.tail_deadline =
-                            Some(Instant::now() + audio::DICTATION_RELEASE_TAIL);
+                    let tail =
+                        trigger.release_tail(current.owner, current.standby_policy.seconds > 0);
+                    tracing::info!(target: "audio",
+                        event_code = "audio.stop_tail_applied",
+                        recording_id = current.owner.telemetry_id(),
+                        owner_kind = current.owner.kind(),
+                        stop_trigger = trigger.as_str(),
+                        standby_enabled = current.standby_policy.seconds > 0,
+                        release_tail_ms = tail.as_millis() as u64,
+                        "stop tail resolved from accepted trigger"
+                    );
+                    // The supervisor owns the tail for both cold and standby
+                    // stops. The worker only drains after Stop; never add it twice.
+                    if current.owner.dictation_id().is_some() {
+                        current.tail_deadline = Some(Instant::now() + tail);
                     } else {
                         let _ = current.command_sender.send(AudioCommand::Stop);
                     }
@@ -1118,6 +1177,7 @@ fn handle_start(
         sample_rate: WHISPER_SAMPLE_RATE,
         start_response: Some(request.response),
         stop_response: None,
+        sealed_delivery: false,
     });
     let current = attempt.as_ref().expect("accepted attempt was installed");
     if let Some(recording_id) = owner.dictation_id() {
@@ -1171,6 +1231,7 @@ fn handle_worker_event(
         | AudioWorkerEvent::FirstBuffer { owner, .. }
         | AudioWorkerEvent::InitFailed { owner, .. }
         | AudioWorkerEvent::RuntimeFailed { owner, .. }
+        | AudioWorkerEvent::RecordingSealed { owner }
         | AudioWorkerEvent::StreamStopped { owner }
         | AudioWorkerEvent::ThreadExited { owner } => *owner,
     };
@@ -1266,6 +1327,13 @@ fn handle_worker_event(
             }
         }
         AudioWorkerEvent::TerminationUnconfirmed { failure, .. } => {
+            if current.phase == AttemptPhase::Stopping {
+                // A sealed result is final, but failed teardown is a separate
+                // capture failure. Keep the stop response/pipeline intact.
+                current.failure = Some(failure);
+                report_cleanup_stalled(current, sink, public);
+                return;
+            }
             if let Some(response) = current.start_response.take() {
                 let _ = response.send(Err(AudioStartError::InitializationFailed(failure.clone())));
             }
@@ -1425,6 +1493,30 @@ fn handle_worker_event(
                 );
             }
         }
+        AudioWorkerEvent::RecordingSealed { .. } => {
+            // Exact worker identity was checked above. Keep Stopping and its
+            // public owner even when the final samples leave this supervisor.
+            if current.phase == AttemptPhase::Stopping
+                && current.owner.dictation_id().is_some()
+                && current.tail_deadline.is_none()
+                && current.stop_response.is_some()
+            {
+                let result = take_samples(current);
+                let samples_ready = result.is_ok();
+                current.sealed_delivery = current
+                    .stop_response
+                    .take()
+                    .is_some_and(|response| response.send(result).is_ok());
+                tracing::info!(target: "audio",
+                    event_code = "audio.sealed_recording_delivered",
+                    recording_id = current.owner.telemetry_id(),
+                    delivered = current.sealed_delivery && samples_ready,
+                    response_delivered = current.sealed_delivery,
+                    exit_confirmed = false,
+                    "sealed recording handed off; microphone ownership retained"
+                );
+            }
+        }
         AudioWorkerEvent::StreamStopped { .. } => {
             tracing::info!(
                 target: "audio",
@@ -1466,11 +1558,13 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     match finished.phase {
         AttemptPhase::Standby => {}
         AttemptPhase::Stopping => {
-            let result = take_samples(&mut finished);
-            let response_delivered = finished
-                .stop_response
-                .take()
-                .is_some_and(|response| response.send(result).is_ok());
+            let response_delivered = if finished.sealed_delivery {
+                true
+            } else if let Some(response) = finished.stop_response.take() {
+                response.send(take_samples(&mut finished)).is_ok()
+            } else {
+                false
+            };
             if !response_delivered && !idle_after_clear {
                 sink.notify(
                     finished.app_handle.as_ref(),
@@ -1565,6 +1659,13 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
     crate::audio_inventory::lifecycle_became_idle();
+    if finished.sealed_delivery {
+        sink.notify(
+            finished.app_handle.as_ref(),
+            finished.owner,
+            AudioLifecycleEvent::CleanupFinished,
+        );
+    }
     for response in finished.retire_responses.drain(..) {
         let _ = response.send(());
     }
@@ -1815,6 +1916,9 @@ fn handle_deadlines_at(
             let _ = current.command_sender.send(AudioCommand::Stop);
             return;
         }
+        // Preserve the pre-optimization standby handoff: a 50 ms margin
+        // followed by a live-buffer snapshot. This is not a helper fence;
+        // arbitrarily delayed PCM can still arrive after the snapshot.
         let raw = current
             .shared
             .lock()
@@ -1912,22 +2016,31 @@ fn handle_deadlines_at(
                     now.saturating_duration_since(started) >= config.recovery_guidance_after
                 }) =>
         {
-            current.stopping_guidance_emitted = true;
-            sink.invalidate_input_health(current.device_id.as_deref());
-            tracing::warn!(
-                target: "audio",
-                owner = current.owner.telemetry_id(),
-                owner_kind = current.owner.kind(),
-                "audio stopping remains blocked"
-            );
-            sink.notify(
-                current.app_handle.as_ref(),
-                current.owner,
-                AudioLifecycleEvent::RecoveryStalled,
-            );
+            report_cleanup_stalled(current, sink, public);
         }
         _ => {}
     }
+}
+
+fn report_cleanup_stalled(current: &mut Attempt, sink: &dyn LifecycleSink, public: &PublicState) {
+    if current.stopping_guidance_emitted {
+        return;
+    }
+    current.stopping_guidance_emitted = true;
+    public.set_phase(PublicPhase::Recovering);
+    sink.invalidate_input_health(current.device_id.as_deref());
+    tracing::warn!(target: "audio",
+        event_code = "audio.teardown_stalled",
+        owner = current.owner.telemetry_id(),
+        owner_kind = current.owner.kind(),
+        sealed_delivery = current.sealed_delivery,
+        "capture cleanup blocked; ownership retained and recovery guidance published"
+    );
+    sink.notify(
+        current.app_handle.as_ref(),
+        current.owner,
+        AudioLifecycleEvent::RecoveryStalled,
+    );
 }
 
 fn send_start(
@@ -2107,8 +2220,11 @@ pub(crate) fn start_corpus_recording(
     .map_err(|error| error.to_string())
 }
 
-pub(crate) fn stop_dictation_recording(recording_id: u64) -> Result<Vec<f32>, String> {
-    stop(Some(AudioOwner::Dictation(recording_id)))
+pub(crate) fn stop_dictation_recording(
+    recording_id: u64,
+    trigger: DictationStopTrigger,
+) -> Result<Vec<f32>, String> {
+    stop_with_trigger(Some(AudioOwner::Dictation(recording_id)), trigger)
 }
 
 pub(crate) fn stop_query_recording(query_pass_id: u64) -> Result<Vec<f32>, String> {
@@ -2172,10 +2288,18 @@ pub(crate) fn stop_current_recording() -> Result<Vec<f32>, String> {
 }
 
 fn stop(owner: Option<AudioOwner>) -> Result<Vec<f32>, String> {
+    stop_with_trigger(owner, DictationStopTrigger::Other)
+}
+
+fn stop_with_trigger(
+    owner: Option<AudioOwner>,
+    trigger: DictationStopTrigger,
+) -> Result<Vec<f32>, String> {
     let (response_sender, response_receiver) = mpsc::channel();
     supervisor()
         .sender
         .send(SupervisorMessage::Stop {
+            trigger,
             owner,
             response: response_sender,
         })
@@ -2319,6 +2443,17 @@ pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
 }
 
+/// A new logical dictation generation must not supersede cleanup guidance
+/// while the previous worker is still exclusively owned.
+pub(crate) fn is_dictation_cleanup_pending(recording_id: u64) -> bool {
+    let public = &supervisor().public;
+    public.owns(AudioOwner::Dictation(recording_id))
+        && matches!(
+            public.phase(),
+            PublicPhase::Stopping | PublicPhase::Recovering
+        )
+}
+
 /// Read-only lifecycle view for hang diagnostics.
 pub(crate) struct AudioLifecycleSnapshot {
     pub(crate) phase: &'static str,
@@ -2441,6 +2576,60 @@ pub(crate) fn register_sleep_wake_observer() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_trigger_tail_mapping_preserves_speech_except_explicit_toggle() {
+        for trigger in [
+            DictationStopTrigger::HoldRelease,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+            DictationStopTrigger::Other,
+        ] {
+            assert_eq!(
+                trigger.release_tail(AudioOwner::Dictation(1), false),
+                Duration::from_millis(50)
+            );
+        }
+        assert_eq!(
+            DictationStopTrigger::Toggle.release_tail(AudioOwner::Dictation(1), false),
+            Duration::ZERO
+        );
+        for owner in [
+            AudioOwner::Transform(1),
+            AudioOwner::Query(1),
+            AudioOwner::Preview(1),
+        ] {
+            for trigger in [
+                DictationStopTrigger::HoldRelease,
+                DictationStopTrigger::Toggle,
+                DictationStopTrigger::Other,
+            ] {
+                assert_eq!(trigger.release_tail(owner, false), Duration::ZERO);
+                assert_eq!(trigger.release_tail(owner, true), Duration::ZERO);
+            }
+        }
+        assert_eq!(
+            DictationStopTrigger::Toggle.release_tail(AudioOwner::Dictation(1), true),
+            Duration::from_millis(50)
+        );
+        assert_eq!(DictationStopTrigger::default(), DictationStopTrigger::Other);
+        let now = Instant::now();
+        let release = crate::hotkey_release::HotkeyRelease::for_test(now, now);
+        assert_eq!(
+            DictationStopTrigger::Toggle.resolve(Some(release)),
+            DictationStopTrigger::HoldRelease
+        );
+        assert_eq!(
+            DictationStopTrigger::Toggle.resolve(None),
+            DictationStopTrigger::Toggle
+        );
+
+        assert_eq!(
+            serde_json::from_str::<DictationStopTrigger>("\"toggle\"").unwrap(),
+            DictationStopTrigger::Toggle
+        );
+        assert!(serde_json::from_str::<DictationStopTrigger>("\"unknown\"").is_err());
+    }
 
     #[test]
     fn microphone_benchmark_has_distinct_non_retaining_ownership() {
@@ -2638,6 +2827,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(AudioOwner::Preview(526)),
                 response,
             })
@@ -2649,6 +2839,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(AudioOwner::Preview(525)),
                 response,
             })
@@ -2698,6 +2889,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(AudioOwner::Preview(525)),
                 response,
             })
@@ -2874,6 +3066,752 @@ mod tests {
                 let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
             }))
         }
+    }
+
+    struct TailPolicyFactory(Arc<Mutex<Option<Receiver<AudioCommand>>>>);
+
+    impl WorkerFactory for TailPolicyFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            _events: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            spec.shared
+                .lock()
+                .unwrap()
+                .append_pcm(&[0.25; 160], WHISPER_SAMPLE_RATE);
+            *self.0.lock().unwrap() = Some(spec.command_receiver);
+            Ok(std::thread::spawn(|| {}))
+        }
+    }
+
+    #[test]
+    fn stop_tail_deadline_applies_once_for_cold_and_standby_capture() {
+        for standby in [false, true] {
+            for trigger in [
+                DictationStopTrigger::HoldRelease,
+                DictationStopTrigger::Toggle,
+                DictationStopTrigger::Overlay,
+                DictationStopTrigger::AutoStop,
+                DictationStopTrigger::Other,
+            ] {
+                let commands = Arc::new(Mutex::new(None));
+                let factory = TailPolicyFactory(commands.clone());
+                let events = AudioWorkerEventSender::new(|_| Ok(()));
+                let public = PublicState::default();
+                let sink = RecordingSink::default();
+                let owner = AudioOwner::Dictation(702);
+                let mut attempt = None;
+                let (response, _started) = mpsc::channel();
+                handle_start(
+                    StartRequest {
+                        caller_alive: Arc::new(AtomicBool::new(true)),
+                        owner,
+                        app_handle: None,
+                        device_id: None,
+                        origin: "toggle".to_string(),
+                        wait_until_ready: false,
+                        response,
+                        probe_permit: None,
+                    },
+                    &mut attempt,
+                    &events,
+                    &factory,
+                    &sink,
+                    &public,
+                );
+                handle_worker_event(
+                    AudioWorkerEvent::FirstBuffer {
+                        owner,
+                        sample_rate: WHISPER_SAMPLE_RATE,
+                    },
+                    &mut attempt,
+                    &sink,
+                    &public,
+                );
+                attempt.as_mut().unwrap().standby_policy.seconds = if standby { 300 } else { 0 };
+                let (response, result) = mpsc::channel();
+                let before = Instant::now();
+                handle_message(
+                    SupervisorMessage::Stop {
+                        owner: Some(owner),
+                        trigger,
+                        response,
+                    },
+                    &mut attempt,
+                    &events,
+                    &factory,
+                    &sink,
+                    &public,
+                );
+                let deadline = attempt.as_ref().unwrap().tail_deadline.unwrap();
+                assert!(deadline >= before + trigger.release_tail(owner, standby));
+                assert!(deadline <= Instant::now() + trigger.release_tail(owner, standby));
+                let commands = commands.lock().unwrap().take().unwrap();
+                handle_deadlines_at(
+                    &mut attempt,
+                    &sink,
+                    &public,
+                    SupervisorConfig::default(),
+                    deadline - Duration::from_nanos(1),
+                );
+                assert!(matches!(
+                    commands.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
+                assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                handle_deadlines_at(
+                    &mut attempt,
+                    &sink,
+                    &public,
+                    SupervisorConfig::default(),
+                    deadline,
+                );
+                assert!(attempt.as_ref().unwrap().tail_deadline.is_none());
+                if standby {
+                    assert_eq!(public.phase(), PublicPhase::Standby);
+                    assert_eq!(result.recv().unwrap().unwrap(), vec![0.25; 160]);
+                    assert!(matches!(
+                        commands.try_recv(),
+                        Err(mpsc::TryRecvError::Empty)
+                    ));
+                } else {
+                    assert!(matches!(commands.try_recv(), Ok(AudioCommand::Stop)));
+                    assert_eq!(public.phase(), PublicPhase::Stopping);
+                    assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                }
+                handle_deadlines_at(
+                    &mut attempt,
+                    &sink,
+                    &public,
+                    SupervisorConfig::default(),
+                    deadline,
+                );
+                assert!(matches!(
+                    commands.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
+                finish_attempt(&mut attempt, &sink, &public);
+            }
+        }
+    }
+
+    #[test]
+    fn standby_margin_keeps_pcm_delivered_before_the_deadline() {
+        assert_standby_margin(false);
+    }
+
+    #[test]
+    fn standby_margin_preserves_baseline_with_pcm_still_delayed_at_the_deadline() {
+        assert_standby_margin(true);
+    }
+
+    fn assert_standby_margin(delayed_past_deadline: bool) {
+        let commands = Arc::new(Mutex::new(None));
+        let factory = TailPolicyFactory(commands);
+        let events = AudioWorkerEventSender::new(|_| Ok(()));
+        let public = PublicState::default();
+        let sink = RecordingSink::default();
+        let owner = AudioOwner::Dictation(703);
+        let mut attempt = None;
+        let (response, _started) = mpsc::channel();
+        handle_start(
+            StartRequest {
+                caller_alive: Arc::new(AtomicBool::new(true)),
+                owner,
+                app_handle: None,
+                device_id: None,
+                origin: "toggle".to_string(),
+                wait_until_ready: false,
+                response,
+                probe_permit: None,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        handle_worker_event(
+            AudioWorkerEvent::FirstBuffer {
+                owner,
+                sample_rate: WHISPER_SAMPLE_RATE,
+            },
+            &mut attempt,
+            &sink,
+            &public,
+        );
+        attempt.as_mut().unwrap().standby_policy = StandbyPolicy {
+            seconds: 300,
+            pre_roll_ms: 450,
+        };
+        let shared = attempt.as_ref().unwrap().shared.clone();
+        let gate = Gate::closed();
+        let final_pcm = gate.clone();
+        let mut producer = Some(std::thread::spawn(move || {
+            // This callback has already captured the ending, but delivery from
+            // the helper/reader is stalled until after the accepted stop.
+            let captured = [0.75; 80];
+            final_pcm.wait();
+            shared
+                .lock()
+                .unwrap()
+                .append_pcm(&captured, WHISPER_SAMPLE_RATE);
+        }));
+        let (response, result) = mpsc::channel();
+        handle_message(
+            SupervisorMessage::Stop {
+                owner: Some(owner),
+                trigger: DictationStopTrigger::Toggle,
+                response,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        let now = attempt.as_ref().unwrap().stopping_started_at.unwrap();
+        handle_deadlines_at(
+            &mut attempt,
+            &sink,
+            &public,
+            SupervisorConfig::default(),
+            now,
+        );
+        assert_eq!(public.phase(), PublicPhase::Stopping);
+        assert!(
+            matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "standby must not finalize before the retained release tail"
+        );
+        if !delayed_past_deadline {
+            gate.open();
+            producer.take().unwrap().join().unwrap();
+        }
+        let deadline = attempt.as_ref().unwrap().tail_deadline.unwrap();
+        handle_deadlines_at(
+            &mut attempt,
+            &sink,
+            &public,
+            SupervisorConfig::default(),
+            deadline,
+        );
+        let samples = result.recv().unwrap().unwrap();
+        assert_eq!(&samples[..160], &[0.25; 160]);
+        if delayed_past_deadline {
+            // The producer is still blocked at the deadline. This is the
+            // existing standby limitation, not a proven delivery fence:
+            // late PCM becomes pre-roll instead of the finalized recording.
+            assert_eq!(samples.len(), 160);
+            assert_eq!(public.phase(), PublicPhase::Standby);
+            gate.open();
+            producer.take().unwrap().join().unwrap();
+            assert_eq!(
+                attempt.as_ref().unwrap().shared.lock().unwrap().as_slice(),
+                &[0.75; 80]
+            );
+        } else {
+            assert_eq!(&samples[160..], &[0.75; 80]);
+        }
+        finish_attempt(&mut attempt, &sink, &public);
+    }
+
+    struct WireDrainFactory {
+        pcm: Gate,
+        receipt: Gate,
+        exit: Gate,
+        stop_seen: Sender<()>,
+        terminal: murmur_capture_helper_protocol::ProductionHelperMessage,
+    }
+
+    impl WorkerFactory for WireDrainFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            events: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            use murmur_capture_helper_protocol::{
+                read_production_frame, write_production_control, write_production_pcm,
+                CaptureChannel, ProductionPcmMetadata,
+            };
+            let pcm = self.pcm.clone();
+            let receipt = self.receipt.clone();
+            let exit = self.exit.clone();
+            let stop_seen = self.stop_seen.clone();
+            let terminal = self.terminal.clone();
+            Ok(std::thread::spawn(move || {
+                spec.shared
+                    .lock()
+                    .unwrap()
+                    .append_pcm(&[0.25; 160], WHISPER_SAMPLE_RATE);
+                events
+                    .send(AudioWorkerEvent::FirstBuffer {
+                        owner: spec.owner,
+                        sample_rate: WHISPER_SAMPLE_RATE,
+                    })
+                    .unwrap();
+                spec.command_receiver.recv().unwrap();
+                let (frames, reader) = mpsc::channel();
+                let owner = spec.owner;
+                let producer = std::thread::spawn(move || {
+                    // Encode and authenticate real protocol frames, with final
+                    // PCM held in flight independently of Stopped and exit.
+                    let nonce = [3; 16];
+                    let id = owner.telemetry_id();
+                    let mut wire = Vec::new();
+                    write_production_pcm(
+                        &mut wire,
+                        id,
+                        nonce,
+                        ProductionPcmMetadata {
+                            channel: CaptureChannel::Microphone,
+                            sequence: 1,
+                            sample_rate: WHISPER_SAMPLE_RATE,
+                            captured_at_ns: 0,
+                            sample_offset: 160,
+                        },
+                        &[0.75; 80],
+                    )
+                    .unwrap();
+                    pcm.wait();
+                    frames
+                        .send(audio::HelperRead::Frame(
+                            read_production_frame(&mut wire.as_slice(), id, nonce).unwrap(),
+                        ))
+                        .unwrap();
+                    receipt.wait();
+                    wire.clear();
+                    write_production_control(&mut wire, id, nonce, &terminal).unwrap();
+                    frames
+                        .send(audio::HelperRead::Frame(
+                            read_production_frame(&mut wire.as_slice(), id, nonce).unwrap(),
+                        ))
+                        .unwrap();
+                });
+                stop_seen.send(()).unwrap();
+                audio::drain_stopping_recording(
+                    &reader,
+                    Instant::now() + Duration::from_secs(5),
+                    &mut 1,
+                    Some(WHISPER_SAMPLE_RATE),
+                    owner,
+                    &events,
+                    &mut 160,
+                    &mut |samples| {
+                        spec.shared
+                            .lock()
+                            .unwrap()
+                            .append_pcm(samples, WHISPER_SAMPLE_RATE)
+                    },
+                );
+                producer.join().unwrap();
+                exit.wait();
+                events
+                    .send(AudioWorkerEvent::ThreadExited { owner })
+                    .unwrap();
+            }))
+        }
+    }
+
+    #[test]
+    fn delayed_protocol_pcm_reaches_supervisor_only_after_valid_stopped() {
+        use murmur_capture_helper_protocol::{
+            CaptureBackend, FailureCode, ProductionHelperMessage,
+        };
+        for terminal in [
+            ProductionHelperMessage::Stopped {
+                retained_samples: 240,
+            },
+            ProductionHelperMessage::Stopped {
+                retained_samples: 241,
+            },
+            ProductionHelperMessage::Failure {
+                code: FailureCode::StreamError,
+                backend: CaptureBackend::Auhal,
+                retained_samples: 240,
+            },
+        ] {
+            let complete = matches!(
+                terminal,
+                ProductionHelperMessage::Stopped {
+                    retained_samples: 240
+                }
+            );
+            let pcm = Gate::closed();
+            let receipt = Gate::closed();
+            let exit = Gate::closed();
+            let (stop_seen, seen) = mpsc::channel();
+            let supervisor = spawn_supervisor(
+                Arc::new(WireDrainFactory {
+                    pcm: pcm.clone(),
+                    receipt: receipt.clone(),
+                    exit: exit.clone(),
+                    stop_seen,
+                    terminal,
+                }),
+                Arc::new(RecordingSink::default()),
+                SupervisorConfig::default(),
+            );
+            let owner = AudioOwner::Dictation(704);
+            start(&supervisor, owner).recv().unwrap().unwrap();
+            wait_until("wire ready", || {
+                supervisor.public.phase() == PublicPhase::Recording
+            });
+            let (response, result) = mpsc::channel();
+            supervisor
+                .sender
+                .send(SupervisorMessage::Stop {
+                    owner: Some(owner),
+                    trigger: DictationStopTrigger::Toggle,
+                    response,
+                })
+                .unwrap();
+            seen.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            pcm.open();
+            // FIFO barrier through supervisor: PCM without Stopped must not seal.
+            assert_eq!(
+                start(&supervisor, AudioOwner::Query(705)).recv().unwrap(),
+                Err(AudioStartError::AudioRecovering)
+            );
+            assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            receipt.open();
+            if complete {
+                let samples = result
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(&samples[..160], &[0.25; 160]);
+                assert_eq!(&samples[160..], &[0.75; 80]);
+            } else {
+                // A count mismatch or native-stop Failure never claims a seal.
+                assert!(result.recv_timeout(Duration::from_millis(30)).is_err());
+            }
+            assert!(supervisor.public.owns(owner));
+            exit.open();
+            if !complete {
+                assert_eq!(
+                    result
+                        .recv_timeout(Duration::from_secs(1))
+                        .unwrap()
+                        .unwrap()
+                        .len(),
+                    240
+                );
+            }
+            wait_until("wire joined", || {
+                supervisor.public.phase() == PublicPhase::Idle
+            });
+            shutdown(&supervisor);
+        }
+    }
+
+    struct SealedFactory {
+        teardown: Gate,
+        seal: bool,
+    }
+
+    impl WorkerFactory for SealedFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            events: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            let teardown = self.teardown.clone();
+            let seal = self.seal;
+            Ok(std::thread::spawn(move || {
+                spec.shared
+                    .lock()
+                    .unwrap()
+                    .append_pcm(&[0.25; 160], WHISPER_SAMPLE_RATE);
+                events
+                    .send(AudioWorkerEvent::FirstBuffer {
+                        owner: spec.owner,
+                        sample_rate: WHISPER_SAMPLE_RATE,
+                    })
+                    .unwrap();
+                spec.command_receiver.recv().unwrap();
+                if seal {
+                    events
+                        .send(AudioWorkerEvent::RecordingSealed { owner: spec.owner })
+                        .unwrap();
+                }
+                teardown.wait();
+                events
+                    .send(AudioWorkerEvent::ThreadExited { owner: spec.owner })
+                    .unwrap();
+            }))
+        }
+    }
+
+    #[test]
+    fn sealed_delivery_overlaps_exit_but_retains_exclusive_owner_and_processing() {
+        for seal in [false, true] {
+            let teardown = Gate::closed();
+            let sink = Arc::new(RecordingSink::default());
+            let supervisor = spawn_supervisor(
+                Arc::new(SealedFactory {
+                    teardown: teardown.clone(),
+                    seal,
+                }),
+                sink.clone(),
+                SupervisorConfig::default(),
+            );
+            let owner = AudioOwner::Dictation(700);
+            start(&supervisor, owner).recv().unwrap().unwrap();
+            wait_until("sealed worker ready", || {
+                supervisor.public.phase() == PublicPhase::Recording
+            });
+            let (response, result) = mpsc::channel();
+            supervisor
+                .sender
+                .send(SupervisorMessage::Stop {
+                    owner: Some(owner),
+                    trigger: DictationStopTrigger::Toggle,
+                    response,
+                })
+                .unwrap();
+            wait_until("sealed worker stopping", || {
+                supervisor.public.phase() == PublicPhase::Stopping
+            });
+            // A stale generation cannot release samples or ownership.
+            supervisor
+                .sender
+                .send(SupervisorMessage::Worker(
+                    AudioWorkerEvent::RecordingSealed {
+                        owner: AudioOwner::Dictation(699),
+                    },
+                ))
+                .unwrap();
+            if seal {
+                assert_eq!(
+                    result
+                        .recv_timeout(Duration::from_secs(1))
+                        .unwrap()
+                        .unwrap(),
+                    vec![0.25; 160]
+                );
+            } else {
+                assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            }
+            assert!(supervisor.public.is_active());
+            assert!(supervisor.public.owns(owner));
+            for next in [
+                AudioOwner::Dictation(701),
+                AudioOwner::Transform(701),
+                AudioOwner::Query(701),
+                AudioOwner::Preview(701),
+            ] {
+                assert_eq!(
+                    start(&supervisor, next).recv().unwrap(),
+                    Err(AudioStartError::AudioRecovering)
+                );
+            }
+            if !seal {
+                // The start replies above are also a supervisor FIFO barrier:
+                // the stale seal has now been processed and still delivered nothing.
+                assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+            }
+            if seal {
+                // Even an unconfirmed exit must keep ownership without resetting
+                // the already running delivery pipeline or publishing Idle.
+                supervisor
+                    .sender
+                    .send(SupervisorMessage::Worker(
+                        AudioWorkerEvent::TerminationUnconfirmed {
+                            owner,
+                            failure: AudioFailure::new(
+                                AudioFailureKind::TerminationUnconfirmed,
+                                AudioInitPhase::Runtime,
+                            ),
+                        },
+                    ))
+                    .unwrap();
+                // A round trip proves unconfirmed exit publishes guidance
+                // immediately, independently of the long-stop deadline.
+                assert_eq!(
+                    start(&supervisor, AudioOwner::Query(706)).recv().unwrap(),
+                    Err(AudioStartError::AudioRecovering)
+                );
+                assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
+                assert!(sink
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(_, event)| *event == AudioLifecycleEvent::RecoveryStalled));
+                check_deadlines(
+                    &supervisor,
+                    RECOVERY_GUIDANCE_AFTER + Duration::from_secs(1),
+                );
+                assert!(supervisor.public.owns(owner));
+                assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
+                assert_eq!(
+                    sink.events
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|(_, event)| *event == AudioLifecycleEvent::RecoveryStalled)
+                        .count(),
+                    1
+                );
+                assert!(!sink
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(_, event)| matches!(
+                        event,
+                        AudioLifecycleEvent::Idle | AudioLifecycleEvent::Recovering { .. }
+                    )));
+            }
+            teardown.open();
+            if !seal {
+                assert_eq!(
+                    result
+                        .recv_timeout(Duration::from_secs(1))
+                        .unwrap()
+                        .unwrap(),
+                    vec![0.25; 160]
+                );
+            }
+            wait_until("sealed worker joined", || {
+                supervisor.public.phase() == PublicPhase::Idle
+            });
+            assert!(!supervisor.public.owns(owner));
+            assert_eq!(
+                sink.events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, event)| *event == AudioLifecycleEvent::CleanupFinished)
+                    .count(),
+                usize::from(seal)
+            );
+            assert!(!sink
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, event)| *event == AudioLifecycleEvent::Idle));
+            shutdown(&supervisor);
+        }
+    }
+
+    struct CommandCleanupSink {
+        app_state: Arc<crate::state::AppState>,
+        completed: AtomicUsize,
+    }
+
+    impl LifecycleSink for CommandCleanupSink {
+        fn invalidate_input_health(&self, _: Option<&str>) {}
+        fn notify(
+            &self,
+            _: Option<&tauri::AppHandle>,
+            owner: AudioOwner,
+            event: AudioLifecycleEvent,
+        ) {
+            match event {
+                AudioLifecycleEvent::CleanupFinished => {
+                    // Exercise the same generation/status guard as the real
+                    // recording command, without starting a native app.
+                    crate::commands::recording::complete_dictation_capture_cleanup(
+                        &self.app_state,
+                        owner.telemetry_id(),
+                        |restore_idle| {
+                            assert!(restore_idle);
+                            self.completed.fetch_add(1, Ordering::SeqCst);
+                        },
+                    );
+                }
+                AudioLifecycleEvent::RecoveryStalled => {
+                    panic!("normal exit must not need stall guidance")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn retry_during_sealed_cleanup_then_normal_exit_allows_the_next_start() {
+        use crate::state::{AppState, DictationStatus};
+        let app_state = Arc::new(AppState::default());
+        let owner = AudioOwner::Dictation(707);
+        app_state
+            .recording_id
+            .store(owner.telemetry_id(), Ordering::SeqCst);
+        let sink = Arc::new(CommandCleanupSink {
+            app_state: app_state.clone(),
+            completed: AtomicUsize::new(0),
+        });
+        let teardown = Gate::closed();
+        let supervisor = spawn_supervisor(
+            Arc::new(SealedFactory {
+                teardown: teardown.clone(),
+                seal: true,
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        start(&supervisor, owner).recv().unwrap().unwrap();
+        wait_until("normal seal worker ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                trigger: DictationStopTrigger::Toggle,
+                response,
+            })
+            .unwrap();
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap(),
+            vec![0.25; 160]
+        );
+        // ASR has finished, but the capture thread still owns cleanup.
+        assert_eq!(
+            app_state.dictation.lock().unwrap().status,
+            DictationStatus::Idle
+        );
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(708))
+                .recv()
+                .unwrap(),
+            Err(AudioStartError::AudioRecovering)
+        );
+        // The native retry path keeps this generation and marks it Recovering.
+        app_state.dictation.lock().unwrap().status = DictationStatus::Recovering;
+        assert_eq!(sink.completed.load(Ordering::SeqCst), 0);
+        teardown.open();
+        wait_until("normal cleanup did not publish completion", || {
+            sink.completed.load(Ordering::SeqCst) == 1
+        });
+        assert_eq!(
+            app_state.dictation.lock().unwrap().status,
+            DictationStatus::Idle
+        );
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(708))
+                .recv()
+                .unwrap(),
+            Ok(())
+        );
+        wait_until("next recording did not become ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        cancel_any_phase(&supervisor, AudioOwner::Dictation(708))
+            .recv()
+            .unwrap()
+            .unwrap();
+        wait_until("next worker did not exit", || {
+            supervisor.public.phase() == PublicPhase::Idle
+        });
+        shutdown(&supervisor);
     }
 
     struct RuntimeFailureFactory;
@@ -3425,6 +4363,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
             })
@@ -3514,6 +4453,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: stop_sender,
             })
@@ -3635,6 +4575,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
             })
@@ -3693,6 +4634,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: stop_sender,
             })
@@ -3709,6 +4651,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: second_stop_sender,
             })
@@ -3758,6 +4701,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: stop_sender,
             })
@@ -4254,6 +5198,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
             })
@@ -4300,6 +5245,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
             })
@@ -4337,6 +5283,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Other,
                 owner: Some(retry_owner),
                 response: retry_stop_sender,
             })
