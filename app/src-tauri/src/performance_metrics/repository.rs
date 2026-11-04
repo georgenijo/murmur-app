@@ -8,7 +8,7 @@ use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
 const LATEST_DB_SCHEMA_VERSION: u32 = 5;
-const MAX_COMPLETED_RUNS: usize = 200;
+pub(super) const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(25);
@@ -304,6 +304,73 @@ impl PerformanceRepository {
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
         Ok(changed == 1)
+    }
+
+    /// Amend only teardown evidence on the exact delivered run. A transaction
+    /// preserves its terminal outcome, delivery timings and retention order;
+    /// UPDATE-only semantics cannot resurrect a cleared or pruned row.
+    pub(crate) fn update_completed_capture(
+        &self,
+        run_id: &str,
+        recording_id: u64,
+        capture: &super::production::ProductionCaptureV1,
+    ) -> StoreResult<bool> {
+        retry_operation(PerformanceStoreOperationV1::Update, || {
+            let mut connection = self.open()?;
+            let transaction = connection.transaction().map_err(db_error)?;
+            let row = transaction
+                .query_row(
+                    "SELECT payload_json FROM completed_runs
+                     WHERE run_id = ? AND record_version = ?
+                     AND correlation_kind = 'dictation' AND correlation_id = ?",
+                    params![
+                        run_id,
+                        PERFORMANCE_RUN_SCHEMA_VERSION,
+                        to_i64(recording_id)?
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(db_error)?;
+            let Some(payload) = row else {
+                return Ok(false);
+            };
+            let mut run: PerformanceRunV1 =
+                serde_json::from_str(&payload).map_err(|_| invalid_record())?;
+            if run.run_id != run_id
+                || run.correlation != (RunCorrelationV1::Dictation { recording_id })
+            {
+                return Err(invalid_record());
+            }
+            let Some(production) = run.production.as_mut() else {
+                return Ok(false);
+            };
+            if let Some(elapsed) = capture.stop_to_worker_exit_ms {
+                production.capture.stop_to_worker_exit_ms = Some(elapsed);
+            }
+            if let Some(violation) = capture.worker_invariant_violation {
+                production.capture.worker_invariant_violation = Some(
+                    production
+                        .capture
+                        .worker_invariant_violation
+                        .unwrap_or(false)
+                        || violation,
+                );
+            }
+            if capture.failure_kind == Some(crate::audio::AudioFailureKind::TerminationUnconfirmed)
+            {
+                production.capture.failure_kind = capture.failure_kind;
+            }
+            let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
+            let changed = transaction
+                .execute(
+                    "UPDATE completed_runs SET payload_json = ? WHERE run_id = ?",
+                    params![payload, run_id],
+                )
+                .map_err(db_error)?;
+            transaction.commit().map_err(db_error)?;
+            Ok(changed == 1)
+        })
     }
 
     pub(crate) fn complete(
