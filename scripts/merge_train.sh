@@ -15,15 +15,27 @@ set -euo pipefail
 [ -z "$(git status --porcelain)" ] || { echo "working tree is not clean" >&2; exit 1; }
 
 branch="train/$(IFS=-; echo "$*")"
+if git show-ref --quiet "refs/heads/$branch"; then
+  echo "$branch already exists; delete it (git branch -D $branch) to rebuild the train" >&2
+  exit 1
+fi
+start=$(git rev-parse --abbrev-ref HEAD)
 git fetch --quiet origin main
 git switch --quiet --create "$branch" origin/main
+# Until the push, the train is local and disposable: on any failure, return to
+# the starting branch and delete it so the same command can simply be rerun.
+discard_train() {
+  git merge --abort 2>/dev/null || true
+  git switch --quiet "$start" && git branch --quiet -D "$branch"
+}
+trap discard_train ERR
 
 body="Merge train: CI runs once on the combination, then this merges with a merge commit."
 for pr in "$@"; do
   read -r head title < <(gh pr view "$pr" --json headRefOid,title --jq '"\(.headRefOid) \(.title)"')
   git fetch --quiet origin "$head"
   if ! git merge --quiet --no-ff --no-edit -m "Merge #$pr: $title" "$head"; then
-    git merge --abort
+    discard_train
     echo "PR #$pr conflicts with the train; update it with main and rerun" >&2
     exit 1
   fi
@@ -31,4 +43,5 @@ for pr in "$@"; do
 done
 
 git push --quiet --set-upstream origin "$branch"
+trap - ERR
 gh pr create --base main --head "$branch" --title "Merge train: $(printf '#%s ' "$@" | sed 's/ $//')" --body "$body"

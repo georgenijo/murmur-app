@@ -188,7 +188,8 @@ while another adds a required field to it.
 
 - **Push to main skips an already-verified tree.** `scripts/ci_verified_tree.sh`
   finds the PR whose merge commit was pushed. If the commit's tree matches that
-  PR head and the head's latest `ci-pass` succeeded, CI skips the tests and
+  PR head, the head already contained the pre-merge `main`, and the head's
+  latest `ci-pass` succeeded, CI skips the tests and
   `ci-pass` passes with that reason in its log. Admin merges over a stale,
   pending, or red PR, conflict resolutions, and direct pushes run the full
   suite. When the push changes Cargo manifests or `ci.yml`, the Rust jobs still

@@ -4,7 +4,7 @@
 
 **Decision:** `main` keeps `strict` up-to-date protection with `ci-pass` as the
 only required check. A push to `main` skips its tests when the commit's tree
-equals a PR head whose latest `ci-pass` succeeded. Several green PRs land
+equals an up-to-date PR head whose latest `ci-pass` succeeded. Several green PRs land
 together through one train PR (`scripts/merge_train.sh`) that merges with a
 merge commit.
 
@@ -12,9 +12,10 @@ merge commit.
 2026-11-04, #918 and #920 compiled separately but not combined. Dropping
 `strict` would let `main` break until a push run noticed. GitHub's merge queue
 batches PRs safely, but it is unavailable for personal-account repositories. A
-train reruns CI once for N PRs instead of about N² times. A squash or an
-up-to-date merge leaves the tree byte-identical to the tested head, so the push
-run has nothing new to test. Any mismatch falls back to the full suite.
+train reruns CI once for N PRs instead of about N² times. PR CI tests the head merged with the base of that moment, so a
+matching tree counts only when the head already contained the pre-merge `main`;
+then every tested merge equals the head, and the push run has nothing new to
+test. Any mismatch falls back to the full suite.
 
 **References:** `scripts/ci_verified_tree.sh`, `scripts/merge_train.sh`,
 [CI and merging](../DEVELOPMENT.md#ci-and-merging)
