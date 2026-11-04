@@ -832,6 +832,33 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
+  it('keeps the scroll position when Delivery Advanced opens and closes', async () => {
+    const delivery = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
+      .find(button => button.textContent === 'Delivery')!;
+    await act(async () => delivery.click());
+    const advanced = container.querySelector<HTMLButtonElement>('.settings-advanced-toggle')!;
+    if (advanced.getAttribute('aria-expanded') === 'true') {
+      await act(async () => advanced.click());
+    }
+    scrollTo.mockClear();
+    scrollIntoView.mockClear();
+
+    await act(async () => advanced.click());
+    expect(advanced.getAttribute('aria-expanded')).toBe('true');
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    await act(async () => advanced.click());
+    expect(advanced.getAttribute('aria-expanded')).toBe('false');
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    const general = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
+      .find(button => button.textContent === 'General')!;
+    await act(async () => general.click());
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
+  });
+
   it('discloses Calendar reads and browser limits before enabling meeting suggestions', async () => {
     const meetings = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Meetings',

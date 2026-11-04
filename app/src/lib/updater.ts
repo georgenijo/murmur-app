@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 const LAST_CHECK_KEY = 'updater-last-check';
 const PENDING_UPDATE_KEY = 'pending-update-release-notes';
-const MAX_RELEASE_NOTES_LENGTH = 50_000;
+const MAX_RELEASE_NOTES_LENGTH = 1_000_000;
 export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 export const CHECK_TIMER_TICK_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -132,6 +132,37 @@ export function getPendingUpdateForVersion(currentVersion: string): CompletedUpd
 function normalizedVersionIdentity(version: string): string | null {
   if (!parseSemver(version)) return null;
   return version.trim().replace(/^v/, '');
+}
+
+/** Select the complete upgrade range from the native manifest, newest first.
+ * Older/malformed manifests retain the latest release's ordinary notes.
+ */
+export function getUpdateReleaseNotes(
+  manifest: unknown, currentVersion: string, targetVersion: string, latestNotes: string,
+): string {
+  if (!/^v?\d+\.\d+\.\d+$/.test(currentVersion.trim()) ||
+      !/^v?\d+\.\d+\.\d+$/.test(targetVersion.trim()) ||
+      compareSemver(currentVersion, targetVersion) !== -1 ||
+      typeof manifest !== 'object' || manifest === null ||
+      !('release_history' in manifest) || !Array.isArray(manifest.release_history)) {
+    return latestNotes;
+  }
+  const history = new Map<string, string>();
+  for (const entry of manifest.release_history) {
+    if (typeof entry !== 'object' || entry === null ||
+        typeof entry.version !== 'string' || typeof entry.notes !== 'string' ||
+        !/^v?\d+\.\d+\.\d+$/.test(entry.version) || !entry.notes.trim()) continue;
+    if (compareSemver(entry.version, currentVersion) === 1 &&
+        (compareSemver(entry.version, targetVersion) ?? 1) <= 0) {
+      history.set(entry.version.replace(/^v/, ''), entry.notes.trim());
+    }
+  }
+  // The native updater's latest notes remain authoritative for the target.
+  const target = targetVersion.trim().replace(/^v/, '');
+  history.set(target, latestNotes.trim() || history.get(target) || 'No release notes were provided for this version.');
+  if (history.size === 1) return latestNotes || history.get(target)!;
+  return [...history].sort(([a], [b]) => compareSemver(b, a) ?? 0)
+    .map(([version, notes]) => `# v${version}\n\n${notes}`).join('\n\n---\n\n');
 }
 
 // --- min_version policy ---

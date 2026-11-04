@@ -10,6 +10,7 @@ import {
   clearPendingUpdate,
   getPendingUpdateForVersion,
   parseMinVersionPolicy,
+  getUpdateReleaseNotes,
   CHECK_INTERVAL_MS,
 } from './updater';
 
@@ -184,5 +185,42 @@ describe('minimum-version policy parsing', () => {
       status: 'unavailable',
       message: expect.stringContaining('not a string'),
     });
+  });
+});
+
+
+describe('cumulative release notes', () => {
+  const manifest = { release_history: [
+    { version: '0.59.3', notes: 'Third fix' },
+    { version: '0.59.1', notes: 'Already installed' },
+    { version: '0.59.5', notes: 'Stale latest notes' },
+    { version: '0.59.2', notes: 'Second fix' },
+    { version: '0.59.6', notes: 'Future fix' },
+    { version: '0.59.4', notes: 'Fourth fix' },
+    { version: '0.59.4-beta.1', notes: 'Preview' },
+    { version: 'bad', notes: 'Invalid' },
+    null,
+  ] };
+
+  it('includes every missed release newest first and excludes installed/future/preview versions', () => {
+    const notes = getUpdateReleaseNotes(manifest, '0.59.1', '0.59.5', 'Latest fix');
+    expect(notes).toBe('# v0.59.5\n\nLatest fix\n\n---\n\n# v0.59.4\n\nFourth fix\n\n---\n\n# v0.59.3\n\nThird fix\n\n---\n\n# v0.59.2\n\nSecond fix');
+  });
+
+  it('uses numeric version ordering and accepts v prefixes', () => {
+    const notes = getUpdateReleaseNotes({ release_history: [
+      { version: 'v0.59.9', notes: 'Nine' }, { version: '0.59.10', notes: 'Ten' },
+    ] }, 'v0.59.8', '0.59.11', 'Eleven');
+    expect(notes.indexOf('v0.59.10')).toBeLessThan(notes.indexOf('v0.59.9'));
+    expect(notes.match(/# v/g)).toHaveLength(3);
+  });
+
+  it('keeps single-release notes and falls back for missing or malformed history', () => {
+    for (const raw of [null, {}, { release_history: 'bad' }, { release_history: [null, {}, { version: '0.59.3', notes: 42 }] }]) {
+      expect(getUpdateReleaseNotes(raw, '0.59.4', '0.59.5', 'Latest')).toBe('Latest');
+    }
+    expect(getUpdateReleaseNotes(manifest, '0.59.4', '0.59.5', 'Latest')).toBe('Latest');
+    expect(getUpdateReleaseNotes(manifest, 'bad', '0.59.5', 'Latest')).toBe('Latest');
+    expect(getUpdateReleaseNotes(manifest, '0.59.1-beta', '0.59.5', 'Latest')).toBe('Latest');
   });
 });

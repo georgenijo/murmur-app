@@ -411,6 +411,34 @@ def _normalize_release_notes(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+def release_history(releases: Any, version: str, notes: str) -> list[dict[str, str]]:
+    """Snapshot all published stable releases; the candidate's exact notes win."""
+    if not isinstance(releases, list):
+        raise ArtifactError("release history must be a JSON array")
+    current = tuple(int(part) for part in version.split("."))
+    history = {version: notes}
+    for release in releases:
+        if not isinstance(release, dict):
+            raise ArtifactError("release history entries must be objects")
+        tag = release.get("tag_name", "")
+        if release.get("draft") or release.get("prerelease"):
+            continue
+        if not isinstance(tag, str) or not re.fullmatch(r"v?\d+\.\d+\.\d+", tag):
+            continue
+        stable = tag.removeprefix("v")
+        if tuple(int(part) for part in stable.split(".")) >= current:
+            continue
+        body = release.get("body")
+        history[stable] = (
+            _normalize_release_notes(body) if isinstance(body, str) and body.strip()
+            else "No release notes were provided for this version."
+        )
+    return [
+        {"version": item, "notes": history[item]}
+        for item in sorted(history, key=lambda item: tuple(map(int, item.split("."))), reverse=True)
+    ]
+
+
 def write_updater_manifests(
     validated_path: Path,
     tag: str,
@@ -420,6 +448,7 @@ def write_updater_manifests(
     release_notes_path: Path,
     output_dir: Path,
     min_version: str | None = None,
+    releases_path: Path | None = None,
 ) -> tuple[Path, Path]:
     if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", tag):
         raise ArtifactError(f"invalid release tag: {tag}")
@@ -470,6 +499,14 @@ def write_updater_manifests(
         },
         "notes": release_notes,
     }
+    if releases_path is not None:
+        # Production releases are stable. Keep the existing notes field intact
+        # for older clients and the release-body equality gate.
+        if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            raise ArtifactError("release history requires a stable release version")
+        modern["release_history"] = release_history(
+            json.loads(releases_path.read_text(encoding="utf-8")), version, release_notes
+        )
     if min_version is not None:
         modern["min_version"] = min_version
     legacy = {
@@ -605,6 +642,7 @@ def _parser() -> argparse.ArgumentParser:
     manifests.add_argument("--bridge-signature", required=True)
     manifests.add_argument("--release-notes", type=Path, required=True)
     manifests.add_argument("--min-version")
+    manifests.add_argument("--releases", type=Path)
     manifests.add_argument("--output-dir", type=Path, required=True)
 
     verify_notes = subparsers.add_parser("verify-notes")
@@ -738,6 +776,7 @@ def main() -> None:
                 args.release_notes,
                 args.output_dir,
                 args.min_version,
+                args.releases,
             )
             print(f"wrote updater manifests: {modern}, {legacy}")
         elif args.command == "highest-release":

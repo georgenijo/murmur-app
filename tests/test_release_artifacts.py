@@ -33,6 +33,7 @@ from scripts.release_artifacts import (
     validate_release,
     verify_release_notes_match,
     write_updater_manifests,
+    release_history,
 )
 
 
@@ -103,6 +104,42 @@ class ReleaseArtifactTests(unittest.TestCase):
             modern["notes"],
             "## New Features\n\n- Added post-update release notes.",
         )
+
+    def test_manifest_embeds_published_history_without_changing_latest_notes(self) -> None:
+        validated = self.root / "validated.json"
+        validate_release(self.artifacts, SHA, RUN_ID, validated)
+        notes = self.root / "notes.md"
+        notes.write_text("Latest notes")
+        releases = self.root / "releases.json"
+        releases.write_text(json.dumps([
+            {"tag_name": "v1.2.1", "body": "First\r\nfix"},
+            {"tag_name": "v1.2.2", "body": "Second fix"},
+            {"tag_name": "v1.2.3", "body": "Stale candidate", "draft": True},
+            {"tag_name": "v1.2.4", "body": "Future"},
+            {"tag_name": "v1.2.0", "body": "Draft", "draft": True},
+            {"tag_name": "v1.1.9", "body": "Preview", "prerelease": True},
+            {"tag_name": "v1.1.8-beta.1", "body": "Preview"},
+            {"tag_name": "v1.1.7", "body": None},
+        ]))
+        modern, legacy = write_updater_manifests(
+            validated, "v1.2.3", "owner/repo", "https://example.invalid/bridge",
+            "signature", notes, self.root / "manifests", releases_path=releases,
+        )
+        payload = json.loads(modern.read_text())
+        self.assertEqual(payload["notes"], "Latest notes")
+        self.assertEqual(payload["release_history"], [
+            {"version": "1.2.3", "notes": "Latest notes"},
+            {"version": "1.2.2", "notes": "Second fix"},
+            {"version": "1.2.1", "notes": "First\nfix"},
+            {"version": "1.1.7", "notes": "No release notes were provided for this version."},
+        ])
+        self.assertNotIn("release_history", json.loads(legacy.read_text()))
+        verify_release_notes_match(modern, notes)
+
+    def test_release_history_rejects_invalid_top_level_payload(self) -> None:
+        for payload in ({}, None, [None]):
+            with self.subTest(payload=payload), self.assertRaises(ArtifactError):
+                release_history(payload, "1.2.3", "Latest")
 
     def test_manifest_generation_requires_nonempty_release_notes(self) -> None:
         validated_path = self.root / "validated.json"
