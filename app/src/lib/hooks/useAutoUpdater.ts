@@ -75,6 +75,8 @@ const UPDATE_CHECK_ATTEMPTS = 2;
 
 interface UseAutoUpdaterOptions {
   automaticChecksEnabled?: boolean;
+  /** Defer background checks until onboarding and model setup are complete. */
+  setupComplete?: boolean;
 }
 
 export interface UseAutoUpdaterReturn {
@@ -92,7 +94,8 @@ export interface UseAutoUpdaterReturn {
 export function useAutoUpdater(
   options: UseAutoUpdaterOptions = {},
 ): UseAutoUpdaterReturn {
-  const automaticChecksEnabled = options.automaticChecksEnabled ?? !import.meta.env.DEV;
+  const automaticChecksEnabled = (options.automaticChecksEnabled ?? !import.meta.env.DEV)
+    && (options.setupComplete ?? true);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' });
   const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
@@ -632,12 +635,9 @@ export function useAutoUpdater(
   // An absent marker falls straight through to the existing updater behavior.
   useEffect(() => {
     if (!automaticChecksEnabled) {
-      flog.info('updater', 'dev build — skipping automatic update check');
+      flog.info('updater', 'automatic update checks deferred or disabled');
       return;
     }
-    if (automaticStartupRef.current) return;
-    automaticStartupRef.current = true;
-
     let disposed = false;
     const start = async () => {
       try {
@@ -652,7 +652,10 @@ export function useAutoUpdater(
         if (!disposed) await performCheck({ isBackground: true });
       }
     };
-    start();
+    if (!automaticStartupRef.current) {
+      automaticStartupRef.current = true;
+      void start();
+    }
 
     const checkIfDue = () => {
       if (isDueForCheck()) performCheck({ isBackground: true });

@@ -46,6 +46,7 @@ const MAX_MEETING_PAGE_SIZE = 100; // Rust's per-request clamp; loaded windows c
 
 export function useMeetings(settings: Settings) {
   const [status, setStatus] = useState<MeetingRuntimeStatus>(IDLE_MEETING_STATUS);
+  const permissionRevision = useRef(0);
   const [permission, setPermission] = useState<SystemAudioPermissionState>('unknown');
   const [access, setAccess] = useState<SystemAudioAccess | null>(null);
   const [page, setPage] = useState<MeetingPage>(EMPTY_PAGE);
@@ -224,6 +225,7 @@ export function useMeetings(settings: Settings) {
 
   useEffect(() => {
     const initialStatus = runtimeStatusRef.current;
+    const initialPermissionRevision = permissionRevision.current;
     void Promise.all([
       getMeetingStatus().then((next) => {
         if (runtimeStatusRef.current !== initialStatus) return;
@@ -231,7 +233,9 @@ export function useMeetings(settings: Settings) {
         setStatus(next);
       }),
       getMeetingSummaryStatus().then(setSummaryStatus),
-      getSystemAudioPermissionStatus().then(setPermission),
+      getSystemAudioPermissionStatus().then((next) => {
+        if (permissionRevision.current === initialPermissionRevision) setPermission(next);
+      }),
       refresh(),
     ]).catch((cause) => {
       flog.warn('main', 'Meeting initialization failed', { error: String(cause) });
@@ -241,11 +245,19 @@ export function useMeetings(settings: Settings) {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     Promise.all([
+      listen<SystemAudioAccess>('system-audio-permission-changed', (event) => {
+        ++permissionRevision.current;
+        setAccess(event.payload);
+        setPermission(event.payload.permission);
+      }),
       listen<MeetingRuntimeStatus>('meeting-status-changed', (event) => {
         const previous = runtimeStatusRef.current;
         if (event.payload.generation < previous.generation) return;
         runtimeStatusRef.current = event.payload;
         setStatus(event.payload);
+        if (event.payload.systemAudioActive
+          || event.payload.errorCode === 'system_audio_permission_denied'
+          || event.payload.errorCode === 'unsupported_os') ++permissionRevision.current;
         if (event.payload.systemAudioActive) setPermission('granted');
         if (event.payload.errorCode === 'system_audio_permission_denied') setPermission('denied');
         if (event.payload.errorCode === 'unsupported_os') setPermission('unsupported');
@@ -370,6 +382,7 @@ export function useMeetings(settings: Settings) {
   }, []);
 
   const requestPermission = useCallback(async () => {
+    ++permissionRevision.current;
     setError(null);
     try {
       const next = await requestSystemAudioPermission();
