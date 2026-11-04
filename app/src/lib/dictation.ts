@@ -203,8 +203,13 @@ export async function previewVocabularyAliases(
 }
 
 /** Download a local transcription model by its catalog name. */
-export async function downloadModel(modelName: string): Promise<void> {
-  await invoke('download_model', { modelName });
+export async function downloadModel(modelName: string, requestId?: string): Promise<void> {
+  await invoke('download_model', { modelName, ...(requestId ? { requestId } : {}) });
+}
+
+/** Resolves only when this owner's native install has stopped. */
+export async function cancelModelDownload(modelName: string, requestId: string): Promise<void> {
+  await invoke('cancel_model_download', { modelName, requestId });
 }
 
 /**

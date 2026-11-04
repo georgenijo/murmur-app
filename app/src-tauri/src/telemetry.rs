@@ -334,6 +334,7 @@ fn is_safe_model_install_field(key: &str, value: &serde_json::Value) -> bool {
                 "success"
                     | "install_failed"
                     | "installer_timeout"
+                    | "cancelled"
                     | "cache_repair_failed"
                     | "repair_state_unavailable"
                     | "validation_failed"

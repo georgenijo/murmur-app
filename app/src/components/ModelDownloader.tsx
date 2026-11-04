@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { cn } from '../lib/sona-utils';
-import { downloadModel } from '../lib/dictation';
+import { cancelModelDownload, downloadModel } from '../lib/dictation';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
 import {
   correlatedModelDownloadAttempt,
@@ -59,6 +59,14 @@ interface Props {
   }) => ReactNode;
 }
 
+interface DownloadOperation {
+  requestId: string;
+  model: ModelOption;
+  cancelled: boolean;
+  started: boolean;
+  done: Promise<void>;
+}
+
 type DownloadState =
   | { phase: 'idle' }
   | { phase: 'downloading'; progress: ModelDownloadProgress }
@@ -81,70 +89,103 @@ export function ModelDownloadPanel({
     MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
   );
   const [downloadState, setDownloadState] = useState<DownloadState>({ phase: 'idle' });
+  const operationRef = useRef<DownloadOperation | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
   const activeAttemptRef = useRef<number | null>(null);
-  const activeModelRef = useRef<ModelOption | null>(null);
 
   useEffect(() => {
     return () => {
+      const operation = operationRef.current;
+      operationRef.current = null;
+      if (operation) {
+        operation.cancelled = true;
+        if (operation.started) void cancelModelDownload(operation.model, operation.requestId).catch(() => {});
+      }
       downloadUnlistenRef.current?.();
       downloadUnlistenRef.current = null;
       activeAttemptRef.current = null;
-      activeModelRef.current = null;
     };
   }, []);
 
-  const handleDownload = async () => {
+  const handleDownload = () => {
+    if (operationRef.current) return;
     const requestedModel = selected;
-    activeModelRef.current = requestedModel;
+    const operation: DownloadOperation = {
+      requestId: crypto.randomUUID(), model: requestedModel,
+      cancelled: false, started: false, done: Promise.resolve(),
+    };
+    operationRef.current = operation;
     activeAttemptRef.current = null;
+    setCancelError(null);
     onDownloadingChange?.(true);
     setDownloadState({
       phase: 'downloading',
       progress: { modelName: requestedModel, received: 0, total: 0, phase: 'downloading' },
     });
-
-    // Single try/catch covering listen() as well as the download itself, so a
-    // listen failure can't strand the downloading state (or an embedder's
-    // navigation lock) forever.
-    try {
-      const unlisten = await listen<ModelDownloadProgress>(
-        'download-progress',
-        (event) => {
+    operation.done = (async () => {
+      let unlisten: (() => void) | null = null;
+      try {
+        unlisten = await listen<ModelDownloadProgress>('download-progress', (event) => {
+          if (operationRef.current !== operation || operation.cancelled) return;
           const progress = event.payload;
-          if (activeModelRef.current !== requestedModel) return;
-          const attemptId = correlatedModelDownloadAttempt(
-            progress,
-            requestedModel,
-            activeAttemptRef.current,
-          );
+          if (progress.requestId !== operation.requestId) return;
+          const attemptId = correlatedModelDownloadAttempt(progress, requestedModel, activeAttemptRef.current);
           if (attemptId === undefined) return;
           activeAttemptRef.current = attemptId;
-          setDownloadState({
-            phase: 'downloading',
-            progress,
-          });
-        }
-      );
-      downloadUnlistenRef.current = unlisten;
+          setDownloadState({ phase: 'downloading', progress });
+        });
+        const nativeUnlisten = unlisten;
+        let listening = true;
+        unlisten = () => {
+          if (!listening) return;
+          listening = false;
+          nativeUnlisten();
+        };
+        if (operationRef.current !== operation || operation.cancelled) return;
+        downloadUnlistenRef.current = unlisten;
+        operation.started = true;
+        await downloadModel(requestedModel, operation.requestId);
+        if (operationRef.current !== operation || operation.cancelled) return;
+        operationRef.current = null;
+        onDownloadingChange?.(false);
+        onComplete(requestedModel);
+      } catch (err) {
+        if (operationRef.current !== operation || operation.cancelled) return;
+        operationRef.current = null;
+        onDownloadingChange?.(false);
+        setDownloadState({ phase: 'error', message: String(err) });
+      } finally {
+        unlisten?.();
+        if (downloadUnlistenRef.current === unlisten) downloadUnlistenRef.current = null;
+      }
+    })();
+  };
 
-      await downloadModel(requestedModel);
-      unlisten();
-      downloadUnlistenRef.current = null;
+  const handleCancel = async () => {
+    const operation = operationRef.current;
+    if (!operation) return;
+    operation.cancelled = true;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      if (operation.started) await cancelModelDownload(operation.model, operation.requestId);
+      // A pending listen has no native owner. Its continuation checks cancelled.
+      if (operation.started) await operation.done;
+      if (operationRef.current !== operation) return;
+      operationRef.current = null;
       activeAttemptRef.current = null;
-      activeModelRef.current = null;
-      onDownloadingChange?.(false);
-      onComplete(requestedModel);
-    } catch (err) {
       downloadUnlistenRef.current?.();
       downloadUnlistenRef.current = null;
-      activeAttemptRef.current = null;
-      activeModelRef.current = null;
+      setDownloadState({ phase: 'idle' });
+      setCancelling(false);
       onDownloadingChange?.(false);
-      setDownloadState({
-        phase: 'error',
-        message: String(err),
-      });
+    } catch (error) {
+      if (operationRef.current !== operation) return;
+      // Keep navigation locked until native termination is confirmed.
+      setCancelError(String(error));
+      setCancelling(false);
     }
   };
 
@@ -248,7 +289,7 @@ export function ModelDownloadPanel({
         {isDownloading && (
           <div className="mb-4" aria-live="polite" aria-busy="true">
             <div className="flex justify-between text-xs text-on-surface-variant mb-1">
-              <span>{progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
+              <span>{cancelling ? 'Cancelling…' : progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
               {progressPercent !== null ? (
                 <span>{progressPercent}%</span>
               ) : (
@@ -275,6 +316,17 @@ export function ModelDownloadPanel({
                 {(progress.total / 1024 / 1024).toFixed(1)} MB
               </p>
             )}
+          </div>
+        )}
+
+        {isDownloading && (
+          <div className="mb-4">
+            <button type="button" onClick={() => void handleCancel()} disabled={cancelling}
+              className="dialog-pill-btn px-4 py-2 text-[length:var(--ui-font-body)] text-on-surface disabled:opacity-50">
+              {cancelling ? 'Cancelling…' : 'Cancel download'}
+            </button>
+            <p className="mt-2 text-[length:var(--ui-font-caption)] text-on-surface-variant">Cancel to go back or choose another model. Retry resumes supported downloads.</p>
+            {cancelError && <p role="alert" className="mt-2 text-[length:var(--ui-font-body)] text-error">{cancelError}</p>}
           </div>
         )}
 

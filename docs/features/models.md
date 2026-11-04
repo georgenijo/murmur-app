@@ -21,7 +21,7 @@ never fall through to Whisper or another backend.
 | Base | `base.en` | Whisper (Metal GPU) | ~150 MB | Fast | English only |
 | Small | `small.en` | Whisper (Metal GPU) | ~500 MB | Medium | English only |
 | Medium | `medium.en` | Whisper (Metal GPU) | ~1.5 GB | Slow | English only |
-| Large Turbo | `large-v3-turbo` | Whisper (Metal GPU) | ~3 GB | Slow | Multilingual |
+| Large Turbo | `large-v3-turbo` | Whisper (Metal GPU) | ~1.6 GB | Slow | Multilingual |
 
 **Default for new installs:** `parakeet-tdt-0.6b-v3-coreml`. The complete macOS catalog is always exposed. Persisted Whisper and CPU Parakeet selections remain valid and are not migrated. The Rust `DictationState::default()` stays `base.en` until the first frontend `configure_dictation` call selects the persisted model.
 
@@ -56,7 +56,7 @@ an informational message; the row or option remains enabled.
 | `base.en` | ~150 MB | 768 MiB |
 | `small.en` | ~500 MB | 1.5 GiB |
 | `medium.en` | ~1.5 GB | 4 GiB |
-| `large-v3-turbo` | ~3 GB | 7 GiB |
+| `large-v3-turbo` | ~1.6 GB | 7 GiB |
 
 ## Backend
 
@@ -181,12 +181,39 @@ The main app controls are gated on `initialized` (which requires a model to exis
 
 `stream_download()` handles all model downloads:
 
-- Uses `reqwest` with 30s connect timeout and 15-minute overall timeout
+- Uses `reqwest` with a 30s connect timeout and 120s idle/read timeout, reset by progress; progressing downloads have no total deadline
 - Writes chunks to a temp file (`.tmp` suffix)
-- Emits attempt-correlated `download-progress` events with `{ modelName, attemptId, received, total, phase, repeatedRepair }`; consumers ignore other models and stale attempt IDs
+- Emits attempt-correlated `download-progress` events with `{ modelName, attemptId, requestId, received, total, phase, repeatedRepair }`; consumers ignore other models and stale attempt IDs
 - Rejects undersized artifacts and HTML, JSON, Git LFS pointer, or access-error payloads before publication
 - On success: atomic rename from `.tmp` to final path
-- On failure: temp file cleaned up
+- On interruption or Cancel: retain the partial plus source/validator metadata. Retry uses `Range` and `If-Range`; an ignored range, changed artifact, malformed range, or 416 restarts safely. Unvalidated partials restart from zero.
+
+### Cancellation and disk space
+
+The setup panel exposes **Cancel download** during byte transfers, extraction,
+and Core ML preparation. Back and model choices unlock after cancellation
+confirms termination. Unmounting also cancels its exact owner; late event,
+subscription, and completion callbacks cannot advance an abandoned panel.
+A caller-generated request ID owns the entire transaction, including pending
+install/VAD locks. Duplicate installs for a model are refused while owned.
+
+Before starting, onboarding and Settings share native disk preflight. Whisper
+budgets the catalog download; CPU Parakeet budgets its 1.2 GB archive plus a
+2 GB extraction allowance; Core ML budgets 2 GB for download and compilation
+on the **FluidAudio/Models volume**, separately checking Murmur's VAD volume.
+These conservative allowances include a 64 MiB free-space reserve and VAD.
+Retained partial/archive bytes reduce the additional download budget. HTTP
+Content-Length refines the byte check before writing, and unknown-length
+transfers check each write. Extraction rechecks its 2 GB staging allowance and
+rejects expanded archives that exceed it. A refusal reports needed and available
+MB before allocating the artifact or staging directory. Space can still be
+consumed by other processes after preflight; write errors remain actionable.
+
+Core ML retains its separate ten-minute supervision deadline because the
+upstream synchronous initializer exposes phases without byte progress. Cancel
+terminates its exact managed process group and rechecks any quarantined owner
+before reporting completion. Partial Core ML cache repair remains FluidAudio's
+existing retry path; HTTP Range resume applies to Murmur-managed downloads.
 
 ### Whisper Downloads
 

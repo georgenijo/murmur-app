@@ -454,7 +454,7 @@ export const MODEL_OPTIONS: { value: ModelOption; label: string; size: string; b
   { value: 'base.en', label: 'Whisper Base (English)', size: '~150 MB', backend: 'whisper' },
   { value: 'small.en', label: 'Whisper Small (English)', size: '~500 MB', backend: 'whisper' },
   { value: 'medium.en', label: 'Whisper Medium (English)', size: '~1.5 GB', backend: 'whisper' },
-  { value: 'large-v3-turbo', label: 'Whisper Large Turbo', size: '~3 GB', backend: 'whisper' },
+  { value: 'large-v3-turbo', label: 'Whisper Large Turbo', size: '~1.6 GB', backend: 'whisper' },
   // --- Parakeet backend (removable): delete this entry to remove. ---
   { value: 'parakeet-tdt-0.6b-v2-fp16', label: 'Parakeet TDT 0.6B (English, fast)', size: '~1.2 GB', backend: 'parakeet' },
 ];
