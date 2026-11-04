@@ -811,7 +811,7 @@ fn run_supervisor(
                             current.active.store(true, Ordering::SeqCst);
                             public.set_owner(current.owner);
                             public.set_phase(PublicPhase::Recording);
-                            publish_gesture_ready(current, sink.as_ref());
+                            publish_gesture_ready(current, sink.as_ref(), Instant::now());
                             sink.notify(
                                 current.app_handle.as_ref(),
                                 current.owner,
@@ -1258,9 +1258,8 @@ fn handle_start(
     }
 }
 
-fn publish_gesture_ready(current: &Attempt, sink: &dyn LifecycleSink) {
+fn publish_gesture_ready(current: &Attempt, sink: &dyn LifecycleSink, ready: Instant) {
     if let Some(g) = current.gesture {
-        let ready = Instant::now();
         sink.notify(
             current.app_handle.as_ref(),
             current.owner,
@@ -1280,6 +1279,7 @@ fn handle_worker_event(
     sink: &dyn LifecycleSink,
     public: &PublicState,
 ) {
+    let dequeued_at = Instant::now();
     let owner = match &event {
         AudioWorkerEvent::PhaseEntered { owner, .. }
         | AudioWorkerEvent::PhaseExited { owner, .. }
@@ -1433,7 +1433,11 @@ fn handle_worker_event(
                 "audio initialization phase exited"
             );
         }
-        AudioWorkerEvent::FirstBuffer { sample_rate, .. } => match current.phase {
+        AudioWorkerEvent::FirstBuffer {
+            sample_rate,
+            sent_at,
+            ..
+        } => match current.phase {
             AttemptPhase::Starting => {
                 if current.owner.retains_samples()
                     && current
@@ -1452,21 +1456,26 @@ fn handle_worker_event(
                     return;
                 }
                 current.sample_rate = sample_rate;
-                current.ready_at = Some(Instant::now());
+                let ready_at = Instant::now();
+                current.ready_at = Some(ready_at);
                 current.active.store(true, Ordering::SeqCst);
                 public.still_connecting.store(false, Ordering::SeqCst);
                 current.phase = AttemptPhase::Recording;
                 public.set_phase(PublicPhase::Recording);
-                publish_gesture_ready(current, sink);
+                sink.notify(
+                    current.app_handle.as_ref(),
+                    current.owner,
+                    AudioLifecycleEvent::Ready,
+                );
+                publish_gesture_ready(current, sink, ready_at);
                 if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                     sink.notify(
                         current.app_handle.as_ref(),
                         current.owner,
                         AudioLifecycleEvent::StartupDiagnostic(
                             crate::audio::AudioStartupDiagnostic::CycleReady {
-                                cycle_start_to_first_pcm_ms: current
-                                    .accepted_at
-                                    .elapsed()
+                                cycle_start_to_first_pcm_ms: ready_at
+                                    .saturating_duration_since(current.accepted_at)
                                     .as_millis()
                                     as u64,
                             },
@@ -1480,7 +1489,8 @@ fn handle_worker_event(
                         recording_id,
                         owner = owner.telemetry_id(),
                         owner_kind = owner.kind(),
-                        startup_ms = current.accepted_at.elapsed().as_millis() as u64,
+                        first_buffer_queue_ms = dequeued_at.saturating_duration_since(sent_at).as_millis() as u64,
+                        startup_ms = ready_at.saturating_duration_since(current.accepted_at).as_millis() as u64,
                         origin = current.origin.as_str(),
                         "audio readiness accepted"
                     );
@@ -1490,16 +1500,12 @@ fn handle_worker_event(
                         event_code = "audio.capture_ready",
                         owner = owner.telemetry_id(),
                         owner_kind = owner.kind(),
-                        startup_ms = current.accepted_at.elapsed().as_millis() as u64,
+                        first_buffer_queue_ms = dequeued_at.saturating_duration_since(sent_at).as_millis() as u64,
+                        startup_ms = ready_at.saturating_duration_since(current.accepted_at).as_millis() as u64,
                         origin = current.origin.as_str(),
                         "audio readiness accepted"
                     );
                 }
-                sink.notify(
-                    current.app_handle.as_ref(),
-                    current.owner,
-                    AudioLifecycleEvent::Ready,
-                );
                 if let Some(response) = current.start_response.take() {
                     let _ = response.send(Ok(()));
                 }
@@ -2480,8 +2486,13 @@ fn cancel(
 
 /// Called directly by the native default-input/device topology notification.
 /// The epoch closes the notification-to-supervisor race before any warm reuse.
+pub(crate) fn input_topology_generation() -> u64 {
+    INPUT_TOPOLOGY_GENERATION.load(Ordering::Acquire)
+}
+
 pub(crate) fn input_topology_changed() {
     INPUT_TOPOLOGY_GENERATION.fetch_add(1, Ordering::AcqRel);
+    audio::prepare::invalidate(audio::prepare::InvalidateReason::TopologyChanged);
     if let Some(supervisor) = SUPERVISOR.get() {
         let _ = supervisor
             .sender
@@ -2491,6 +2502,9 @@ pub(crate) fn input_topology_changed() {
 
 /// Disabled by default; settings transport clamps the memory/time bounds.
 pub(crate) fn configure_standby(enabled: bool, seconds: u32, pre_roll_ms: u32) {
+    if enabled {
+        audio::prepare::invalidate(audio::prepare::InvalidateReason::CaptureClaimed);
+    }
     let policy = StandbyPolicy {
         seconds: if enabled { seconds.clamp(30, 900) } else { 0 },
         pre_roll_ms: pre_roll_ms.clamp(100, 450),
@@ -2744,6 +2758,7 @@ mod tests {
                     let _ = events.send(AudioWorkerEvent::FirstBuffer {
                         owner: spec.owner,
                         sample_rate: WHISPER_SAMPLE_RATE,
+                        sent_at: std::time::Instant::now(),
                     });
                 }
                 let _ = spec.command_receiver.recv();
@@ -3200,6 +3215,7 @@ mod tests {
                     AudioWorkerEvent::FirstBuffer {
                         owner,
                         sample_rate: WHISPER_SAMPLE_RATE,
+                        sent_at: std::time::Instant::now(),
                     },
                     &mut attempt,
                     &sink,
@@ -3313,6 +3329,7 @@ mod tests {
             AudioWorkerEvent::FirstBuffer {
                 owner,
                 sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: std::time::Instant::now(),
             },
             &mut attempt,
             &sink,
@@ -3425,6 +3442,7 @@ mod tests {
                     .send(AudioWorkerEvent::FirstBuffer {
                         owner: spec.owner,
                         sample_rate: WHISPER_SAMPLE_RATE,
+                        sent_at: std::time::Instant::now(),
                     })
                     .unwrap();
                 spec.command_receiver.recv().unwrap();
@@ -3605,6 +3623,7 @@ mod tests {
                     .send(AudioWorkerEvent::FirstBuffer {
                         owner: spec.owner,
                         sample_rate: WHISPER_SAMPLE_RATE,
+                        sent_at: std::time::Instant::now(),
                     })
                     .unwrap();
                 spec.command_receiver.recv().unwrap();
@@ -3914,6 +3933,7 @@ mod tests {
                     .send(AudioWorkerEvent::FirstBuffer {
                         owner,
                         sample_rate: WHISPER_SAMPLE_RATE,
+                        sent_at: std::time::Instant::now(),
                     })
                     .unwrap();
                 first_buffer_enqueued.send(()).unwrap();
@@ -3941,6 +3961,7 @@ mod tests {
                 let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
                     owner,
                     sample_rate: WHISPER_SAMPLE_RATE,
+                    sent_at: std::time::Instant::now(),
                 });
                 let _ = event_sender.send(AudioWorkerEvent::RuntimeFailed {
                     owner,
@@ -3994,6 +4015,7 @@ mod tests {
                 let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
                     owner,
                     sample_rate: WHISPER_SAMPLE_RATE,
+                    sent_at: std::time::Instant::now(),
                 });
                 let _ = spec.command_receiver.recv();
                 let _ = event_sender.send(AudioWorkerEvent::StreamStopped { owner });
@@ -4037,6 +4059,7 @@ mod tests {
                 let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
                     owner,
                     sample_rate: WHISPER_SAMPLE_RATE,
+                    sent_at: std::time::Instant::now(),
                 });
                 while let Ok(command) = spec.command_receiver.recv() {
                     if matches!(command, AudioCommand::Stop) {
@@ -4557,6 +4580,7 @@ mod tests {
             .send(SupervisorMessage::Worker(AudioWorkerEvent::FirstBuffer {
                 owner: AudioOwner::Dictation(8),
                 sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: std::time::Instant::now(),
             }))
             .unwrap();
         // The cancel response is a FIFO barrier proving the stale Ready event
@@ -4595,6 +4619,7 @@ mod tests {
             .send(SupervisorMessage::Worker(AudioWorkerEvent::FirstBuffer {
                 owner,
                 sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: std::time::Instant::now(),
             }))
             .unwrap();
         assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
@@ -4623,12 +4648,49 @@ mod tests {
             .send(SupervisorMessage::Worker(AudioWorkerEvent::FirstBuffer {
                 owner,
                 sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: std::time::Instant::now(),
             }))
+            .unwrap();
+        let diagnostic =
+            AudioLifecycleEvent::StartupDiagnostic(audio::AudioStartupDiagnostic::PhaseDuration {
+                phase: AudioInitPhase::FirstBufferWait,
+                elapsed_ms: 7,
+            });
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(AudioWorkerEvent::PhaseExited {
+                owner,
+                phase: AudioInitPhase::FirstBufferWait,
+                elapsed_ms: 7,
+            }))
+            .unwrap();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Worker(
+                AudioWorkerEvent::StartupDiagnostic {
+                    owner,
+                    diagnostic: audio::AudioStartupDiagnostic::PhaseDuration {
+                        phase: AudioInitPhase::FirstBufferWait,
+                        elapsed_ms: 7,
+                    },
+                },
+            ))
             .unwrap();
         assert_eq!(
             cancel_any_phase(&supervisor, owner).recv().unwrap(),
             Ok(true)
         );
+        let events = sink.events.lock().unwrap();
+        let ready_index = events
+            .iter()
+            .position(|(o, event)| *o == owner && *event == AudioLifecycleEvent::Ready)
+            .unwrap();
+        let diagnostic_index = events
+            .iter()
+            .position(|(o, event)| *o == owner && *event == diagnostic)
+            .unwrap();
+        assert!(ready_index < diagnostic_index);
+        drop(events);
         assert!(sink
             .events
             .lock()

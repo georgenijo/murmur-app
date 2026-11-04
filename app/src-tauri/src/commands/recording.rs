@@ -4682,6 +4682,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             }
         }
         AudioLifecycleEvent::Ready => {
+            let ready_received_at = std::time::Instant::now();
             let mut dictation = state.app_state.dictation.lock_or_recover();
             if !is_current() || dictation.status != DictationStatus::Starting {
                 tracing::warn!(
@@ -4704,8 +4705,11 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             if state.app_state.active_context(recording_id).is_none() {
                 tracing::info!(
                     target: "pipeline",
+                    event_code = "audio.recording_status_timing",
                     recording_id,
-                    "start_native_recording: audio ready, awaiting context"
+                    context_ready = false,
+                    ready_to_observation_ms = ready_received_at.elapsed().as_millis() as u64,
+                    "audio ready, awaiting context"
                 );
                 return;
             }
@@ -4715,8 +4719,11 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             let _ = app_handle.emit("recording-status-changed", "recording");
             tracing::info!(
                 target: "pipeline",
+                event_code = "audio.recording_status_timing",
                 recording_id,
-                "start_native_recording: audio ready"
+                context_ready = true,
+                ready_to_status_emit_ms = ready_received_at.elapsed().as_millis() as u64,
+                "recording status emitted after audio ready"
             );
         }
         AudioLifecycleEvent::StillConnecting => {
@@ -5052,6 +5059,7 @@ pub(crate) fn complete_dictation_capture_cleanup(
 fn publish_recording_ready_if_audio_ready(
     app_handle: &tauri::AppHandle,
     recording_id: u64,
+    context_ready_at: std::time::Instant,
 ) -> bool {
     if !audio_lifecycle::is_dictation_recording(recording_id) {
         return false;
@@ -5071,11 +5079,77 @@ fn publish_recording_ready_if_audio_ready(
     let _ = app_handle.emit("recording-status-changed", "recording");
     tracing::info!(
         target: "pipeline",
+        event_code = "audio.recording_status_timing",
         recording_id,
-        "start_native_recording: context ready after audio"
+        context_to_status_emit_ms = context_ready_at.elapsed().as_millis() as u64,
+        "recording status emitted after context ready"
     );
     spawn_dictation_partial_ticker(app_handle.clone(), recording_id);
     true
+}
+
+/// A reason the shared dictation start transition refuses a new recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DictationStartBlocker {
+    pub kind: &'static str,
+    pub state: &'static str,
+}
+
+/// The admission guards shared by a confirmed dictation start and silent
+/// first-tap helper preparation. Callers hold the dictation lock, so
+/// `transcribe_file`, transforms, and Voice Query cannot slip between the
+/// check and the transition.
+pub(crate) fn dictation_start_blocker(
+    state: &State,
+    status: DictationStatus,
+) -> Option<DictationStartBlocker> {
+    let blocked = |kind, state| Some(DictationStartBlocker { kind, state });
+    if state.app_state.meeting_blocks_asr() {
+        return blocked("busy_meeting", "idle");
+    }
+    // Refuse if a file transcription holds the shared Whisper backend.
+    // `transcribe_file` takes the dictation lock only after claiming the flag.
+    if state.app_state.file_transcribing.load(Ordering::SeqCst) {
+        return blocked("busy_transcribing_file", "idle");
+    }
+    #[cfg(feature = "internal-benchmark")]
+    if state.corpus.is_active() {
+        return blocked("busy_recording_corpus", "idle");
+    }
+    if state.benchmark.is_running() {
+        return blocked("busy_benchmarking", "idle");
+    }
+    // A transform pass (issue #312) holds the shared Whisper backend,
+    // clipboard, and AX surface.
+    if state.app_state.transform_status().blocks_recording() {
+        return blocked("busy_transforming", "idle");
+    }
+    if state.query.status().blocks_capture() {
+        return blocked("busy_querying", "idle");
+    }
+    // Only one heavy inference runtime may be resident: refuse to record
+    // while a local-LLM transform is in flight (supervisor busy).
+    if state.transform_runtime.is_transform_busy() {
+        return blocked("busy_transforming", "idle");
+    }
+    match status {
+        DictationStatus::Starting => blocked("already_starting", "starting"),
+        DictationStatus::Recording => blocked("already_recording", "recording"),
+        DictationStatus::Recovering => blocked("audio_recovering", "recovering"),
+        DictationStatus::Processing => blocked("already_processing", "processing"),
+        DictationStatus::Idle => None,
+    }
+}
+
+/// Whether silent first-tap preparation may spawn an idle capture helper.
+/// It shares the confirmed start's admission guards and additionally refuses
+/// while a previous dictation's capture cleanup is still pending.
+pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
+    let dictation = state.app_state.dictation.lock_or_recover();
+    dictation_start_blocker(state, dictation.status).is_none()
+        && !audio_lifecycle::is_dictation_cleanup_pending(
+            state.app_state.recording_id.load(Ordering::SeqCst),
+        )
 }
 
 #[tauri::command]
@@ -5154,92 +5228,21 @@ pub async fn start_native_recording(
         session_overrides,
     ) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.meeting_blocks_asr() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — meeting capture in progress");
+        if let Some(blocker) = dictation_start_blocker(state.inner(), dictation.status) {
+            tracing::warn!(target: "pipeline", reason = blocker.kind, "start_native_recording: blocked");
             return Ok(serde_json::json!({
-                "type": "busy_meeting",
-                "state": "idle"
-            }));
-        }
-        // Refuse if a file transcription holds the shared Whisper backend.
-        // Checked under the dictation lock (which `transcribe_file` takes only
-        // after claiming the flag) so the two paths can't both start.
-        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — file transcription in progress");
-            return Ok(serde_json::json!({
-                "type": "busy_transcribing_file",
-                "state": "idle"
-            }));
-        }
-        #[cfg(feature = "internal-benchmark")]
-        if state.corpus.is_active() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — corpus recording in progress");
-            return Ok(serde_json::json!({
-                "type": "busy_recording_corpus",
-                "state": "idle"
-            }));
-        }
-        if state.benchmark.is_running() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — benchmark in progress");
-            return Ok(serde_json::json!({
-                "type": "busy_benchmarking",
-                "state": "idle"
-            }));
-        }
-        // Refuse while a transform pass (issue #312) holds the shared Whisper
-        // backend / clipboard / AX surface. Checked under the dictation lock,
-        // same as the two guards above.
-        if state.app_state.transform_status().blocks_recording() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform in progress");
-            return Ok(serde_json::json!({
-                "type": "busy_transforming",
-                "state": "idle"
-            }));
-        }
-        if state.query.status().blocks_capture() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — voice query is capturing");
-            return Ok(serde_json::json!({
-                "type": "busy_querying",
-                "state": "idle"
-            }));
-        }
-        // Only one heavy inference runtime may be resident: refuse to record
-        // while a local-LLM transform is in flight (supervisor busy).
-        if state.transform_runtime.is_transform_busy() {
-            tracing::warn!(target: "pipeline", "start_native_recording: blocked — transform runtime busy");
-            return Ok(serde_json::json!({
-                "type": "busy_transforming",
-                "state": "idle"
+                "type": blocker.kind,
+                "state": blocker.state
             }));
         }
         match dictation.status {
-            DictationStatus::Starting => {
-                tracing::warn!(target: "pipeline", "start_native_recording: already starting");
-                return Ok(serde_json::json!({
-                    "type": "already_starting",
-                    "state": "starting"
-                }));
-            }
-            DictationStatus::Recording => {
-                tracing::warn!(target: "pipeline", "start_native_recording: already recording");
-                return Ok(serde_json::json!({
-                    "type": "already_recording",
-                    "state": "recording"
-                }));
-            }
-            DictationStatus::Recovering => {
-                tracing::warn!(target: "pipeline", "start_native_recording: audio recovering");
-                return Ok(serde_json::json!({
-                    "type": "audio_recovering",
-                    "state": "recovering"
-                }));
-            }
-            DictationStatus::Processing => {
-                tracing::warn!(target: "pipeline", "start_native_recording: currently processing");
-                return Ok(serde_json::json!({
-                    "type": "already_processing",
-                    "state": "processing"
-                }));
+            DictationStatus::Starting
+            | DictationStatus::Recording
+            | DictationStatus::Recovering
+            | DictationStatus::Processing => {
+                // dictation_start_blocker already refused every non-idle
+                // status under this lock.
+                return Err("Dictation is not idle.".to_string());
             }
             DictationStatus::Idle => {
                 if audio_lifecycle::is_dictation_cleanup_pending(
@@ -5396,6 +5399,7 @@ pub async fn start_native_recording(
     // Resolve profile and IDE context from the same native sample frozen at
     // acceptance. A later focus change cannot splice another application's
     // context into the recording while retaining the original paste target.
+    let context_resolution_started = std::time::Instant::now();
     let captured_smart_destination =
         crate::smart_destination::capture(&app_handle, &delivery_target, smart_enabled).await;
     let capture_is_current = {
@@ -5520,9 +5524,12 @@ pub async fn start_native_recording(
             }));
         }
     }
+    let context_ready_at = std::time::Instant::now();
     tracing::info!(
         target: "pipeline",
+        event_code = "audio.recording_context_ready",
         recording_id = rid,
+        context_resolution_ms = context_ready_at.duration_since(context_resolution_started).as_millis() as u64,
         frontmost_app_detected = context.app.bundle_id.is_some(),
         matched_profile = context.matched_profile.is_some(),
         writing_style = context.writing_style.as_str(),
@@ -5540,7 +5547,7 @@ pub async fn start_native_recording(
         // this context's disposable owner, never app-wide recording state.
         engine.prewarm();
     }
-    publish_recording_ready_if_audio_ready(&app_handle, rid);
+    publish_recording_ready_if_audio_ready(&app_handle, rid, context_ready_at);
     spawn_model_preparation(
         app_handle.clone(),
         context.transcription.model_name.clone(),

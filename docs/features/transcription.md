@@ -865,9 +865,14 @@ Dictation measures the first trigger press received by rdev through native
 start acceptance, first retained nonempty PCM, and native capture readiness.
 Double-tap timing also records first release → toggle emission (including the
 second tap's hold). Both-mode hold arming is included in press-to-accepted time.
-These measurements add visibility; microphone/helper startup continues to begin
-only after recording is accepted. A first tap or an arming press creates no
-speculative helper or AudioUnit and captures no audio.
+These measurements add visibility. Microphone startup still begins only after
+recording is accepted. A first clean tap in Double Tap or Both mode may silently
+spawn, signature-verify, and handshake an idle capture helper, but only when
+microphone permission is already granted. It creates no AudioUnit, opens no
+device, and captures no audio. The confirmed start for the same gesture adopts
+that helper; otherwise it is torn down. See
+[Performance diagnostics](performance-diagnostics.md#clean-taps-and-silent-first-tap-helper-preparation).
+An arming press for a hold creates no speculative helper.
 
 The native keyboard event carries an opaque decimal-text `gestureToken`.
 Double-tap, Both, and hold hooks pass it through the recording request; a button

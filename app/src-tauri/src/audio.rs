@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
+#[path = "audio_prepare.rs"]
+pub(crate) mod prepare;
+
 pub fn compute_rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -347,6 +350,7 @@ pub(crate) enum AudioWorkerEvent {
     FirstBuffer {
         owner: crate::audio_lifecycle::AudioOwner,
         sample_rate: u32,
+        sent_at: Instant,
     },
     InitFailed {
         owner: crate::audio_lifecycle::AudioOwner,
@@ -428,6 +432,17 @@ pub(crate) enum AudioStartupDiagnostic {
     CycleReady {
         cycle_start_to_first_pcm_ms: u64,
     },
+    /// Host-observed duration of one helper setup bracket, Entered to
+    /// Completed, so stream open can be split into unit creation,
+    /// configuration, and start (#933).
+    SetupStepDuration {
+        step: CaptureSetupStep,
+        elapsed_ms: u64,
+    },
+    /// Whether this dictation attempt adopted a silently prepared helper.
+    HelperPreparation {
+        outcome: HelperPreparationOutcome,
+    },
     AttemptFailed {
         backend: CaptureBackend,
         resolution_pass: u8,
@@ -436,6 +451,33 @@ pub(crate) enum AudioStartupDiagnostic {
         failure_kind: AudioFailureKind,
         failure_phase: AudioInitPhase,
     },
+}
+
+/// First-attempt outcome of silent first-tap helper preparation (#933).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HelperPreparationOutcome {
+    /// The attempt adopted the prepared, hello'd helper.
+    Adopted,
+    /// No preparation existed for this start.
+    NotPrepared,
+    /// Preparation for this gesture had not finished in time.
+    StillPreparing,
+    /// A prepared helper existed for another gesture, listener, or topology.
+    IdentityMismatch,
+    /// The prepared helper outlived its bounded lifetime.
+    Expired,
+}
+
+impl HelperPreparationOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Adopted => "adopted",
+            Self::NotPrepared => "not_prepared",
+            Self::StillPreparing => "still_preparing",
+            Self::IdentityMismatch => "identity_mismatch",
+            Self::Expired => "expired",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1802,10 +1844,8 @@ fn install_restored_memo(memo: &mut CaptureMemoEntries, entries: CaptureMemoEntr
 }
 
 /// Publishes on a detached thread so the durable write is fully off the
-/// capture-start path: `note_first_pcm` runs on the frame loop *before*
-/// `PhaseExited{FirstBufferWait}` is emitted, so an inline write on a stalled
-/// app-data volume would delay the very capture-ready latency this memo
-/// exists to protect. Saves happen at most a few times per recording, so one
+/// capture thread: `note_first_pcm` runs after first-buffer publication,
+/// and an inline write on a stalled app-data volume would delay capture. Saves happen at most a few times per recording, so one
 /// short-lived thread per save is cheap. A failure is logged without any
 /// content and the in-memory memo keeps working for this session.
 fn save_capture_memo(entries: CaptureMemoEntries) {
@@ -2170,60 +2210,95 @@ fn run_backend(
         );
     }
 
-    let (capture_id, nonce, nonce_hex) = capture_identity();
-    if probe_permit.is_some_and(|permit| !permit.is_valid()) {
-        return AttemptResult::Stopped;
-    }
-    let (child, mut input, output) = match spawn_helper(
-        capture_id,
-        &nonce_hex,
-        requested_capture_fault(),
-        owner.dictation_id().map(|_| (owner, event_sender)),
-    ) {
-        Ok(value) => value,
-        Err(failure) => {
-            end_permission_prompt_pause(
-                &mut permission_prompt_started,
-                &mut clock,
+    // Every first attempt drains silent first-tap preparation (#933). Only a
+    // dictation started by the prepared gesture, on the same listener and
+    // input topology, adopts the hello'd helper; it has received no Start, so
+    // no audio exists before this confirmed start.
+    let fault = requested_capture_fault();
+    let prepared = if ctx.resolution_pass == 1 && ctx.backend_attempt == 1 {
+        let identity = gesture
+            .filter(|_| owner.dictation_id().is_some() && probe_permit.is_none() && fault.is_none())
+            .map(|gesture| prepare::PrepareIdentity {
+                token: gesture.candidate.token,
+                listener_generation: crate::keyboard::listener_generation(),
+                topology_generation: crate::audio_lifecycle::input_topology_generation(),
+            });
+        let (outcome, helper) = prepare::take_for_start(identity);
+        if owner.dictation_id().is_some() {
+            let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
                 owner,
-                event_sender,
-                Instant::now(),
-            );
-            return AttemptResult::Failed {
-                failure,
-                retained_audio: false,
-                active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
-            };
+                diagnostic: AudioStartupDiagnostic::HelperPreparation { outcome },
+            });
         }
+        helper
+    } else {
+        None
     };
-    let output = match hello(&mut input, output, capture_id, nonce) {
-        Ok(output) => output,
-        Err(failure) => {
-            end_permission_prompt_pause(
-                &mut permission_prompt_started,
-                &mut clock,
-                owner,
-                event_sender,
-                Instant::now(),
-            );
-            if !terminate_or_quarantine(
-                child,
-                Some(input),
-                capture_id,
-                nonce,
-                None,
-                owner,
-                event_sender,
-                AudioInitPhase::StreamBuild,
-            ) {
-                return AttemptResult::TerminalHandled;
-            }
-            return AttemptResult::Failed {
-                failure,
-                retained_audio: false,
-                active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
-            };
+    let (capture_id, nonce, child, mut input, output) = if let Some(helper) = prepared {
+        (
+            helper.capture_id,
+            helper.nonce,
+            helper.child,
+            helper.input,
+            helper.output,
+        )
+    } else {
+        let (capture_id, nonce, nonce_hex) = capture_identity();
+        if probe_permit.is_some_and(|permit| !permit.is_valid()) {
+            return AttemptResult::Stopped;
         }
+        let (child, mut input, output) = match spawn_helper(
+            capture_id,
+            &nonce_hex,
+            fault,
+            owner.dictation_id().map(|_| (owner, event_sender)),
+        ) {
+            Ok(value) => value,
+            Err(failure) => {
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    Instant::now(),
+                );
+                return AttemptResult::Failed {
+                    failure,
+                    retained_audio: false,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
+                };
+            }
+        };
+        let output = match hello(&mut input, output, capture_id, nonce) {
+            Ok(output) => output,
+            Err(failure) => {
+                end_permission_prompt_pause(
+                    &mut permission_prompt_started,
+                    &mut clock,
+                    owner,
+                    event_sender,
+                    Instant::now(),
+                );
+                if !terminate_or_quarantine(
+                    child,
+                    Some(input),
+                    capture_id,
+                    nonce,
+                    None,
+                    owner,
+                    event_sender,
+                    AudioInitPhase::StreamBuild,
+                ) {
+                    return AttemptResult::TerminalHandled;
+                }
+                return AttemptResult::Failed {
+                    failure,
+                    retained_audio: false,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
+                };
+            }
+        };
+        (capture_id, nonce, child, input, output)
     };
     let start_message = match probe_permit {
         Some(permit) => {
@@ -2331,6 +2406,7 @@ fn run_backend(
     let mut last_permission_check = Instant::now() - PERMISSION_POLL_INTERVAL;
     let mut current_phase = AudioInitPhase::StreamBuild;
     let mut last_setup_step: Option<(CaptureSetupStep, SetupTransition)> = None;
+    let mut setup_step_entered: Option<(CaptureSetupStep, Instant)> = None;
     let mut input_resolution = InputResolutionTracker::default();
     let worker_pid = child.pid();
     let mut hang_probe: Option<crate::hang_diagnostics::HangProbe> = None;
@@ -2697,6 +2773,83 @@ fn run_backend(
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .append_pcm(&pcm.samples, pcm.sample_rate);
                 }
+                if !retained_audio {
+                    retained_audio = true;
+                    current_phase = AudioInitPhase::Runtime;
+                    let pcm_at = Instant::now();
+                    let active_elapsed_ms = clock.elapsed(pcm_at).as_millis() as u64;
+                    let start_to_pcm = pcm_at.saturating_duration_since(start_sent_at);
+                    let first_wait_ms = first_callback_wait_started.take().map(|started| {
+                        pcm_at.saturating_duration_since(started).as_millis() as u64
+                    });
+                    let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
+                        owner,
+                        sample_rate: pcm.sample_rate,
+                        sent_at: Instant::now(),
+                    });
+                    // A successful preview is real device-readiness evidence,
+                    // so it intentionally trains the per-device backend memo.
+                    if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
+                        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                            owner,
+                            diagnostic: AudioStartupDiagnostic::FirstPcm {
+                                backend,
+                                resolution_pass: ctx.resolution_pass as u8,
+                                attempt_index: ctx.backend_attempt as u8,
+                                // Match the existing production
+                                // `audio.capture_ready.startup_ms` contract:
+                                // helper Start write -> first accepted PCM.
+                                attempt_start_to_first_pcm_ms: start_to_pcm.as_millis() as u64,
+                                active_elapsed_ms,
+                            },
+                        });
+                    }
+                    if let Some(g) = gesture {
+                        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                            owner,
+                            diagnostic: AudioStartupDiagnostic::GesturePcm {
+                                press_to_first_pcm_ms: crate::audio_lifecycle::gesture::millis(
+                                    pcm_at.saturating_duration_since(g.candidate.pressed),
+                                ),
+                                accepted_to_first_pcm_ms: crate::audio_lifecycle::gesture::millis(
+                                    pcm_at.saturating_duration_since(g.accepted),
+                                ),
+                            },
+                        });
+                    }
+                    if probe_permit.is_none() && should_update_capture_memo(owner) {
+                        note_first_pcm(device_id, backend, ctx.is_primary, start_to_pcm);
+                    }
+                    end_permission_prompt_pause(
+                        &mut permission_prompt_started,
+                        &mut clock,
+                        owner,
+                        event_sender,
+                        pcm_at,
+                    );
+                    tracing::info!(
+                        target: "audio",
+                        capture_id,
+                        start_to_first_pcm_ms = start_to_pcm.as_millis() as u64,
+                        "capture helper first PCM accepted"
+                    );
+                    if let Some(elapsed_ms) = first_wait_ms {
+                        if owner.dictation_id().is_some() {
+                            let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                                owner,
+                                diagnostic: AudioStartupDiagnostic::PhaseDuration {
+                                    phase: AudioInitPhase::FirstBufferWait,
+                                    elapsed_ms,
+                                },
+                            });
+                        }
+                    }
+                    let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
+                        owner,
+                        phase: AudioInitPhase::FirstBufferWait,
+                        elapsed_ms: first_wait_ms.unwrap_or_default(),
+                    });
+                }
                 if let Some(preview_id) = owner.preview_id() {
                     if let Some(handle) = app_handle.as_ref() {
                         handle
@@ -2738,81 +2891,6 @@ fn run_backend(
                             }
                         }
                     }
-                }
-                if !retained_audio {
-                    retained_audio = true;
-                    current_phase = AudioInitPhase::Runtime;
-                    // A successful preview is real device-readiness evidence,
-                    // so it intentionally trains the per-device backend memo.
-                    if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
-                        let active_elapsed_ms = clock.elapsed(Instant::now()).as_millis() as u64;
-                        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
-                            owner,
-                            diagnostic: AudioStartupDiagnostic::FirstPcm {
-                                backend,
-                                resolution_pass: ctx.resolution_pass as u8,
-                                attempt_index: ctx.backend_attempt as u8,
-                                // Match the existing production
-                                // `audio.capture_ready.startup_ms` contract:
-                                // helper Start write -> first accepted PCM.
-                                attempt_start_to_first_pcm_ms: start_sent_at.elapsed().as_millis()
-                                    as u64,
-                                active_elapsed_ms,
-                            },
-                        });
-                    }
-                    if let Some(g) = gesture {
-                        let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
-                            owner,
-                            diagnostic: AudioStartupDiagnostic::GesturePcm {
-                                press_to_first_pcm_ms: crate::audio_lifecycle::gesture::millis(
-                                    g.candidate.pressed.elapsed(),
-                                ),
-                                accepted_to_first_pcm_ms: crate::audio_lifecycle::gesture::millis(
-                                    g.accepted.elapsed(),
-                                ),
-                            },
-                        });
-                    }
-                    if probe_permit.is_none() && should_update_capture_memo(owner) {
-                        note_first_pcm(device_id, backend, ctx.is_primary, start_sent_at.elapsed());
-                    }
-                    end_permission_prompt_pause(
-                        &mut permission_prompt_started,
-                        &mut clock,
-                        owner,
-                        event_sender,
-                        Instant::now(),
-                    );
-                    tracing::info!(
-                        target: "audio",
-                        capture_id,
-                        start_to_first_pcm_ms = start_sent_at.elapsed().as_millis() as u64,
-                        "capture helper first PCM accepted"
-                    );
-                    if let Some(started) = first_callback_wait_started {
-                        if owner.dictation_id().is_some() {
-                            let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
-                                owner,
-                                diagnostic: AudioStartupDiagnostic::PhaseDuration {
-                                    phase: AudioInitPhase::FirstBufferWait,
-                                    elapsed_ms: started.elapsed().as_millis() as u64,
-                                },
-                            });
-                        }
-                    }
-                    let _ = event_sender.send(AudioWorkerEvent::PhaseExited {
-                        owner,
-                        phase: AudioInitPhase::FirstBufferWait,
-                        elapsed_ms: first_callback_wait_started
-                            .take()
-                            .map(|started: Instant| started.elapsed().as_millis() as u64)
-                            .unwrap_or_default(),
-                    });
-                    let _ = event_sender.send(AudioWorkerEvent::FirstBuffer {
-                        owner,
-                        sample_rate: pcm.sample_rate,
-                    });
                 }
                 if probe_permit.is_none()
                     && active.load(Ordering::Acquire)
@@ -3016,6 +3094,23 @@ fn run_backend(
                     };
                 }
                 last_setup_step = Some((step, transition));
+                let step_elapsed_ms = match transition {
+                    SetupTransition::Entered => {
+                        setup_step_entered = Some((step, Instant::now()));
+                        None
+                    }
+                    SetupTransition::Completed => setup_step_entered
+                        .take()
+                        .filter(|(entered, _)| *entered == step)
+                        .map(|(_, at)| at.elapsed().as_millis() as u64),
+                };
+                if let (Some(elapsed_ms), true) = (step_elapsed_ms, owner.dictation_id().is_some())
+                {
+                    let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
+                        owner,
+                        diagnostic: AudioStartupDiagnostic::SetupStepDuration { step, elapsed_ms },
+                    });
+                }
                 if owner.is_microphone_benchmark() || owner.dictation_id().is_some() {
                     let _ = event_sender.send(AudioWorkerEvent::StartupDiagnostic {
                         owner,

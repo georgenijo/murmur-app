@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 5;
+const LATEST_DB_SCHEMA_VERSION: u32 = 6;
 const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const MAX_TRANSFORM_FOLLOW_UPS: usize = 8;
@@ -684,8 +684,15 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         // V4 -> V5 adds the optional production capture.gesture measurements.
         // Older strict companion decoders must refuse this database. Keep
         // homophoneContext and all existing payload bytes unchanged.
+        if current < 5 {
+            transaction
+                .pragma_update(None, "user_version", 5)
+                .map_err(db_error)?;
+        }
+        // V5 -> V6 (#933) adds optional production stream-open split and
+        // helper-preparation fields. Older strict decoders must refuse them.
         transaction
-            .pragma_update(None, "user_version", 5)
+            .pragma_update(None, "user_version", 6)
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
     }
@@ -1557,7 +1564,7 @@ mod tests {
             .unwrap()
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, LATEST_DB_SCHEMA_VERSION);
         repository
             .begin(
                 PerformanceRunKindV1::Dictation,
@@ -1600,7 +1607,7 @@ mod tests {
 
     #[test]
     fn v4_homophone_rows_survive_v5_and_v3_path_preserves_payloads() {
-        for source_version in [3, 4] {
+        for source_version in [3, 4, 5] {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("diagnostics");
             let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
@@ -1645,7 +1652,7 @@ mod tests {
             let version: u32 = connection
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .unwrap();
-            assert_eq!(version, 5);
+            assert_eq!(version, LATEST_DB_SCHEMA_VERSION);
             let after: String = connection
                 .query_row(
                     "SELECT payload_json FROM completed_runs WHERE run_id = ?",

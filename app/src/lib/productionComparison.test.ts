@@ -286,4 +286,34 @@ describe('production version comparison', () => {
       .toMatchObject({ newlyObserved: true, candidateObserved: true, baselineUnavailable: 0 });
   });
 
+  it('compares the stream-open split and counts preparation hits without a warning', () => {
+    const split = { deviceResolutionMs: 2, audioUnitNewMs: 120, streamConfigureMs: 15, streamStartMs: 28 };
+    const baseline = comparisonRun('1.0.0');
+    const candidates = [
+      comparisonRun('1.1.0', { production: production({}, { ...split, helperPreparation: 'adopted' }) }),
+      comparisonRun('1.1.0', {
+        production: production({}, { ...split, audioUnitNewMs: 0, helperPreparation: 'expired' }),
+      }),
+      comparisonRun('1.1.0', { production: production({}, { ...split, helperPreparation: 'adopted' }) }),
+    ];
+    const result = compareProductionVersions([baseline, ...candidates], '1.0.0', '1.1.0');
+    const metric = (key: string) =>
+      result.cohorts[0].metrics.find(entry => entry.definition.key === key);
+
+    expect(metric('audioUnitNewMs')?.baseline).toMatchObject({ measuredCount: 0, missingCount: 1 });
+    expect(metric('audioUnitNewMs')?.candidate.rawMs).toEqual([120, 0, 120]);
+    expect(metric('streamConfigureMs')?.candidate.medianMs).toBe(15);
+    expect(metric('streamStartMs')?.candidate.rawMs).toEqual([28, 28, 28]);
+    expect(metric('deviceResolutionMs')?.candidate.measuredCount).toBe(3);
+    expect(result.observations.find(observation => observation.key === 'helperPreparationAdopted'))
+      .toMatchObject({
+        baseline: 0,
+        candidate: 2,
+        baselineUnavailable: 1,
+        candidateUnavailable: 0,
+        newlyObserved: false,
+        candidateObserved: false,
+      });
+  });
+
 });
