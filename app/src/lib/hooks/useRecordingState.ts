@@ -23,6 +23,8 @@ interface UseRecordingStateProps {
   addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
   microphone: string;
   smartAuto?: SmartAutoMicrophoneRequest | null;
+  /** Synchronous admission check, including for already queued hotkey callbacks. */
+  canStart?: () => boolean;
 }
 
 type RecordingErrorKind = 'cleanup' | 'delivery' | 'other';
@@ -40,7 +42,7 @@ interface PresentErrorOptions {
   producerEpoch?: number;
 }
 
-export function useRecordingState({ addEntry, microphone, smartAuto = null }: UseRecordingStateProps) {
+export function useRecordingState({ addEntry, microphone, smartAuto = null, canStart }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
   const [errorPresentation, setErrorPresentation] = useState<RecordingErrorPresentation | null>(null);
@@ -451,6 +453,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
   }, [addEntry]);
 
   const beginRecording = useCallback(async (origin: 'toggle' | 'hold', gestureToken?: string) => {
+    if (canStart && !canStart()) return;
     flog.info('recording', 'handleStart called', {
       isStarting: isStartingRef.current, status: statusRef.current, origin,
     });
@@ -535,7 +538,11 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
         startOperationRef.current = null;
       }
     }
-  }, [beginErrorProducer, presentError]);
+  }, [beginErrorProducer, presentError, canStart]);
+
+  // Admission checks must see dispatched starts before native confirmation or
+  // a lifecycle event updates status. Read the synchronous refs, not a render.
+  const isCaptureBusy = useCallback(() => isStartingRef.current || statusRef.current !== 'idle', []);
 
   const handleStart = useCallback(() => beginRecording('toggle'), [beginRecording]);
   const handleHoldStart = useCallback((gestureToken?: string) => beginRecording('hold', gestureToken), [beginRecording]);
@@ -630,6 +637,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null }: Us
 
   return {
     status,
+    isCaptureBusy,
     transcription,
     recordingDuration,
     error: errorPresentation?.message ?? '',

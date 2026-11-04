@@ -75,7 +75,10 @@ CI runs `cargo check`, `cargo test --lib`, `npx tsc --noEmit`, and `npm test` on
 
 ## Whisper Models
 
-The app requires a ggml `.bin` model file. Download one:
+Only the Whisper backend requires a ggml `.bin` model file. The default Core ML
+backend uses FluidAudio's compiled model cache, and CPU Parakeet uses an ONNX
+bundle; neither requires a Whisper file. To install a Whisper model manually,
+download one:
 
 | Model | Size | Speed | Accuracy |
 |-------|------|-------|----------|
@@ -110,7 +113,13 @@ The app searches these locations in order:
 | **System Audio** (optional, macOS 14.2+) | Meeting playback capture as the Them channel | Explicit check in onboarding or History → Meetings; grant under Privacy & Security > Screen & System Audio Recording |
 
 Under `npm run tauri:dev`, grant these to your *terminal app* — dev builds are
-re-signed on each rebuild, so a grant to the dev binary never sticks.
+re-signed on each rebuild, so a grant to the dev binary never sticks. Restart
+the dev server after granting. The setup assistant hides its Microphone,
+Accessibility, and Calendar Reset actions in development because those actions
+reset Murmur's bundle identity, not the launching terminal. For stale access,
+turn the terminal's permission off and on in the relevant System Settings pane,
+then restart the dev server. A built `.app` uses its own permission identity and
+retains the in-app Reset actions.
 
 ## Logs
 

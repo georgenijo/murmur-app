@@ -186,7 +186,7 @@ pub const MODEL_DEFINITIONS: &[ModelDefinition] = &[
     ModelDefinition {
         model_name: "large-v3-turbo",
         label: "Whisper Large Turbo",
-        size: "~3 GB",
+        size: "~1.6 GB",
         backend: BackendKind::Whisper,
         accelerator: "Metal GPU",
         capabilities: WHISPER_MULTILINGUAL_CAPABILITIES,

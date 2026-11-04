@@ -59,6 +59,21 @@ click. The wishy-washy TCC states are handled explicitly:
 | calendar `denied` | Manual naming explanation, Calendars settings link, and a reset action so macOS can ask again. |
 | calendar `restricted` / `unsupported` | Manual naming remains available; restricted access links to Calendars settings. |
 
+## Accessibility and development recovery
+
+Every step heading is programmatically focusable. Continue, Skip, and Back move
+focus to the new heading, including Welcome on return; the initial Welcome
+mount preserves existing focus. Permission polling and window-focus refreshes
+do not move focus. Permission failures use alerts, while a persistent polite
+status region announces permission-state changes. Decorative checkmarks are
+hidden from assistive technology.
+
+In `tauri:dev`, permission guidance names the launching terminal. Microphone,
+Accessibility, and Calendar Reset actions are hidden because their native
+commands target Murmur's bundle identifier rather than that terminal. Turn
+the terminal's permission off and on in System Settings, then restart the
+dev server. Built apps retain the bundle-targeted Reset actions described above.
+
 ## Gating and grandfathering
 
 `App.tsx` checks a localStorage flag (`murmur_onboarding_complete`,

@@ -222,6 +222,7 @@ describe('OnboardingFlow', () => {
   };
 
   beforeEach(() => {
+    vi.stubEnv('DEV', false);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -247,6 +248,7 @@ describe('OnboardingFlow', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('uses one action row on every non-welcome step and keeps progress separate', async () => {

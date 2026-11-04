@@ -57,6 +57,12 @@ for (const appearance of ['light', 'dark']) {
         await page.getByRole('switch', { name: 'Developer terms', exact: true }).check();
         await page.getByRole('switch', { name: 'Transcript cleanup', exact: true }).check();
       }
+      // Wait for the reduced-motion fold to finish mounting before aligning
+      // the screenshot. Scrolling a still-clipped branch can capture a different
+      // viewport even after toHaveScreenshot waits for stable pixels.
+      await expect(advanced(page)).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('.settings-advanced .settings-dependent-branch-clip').first())
+        .toHaveClass(/settings-dependent-branch-settled/);
       await advanced(page).evaluate(el => el.scrollIntoView({ block: 'start' }));
       await expect(page).toHaveScreenshot(`${appearance}-${pane}-unfolded.png`);
     });
