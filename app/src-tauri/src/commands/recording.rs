@@ -3563,6 +3563,7 @@ pub async fn configure_dictation(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    crate::audio::prepare::configuration_changed();
     crate::launch::frontend_configuring();
     let log_metadata = ConfigurationLogMetadata::from_options(&options);
     tracing::info!(
@@ -5147,6 +5148,7 @@ pub(crate) fn dictation_start_blocker(
 pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
     let dictation = state.app_state.dictation.lock_or_recover();
     dictation_start_blocker(state, dictation.status).is_none()
+        && !audio_lifecycle::is_audio_active()
         && !audio_lifecycle::is_dictation_cleanup_pending(
             state.app_state.recording_id.load(Ordering::SeqCst),
         )
@@ -5296,6 +5298,17 @@ pub async fn start_native_recording(
                 crate::transform_apply::clear_session(&state.app_state);
                 let rid = state.app_state.next_recording_id();
                 let gesture = gesture_claim.accepted(origin == "hold");
+                crate::audio::prepare::capture_claimed(
+                    crate::audio::prepare::CaptureClaim::Dictation(gesture.timing.map(|g| {
+                        crate::audio::prepare::PrepareIdentity {
+                            token: g.candidate.token,
+                            listener_generation: keyboard::listener_generation(),
+                            topology_generation: audio_lifecycle::input_topology_generation(),
+                            configuration_generation:
+                                crate::audio::prepare::configuration_generation(),
+                        }
+                    })),
+                );
                 let performance_started_at_ms =
                     accept_live_dictation_request(rid, &mut dictation, |status_at_acceptance| {
                         debug_assert_eq!(status_at_acceptance, DictationStatus::Idle);

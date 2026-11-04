@@ -1,21 +1,25 @@
 //! Silent first-tap capture-helper preparation (#933).
 //!
 //! A first clean double-tap release may spawn, signature-verify, and hello an
-//! idle capture helper so the confirmed start skips that work. A hello'd helper
-//! blocks on its next control frame and touches no Core Audio: no device is
-//! resolved or opened, no Start is written, and no audio exists before the
-//! confirmed start adopts it. Abandoned preparations are torn down with
+//! idle capture helper so the confirmed start skips that work. A separate
+//! PrepareInput command performs bounded passive HAL UID/default lookup under
+//! an existing TCC grant. It creates/initializes/starts no Audio Unit, writes no
+//! Start, and receives no audio before the confirmed start adopts it. Abandoned
+//! preparations are torn down with
 //! confirmed termination. Nothing here records key labels, device identifiers,
 //! or user content.
 use super::{
-    capture_identity, hello, spawn_helper, terminate_helper_within, HelperPreparationOutcome,
+    capture_identity, spawn_helper_cancellable, terminate_helper_within, HelperPreparationOutcome,
 };
 use crate::managed_child::ManagedChild;
 use crate::MutexExt;
-use murmur_capture_helper_protocol::SessionNonce;
-use std::io::BufReader;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use murmur_capture_helper_protocol::{
+    read_production_frame, write_production_control, ProductionFrame, ProductionHelperMessage,
+    ProductionHostMessage, SessionNonce,
+};
+use std::io::{BufReader, Read};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,12 +29,13 @@ pub(crate) const PREPARED_HELPER_TTL: Duration = Duration::from_millis(1_500);
 const TERMINATION_RETRY: Duration = Duration::from_millis(250);
 
 /// The gesture, listener, and input topology a preparation belongs to. A
-/// confirmed start adopts it only when all three are still current.
+/// confirmed start adopts it only when these and the settings generation match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PrepareIdentity {
     pub token: u64,
     pub listener_generation: u64,
     pub topology_generation: u64,
+    pub configuration_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,10 +71,13 @@ impl InvalidateReason {
 
 enum SlotState<H> {
     Empty,
-    Preparing(PrepareIdentity),
+    Preparing {
+        identity: PrepareIdentity,
+        requested_at: Instant,
+    },
     Ready {
         identity: PrepareIdentity,
-        ready_at: Instant,
+        requested_at: Instant,
         helper: H,
     },
 }
@@ -94,17 +102,25 @@ impl<H> Slot<H> {
     /// it displaced.
     pub(crate) fn begin(&mut self, identity: PrepareIdentity) -> (u64, Option<H>) {
         let displaced = self.clear();
-        self.state = SlotState::Preparing(identity);
+        self.state = SlotState::Preparing {
+            identity,
+            requested_at: Instant::now(),
+        };
         (self.epoch, displaced)
     }
 
     /// Publish a finished helper, or hand it back when superseded.
     pub(crate) fn finish(&mut self, epoch: u64, helper: H, now: Instant) -> Result<(), H> {
         match self.state {
-            SlotState::Preparing(identity) if self.epoch == epoch => {
+            SlotState::Preparing {
+                identity,
+                requested_at,
+            } if self.epoch == epoch
+                && now.saturating_duration_since(requested_at) < PREPARED_HELPER_TTL =>
+            {
                 self.state = SlotState::Ready {
                     identity,
-                    ready_at: now,
+                    requested_at,
                     helper,
                 };
                 Ok(())
@@ -115,7 +131,7 @@ impl<H> Slot<H> {
 
     /// Drop a preparation that failed before producing a helper.
     pub(crate) fn fail(&mut self, epoch: u64) {
-        if self.epoch == epoch && matches!(self.state, SlotState::Preparing(_)) {
+        if self.epoch == epoch && matches!(self.state, SlotState::Preparing { .. }) {
             self.clear();
         }
     }
@@ -150,7 +166,9 @@ impl<H> Slot<H> {
         }
         match state {
             SlotState::Empty => (HelperPreparationOutcome::NotPrepared, None, None),
-            SlotState::Preparing(prepared) => (
+            SlotState::Preparing {
+                identity: prepared, ..
+            } => (
                 if Some(prepared) == identity {
                     HelperPreparationOutcome::StillPreparing
                 } else {
@@ -161,7 +179,7 @@ impl<H> Slot<H> {
             ),
             SlotState::Ready {
                 identity: prepared,
-                ready_at,
+                requested_at,
                 helper,
             } => {
                 if Some(prepared) != identity {
@@ -170,7 +188,7 @@ impl<H> Slot<H> {
                         None,
                         Some(helper),
                     )
-                } else if now.saturating_duration_since(ready_at) > ttl {
+                } else if now.saturating_duration_since(requested_at) >= ttl {
                     (HelperPreparationOutcome::Expired, None, Some(helper))
                 } else {
                     (HelperPreparationOutcome::Adopted, Some(helper), None)
@@ -201,7 +219,52 @@ pub(crate) struct PreparedHelper {
     pub(super) nonce: SessionNonce,
 }
 
-static SLOT: Mutex<Slot<PreparedHelper>> = Mutex::new(Slot::new());
+struct Preparation {
+    slot: Slot<PreparedHelper>,
+    // Remains occupied through confirmed cleanup. Repeated taps cannot create
+    // another worker, reader, or child while the previous owner is retiring.
+    active: Option<Arc<Cancellation>>,
+    retiring: Option<PreparedHelper>,
+}
+impl Preparation {
+    const fn new() -> Self {
+        Self {
+            slot: Slot::new(),
+            active: None,
+            retiring: None,
+        }
+    }
+    fn invalidate(&mut self) -> bool {
+        let (outstanding, helper) = self.slot.invalidate();
+        if let Some(cancel) = &self.active {
+            cancel.cancelled.store(true, Ordering::Release);
+        }
+        if helper.is_some() {
+            assert!(self.retiring.is_none());
+            self.retiring = helper;
+        }
+        outstanding
+    }
+}
+struct Cancellation {
+    cancelled: AtomicBool,
+    deadline: Instant,
+}
+impl Cancellation {
+    fn valid(&self) -> bool {
+        !self.cancelled.load(Ordering::Acquire) && Instant::now() < self.deadline
+    }
+}
+static PREPARATION: Mutex<Preparation> = Mutex::new(Preparation::new());
+static CHANGED: Condvar = Condvar::new();
+static CONFIGURATION_GENERATION: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn configuration_generation() -> u64 {
+    CONFIGURATION_GENERATION.load(Ordering::Acquire)
+}
+pub(crate) fn configuration_changed() {
+    CONFIGURATION_GENERATION.fetch_add(1, Ordering::AcqRel);
+    invalidate(InvalidateReason::Superseded);
+}
 static PREPARED: AtomicU64 = AtomicU64::new(0);
 static ADOPTED: AtomicU64 = AtomicU64::new(0);
 static EXPIRED: AtomicU64 = AtomicU64::new(0);
@@ -220,103 +283,281 @@ fn log_totals(event_code: &'static str, reason: &'static str) {
     );
 }
 
-/// Prepare an idle helper for a first clean tap. `admitted` runs after the
-/// slot is claimed, so a start racing this request either drains the claim
-/// or is observed by admission; no helper survives a start it did not serve.
-pub(crate) fn request(identity: PrepareIdentity, admitted: impl FnOnce() -> bool + Send + 'static) {
-    let (epoch, displaced) = SLOT.lock_or_recover().begin(identity);
-    if let Some(helper) = displaced {
-        discard(helper, InvalidateReason::Superseded);
+/// Caller holds recording_transition through admission and this claim. The
+/// worker is single-flight, including retiring children. No queue of stale taps.
+pub(crate) fn request(identity: PrepareIdentity) {
+    request_with(identity, |epoch, cancel| {
+        thread::Builder::new()
+            .name("murmur-capture-prepare".into())
+            .spawn(move || {
+                prepare(epoch, &cancel);
+                let mut state = PREPARATION.lock_or_recover();
+                state.slot.fail(epoch);
+                state.active = None;
+                CHANGED.notify_all();
+            })
+            .map(|_| ())
+    });
+}
+
+fn request_with(
+    identity: PrepareIdentity,
+    spawn: impl FnOnce(u64, Arc<Cancellation>) -> std::io::Result<()>,
+) -> bool {
+    let mut state = PREPARATION.lock_or_recover();
+    if state.active.is_some()
+        || identity.configuration_generation != configuration_generation()
+        || identity.topology_generation != crate::audio_lifecycle::input_topology_generation()
+    {
+        return false;
     }
-    let spawned = thread::Builder::new()
-        .name("murmur-capture-prepare".to_string())
-        .spawn(move || {
-            if !admitted() {
-                SLOT.lock_or_recover().fail(epoch);
-                log_totals("audio.helper_prepare_skipped", "not_admitted");
-                return;
+    let cancel = Arc::new(Cancellation {
+        cancelled: AtomicBool::new(false),
+        deadline: Instant::now() + PREPARED_HELPER_TTL,
+    });
+    let (epoch, displaced) = state.slot.begin(identity);
+    assert!(displaced.is_none());
+    state.active = Some(Arc::clone(&cancel));
+    // No child exists at the only fallible ownership handoff. All later cleanup
+    // is synchronous on this same worker, even if OS termination is delayed.
+    if spawn(epoch, cancel).is_err() {
+        state.slot.fail(epoch);
+        state.active = None;
+        return false;
+    }
+    true
+}
+
+/// Poll before *every* pipe read (including partial frames), without creating
+/// a detached reader. Cancellation and the request deadline bound hello and
+/// passive resolution alike; neither path can write Start.
+struct CancellableOutput<'a> {
+    output: std::process::ChildStdout,
+    cancel: &'a Cancellation,
+    #[cfg(test)]
+    before_poll: Option<Box<dyn FnOnce() + Send>>,
+}
+impl Read for CancellableOutput<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::fd::AsRawFd;
+        loop {
+            if !self.cancel.valid() {
+                return Err(std::io::ErrorKind::TimedOut.into());
             }
-            let started = Instant::now();
-            let (capture_id, nonce, nonce_hex) = capture_identity();
-            let (child, mut input, output) = match spawn_helper(capture_id, &nonce_hex, None, None)
+            let mut fd = libc::pollfd {
+                fd: self.output.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            #[cfg(test)]
+            if let Some(gate) = self.before_poll.take() {
+                gate();
+            }
+            // SAFETY: fd is an owned pipe and poll only borrows this stack value.
+            let result = unsafe { libc::poll(&mut fd, 1, 5) };
+            if result > 0 {
+                return self.output.read(bytes);
+            }
+            if result < 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
             {
-                Ok(value) => value,
-                Err(_) => {
-                    SLOT.lock_or_recover().fail(epoch);
-                    log_totals("audio.helper_prepare_failed", "spawn");
-                    return;
-                }
-            };
-            let output = match hello(&mut input, output, capture_id, nonce) {
-                Ok(output) => output,
-                Err(_) => {
-                    SLOT.lock_or_recover().fail(epoch);
-                    terminate(child, input, capture_id, nonce);
-                    log_totals("audio.helper_prepare_failed", "hello");
-                    return;
-                }
-            };
-            let helper = PreparedHelper {
-                child,
-                input,
-                output,
-                capture_id,
-                nonce,
-            };
-            let published = SLOT.lock_or_recover().finish(epoch, helper, Instant::now());
-            match published {
-                Ok(()) => {
-                    PREPARED.fetch_add(1, Ordering::Relaxed);
-                    tracing::info!(
-                        target: "audio",
-                        event_code = "audio.helper_prepared",
-                        capture_id,
-                        prepare_ms = started.elapsed().as_millis() as u64,
-                        "capture helper prepared without audio"
-                    );
-                    thread::sleep(PREPARED_HELPER_TTL);
-                    let expired = SLOT.lock_or_recover().expire(epoch);
-                    if let Some(helper) = expired {
-                        EXPIRED.fetch_add(1, Ordering::Relaxed);
-                        teardown(helper);
-                        log_totals(
-                            "audio.helper_prepare_expired",
-                            InvalidateReason::Expired.as_str(),
-                        );
-                    }
-                }
-                Err(helper) => discard(helper, InvalidateReason::Superseded),
+                return Err(std::io::Error::last_os_error());
             }
-        });
-    if spawned.is_err() {
-        SLOT.lock_or_recover().fail(epoch);
+        }
     }
 }
 
-/// Abandon any outstanding preparation. Cheap when nothing is prepared.
-pub(crate) fn invalidate(reason: InvalidateReason) {
-    let (outstanding, helper) = SLOT.lock_or_recover().invalidate();
+fn prepare(epoch: u64, cancel: &Cancellation) {
+    prepare_with_spawn(epoch, cancel, |capture_id, nonce_hex| {
+        spawn_helper_cancellable(capture_id, nonce_hex, || cancel.valid())
+    });
+}
+
+fn prepare_with_spawn(
+    epoch: u64,
+    cancel: &Cancellation,
+    spawn: impl FnOnce(
+        u64,
+        &str,
+    ) -> Result<
+        (
+            ManagedChild,
+            std::process::ChildStdin,
+            std::process::ChildStdout,
+        ),
+        super::AudioFailure,
+    >,
+) {
+    if !cancel.valid() {
+        return;
+    }
+    let started = Instant::now();
+    let (capture_id, nonce, nonce_hex) = capture_identity();
+    let Ok((child, mut input, output)) = spawn(capture_id, &nonce_hex) else {
+        return;
+    };
+    let mut output = CancellableOutput {
+        output,
+        cancel,
+        #[cfg(test)]
+        before_poll: None,
+    };
+    let exchange = |input: &mut std::process::ChildStdin,
+                    output: &mut CancellableOutput<'_>,
+                    command,
+                    expected|
+     -> Result<(), ()> {
+        if !cancel.valid() {
+            return Err(());
+        }
+        write_production_control(input, capture_id, nonce, &command).map_err(|_| ())?;
+        match read_production_frame::<ProductionHelperMessage>(output, capture_id, nonce)
+            .map_err(|_| ())?
+        {
+            ProductionFrame::Control(message) if message == expected => Ok(()),
+            _ => Err(()),
+        }
+    };
+    let ready = exchange(
+        &mut input,
+        &mut output,
+        ProductionHostMessage::Hello,
+        ProductionHelperMessage::HelloAck,
+    )
+    .and_then(|()| {
+        exchange(
+            &mut input,
+            &mut output,
+            ProductionHostMessage::PrepareInput,
+            ProductionHelperMessage::InputPrepared,
+        )
+    });
+    if ready.is_err() || !cancel.valid() {
+        drop(output);
+        terminate(child, input, capture_id, nonce);
+        return;
+    }
+    let helper = PreparedHelper {
+        child,
+        input,
+        output: BufReader::new(output.output),
+        capture_id,
+        nonce,
+    };
+    let mut state = PREPARATION.lock_or_recover();
+    if let Err(helper) = state.slot.finish(epoch, helper, Instant::now()) {
+        drop(state);
+        teardown(helper);
+        return;
+    }
+    PREPARED.fetch_add(1, Ordering::Relaxed);
+    tracing::info!(target: "audio", event_code = "audio.helper_prepared", capture_id, prepare_ms = started.elapsed().as_millis() as u64, "capture helper prepared without audio");
+    while cancel.valid() && state.slot.epoch == epoch {
+        let remaining = cancel.deadline.saturating_duration_since(Instant::now());
+        state = CHANGED
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
+    }
+    let expired = state.slot.expire(epoch);
+    let helper = expired.or_else(|| state.retiring.take());
+    drop(state);
     if let Some(helper) = helper {
-        discard(helper, reason);
-    } else if outstanding {
+        if !cancel.valid() && Instant::now() >= cancel.deadline {
+            EXPIRED.fetch_add(1, Ordering::Relaxed);
+            log_totals(
+                "audio.helper_prepare_expired",
+                InvalidateReason::Expired.as_str(),
+            );
+        }
+        teardown(helper);
+    }
+}
+
+pub(crate) fn invalidate(reason: InvalidateReason) {
+    let outstanding = PREPARATION.lock_or_recover().invalidate();
+    CHANGED.notify_all();
+    if outstanding {
+        ABANDONED.fetch_add(1, Ordering::Relaxed);
         log_totals("audio.helper_prepare_abandoned", reason.as_str());
     }
 }
 
-/// Drain the slot for a capture start. Only a dictation's first attempt for
-/// the prepared gesture adopts the helper; every other start tears it down.
+/// Delayed expiry must never invalidate a different, newer gesture.
+pub(crate) fn invalidate_token(token: u64, listener_generation: u64, reason: InvalidateReason) {
+    let mut state = PREPARATION.lock_or_recover();
+    let identity = match state.slot.state {
+        SlotState::Preparing { identity, .. } | SlotState::Ready { identity, .. } => Some(identity),
+        SlotState::Empty => None,
+    };
+    if identity.is_some_and(|i| i.token == token && i.listener_generation == listener_generation) {
+        state.invalidate();
+        CHANGED.notify_all();
+        ABANDONED.fetch_add(1, Ordering::Relaxed);
+        log_totals("audio.helper_prepare_abandoned", reason.as_str());
+    }
+}
+
+/// Under the shared transition, a confirmed keyboard claim preserves only its
+/// exact gesture; toolbar and other capture claims invalidate immediately.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CaptureClaim {
+    Dictation(Option<PrepareIdentity>),
+    Query,
+    Transform,
+    Meeting,
+    Preview,
+    Standby,
+}
+
+pub(crate) async fn admission_transition<'a>(
+    transition: &'a tokio::sync::Mutex<()>,
+    admitted: impl FnOnce() -> bool,
+) -> Option<tokio::sync::MutexGuard<'a, ()>> {
+    let guard = transition.lock().await;
+    admitted().then_some(guard)
+}
+
+pub(crate) fn capture_claimed(claim: CaptureClaim) {
+    let identity = match claim {
+        CaptureClaim::Dictation(identity) => identity,
+        _ => None,
+    };
+    let mut state = PREPARATION.lock_or_recover();
+    let matches = match state.slot.state {
+        SlotState::Preparing {
+            identity: prepared, ..
+        }
+        | SlotState::Ready {
+            identity: prepared, ..
+        } => Some(prepared) == identity,
+        SlotState::Empty => false,
+    };
+    if !matches && state.invalidate() {
+        CHANGED.notify_all();
+        ABANDONED.fetch_add(1, Ordering::Relaxed);
+        log_totals(
+            "audio.helper_prepare_abandoned",
+            InvalidateReason::CaptureClaimed.as_str(),
+        );
+    }
+}
+
 pub(crate) fn take_for_start(
     identity: Option<PrepareIdentity>,
 ) -> (HelperPreparationOutcome, Option<PreparedHelper>) {
-    let (outcome, adopted, stale) =
-        SLOT.lock_or_recover()
-            .take(identity, Instant::now(), PREPARED_HELPER_TTL);
-    if let Some(helper) = stale {
-        if outcome == HelperPreparationOutcome::Expired {
-            EXPIRED.fetch_add(1, Ordering::Relaxed);
-        }
-        discard(helper, InvalidateReason::Superseded);
+    let mut state = PREPARATION.lock_or_recover();
+    let (outcome, adopted, stale) = state
+        .slot
+        .take(identity, Instant::now(), PREPARED_HELPER_TTL);
+    if let Some(cancel) = &state.active {
+        cancel.cancelled.store(true, Ordering::Release);
     }
+    if let Some(stale) = stale {
+        assert!(state.retiring.is_none());
+        state.retiring = Some(stale);
+    }
+    CHANGED.notify_all();
     if adopted.is_some() {
         ADOPTED.fetch_add(1, Ordering::Relaxed);
         log_totals("audio.helper_prepare_adopted", outcome.as_str());
@@ -324,15 +565,6 @@ pub(crate) fn take_for_start(
     (outcome, adopted)
 }
 
-fn discard(helper: PreparedHelper, reason: InvalidateReason) {
-    ABANDONED.fetch_add(1, Ordering::Relaxed);
-    teardown(helper);
-    log_totals("audio.helper_prepare_abandoned", reason.as_str());
-}
-
-/// Confirmed termination off the caller's thread. Closing stdin before Start
-/// makes the helper exit; it never opened audio, so an unconfirmed exit keeps
-/// retrying ownership here rather than blocking a capture start.
 fn teardown(helper: PreparedHelper) {
     let PreparedHelper {
         child,
@@ -342,9 +574,7 @@ fn teardown(helper: PreparedHelper) {
         nonce,
     } = helper;
     drop(output);
-    let _ = thread::Builder::new()
-        .name("murmur-capture-prepare-reap".to_string())
-        .spawn(move || terminate(child, input, capture_id, nonce));
+    terminate(child, input, capture_id, nonce);
 }
 
 fn terminate(
@@ -378,10 +608,277 @@ mod tests {
             token,
             listener_generation: 3,
             topology_generation: 5,
+            configuration_generation: 7,
         }
     }
 
     const TTL: Duration = Duration::from_millis(1_500);
+
+    fn current_identity(token: u64) -> PrepareIdentity {
+        PrepareIdentity {
+            token,
+            listener_generation: 3,
+            topology_generation: crate::audio_lifecycle::input_topology_generation(),
+            configuration_generation: configuration_generation(),
+        }
+    }
+    fn reset_preparation() {
+        let mut state = PREPARATION.lock_or_recover();
+        assert!(state.retiring.is_none());
+        let (_, helper) = state.slot.invalidate();
+        assert!(helper.is_none());
+        state.active = None;
+    }
+    fn claim_test_request(identity: PrepareIdentity) -> Arc<Cancellation> {
+        let mut ticket = None;
+        assert!(request_with(identity, |_, cancel| {
+            ticket = Some(cancel);
+            Ok(())
+        }));
+        ticket.unwrap()
+    }
+
+    #[tokio::test]
+    async fn shared_transition_serializes_keyboard_admission_and_all_capture_claims() {
+        use crate::state::{AppState, DictationStatus};
+        for claim in [
+            CaptureClaim::Dictation(None),
+            CaptureClaim::Query,
+            CaptureClaim::Meeting,
+            CaptureClaim::Transform,
+            CaptureClaim::Preview,
+            CaptureClaim::Standby,
+        ] {
+            reset_preparation();
+            let app = Arc::new(AppState::default());
+            let owner = Arc::new(AtomicBool::new(false));
+            // First race direction: admission owns the actual production
+            // transition through request; the next claimant invalidates it.
+            let guard =
+                admission_transition(&app.recording_transition, || !owner.load(Ordering::SeqCst))
+                    .await
+                    .unwrap();
+            let id = current_identity(100);
+            let cancel = claim_test_request(id);
+            let capture_app = Arc::clone(&app);
+            let capture_owner = Arc::clone(&owner);
+            let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
+            let capture = tokio::spawn(async move {
+                queued_tx.send(()).unwrap();
+                let _transition = capture_app.recording_transition.lock().await;
+                capture_claimed(claim);
+                capture_owner.store(true, Ordering::SeqCst);
+                capture_app.dictation.lock_or_recover().status = DictationStatus::Starting;
+            });
+            queued_rx.await.unwrap();
+            assert!(cancel.valid());
+            drop(guard);
+            capture.await.unwrap();
+            assert!(
+                !cancel.valid(),
+                "{claim:?} must revoke before async context/setup"
+            );
+            assert!(matches!(
+                PREPARATION.lock_or_recover().slot.state,
+                SlotState::Empty
+            ));
+            // Reverse direction: a capture that claimed first blocks admission,
+            // even when keyboard preparation was queued before lock release.
+            let guard = app.recording_transition.lock().await;
+            let prepare_app = Arc::clone(&app);
+            let prepare_owner = Arc::clone(&owner);
+            let queued = tokio::spawn(async move {
+                admission_transition(&prepare_app.recording_transition, || {
+                    !prepare_owner.load(Ordering::SeqCst)
+                })
+                .await
+                .is_some()
+            });
+            drop(guard);
+            assert!(!queued.await.unwrap());
+            reset_preparation();
+        }
+    }
+
+    #[test]
+    fn exact_keyboard_claim_survives_but_toolbar_and_wrong_gestures_revoke() {
+        reset_preparation();
+        let id = current_identity(101);
+        let cancel = claim_test_request(id);
+        capture_claimed(CaptureClaim::Dictation(Some(id)));
+        assert!(cancel.valid());
+        capture_claimed(CaptureClaim::Dictation(Some(PrepareIdentity {
+            token: 102,
+            ..id
+        })));
+        assert!(!cancel.valid());
+        // Cleanup ownership stays single-flight after invalidation, until its
+        // existing worker (not an extra reaper thread) confirms exit.
+        assert!(!request_with(current_identity(103), |_, _| panic!(
+            "must not spawn during cleanup"
+        )));
+        reset_preparation();
+    }
+
+    #[test]
+    fn failed_worker_handoff_occurs_before_child_creation_and_releases_claim() {
+        reset_preparation();
+        assert!(!request_with(current_identity(104), |_, _| Err(
+            std::io::ErrorKind::Other.into()
+        )));
+        let state = PREPARATION.lock_or_recover();
+        assert!(state.active.is_none());
+        assert!(state.retiring.is_none());
+        assert!(matches!(state.slot.state, SlotState::Empty));
+    }
+
+    #[test]
+    fn delayed_expiry_cannot_cancel_newer_preparation() {
+        reset_preparation();
+        let old = current_identity(105);
+        let old_cancel = claim_test_request(old);
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel();
+        let expiry = thread::spawn(move || {
+            gate_rx.recv().unwrap();
+            invalidate_token(
+                old.token,
+                old.listener_generation,
+                InvalidateReason::SecondTapExpired,
+            );
+        });
+        // The old detector has expired and cleanup completed while its timer
+        // is descheduled before the identity-scoped invalidation call.
+        reset_preparation();
+        old_cancel.cancelled.store(true, Ordering::Release);
+        let newer = current_identity(106);
+        let cancel = claim_test_request(newer);
+        gate_tx.send(()).unwrap();
+        expiry.join().unwrap();
+        assert!(cancel.valid());
+        invalidate_token(
+            newer.token,
+            newer.listener_generation,
+            InvalidateReason::SecondTapExpired,
+        );
+        assert!(!cancel.valid());
+        reset_preparation();
+    }
+
+    #[test]
+    fn settings_generation_prevents_late_request_resurrection_and_adoption() {
+        reset_preparation();
+        let id = current_identity(107);
+        let cancel = claim_test_request(id);
+        configuration_changed();
+        assert!(!cancel.valid());
+        reset_preparation();
+        assert!(!request_with(id, |_, _| panic!(
+            "old settings must not spawn"
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_during_spawn_retains_and_reaps_the_returned_child() {
+        let cancel = Arc::new(Cancellation {
+            cancelled: AtomicBool::new(false),
+            deadline: Instant::now() + TTL,
+        });
+        let worker_cancel = Arc::clone(&cancel);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            prepare_with_spawn(0, &worker_cancel, |_, _| {
+                let owned = ManagedChild::spawn_with_arguments(
+                    std::path::Path::new("/bin/sh"),
+                    &["-c", "exec /bin/sleep 60"],
+                    &[],
+                )
+                .unwrap();
+                entered_tx.send(owned.0.pid()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(owned)
+            });
+        });
+        let pid = entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        cancel.cancelled.store(true, Ordering::Release);
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_during_hello_or_passive_resolution_reaps_the_exact_child() {
+        for command in [
+            ProductionHostMessage::Hello,
+            ProductionHostMessage::PrepareInput,
+        ] {
+            let cancel = Arc::new(Cancellation {
+                cancelled: AtomicBool::new(false),
+                deadline: Instant::now() + TTL,
+            });
+            let (child, mut input, output) = ManagedChild::spawn_with_arguments(
+                std::path::Path::new("/bin/sh"),
+                &["-c", "exec /bin/sleep 60"],
+                &[],
+            )
+            .unwrap();
+            let pid = child.pid();
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let worker_cancel = Arc::clone(&cancel);
+            let worker = thread::spawn(move || {
+                let nonce = [7; 16];
+                write_production_control(&mut input, 77, nonce, &command).unwrap();
+                let mut output = CancellableOutput {
+                    output,
+                    cancel: &worker_cancel,
+                    before_poll: Some(Box::new(move || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    })),
+                };
+                assert!(
+                    read_production_frame::<ProductionHelperMessage>(&mut output, 77, nonce)
+                        .is_err()
+                );
+                drop(output);
+                terminate(child, input, 77, nonce);
+            });
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            cancel.cancelled.store(true, Ordering::Release);
+            release_tx.send(()).unwrap();
+            worker.join().unwrap();
+            assert_eq!(
+                unsafe { libc::kill(pid as i32, 0) },
+                -1,
+                "child must have confirmed exit, not a dropped handoff"
+            );
+        }
+    }
+
+    #[test]
+    fn request_deadline_includes_spawn_and_hello_time() {
+        let mut slot = Slot::new();
+        let (epoch, _) = slot.begin(identity(1));
+        let requested = match slot.state {
+            SlotState::Preparing { requested_at, .. } => requested_at,
+            _ => unreachable!(),
+        };
+        assert!(slot
+            .finish(epoch, "helper", requested + TTL - Duration::from_millis(1))
+            .is_ok());
+        assert_eq!(
+            slot.take(Some(identity(1)), requested + TTL, TTL),
+            (HelperPreparationOutcome::Expired, None, Some("helper"))
+        );
+        let (epoch, _) = slot.begin(identity(2));
+        assert_eq!(
+            slot.finish(epoch, "late", Instant::now() + TTL),
+            Err("late")
+        );
+    }
 
     #[test]
     fn matching_ready_helper_is_adopted_once() {

@@ -330,8 +330,9 @@ Transcription processing is local. Network access occurs for model setup and may
   boundary.
 - Protocol v6 emits stable entered/completed setup-step constants that bracket
   each native Core Audio call on the AUHAL path — device resolution, unit
-  creation (`audio_unit_new`: component find/instantiate/initialize), input
-  enable, output disable, current-device binding, stream-format configuration,
+  creation (`audio_unit_new`: component find/instantiate), separate initialization
+  (`audio_unit_initialize`), input enable, output disable, current-device binding,
+  stream-format configuration,
   callback installation, and `stream_start` (exactly `AudioOutputUnitStart`) —
   plus comparable CPAL steps and the callback wait. A step that entered without
   completing therefore names the exact hung operation; the supervisor logs each

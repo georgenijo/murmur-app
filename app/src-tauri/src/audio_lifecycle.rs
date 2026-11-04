@@ -2537,7 +2537,7 @@ pub(crate) fn input_topology_changed() {
 /// Disabled by default; settings transport clamps the memory/time bounds.
 pub(crate) fn configure_standby(enabled: bool, seconds: u32, pre_roll_ms: u32) {
     if enabled {
-        audio::prepare::invalidate(audio::prepare::InvalidateReason::CaptureClaimed);
+        audio::prepare::capture_claimed(audio::prepare::CaptureClaim::Standby);
     }
     let policy = StandbyPolicy {
         seconds: if enabled { seconds.clamp(30, 900) } else { 0 },

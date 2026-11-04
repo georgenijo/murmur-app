@@ -806,18 +806,48 @@ fn apply_prepare_signal(
                 token: candidate.token,
                 listener_generation,
                 topology_generation: crate::audio_lifecycle::input_topology_generation(),
+                configuration_generation: crate::audio::prepare::configuration_generation(),
             };
             let handle = handle.clone();
-            crate::audio::prepare::request(identity, move || {
-                listener_context_matches(mode, listener_generation)
-                    && !IS_PROCESSING.load(Ordering::SeqCst)
-                    && !APP_DISABLED.load(Ordering::SeqCst)
-                    && crate::commands::permissions::check_microphone_permission_status()
-                        == "granted"
-                    && !crate::audio_lifecycle::is_audio_active()
-                    && handle.try_state::<crate::State>().is_some_and(|state| {
-                        crate::commands::recording::dictation_prepare_admitted(&state)
-                    })
+            tauri::async_runtime::spawn(async move {
+                let Some(state) = handle.try_state::<crate::State>() else {
+                    return;
+                };
+                // Same transition as toolbar, query, transform, meeting, and
+                // preview claims. Keep it through the preparation slot claim.
+                let Some(_transition) = crate::audio::prepare::admission_transition(
+                    &state.app_state.recording_transition,
+                    || {
+                        listener_context_matches(mode, listener_generation)
+                            && !IS_PROCESSING.load(Ordering::SeqCst)
+                            && !APP_DISABLED.load(Ordering::SeqCst)
+                            && crate::commands::permissions::check_microphone_permission_status()
+                                == "granted"
+                            && DOUBLE_TAP_DETECTOR
+                                .lock_or_recover()
+                                .as_ref()
+                                .is_some_and(|d| d.prepared_token == Some(identity.token))
+                            && crate::commands::recording::dictation_prepare_admitted(&state)
+                            && identity.topology_generation
+                                == crate::audio_lifecycle::input_topology_generation()
+                            && identity.configuration_generation
+                                == crate::audio::prepare::configuration_generation()
+                    },
+                )
+                .await
+                else {
+                    return;
+                };
+                // Keep the detector identity stable through the slot claim;
+                // a chord/expiry that already ran cannot be resurrected by a
+                // queued async admission continuation.
+                let detector = DOUBLE_TAP_DETECTOR.lock_or_recover();
+                if detector
+                    .as_ref()
+                    .is_some_and(|d| d.prepared_token == Some(identity.token))
+                {
+                    crate::audio::prepare::request(identity);
+                }
             });
         }
     }
@@ -838,14 +868,22 @@ fn schedule_second_tap_expiry(
             return;
         }
 
-        let elapsed_ms = {
+        let expired = {
             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
-            det.as_mut()
-                .and_then(|d| d.expire_second_tap_wait(started_at))
+            det.as_mut().and_then(|d| {
+                let token = d.prepared_token;
+                d.expire_second_tap_wait(started_at)
+                    .map(|elapsed| (elapsed, token))
+            })
         };
-        if elapsed_ms.is_some() {
-            invalidate_preparation(crate::audio::prepare::InvalidateReason::SecondTapExpired);
+        if let Some((_, Some(token))) = expired {
+            crate::audio::prepare::invalidate_token(
+                token,
+                listener_generation,
+                crate::audio::prepare::InvalidateReason::SecondTapExpired,
+            );
         }
+        let elapsed_ms = expired.map(|(elapsed, _)| elapsed);
 
         if let Some(elapsed_ms) =
             elapsed_ms.filter(|_| listener_context_matches(mode, listener_generation))

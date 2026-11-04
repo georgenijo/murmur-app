@@ -251,6 +251,7 @@ fn prepare_meeting_session(
             }
         }
     }
+    crate::audio::prepare::capture_claimed(crate::audio::prepare::CaptureClaim::Meeting);
     app_state.meeting_active.store(true, Ordering::SeqCst);
     app_state
         .meeting_inference_active

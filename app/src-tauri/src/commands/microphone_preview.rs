@@ -177,6 +177,7 @@ pub async fn start_microphone_preview(
         None => device_id,
     };
     let preview_id = state.app_state.microphone_preview.claim(vad_sensitivity)?;
+    crate::audio::prepare::capture_claimed(crate::audio::prepare::CaptureClaim::Preview);
     state.app_state.microphone_preview.bind_signal_evidence(
         preview_id,
         crate::audio_inventory::signal_evidence_key(device_id.as_deref()),

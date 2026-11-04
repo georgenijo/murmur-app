@@ -220,6 +220,12 @@ pub struct ProductionCaptureV1 {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "optional_duration"
     )]
+    pub audio_unit_initialize_ms: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_duration"
+    )]
     pub stream_configure_ms: Option<u64>,
     #[serde(
         default,
@@ -289,6 +295,7 @@ impl ProductionCaptureV1 {
                 // The split describes the latest attempt, like streamOpenMs.
                 self.device_resolution_ms = None;
                 self.audio_unit_new_ms = None;
+                self.audio_unit_initialize_ms = None;
                 self.stream_configure_ms = None;
                 self.stream_start_ms = None;
             }
@@ -358,6 +365,9 @@ impl ProductionCaptureV1 {
                     self.device_resolution_ms = Some(elapsed_ms);
                 }
                 CaptureSetupStep::AudioUnitNew => self.audio_unit_new_ms = Some(elapsed_ms),
+                CaptureSetupStep::AudioUnitInitialize => {
+                    self.audio_unit_initialize_ms = Some(elapsed_ms)
+                }
                 CaptureSetupStep::EnableInputIo
                 | CaptureSetupStep::DisableOutputIo
                 | CaptureSetupStep::SetCurrentDevice
@@ -1044,7 +1054,8 @@ mod stream_open_split_tests {
         capture.observe(attempt(1));
         for (s, ms) in [
             (CaptureSetupStep::DeviceResolution, 2),
-            (CaptureSetupStep::AudioUnitNew, 120),
+            (CaptureSetupStep::AudioUnitNew, 116),
+            (CaptureSetupStep::AudioUnitInitialize, 4),
             (CaptureSetupStep::EnableInputIo, 1),
             (CaptureSetupStep::DisableOutputIo, 1),
             (CaptureSetupStep::SetCurrentDevice, 9),
@@ -1057,7 +1068,11 @@ mod stream_open_split_tests {
             capture.observe(step(s, ms));
         }
         assert_eq!(capture.device_resolution_ms, Some(2));
-        assert_eq!(capture.audio_unit_new_ms, Some(120));
+        assert_eq!(capture.audio_unit_new_ms, Some(116));
+        assert_eq!(capture.audio_unit_initialize_ms, Some(4));
+        let roundtrip: ProductionCaptureV1 =
+            serde_json::from_value(serde_json::to_value(&capture).unwrap()).unwrap();
+        assert_eq!(roundtrip.audio_unit_initialize_ms, Some(4));
         assert_eq!(capture.stream_configure_ms, Some(15));
         assert_eq!(capture.stream_start_ms, Some(30));
 
@@ -1074,6 +1089,7 @@ mod stream_open_split_tests {
         }
         assert_eq!(capture.device_resolution_ms, Some(0), "zero is measured");
         assert_eq!(capture.audio_unit_new_ms, None);
+        assert_eq!(capture.audio_unit_initialize_ms, None);
         assert_eq!(capture.stream_configure_ms, Some(10));
         assert_eq!(capture.stream_start_ms, Some(7));
     }
@@ -1130,11 +1146,15 @@ mod stream_open_split_tests {
         let parsed: ProductionCaptureV1 = serde_json::from_value(historical.clone()).unwrap();
         assert_eq!(parsed.stream_open_ms, Some(165));
         assert_eq!(parsed.audio_unit_new_ms, None);
+        assert_eq!(parsed.audio_unit_initialize_ms, None);
         assert_eq!(parsed.helper_preparation, None);
         assert_eq!(serde_json::to_value(&parsed).unwrap(), historical);
 
         let mut bad = historical.clone();
         bad["audioUnitNewMs"] = serde_json::json!(u64::MAX);
+        assert!(serde_json::from_value::<ProductionCaptureV1>(bad).is_err());
+        let mut bad = historical.clone();
+        bad["audioUnitInitializeMs"] = serde_json::json!(u64::MAX);
         assert!(serde_json::from_value::<ProductionCaptureV1>(bad).is_err());
         let mut bad = historical;
         bad["helperPreparation"] = serde_json::json!("private");

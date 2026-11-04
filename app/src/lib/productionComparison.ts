@@ -19,6 +19,7 @@ type CaptureMetricKey = keyof Pick<ProductionRunV1['capture'],
     | 'streamOpenMs'
     | 'deviceResolutionMs'
     | 'audioUnitNewMs'
+    | 'audioUnitInitializeMs'
     | 'streamConfigureMs'
     | 'streamStartMs'
     | 'firstCallbackWaitMs'
@@ -50,6 +51,7 @@ export const PRODUCTION_COMPARISON_METRICS: readonly ProductionMetricDefinition[
   { key: 'streamOpenMs', label: 'Stream open', source: 'capture' },
   { key: 'deviceResolutionMs', label: 'Stream open · device resolution', source: 'capture' },
   { key: 'audioUnitNewMs', label: 'Stream open · audio unit new', source: 'capture' },
+  { key: 'audioUnitInitializeMs', label: 'Stream open · audio unit initialize', source: 'capture' },
   { key: 'streamConfigureMs', label: 'Stream open · configure', source: 'capture' },
   { key: 'streamStartMs', label: 'Stream open · start', source: 'capture' },
   { key: 'firstCallbackWaitMs', label: 'First callback wait', source: 'capture' },

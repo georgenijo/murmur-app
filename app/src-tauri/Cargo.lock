@@ -2857,6 +2857,7 @@ dependencies = [
  "core-foundation-sys",
  "core-graphics",
  "coreaudio-rs 0.11.3",
+ "coreaudio-rs 0.14.2",
  "cpal",
  "hound",
  "libc",

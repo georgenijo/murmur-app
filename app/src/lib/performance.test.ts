@@ -266,7 +266,8 @@ describe('performance contracts', () => {
     } });
     expect(isPerformanceRunV1(withCapture({
       deviceResolutionMs: 0,
-      audioUnitNewMs: 120,
+      audioUnitNewMs: 116,
+      audioUnitInitializeMs: 4,
       streamConfigureMs: 15,
       streamStartMs: 28,
       helperPreparation: 'adopted',
@@ -275,6 +276,9 @@ describe('performance contracts', () => {
       expect(isPerformanceRunV1(withCapture({ helperPreparation: outcome }))).toBe(true);
     }
     expect(isPerformanceRunV1(withCapture({ audioUnitNewMs: -1 }))).toBe(false);
+    expect(isPerformanceRunV1(withCapture({ audioUnitInitializeMs: 0 }))).toBe(true);
+    expect(isPerformanceRunV1(withCapture({ audioUnitInitializeMs: -1 }))).toBe(false);
+    expect(isPerformanceRunV1(withCapture({ audioUnitInitializeMs: Number.MAX_SAFE_INTEGER + 1 }))).toBe(false);
     expect(isPerformanceRunV1(withCapture({ streamStartMs: 1.5 }))).toBe(false);
     expect(isPerformanceRunV1(withCapture({ helperPreparation: 'private' }))).toBe(false);
     expect(isPerformanceRunV1(withCapture({ streamConfigureMs: 3, stderr: 'private' }))).toBe(false);

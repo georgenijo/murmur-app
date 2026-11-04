@@ -157,6 +157,7 @@ export interface ProductionRunV1 {
     /** Latest-attempt split of streamOpenMs; absent on older records. */
     deviceResolutionMs?: number | null;
     audioUnitNewMs?: number | null;
+    audioUnitInitializeMs?: number | null;
     streamConfigureMs?: number | null;
     streamStartMs?: number | null;
     /** First-attempt silent first-tap preparation outcome; absent on older records. */
@@ -373,7 +374,7 @@ const productionHelperPreparations = new Set<string>([
   'adopted', 'notPrepared', 'stillPreparing', 'identityMismatch', 'expired',
 ]);
 const optionalProductionCaptureKeys = [
-  'gesture', 'deviceResolutionMs', 'audioUnitNewMs', 'streamConfigureMs', 'streamStartMs',
+  'gesture', 'deviceResolutionMs', 'audioUnitNewMs', 'audioUnitInitializeMs', 'streamConfigureMs', 'streamStartMs',
   'helperPreparation',
 ] as const;
 const productionCaptureFailureKinds = new Set<string>([
@@ -657,6 +658,7 @@ function isProductionRunV1(value: unknown): value is ProductionRunV1 {
     value.capture.stopToWorkerExitMs,
     value.capture.deviceResolutionMs,
     value.capture.audioUnitNewMs,
+    value.capture.audioUnitInitializeMs,
     value.capture.streamConfigureMs,
     value.capture.streamStartMs,
   ];

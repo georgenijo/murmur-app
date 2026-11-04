@@ -579,6 +579,44 @@ fn spawn_helper(
     ),
     AudioFailure,
 > {
+    spawn_helper_checked(capture_id, nonce_hex, fault, observation, || true)
+}
+
+fn spawn_helper_cancellable(
+    capture_id: u64,
+    nonce_hex: &str,
+    valid: impl Fn() -> bool,
+) -> Result<
+    (
+        ManagedChild,
+        std::process::ChildStdin,
+        std::process::ChildStdout,
+    ),
+    AudioFailure,
+> {
+    spawn_helper_checked(capture_id, nonce_hex, None, None, valid)
+}
+
+fn spawn_helper_checked(
+    capture_id: u64,
+    nonce_hex: &str,
+    fault: Option<&str>,
+    observation: Option<(crate::audio_lifecycle::AudioOwner, &AudioWorkerEventSender)>,
+    valid: impl Fn() -> bool,
+) -> Result<
+    (
+        ManagedChild,
+        std::process::ChildStdin,
+        std::process::ChildStdout,
+    ),
+    AudioFailure,
+> {
+    if !valid() {
+        return Err(AudioFailure::new(
+            AudioFailureKind::InitializationTimeout,
+            AudioInitPhase::StreamBuild,
+        ));
+    }
     let resolve_started = Instant::now();
     let path = helper_path().map_err(|_| {
         AudioFailure::new(
@@ -603,6 +641,14 @@ fn spawn_helper(
     let mut arguments = vec!["--production-v10", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
+    }
+    // Signature validation may block; cancellation must be rechecked before
+    // creating a process, not just when publishing its eventual hello.
+    if !valid() {
+        return Err(AudioFailure::new(
+            AudioFailureKind::InitializationTimeout,
+            AudioInitPhase::StreamBuild,
+        ));
     }
     let spawn_started = Instant::now();
     let child = ManagedChild::spawn_with_arguments(&path, &arguments, &[]).map_err(|_| {
@@ -2224,6 +2270,7 @@ fn run_backend(
                 token: gesture.candidate.token,
                 listener_generation: crate::keyboard::listener_generation(),
                 topology_generation: crate::audio_lifecycle::input_topology_generation(),
+                configuration_generation: prepare::configuration_generation(),
             });
         let (outcome, helper) = prepare::take_for_start(identity);
         if owner.dictation_id().is_some() {

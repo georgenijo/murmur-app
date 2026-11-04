@@ -5,13 +5,8 @@ use topology_wake::TopologyWake;
 use core_foundation_sys::base::CFTypeRef;
 use core_foundation_sys::string::{kCFStringEncodingUTF8, CFStringGetCString, CFStringRef};
 use core_graphics::display::CGDisplay;
-use coreaudio::audio_unit::audio_format::LinearPcmFlags;
 use coreaudio::audio_unit::macos_helpers::{
     get_audio_device_ids, get_default_device_id, get_device_name,
-};
-use coreaudio::audio_unit::render_callback::{self, data};
-use coreaudio::audio_unit::{
-    AudioUnit, Element, IOType, SampleFormat as AuSampleFormat, Scope, StreamFormat,
 };
 use coreaudio::sys::{
     kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID,
@@ -23,6 +18,11 @@ use coreaudio::sys::{
     AudioBufferList, AudioDeviceID, AudioObjectAddPropertyListener, AudioObjectGetPropertyData,
     AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
     AudioObjectPropertyListenerProc, AudioObjectRemovePropertyListener,
+};
+use coreaudio_unit::audio_unit::audio_format::LinearPcmFlags;
+use coreaudio_unit::audio_unit::render_callback::{self, data};
+use coreaudio_unit::audio_unit::{
+    AudioUnit, Element, IOType, SampleFormat as AuSampleFormat, Scope, StreamFormat,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream};
@@ -817,7 +817,7 @@ impl SpscRing {
 
 pub(super) enum CaptureStream {
     Cpal(Stream),
-    Auhal(coreaudio::audio_unit::AudioUnit),
+    Auhal(AudioUnit),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1424,16 +1424,95 @@ fn start_cpal(
     Ok((CaptureStream::Cpal(stream), rate))
 }
 
-pub(super) fn start_auhal(
+/// Passive reads only: inventory, raw UIDs, and current default. Never asks
+/// Core Audio for an Audio Unit, stream format, or input stream. Retained only
+/// until the separate confirmed Start command, within the host's request TTL.
+struct PassiveInput {
+    devices: Vec<(AudioDeviceID, Option<String>)>,
+    default_device: Option<AudioDeviceID>,
+}
+impl PassiveInput {
+    fn lookup() -> Result<Self, ()> {
+        Self::lookup_with(
+            microphone_authorization_granted(),
+            || get_audio_device_ids().map_err(|_| ()),
+            device_has_input_channels,
+            raw_uid,
+            || get_default_device_id(true),
+        )
+    }
+    fn lookup_with(
+        granted: bool,
+        enumerate: impl FnOnce() -> Result<Vec<AudioDeviceID>, ()>,
+        has_input: impl Fn(AudioDeviceID) -> bool,
+        uid: impl Fn(AudioDeviceID) -> Option<String>,
+        default_device: impl FnOnce() -> Option<AudioDeviceID>,
+    ) -> Result<Self, ()> {
+        if !granted {
+            return Err(());
+        }
+        let devices = enumerate()?;
+        if devices.len() > MAX_INPUT_DEVICE_COUNT {
+            return Err(());
+        }
+        let devices = devices
+            .into_iter()
+            .filter(|id| has_input(*id))
+            .map(|id| (id, uid(id)))
+            .collect();
+        Ok(Self {
+            devices,
+            default_device: default_device(),
+        })
+    }
+    fn resolve(
+        &self,
+        requested: Option<&str>,
+    ) -> Option<(Result<AudioDeviceID, FailureCode>, InputResolutionEvidence)> {
+        if !microphone_authorization_granted() {
+            return None;
+        }
+        self.resolve_with(
+            requested,
+            get_default_device_id(true),
+            raw_uid,
+            device_has_input_channels,
+        )
+    }
+    fn resolve_with(
+        &self,
+        requested: Option<&str>,
+        current_default: Option<AudioDeviceID>,
+        raw_uid: impl Fn(AudioDeviceID) -> Option<String>,
+        has_input: impl Fn(AudioDeviceID) -> bool,
+    ) -> Option<(Result<AudioDeviceID, FailureCode>, InputResolutionEvidence)> {
+        // Default and the exact resolved UID must still match at confirmation.
+        // A topology notification also invalidates host adoption independently.
+        if current_default != self.default_device {
+            return None;
+        }
+        let selected = match requested {
+            Some(uid) => select_auhal_device(uid, self.devices.iter().cloned()),
+            None => self.default_device,
+        }?;
+        let (_, uid) = self.devices.iter().find(|(id, _)| *id == selected)?;
+        if uid.is_none() || raw_uid(selected).as_ref() != uid.as_ref() || !has_input(selected) {
+            return None;
+        }
+        Some((
+            Ok(selected),
+            InputResolutionEvidence::observed(
+                requested.map(|_| true),
+                self.devices.len(),
+                self.default_device.is_some(),
+            ),
+        ))
+    }
+}
+
+fn resolve_auhal_input(
     requested: Option<&str>,
-    ring: Arc<SpscRing>,
-    callback_clock: Option<Arc<CallbackClock>>,
-    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
-) -> Result<(CaptureStream, u32), FailureCode> {
-    emit(MicrophoneSetupObservation::Step(
-        CaptureSetupStep::DeviceResolution,
-        SetupTransition::Entered,
-    ))?;
+) -> (Result<AudioDeviceID, FailureCode>, InputResolutionEvidence) {
     let default_device = get_default_device_id(true);
     let default_input_available = default_device.is_some();
     let (device, evidence) = match requested {
@@ -1472,6 +1551,32 @@ pub(super) fn start_auhal(
             (selected, evidence)
         }
     };
+    (device, evidence)
+}
+
+pub(super) fn start_auhal(
+    requested: Option<&str>,
+    ring: Arc<SpscRing>,
+    callback_clock: Option<Arc<CallbackClock>>,
+    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
+) -> Result<(CaptureStream, u32), FailureCode> {
+    start_auhal_resolved(requested, ring, callback_clock, emit, None)
+}
+
+fn start_auhal_resolved(
+    requested: Option<&str>,
+    ring: Arc<SpscRing>,
+    callback_clock: Option<Arc<CallbackClock>>,
+    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
+    prepared: Option<&PassiveInput>,
+) -> Result<(CaptureStream, u32), FailureCode> {
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::DeviceResolution,
+        SetupTransition::Entered,
+    ))?;
+    let (device, evidence) = prepared
+        .and_then(|p| p.resolve(requested))
+        .unwrap_or_else(|| resolve_auhal_input(requested));
     emit(MicrophoneSetupObservation::InputResolution(evidence))?;
     let device = device?;
     emit(MicrophoneSetupObservation::Step(
@@ -1486,9 +1591,24 @@ pub(super) fn start_auhal(
         CaptureSetupStep::AudioUnitNew,
         SetupTransition::Entered,
     ))?;
-    let mut unit = AudioUnit::new(IOType::HalOutput).map_err(|_| FailureCode::StreamOpenFailed)?;
+    // The owning uninitialized constructor disposes the instance on all error
+    // paths. Do not transmute a raw handle into coreaudio-rs's private layout.
+    // Preserve the old executable order: initialize BEFORE setting IO/device/
+    // format. This runs only after confirmed Start, never in PrepareInput.
+    let mut unit = AudioUnit::new_uninitialized(IOType::HalOutput)
+        .map_err(|_| FailureCode::StreamOpenFailed)?;
     emit(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitNew,
+        SetupTransition::Completed,
+    ))?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::AudioUnitInitialize,
+        SetupTransition::Entered,
+    ))?;
+    unit.initialize()
+        .map_err(|_| FailureCode::StreamOpenFailed)?;
+    emit(MicrophoneSetupObservation::Step(
+        CaptureSetupStep::AudioUnitInitialize,
         SetupTransition::Completed,
     ))?;
     emit(MicrophoneSetupObservation::Step(
@@ -1574,7 +1694,7 @@ pub(super) fn start_auhal(
             }
         }
         if let Some(clock) = &callback_clock {
-            let timing_valid = args.time_stamp.mFlags & 0b11 == 0b11
+            let timing_valid = args.time_stamp.mFlags.0 & 0b11 == 0b11
                 && frame_count > 0
                 && frame_count == args.num_frames;
             clock.note(
@@ -2448,6 +2568,152 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    fn passive_fixture() -> PassiveInput {
+        PassiveInput::lookup_with(
+            true,
+            || Ok(vec![1, 2, 3]),
+            |id| id != 3,
+            |id| Some(format!("uid-{id}")),
+            || Some(1),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn passive_lookup_requires_existing_grant_and_bounds_inventory() {
+        assert!(PassiveInput::lookup_with(
+            false,
+            || panic!("no HAL read without existing grant"),
+            |_| panic!(),
+            |_| panic!(),
+            || panic!()
+        )
+        .is_err());
+        assert!(PassiveInput::lookup_with(
+            true,
+            || Ok(vec![1; MAX_INPUT_DEVICE_COUNT + 1]),
+            |_| panic!("must bound before per-device reads"),
+            |_| panic!(),
+            || panic!()
+        )
+        .is_err());
+        let prepared = passive_fixture();
+        assert_eq!(
+            prepared.devices,
+            vec![(1, Some("uid-1".into())), (2, Some("uid-2".into()))]
+        );
+        let (resolved, evidence) = prepared
+            .resolve_with(
+                Some("uid-2"),
+                Some(1),
+                |id| {
+                    assert_eq!(id, 2);
+                    Some("uid-2".into())
+                },
+                |id| id == 2,
+            )
+            .unwrap();
+        assert_eq!(resolved, Ok(2));
+        assert_eq!(evidence.input_device_count, 2);
+        assert_eq!(evidence.requested_present, Some(true));
+    }
+
+    #[test]
+    fn prepared_input_revalidates_exact_uid_default_and_input_capability() {
+        let prepared = passive_fixture();
+        assert!(prepared
+            .resolve_with(
+                None,
+                Some(2),
+                |_| panic!("changed default must refuse"),
+                |_| panic!()
+            )
+            .is_none());
+        assert!(prepared
+            .resolve_with(
+                Some("uid-2"),
+                Some(1),
+                |_| Some("uid-reused".into()),
+                |_| true
+            )
+            .is_none());
+        assert!(prepared
+            .resolve_with(Some("uid-2"), Some(1), |_| Some("uid-2".into()), |_| false)
+            .is_none());
+        assert!(prepared
+            .resolve_with(
+                Some("missing"),
+                Some(1),
+                |_| panic!("no default substitution"),
+                |_| panic!()
+            )
+            .is_none());
+        assert_eq!(
+            prepared
+                .resolve_with(None, Some(1), |_| Some("uid-1".into()), |_| true)
+                .unwrap()
+                .0,
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn preparation_ack_is_nonopening_and_requires_separate_confirmed_start() {
+        let nonce = [8; 16];
+        for next in [
+            None,
+            Some(ProductionHostMessage::Cancel),
+            Some(ProductionHostMessage::Start {
+                device_id: Some("uid-2".into()),
+                backend: CaptureBackend::Auhal,
+            }),
+        ] {
+            let mut input = Vec::new();
+            if let Some(command) = &next {
+                write_production_control(&mut input, 5, nonce, command).unwrap();
+            }
+            let mut output = Vec::new();
+            let result = prepare_input_command(
+                ProductionHostMessage::PrepareInput,
+                &mut input.as_slice(),
+                &mut output,
+                5,
+                nonce,
+                || Ok(passive_fixture()),
+            );
+            let mut frames = output.as_slice();
+            assert_eq!(
+                read_production_frame::<ProductionHelperMessage>(&mut frames, 5, nonce).unwrap(),
+                ProductionFrame::Control(ProductionHelperMessage::InputPrepared)
+            );
+            assert!(
+                frames.is_empty(),
+                "preparation must emit neither setup nor PCM"
+            );
+            if matches!(next, Some(ProductionHostMessage::Start { .. })) {
+                let (command, prepared) = result.unwrap();
+                assert_eq!(Some(command), next);
+                assert!(prepared.is_some());
+            } else {
+                assert!(result.is_err());
+            }
+        }
+        let mut output = Vec::new();
+        assert!(prepare_input_command(
+            ProductionHostMessage::PrepareInput,
+            &mut &[][..],
+            &mut output,
+            5,
+            nonce,
+            || Err(())
+        )
+        .is_err());
+        assert!(
+            output.is_empty(),
+            "failed resolution cannot publish an adoptable helper"
+        );
+    }
+
     fn anchor(
         first_host_time: u64,
         host_time: u64,
@@ -3144,6 +3410,34 @@ mod tests {
     }
 }
 
+fn prepare_input_command(
+    command: ProductionHostMessage,
+    input: &mut impl Read,
+    output: &mut impl Write,
+    capture_id: u64,
+    nonce: SessionNonce,
+    lookup: impl FnOnce() -> Result<PassiveInput, ()>,
+) -> Result<(ProductionHostMessage, Option<PassiveInput>), ()> {
+    if command != ProductionHostMessage::PrepareInput {
+        return Ok((command, None));
+    }
+    let prepared = lookup()?;
+    write_production_control(
+        output,
+        capture_id,
+        nonce,
+        &ProductionHelperMessage::InputPrepared,
+    )
+    .map_err(|_| ())?;
+    // Only a separate confirmed Start can open capture. EOF, cancel, and all
+    // other feature commands exit without any Audio Unit or production run.
+    let command = read_control(input, capture_id, nonce)?;
+    if !matches!(command, ProductionHostMessage::Start { .. }) {
+        return Err(());
+    }
+    Ok((command, Some(prepared)))
+}
+
 pub fn run(arguments: &[String]) -> Result<(), ()> {
     spawn_parent_watchdog()?;
     let capture_id = arguments
@@ -3169,6 +3463,14 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
     )
     .map_err(|_| ())?;
     let command = read_control(&mut stdin, capture_id, nonce)?;
+    let (command, prepared_input) = prepare_input_command(
+        command,
+        &mut stdin,
+        &mut stdout,
+        capture_id,
+        nonce,
+        PassiveInput::lookup,
+    )?;
     let (command, automatic_deadline) = match command {
         ProductionHostMessage::StartAutomaticProbe {
             device_id,
@@ -3292,11 +3594,12 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                         Arc::clone(&failed),
                         &mut emit_setup,
                     ),
-                    CaptureBackend::Auhal => start_auhal(
+                    CaptureBackend::Auhal => start_auhal_resolved(
                         device_id.as_deref(),
                         Arc::clone(&ring),
                         None,
                         &mut emit_setup,
+                        prepared_input.as_ref(),
                     ),
                 }
             };

@@ -756,8 +756,9 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
                 .pragma_update(None, "user_version", 5)
                 .map_err(db_error)?;
         }
-        // V5 -> V6 (#933) adds optional production stream-open split and
-        // helper-preparation fields. Older strict decoders must refuse them.
+        // V5 -> V6 (#933) adds optional production stream-open split (including
+        // separate AUHAL new/initialize/start) and helper-preparation fields.
+        // Older strict decoders must refuse them.
         transaction
             .pragma_update(None, "user_version", 6)
             .map_err(db_error)?;

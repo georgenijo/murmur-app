@@ -511,19 +511,34 @@ scroll-wheel event occurs during either press. Any of those cancels the tap.
 Pointer movement alone does not.
 
 In Double Tap or Both mode, a first clean release of the double-tap key may
-silently prepare an idle capture helper. Preparation spawns the helper,
-verifies its signature, and completes the hello handshake. It does not touch
-Core Audio, open a device, send Start, show the microphone indicator, or
-trigger a TCC prompt. It runs only when microphone permission is already
-granted and audio is idle, with no dictation starting or recording and no live
-standby. Admission goes through the shared recording transition. The per-launch
-signature check still runs for every prepared helper.
+silently prepare an idle capture helper. Preparation verifies its signature,
+spawns it, completes hello, then sends a distinct `PrepareInput` command for
+bounded, nonopening HAL input-UID/default lookup. Both host and helper require
+an existing microphone grant; neither requests permission. No Audio Unit is
+created, configured, initialized, or started, no Start is sent, and no PCM or
+Murmur UI exists before confirmation. The contract is indicator- and prompt-free;
+final native interaction on the rebuilt signed helper must verify that contract.
+Preparation runs only while audio is idle, with no dictation starting/recording
+and no live standby. Admission and the preparation-slot claim hold the same
+`recording_transition` as capture claims. Every launch still verifies the signature.
 
-The confirmed start for the same gesture token, listener generation, and
-input-topology generation adopts the prepared helper. Everything else tears it
-down with confirmed termination: second-tap expiry, a chord, a mode or key
-change, a topology change, another feature claiming capture, or the roughly
-1.5 s lifetime. No Murmur UI appears for the first tap.
+The confirmed start must match gesture token, listener, input topology, and
+settings generation. Device/Smart Auto settings writes revoke preparation even
+without a topology notification. At Start the helper rechecks the current default,
+exact selected UID, and input capability before reusing its passive resolution;
+a mismatch uses ordinary post-confirmation resolution, never a different default
+for a pinned input. CPAL keeps its existing confirmed-start resolution path.
+
+Second-tap expiry, chords, mode/key/settings/topology changes, and another
+feature's capture claim invalidate preparation immediately, before asynchronous
+context capture or native setup. Expiry is identity-scoped so a delayed timer
+cannot kill a newer gesture. The 1.5 s deadline starts at the request, including
+spawn, hello, and passive resolution. In-flight pipe reads poll cancellation;
+creation rechecks cancellation after signature verification and before spawn.
+One single-flight preparation worker owns any child through confirmed teardown,
+including failed hello, invalidation during spawn, or delayed termination. No new
+preparation is launched while that worker is cleaning up; cleanup never hands a
+child to a fallibly spawned detached thread.
 
 Each dictation's first capture attempt records `capture.helperPreparation`:
 `adopted`, `notPrepared`, `stillPreparing`, `identityMismatch`, or `expired`.
@@ -545,7 +560,9 @@ are counted as unavailable, and the observation never raises a warning.
 split it using host-observed Entered → Completed helper setup brackets:
 
 - `deviceResolutionMs`: `DeviceResolution`;
-- `audioUnitNewMs`: AUHAL `AudioUnitNew` (absent for CPAL);
+- `audioUnitNewMs`: AUHAL component lookup/instance creation (`AudioUnitNew`);
+- `audioUnitInitializeMs`: the separate AUHAL `AudioUnitInitialize` call;
+  both AUHAL-only fields are absent for CPAL;
 - `streamConfigureMs`: sum of the configuration steps between creation and
   start (`EnableInputIo`, `DisableOutputIo`, `SetCurrentDevice`,
   `FormatConfiguration`, `CallbackInstallation`, or CPAL `DefaultConfig` and
@@ -554,8 +571,25 @@ split it using host-observed Entered → Completed helper setup brackets:
 
 Like `streamOpenMs`, these describe the latest capture attempt. A new attempt
 clears them, so a fallback never mixes steps from two backends. The helper
-duration fields still sum across attempts. Older records omit all four fields
+duration fields still sum across attempts. Older records omit these five fields
 and `helperPreparation`. A missing value is unavailable, never zero.
+
+All AUHAL brackets run after confirmed Start. Creation uses the pinned safe
+owning `coreaudio-rs 0.14.2` uninitialized constructor; its separate `initialize`
+call immediately follows, preserving the old new → initialize → IO/device/format
+configuration → callback → start order. The legacy HAL inventory helpers stay
+on their existing dependency. No raw instance is transmuted into the older
+wrapper's private layout, and an initialization failure still disposes its owner.
+
+The local signed stopped-AUHAL experiment for #933 did **not** justify shipping
+speculative configuration or a reorder: setting CurrentDevice with undetermined
+TCC prompted even without Start. In 20 granted trials configure-before-initialize
+had new-to-first-callback p50 33.58 ms versus 34.59 ms for the old order (~1 ms);
+initialization was ~3.9 ms, and pre-initialize/hold delayed the later start.
+RunningSomewhere stayed zero and callbacks absent during holds, but visual
+orange-indicator proof was incomplete. These scratch observations are not a
+production latency gain or an indicator-free proof. Therefore only passive lookup
+is prepared; configuration, initialization, and capture remain post-confirmation.
 
 SQLite `user_version = 5` reserves the optional gesture companion separately
 from #919's v4 `homophoneContext` stage. The transactional 4 → 5 metadata step
