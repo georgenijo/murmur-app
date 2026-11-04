@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.60.1] - 2026-11-04
+
+### Changed
+
+- Reduce double-tap dictation startup delay by preparing an idle capture helper after the first clean tap, without opening the microphone or capturing audio before confirmation (#938).
+- Show helper preparation outcomes and more detailed microphone startup timings in performance diagnostics (#938).
+- Skip unused Rust packaging outputs during CI tests and refresh dependency caches when the build recipe changes (#942).
+
+### Fixed
+
+- Cancel double-tap preparation when other keys, mouse buttons, scrolling, or settings changes invalidate the gesture (#938).
+
 ## [0.60.0] - 2026-11-04
 
 ### Added
