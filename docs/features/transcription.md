@@ -344,10 +344,12 @@ Transcription processing is local. Network access occurs for model setup and may
   recording's start mode does not determine the stop policy, so releasing a
   promoted hold over a toggle recording still protects speech. The supervisor
   applies the tail once. All standby stops retain 50 ms, including toggles:
-  standby snapshots the live buffer without a helper drain/fence, so the margin
-  protects final PCM still in the helper ring, pipe, reader queue, or awaiting
-  the shared-buffer lock. It is a conservative timing margin, not a delivery
-  fence. The content-free `audio.stop_tail_applied` event records `stop_trigger`,
+  the existing live-buffer snapshot semantics are unchanged. There is no
+  helper drain/fence on this path. PCM delayed longer than the margin can
+  miss the finalized recording and become standby pre-roll; the 50 ms margin
+  does not prove all previously captured audio has arrived. Zero-tail
+  acceleration is restricted to cold teardown, where Stop/Stopped provides
+  the delivery boundary. The content-free `audio.stop_tail_applied` event records `stop_trigger`,
   `recording_id`, `standby_enabled`, and `release_tail_ms`.
 - On the cold teardown path (no standby handoff), after the tail the host
   sends `Stop`. The helper checks the native stream stop, flushes
@@ -364,8 +366,9 @@ Transcription processing is local. Network access occurs for model setup and may
   seal. Unconfirmed exit or a long stop publishes existing cleanup-stalled
   restart guidance and marks the public capture state **Recovering** without
   discarding the delivered result or resetting its Processing state. Confirmed
-  exit emits `recording-cleanup-finished` to clear only that owner's cleanup
-  notice. A new dictation cannot advance its generation while the old capture
+  exit always emits `recording-cleanup-finished` for a delivered seal, including
+  normal exits with no stall warning. This clears only that owner's cleanup
+  notice and releases a retry's Recovering status while preserving Processing. A new dictation cannot advance its generation while the old capture
   is stopping/recovering. Other owners, incomplete/malformed drains, and
   sample-count mismatches retain
   the exit-before-delivery path. The post-exit stop log carries

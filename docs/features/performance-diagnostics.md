@@ -343,7 +343,8 @@ helper stop-to-exit timing starts when the worker receives Stop and excludes it.
 On the cold teardown path, a checked successful native stop and validated
 complete drain permit an early handoff: `audio.sealed_recording_delivered` marks
 the handoff before exit confirmation. Standby retains its 50 ms margin and
-does not use Stop/Stopped or the sealed-drain handoff. `captureFinalization`
+does not use Stop/Stopped or the sealed-drain handoff. The unchanged timed
+standby snapshot is not a delivery fence for PCM delayed beyond 50 ms. `captureFinalization`
 then measures through sealed-sample delivery and resampling; exit confirmation and thread join may
 continue concurrently with inference while capture ownership stays busy.
 The helper timing totals include observed attempts; stream-open and first-PCM

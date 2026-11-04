@@ -1659,7 +1659,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
     crate::audio_inventory::lifecycle_became_idle();
-    if finished.sealed_delivery && finished.stopping_guidance_emitted {
+    if finished.sealed_delivery {
         sink.notify(
             finished.app_handle.as_ref(),
             finished.owner,
@@ -1916,6 +1916,9 @@ fn handle_deadlines_at(
             let _ = current.command_sender.send(AudioCommand::Stop);
             return;
         }
+        // Preserve the pre-optimization standby handoff: a 50 ms margin
+        // followed by a live-buffer snapshot. This is not a helper fence;
+        // arbitrarily delayed PCM can still arrive after the snapshot.
         let raw = current
             .shared
             .lock()
@@ -3194,7 +3197,16 @@ mod tests {
     }
 
     #[test]
-    fn standby_toggle_keeps_delayed_final_pcm_in_the_stopped_recording() {
+    fn standby_margin_keeps_pcm_delivered_before_the_deadline() {
+        assert_standby_margin(false);
+    }
+
+    #[test]
+    fn standby_margin_preserves_baseline_with_pcm_still_delayed_at_the_deadline() {
+        assert_standby_margin(true);
+    }
+
+    fn assert_standby_margin(delayed_past_deadline: bool) {
         let commands = Arc::new(Mutex::new(None));
         let factory = TailPolicyFactory(commands);
         let events = AudioWorkerEventSender::new(|_| Ok(()));
@@ -3229,11 +3241,14 @@ mod tests {
             &sink,
             &public,
         );
-        attempt.as_mut().unwrap().standby_policy.seconds = 300;
+        attempt.as_mut().unwrap().standby_policy = StandbyPolicy {
+            seconds: 300,
+            pre_roll_ms: 450,
+        };
         let shared = attempt.as_ref().unwrap().shared.clone();
         let gate = Gate::closed();
         let final_pcm = gate.clone();
-        let producer = std::thread::spawn(move || {
+        let mut producer = Some(std::thread::spawn(move || {
             // This callback has already captured the ending, but delivery from
             // the helper/reader is stalled until after the accepted stop.
             let captured = [0.75; 80];
@@ -3242,7 +3257,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .append_pcm(&captured, WHISPER_SAMPLE_RATE);
-        });
+        }));
         let (response, result) = mpsc::channel();
         handle_message(
             SupervisorMessage::Stop {
@@ -3269,8 +3284,10 @@ mod tests {
             matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)),
             "standby must not finalize before the retained release tail"
         );
-        gate.open();
-        producer.join().unwrap();
+        if !delayed_past_deadline {
+            gate.open();
+            producer.take().unwrap().join().unwrap();
+        }
         let deadline = attempt.as_ref().unwrap().tail_deadline.unwrap();
         handle_deadlines_at(
             &mut attempt,
@@ -3281,7 +3298,21 @@ mod tests {
         );
         let samples = result.recv().unwrap().unwrap();
         assert_eq!(&samples[..160], &[0.25; 160]);
-        assert_eq!(&samples[160..], &[0.75; 80]);
+        if delayed_past_deadline {
+            // The producer is still blocked at the deadline. This is the
+            // existing standby limitation, not a proven delivery fence:
+            // late PCM becomes pre-roll instead of the finalized recording.
+            assert_eq!(samples.len(), 160);
+            assert_eq!(public.phase(), PublicPhase::Standby);
+            gate.open();
+            producer.take().unwrap().join().unwrap();
+            assert_eq!(
+                attempt.as_ref().unwrap().shared.lock().unwrap().as_slice(),
+                &[0.75; 80]
+            );
+        } else {
+            assert_eq!(&samples[160..], &[0.75; 80]);
+        }
         finish_attempt(&mut attempt, &sink, &public);
     }
 
@@ -3665,6 +3696,122 @@ mod tests {
                 .any(|(_, event)| *event == AudioLifecycleEvent::Idle));
             shutdown(&supervisor);
         }
+    }
+
+    struct CommandCleanupSink {
+        app_state: Arc<crate::state::AppState>,
+        completed: AtomicUsize,
+    }
+
+    impl LifecycleSink for CommandCleanupSink {
+        fn invalidate_input_health(&self, _: Option<&str>) {}
+        fn notify(
+            &self,
+            _: Option<&tauri::AppHandle>,
+            owner: AudioOwner,
+            event: AudioLifecycleEvent,
+        ) {
+            match event {
+                AudioLifecycleEvent::CleanupFinished => {
+                    // Exercise the same generation/status guard as the real
+                    // recording command, without starting a native app.
+                    crate::commands::recording::complete_dictation_capture_cleanup(
+                        &self.app_state,
+                        owner.telemetry_id(),
+                        |restore_idle| {
+                            assert!(restore_idle);
+                            self.completed.fetch_add(1, Ordering::SeqCst);
+                        },
+                    );
+                }
+                AudioLifecycleEvent::RecoveryStalled => {
+                    panic!("normal exit must not need stall guidance")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn retry_during_sealed_cleanup_then_normal_exit_allows_the_next_start() {
+        use crate::state::{AppState, DictationStatus};
+        let app_state = Arc::new(AppState::default());
+        let owner = AudioOwner::Dictation(707);
+        app_state
+            .recording_id
+            .store(owner.telemetry_id(), Ordering::SeqCst);
+        let sink = Arc::new(CommandCleanupSink {
+            app_state: app_state.clone(),
+            completed: AtomicUsize::new(0),
+        });
+        let teardown = Gate::closed();
+        let supervisor = spawn_supervisor(
+            Arc::new(SealedFactory {
+                teardown: teardown.clone(),
+                seal: true,
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        start(&supervisor, owner).recv().unwrap().unwrap();
+        wait_until("normal seal worker ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                owner: Some(owner),
+                trigger: DictationStopTrigger::Toggle,
+                response,
+            })
+            .unwrap();
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap(),
+            vec![0.25; 160]
+        );
+        // ASR has finished, but the capture thread still owns cleanup.
+        assert_eq!(
+            app_state.dictation.lock().unwrap().status,
+            DictationStatus::Idle
+        );
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(708))
+                .recv()
+                .unwrap(),
+            Err(AudioStartError::AudioRecovering)
+        );
+        // The native retry path keeps this generation and marks it Recovering.
+        app_state.dictation.lock().unwrap().status = DictationStatus::Recovering;
+        assert_eq!(sink.completed.load(Ordering::SeqCst), 0);
+        teardown.open();
+        wait_until("normal cleanup did not publish completion", || {
+            sink.completed.load(Ordering::SeqCst) == 1
+        });
+        assert_eq!(
+            app_state.dictation.lock().unwrap().status,
+            DictationStatus::Idle
+        );
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(708))
+                .recv()
+                .unwrap(),
+            Ok(())
+        );
+        wait_until("next recording did not become ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        cancel_any_phase(&supervisor, AudioOwner::Dictation(708))
+            .recv()
+            .unwrap()
+            .unwrap();
+        wait_until("next worker did not exit", || {
+            supervisor.public.phase() == PublicPhase::Idle
+        });
+        shutdown(&supervisor);
     }
 
     struct RuntimeFailureFactory;

@@ -4863,26 +4863,15 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             }
         }
         AudioLifecycleEvent::CleanupFinished => {
-            let mut dictation = state.app_state.dictation.lock_or_recover();
-            if is_current() {
+            complete_dictation_capture_cleanup(&state.app_state, recording_id, |restore_idle| {
                 let _ = app_handle.emit(
                     "recording-cleanup-finished",
                     serde_json::json!({ "recordingId": recording_id }),
                 );
-                // A blocked start can show Recovering in a webview after ASR
-                // finished. Do not reset a pipeline still processing its result.
-                if matches!(
-                    dictation.status,
-                    DictationStatus::Idle | DictationStatus::Recovering
-                ) {
-                    transition_dictation_status(
-                        recording_id,
-                        &mut dictation,
-                        DictationStatus::Idle,
-                    );
+                if restore_idle {
                     let _ = app_handle.emit("recording-status-changed", "idle");
                 }
-            }
+            });
         }
         AudioLifecycleEvent::RecoveryStalled => {
             if is_current()
@@ -5024,6 +5013,28 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
     }
+}
+
+/// Capture completion is independent of ASR completion and stall guidance.
+/// Hold the generation/status lock through publication so a newer recording
+/// cannot be reset by the old owner's trailing unscoped Idle event.
+pub(crate) fn complete_dictation_capture_cleanup(
+    app_state: &AppState,
+    recording_id: u64,
+    publish: impl FnOnce(bool),
+) {
+    let mut dictation = app_state.dictation.lock_or_recover();
+    if app_state.recording_id.load(Ordering::SeqCst) != recording_id {
+        return;
+    }
+    let restore_idle = matches!(
+        dictation.status,
+        DictationStatus::Idle | DictationStatus::Recovering
+    );
+    if restore_idle {
+        transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
+    }
+    publish(restore_idle);
 }
 
 fn publish_recording_ready_if_audio_ready(
@@ -7070,6 +7081,23 @@ pub(crate) mod tests {
         assert!(stop_owner_matches(41, None));
         assert!(stop_owner_matches(41, Some(41)));
         assert!(!stop_owner_matches(42, Some(41)));
+    }
+
+    #[test]
+    fn capture_cleanup_completion_preserves_processing_and_rejects_old_generations() {
+        let state = AppState::default();
+        state.recording_id.store(710, Ordering::SeqCst);
+        state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        complete_dictation_capture_cleanup(&state, 710, |restore_idle| assert!(!restore_idle));
+        assert_eq!(
+            state.dictation.lock_or_recover().status,
+            DictationStatus::Processing
+        );
+        complete_dictation_capture_cleanup(&state, 709, |_| panic!("stale cleanup cannot publish"));
+        assert_eq!(
+            state.dictation.lock_or_recover().status,
+            DictationStatus::Processing
+        );
     }
 
     #[test]
