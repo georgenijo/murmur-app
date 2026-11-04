@@ -38,7 +38,7 @@ vi.mock('../log', () => ({
   },
 }));
 
-import { useAutoUpdater, type UseAutoUpdaterReturn } from './useAutoUpdater';
+import { useAutoUpdater, UPDATE_FRESHNESS_WINDOW_MS, type UseAutoUpdaterReturn } from './useAutoUpdater';
 import type { DownloadEvent } from '@tauri-apps/plugin-updater';
 
 describe('useAutoUpdater presentation state', () => {
@@ -76,6 +76,86 @@ describe('useAutoUpdater presentation state', () => {
     await act(async () => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('refreshes a stale update and downloads and installs the newer version with its cumulative notes', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    mocks.getVersion.mockResolvedValue('0.22.1');
+    const oldDownload = vi.fn();
+    const newDownload = vi.fn().mockResolvedValue(undefined);
+    const newInstall = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValueOnce({
+      available: true, version: '0.23.0', body: 'Old notes', rawJson: {}, download: oldDownload,
+    }).mockResolvedValueOnce({
+      available: true, version: '0.24.0', body: 'New notes',
+      rawJson: { min_version: '0.23.0', release_history: [{ version: '0.23.0', notes: 'Old notes' }] },
+      download: newDownload, install: newInstall,
+    });
+    await act(async () => current.checkForUpdate());
+    now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS + 1);
+    await act(async () => current.startDownload());
+    expect(oldDownload).not.toHaveBeenCalled();
+    expect(newDownload).toHaveBeenCalledOnce();
+    expect(current.updateStatus).toEqual({ phase: 'ready', version: '0.24.0', isForced: true });
+    expect(JSON.parse(localStorage.getItem('pending-update-release-notes')!)).toEqual({
+      version: '0.24.0', notes: expect.stringContaining('Old notes'),
+    });
+    expect(JSON.parse(localStorage.getItem('pending-update-release-notes')!).notes).toContain('New notes');
+    expect(mocks.flogInfo).toHaveBeenCalledWith('updater', 'starting download', {
+      event_code: 'updater.download_starting', version: '0.24.0', selection: 'fresh_check',
+    });
+    await act(async () => current.restartUpdate());
+    expect(newInstall).toHaveBeenCalledOnce();
+  });
+
+  it('uses the retained update if a stale update refresh fails', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const download = vi.fn().mockResolvedValue(undefined);
+    const install = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValueOnce({
+      available: true, version: '0.23.0', body: 'Retained notes', rawJson: {}, download, install,
+    }).mockRejectedValueOnce(new Error('offline'));
+    await act(async () => current.checkForUpdate());
+    now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS + 1);
+    await act(async () => current.startDownload());
+    expect(download).toHaveBeenCalledOnce();
+    expect(mocks.flogInfo).toHaveBeenCalledWith('updater', 'starting download', {
+      event_code: 'updater.download_starting', version: '0.23.0', selection: 'retained',
+    });
+    await act(async () => current.restartUpdate());
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, { available: true, version: '0.22.0' }])(
+    'uses the retained update when a stale refresh returns no newer version', async (result) => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+      const download = vi.fn().mockResolvedValue(undefined);
+      mocks.check.mockResolvedValueOnce({
+        available: true, version: '0.23.0', body: 'Retained notes', rawJson: {}, download,
+      }).mockResolvedValueOnce(result);
+      await act(async () => current.checkForUpdate());
+      now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS + 1);
+      await act(async () => current.startDownload());
+      expect(download).toHaveBeenCalledOnce();
+      expect(current.updateStatus).toMatchObject({ phase: 'ready', version: '0.23.0' });
+    },
+  );
+
+  it('does not refresh a recently discovered update or an already downloaded update', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    const install = vi.fn().mockResolvedValue(undefined);
+    mocks.check.mockResolvedValueOnce({
+      available: true, version: '0.23.0', body: '', rawJson: {},
+      download: vi.fn().mockResolvedValue(undefined), install,
+    });
+    await act(async () => current.checkForUpdate());
+    now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS);
+    await act(async () => current.startDownload());
+    now.mockReturnValue(1_000_001 + 2 * UPDATE_FRESHNESS_WINDOW_MS);
+    await act(async () => current.restartUpdate());
+    expect(mocks.check).toHaveBeenCalledOnce();
+    expect(install).toHaveBeenCalledOnce();
   });
 
   async function relaunchWithPendingUpdate(version: string) {
@@ -597,7 +677,7 @@ describe('useAutoUpdater presentation state', () => {
     expect(mocks.flogInfo).toHaveBeenCalledWith(
       'updater',
       'download ready',
-      { event_code: 'updater.download_ready' },
+      { event_code: 'updater.download_ready', version: '0.24.2' },
     );
 
     await act(async () => current.dismissUpdate());

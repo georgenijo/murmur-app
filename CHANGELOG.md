@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Refresh stale update discoveries before downloading so a newer release can install in one update cycle (#836).
+
 ## [0.60.1] - 2026-11-04
 
 ### Changed

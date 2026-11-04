@@ -14,6 +14,7 @@ import {
   type UpdateStatus,
   type CompletedUpdate,
   isBelowMinVersion,
+  compareSemver,
   setPendingUpdate,
   clearPendingUpdate,
   getPendingUpdateForVersion,
@@ -73,6 +74,7 @@ interface InstallLifecycle {
 }
 
 const UPDATE_CHECK_ATTEMPTS = 2;
+export const UPDATE_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 
 interface UseAutoUpdaterOptions {
   automaticChecksEnabled?: boolean;
@@ -98,6 +100,7 @@ export function useAutoUpdater(
   const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const updateRef = useRef<Update | null>(null);
+  const updateDiscoveredAtRef = useRef(0);
   const operationRef = useRef<UpdaterOperation>('idle');
   // Resolves when the in-flight check settles, so an Install click that races
   // a background check waits instead of being silently dropped.
@@ -193,6 +196,7 @@ export function useAutoUpdater(
       if (!update?.available || !update.version) {
         const hadKnownUpdate = updateRef.current !== null;
         updateRef.current = null;
+        updateDiscoveredAtRef.current = 0;
         hasDownloadedUpdateRef.current = false;
         hasInstalledUpdateRef.current = false;
         isForcedRef.current = false;
@@ -212,7 +216,7 @@ export function useAutoUpdater(
         return { kind: 'current', version: await getVersion() };
       }
 
-      flog.info('updater', 'update available', { version: update.version });
+      flog.info('updater', 'update available', { event_code: 'updater.update_available', version: update.version });
 
       // Tauri exposes the exact native response as rawJson, so policy parsing
       // does not need a second cross-origin request from the webview.
@@ -238,6 +242,7 @@ export function useAutoUpdater(
 
       const wasAlreadyAvailable = updateRef.current?.version === update.version;
       updateRef.current = update;
+      updateDiscoveredAtRef.current = Date.now();
       hasDownloadedUpdateRef.current = false;
       hasInstalledUpdateRef.current = false;
       isForcedRef.current = isForced;
@@ -331,14 +336,48 @@ export function useAutoUpdater(
       });
       return undefined;
     }
-    const update = updateRef.current;
+    let update = updateRef.current;
     if (!update) return undefined;
+
+    operationRef.current = 'downloading';
+    setIsUpdateDialogOpen(true);
+    setUpdateStatus({ phase: 'preparing', version: update.version });
+
+    let selection = 'retained';
+    if (Date.now() - updateDiscoveredAtRef.current > UPDATE_FRESHNESS_WINDOW_MS) {
+      try {
+        const freshUpdate = await check();
+        if (freshUpdate?.available && freshUpdate.version && compareSemver(freshUpdate.version, update.version) === 1) {
+          const policy = parseMinVersionPolicy(freshUpdate.rawJson);
+          if (policy.status === 'unavailable') {
+            flog.warn('updater', 'could not verify update policy', { error: policy.message });
+          }
+          let currentVersion = 'unknown';
+          if (policy.status === 'present') {
+            currentVersion = await getVersion();
+          } else if (Array.isArray(freshUpdate.rawJson?.release_history)) {
+            currentVersion = await getVersion().catch(() => 'unknown');
+          }
+          isForcedRef.current = policy.status === 'present' && isBelowMinVersion(currentVersion, policy.minVersion);
+          releaseNotesRef.current = getUpdateReleaseNotes(
+            freshUpdate.rawJson, currentVersion, freshUpdate.version, freshUpdate.body ?? '',
+          );
+          update = freshUpdate;
+          updateRef.current = freshUpdate;
+          updateDiscoveredAtRef.current = Date.now();
+          selection = 'fresh_check';
+          flog.info('updater', 'update available', { event_code: 'updater.update_available', version: update.version });
+          setUpdateStatus({ phase: 'preparing', version: update.version });
+        }
+      } catch (err) {
+        flog.warn('updater', 'freshness check failed; using retained update', {
+          event_code: 'updater.freshness_check_failed', version: update.version, error: String(err),
+        });
+      }
+    }
 
     const version = update.version;
     const isForced = isForcedRef.current;
-    operationRef.current = 'downloading';
-    setIsUpdateDialogOpen(true);
-    setUpdateStatus({ phase: 'preparing', version });
 
     try {
       const environment = await getUpdateInstallEnvironment();
@@ -358,7 +397,7 @@ export function useAutoUpdater(
       }
 
       setUpdateStatus({ phase: 'downloading', version, progress: null });
-      flog.info('updater', 'starting download', { version });
+      flog.info('updater', 'starting download', { event_code: 'updater.download_starting', version, selection });
       setPendingUpdate({ version, notes: releaseNotesRef.current });
 
       let totalContentLength = 0;
@@ -367,7 +406,7 @@ export function useAutoUpdater(
         switch (event.event) {
           case 'Started':
             totalContentLength = event.data.contentLength ?? 0;
-            flog.info('updater', 'download started', { contentLength: totalContentLength });
+            flog.info('updater', 'download started', { event_code: 'updater.download_started', version, contentLength: totalContentLength });
             break;
           case 'Progress':
             totalDownloaded += event.data.chunkLength;
@@ -380,7 +419,7 @@ export function useAutoUpdater(
             });
             break;
           case 'Finished':
-            flog.info('updater', 'download finished');
+            flog.info('updater', 'download finished', { event_code: 'updater.download_finished', version });
             break;
         }
       });
@@ -390,6 +429,7 @@ export function useAutoUpdater(
       setUpdateStatus({ phase: 'ready', version, isForced });
       flog.info('updater', 'download ready', {
         event_code: 'updater.download_ready',
+        version,
       });
       return { kind: 'ready', version };
     } catch (err) {
@@ -445,6 +485,7 @@ export function useAutoUpdater(
       await lifecycle?.onInstalled?.();
       flog.info('updater', 'installed, relaunching', {
         event_code: 'updater.install_ready',
+        version,
       });
       relaunchStarted = true;
       await relaunch();
