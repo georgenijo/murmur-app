@@ -389,3 +389,27 @@ For an explicitly requested comparison whose retained baseline predates this
 companion, use the manual read-only procedure in `prompts/PROMPT_RELEASE.md`.
 The in-app comparison becomes authoritative only when both selected cohorts
 carry the required evidence. Release requests do not imply a performance study.
+
+## Launch milestones
+
+The structured event log and Diagnostics event ring contain five content-free
+launch milestones, with monotonic `launch_elapsed_ms` measured from executable
+`main` entry (or `run` entry on mobile). The process-start event is emitted once
+telemetry is initialized, with elapsed zero; its log timestamp is the later
+emission time. Use the elapsed field for launch comparisons.
+
+| Event code | Boundary |
+|------------|----------|
+| `system.launch_process_start` | Clock origin at executable entry; backfilled after telemetry setup |
+| `system.launch_native_setup_done` | Rust setup, including stores and tray, returned successfully |
+| `system.launch_listener_armed` | Shared keyboard thread initialized and entering rdev; detectors still require frontend configuration/subscription |
+| `system.launch_model_ready` | First ready ASR runtime, including frontend/recording fallback |
+| `system.launch_frontend_hydrated` | Main settings, history/stats, and theme caches settled, immediately before React root rendering |
+
+The listener event marks entry into the blocking rdev listener, not a verified
+macOS event-tap receipt. `keyboard.listener_failed` reports a later start failure;
+actual shortcut interaction establishes working input. A disabled app, incomplete
+onboarding, unavailable Accessibility, missing settings, or a model without the
+catalog startup-warm policy may omit early listener/model milestones. Failures
+use the existing frontend path. There is no new SQLite run kind or retained
+content; the telemetry boundary permits only the fixed code and elapsed integer.

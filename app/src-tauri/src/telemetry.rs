@@ -221,6 +221,11 @@ fn sanitized_event_payload(
 /// identifiers, or raw errors) are discarded in both debug and release builds.
 pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
     match value {
+        "system.launch_process_start" => Some("system.launch_process_start"),
+        "system.launch_native_setup_done" => Some("system.launch_native_setup_done"),
+        "system.launch_listener_armed" => Some("system.launch_listener_armed"),
+        "system.launch_model_ready" => Some("system.launch_model_ready"),
+        "system.launch_frontend_hydrated" => Some("system.launch_frontend_hydrated"),
         "keyboard.listener_started" => Some("keyboard.listener_started"),
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
@@ -1369,13 +1374,30 @@ fn is_safe_dictation_error_code(value: &str) -> bool {
     )
 }
 
+fn is_launch_event_code(code: &str) -> bool {
+    matches!(
+        code,
+        "system.launch_process_start"
+            | "system.launch_native_setup_done"
+            | "system.launch_listener_armed"
+            | "system.launch_model_ready"
+            | "system.launch_frontend_hydrated"
+    )
+}
+
 fn sanitized_summary(
     stream: &str,
     summary: Option<String>,
     data: &serde_json::Value,
     debug_build: bool,
 ) -> String {
-    if data.get("event_code").and_then(serde_json::Value::as_str)
+    if data
+        .get("event_code")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(is_launch_event_code)
+    {
+        "Launch milestone".to_string()
+    } else if data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("audio.input_resolution_observed")
     {
         // Keep this privacy-sensitive hardware observation constant even in a
@@ -1738,6 +1760,18 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    if obj
+        .get("event_code")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(is_launch_event_code)
+    {
+        obj.retain(|key, value| match key.as_str() {
+            "event_code" => value.as_str().and_then(canonical_event_code).is_some(),
+            "launch_elapsed_ms" => value.as_u64().is_some(),
+            _ => false,
+        });
+        return;
+    }
     if key_identity::sanitize_fields(stream, obj) {
         return;
     }
@@ -5018,6 +5052,30 @@ mod tests {
                 data,
                 serde_json::json!({ "event_code": data["event_code"].clone() })
             );
+        }
+    }
+    #[test]
+    fn launch_milestones_keep_only_elapsed_time_and_fixed_codes() {
+        for debug in [false, true] {
+            for code in [
+                "system.launch_process_start",
+                "system.launch_native_setup_done",
+                "system.launch_listener_armed",
+                "system.launch_model_ready",
+                "system.launch_frontend_hydrated",
+            ] {
+                let mut data = serde_json::json!({"event_code":code,"launch_elapsed_ms":125,
+                    "transcript":"PRIVATE_SENTINEL", "model":"PRIVATE_SENTINEL", "recording_id":22});
+                sanitize_event_data("system", &mut data, debug);
+                assert_eq!(
+                    data,
+                    serde_json::json!({"event_code":code,"launch_elapsed_ms":125})
+                );
+                assert_eq!(
+                    sanitized_summary("system", Some("PRIVATE_SENTINEL".into()), &data, debug),
+                    "Launch milestone"
+                );
+            }
         }
     }
 }

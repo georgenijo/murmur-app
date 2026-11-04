@@ -173,7 +173,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Starts the rdev listener in `hold_down`, `double_tap`, or `both`. Validates mode and the modifier/F1–F20 key allowlist; requires Accessibility. |
+| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Synchronizes Rust-owned listener registration in `hold_down`, `double_tap`, or `both`; identical registration preserves detector state and reuses a thread prepared by native setup. Validates mode and the modifier/F1–F20 key allowlist; requires Accessibility. |
 | `stop_keyboard_listener` | — | `()` | Stops processing key events; the thread stays alive. |
 | `update_keyboard_key` | `hotkey: String` | `Result<(), String>` | Validates and changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
 | `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
@@ -381,7 +381,7 @@ frontend.
 |---------|-----------|---------|-------------|
 | `get_log_contents` | `lines: usize` | `String` | Last N lines of the pretty log file. |
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
-| `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>` | `()` | Routes a frontend message through Rust tracing with `source="frontend"`, optionally correlated to a transform pass. |
+| `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>`, `event_code: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code, optionally correlated to a transform pass. The main hydration code records native monotonic launch time once. Message contents are discarded. |
 
 ## Mode file exchange (`commands/mode_exchange.rs`)
 

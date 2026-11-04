@@ -1,5 +1,26 @@
-use crate::{injector, keyboard};
+use crate::{injector, keyboard, MutexExt};
+use std::sync::Mutex;
 use tauri::Emitter;
+
+#[derive(Default)]
+struct ListenerRegistration(Option<(String, String)>);
+
+impl ListenerRegistration {
+    fn sync(&mut self, hotkey: &str, mode: &str, active: bool) -> bool {
+        if active
+            && self
+                .0
+                .as_ref()
+                .is_some_and(|(key, active_mode)| key == hotkey && active_mode == mode)
+        {
+            return false;
+        }
+        self.0 = Some((hotkey.into(), mode.into()));
+        true
+    }
+}
+
+static REGISTRATION: Mutex<ListenerRegistration> = Mutex::new(ListenerRegistration(None));
 
 fn validate_dictation_key(hotkey: &str) -> Result<(), String> {
     if keyboard::is_dictation_key_id(hotkey) {
@@ -38,13 +59,22 @@ pub fn start_keyboard_listener(
             "Accessibility permission is required. Please grant it in System Settings.".to_string(),
         );
     }
-    keyboard::start_listener(app_handle, &hotkey, &mode);
+    let mut registration = REGISTRATION.lock_or_recover();
+    if registration.sync(&hotkey, &mode, keyboard::dictation_listener_active()) {
+        keyboard::start_listener(app_handle, &hotkey, &mode);
+    } else {
+        // Reattach after a webview remount without resetting an in-flight hold
+        // or double-tap. This also retries a failed shared rdev thread.
+        keyboard::ensure_listener_thread_spawned(app_handle);
+    }
     tracing::info!(target: "keyboard", "Keyboard listener started: mode={}, key={}, accessibility={}", mode, hotkey, injector::is_accessibility_enabled());
     Ok(())
 }
 
 #[tauri::command]
 pub fn stop_keyboard_listener() {
+    let mut registration = REGISTRATION.lock_or_recover();
+    registration.0 = None;
     keyboard::stop_listener();
     tracing::info!(target: "keyboard", "Keyboard listener stopped: accessibility={}", injector::is_accessibility_enabled());
 }
@@ -52,7 +82,11 @@ pub fn stop_keyboard_listener() {
 #[tauri::command]
 pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
     validate_dictation_key(&hotkey)?;
+    let mut registration = REGISTRATION.lock_or_recover();
     let should_stop = keyboard::set_target_key(&hotkey);
+    if let Some((key, _)) = registration.0.as_mut() {
+        *key = hotkey.clone();
+    }
     if should_stop {
         let _ = app_handle.emit("hold-down-stop", ());
         tracing::info!(target: "keyboard", "Keyboard key changed while held — emitted stop; updated to: {}", hotkey);
@@ -230,6 +264,20 @@ pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: String) -> Res
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frontend_registration_is_idempotent_and_restarts_after_stop_or_change() {
+        let mut registration = super::ListenerRegistration::default();
+        assert!(registration.sync("shift_l", "hold_down", true));
+        assert!(!registration.sync("shift_l", "hold_down", true));
+        assert!(
+            registration.sync("shift_l", "hold_down", false),
+            "a failed listener must re-arm on retry"
+        );
+        assert!(registration.sync("alt_l", "hold_down", true));
+        assert!(registration.sync("alt_l", "both", true));
+        registration.0 = None;
+        assert!(registration.sync("alt_l", "both", true));
+    }
     use super::{validate_dictation_key, validate_transform_or_query_key};
 
     #[test]

@@ -9,6 +9,12 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 import { flog } from './log';
 
 describe('flog event codes', () => {
+  it('forwards the content-free frontend hydration milestone', () => {
+    flog.info('main', 'Frontend hydrated', { event_code: 'system.launch_frontend_hydrated' });
+    expect(mocks.invoke).toHaveBeenCalledWith('log_frontend', expect.objectContaining({
+      eventCode: 'system.launch_frontend_hydrated', transformPassId: null,
+    }));
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });
