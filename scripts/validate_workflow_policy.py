@@ -243,6 +243,7 @@ def validate_ci(ci: str) -> int:
     )
     test_prebuild = test_build.find(
         "cargo nextest run --workspace --exclude murmur-llm-sidecar --no-run --lib"
+        " --bin murmur-capture-helper --test topology_watch"
         " --test llm_sidecar_integration --test transform_flow_integration"
     )
     assert 0 <= example_build < test_prebuild, "build examples, then every test target"
@@ -254,7 +255,11 @@ def validate_ci(ci: str) -> int:
     assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
     assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
     capture_tests = named_step_block(rust_macos, "Run capture worker unit tests", 6)
-    assert "cargo test -p murmur-capture-helper" in capture_tests
+    assert (
+        "cargo nextest run --workspace --exclude murmur-llm-sidecar"
+        " --bin murmur-capture-helper --test topology_watch"
+        in " ".join(capture_tests.split())
+    )
     rust_audit = named_step_block(
         dependency_audit, "Audit Rust dependencies (advisory)", 6
     )
