@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.59.3] - 2026-11-04
+
+### Changed
+
+- Prepare dictation resources during native launch, choose the stop tail by trigger while overlapping the capture helper exit, and back off homophone timeouts while exposing stage cost.
+- Measure gesture-to-mic-ready latency in the performance harness.
+
+### Fixed
+
+- Complete every sealed teardown and clarify the standby fallback.
+- Preserve speech and cleanup guidance across the stop handoff.
+- Remove the native controls inset in fullscreen (#910).
+- Reserve native chrome independently of sidebar rails.
+
 ## [0.59.2] - 2026-11-03
 
 ### Changed
