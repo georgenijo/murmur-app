@@ -1,5 +1,25 @@
 # Decisions Log
 
+## 2026-11-04: Keep strict branch protection; skip verified pushes and use merge trains (#924)
+
+**Decision:** `main` keeps `strict` up-to-date protection with `ci-pass` as the
+only required check. A push to `main` skips its tests when the commit's tree
+equals an up-to-date PR head whose latest `ci-pass` succeeded. Several green PRs land
+together through one train PR (`scripts/merge_train.sh`) that merges with a
+merge commit.
+
+**Why:** Strict protection catches PRs that pass alone but fail together. On
+2026-11-04, #918 and #920 compiled separately but not combined. Dropping
+`strict` would let `main` break until a push run noticed. GitHub's merge queue
+batches PRs safely, but it is unavailable for personal-account repositories. A
+train reruns CI once for N PRs instead of about N² times. PR CI tests the head merged with the base of that moment, so a
+matching tree counts only when the head already contained the pre-merge `main`;
+then every tested merge equals the head, and the push run has nothing new to
+test. Any mismatch falls back to the full suite.
+
+**References:** `scripts/ci_verified_tree.sh`, `scripts/merge_train.sh`,
+[CI and merging](../DEVELOPMENT.md#ci-and-merging)
+
 ## 2026-11-02: Bezel floating pill on a native HUD material
 
 **Decision:** The floating pill and the Live Words card above it use a native
@@ -21,6 +41,27 @@ native layer cannot follow a CSS scale, so the Bezel pill fades without the
 notch's scale. Live Words size is measured by the webview because only it lays
 out the words; that costs one IPC round trip per resize. Details:
 [Overlay placements](../features/overlay.md#placements).
+
+## 2026-11-01: Parallel, sharded CI with process-isolated Rust tests
+
+**Decision:** `changes` only filters paths; workflow validation runs in a
+separate `policy` job that every run requires. Vitest, the Linux and macOS
+Playwright goldens, and Rust lint vs. Rust tests run as parallel shards or jobs,
+and `ci-pass` requires all of them. Rust unit tests run under `cargo nextest`
+instead of `cargo test -- --test-threads=1`. Docs, scripts, and Python tests no
+longer start the frontend or Rust builds, and CI no longer runs a separate
+`cargo check` before clippy.
+
+**Why:** PR CI took 7–10 minutes, mostly in serial work: validation blocked
+every job, Linux goldens ran after vitest, and a single Rust job ran check,
+clippy, the test build, and serial tests back to back. nextest runs every test
+in its own process, so the shared process state that forced one thread stays
+isolated. Locally the suite went from 29 s to 9 s, and it passed repeated runs
+at 3 and 20 threads. Clippy `--all-targets` already type-checks everything
+`cargo check` did. Only `ci-pass` is a required check, so renaming or splitting
+jobs does not touch branch protection.
+
+**References:** `.github/workflows/ci.yml`, `scripts/validate_workflow_policy.py`
 
 ## 2026-10-29: No decode-time vocabulary biasing for Parakeet yet (#832)
 

@@ -827,12 +827,21 @@ fn simulate_paste_osascript() -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn run_osascript_with_timeout(script: &str) -> Result<std::process::Output, String> {
+    run_osascript_with_deadline(script, std::time::Duration::from_millis(250))
+}
+
+/// Tests pass a generous deadline: cold-starting `osascript` on a loaded CI
+/// runner can exceed the production 250 ms.
+#[cfg(target_os = "macos")]
+fn run_osascript_with_deadline(
+    script: &str,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::Duration;
 
-    const TIMEOUT: Duration = Duration::from_millis(250);
     const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
     let mut child = Command::new("osascript")
@@ -866,12 +875,12 @@ pub(crate) fn run_osascript_with_timeout(script: &str) -> Result<std::process::O
                     stderr,
                 });
             }
-            None if started.elapsed() >= TIMEOUT => {
+            None if started.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
                     "osascript timed out after {}ms",
-                    TIMEOUT.as_millis()
+                    timeout.as_millis()
                 ));
             }
             None => thread::sleep(POLL_INTERVAL),
@@ -2001,8 +2010,9 @@ mod focus_tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn osascript_runner_captures_output() {
-        let output = run_osascript_with_timeout(r#"return "ready""#)
-            .expect("short AppleScript should complete");
+        let output =
+            run_osascript_with_deadline(r#"return "ready""#, std::time::Duration::from_secs(30))
+                .expect("short AppleScript should complete");
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ready");
     }
@@ -2011,10 +2021,12 @@ mod focus_tests {
     #[test]
     fn osascript_runner_terminates_after_deadline() {
         let started = Instant::now();
-        let error = run_osascript_with_timeout("delay 1")
+        // Uses the production deadline. The slack covers a slow spawn on a
+        // loaded runner; without the kill this would take the full 30 s delay.
+        let error = run_osascript_with_timeout("delay 30")
             .expect_err("slow AppleScript should be terminated");
         assert!(error.contains("timed out after 250ms"));
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 }
 
