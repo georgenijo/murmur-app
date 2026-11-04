@@ -1506,7 +1506,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             </SettingsDisclosure>
           </SettingsSection>
 
-          <SettingsSection hideHeading card={false} pageId="modes" activePage={activeCat} title="Modes">
+          <SettingsSection hideHeading plain pageId="modes" activePage={activeCat} title="Modes">
             <div data-setting-target="modes">
               <ModesManager
                 modes={settings.modes}

@@ -591,10 +591,10 @@ describe("AppearanceSettings", () => {
     expect(container.querySelectorAll('button[aria-label="Use Claude Theme theme"]')).toHaveLength(1);
     const claudeCard = container.querySelector('[data-theme-collection="Claude Theme"]')!;
     const sonicCard = container.querySelector('[data-theme-collection="Sonic"]')!;
-    expect(sonicCard.classList.contains("h-[94px]")).toBe(true);
-    expect(claudeCard.classList.contains("h-[94px]")).toBe(true);
-    expect(sonicCard.querySelector('[role="group"]')?.classList.contains("h-14")).toBe(true);
-    expect(claudeCard.querySelector('[role="group"]')?.classList.contains("h-14")).toBe(true);
+    expect(sonicCard.classList.contains("h-26.5")).toBe(true);
+    expect(claudeCard.classList.contains("h-26.5")).toBe(true);
+    expect(sonicCard.querySelector('[role="group"]')?.classList.contains("h-17")).toBe(true);
+    expect(claudeCard.querySelector('[role="group"]')?.classList.contains("h-17")).toBe(true);
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(claudeCard.querySelector('button[aria-label="Use Dusk Light for light mode"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");

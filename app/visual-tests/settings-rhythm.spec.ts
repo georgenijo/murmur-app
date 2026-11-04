@@ -30,26 +30,47 @@ for (const { path, state } of pages) {
           for (const button of await page.locator('.settings-advanced-toggle[aria-expanded=false]').all()) await button.click();
         }
       }
-      const result = await page.locator('.settings-card-body').evaluate(body => {
-        const failures: string[] = [];
-        const card = body.getBoundingClientRect();
-        const cardStyle = getComputedStyle(body);
-        if (cardStyle.padding !== '0px') failures.push(`card padding ${cardStyle.padding}`);
-        [...body.children].forEach((row, i) => {
-          const style = getComputedStyle(row);
-          const bounds = row.getBoundingClientRect();
-          const branch = row.classList.contains('settings-dependent-branch');
-          const label = row.textContent?.trim().slice(0, 40);
-          if (style.paddingTop !== (branch ? '0px' : '12px') || style.paddingBottom !== (branch ? '0px' : '12px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
-          if (style.paddingLeft !== (branch ? '0px' : '16px') || style.paddingRight !== (branch ? '0px' : '16px')) failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
-          if (style.borderRadius !== '0px') failures.push(`${label}: rounded row ${style.borderRadius}`);
-          if (Math.abs(bounds.width - (card.width - 2)) > .1) failures.push(`${label}: inset divider (${bounds.width}/${card.width})`);
-          if (i > 0 && style.borderTopWidth !== (branch ? '0px' : '1px')) failures.push(`${label}: divider ${style.borderTopWidth}`);
+      // A toggle can return before React and :has() layout settle on macOS.
+      // Retry the same geometry contract until the revealed rows finish rendering.
+      await expect(async () => {
+        const result = await page.locator('.settings-card-body').evaluate(body => {
+          const failures: string[] = [];
+          const card = body.getBoundingClientRect();
+          const cardStyle = getComputedStyle(body);
+          if (cardStyle.padding !== '0px') failures.push(`card padding ${cardStyle.padding}`);
+          [...body.children].forEach((row, i) => {
+            const style = getComputedStyle(row);
+            const bounds = row.getBoundingClientRect();
+            const branch = row.classList.contains('settings-dependent-branch');
+            const expandedRows = row.matches('.settings-advanced:has(> .settings-advanced-toggle[aria-expanded="true"] ~ .settings-advanced-rows)');
+            const label = row.textContent?.trim().slice(0, 40);
+            if (style.paddingTop !== (branch ? '0px' : '12px') || style.paddingBottom !== (branch || expandedRows ? '0px' : '12px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
+            if (style.paddingLeft !== (branch ? '0px' : '16px') || style.paddingRight !== (branch ? '0px' : '16px')) failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
+            if (style.borderRadius !== '0px') failures.push(`${label}: rounded row ${style.borderRadius}`);
+            if (Math.abs(bounds.width - (card.width - 2)) > .1) failures.push(`${label}: inset divider (${bounds.width}/${card.width})`);
+            if (i > 0 && style.borderTopWidth !== (branch ? '0px' : '1px')) failures.push(`${label}: divider ${style.borderTopWidth}`);
+          });
+          for (const disclosure of body.querySelectorAll('.settings-advanced:has(> .settings-advanced-toggle[aria-expanded="true"])')) {
+            const toggle = disclosure.querySelector('.settings-advanced-toggle')!.getBoundingClientRect();
+            const rows = disclosure.querySelector(':scope > .settings-advanced-rows > .settings-dependent-branch-clip > .settings-dependent-branch-content');
+            if (!rows) continue; // Stack disclosures intentionally keep inset cards.
+            for (const row of rows.children) {
+              const bounds = row.getBoundingClientRect();
+              const style = getComputedStyle(row);
+              const label = row.textContent?.trim().slice(0, 40);
+              if (Math.abs(bounds.left - (card.left + 1)) > .1 || Math.abs(bounds.right - (card.right - 1)) > .1) failures.push(`${label}: Advanced row edges`);
+              if (row.classList.contains('settings-dependent-branch')) continue;
+              if (Math.abs(bounds.left + parseFloat(style.paddingLeft) - toggle.left) > .1) failures.push(`${label}: Advanced content inset`);
+              if (style.paddingTop !== '12px' || style.paddingBottom !== '12px' || style.borderTopWidth !== '1px') failures.push(`${label}: Advanced row rhythm`);
+            }
+            const last = rows.lastElementChild?.getBoundingClientRect();
+            if (last && Math.abs(last.bottom - disclosure.getBoundingClientRect().bottom) > .1) failures.push('Advanced trailing inset');
+          }
+          return { failures, count: body.children.length };
         });
-        return { failures, count: body.children.length };
-      });
-      expect(result.count).toBeGreaterThan(0);
-      expect(result.failures).toEqual([]);
+        expect(result.count).toBeGreaterThan(0);
+        expect(result.failures).toEqual([]);
+      }).toPass({ timeout: 5_000 });
     });
   }
 }

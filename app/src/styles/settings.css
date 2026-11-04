@@ -90,7 +90,7 @@
 }
 
 .settings-mode-row {
-  border: 1px solid transparent;
+  border: 1px solid var(--settings-divider);
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
@@ -415,19 +415,22 @@
   .settings-row-controls > :not([role='switch']) { flex: 1; }
 }
 .settings-rows > .settings-dependent-branch { border-top: 0; padding: 0; }
-/* Advanced stacks are excluded: their children keep their own box (calibration
-   card, quiet buttons). :where() keeps the specificity of the rules below. */
-.settings-dependent-branch-content.settings-stack:where(:not(.settings-advanced-stack > .settings-dependent-branch-clip > *)) > * { margin: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-top: 1px solid var(--settings-divider); }
+/* Stack branches are excluded: their children keep their own box (calibration
+   card, quiet buttons, model cards). :where() keeps the specificity of the rules below. */
+.settings-dependent-branch-content.settings-stack:where(:not(.settings-branch-stack > .settings-dependent-branch-clip > *)) > * { margin: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-top: 1px solid var(--settings-divider); border-radius: 0; }
 .settings-dependent-branch-content.settings-stack > .settings-dependent-branch { padding: 0; border: 0; }
 .settings-stack > .settings-dependent-branch { margin-top: 0; }
 .settings-advanced-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 20px; padding: 0; text-align: left; color: var(--murmur-on-surface); font-size: 14px; line-height: 20px; font-weight: 500; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .settings-advanced-toggle:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
 .settings-advanced-chevron { width: 16px; height: 16px; flex: none; color: var(--murmur-on-surface-variant); transition: transform 150ms ease-out; }
 .settings-advanced-toggle[aria-expanded='true'] .settings-advanced-chevron { transform: rotate(180deg); }
-/* Rows reach the card edge so their dividers do; stacks stay inside the row inset. */
-.settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
-.settings-advanced-stack .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
-.settings-advanced-stack .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
+/* Rows reach the card edge so their dividers do; stacks stay inside the row inset.
+   The row inset below the toggle moves above the rows, so the toggle keeps the
+   same rhythm open or closed and the last row ends flush with the card. */
+.settings-advanced:has(> .settings-advanced-toggle[aria-expanded='true'] ~ .settings-advanced-rows) { padding-bottom: 0; }
+.settings-advanced > .settings-advanced-toggle[aria-expanded='true'] ~ .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); margin-top: var(--settings-row-pad); }
+.settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
+.settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
 .settings-advanced > .settings-row-description { margin-bottom: 0; }
 .settings-rows-nested { margin-top: var(--settings-row-pad); border-top: 1px solid var(--settings-divider); }
 .settings-rows-nested > * { padding-inline: 0; }
@@ -547,3 +550,36 @@
 @media (prefers-reduced-motion: reduce) {
   .settings-dependent-branch { transition: none !important; }
 }
+
+/* Modes page (#931): headed cards built from shared rows. */
+.settings-modes-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 168px), 1fr)); gap: 8px; }
+.settings-modes-list > .settings-mode-row { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 8px 12px; border-radius: var(--ui-radius-control); color: var(--murmur-on-surface-variant); text-align: left; cursor: pointer; }
+.settings-modes-list > .settings-mode-row:not([aria-pressed='true']):hover { background: var(--murmur-surface-container-low); color: var(--murmur-on-surface); }
+.settings-modes-list > .settings-mode-row[aria-pressed='true'] { color: var(--murmur-on-surface); }
+.settings-modes-list > .settings-mode-row:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 1px; }
+.settings-mode-row-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-font-body); line-height: var(--ui-leading-body); font-weight: 500; }
+.settings-mode-row-status { display: block; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface-variant); }
+.settings-modes .settings-row-layout:not(:has(> .settings-row-controls)) { grid-template-columns: minmax(0, 1fr); }
+.settings-modes-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.settings-modes-note { margin-top: 8px; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface-variant); }
+.settings-modes-error { color: var(--murmur-error); }
+.ui-form-button.settings-modes-danger { color: var(--murmur-error); }
+.settings-modes-import { margin-top: 12px; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface); }
+.settings-modes-import > * + * { margin-top: 8px; }
+.settings-modes-import > .settings-modes-actions { justify-content: flex-start; }
+.settings-modes-site-form { display: grid; grid-template-columns: minmax(0, 176px) minmax(0, 1fr) auto; gap: 8px; margin-top: 12px; }
+.settings-modes-site-rule { display: grid; grid-template-columns: auto minmax(0, 176px) minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.settings-modes-site-rule .ui-form-input { height: var(--ui-control-compact); }
+.settings-modes-sample { display: block; width: 100%; min-height: 72px; margin-top: 12px; padding-block: 8px; resize: vertical; }
+.settings-modes-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.settings-modes-preview-label { font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); font-weight: 500; color: var(--murmur-on-surface-variant); }
+.settings-modes-preview-text { margin-top: 4px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--settings-divider); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-low); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); color: var(--murmur-on-surface); }
+.settings-modes-preview-text[data-tone='after'] { background: var(--settings-tint-accent-subtle); border-color: color-mix(in srgb, var(--murmur-primary) 30%, var(--settings-divider)); }
+@container settings-fields (width < 512px) {
+  .settings-modes-site-form, .settings-modes-site-rule, .settings-modes-preview { grid-template-columns: minmax(0, 1fr); }
+  .settings-modes-site-rule > [role='switch'] { justify-self: start; }
+}
+/* The Browser sites group keeps its row and folded rules flush with the card. */
+.settings-rows > .settings-modes-sites { padding: 0; }
+.settings-modes-sites > .settings-setting-row { padding: var(--settings-row-pad) var(--settings-row-x); }
+.settings-modes-sites > .settings-dependent-branch { padding: 0; border: 0; }

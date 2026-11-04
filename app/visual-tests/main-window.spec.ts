@@ -682,9 +682,9 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   const claudeCard = page.locator('[data-theme-collection="Claude Theme"]');
   await expect(claudeCard).toHaveCount(1);
   await expect(sonicCard).toHaveCSS('width', '208px');
-  await expect(sonicCard).toHaveCSS('height', '94px');
+  await expect(sonicCard).toHaveCSS('height', '106px');
   await expect(claudeCard).toHaveCSS('width', '208px');
-  await expect(claudeCard).toHaveCSS('height', '94px');
+  await expect(claudeCard).toHaveCSS('height', '106px');
   await expect(claudeCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
   await expect(page.locator('section[aria-labelledby="active-theme-heading"]')).toHaveCount(0);

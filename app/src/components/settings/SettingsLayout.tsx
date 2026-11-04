@@ -56,7 +56,7 @@ export function SettingsDisclosure({ title, description, layout, targetId, child
       </button>
       {description && <p className="settings-row-description">{description}</p>}
       <SettingsBranch id={contentId} open={open} unmountOnClose restoreFocus={() => buttonRef.current}
-        className={layout === 'rows' ? 'settings-advanced-rows' : 'settings-advanced-stack'}>
+        className={layout === 'rows' ? 'settings-advanced-rows' : 'settings-advanced-stack settings-branch-stack'}>
         {children}
       </SettingsBranch>
     </div>
