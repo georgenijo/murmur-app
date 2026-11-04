@@ -558,7 +558,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   type="button"
                   disabled={systemAudioBusy}
                   onClick={() => void handleRequestSystemAudio()}
-                  className="dialog-pill-btn w-full px-4 py-2 text-sm font-semibold text-on-surface disabled:cursor-wait disabled:opacity-60"
+                  className="dialog-pill-btn w-full px-4 py-2 text-[length:var(--ui-font-body)] font-semibold text-on-surface disabled:cursor-wait disabled:opacity-60"
                 >
                   {systemAudioBusy ? 'Waiting for macOS…' : 'Re-check system audio access'}
                 </button>
