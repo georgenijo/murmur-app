@@ -117,7 +117,8 @@ pub enum StartupSetupStep {
     DeviceResolution,
     AudioUnitCreation,
     AudioUnitNew,
-    AudioUnitInitialize,
+    #[serde(rename = "audio_unit_initialize")]
+    AudioUnitInit,
     EnableInputIo,
     DisableOutputIo,
     SetCurrentDevice,
@@ -464,7 +465,7 @@ fn startup_setup_step(value: CaptureSetupStep) -> StartupSetupStep {
         CaptureSetupStep::DeviceResolution => StartupSetupStep::DeviceResolution,
         CaptureSetupStep::AudioUnitCreation => StartupSetupStep::AudioUnitCreation,
         CaptureSetupStep::AudioUnitNew => StartupSetupStep::AudioUnitNew,
-        CaptureSetupStep::AudioUnitInitialize => StartupSetupStep::AudioUnitInitialize,
+        CaptureSetupStep::AudioUnitInit => StartupSetupStep::AudioUnitInit,
         CaptureSetupStep::EnableInputIo => StartupSetupStep::EnableInputIo,
         CaptureSetupStep::DisableOutputIo => StartupSetupStep::DisableOutputIo,
         CaptureSetupStep::SetCurrentDevice => StartupSetupStep::SetCurrentDevice,

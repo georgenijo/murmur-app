@@ -221,6 +221,7 @@ pub(crate) struct PreparedHelper {
 
 struct Preparation {
     slot: Slot<PreparedHelper>,
+    revocation_generation: u64,
     // Remains occupied through confirmed cleanup. Repeated taps cannot create
     // another worker, reader, or child while the previous owner is retiring.
     active: Option<Arc<Cancellation>>,
@@ -230,11 +231,13 @@ impl Preparation {
     const fn new() -> Self {
         Self {
             slot: Slot::new(),
+            revocation_generation: 0,
             active: None,
             retiring: None,
         }
     }
     fn invalidate(&mut self) -> bool {
+        self.revocation_generation = self.revocation_generation.wrapping_add(1);
         let (outstanding, helper) = self.slot.invalidate();
         if let Some(cancel) = &self.active {
             cancel.cancelled.store(true, Ordering::Release);
@@ -257,6 +260,9 @@ impl Cancellation {
 }
 static PREPARATION: Mutex<Preparation> = Mutex::new(Preparation::new());
 static CHANGED: Condvar = Condvar::new();
+pub(crate) fn revocation_generation() -> u64 {
+    PREPARATION.lock_or_recover().revocation_generation
+}
 static CONFIGURATION_GENERATION: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn configuration_generation() -> u64 {
     CONFIGURATION_GENERATION.load(Ordering::Acquire)
@@ -285,8 +291,8 @@ fn log_totals(event_code: &'static str, reason: &'static str) {
 
 /// Caller holds recording_transition through admission and this claim. The
 /// worker is single-flight, including retiring children. No queue of stale taps.
-pub(crate) fn request(identity: PrepareIdentity) {
-    request_with(identity, |epoch, cancel| {
+pub(crate) fn request(identity: PrepareIdentity, revocation_generation: u64) {
+    request_with(identity, revocation_generation, |epoch, cancel| {
         thread::Builder::new()
             .name("murmur-capture-prepare".into())
             .spawn(move || {
@@ -302,10 +308,12 @@ pub(crate) fn request(identity: PrepareIdentity) {
 
 fn request_with(
     identity: PrepareIdentity,
+    revocation_generation: u64,
     spawn: impl FnOnce(u64, Arc<Cancellation>) -> std::io::Result<()>,
 ) -> bool {
     let mut state = PREPARATION.lock_or_recover();
-    if state.active.is_some()
+    if state.revocation_generation != revocation_generation
+        || state.active.is_some()
         || identity.configuration_generation != configuration_generation()
         || identity.topology_generation != crate::audio_lifecycle::input_topology_generation()
     {
@@ -631,10 +639,14 @@ mod tests {
     }
     fn claim_test_request(identity: PrepareIdentity) -> Arc<Cancellation> {
         let mut ticket = None;
-        assert!(request_with(identity, |_, cancel| {
-            ticket = Some(cancel);
-            Ok(())
-        }));
+        assert!(request_with(
+            identity,
+            revocation_generation(),
+            |_, cancel| {
+                ticket = Some(cancel);
+                Ok(())
+            }
+        ));
         ticket.unwrap()
     }
 
@@ -714,18 +726,22 @@ mod tests {
         assert!(!cancel.valid());
         // Cleanup ownership stays single-flight after invalidation, until its
         // existing worker (not an extra reaper thread) confirms exit.
-        assert!(!request_with(current_identity(103), |_, _| panic!(
-            "must not spawn during cleanup"
-        )));
+        assert!(!request_with(
+            current_identity(103),
+            revocation_generation(),
+            |_, _| panic!("must not spawn during cleanup")
+        ));
         reset_preparation();
     }
 
     #[test]
     fn failed_worker_handoff_occurs_before_child_creation_and_releases_claim() {
         reset_preparation();
-        assert!(!request_with(current_identity(104), |_, _| Err(
-            std::io::ErrorKind::Other.into()
-        )));
+        assert!(!request_with(
+            current_identity(104),
+            revocation_generation(),
+            |_, _| Err(std::io::ErrorKind::Other.into())
+        ));
         let state = PREPARATION.lock_or_recover();
         assert!(state.active.is_none());
         assert!(state.retiring.is_none());
@@ -772,9 +788,35 @@ mod tests {
         configuration_changed();
         assert!(!cancel.valid());
         reset_preparation();
-        assert!(!request_with(id, |_, _| panic!(
+        assert!(!request_with(id, revocation_generation(), |_, _| panic!(
             "old settings must not spawn"
         )));
+    }
+
+    #[test]
+    fn keyboard_revocation_rejects_a_continuation_that_already_passed_admission() {
+        for revoke in [
+            (|| crate::keyboard::set_app_disabled(true)) as fn(),
+            || crate::keyboard::set_processing(true),
+            crate::keyboard::stop_listener,
+        ] {
+            reset_preparation();
+            let identity = current_identity(108);
+            let generation = revocation_generation();
+            let (resume, paused) = std::sync::mpsc::channel();
+            // Pause exactly between earlier admission and the final slot claim.
+            let continuation = thread::spawn(move || {
+                paused.recv().unwrap();
+                request_with(identity, generation, |_, _| {
+                    panic!("revoked continuation must not start a worker")
+                })
+            });
+            revoke();
+            resume.send(()).unwrap();
+            assert!(!continuation.join().unwrap());
+            crate::keyboard::set_app_disabled(false);
+            crate::keyboard::set_processing(false);
+        }
     }
 
     #[cfg(unix)]

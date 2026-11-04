@@ -316,7 +316,7 @@ pub enum SystemAudioPermissionStatus {
 /// this message. AUHAL steps map to native Core Audio calls as follows:
 ///
 /// - `AudioUnitNew`: `AudioComponentFindNext`, `AudioComponentInstanceNew`
-/// - `AudioUnitInitialize`: `AudioUnitInitialize`, after confirmed Start only
+/// - `AudioUnitInit`: `AudioUnitInitialize`, after confirmed Start only
 /// - `EnableInputIo` / `DisableOutputIo`:
 ///   `AudioUnitSetProperty(kAudioOutputUnitProperty_EnableIO)` on the input /
 ///   output element
@@ -338,7 +338,8 @@ pub enum CaptureSetupStep {
     DeviceResolution,
     AudioUnitCreation,
     AudioUnitNew,
-    AudioUnitInitialize,
+    #[serde(rename = "audioUnitInitialize")]
+    AudioUnitInit,
     EnableInputIo,
     DisableOutputIo,
     SetCurrentDevice,
@@ -360,7 +361,7 @@ impl CaptureSetupStep {
             Self::DeviceResolution => "device_resolution",
             Self::AudioUnitCreation => "audio_unit_creation",
             Self::AudioUnitNew => "audio_unit_new",
-            Self::AudioUnitInitialize => "audio_unit_initialize",
+            Self::AudioUnitInit => "audio_unit_initialize",
             Self::EnableInputIo => "enable_input_io",
             Self::DisableOutputIo => "disable_output_io",
             Self::SetCurrentDevice => "set_current_device",
@@ -1026,10 +1027,7 @@ mod tests {
         );
         for (step, name) in [
             (CaptureSetupStep::AudioUnitNew, "audio_unit_new"),
-            (
-                CaptureSetupStep::AudioUnitInitialize,
-                "audio_unit_initialize",
-            ),
+            (CaptureSetupStep::AudioUnitInit, "audio_unit_initialize"),
             (CaptureSetupStep::StreamStart, "stream_start"),
         ] {
             assert_eq!(step.as_str(), name);

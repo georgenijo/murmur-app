@@ -365,9 +365,7 @@ impl ProductionCaptureV1 {
                     self.device_resolution_ms = Some(elapsed_ms);
                 }
                 CaptureSetupStep::AudioUnitNew => self.audio_unit_new_ms = Some(elapsed_ms),
-                CaptureSetupStep::AudioUnitInitialize => {
-                    self.audio_unit_initialize_ms = Some(elapsed_ms)
-                }
+                CaptureSetupStep::AudioUnitInit => self.audio_unit_initialize_ms = Some(elapsed_ms),
                 CaptureSetupStep::EnableInputIo
                 | CaptureSetupStep::DisableOutputIo
                 | CaptureSetupStep::SetCurrentDevice
@@ -1055,7 +1053,7 @@ mod stream_open_split_tests {
         for (s, ms) in [
             (CaptureSetupStep::DeviceResolution, 2),
             (CaptureSetupStep::AudioUnitNew, 116),
-            (CaptureSetupStep::AudioUnitInitialize, 4),
+            (CaptureSetupStep::AudioUnitInit, 4),
             (CaptureSetupStep::EnableInputIo, 1),
             (CaptureSetupStep::DisableOutputIo, 1),
             (CaptureSetupStep::SetCurrentDevice, 9),

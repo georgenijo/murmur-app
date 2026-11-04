@@ -1602,13 +1602,13 @@ fn start_auhal_resolved(
         SetupTransition::Completed,
     ))?;
     emit(MicrophoneSetupObservation::Step(
-        CaptureSetupStep::AudioUnitInitialize,
+        CaptureSetupStep::AudioUnitInit,
         SetupTransition::Entered,
     ))?;
     unit.initialize()
         .map_err(|_| FailureCode::StreamOpenFailed)?;
     emit(MicrophoneSetupObservation::Step(
-        CaptureSetupStep::AudioUnitInitialize,
+        CaptureSetupStep::AudioUnitInit,
         SetupTransition::Completed,
     ))?;
     emit(MicrophoneSetupObservation::Step(

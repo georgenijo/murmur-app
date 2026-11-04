@@ -153,6 +153,17 @@ impl DoubleTapDetector {
         self.state_entered_at = Instant::now();
     }
 
+    fn preparation_candidate_matches(&self, token: u64) -> bool {
+        self.prepared_token == Some(token)
+            && self
+                .candidate
+                .is_some_and(|candidate| candidate.token == token)
+            && matches!(
+                self.state,
+                DetectorState::WaitingSecondDown | DetectorState::WaitingSecondUp
+            )
+    }
+
     fn transition(&mut self, new_state: DetectorState) {
         self.state = new_state;
         self.state_entered_at = Instant::now();
@@ -802,6 +813,7 @@ fn apply_prepare_signal(
             invalidate_preparation(crate::audio::prepare::InvalidateReason::SequenceAbandoned);
         }
         PrepareSignal::Request(candidate) => {
+            let revocation_generation = crate::audio::prepare::revocation_generation();
             let identity = crate::audio::prepare::PrepareIdentity {
                 token: candidate.token,
                 listener_generation,
@@ -826,7 +838,7 @@ fn apply_prepare_signal(
                             && DOUBLE_TAP_DETECTOR
                                 .lock_or_recover()
                                 .as_ref()
-                                .is_some_and(|d| d.prepared_token == Some(identity.token))
+                                .is_some_and(|d| d.preparation_candidate_matches(identity.token))
                             && crate::commands::recording::dictation_prepare_admitted(&state)
                             && identity.topology_generation
                                 == crate::audio_lifecycle::input_topology_generation()
@@ -844,9 +856,9 @@ fn apply_prepare_signal(
                 let detector = DOUBLE_TAP_DETECTOR.lock_or_recover();
                 if detector
                     .as_ref()
-                    .is_some_and(|d| d.prepared_token == Some(identity.token))
+                    .is_some_and(|d| d.preparation_candidate_matches(identity.token))
                 {
-                    crate::audio::prepare::request(identity);
+                    crate::audio::prepare::request(identity, revocation_generation);
                 }
             });
         }
@@ -1511,10 +1523,10 @@ pub fn is_processing() -> bool {
 /// re-enabling doesn't produce phantom events.
 pub fn set_app_disabled(disabled: bool) {
     crate::audio_lifecycle::gesture::clear_pending();
+    let was_disabled = APP_DISABLED.swap(disabled, Ordering::SeqCst);
     if disabled {
         invalidate_preparation(crate::audio::prepare::InvalidateReason::Disabled);
     }
-    let was_disabled = APP_DISABLED.swap(disabled, Ordering::SeqCst);
     if !was_disabled && disabled {
         // Transitioning false → true: clean up any partial detector state
         HOLD_PROMOTION.invalidate();
@@ -1685,9 +1697,9 @@ pub(crate) fn dictation_listener_active() -> bool {
 /// `mode` should be `"double_tap"`, `"hold_down"`, or `"both"`.
 pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
     crate::audio_lifecycle::gesture::clear_pending();
+    LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
     HOLD_PROMOTION.invalidate();
-    LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let target = hotkey_to_rdev_key(hotkey);
 
     let detector_mode = match mode {
@@ -2480,9 +2492,9 @@ fn transform_escape_target_pass_id(
 /// Stop processing keyboard events (the thread stays alive but idle).
 pub fn stop_listener() {
     crate::audio_lifecycle::gesture::clear_pending();
-    invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
     LISTENER_ACTIVE.store(false, Ordering::SeqCst);
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
+    invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
 
     // Reset both detectors and Both-mode state
     {
@@ -2506,9 +2518,9 @@ pub fn stop_listener() {
 /// Returns `true` if a hold-down stop event should be emitted (key changed while held).
 pub fn set_target_key(hotkey: &str) -> bool {
     crate::audio_lifecycle::gesture::clear_pending();
+    LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
     HOLD_PROMOTION.invalidate();
-    LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     let target = hotkey_to_rdev_key(hotkey);
     let mode = {
         let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
@@ -2931,6 +2943,38 @@ mod tests {
             PrepareSignal::Abandon
         ));
         assert!(matches!(d.take_prepare_signal(false), PrepareSignal::None));
+    }
+
+    #[test]
+    fn lifecycle_reset_rejects_signal_resumed_before_its_generation_snapshot() {
+        for revoke_and_resume in [
+            (|| {
+                set_app_disabled(true);
+                set_app_disabled(false);
+            }) as fn(),
+            || {
+                set_processing(true);
+                set_processing(false);
+            },
+        ] {
+            let mut detector = make_detector(Key::ShiftLeft);
+            detector.handle_event(&press(Key::ShiftLeft));
+            detector.handle_event(&release(Key::ShiftLeft));
+            let PrepareSignal::Request(candidate) = detector.take_prepare_signal(false) else {
+                panic!("first clean tap must request preparation");
+            };
+            let saved = DOUBLE_TAP_DETECTOR.lock_or_recover().replace(detector);
+            // The signal exists, but apply_prepare_signal has not sampled
+            // revocation yet. A complete disable/enable cycle happens first.
+            revoke_and_resume();
+            let _fresh_generation = crate::audio::prepare::revocation_generation();
+            let mut detector = DOUBLE_TAP_DETECTOR.lock_or_recover();
+            assert!(!detector
+                .as_ref()
+                .unwrap()
+                .preparation_candidate_matches(candidate.token));
+            *detector = saved;
+        }
     }
 
     #[test]

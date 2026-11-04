@@ -5148,6 +5148,7 @@ pub(crate) fn dictation_start_blocker(
 pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
     let dictation = state.app_state.dictation.lock_or_recover();
     dictation_start_blocker(state, dictation.status).is_none()
+        && !state.app_state.microphone_preview.is_active()
         && !audio_lifecycle::is_audio_active()
         && !audio_lifecycle::is_dictation_cleanup_pending(
             state.app_state.recording_id.load(Ordering::SeqCst),
@@ -7151,6 +7152,55 @@ pub(crate) mod tests {
             state.dictation.lock_or_recover().status,
             DictationStatus::Processing
         );
+    }
+
+    #[tokio::test]
+    async fn connecting_preview_blocks_queued_preparation_before_supervisor_startup() {
+        let state = Arc::new(State {
+            app_state: AppState::default(),
+            benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+            microphone_startup_benchmark: Default::default(),
+            #[cfg(feature = "internal-benchmark")]
+            corpus: Default::default(),
+            knowledge: Default::default(),
+            meeting_store: Default::default(),
+            meetings: Default::default(),
+            meeting_suggestions: Default::default(),
+            meeting_summaries: Default::default(),
+            delivery_recovery: Default::default(),
+            correct_and_teach: Default::default(),
+            capture_health: Default::default(),
+            performance: Default::default(),
+            query_history: Default::default(),
+            assistant: Default::default(),
+            transform_diagnostics: Default::default(),
+            dictation_diagnostics: Default::default(),
+            notch_info: Default::default(),
+            display_snapshot: Default::default(),
+            overlay_calibration: Default::default(),
+            overlay_frame: Default::default(),
+            overlay_layout: Default::default(),
+            transform_popover_anchor: Default::default(),
+            transform_main_was_visible: Default::default(),
+            transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
+            query: Default::default(),
+        });
+        let transition = state.app_state.recording_transition.lock().await;
+        assert!(dictation_prepare_admitted(&state));
+        let preview = state.app_state.microphone_preview.claim(0).unwrap();
+        assert!(state.app_state.microphone_preview.is_connecting(preview));
+        assert!(!audio_lifecycle::is_audio_active());
+        let queued_state = Arc::clone(&state);
+        let queued = tokio::spawn(async move {
+            crate::audio::prepare::admission_transition(
+                &queued_state.app_state.recording_transition,
+                || dictation_prepare_admitted(&queued_state),
+            )
+            .await
+            .is_some()
+        });
+        drop(transition);
+        assert!(!queued.await.unwrap());
     }
 
     #[test]
