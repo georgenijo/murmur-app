@@ -20,6 +20,7 @@ import {
   isDueForCheck,
   setLastCheckTimestamp,
   parseMinVersionPolicy,
+  getUpdateReleaseNotes,
   CHECK_TIMER_TICK_MS,
 } from '../updater';
 import { getUpdateInstallEnvironment } from '../updaterEnvironment';
@@ -104,6 +105,7 @@ export function useAutoUpdater(
   const hasDownloadedUpdateRef = useRef(false);
   const hasInstalledUpdateRef = useRef(false);
   const isForcedRef = useRef(false);
+  const releaseNotesRef = useRef('');
   const manualPresentationRequestedRef = useRef(false);
   const automaticStartupRef = useRef(false);
 
@@ -223,10 +225,14 @@ export function useAutoUpdater(
       // A secondary policy read may fail to force an update; it must never
       // fail to offer a verified update.
       let isForced = false;
-      let currentVersion: string = 'unknown';
+      let currentVersion = 'unknown';
       if (policy.status === 'present') {
         currentVersion = await getVersion();
         isForced = isBelowMinVersion(currentVersion, policy.minVersion);
+      }
+      if (currentVersion === 'unknown' && Array.isArray(update.rawJson?.release_history)) {
+        // History enrichment must not prevent offering a verified update.
+        currentVersion = await getVersion().catch(() => 'unknown');
       }
       setLastCheckTimestamp(Date.now());
 
@@ -235,10 +241,13 @@ export function useAutoUpdater(
       hasDownloadedUpdateRef.current = false;
       hasInstalledUpdateRef.current = false;
       isForcedRef.current = isForced;
+      releaseNotesRef.current = getUpdateReleaseNotes(
+        update.rawJson, currentVersion, update.version, update.body ?? '',
+      );
       setUpdateStatus({
         phase: 'available',
         version: update.version,
-        notes: update.body ?? '',
+        notes: releaseNotesRef.current,
         isForced,
       });
       setIsUpdateDialogOpen(isForced || shouldPresentManualResult());
@@ -350,7 +359,7 @@ export function useAutoUpdater(
 
       setUpdateStatus({ phase: 'downloading', version, progress: null });
       flog.info('updater', 'starting download', { version });
-      setPendingUpdate({ version, notes: update.body ?? '' });
+      setPendingUpdate({ version, notes: releaseNotesRef.current });
 
       let totalContentLength = 0;
       let totalDownloaded = 0;

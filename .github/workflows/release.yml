@@ -426,6 +426,9 @@ jobs:
             MIN_VERSION=$(jq -r '.min_version' .github/updater-policy.json)
             MIN_VERSION_ARGS=(--min-version "$MIN_VERSION")
           fi
+          # Paginate the complete history, including releases beyond page one.
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | jq 'add | map({tag_name, body, draft, prerelease})' > release-history.json
           python3 scripts/release_artifacts.py manifests \
             --validated validated-release.json \
             --tag "$TAG" \
@@ -433,6 +436,7 @@ jobs:
             --bridge-url "$BRIDGE_URL" \
             --bridge-signature "$BRIDGE_SIG" \
             --release-notes release-notes.md \
+            --releases release-history.json \
             "${MIN_VERSION_ARGS[@]}" \
             --output-dir manifests
 
