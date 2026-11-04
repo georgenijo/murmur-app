@@ -187,6 +187,11 @@ impl PerformanceMetrics {
         self.observe(result).map(|_| ())
     }
 
+    #[cfg(test)]
+    pub(crate) fn flush_production_for_test(&self, id: u64) {
+        self.persist_production(id).unwrap();
+    }
+
     pub(crate) fn health(&self) -> PerformanceStoreHealthV1 {
         self.inner
             .lock()
@@ -1154,6 +1159,7 @@ mod production_persistence_tests {
         let metrics = PerformanceMetrics::default();
         metrics.initialize(temp.path().to_path_buf(), None).unwrap();
         begin(&metrics, 18);
+        metrics.observe_production_capture(18, AudioStartupDiagnostic::RecordingStopIssued);
         let mut expected = finish(&metrics, 18);
         assert_eq!(
             metrics.get(&expected.run_id).unwrap(),
@@ -1217,6 +1223,7 @@ mod production_persistence_tests {
         metrics.initialize(temp.path().to_path_buf(), None).unwrap();
         for id in 1..=3 {
             begin(&metrics, id);
+            metrics.observe_production_capture(id, AudioStartupDiagnostic::RecordingStopIssued);
             let run = finish(&metrics, id);
             if id == 1 {
                 metrics.production_capture_failure(
@@ -1273,8 +1280,10 @@ mod production_persistence_tests {
         let metrics = PerformanceMetrics::default();
         metrics.initialize(temp.path().to_path_buf(), None).unwrap();
         begin(&metrics, 18);
+        metrics.observe_production_capture(18, AudioStartupDiagnostic::RecordingStopIssued);
         let previous = finish(&metrics, 18);
         begin(&metrics, 19);
+        metrics.observe_production_capture(19, AudioStartupDiagnostic::RecordingStopIssued);
         observe_and_persist(
             &metrics,
             18,
@@ -1378,6 +1387,67 @@ mod production_persistence_tests {
             assert_eq!(run.production.unwrap().capture.stop_to_worker_exit_ms, exit);
         }
     }
+
+    #[test]
+    fn completed_standby_rejects_failure_routes_and_cannot_acquire_a_late_stop_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 18);
+        let completed = finish(&metrics, 18);
+        for late_binding in [false, true] {
+            if late_binding {
+                metrics.observe_production_capture(18, AudioStartupDiagnostic::RecordingStopIssued);
+            }
+            metrics.production_capture_failure(
+                18,
+                crate::audio::AudioFailureKind::TerminationUnconfirmed,
+            );
+            metrics
+                .observe_production_capture(18, AudioStartupDiagnostic::WorkerInvariantViolation);
+            metrics.persist_production(18).unwrap();
+            assert_eq!(
+                metrics.get(&completed.run_id).unwrap(),
+                Some(completed.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn queued_failure_checkpoint_rechecks_standby_completion_before_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 18);
+        let completed = {
+            // Exercise the interleaving between the SQLite completion and the
+            // accumulator's completion marker. The queued async write cannot
+            // acquire the operation lock until the transition is published.
+            let _operation = metrics.operation_lock.lock().unwrap();
+            let repository = metrics
+                .repository(PerformanceStoreOperationV1::Complete)
+                .unwrap();
+            let completed = repository
+                .complete(
+                    &RunCorrelationV1::Dictation { recording_id: 18 },
+                    RunOutcomeV1::Success,
+                    Vec::new(),
+                    None,
+                    None,
+                )
+                .unwrap()
+                .unwrap();
+            metrics.production_capture_failure(
+                18,
+                crate::audio::AudioFailureKind::TerminationUnconfirmed,
+            );
+            metrics.production.lock().unwrap().completed(18, &completed);
+            completed
+        };
+        metrics.persist_production(18).unwrap();
+        assert_eq!(metrics.get(&completed.run_id).unwrap(), Some(completed));
+    }
+
     #[test]
     fn production_capture_survives_restart_and_clear_discards_delayed_updates() {
         let temp = tempfile::tempdir().unwrap();

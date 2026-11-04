@@ -2000,6 +2000,13 @@ fn handle_deadlines_at(
         {
             if current.command_sender.send(AudioCommand::Stop).is_ok() {
                 current.recording_stop_owner = Some(current.owner);
+                sink.notify(
+                    current.app_handle.as_ref(),
+                    current.owner,
+                    AudioLifecycleEvent::StartupDiagnostic(
+                        audio::AudioStartupDiagnostic::RecordingStopIssued,
+                    ),
+                );
             }
             return;
         }

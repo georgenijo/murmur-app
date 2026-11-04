@@ -364,7 +364,8 @@ The helper timing totals include observed attempts; stream-open and first-PCM
 measurements describe the successful/current attempt. A failed attempt remains
 visible even if fallback later succeeds. Stale-owner events and unconfirmed
 termination mark worker-invariant evidence when their run is still retained in
-the bounded pending set. A confirmed normal helper stop supplies healthy
+the bounded pending set and is in flight or bound to its own cold Stop.
+A confirmed normal helper stop supplies healthy
 termination evidence; unobserved invariants remain unavailable. This is not an
 OS-wide count of arbitrary processes.
 
@@ -380,6 +381,16 @@ healthy termination evidence for the already delivered dictation. Resuming a
 worker clears the binding before accepting the next recording owner, so that
 owner's later cold stop can amend only its own run. Unconfirmed standby
 retirement also cannot supply an invariant observation for the delivered run.
+The supervisor sends an in-memory `RecordingStopIssued` observation at the same
+accepted cold Stop. The diagnostics accumulator can acquire this binding only
+before run completion. Both typed capture observations and
+`InitializationFailed` → `production_capture_failure` reject completed runs
+without it. The async persistence continuation rechecks the same eligibility
+after acquiring the operation lock, so an in-flight checkpoint that races
+standby completion cannot write later. Standby failures still reach ordinary
+recovery/presentation handling; they cannot change the completed dictation's
+`failureKind` or invariant evidence through either diagnostics route. This
+binding is ephemeral and adds no persisted JSON field or schema version.
 A late recording-stop `WorkerStopped` or worker-invariant observation schedules
 an off-path SQLite transaction that rereads that UUID and
 checks its dictation recording ID before updating only capture teardown

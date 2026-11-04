@@ -20,6 +20,12 @@ impl LifecycleSink for MetricsSink {
         owner: AudioOwner,
         event: AudioLifecycleEvent,
     ) {
+        if let (Some(id), AudioLifecycleEvent::InitializationFailed { kind, .. }) =
+            (owner.dictation_id(), &event)
+        {
+            // Match recording.rs, including the indirect failure route.
+            self.metrics.production_capture_failure(id, *kind);
+        }
         if let (Some(id), AudioLifecycleEvent::StartupDiagnostic(diagnostic)) =
             (owner.dictation_id(), &event)
         {
@@ -266,6 +272,82 @@ fn cold_sealed_delivery_late_exit_amends_its_completed_run() {
     );
     fixture.finish_teardown();
     fixture.assert_late_exit(completed);
+    shutdown(&fixture.supervisor);
+}
+
+#[test]
+fn unconfirmed_termination_directly_in_standby_cannot_amend_completed_run() {
+    let fixture = Fixture::new(true);
+    fixture.start(18);
+    let completed = fixture.stop_and_persist(18);
+    assert_eq!(fixture.supervisor.public.phase(), PublicPhase::Standby);
+    fixture
+        .supervisor
+        .sender
+        .send(SupervisorMessage::Worker(
+            AudioWorkerEvent::TerminationUnconfirmed {
+                owner: AudioOwner::Dictation(18),
+                failure: AudioFailure::new(
+                    AudioFailureKind::TerminationUnconfirmed,
+                    AudioInitPhase::Runtime,
+                ),
+            },
+        ))
+        .unwrap();
+    fixture
+        .stopped
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    fixture.finish_teardown();
+    assert!(fixture
+        .sink
+        .recorded
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, event)| matches!(
+            event,
+            AudioLifecycleEvent::InitializationFailed {
+                kind: AudioFailureKind::TerminationUnconfirmed,
+                ..
+            }
+        )));
+    fixture.sink.metrics.flush_production_for_test(18);
+    assert_eq!(
+        fixture.sink.metrics.get(&completed.run_id).unwrap(),
+        Some(completed)
+    );
+    shutdown(&fixture.supervisor);
+}
+
+#[test]
+fn genuine_cold_stop_unconfirmed_termination_still_amends_its_run() {
+    let fixture = Fixture::new(false);
+    fixture.start(18);
+    let mut expected = fixture.stop_and_persist(18);
+    fixture
+        .supervisor
+        .sender
+        .send(SupervisorMessage::Worker(
+            AudioWorkerEvent::TerminationUnconfirmed {
+                owner: AudioOwner::Dictation(18),
+                failure: AudioFailure::new(
+                    AudioFailureKind::TerminationUnconfirmed,
+                    AudioInitPhase::Runtime,
+                ),
+            },
+        ))
+        .unwrap();
+    fixture.finish_teardown();
+    let capture = &mut expected.production.as_mut().unwrap().capture;
+    capture.stop_to_worker_exit_ms = Some(212);
+    capture.worker_invariant_violation = Some(true);
+    fixture.sink.metrics.flush_production_for_test(18);
+    assert_eq!(
+        fixture.sink.metrics.get(&expected.run_id).unwrap(),
+        Some(expected)
+    );
     shutdown(&fixture.supervisor);
 }
 
