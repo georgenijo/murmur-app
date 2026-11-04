@@ -1266,7 +1266,8 @@ impl StopReadOutcome {
 }
 
 /// Accepts valid microphone PCM until `deadline` or a terminal frame. Used
-/// for the dictation release tail and for the post-`Stop` ring drain (#829).
+/// for the post-`Stop` ring drain (#829). The supervisor retains the release
+/// tail through normal live capture before sending Stop.
 fn read_stopping_frames(
     reader_rx: &mpsc::Receiver<HelperRead>,
     deadline: Instant,

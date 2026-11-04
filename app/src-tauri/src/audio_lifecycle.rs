@@ -1491,6 +1491,7 @@ fn handle_worker_event(
                 && current.stop_response.is_some()
             {
                 let result = take_samples(current);
+                let samples_ready = result.is_ok();
                 current.sealed_delivery = current
                     .stop_response
                     .take()
@@ -1498,7 +1499,8 @@ fn handle_worker_event(
                 tracing::info!(target: "audio",
                     event_code = "audio.sealed_recording_delivered",
                     recording_id = current.owner.telemetry_id(),
-                    delivered = current.sealed_delivery,
+                    delivered = current.sealed_delivery && samples_ready,
+                    response_delivered = current.sealed_delivery,
                     exit_confirmed = false,
                     "sealed recording handed off; microphone ownership retained"
                 );
@@ -3250,6 +3252,11 @@ mod tests {
                     start(&supervisor, next).recv().unwrap(),
                     Err(AudioStartError::AudioRecovering)
                 );
+            }
+            if !seal {
+                // The start replies above are also a supervisor FIFO barrier:
+                // the stale seal has now been processed and still delivered nothing.
+                assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
             }
             if seal {
                 // Even an unconfirmed exit must keep ownership without resetting
