@@ -18,9 +18,11 @@ drifting away from it.
   are the exception: CSS derives them from the active repaired `--murmur-*`
   palette and never persists them as theme data.
 
-The type ramp is intentionally limited to three reusable sizes: 12px captions,
-13px controls, and 14px body text. Components should use those tokens instead
-of inventing local font sizes.
+The shared small-type ramp is 11/16, 12/16, 13/18, and 14/20px, as pinned
+by #853 below. Components use the corresponding tokens rather than inventing
+local sizes. Prose statistics, eyebrows, and history date labels use the sans
+stack with tabular numerals; monospace is reserved for technical text such as
+shortcuts, code, paths, and transcript timestamps.
 
 Feature components must not replace semantic colors with literal palette
 values. New recurring measurements belong in `--ui-*`; one-off arbitrary
@@ -72,10 +74,10 @@ Use these before creating a feature-local control or surface.
 
 | Area | Contract |
 |------|----------|
-| Native chrome | Traffic lights, status, updates, and Settings share one row; recording actions live in the dashboard |
+| Native chrome | Traffic lights, Home sidebar toggle, status, updates, and Settings share one row. The toggle starts after the zoom-compensated 80pt controls inset and never acts as a drag region; recording actions live in the dashboard. Collapsed Home and narrow Settings leave the header background unpainted; expanded header paint aligns with its sidebar |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
 | Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
-| Sidebar | Home uses 200px normally and 184px at widths of 760px or less. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, Assistant, and Insights; selection is a surface state, never elevation |
+| Sidebar | App owns Home collapsed state, resizing, and a 256–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, Assistant, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
 | Customize | The gear and `⌘,` open General; Customize is an unordered set of independent destinations, and detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses the 896px shell documented below |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
@@ -125,6 +127,14 @@ Open VSX-like inputs. The 880×720 fixture must retain a 200px Insights rail
 beside the history column. Update those baselines only after comparing the
 rendered fixture with the Open Design source and repeating the bundled native
 smoke test.
+
+### UI PR checklist
+
+- Check native controls clearance and the header centreline independently of sidebar width.
+- Keep the shared type scale; use sans prose and tabular statistics, mono technical text.
+- Exercise expanded, collapsed, narrow and attainable 0.5/1.0/1.1/1.2 zoom states.
+- Compare light and dark rendering and inspect platform-specific golden diffs.
+- Verify the signed bundled native app: pointer/keyboard toggle, separator focus restore, window drag and title-bar double-click; include narrow Settings at 1.1.
 
 ## T3 Code typography and floating surfaces (#853)
 
