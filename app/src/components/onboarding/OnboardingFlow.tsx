@@ -11,8 +11,8 @@ import {
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../../lib/dictation';
-import { getModelRuntimeCatalog } from '../../lib/modelRuntime';
-import { DOWNLOAD_MODEL_KEYS, ModelDownloadPanel } from '../ModelDownloader';
+import { preferredInstalledModel, useInstalledModels } from '../../lib/hooks/useInstalledModels';
+import { ModelDownloadPanel } from '../ModelDownloader';
 import { WindowHeader } from '../ui/WindowHeader';
 import {
   DICTATION_KEY_OPTION_GROUPS,
@@ -64,7 +64,7 @@ interface Props {
   recordingMode: RecordingMode;
   triggerKey: DictationKey;
   /** Called when the user finishes the wizard with the selected local setup. */
-  onComplete: (model: ModelOption, recordingMode: RecordingMode, triggerKey: DictationKey) => void;
+  onComplete: (model: ModelOption, recordingMode: RecordingMode, triggerKey: DictationKey) => void | Promise<void>;
 }
 
 /**
@@ -86,6 +86,10 @@ interface Props {
  */
 export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComplete }: Props) {
   const [step, setStep] = useState<Step>('welcome');
+  const stepContentRef = useRef<HTMLDivElement>(null);
+  const previousStepRef = useRef(step);
+  const permissionOwner = import.meta.env.DEV ? 'your terminal app' : 'Murmur';
+
   const [micStatus, setMicStatus] = useState<MicPermissionStatus>('unknown');
   const [micRequested, setMicRequested] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
@@ -98,23 +102,31 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [calendarStatus, setCalendarStatus] = useState<CalendarPermissionState>('notDetermined');
   const [calendarBusy, setCalendarBusy] = useState(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
-  // Per-model on-disk status for every option the download panel offers.
-  // null = not probed yet; the model step shows a spinner-less blank until known.
-  const [installedModels, setInstalledModels] = useState<Partial<Record<ModelOption, boolean>> | null>(null);
+  const { installedModels, error: modelCatalogError, retry: retryModelCatalog } = useInstalledModels(step === 'model');
   // Whether the model step finished with a model on disk (Continue or download);
   // drives the done-step summary row.
   const [modelInstalled, setModelInstalled] = useState(false);
   const [installedModel, setInstalledModel] = useState<ModelOption>(initialModel);
   const [selectedRecordingMode, setSelectedRecordingMode] = useState(recordingMode);
   const [selectedTriggerKey, setSelectedTriggerKey] = useState(triggerKey);
-  // Lock Back while a download is in flight: unmounting the panel wouldn't stop
-  // the Rust download_model command, and re-entering the step could start a
-  // second concurrent download of the same file.
+  const [completing, setCompleting] = useState(false);
+  const [completionError, setCompletionError] = useState(false);
+  const completionPending = useRef(false);
+  // Cancel in the model panel confirms native termination before releasing Back.
   const [modelDownloading, setModelDownloading] = useState(false);
+
+  useEffect(() => {
+    // Leave initial focus alone, including StrictMode's effect replay. Only
+    // navigation moves focus; permission polling must preserve the active control.
+    if (previousStepRef.current === step) return;
+    previousStepRef.current = step;
+    stepContentRef.current?.querySelector('h1')?.focus();
+  }, [step]);
 
   // Monotonic sequence so an interval probe overlapping a focus probe can't
   // apply an older TCC result over a newer one.
   const pollSeq = useRef(0);
+  const systemAudioProbeSeq = useRef(0);
   const calendarProbeSeq = useRef(0);
   const calendarMutationSeq = useRef(0);
   const refreshPermissions = useCallback(async () => {
@@ -146,40 +158,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     };
   }, [refreshPermissions]);
 
-  // Probe every offered model when entering the model step (re-run of the
-  // wizard, or a fresh webview data store next to an installed app), so any
-  // already-downloaded model shows as Installed instead of just the settings
-  // default (#240).
-  useEffect(() => {
-    if (step !== 'model') return;
-    let stale = false;
-    getModelRuntimeCatalog().then((catalog) => {
-      if (!stale) {
-        const byName = new Map(catalog.map((model) => [model.modelName, model]));
-        const entries = DOWNLOAD_MODEL_KEYS.map((model) => [
-          model,
-          byName.get(model)?.installState === 'installed',
-        ] as const);
-        setInstalledModels(Object.fromEntries(entries) as Partial<Record<ModelOption, boolean>>);
-      }
-    }, () => {
-      if (!stale) {
-        // Preserve the previous fail-open onboarding behavior if the status
-        // command itself is unavailable; genuine missing models are reported
-        // as notInstalled rather than rejecting the request.
-        setInstalledModels(Object.fromEntries(
-          DOWNLOAD_MODEL_KEYS.map((model) => [model, true]),
-        ) as Partial<Record<ModelOption, boolean>>);
-      }
-    });
-    return () => {
-      stale = true;
-    };
-  }, [step]);
-
   useEffect(() => {
     if (step !== 'systemAudio') return;
-    void getSystemAudioPermissionStatus().then(setSystemAudioStatus).catch(() => {});
+    const seq = ++systemAudioProbeSeq.current;
+    void getSystemAudioPermissionStatus().then((status) => {
+      if (seq === systemAudioProbeSeq.current) setSystemAudioStatus(status);
+    }).catch(() => {});
+    return () => { ++systemAudioProbeSeq.current; };
   }, [step]);
 
   // Calendar access is optional. Keep even its passive permission probe out of
@@ -211,12 +196,24 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     };
   }, [step]);
 
-  // If the settings model is missing but another offered model is on disk,
-  // pre-select an installed one so the primary action is Continue, not Download.
-  const preferredModel =
-    installedModels === null || installedModels[initialModel]
-      ? initialModel
-      : DOWNLOAD_MODEL_KEYS.find((model) => installedModels[model]) ?? initialModel;
+  const preferredModel = modelInstalled
+    ? installedModel
+    : preferredInstalledModel(initialModel, installedModels);
+
+  const finishSetup = async () => {
+    if (completionPending.current) return;
+    completionPending.current = true;
+    setCompleting(true);
+    setCompletionError(false);
+    try {
+      await onComplete(installedModel, selectedRecordingMode, selectedTriggerKey);
+    } catch {
+      setCompletionError(true);
+    } finally {
+      completionPending.current = false;
+      setCompleting(false);
+    }
+  };
 
   const stepIndex = STEP_ORDER.indexOf(step);
   const goNext = () => setStep(STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)]);
@@ -293,6 +290,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   const handleRequestSystemAudio = async () => {
+    ++systemAudioProbeSeq.current;
     setSystemAudioError(null);
     setSystemAudioBusy(true);
     try {
@@ -359,11 +357,22 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     }
   };
 
+  const permissionStatusMessage = step === 'microphone'
+    ? `Microphone access ${micGranted ? 'granted' : micDenied ? 'denied' : micRequested ? 'waiting for your answer in the macOS dialog' : 'not yet granted'}.`
+    : step === 'accessibility'
+    ? `Accessibility access ${axGranted === true ? 'granted' : axGranted === null ? 'being checked' : 'not granted'}.`
+    : step === 'systemAudio'
+    ? `System audio access ${systemAudioBusy ? 'waiting for macOS' : systemAudioStatus}.`
+    : step === 'calendar'
+    ? `Calendar access ${calendarBusy ? 'waiting for macOS' : calendarStatus === 'notDetermined' ? 'not yet requested' : calendarStatus}.`
+    : '';
+
   return (
     <AppSurface data-default-scope onKeyDown={defaultButtonKeyDown} surface="onboarding" className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <WindowHeader />
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
-      <div className="w-full max-w-lg">
+      <div ref={stepContentRef} className="w-full max-w-lg">
+        <p role="status" aria-atomic="true" className="sr-only">{permissionStatusMessage}</p>
         {/* Persistent wizard progress */}
         <div className="mb-10 flex items-center justify-center">
           <div
@@ -392,7 +401,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'welcome' && (
           <div className="text-center">
-            <h1 className="mb-3 text-2xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
+            <h1 tabIndex={-1} className="mb-3 text-2xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Welcome to Murmur
             </h1>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
@@ -429,7 +438,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             ) : micDenied ? (
               <div className="dialog-card mb-6 space-y-3 border-error/30 bg-error/10 px-4 py-3">
                 <p className="text-sm text-error">
-                  Microphone access is denied. Enable Murmur under Privacy &amp;
+                  Microphone access is denied. Enable {permissionOwner} under Privacy &amp;
                   Security → Microphone, then come back — this screen updates
                   automatically.
                 </p>
@@ -439,7 +448,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 >
                   Open System Settings…
                 </button>
-                <div>
+                {import.meta.env.DEV ? <DevPermissionHelp /> : <div>
                   <button
                     onClick={handleResetMic}
                     className="text-xs text-error underline hover:no-underline"
@@ -450,7 +459,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                     Clears Murmur's stale Microphone entry so macOS can ask fresh —
                     useful when the toggle is on but recording still fails.
                   </p>
-                </div>
+                </div>}
               </div>
             ) : (
               <div className="mb-6">
@@ -469,7 +478,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             {micError && (
-              <p className="mb-4 text-xs text-error">{micError}</p>
+              <p role="alert" className="mb-4 text-xs text-error">{micError}</p>
             )}
 
             <WizardNavigationRow
@@ -502,11 +511,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   Grant accessibility access…
                 </button>
                 <p className="text-xs text-on-surface-variant text-center">
-                  macOS opens System Settings — turn on <strong>Murmur</strong> in the
+                  macOS opens System Settings — turn on <strong>{permissionOwner}</strong> in the
                   list, then come back. This screen updates automatically.
                 </p>
                 {axRequested && (
-                  <div className="pt-1">
+                  import.meta.env.DEV ? <DevPermissionHelp /> : <div className="pt-1">
                     <button
                       onClick={handleResetAx}
                       className="text-xs text-on-surface-variant underline hover:no-underline"
@@ -523,7 +532,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             )}
 
             {axError && (
-              <p className="mb-4 text-xs text-error">{axError}</p>
+              <p role="alert" className="mb-4 text-xs text-error">{axError}</p>
             )}
 
             <WizardNavigationRow
@@ -546,7 +555,17 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             />
 
             {systemAudioStatus === 'granted' ? (
-              <GrantedCard label="System audio access granted" />
+              <div className="mb-6">
+                <GrantedCard label="System audio access granted" />
+                <button
+                  type="button"
+                  disabled={systemAudioBusy}
+                  onClick={() => void handleRequestSystemAudio()}
+                  className="dialog-pill-btn w-full px-4 py-2 text-[length:var(--ui-font-body)] font-semibold text-on-surface disabled:cursor-wait disabled:opacity-60"
+                >
+                  {systemAudioBusy ? 'Waiting for macOS…' : 'Re-check system audio access'}
+                </button>
+              </div>
             ) : systemAudioStatus === 'unsupported' ? (
               <div className="dialog-card mb-6 border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
                 Meeting capture requires macOS 14.2 or newer. Dictation is still available.
@@ -576,7 +595,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </div>
             )}
 
-            {systemAudioError && <p className="mb-4 text-xs text-error">{systemAudioError}</p>}
+            {systemAudioError && <p role="alert" className="mb-4 text-xs text-error">{systemAudioError}</p>}
             <WizardNavigationRow
               onBack={goBack}
               onNext={goNext}
@@ -601,7 +620,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             ) : calendarStatus === 'denied' ? (
               <div className="dialog-card mb-6 space-y-3 border-error/30 bg-error/10 px-4 py-3">
                 <p className="text-sm text-error">
-                  Calendar access is denied. You can still name meetings manually, or enable Murmur under Privacy &amp; Security → Calendars.
+                  Calendar access is denied. You can still name meetings manually, or enable {permissionOwner} under Privacy &amp; Security → Calendars.
                 </p>
                 <button
                   type="button"
@@ -610,7 +629,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 >
                   Open System Settings…
                 </button>
-                <div>
+                {import.meta.env.DEV ? <DevPermissionHelp /> : <div>
                   <button
                     type="button"
                     disabled={calendarBusy}
@@ -622,7 +641,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   <p className="mt-1 text-xs text-error">
                     Clears Murmur's Calendar entry so macOS can ask again the next time you allow access.
                   </p>
-                </div>
+                </div>}
               </div>
             ) : calendarStatus === 'restricted' ? (
               <div className="dialog-card mb-6 space-y-3 border-warning/30 bg-warning/10 px-4 py-3">
@@ -657,7 +676,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </div>
             )}
 
-            {calendarError && <p className="mb-4 text-xs text-error">{calendarError}</p>}
+            {calendarError && <p role="alert" className="mb-4 text-xs text-error">{calendarError}</p>}
             <WizardNavigationRow
               onBack={goBack}
               onNext={goNext}
@@ -671,7 +690,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'model' && (
           <div>
-            <h1 className="mb-1 text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
+            <h1 tabIndex={-1} className="mb-1 text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               Transcription model
             </h1>
             <p className="text-sm text-on-surface-variant mb-6">
@@ -679,7 +698,12 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               runs offline.
             </p>
 
-            {installedModels === null ? (
+            {modelCatalogError ? (
+              <>
+                <p role="alert" className="mb-4 text-[length:var(--ui-font-body)] text-error">Could not check installed models. Retry to continue setup.</p>
+                <WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" />
+              </>
+            ) : installedModels === null ? (
               <>
                 <div className="h-24" />
                 <WizardNavigationRow
@@ -784,7 +808,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
         {step === 'done' && (
           <div>
-            <h1 className="mb-1 text-center text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
+            <h1 tabIndex={-1} className="mb-1 text-center text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface">
               You're all set
             </h1>
             <p className="text-sm text-on-surface-variant mb-6 text-center">
@@ -817,11 +841,17 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </p>
             </div>
 
+            {completionError && (
+              <p role="alert" className="mb-4 text-[length:var(--ui-font-body)] text-error">
+                Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model.
+              </p>
+            )}
             <WizardNavigationRow
               onBack={goBack}
-              onNext={() => onComplete(installedModel, selectedRecordingMode, selectedTriggerKey)}
-              nextEnabled
-              nextLabel="Start using Murmur"
+              backDisabled={completing}
+              onNext={() => void finishSetup()}
+              nextEnabled={!completing}
+              nextLabel={completing ? 'Configuring model…' : completionError ? 'Retry' : 'Start using Murmur'}
             />
           </div>
         )}
@@ -831,11 +861,21 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   );
 }
 
+function DevPermissionHelp() {
+  return (
+    <p className="mt-1 text-[length:var(--ui-font-caption)] leading-[var(--ui-leading-caption)] text-on-surface-variant">
+      In this development session, grant access to the terminal app that launched
+      Murmur, then restart the dev server. If access stays stale, turn that
+      terminal's permission off and on in System Settings.
+    </p>
+  );
+}
+
 function StepHeading({ title, subtitle, granted }: { title: string; subtitle: string; granted: boolean }) {
   return (
     <div className="mb-6">
       <div className="flex items-center gap-2 mb-1">
-        <h1 className="text-xl font-semibold text-on-surface">{title}</h1>
+        <h1 tabIndex={-1} className="text-xl font-semibold text-on-surface">{title}</h1>
         {granted && <CheckIcon />}
       </div>
       <p className="text-sm text-on-surface-variant">{subtitle}</p>
@@ -930,7 +970,7 @@ function WizardNavigationRow({
 
 function CheckIcon() {
   return (
-    <svg className="w-4 h-4 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+    <svg aria-hidden="true" className="w-4 h-4 text-success shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
     </svg>
   );

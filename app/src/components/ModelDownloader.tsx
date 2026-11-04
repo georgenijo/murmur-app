@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { cn } from '../lib/sona-utils';
-import { downloadModel } from '../lib/dictation';
+import { cancelModelDownload, downloadModel } from '../lib/dictation';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
+import { preferredInstalledModel, useInstalledModels } from '../lib/hooks/useInstalledModels';
 import {
   correlatedModelDownloadAttempt,
   modelDownloadLabel,
@@ -24,8 +25,7 @@ const MODEL_DESCRIPTIONS: Record<string, string> = {
 
 /**
  * Subset of models shown on the initial download screen (first = default).
- * Exported so embedders (the onboarding wizard) can probe exactly the rows
- * the panel renders for on-disk existence.
+ * Installed models outside this curated list are also offered.
  */
 export const DOWNLOAD_MODEL_KEYS: ModelOption[] = [
   'parakeet-tdt-0.6b-v3-coreml',
@@ -33,11 +33,9 @@ export const DOWNLOAD_MODEL_KEYS: ModelOption[] = [
   'large-v3-turbo',
   'base.en',
 ];
-const MODELS = DOWNLOAD_MODEL_KEYS.map((key) => {
-  const opt = AVAILABLE_MODEL_OPTIONS.find((m) => m.value === key);
-  if (!opt) return null;
-  return { name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[key] ?? '' };
-}).filter((model): model is NonNullable<typeof model> => model !== null);
+const MODELS = AVAILABLE_MODEL_OPTIONS.map((opt) => ({
+  name: opt.value, label: opt.label, size: opt.size, description: MODEL_DESCRIPTIONS[opt.value] ?? '',
+}));
 
 interface Props {
   initialModel: ModelOption;
@@ -59,6 +57,14 @@ interface Props {
   }) => ReactNode;
 }
 
+interface DownloadOperation {
+  requestId: string;
+  model: ModelOption;
+  cancelled: boolean;
+  started: boolean;
+  done: Promise<void>;
+}
+
 type DownloadState =
   | { phase: 'idle' }
   | { phase: 'downloading'; progress: ModelDownloadProgress }
@@ -77,74 +83,111 @@ export function ModelDownloadPanel({
   renderPrimaryAction,
 }: Props) {
   const hardwareGuidance = useModelHardwareGuidance();
+  const offeredModels = [
+    ...DOWNLOAD_MODEL_KEYS,
+    ...MODELS.filter((model) => !DOWNLOAD_MODEL_KEYS.includes(model.name) && installedModels?.[model.name]).map((model) => model.name),
+  ].map((name) => MODELS.find((model) => model.name === name)!);
   const [selected, setSelected] = useState<ModelOption>(
-    MODELS.some((model) => model.name === initialModel) ? initialModel : MODELS[0].name
+    offeredModels.some((model) => model.name === initialModel) ? initialModel : offeredModels[0].name
   );
   const [downloadState, setDownloadState] = useState<DownloadState>({ phase: 'idle' });
+  const operationRef = useRef<DownloadOperation | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
   const activeAttemptRef = useRef<number | null>(null);
-  const activeModelRef = useRef<ModelOption | null>(null);
 
   useEffect(() => {
     return () => {
+      const operation = operationRef.current;
+      operationRef.current = null;
+      if (operation) {
+        operation.cancelled = true;
+        if (operation.started) void cancelModelDownload(operation.model, operation.requestId).catch(() => {});
+      }
       downloadUnlistenRef.current?.();
       downloadUnlistenRef.current = null;
       activeAttemptRef.current = null;
-      activeModelRef.current = null;
     };
   }, []);
 
-  const handleDownload = async () => {
+  const handleDownload = () => {
+    if (operationRef.current) return;
     const requestedModel = selected;
-    activeModelRef.current = requestedModel;
+    const operation: DownloadOperation = {
+      requestId: crypto.randomUUID(), model: requestedModel,
+      cancelled: false, started: false, done: Promise.resolve(),
+    };
+    operationRef.current = operation;
     activeAttemptRef.current = null;
+    setCancelError(null);
     onDownloadingChange?.(true);
     setDownloadState({
       phase: 'downloading',
       progress: { modelName: requestedModel, received: 0, total: 0, phase: 'downloading' },
     });
-
-    // Single try/catch covering listen() as well as the download itself, so a
-    // listen failure can't strand the downloading state (or an embedder's
-    // navigation lock) forever.
-    try {
-      const unlisten = await listen<ModelDownloadProgress>(
-        'download-progress',
-        (event) => {
+    operation.done = (async () => {
+      let unlisten: (() => void) | null = null;
+      try {
+        unlisten = await listen<ModelDownloadProgress>('download-progress', (event) => {
+          if (operationRef.current !== operation || operation.cancelled) return;
           const progress = event.payload;
-          if (activeModelRef.current !== requestedModel) return;
-          const attemptId = correlatedModelDownloadAttempt(
-            progress,
-            requestedModel,
-            activeAttemptRef.current,
-          );
+          if (progress.requestId !== operation.requestId) return;
+          const attemptId = correlatedModelDownloadAttempt(progress, requestedModel, activeAttemptRef.current);
           if (attemptId === undefined) return;
           activeAttemptRef.current = attemptId;
-          setDownloadState({
-            phase: 'downloading',
-            progress,
-          });
-        }
-      );
-      downloadUnlistenRef.current = unlisten;
+          setDownloadState({ phase: 'downloading', progress });
+        });
+        const nativeUnlisten = unlisten;
+        let listening = true;
+        unlisten = () => {
+          if (!listening) return;
+          listening = false;
+          nativeUnlisten();
+        };
+        if (operationRef.current !== operation || operation.cancelled) return;
+        downloadUnlistenRef.current = unlisten;
+        operation.started = true;
+        await downloadModel(requestedModel, operation.requestId);
+        if (operationRef.current !== operation || operation.cancelled) return;
+        operationRef.current = null;
+        onDownloadingChange?.(false);
+        onComplete(requestedModel);
+      } catch (err) {
+        if (operationRef.current !== operation || operation.cancelled) return;
+        operationRef.current = null;
+        onDownloadingChange?.(false);
+        setDownloadState({ phase: 'error', message: String(err) });
+      } finally {
+        unlisten?.();
+        if (downloadUnlistenRef.current === unlisten) downloadUnlistenRef.current = null;
+      }
+    })();
+  };
 
-      await downloadModel(requestedModel);
-      unlisten();
-      downloadUnlistenRef.current = null;
+  const handleCancel = async () => {
+    const operation = operationRef.current;
+    if (!operation) return;
+    operation.cancelled = true;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      if (operation.started) await cancelModelDownload(operation.model, operation.requestId);
+      // A pending listen has no native owner. Its continuation checks cancelled.
+      if (operation.started) await operation.done;
+      if (operationRef.current !== operation) return;
+      operationRef.current = null;
       activeAttemptRef.current = null;
-      activeModelRef.current = null;
-      onDownloadingChange?.(false);
-      onComplete(requestedModel);
-    } catch (err) {
       downloadUnlistenRef.current?.();
       downloadUnlistenRef.current = null;
-      activeAttemptRef.current = null;
-      activeModelRef.current = null;
+      setDownloadState({ phase: 'idle' });
+      setCancelling(false);
       onDownloadingChange?.(false);
-      setDownloadState({
-        phase: 'error',
-        message: String(err),
-      });
+    } catch (error) {
+      if (operationRef.current !== operation) return;
+      // Keep navigation locked until native termination is confirmed.
+      setCancelError(String(error));
+      setCancelling(false);
     }
   };
 
@@ -190,7 +233,7 @@ export function ModelDownloadPanel({
         </p>
       )}
       <div className="space-y-2 mb-6">
-          {MODELS.map((model) => (
+          {offeredModels.map((model) => (
             <button
               key={model.name}
               id={`download-model-${model.name}`}
@@ -248,7 +291,7 @@ export function ModelDownloadPanel({
         {isDownloading && (
           <div className="mb-4" aria-live="polite" aria-busy="true">
             <div className="flex justify-between text-xs text-on-surface-variant mb-1">
-              <span>{progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
+              <span>{cancelling ? 'Cancelling…' : progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
               {progressPercent !== null ? (
                 <span>{progressPercent}%</span>
               ) : (
@@ -275,6 +318,17 @@ export function ModelDownloadPanel({
                 {(progress.total / 1024 / 1024).toFixed(1)} MB
               </p>
             )}
+          </div>
+        )}
+
+        {isDownloading && (
+          <div className="mb-4">
+            <button type="button" onClick={() => void handleCancel()} disabled={cancelling}
+              className="dialog-pill-btn px-4 py-2 text-[length:var(--ui-font-body)] text-on-surface disabled:opacity-50">
+              {cancelling ? 'Cancelling…' : 'Cancel download'}
+            </button>
+            <p className="mt-2 text-[length:var(--ui-font-caption)] text-on-surface-variant">Cancel to go back or choose another model. Retry resumes supported downloads.</p>
+            {cancelError && <p role="alert" className="mt-2 text-[length:var(--ui-font-body)] text-error">{cancelError}</p>}
           </div>
         )}
 
@@ -327,6 +381,7 @@ export function ModelDownloadPanel({
  * onboarding has already completed (e.g. the model file was deleted).
  */
 export function ModelDownloader({ initialModel, onComplete }: Props) {
+  const { installedModels, error, retry } = useInstalledModels();
   return (
     <div className="h-full min-h-0 bg-background flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
@@ -334,9 +389,18 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
           Download a Model
         </h1>
         <p className="text-sm text-on-surface-variant mb-6">
-          A model file is required for transcription. Choose one to download.
+          A model file is required for transcription. Choose an installed model or download one.
         </p>
-        <ModelDownloadPanel initialModel={initialModel} onComplete={onComplete} />
+        {error ? (
+          <div role="alert">
+            <p>Could not check installed models.</p>
+            <button type="button" onClick={retry} className="dialog-pill-btn mt-3 px-4 py-2">Retry</button>
+          </div>
+        ) : installedModels === null ? (
+          <p role="status">Checking installed models…</p>
+        ) : (
+          <ModelDownloadPanel initialModel={preferredInstalledModel(initialModel, installedModels)} installedModels={installedModels} onComplete={onComplete} />
+        )}
       </div>
     </div>
   );

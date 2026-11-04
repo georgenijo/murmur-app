@@ -72,7 +72,7 @@ const MODEL_MEMORY_COSTS: &[ModelMemoryCost] = &[
     },
     ModelMemoryCost {
         model_name: "large-v3-turbo",
-        catalog_size: "~3 GB",
+        catalog_size: "~1.6 GB",
         working_memory_mib: 7_168,
     },
 ];

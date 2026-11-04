@@ -9,6 +9,7 @@ export type ModelDownloadPhase =
 export interface ModelDownloadProgress {
   modelName?: string;
   attemptId?: number;
+  requestId?: string;
   received: number;
   total: number;
   phase?: ModelDownloadPhase;

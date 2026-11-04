@@ -15,13 +15,10 @@ const guidanceMocks = vi.hoisted(() => ({
   current: null as ModelHardwareGuidance | null,
 }));
 
-vi.mock('../lib/modelHardwareGuidance', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../lib/modelHardwareGuidance')>(),
-  useModelHardwareGuidance: () => guidanceMocks.current,
-}));
-
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...arguments_: unknown[]) => mocks.invoke(...arguments_),
+  invoke: (command: string, ...arguments_: unknown[]) => command === 'get_model_hardware_guidance'
+    ? Promise.resolve(guidanceMocks.current)
+    : mocks.invoke(command, ...arguments_),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -114,11 +111,13 @@ describe('ModelDownloadPanel', () => {
     await click('Download');
     expect(mocks.invoke).toHaveBeenCalledWith('download_model', {
       modelName: 'parakeet-tdt-0.6b-v3-coreml',
+      requestId: expect.any(String),
     });
 
     await act(async () => mocks.listener?.({
       payload: {
         modelName: 'base.en',
+        requestId: mocks.invoke.mock.calls[0][1].requestId,
         attemptId: 2,
         received: 0,
         total: 0,
@@ -130,6 +129,7 @@ describe('ModelDownloadPanel', () => {
     await act(async () => mocks.listener?.({
       payload: {
         modelName: 'parakeet-tdt-0.6b-v3-coreml',
+        requestId: mocks.invoke.mock.calls[0][1].requestId,
         attemptId: 7,
         received: 0,
         total: 0,
@@ -142,6 +142,7 @@ describe('ModelDownloadPanel', () => {
     await act(async () => mocks.listener?.({
       payload: {
         modelName: 'parakeet-tdt-0.6b-v3-coreml',
+        requestId: mocks.invoke.mock.calls[0][1].requestId,
         attemptId: 8,
         received: 0,
         total: 0,
@@ -220,4 +221,119 @@ describe('ModelDownloadPanel', () => {
     expect(container.textContent).toContain('You can still select and use it');
     expect(button('Download').hasAttribute('disabled')).toBe(false);
   });
+  it('keeps Back and model choices locked until cancellation and the install settle', async () => {
+    const download = deferred<void>();
+    const cancellation = deferred<void>();
+    const onDownloadingChange = vi.fn();
+    const onComplete = vi.fn();
+    mocks.invoke.mockImplementation((command: string) => command === 'cancel_model_download' ? cancellation.promise : download.promise);
+    await renderPanel({ onDownloadingChange, onComplete });
+    await click('Download');
+    const requestId = mocks.invoke.mock.calls[0][1].requestId;
+    await click('Cancel download');
+    expect(mocks.invoke).toHaveBeenLastCalledWith('cancel_model_download', {
+      modelName: 'parakeet-tdt-0.6b-v3-coreml', requestId,
+    });
+    expect(button('Cancelling…').disabled).toBe(true);
+    expect(onDownloadingChange.mock.calls).toEqual([[true]]);
+    await act(async () => download.reject('Model installation cancelled'));
+    expect(onDownloadingChange.mock.calls).toEqual([[true]]);
+    await act(async () => cancellation.resolve());
+    expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(button('Download').disabled).toBe(false);
+    expect((container.querySelector('[id="download-model-base.en"]') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not unlock navigation if native cancellation cannot confirm termination', async () => {
+    const download = deferred<void>();
+    const onDownloadingChange = vi.fn();
+    mocks.invoke.mockImplementation((command: string) => command === 'cancel_model_download'
+      ? Promise.reject('Installer termination is not yet confirmed') : download.promise);
+    await renderPanel({ onDownloadingChange });
+    await click('Download');
+    await click('Cancel download');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('termination');
+    expect(onDownloadingChange.mock.calls).toEqual([[true]]);
+    expect((container.querySelector('[id="download-model-base.en"]') as HTMLButtonElement).disabled).toBe(true);
+    mocks.invoke.mockImplementation(() => Promise.resolve());
+    await act(async () => download.reject('cancelled'));
+    await click('Cancel download');
+    expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it('cancels before a pending subscription without starting or completing a stale install', async () => {
+    const listening = deferred<() => void>();
+    mocks.listen.mockReturnValueOnce(listening.promise);
+    const onComplete = vi.fn();
+    await renderPanel({ onComplete });
+    await click('Download');
+    await click('Cancel download');
+    expect(button('Download').disabled).toBe(false);
+    await act(async () => listening.resolve(mocks.unlisten));
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(mocks.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it('cancels on unmount and ignores late native success', async () => {
+    const download = deferred<void>();
+    const onComplete = vi.fn();
+    mocks.invoke.mockImplementation((command: string) => command === 'download_model' ? download.promise : Promise.resolve());
+    await renderPanel({ onComplete });
+    await click('Download');
+    const requestId = mocks.invoke.mock.calls[0][1].requestId;
+    await act(async () => root.render(null));
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_model_download', {
+      modelName: 'parakeet-tdt-0.6b-v3-coreml', requestId,
+    });
+    await act(async () => download.resolve());
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(mocks.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it('allows slow progress without a frontend deadline and displays a resumed offset on retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = deferred<void>();
+      const second = deferred<void>();
+      mocks.invoke.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+      await renderPanel({ initialModel: 'base.en' });
+      await act(async () => button('Download').click());
+      const firstRequest = mocks.invoke.mock.calls[0][1].requestId;
+      for (let n = 1; n <= 20; n++) {
+        await act(async () => {
+          vi.advanceTimersByTime(60_000);
+          mocks.listener?.({ payload: { requestId: firstRequest, modelName: 'base.en', attemptId: 1, received: n, total: 100, phase: 'downloading' } });
+        });
+      }
+      expect(container.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('20');
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      await act(async () => first.reject('Download stalled: no data received. Retry to resume.'));
+      expect(container.textContent).toContain('stalled');
+      await act(async () => button('Retry download').click());
+      const secondRequest = mocks.invoke.mock.calls[1][1].requestId;
+      expect(secondRequest).not.toBe(firstRequest);
+      await act(async () => mocks.listener?.({ payload: { requestId: firstRequest, modelName: 'base.en', attemptId: 1, received: 99, total: 100 } }));
+      expect(container.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBeNull();
+      await act(async () => mocks.listener?.({ payload: { requestId: secondRequest, modelName: 'base.en', attemptId: 2, received: 20, total: 100 } }));
+      expect(container.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('20');
+      await act(async () => second.resolve());
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('shows native disk preflight failure and permits another model without completing', async () => {
+    const onComplete = vi.fn();
+    const onDownloadingChange = vi.fn();
+    mocks.invoke.mockRejectedValueOnce('Not enough disk space: need 1630 MB, available 100 MB. Free space and retry.');
+    await renderPanel({ initialModel: 'large-v3-turbo', onComplete, onDownloadingChange });
+    await click('Download');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('need 1630 MB, available 100 MB');
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
+    expect(button('Retry download').disabled).toBe(false);
+    await act(async () => (container.querySelector('[id="download-model-base.en"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
 });

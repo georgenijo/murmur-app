@@ -19,6 +19,7 @@ import {
   requestCalendarPermission,
 } from '../calendar';
 import { configureMeetingSuggestions } from '../meetingSuggestions';
+import { getModelRuntimeCatalog } from '../modelRuntime';
 
 let lastAutostartOp: Promise<void> = Promise.resolve();
 
@@ -445,22 +446,70 @@ export function useSettings() {
       confirmedConfigureSettingsRef.current = {
         ...confirmedConfigureSettingsRef.current, autoPaste: fresh.autoPaste,
       };
-      const nativeModeVersion = nativeModeVersionRef.current;
-      void configure(buildConfigureOptions(next), {
-        onSuccess: () => { confirmConfigured(next, nativeModeVersion); },
+      // This queue entry owns auto-paste only. A full snapshot captured here
+      // could restore the old model after pending setup configuration succeeds.
+      void configure({ autoPaste: fresh.autoPaste }, {
+        onSuccess: () => {
+          confirmedConfigureSettingsRef.current = {
+            ...confirmedConfigureSettingsRef.current, autoPaste: fresh.autoPaste,
+          };
+        },
         onError: () => {
           console.error('Failed to configure externally changed settings.');
           setConfigureError('Settings could not be synchronized. Reopen Settings and try again.');
         },
       }).catch(() => {});
     }
-  }, [confirmConfigured]);
+  }, []);
+
+  // Setup is acknowledged before publishing any of its choices. Unlike normal
+  // Settings edits, a failed or timed-out attempt must leave the wizard open.
+  const configureOnboarding = useCallback(async (choices: Pick<Settings, 'model' | 'recordingMode' | 'doubleTapKey'>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let expired = false;
+    const version = configureVersionRef.current;
+    try {
+      await Promise.race([
+        (async () => {
+          const catalog = await getModelRuntimeCatalog();
+          if (expired) return;
+          if (!catalog.some((model) => model.modelName === choices.model && model.installState === 'installed')) {
+            throw new Error('The selected transcription model is not installed.');
+          }
+          await configure(() => buildConfigureOptions({ ...settingsRef.current, ...choices }), {
+            // Publish the acknowledgment inside the serialized configure job,
+            // before a queued startup configure reads the confirmed snapshot.
+            onSuccess: () => {
+              if (expired || version !== configureVersionRef.current) return;
+              const confirmed = { ...settingsRef.current, ...choices };
+              confirmedConfigureSettingsRef.current = { ...confirmedConfigureSettingsRef.current, ...choices };
+              settingsRef.current = confirmed;
+              setSettings(confirmed);
+              persistSettings(confirmed);
+              setConfigureError(null);
+              void emit('settings-changed').catch(() => {});
+            },
+          });
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            expired = true;
+            reject(new Error('Transcription model configuration timed out.'));
+          }, 30_000);
+        }),
+      ]);
+      if (version !== configureVersionRef.current) throw new Error('Settings changed during setup. Retry with the selected model.');
+    } finally {
+      clearTimeout(timer);
+    }
+  }, [persistSettings]);
 
   return {
     settings,
     getCurrentSettings: () => settingsRef.current,
     getConfirmedSettings: () => confirmedConfigureSettingsRef.current,
     updateSettings,
+    configureOnboarding,
     applyExternalSettings,
     configureError: probeConfigureError ?? configureError,
   };

@@ -2,7 +2,8 @@
 
 ## Overview
 
-The app checks for updates on launch, every six hours while resident, and when
+After onboarding is complete and a dictation model is ready, the app checks for
+updates on launch, every six hours while resident, and when
 the native app resumes or the main window becomes active after a due interval.
 Updates are downloaded from GitHub Releases, verified with ed25519 signatures,
 and installed when the user chooses to restart. A `min_version` field in the release
@@ -10,7 +11,10 @@ manifest enables forced updates that cannot be skipped or dismissed.
 
 ## Update Check Schedule
 
-- **On launch:** A background check runs immediately on mount via the `useAutoUpdater` hook.
+- **On launch:** A background check runs via `useAutoUpdater` once onboarding
+  is complete and a dictation model is ready. During setup, automatic launch,
+  periodic, and lifecycle checks stay disabled, so they cannot post update
+  notifications. Explicit manual checks remain available.
 - **Periodic:** Every six hours (`CHECK_INTERVAL_MS = 21600000`), gated by
   `isDueForCheck()` which reads the last check timestamp from localStorage
   (`updater-last-check`). A low-cost 15-minute timer only evaluates that local

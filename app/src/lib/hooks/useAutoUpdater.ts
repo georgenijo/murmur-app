@@ -78,6 +78,8 @@ export const UPDATE_FRESHNESS_WINDOW_MS = 5 * 60 * 1000;
 
 interface UseAutoUpdaterOptions {
   automaticChecksEnabled?: boolean;
+  /** Defer background checks until onboarding and model setup are complete. */
+  setupComplete?: boolean;
 }
 
 export interface UseAutoUpdaterReturn {
@@ -95,12 +97,20 @@ export interface UseAutoUpdaterReturn {
 export function useAutoUpdater(
   options: UseAutoUpdaterOptions = {},
 ): UseAutoUpdaterReturn {
-  const automaticChecksEnabled = options.automaticChecksEnabled ?? !import.meta.env.DEV;
+  const automaticChecksEnabled = (options.automaticChecksEnabled ?? !import.meta.env.DEV)
+    && (options.setupComplete ?? true);
+  // A request can finish after setup is reopened. Presentation must use the
+  // current gate rather than the render that started the background check.
+  const automaticChecksEnabledRef = useRef(automaticChecksEnabled);
+  automaticChecksEnabledRef.current = automaticChecksEnabled;
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ phase: 'idle' });
   const [completedUpdate, setCompletedUpdate] = useState<CompletedUpdate | null>(null);
   const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
   const updateRef = useRef<Update | null>(null);
   const updateDiscoveredAtRef = useRef(0);
+  // Availability may be discovered while setup suppresses presentation. Only
+  // a posted notification consumes this version's background notification.
+  const notifiedVersionRef = useRef<string | null>(null);
   const operationRef = useRef<UpdaterOperation>('idle');
   // Resolves when the in-flight check settles, so an Install click that races
   // a background check waits instead of being silently dropped.
@@ -197,6 +207,7 @@ export function useAutoUpdater(
         const hadKnownUpdate = updateRef.current !== null;
         updateRef.current = null;
         updateDiscoveredAtRef.current = 0;
+        notifiedVersionRef.current = null;
         hasDownloadedUpdateRef.current = false;
         hasInstalledUpdateRef.current = false;
         isForcedRef.current = false;
@@ -240,7 +251,6 @@ export function useAutoUpdater(
       }
       setLastCheckTimestamp(Date.now());
 
-      const wasAlreadyAvailable = updateRef.current?.version === update.version;
       updateRef.current = update;
       updateDiscoveredAtRef.current = Date.now();
       hasDownloadedUpdateRef.current = false;
@@ -255,21 +265,26 @@ export function useAutoUpdater(
         notes: releaseNotesRef.current,
         isForced,
       });
-      setIsUpdateDialogOpen(isForced || shouldPresentManualResult());
+      setIsUpdateDialogOpen(shouldPresentManualResult() || (isForced && automaticChecksEnabledRef.current));
 
       // Background check: fire macOS notification
-      if (opts.isBackground && !opts.canary && !wasAlreadyAvailable) {
+      if (
+        opts.isBackground && !opts.canary
+        && notifiedVersionRef.current !== update.version
+        && automaticChecksEnabledRef.current
+      ) {
         try {
           let permGranted = await isPermissionGranted();
-          if (!permGranted) {
+          if (!permGranted && automaticChecksEnabledRef.current) {
             const perm = await requestPermission();
             permGranted = perm === 'granted';
           }
-          if (permGranted) {
+          if (permGranted && automaticChecksEnabledRef.current) {
             sendNotification({
               title: 'Update Available',
               body: `Murmur v${update.version} is ready to install.`,
             });
+            notifiedVersionRef.current = update.version;
           }
         } catch (err) {
           flog.warn('updater', 'notification failed', { error: String(err) });
@@ -686,12 +701,9 @@ export function useAutoUpdater(
   // An absent marker falls straight through to the existing updater behavior.
   useEffect(() => {
     if (!automaticChecksEnabled) {
-      flog.info('updater', 'dev build — skipping automatic update check');
+      flog.info('updater', 'automatic update checks deferred or disabled');
       return;
     }
-    if (automaticStartupRef.current) return;
-    automaticStartupRef.current = true;
-
     let disposed = false;
     const start = async () => {
       try {
@@ -706,7 +718,10 @@ export function useAutoUpdater(
         if (!disposed) await performCheck({ isBackground: true });
       }
     };
-    start();
+    if (!automaticStartupRef.current) {
+      automaticStartupRef.current = true;
+      void start();
+    }
 
     const checkIfDue = () => {
       if (isDueForCheck()) performCheck({ isBackground: true });
