@@ -12,6 +12,8 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import {
   hydrateSettingsFromDisk,
+  ONBOARDING_KEY,
+  persistOnboardingComplete,
   parseSettingsBlob,
   loadSettings,
   saveSettings,
@@ -1182,6 +1184,44 @@ describe('durable settings store', () => {
 
   beforeEach(() => {
     mocks.isTauri.mockReturnValue(true);
+  });
+
+  it('hydrates the authoritative onboarding gate before startup can continue', async () => {
+    let release!: (blob: string) => void;
+    mocks.invoke.mockImplementation(() => new Promise<string>((resolve) => { release = resolve; }));
+    localStorage.setItem(ONBOARDING_KEY, 'true');
+    let rendered = false;
+    const startup = hydrateSettingsFromDisk().then(() => { rendered = true; });
+    expect(rendered).toBe(false);
+    release(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 7, launchOnboardingComplete: false }));
+    await startup;
+    expect(rendered).toBe(true);
+    expect(localStorage.getItem(ONBOARDING_KEY)).toBeNull();
+    expect(loadSettings()).not.toHaveProperty('launchOnboardingComplete');
+  });
+
+  it('restores a completed onboarding gate after cache eviction and keeps companions read-only', async () => {
+    mocks.invoke.mockResolvedValue(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 7, launchOnboardingComplete: true }));
+    await hydrateSettingsFromDisk();
+    expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
+    ownSettingsMigrations(false);
+    mocks.invoke.mockResolvedValue(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 7, launchOnboardingComplete: false }));
+    await hydrateSettingsFromDisk();
+    expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
+  });
+
+  it('mirrors completion and reset without replacing capture settings with defaults', () => {
+    const original = { ...DEFAULT_SETTINGS, language: 'ja', settingsVersion: 7 };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(original));
+    persistOnboardingComplete(true);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual({ ...original, launchOnboardingComplete: true });
+    persistOnboardingComplete(true);
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    persistOnboardingComplete(false);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual({ ...original, launchOnboardingComplete: false });
+    expect(mocks.invoke).toHaveBeenLastCalledWith('save_settings_blob', {
+      blob: JSON.stringify({ ...original, launchOnboardingComplete: false }),
+    });
   });
 
   it('seeds localStorage from the blob the backend returns', async () => {

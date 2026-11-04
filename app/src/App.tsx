@@ -190,6 +190,7 @@ function App() {
   // when models are already on disk (#240).
   useEffect(() => {
     if (isOnboardingComplete()) {
+      markOnboardingComplete(); // Upgrade the durable native launch gate.
       initializeGrandfatheredDiscovery(discoveryEvidence(settings, loadStats()));
       setOnboardingState('done');
       return;

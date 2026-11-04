@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { flog } from "./lib/log";
 import { NativeWindowLifecycle } from "./lib/windowLifecycle";
 import { AppearanceProvider } from "./lib/hooks/useAppearance";
 import { hydrateSettingsFromDisk, ownSettingsMigrations } from "./lib/settings";
@@ -24,6 +25,7 @@ Promise.all([
   hydrateUserDataFromDisk(),
   hydrateThemeLibraryFromDisk(),
 ]).finally(() => {
+  flog.info('main', 'Frontend hydrated', { event_code: 'system.launch_frontend_hydrated' });
   root.render(
     <React.StrictMode>
       <AppearanceProvider>

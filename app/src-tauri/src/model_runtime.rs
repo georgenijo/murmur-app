@@ -692,6 +692,7 @@ impl ModelRuntimeManager {
                 false,
                 reason.as_str(),
             )?;
+            crate::launch::model_ready();
             return Ok(LoadReport {
                 cache_hit: true,
                 lock_wait_ms: 0,
@@ -712,6 +713,7 @@ impl ModelRuntimeManager {
                     false,
                     reason.as_str(),
                 )?;
+                crate::launch::model_ready();
                 Ok(LoadReport {
                     cache_hit: false,
                     lock_wait_ms: 0,
@@ -746,6 +748,23 @@ impl ModelRuntimeManager {
         let mut report = self.ensure_loaded(app, &mut inner, model_name, reason)?;
         report.lock_wait_ms = lock_wait_ms;
         Ok(report)
+    }
+
+    /// Native launch preparation must not replace a newer frontend selection.
+    /// Recheck the launch generation under the same lock that selects/loads.
+    pub(crate) fn prepare_startup_if(
+        &self,
+        app: Option<&tauri::AppHandle>,
+        model_name: &str,
+        is_current: impl FnOnce() -> bool,
+    ) -> Result<Option<LoadReport>, String> {
+        let _reservation = crate::meeting_diarization::ForegroundReservation::acquire()?;
+        let mut inner = self.inner.lock_or_recover();
+        if !is_current() {
+            return Ok(None);
+        }
+        self.ensure_loaded(app, &mut inner, model_name, PreparationReason::StartupWarm)
+            .map(Some)
     }
 
     pub fn with_ready_backend<T>(
@@ -799,6 +818,13 @@ impl ModelRuntimeManager {
     ) -> Result<(), String> {
         self.definition(model_name)?;
         let mut inner = self.inner.lock_or_recover();
+        // Frontend configuration may confirm the model already warmed by Rust.
+        // Preserve that warm backend instead of unloading it.
+        if inner.active_model.as_deref() == Some(model_name)
+            && inner.backend.is_model_loaded(model_name)
+        {
+            return Ok(());
+        }
         if let Some(active) = inner.active_model.take() {
             self.set_lifecycle(
                 app,
@@ -1158,6 +1184,45 @@ mod tests {
             }),
             ..ModelRuntimeManager::default()
         }
+    }
+
+    #[test]
+    fn native_startup_preparation_is_reused_by_frontend_selection() {
+        let manager = fake_manager(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            None,
+        );
+        assert!(manager
+            .prepare_startup_if(None, "fake-translation", || {
+                assert!(
+                    manager.inner.try_lock_or_recover().is_none(),
+                    "ownership must be rechecked under the backend lock"
+                );
+                false
+            })
+            .unwrap()
+            .is_none());
+        assert!(manager.inner.lock_or_recover().active_model.is_none());
+        let report = manager
+            .prepare_startup_if(None, "fake-translation", || true)
+            .unwrap()
+            .unwrap();
+        assert!(!report.cache_hit);
+        manager.select_model(None, "fake-translation").unwrap();
+        let confirmed = manager
+            .prepare(None, "fake-translation", PreparationReason::StartupWarm)
+            .unwrap();
+        assert!(
+            confirmed.cache_hit,
+            "frontend confirmation must preserve the native warm model"
+        );
+        manager.select_model(None, "fake-second").unwrap();
+        assert!(!manager
+            .inner
+            .lock_or_recover()
+            .backend
+            .is_model_loaded("fake-second"));
     }
 
     #[test]

@@ -1,5 +1,16 @@
 # Transcription Pipeline
 
+## Launch readiness
+
+Rust setup can prepare the shared keyboard thread and the selected model before
+the main webview renders, using durable settings and onboarding completion.
+Native preparation preserves Accessibility/disabled gates and existing model
+warmup policy. Capture still starts only after the frontend applies validated
+settings and subscribes. Missing or legacy launch metadata uses the frontend
+path for that boot. Repeated registration of the same key/mode preserves the
+running listener and gesture state. See [launch sequencing](../ARCHITECTURE.md#launch-preparation)
+and [launch milestones](performance-diagnostics.md#launch-milestones).
+
 ## Process-isolated capture
 
 Microphone enumeration and streaming execute only in the signed

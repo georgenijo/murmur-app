@@ -3561,6 +3561,7 @@ pub async fn configure_dictation(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    crate::launch::frontend_configuring();
     let log_metadata = ConfigurationLogMetadata::from_options(&options);
     tracing::info!(
         target: "pipeline",

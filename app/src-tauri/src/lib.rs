@@ -46,6 +46,7 @@ mod ide_context;
 mod injector;
 mod keyboard;
 mod knowledge_store;
+pub mod launch;
 pub mod llm_sidecar;
 mod log_shipper;
 pub mod managed_child;
@@ -281,6 +282,7 @@ impl llm_sidecar::HostGuard for AppHostGuard {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    launch::process_start();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -598,6 +600,8 @@ pub fn run() {
         .setup(|app| {
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
+            launch::milestone("system.launch_process_start");
+            launch::prepare(app.handle());
             audio_inventory::initialize(app.handle().clone());
             smart_auto_probe::initialize(app.handle().clone());
             audio_graph_snapshot::set_app_handle(app.handle().clone());
@@ -814,7 +818,7 @@ pub fn run() {
             let mode_item = MenuItemBuilder::with_id("cycle_mode", "Mode: Everyday").build(app)?;
             let next_mode_menu = tauri::menu::SubmenuBuilder::new(app, "Next recording").build()?;
             let disabled_item = tauri::menu::CheckMenuItemBuilder::with_id("toggle_disabled", "Disable Murmur")
-                .checked(false)
+                .checked(keyboard::is_app_disabled())
                 .build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit Murmur").build(app)?;
             let tray_menu = MenuBuilder::new(app).item(&show_item);
@@ -899,6 +903,7 @@ pub fn run() {
                 .build(app)?;
 
             commands::mode_runtime::spawn_mode_watcher(app.handle().clone());
+            launch::milestone("system.launch_native_setup_done");
 
             Ok(())
         })
