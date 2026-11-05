@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-11-05
+
+### Removed
+
+- Remove the local LLM helper and the features built on it: selected-text rewrite, correct last dictation, and meeting summaries. Meetings still record and transcribe with speaker labels. Leftover rewrite diagnostic captures are deleted on first launch (#967).
+- Remove Voice Query and Assistant conversations. Saved query and conversation history is deleted on first launch because it can no longer be viewed or removed in the app (#968).
+
 ## [0.60.3] - 2026-11-04
 
 ### Added
