@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.62.1] - 2026-11-05
+
+<!-- Release notes generated using configuration in .github/release.yml at fdf8f46fa1d6e08c279e009916ddea8c84f59a9a -->
+
+## What's Changed
+### Other Changes
+* fix: resume microphone preview after dictation by @georgenijo in https://github.com/georgenijo/murmur-app/pull/974
+* Remove trigger key menu headings by @georgenijo in https://github.com/georgenijo/murmur-app/pull/973
+* fix(settings): smooth Recording folds and stabilize scrolling by @georgenijo in https://github.com/georgenijo/murmur-app/pull/975
+* Add a release button with automatic OTA verification by @georgenijo in https://github.com/georgenijo/murmur-app/pull/976
+* docs: add the GPUI rewrite plan draft by @georgenijo in https://github.com/georgenijo/murmur-app/pull/977
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.62.0...v0.62.1
+
 ## [0.62.0] - 2026-11-05
 
 ### Changed
