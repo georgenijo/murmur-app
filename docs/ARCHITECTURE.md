@@ -25,7 +25,6 @@ Built with **Tauri 2** (Rust backend + React frontend). Transcription backends:
 | VAD | Silero v5.1.2 via whisper-rs | Filters silence before transcription; thread-local cached context |
 | Transcription | FluidAudio (Core ML/ANE), whisper-rs → whisper.cpp (Metal), sherpa-onnx (CPU) | Selected per model from one catalog |
 | Text injection | arboard + CGEvent (osascript fallback) | Clipboard-first |
-| Selection capture | Accessibility (AX) APIs + sentinel-guarded clipboard fallback | Secure fields fail closed |
 | Keyboard listening | rdev (git main branch) | Global key events; one background thread for dictation and Paste Last |
 | Local storage | rusqlite (SQLite) | Personal knowledge store + performance diagnostics |
 | Telemetry | tracing + tracing-subscriber | Structured events: ring buffer, JSONL file, real-time frontend emission |
@@ -282,7 +281,6 @@ stay local and never reach logs or telemetry. See
 | `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
 | `platform/` | macOS CPU/resource metrics seam |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
-| `selection.rs` | AX selection capture with secure-field fail-closed and clipboard fallback |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
 | `smart_turn.rs` | Smart Auto-Stop: Smart Turn log-mel features, scoring on the sherpa-linked ONNX Runtime, model pins |
 | `spoken_numbers.rs` | Deterministic English spoken-cardinal rendering |
