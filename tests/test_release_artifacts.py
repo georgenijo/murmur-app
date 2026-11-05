@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import plistlib
+import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -58,6 +60,44 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_record_and_validate_cli_with_capture_provenance(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "scripts/release_artifacts.py"
+        macos = self.artifacts / "macos"
+        (macos / "provenance.json").unlink()
+        record = [
+            sys.executable, str(script), "record", "--platform", "macos",
+            "--platform-key", "darwin-aarch64", "--artifacts", str(macos),
+            "--commit-sha", SHA, "--run-id", str(RUN_ID),
+        ]
+        for name in ("agent", "worker", "helper"):
+            prefix = f"--capture-{name}"
+            requirement = (
+                f'identifier "com.localdictation.capture-{name}" and anchor apple generic '
+                'and certificate leaf[subject.OU] = "ABCDE12345"'
+            )
+            record.extend([
+                f"{prefix}-sha256", "a" * 64,
+                f"{prefix}-arch", "arm64",
+                f"{prefix}-designated-requirement", requirement,
+                f"{prefix}-team-id", "ABCDE12345",
+                f"{prefix}-entitlement-sha256", "b" * 64,
+            ])
+        subprocess.run(record, check=True, capture_output=True, text=True)
+        provenance = json.loads((macos / "provenance.json").read_text())
+        self.assertNotIn("helper", provenance)
+        for name in ("agent", "worker", "helper"):
+            self.assertIn(f"capture_{name}", provenance)
+
+        output = self.root / "validated.json"
+        subprocess.run([
+            sys.executable, str(script), "validate", "--artifacts", str(self.artifacts),
+            "--expected-sha", SHA, "--expected-run-id", str(RUN_ID),
+            "--output", str(output), "--require-macos-capture-agent",
+            "--require-macos-capture-worker", "--require-macos-capture-helper",
+        ], check=True, capture_output=True, text=True)
+        validated = json.loads(output.read_text())
+        self.assertEqual(validated["platforms"]["macos"]["signature"], "mac-signature")
 
     def test_bundled_helpers_reject_homebrew_dynamic_dependencies(self) -> None:
         output = """helper:
