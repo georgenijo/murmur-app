@@ -93,7 +93,7 @@ status region announces permission-state changes. Decorative checkmarks are
 hidden from assistive technology; status pills and summary rows retain meaningful
 text alongside Lucide icons.
 
-The fixed 520×500 frame uses a centered setup-assistant hero (64 px accent-tinted
+The fixed 520×560 frame uses a centered setup-assistant hero (64 px accent-tinted
 icon tile and 24 px title), full-width permission/model/shortcut cards, and a pinned
 navigation row. Step content scrolls without moving progress or navigation. Forward
 and Back entry transitions fade and slide 12 px in opposite directions over 220 ms;
