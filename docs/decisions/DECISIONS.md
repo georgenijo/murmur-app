@@ -175,17 +175,6 @@ rows). AGENTS.md is now a symlink to CLAUDE.md so there is exactly one agent
 guide; edit CLAUDE.md only. The H1 was changed to `# Murmur — agent guide
 (CLAUDE.md / AGENTS.md)` to reflect that it now serves both entry points.
 
-## 2026-09-09: Session-only read access for Voice Query (#573)
-
-Keep Restricted as the launch and migration default. Support only Claude's
-CLI-enforced read-only folder profile, verified against 2.1.263, with a native
-chooser and second confirmation. Keep grants in Rust memory and freeze them
-per query. Do not offer equivalent-looking flags for other providers whose
-file scope and extension boundaries have not been proven. No web, commands,
-writes, MCP or plugins are granted. Reject malformed expanded output instead
-of retaining raw tool frames. Restart or explicit revocation removes consent;
-cancellation stops an already-running query's frozen access.
-
 ## 2026-09-07: Label remote meeting speakers locally with session-scoped names (#685)
 
 **Decision:** Add optional post-meeting speaker refinement for the remote
@@ -442,61 +431,6 @@ in the 2025-12 overlay architecture decision
 
 ---
 
-## 2026-08-13: Voice Query history retains opted-in contextual results
-
-**Decision:** When **Keep Voice Query history on this Mac** is enabled, retain
-every recognized Voice Query result regardless of attached app/window/selection
-context or structured-provider raw fallback. The store continues to have no
-separate context or composed-prompt field, but its saved answer can quote what
-was sent to the configured CLI.
-
-**Rationale:** The user-visible History setting should have the same clear
-local-retention contract as transcription history. Suppressing most useful
-queries after the user opted in made History appear broken. The toggle remains
-off by default, freezes at pass start, and explicitly discloses the expanded
-local-retention boundary before consent.
-
-**Status:** active; supersedes the contextual/raw-fallback exclusion in the
-2026-08-12 Voice Query retention decision below
-
-**References:** `query_flow.rs`, `QueryHistoryPanel.tsx`, `SettingsPanel.tsx`,
-`docs/features/voice-query.md`
-
----
-
-## 2026-08-13: Voice Query live partials use a trailing decode window; pinned provider arguments are Rust-owned
-
-**Decision:** Two related fixes to Voice Query. (a) Replace the 20-second
-live-partial hard stop with a trailing-window decode: once captured audio
-exceeds `PARTIAL_WINDOW_SAMPLES` (still 20 seconds), each tick re-decodes only
-the trailing window instead of the ticker permanently stopping, so the words
-keep updating for as long as the user keeps speaking. (b) Introduce
-`pinned_query_arguments`, a set of Rust-owned argv elements appended after the
-user's saved fixed arguments at command-validation time, separate from
-`recommended_arguments` (which are copied into user-editable Settings).
-Claude's first use is a fixed `--append-system-prompt` instruction telling the
-model it has no tools or file access and that its working directory is the
-dictation app's empty private scratch folder, not the user's project —
-verified empirically that with `--tools ""` Claude Code otherwise still frames
-itself as a coding agent and fabricates file listings of that folder instead
-of answering.
-
-**Rationale:** User-editable copied argv cannot be retroactively upgraded —
-once `recommended_arguments` is copied into a user's saved Settings, a later
-fix to the preset never reaches that saved config. Pinning the anti-fabrication
-instruction in Rust and appending it at validation time means the fix applies
-to every existing saved Claude configuration immediately, not just newly
-selected presets. The trailing-window decode keeps the same content-free
-`query.partial_tick` telemetry vocabulary and cost bound as the previous cap,
-without the freeze.
-
-**Status:** active
-
-**References:** #561; `app/src-tauri/src/query_flow.rs`,
-`app/src-tauri/src/query_provider.rs`, `docs/features/voice-query.md`
-
----
-
 ## 2026-08-13: Application builds and runtime support are macOS-only
 
 **Decision:** Enforce macOS as the only Murmur application target. The Rust
@@ -516,98 +450,6 @@ runtime metadata aligned with the shipped product.
 
 **References:** #570; `app/src-tauri/build.rs`, `app/src-tauri/tauri.conf.json`,
 `.github/workflows/ci.yml`
-
----
-
-## 2026-08-12: Voice Query content retention is explicit, bounded, and isolated
-
-**Decision:** Supersede Voice Query's blanket “never in history” rule with one
-narrow exception: **Keep Voice Query history on this Mac** is off by default
-and is frozen independently for each pass. When enabled, a Rust-owned SQLite
-store may retain the original transcribed question, bounded answer, timestamp,
-provider preset, token counts, total duration, and stable error code. It keeps
-the newest 200 records and exposes main-window-only paging, provider filtering,
-and direct purge. Turning retention off stops new inserts but does not silently
-delete existing records. A clear epoch prevents a pass that began before purge
-from restoring deleted content.
-
-The exception does not include composed prompts, app/window/selected-text
-context, stderr or typed provider detail, executable paths, argv, environment
-values, or secrets. Query records never enter localStorage, dictation history,
-Correct and Teach, transcript exports, saved output, logs, telemetry, stats, or
-the performance database. Diagnostics remain unconditional and content-free:
-capture/transcription/provider-spawn/first-answer/total timings, stable outcome,
-exit code, and stderr presence only.
-
-Because any provider can quote its input, a pass that actually appended app
-context is display-only and skips the whole history row. Claude/Codex passes
-that degrade to raw JSONL fallback do the same because their raw archive can
-contain a user frame with the composed prompt. Context configured but not
-available—or explicitly excluded for the app—is not appended and does not by
-itself suppress history.
-
-**Rationale:** George wants local visibility into past questions and answers,
-but content persistence must remain a deliberate per-pass choice rather than a
-side effect of enabling Voice Query. A dedicated Rust store keeps that consent,
-retention, purge, and recovery boundary enforceable without widening any
-telemetry or frontend cache contract. Keeping diagnostics separate preserves
-useful failure evidence even when content history is disabled.
-
-**Status:** superseded by the 2026-08-13 decision above. The local, opt-in
-retention boundary remains active; contextual and raw-fallback results are now
-retained within that boundary.
-
-**References:** #553; `query_history/`, `query_flow.rs`,
-`performance_metrics/`, `docs/features/voice-query.md`
-
----
-
-## 2026-08-12: Voice Query environment additions are named, provider-scoped, and Rust-owned
-
-**Decision:** Keep `spawn_user_cli` fail-closed with only `HOME`, `PATH`,
-`TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, and `LOGNAME` copied from the
-parent. A provider may additionally declare only `CLAUDE_CONFIG_DIR` or
-`CODEX_HOME`; it cannot override a base key. Values must be absolute directory
-paths, live in an owner-only Rust app-data file, and are never returned to a
-webview after Save. API keys, tokens, and arbitrary environment names are not
-accepted. The explicit Terminal sign-in repair is held to the same boundary:
-its AppleScript child receives only the base set, and the provider command
-starts with `env -i` before those base and declared values are added. Any future
-secret-bearing variable requires a separate storage and redaction design before
-implementation.
-
-**Rationale:** Full parent-environment inheritance silently exports unrelated
-credentials, while local CLI wrappers and credential stores still need the
-small base set. Provider-scoped config roots solve the known multi-profile use
-case without turning Voice Query into a generic secret store or allowing a
-webview/localStorage copy of sensitive values.
-
-**Status:** active
-
-**References:** #550; `managed_child.rs`, `query_provider.rs`,
-`docs/features/voice-query.md`
-
----
-
-## 2026-08-12: Voice Query stderr is bounded repair detail, never answer or telemetry
-
-**Decision:** Capture at most the final 16 KiB of provider stderr on query and
-auth-probe paths. A terminal query failure always renders its stable error ahead
-of any partial stdout, with sanitized stderr in a visually separate provider
-detail block available only through the requester-gated review window. Auth
-probe stdout/stderr is returned only to Settings. Neither stream enters logs,
-telemetry, stats, or history. Known provider signatures map to the content-free
-`provider_not_authenticated` code and an exact Terminal repair action.
-
-**Rationale:** Discarding stderr made authentication failures unactionable, but
-mixing it into answer content recreated the stdout-precedence bug and risked
-persisting CLI diagnostics. A small requester-only tail preserves enough vendor
-guidance while maintaining the query telemetry allowlist and output bounds.
-
-**Status:** active
-
-**References:** #550; `query_flow.rs`, `query_provider.rs`,
-`telemetry.rs`, `docs/features/voice-query.md`
 
 ---
 

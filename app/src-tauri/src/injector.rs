@@ -3,18 +3,7 @@ use arboard::Clipboard;
 use authority::{AttemptStop, PasteAttempt, PostDecision};
 #[cfg(target_os = "macos")]
 use objc2::rc::autoreleasepool;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-/// Monotonic count of successful clipboard writes made by Murmur.
-///
-/// A caller that plans to write the clipboard after a long asynchronous gap can
-/// snapshot this first and re-check it before writing, so it never silently
-/// overwrites something the user produced in the meantime. Voice Query uses it
-/// to leave a dictation that landed while an answer was generating in place —
-/// the answer stays one Copy click away, but text the user already pasted
-/// somewhere is never yanked out from under them.
-static CLIPBOARD_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClipboardOnlyReason {
@@ -255,10 +244,6 @@ fn post_decision_outcome(
     }
 }
 
-pub(crate) fn clipboard_write_generation() -> u64 {
-    CLIPBOARD_WRITE_GENERATION.load(Ordering::SeqCst)
-}
-
 pub(crate) fn read_clipboard_text() -> Result<String, String> {
     let mut clipboard =
         Clipboard::new().map_err(|_| "Clipboard access is unavailable.".to_string())?;
@@ -279,7 +264,6 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
     clipboard
         .set_text(text)
         .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
-    CLIPBOARD_WRITE_GENERATION.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 

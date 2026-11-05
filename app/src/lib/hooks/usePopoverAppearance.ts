@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { applyResolvedTheme, loadAppearanceDocument, resolveTheme } from '../appearance';
 
 /** Follow the shared appearance without writing settings or changing native focus. */
-export function useQueryAppearance() {
+export function usePopoverAppearance() {
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const apply = () => {

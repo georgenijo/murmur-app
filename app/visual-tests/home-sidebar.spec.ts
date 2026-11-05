@@ -34,7 +34,7 @@ for (const appearance of ['light', 'dark']) {
           expect(await text.evaluate(el => getComputedStyle(el).fontFamily)).toBe(await page.locator('html').evaluate(el => getComputedStyle(el).fontFamily));
         }
       }
-      for (const label of ['Home', 'Notetaker', 'Assistant', 'Insights']) {
+      for (const label of ['Home', 'Notetaker', 'Insights']) {
         const item = sidebar.getByRole('button', { name: label, exact: true });
         await expect(item).toBeVisible();
         await expect(item).toBeEnabled();

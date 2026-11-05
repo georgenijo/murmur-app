@@ -10,7 +10,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 const profile: AppProfile = {
   bundleId: 'com.example.Editor', label: 'Editor', autoPasteOverride: null,
   cleanupOverride: null, smartFormattingOverride: null, cliFormattingOverride: null,
-  writingStyle: null, ideContextEnabled: false, ideProjectRoots: [], queryContextExcluded: false,
+  writingStyle: null, ideContextEnabled: false, ideProjectRoots: [],
 };
 const mode: MurmurMode = {
   id: 'mode.focus', name: 'Focus', builtIn: false, enabled: true,

@@ -28,7 +28,6 @@ pub const WHISPER_SAMPLE_RATE: u32 = 16000;
 #[derive(Clone, Copy)]
 pub enum PreviewPass {
     Dictation(u64),
-    VoiceQuery(u64),
     SyntheticDiagnostic,
 }
 
@@ -36,12 +35,6 @@ impl PreviewPass {
     pub fn recording_id(self) -> Option<u64> {
         match self {
             Self::Dictation(id) => Some(id),
-            _ => None,
-        }
-    }
-    pub fn query_pass_id(self) -> Option<u64> {
-        match self {
-            Self::VoiceQuery(id) => Some(id),
             _ => None,
         }
     }

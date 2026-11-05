@@ -23,12 +23,6 @@ vi.mock('../dictation', () => ({ cancelRecording: mocks.cancelRecording }));
 
 import { useEscapeCancel } from './useEscapeCancel';
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => { resolve = done; });
-  return { promise, resolve };
-}
-
 describe('useEscapeCancel', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -65,40 +59,14 @@ describe('useEscapeCancel', () => {
     });
   }
 
-  async function pressEscape(payload: unknown = { queryPassId: null }) {
+  async function pressEscape(payload: unknown = null) {
     await act(async () => {
       await mocks.listeners.get('escape-cancel')?.({ payload });
     });
   }
 
-  it('routes a correlated Escape to only that exact query pass', async () => {
-    mocks.invoke.mockResolvedValue(undefined);
-    await renderHook('processing');
-
-    await pressEscape({ queryPassId: 41 });
-
-    expect(mocks.invoke).toHaveBeenCalledOnce();
-    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', {
-      queryPassId: 41,
-    });
-    expect(mocks.cancelRecording).not.toHaveBeenCalled();
-  });
-
-  it('routes a correlated Escape to only that exact query pass', async () => {
-    mocks.invoke.mockResolvedValue(undefined);
-    await renderHook('idle');
-
-    await pressEscape({ queryPassId: 42 });
-
-    expect(mocks.invoke).toHaveBeenCalledOnce();
-    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', {
-      queryPassId: 42,
-    });
-    expect(mocks.cancelRecording).not.toHaveBeenCalled();
-  });
-
   it.each(['recording', 'processing'] as const)(
-    'retains dictation cancellation for a null query target while dictation is %s',
+    'retains dictation cancellation while dictation is %s',
     async (status) => {
       mocks.cancelRecording.mockResolvedValue(undefined);
       await renderHook(status);
@@ -110,116 +78,10 @@ describe('useEscapeCancel', () => {
     },
   );
 
-  it('does nothing when both pipelines are idle', async () => {
+  it('does nothing when dictation is idle', async () => {
     await renderHook('idle');
 
     await pressEscape();
-
-    expect(mocks.invoke).not.toHaveBeenCalled();
-    expect(mocks.cancelRecording).not.toHaveBeenCalled();
-  });
-
-  it('coalesces repeated Escape events for the same pass while cancellation is in flight', async () => {
-    const cancellation = deferred<void>();
-    mocks.invoke.mockReturnValue(cancellation.promise);
-    await renderHook('idle');
-
-    let first!: Promise<void>;
-    await act(async () => {
-      first = Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-        payload: { queryPassId: 51 },
-      }));
-      await Promise.resolve();
-      await mocks.listeners.get('escape-cancel')?.({
-        payload: { queryPassId: 51 },
-      });
-    });
-
-    expect(mocks.invoke).toHaveBeenCalledOnce();
-    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', {
-      queryPassId: 51,
-    });
-
-    cancellation.resolve();
-    await act(async () => first);
-  });
-
-  it('does not let an in-flight stale pass suppress cancellation of a newer pass', async () => {
-    const firstCancellation = deferred<void>();
-    mocks.invoke.mockImplementation(
-      (_command: string, args?: { queryPassId?: number }) => (
-        args?.queryPassId === 61 ? firstCancellation.promise : Promise.resolve()
-      ),
-    );
-    await renderHook('idle');
-
-    let first!: Promise<void>;
-    await act(async () => {
-      first = Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-        payload: { queryPassId: 61 },
-      }));
-      await Promise.resolve();
-      await mocks.listeners.get('escape-cancel')?.({
-        payload: { queryPassId: 62 },
-      });
-    });
-
-    expect(mocks.invoke.mock.calls).toEqual([
-      ['cancel_query', { queryPassId: 61 }],
-      ['cancel_query', { queryPassId: 62 }],
-    ]);
-
-    firstCancellation.resolve();
-    await act(async () => first);
-  });
-
-  it('bounds distinct in-flight cancellation targets and releases capacity on settle', async () => {
-    const cancellations = Array.from({ length: 9 }, () => deferred<void>());
-    mocks.invoke.mockImplementation(
-      (_command: string, args?: { queryPassId?: number }) => (
-        cancellations[(args?.queryPassId ?? 1) - 1].promise
-      ),
-    );
-    await renderHook('idle');
-
-    const pending: Promise<void>[] = [];
-    await act(async () => {
-      for (let queryPassId = 1; queryPassId <= 9; queryPassId += 1) {
-        pending.push(Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-          payload: { queryPassId },
-        })));
-      }
-      await Promise.resolve();
-    });
-    expect(mocks.invoke).toHaveBeenCalledTimes(8);
-
-    cancellations[0].resolve();
-    await act(async () => pending[0]);
-    await act(async () => {
-      pending.push(Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-        payload: { queryPassId: 9 },
-      })));
-      await Promise.resolve();
-    });
-    expect(mocks.invoke).toHaveBeenCalledTimes(9);
-
-    for (const cancellation of cancellations) cancellation.resolve();
-    await act(async () => Promise.all(pending));
-  });
-
-  it.each([
-    null,
-    {},
-    { queryPassId: undefined },
-    { queryPassId: 0 },
-    { queryPassId: -1 },
-    { queryPassId: 1.5 },
-    { queryPassId: Number.MAX_SAFE_INTEGER + 1 },
-    { queryPassId: '41' },
-  ])('fails closed for malformed payload %#', async (payload) => {
-    await renderHook('recording');
-
-    await pressEscape(payload);
 
     expect(mocks.invoke).not.toHaveBeenCalled();
     expect(mocks.cancelRecording).not.toHaveBeenCalled();
@@ -237,7 +99,7 @@ describe('useEscapeCancel', () => {
 
     await act(async () => root.unmount());
     rootMounted = false;
-    await listener?.({ payload: { queryPassId: 71 } });
+    await listener?.({ payload: null });
 
     expect(mocks.unlisten).toHaveBeenCalledOnce();
     expect(mocks.invoke).not.toHaveBeenCalled();

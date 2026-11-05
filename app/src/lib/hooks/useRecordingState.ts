@@ -497,7 +497,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
           else if (res.type === 'busy_meeting') presentError('Stop the meeting capture before starting dictation.', { producerEpoch });
           // Without these three the press is a silent no-op: Rust refuses the
           // start but nothing tells the user why.
-          else if (res.type === 'busy_querying') presentError('Finish speaking your voice query before starting dictation.', { producerEpoch });
           else if (res.type === 'busy_transforming') presentError('Wait for the transform to finish.', { producerEpoch });
           else if (res.type === 'busy_recording_corpus') presentError('Finish the corpus recording before starting dictation.', { producerEpoch });
           else if (res.type === 'audio_recovering') {

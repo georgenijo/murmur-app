@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { surfaceCases } from './surface-matrix';
 
-const panes = ['general', 'recording', 'text', 'delivery', 'meetings', 'ai-transcription', 'ai-query'] as const;
+const panes = ['general', 'recording', 'text', 'delivery', 'meetings', 'ai-transcription'] as const;
 async function open(page: Page, pane: string, appearance = 'light', motion: 'reduce' | 'no-preference' = 'reduce') {
   await page.emulateMedia({ reducedMotion: motion, colorScheme: appearance as 'light' | 'dark' });
   await page.goto(`/visual-fixtures.html?state=settings-folding&page=${pane}&appearance=${appearance}`);
@@ -168,7 +168,6 @@ for (const [query, parent, child] of [
   ['Project scan', 'developer-terms', 'project-scan'],
   ['Remove filler words', 'cleanup', 'cleanup-filler'],
   ['Paste delay', 'auto-paste', 'paste-delay'],
-  ['Query shortcut', 'voice-query-shortcut', 'query-key'],
   ['Browser site rules', 'browser-sites', 'browser-site-rules'],
 ] as const) {
   test(`search for ${query} reveals its off parent without enabling anything`, async ({ page }) => {
@@ -253,17 +252,6 @@ test('search reveals Advanced once and lets the user close it again', async ({ p
   await page.getByRole('button', { name: /^Project scan/ }).last().click();
   await expect(advanced(page)).toHaveAttribute('aria-expanded', 'true');
 });
-
-test('enabled feature navigation has exactly one current page', async ({ page }) => {
-  await page.goto('/visual-fixtures.html?state=settings-shortcuts&appearance=light');
-  const nav = page.getByRole('navigation', { name: 'Settings pages' });
-  for (const name of ['Voice Query']) {
-    await nav.getByRole('button', { name, exact: true }).click();
-    await expect(nav.locator('[aria-current="page"]')).toHaveCount(1);
-    await expect(nav.getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'page');
-  }
-});
-
 
 for (const { appearance, width, height, label } of surfaceCases()) {
   test.describe(`Settings folding ${label}`, () => {

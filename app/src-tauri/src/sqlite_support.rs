@@ -1,5 +1,5 @@
 //! Shared low-level SQLite helpers for Murmur's local stores
-//! (`knowledge_store`, `query_history`, `meeting_store`, `performance_metrics`).
+//! (`knowledge_store`, `meeting_store`, `performance_metrics`).
 //!
 //! This module intentionally stays at the raw `rusqlite`/`std::io` error
 //! level: every store maps these results into its own error type at the call
@@ -30,7 +30,7 @@ pub struct PragmaOptions {
 
 impl PragmaOptions {
     /// WAL journaling, FULL durability, foreign keys and secure delete on,
-    /// a 2s busy timeout. Shared today by `knowledge_store`, `query_history`,
+    /// a 2s busy timeout. Shared today by `knowledge_store`
     /// and `meeting_store`'s primary connections.
     pub const STANDARD: Self = Self {
         journal_mode: "WAL",

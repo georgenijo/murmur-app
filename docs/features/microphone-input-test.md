@@ -34,7 +34,7 @@ the input is too quiet or clipping.
 capture supervisor. Preview IDs are monotonic and every lifecycle event is
 generation-checked. Preview is lower priority than real pipeline work:
 dictation, file/base64 processing, Meeting Capture,
-Voice Query, corpus capture, and benchmark startup stop
+Corpus capture and benchmark startup stop
 the exact Preview owner, wait for confirmed worker teardown, and claim their
 work under the same short `recording_transition` lock. Preview startup still
 refuses while any real pipeline owns audio.

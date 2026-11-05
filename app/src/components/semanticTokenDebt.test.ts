@@ -524,7 +524,6 @@ describe("semantic theme token debt gate", () => {
   it("locks transparent bodies and unsynchronized always-dark glass", () => {
     const css = readFileSync("./src/styles.css", "utf8");
     const overlayHtml = readFileSync("./overlay.html", "utf8");
-    const queryHtml = readFileSync("./query-review.html", "utf8");
     const overlay = readFileSync("./src/components/OverlayWidget.tsx", "utf8");
     const alwaysDarkSource = sources
       .filter((path) => {
@@ -541,11 +540,7 @@ describe("semantic theme token debt gate", () => {
       /body\.overlay-window\s*\{[^}]*background:\s*transparent/s,
     );
     expect(overlayHtml).toContain('<body class="overlay-window">');
-    expect(queryHtml).toContain('<body class="overlay-window">');
     expect(overlayHtml).toMatch(
-      /html, body, #root[\s\S]*background:\s*transparent/,
-    );
-    expect(queryHtml).toMatch(
       /html, body, #root[\s\S]*background:\s*transparent/,
     );
     expect(overlay).toContain('<OverlayIsland');

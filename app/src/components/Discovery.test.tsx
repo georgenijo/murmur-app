@@ -19,23 +19,23 @@ describe('discovery UI', () => {
     container.remove();
   });
 
-  it('renders six labelled actions and updates its accessible completion count', async () => {
+  it('renders five labelled actions and updates its accessible completion count', async () => {
     const onAction = vi.fn();
     await act(async () => root.render(
       <DiscoveryChecklist completed={[]} onAction={onAction} onDismiss={vi.fn()} />,
     ));
-    expect(container.querySelectorAll('.discovery-checklist-items li')).toHaveLength(6);
-    expect(container.querySelector('[aria-label="0 of 6 complete"]')).not.toBeNull();
+    expect(container.querySelectorAll('.discovery-checklist-items li')).toHaveLength(5);
+    expect(container.querySelector('[aria-label="0 of 5 complete"]')).not.toBeNull();
     expect(container.querySelector('section')?.getAttribute('aria-labelledby')).toBe('discovery-checklist-title');
     const transform = Array.from(container.querySelectorAll('button'))
-      .find((button) => button.textContent === 'Set up') as HTMLButtonElement;
+      .find((button) => button.textContent === 'Open Notetaker') as HTMLButtonElement;
     await act(async () => transform.click());
-    expect(onAction).toHaveBeenCalledWith('voice_query');
+    expect(onAction).toHaveBeenCalledWith('meeting');
 
     await act(async () => root.render(
-      <DiscoveryChecklist completed={['voice_query']} onAction={onAction} onDismiss={vi.fn()} />,
+      <DiscoveryChecklist completed={['meeting']} onAction={onAction} onDismiss={vi.fn()} />,
     ));
-    expect(container.querySelector('[aria-label="1 of 6 complete"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="1 of 5 complete"]')).not.toBeNull();
     expect(container.querySelector('[data-complete="true"]')?.textContent).toContain('Open again');
   });
 

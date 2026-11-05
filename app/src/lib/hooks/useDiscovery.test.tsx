@@ -22,9 +22,7 @@ const emptyEvidence: DiscoveryEvidence = {
   transforms: 0,
   meetings: 0,
   correctionsTaught: 0,
-  queriesRun: 0,
   modeBindings: [],
-  voiceQueryConfigured: false,
 };
 
 describe('discovery event receipts', () => {

@@ -3115,11 +3115,6 @@ pub async fn process_audio(
             return Err("Cannot process audio while a benchmark is in progress.".to_string());
         }
 
-        if state.query.status().blocks_capture() {
-            tracing::warn!(target: "pipeline", "process_audio: blocked — voice query is capturing");
-            return Err("Cannot process audio while a voice query is listening.".to_string());
-        }
-
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
         }
@@ -3901,10 +3896,6 @@ pub async fn configure_dictation(
                         crate::ide_context::normalize_config_roots(&roots)
                     })
                     .unwrap_or_default();
-                let query_context_excluded = p
-                    .get("queryContextExcluded")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
                 let mode_id = p
                     .get("modeId")
                     .and_then(|value| value.as_str())
@@ -3921,7 +3912,6 @@ pub async fn configure_dictation(
                     writing_style,
                     ide_context_enabled,
                     ide_project_roots,
-                    query_context_excluded,
                     mode_id,
                 })
             })
@@ -5056,7 +5046,7 @@ pub(crate) struct DictationStartBlocker {
 
 /// The admission guards shared by a confirmed dictation start and silent
 /// first-tap helper preparation. Callers hold the dictation lock, so
-/// `transcribe_file`, transforms, and Voice Query cannot slip between the
+/// `transcribe_file` cannot slip between the
 /// check and the transition.
 pub(crate) fn dictation_start_blocker(
     state: &State,
@@ -5077,10 +5067,6 @@ pub(crate) fn dictation_start_blocker(
     }
     if state.benchmark.is_running() {
         return blocked("busy_benchmarking", "idle");
-    }
-
-    if state.query.status().blocks_capture() {
-        return blocked("busy_querying", "idle");
     }
 
     match status {
@@ -6141,12 +6127,6 @@ pub async fn transcribe_file(
             return Err("Finish the corpus recording before transcribing a file.".to_string());
         }
 
-        if state.query.status().blocks_capture() {
-            return Err(
-                "Wait for the voice query to finish listening before transcribing a file."
-                    .to_string(),
-            );
-        }
         if dictation.status != DictationStatus::Idle {
             return Err(
                 "Can't transcribe a file while recording or processing live audio. \
@@ -6550,8 +6530,6 @@ pub(crate) mod tests {
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
-                query_history: crate::query_history::QueryHistoryStore::default(),
-                assistant: crate::assistant::AssistantStore::default(),
 
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
                 ),
@@ -6562,7 +6540,7 @@ pub(crate) mod tests {
                 ),
                 overlay_frame: std::sync::Mutex::new(None),
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
-                query: crate::query_flow::QueryCoordinator::default(),
+
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");
@@ -7042,15 +7020,13 @@ pub(crate) mod tests {
             correct_and_teach: Default::default(),
             capture_health: Default::default(),
             performance: Default::default(),
-            query_history: Default::default(),
-            assistant: Default::default(),
+
             dictation_diagnostics: Default::default(),
             notch_info: Default::default(),
             display_snapshot: Default::default(),
             overlay_calibration: Default::default(),
             overlay_frame: Default::default(),
             overlay_layout: Default::default(),
-            query: Default::default(),
         });
         let transition = state.app_state.recording_transition.lock().await;
         assert!(dictation_prepare_admitted(&state));
@@ -7102,8 +7078,6 @@ pub(crate) mod tests {
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
-                query_history: crate::query_history::QueryHistoryStore::default(),
-                assistant: crate::assistant::AssistantStore::default(),
 
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
                 ),
@@ -7114,7 +7088,7 @@ pub(crate) mod tests {
                 ),
                 overlay_frame: std::sync::Mutex::new(None),
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
-                query: crate::query_flow::QueryCoordinator::default(),
+
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");
@@ -7231,8 +7205,6 @@ pub(crate) mod tests {
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
-                query_history: crate::query_history::QueryHistoryStore::default(),
-                assistant: crate::assistant::AssistantStore::default(),
 
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
                 ),
@@ -7243,7 +7215,7 @@ pub(crate) mod tests {
                 ),
                 overlay_frame: std::sync::Mutex::new(None),
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
-                query: crate::query_flow::QueryCoordinator::default(),
+
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");
@@ -7677,7 +7649,6 @@ pub(crate) mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            query_context_excluded: false,
             mode_id: None,
         };
         let mut technical = ordinary.clone();
@@ -7951,7 +7922,6 @@ pub(crate) mod tests {
                 writing_style: None,
                 ide_context_enabled: false,
                 ide_project_roots: vec![],
-                query_context_excluded: false,
                 mode_id: None,
             }];
             assert!(!smart_destination_eligible(&dictation));
@@ -8079,7 +8049,6 @@ pub(crate) mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            query_context_excluded: false,
             mode_id: None,
         };
         let media_target = target("com.brave.Browser", 41, 1);
@@ -8198,7 +8167,6 @@ pub(crate) mod tests {
                 writing_style: Some(WritingStyle::CodeTechnical),
                 ide_context_enabled: true,
                 ide_project_roots: vec!["/project".into()],
-                query_context_excluded: false,
                 mode_id: None,
             }];
             dictation.vocabulary_entries = vec![VocabularyEntry {

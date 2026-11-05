@@ -71,7 +71,7 @@ fn standby_expiry_device_change_sleep_and_disable_confirm_worker_exit() {
             }
             "setting" => { supervisor.sender.send(SupervisorMessage::ConfigureStandby(StandbyPolicy::default())).unwrap(); }
             "other_owner" | "other_device" => {
-                let owner = if teardown == "other_owner" { AudioOwner::Query(2) } else { AudioOwner::Dictation(2) };
+                let owner = if teardown == "other_owner" { AudioOwner::Preview(2) } else { AudioOwner::Dictation(2) };
                 let device = (teardown == "other_device").then(|| "different".to_string());
                 start_with_device(&supervisor, owner, device).recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
                 wait_until("replacement ready", || supervisor.public.phase() == PublicPhase::Recording);
@@ -119,14 +119,14 @@ fn cancellation_during_standby_handoff_never_launches_pending_owner() {
     let (tx, rx) = mpsc::channel();
     supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
     rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
-    let pending = start(&supervisor, AudioOwner::Query(2));
+    let pending = start(&supervisor, AudioOwner::Preview(2));
     wait_until("old worker terminating", || supervisor.public.phase() == PublicPhase::Recovering);
     assert!(matches!(pending.try_recv(), Err(mpsc::TryRecvError::Empty)));
-    assert_eq!(cancel_any_phase(&supervisor, AudioOwner::Query(2)).recv().unwrap(), Ok(true));
+    assert_eq!(cancel_any_phase(&supervisor, AudioOwner::Preview(2)).recv().unwrap(), Ok(true));
     assert_eq!(pending.recv().unwrap(), Err(AudioStartError::Cancelled));
     gate.open();
     wait_until("old worker joined", || supervisor.public.phase() == PublicPhase::Idle);
-    assert!(!sink.events.lock().unwrap().iter().any(|(owner, event)| *owner == AudioOwner::Query(2) && *event == AudioLifecycleEvent::Accepted));
+    assert!(!sink.events.lock().unwrap().iter().any(|(owner, event)| *owner == AudioOwner::Preview(2) && *event == AudioLifecycleEvent::Accepted));
     shutdown(&supervisor);
 }
 
@@ -191,19 +191,19 @@ fn timed_out_handoff_never_spawns_after_blocked_teardown_completes() {
     let (response, result) = mpsc::channel();
     supervisor.sender.send(SupervisorMessage::Start(StartRequest {
         gesture: gesture::StartGesture::default(),
-        caller_alive: lease.clone(), owner: AudioOwner::Query(2),
+        caller_alive: lease.clone(), owner: AudioOwner::Preview(2),
         app_handle: None, device_id: None, origin: "transform".into(),
         wait_until_ready: false, response, probe_permit: None,
     })).unwrap();
     let began = Instant::now();
-    assert_eq!(await_start_response(&supervisor, AudioOwner::Query(2), lease.clone(), result, SUPERVISOR_RESPONSE_TIMEOUT), Err(AudioStartError::SupervisorUnavailable));
+    assert_eq!(await_start_response(&supervisor, AudioOwner::Preview(2), lease.clone(), result, SUPERVISOR_RESPONSE_TIMEOUT), Err(AudioStartError::SupervisorUnavailable));
     assert!(began.elapsed() >= SUPERVISOR_RESPONSE_TIMEOUT);
     assert!(!lease.load(Ordering::Acquire));
     assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
     gate.open();
     wait_until("old worker joined", || supervisor.public.phase() == PublicPhase::Idle);
     assert_eq!(spawns.load(Ordering::SeqCst), 1);
-    assert!(!sink.events.lock().unwrap().iter().any(|(owner, event)| *owner == AudioOwner::Query(2) && *event == AudioLifecycleEvent::Accepted));
+    assert!(!sink.events.lock().unwrap().iter().any(|(owner, event)| *owner == AudioOwner::Preview(2) && *event == AudioLifecycleEvent::Accepted));
     shutdown(&supervisor);
 }
 

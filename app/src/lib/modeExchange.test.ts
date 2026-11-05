@@ -11,7 +11,7 @@ const mode: MurmurMode = {
 const profile: AppProfile = {
   bundleId: 'com.example.Editor', label: 'Editor', autoPasteOverride: false,
   cleanupOverride: null, smartFormattingOverride: null, cliFormattingOverride: null,
-  writingStyle: null, ideContextEnabled: false, ideProjectRoots: ['/private/project'], queryContextExcluded: true,
+  writingStyle: null, ideContextEnabled: false, ideProjectRoots: ['/private/project'],
 };
 const rule = { id: 'site.example', browserBundleId: 'com.apple.Safari', host: 'example.com', modeId: mode.id, enabled: true };
 const empty: ModeExchangeSettings = { modes: [], appProfiles: [], browserSiteRules: [], siteModeLookupEnabled: false };

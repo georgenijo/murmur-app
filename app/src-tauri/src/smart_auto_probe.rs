@@ -374,7 +374,6 @@ fn idle(state: &State) -> bool {
         && !state.app_state.file_transcribing.load(Ordering::SeqCst)
         && !state.app_state.meeting_blocks_asr()
         && !crate::meeting_diarization::is_active()
-        && !state.query.status().blocks_pipeline()
         && !state.benchmark.is_running()
         && !state.microphone_startup_benchmark.is_active()
         && !state.app_state.microphone_preview.is_active()

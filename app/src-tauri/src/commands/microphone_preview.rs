@@ -135,12 +135,6 @@ pub async fn start_microphone_preview(
             );
         }
 
-        if state.query.status().blocks_capture() {
-            return Err(
-                "Finish the current voice query's recording before testing the microphone"
-                    .to_string(),
-            );
-        }
         if state.benchmark.is_running() {
             return Err("Finish the current benchmark before testing the microphone".to_string());
         }

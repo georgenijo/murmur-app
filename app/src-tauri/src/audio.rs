@@ -1331,14 +1331,6 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     crate::audio_inventory::available_devices()
 }
 
-pub fn start_query_capture_audio(
-    app_handle: Option<tauri::AppHandle>,
-    device_id: Option<String>,
-    query_pass_id: u64,
-) -> Result<(), String> {
-    crate::audio_lifecycle::start_query_recording(app_handle, device_id, query_pass_id)
-}
-
 pub(crate) enum HelperRead {
     Frame(ProductionFrame<ProductionHelperMessage>),
     Invalid,

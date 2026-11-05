@@ -35,7 +35,7 @@ describe('KeyboardShortcutsSettings', () => {
   });
   it('shows retained shortcuts without removed rewrite or correction controls', async () => {
     await render(DEFAULT_SETTINGS);
-    expect(container.textContent).toContain('Voice Query');
+    expect(container.textContent).not.toContain('Voice Query');
     expect(container.textContent).toContain('Paste last or retry delivery');
     expect(container.textContent).not.toMatch(/Selected-text|Correct last dictation/i);
   });

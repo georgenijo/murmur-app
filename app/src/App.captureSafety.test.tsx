@@ -81,7 +81,7 @@ async function mount({ setup = false, modelInstalled = true, recordingMode = 'do
   native.modelInstalled = modelInstalled;
   if (!setup) localStorage.setItem(ONBOARDING_KEY, 'true');
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    ...DEFAULT_SETTINGS, model: 'base.en', recordingMode, microphoneIdMigrationComplete: true, queryHotkey: 'ctrl_l', queryExecutable: '/usr/bin/true',
+    ...DEFAULT_SETTINGS, model: 'base.en', recordingMode, microphoneIdMigrationComplete: true,
   }));
   // A missing model prevents grandfathering for the initial setup fixture.
   if (setup) native.modelInstalled = false;
@@ -177,7 +177,7 @@ describe('App setup capture safety', () => {
     await mount({ modelInstalled: false, recordingMode });
     expect(container.querySelector('.main-app-shell')).toBeNull();
     expect(native.invoke.mock.calls.filter(([command]) => command === 'start_keyboard_listener')).toEqual([]);
-    expect(native.invoke.mock.calls.filter(([command]) => command === 'start_transform_listener' || command === 'start_query_listener')).toEqual([]);
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'start_keyboard_listener')).toEqual([]);
     await emit('hold-down-start', null);
     await emit('double-tap-toggle', null);
     expect(native.invoke.mock.calls.filter(([command]) => command === 'start_native_recording')).toEqual([]);
@@ -198,19 +198,6 @@ describe('App setup capture safety', () => {
       expect(stop?.textContent).toContain('Stop meeting');
       await act(async () => stop!.click());
       expect(native.invoke).toHaveBeenCalledWith('stop_meeting');
-    });
-
-    it.each(['query'] as const)(`refuses setup without cancelling %s capture through ${entry}`, async (kind) => {
-      await mount();
-      await emit('query-toggle', { queryPassId: 7, action: 'start' });
-      expect(native.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({ queryPassId: 7 }));
-      native.captureBusy = true;
-      await rerun(entry);
-      expectMain();
-      expect(container.textContent).toContain('Stop recording first');
-      expect(native.invoke.mock.calls.filter(([command]) => command === `cancel_${kind}`)).toEqual([]);
-      await emit('escape-cancel', { queryPassId: 7 });
-      expect(native.invoke).toHaveBeenCalledWith(`cancel_${kind}`, { [`${kind}PassId`]: 7 });
     });
   }
 
@@ -238,7 +225,7 @@ describe('App setup capture safety', () => {
     expectMain();
     expect(container.textContent).toContain('Stop recording first');
     expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
-    await emit('escape-cancel', { transformPassId: null, queryPassId: null });
+    await emit('escape-cancel', {});
     expect(native.invoke).toHaveBeenCalledWith('cancel_native_recording');
   });
 
@@ -264,7 +251,7 @@ describe('App setup capture safety', () => {
     await emit('recording-status-changed', 'starting');
     await act(async () => start.resolve({ type: 'recording_starting', state: 'starting', recordingId: 1 }));
     await emit('recording-status-changed', 'recording');
-    await emit('escape-cancel', { transformPassId: null, queryPassId: null });
+    await emit('escape-cancel', {});
     expect(native.invoke).toHaveBeenCalledWith('cancel_native_recording');
   });
 

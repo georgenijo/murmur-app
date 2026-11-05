@@ -8,7 +8,6 @@ export const ADVANCED_TARGETS: Record<string, readonly string[]> = {
   delivery: ['app-overrides'],
   meetings: ['meeting-retention', 'meeting-echo-cancellation'],
   'ai-transcription': ['model-idle-timeout'],
-  'ai-query': ['query-timeout'],
 };
 
 export function visibleSettingsTarget(target: string, settings: Settings): string {
@@ -19,7 +18,6 @@ export function visibleSettingsTarget(target: string, settings: Settings): strin
   if (['fuzzy-correction', 'homophone-context'].includes(target) && !settings.correctionEnabled) return 'smart-correction';
   if (['standby-window', 'pre-roll'].includes(target) && !settings.captureStandbyEnabled) return 'standby';
   if (['sound-volume', 'meeting-cues'].includes(target) && !settings.soundCuesEnabled) return 'sound-cues';
-  if (target === 'query-key' && settings.queryHotkey === null) return 'voice-query-shortcut';
   if (target === 'hotkey-feedback' && settings.recordingMode === 'hold_down') return 'recording-trigger';
   if (target === 'browser-site-rules' && !settings.siteModeLookupEnabled) return 'browser-sites';
   if (target === 'meeting-calendar' && !settings.meetingSuggestionsEnabled) return 'meeting-suggestions';

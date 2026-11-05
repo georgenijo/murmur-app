@@ -511,7 +511,6 @@ pub(crate) fn invalidate_token(token: u64, listener_generation: u64, reason: Inv
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CaptureClaim {
     Dictation(Option<PrepareIdentity>),
-    Query,
     Meeting,
     Preview,
     Standby,
@@ -654,7 +653,6 @@ mod tests {
         use crate::state::{AppState, DictationStatus};
         for claim in [
             CaptureClaim::Dictation(None),
-            CaptureClaim::Query,
             CaptureClaim::Meeting,
             CaptureClaim::Preview,
             CaptureClaim::Standby,

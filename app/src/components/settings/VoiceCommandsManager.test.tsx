@@ -76,7 +76,6 @@ describe('VoiceCommandsManager', () => {
       bundleId: 'com.apple.mail', label: 'Mail', autoPasteOverride: null, cleanupOverride: null,
       smartFormattingOverride: null, cliFormattingOverride: null, writingStyle: null,
       ideContextEnabled: false, ideProjectRoots: [],
-      queryContextExcluded: false,
     }]} />));
   });
 

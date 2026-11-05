@@ -2,7 +2,7 @@
 
 Issue [#351](https://github.com/georgenijo/murmur-app/issues/351) defines the
 versioned, local data layer used by the Diagnostics performance workspace.
-Dictation, imported-file, and Voice Query runs share this contract.
+Dictation and imported-file runs share this contract.
 Older records for retired flows remain readable without producing new records.
 
 ## Storage and retention
@@ -66,15 +66,15 @@ quarantined evidence, and a healthy database is never quarantined.
 `PerformanceRunV1` contains:
 
 - an opaque random `runId`;
-- kind (`dictation`, `fileTranscription`, or `voiceQuery` for new runs);
+- kind (`dictation`, `fileTranscription` for new runs);
 - start/finish UTC timestamps and exactly one terminal outcome;
-- the existing `recordingId`, a dedicated `fileRunId`, or the monotonic `queryPassId`;
+- the existing `recordingId` or a dedicated `fileRunId`;
 - catalog-backed model, backend, accelerator, and warm/cold state;
 - typed stage measurements;
 - content-free audio duration or bounded size/token fields;
 - scoped resource summaries.
 
-Voice Query records may additionally carry `queryProcess` with only an integer
+Retired Voice Query records may carry `queryProcess` with only an integer
 exit code (or unavailable) and a boolean `stderrPresent`. Old V1 rows omit the
 field. No stderr bytes or provider error detail is admitted.
 
@@ -146,19 +146,6 @@ The new build reads older diagnostic records. Older builds do not recognize
 the added stage in new records; downgrading does not provide forward-compatible
 diagnostic history. This does not change dictation or meeting history formats.
 
-### Voice Query stages
-
-- instruction capture is presented as **Capture**;
-- instruction ASR is presented as **Transcription**;
-- CLI process startup is presented as **Provider spawn**;
-- generation is the time to **First answer**;
-- total processing is presented as **Total**.
-
-The stored stage IDs remain the existing V1 enum, so old readers and rows do
-not require a JSON schema bump. A terminal provider/configuration/query-path
-failure maps to the stable `queryFailed` run error. Audio and transcription
-failures continue to use their existing stable errors.
-
 ## Resource scopes
 
 | Field | Scope and unit |
@@ -183,7 +170,7 @@ and main process only.
 Persistent diagnostics never contain transcript, query, answer, or instruction text,
 selected/proposed/replaced text, clipboard contents, paths or filenames, bundle
 IDs, window titles, selected context, project/profile names, raw stderr, or
-free-form native error messages. Voice Query records retain stderr presence
+free-form native error messages. Retired Voice Query records retain stderr presence
 only. Errors are stable enums. Text-related sizes are bounded buckets.
 Database contents are never uploaded. When a dictation diagnostics row still
 cannot begin after its bounded retry, one content-free structured event reports

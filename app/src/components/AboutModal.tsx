@@ -54,7 +54,7 @@ function AboutDialog({ onClose }: Pick<AboutModalProps, 'onClose'>) {
           </p>
 
           <p className="text-sm text-on-surface mb-4">
-            Private dictation with local transcription models, including Whisper and Parakeet. Dictation and selected-text rewriting run on this Mac. Optional Voice Query uses your configured CLI/provider, which may send questions, shared app context, and permitted files over its own network connection.
+            Private dictation and meeting transcription with local models, including Whisper and Parakeet. Audio and transcripts stay on this Mac.
           </p>
 
           <p className="text-xs text-on-surface-variant">

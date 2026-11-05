@@ -56,7 +56,7 @@ The `settings-copy` visual fixture renders real Settings panes and editors with
 synthetic local data. It sends editor requests after mount, then waits for the
 actual editor heading; an overview screenshot cannot satisfy editor coverage.
 Both light and dark cover General, Recording, Delivery, Meetings, Text,
-AI overview, speech recognition, rewriting, Voice Query, Modes, Appearance,
+AI overview, speech recognition, Modes, Appearance,
 Performance Lab, Diagnostics, shortcuts, and every text editor. Disclosures are
 also captured expanded, scrolled to the final controls. Additional snapshots
 show a recoverable command default, Knowledge overflow, typed bulk deletion,

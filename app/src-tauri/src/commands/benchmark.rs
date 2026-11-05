@@ -61,12 +61,6 @@ pub async fn run_benchmark(
     {
         let dictation = state.app_state.dictation.lock_or_recover();
 
-        // Deliberately the strict predicate, not `blocks_capture`: a query in
-        // `Running` still has a CLI child competing for CPU, which would skew
-        // the latency numbers this harness exists to measure.
-        if state.query.status().blocks_pipeline() {
-            return Err("Wait for the voice query to finish before benchmarking".to_string());
-        }
         if dictation.status != DictationStatus::Idle {
             return Err("Stop recording before running a benchmark".to_string());
         }

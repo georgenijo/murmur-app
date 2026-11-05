@@ -186,7 +186,7 @@ failed measurements create chart gaps. A measured zero remains zero;
 ### Runs Tab
 
 Runs reads at most the newest 200 `PerformanceRunV1` records. Dictation, file
-transcription, and Voice Query are current kinds. Legacy records remain readable. Kind and
+transcription are current kinds. Retired run kinds remain readable as content-free diagnostics. Kind and
 outcome filters cover success, no-speech, cancelled, timed-out, failed, and
 interrupted terminal outcomes.
 

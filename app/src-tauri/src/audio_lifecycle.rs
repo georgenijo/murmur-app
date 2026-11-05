@@ -22,7 +22,6 @@ const STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AudioOwner {
     Dictation(u64),
-    Query(u64),
     Preview(u64),
     MicrophoneBenchmark(u64),
     #[cfg(feature = "internal-benchmark")]
@@ -32,10 +31,7 @@ pub(crate) enum AudioOwner {
 impl AudioOwner {
     pub(crate) fn telemetry_id(self) -> u64 {
         match self {
-            Self::Dictation(id)
-            | Self::Query(id)
-            | Self::Preview(id)
-            | Self::MicrophoneBenchmark(id) => id,
+            Self::Dictation(id) | Self::Preview(id) | Self::MicrophoneBenchmark(id) => id,
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(id) => id,
         }
@@ -44,7 +40,6 @@ impl AudioOwner {
     pub(crate) fn kind(self) -> &'static str {
         match self {
             Self::Dictation(_) => "dictation",
-            Self::Query(_) => "query",
             Self::Preview(_) => "preview",
             Self::MicrophoneBenchmark(_) => "microphone_benchmark",
             #[cfg(feature = "internal-benchmark")]
@@ -388,9 +383,6 @@ impl LifecycleSink for ProductionLifecycleSink {
                 );
             }
 
-            AudioOwner::Query(query_pass_id) => {
-                crate::query_flow::handle_audio_lifecycle(app_handle.clone(), query_pass_id, event);
-            }
             AudioOwner::Preview(preview_id) => {
                 crate::commands::microphone_preview::handle_audio_lifecycle(
                     app_handle.clone(),
@@ -1549,9 +1541,7 @@ fn handle_worker_event(
                 // worker exit. Transform audio has no partial-transcript path,
                 // so preserve its typed, content-free failure before recovery.
                 let report_failure = match current.owner {
-                    AudioOwner::Query(_)
-                    | AudioOwner::Preview(_)
-                    | AudioOwner::MicrophoneBenchmark(_) => Some(failure),
+                    AudioOwner::Preview(_) | AudioOwner::MicrophoneBenchmark(_) => Some(failure),
                     #[cfg(feature = "internal-benchmark")]
                     AudioOwner::Corpus(_) => Some(failure),
                     AudioOwner::Dictation(_) => None,
@@ -2224,21 +2214,6 @@ pub(crate) fn start_dictation_recording(
     )
 }
 
-pub(crate) fn start_query_recording(
-    app_handle: Option<tauri::AppHandle>,
-    device_id: Option<String>,
-    query_pass_id: u64,
-) -> Result<(), String> {
-    send_start(
-        AudioOwner::Query(query_pass_id),
-        app_handle,
-        device_id,
-        "query",
-        false,
-    )
-    .map_err(|error| error.to_string())
-}
-
 pub(crate) fn start_preview_recording(
     app_handle: tauri::AppHandle,
     device_id: Option<String>,
@@ -2305,29 +2280,6 @@ pub(crate) fn stop_dictation_recording(
     trigger: DictationStopTrigger,
 ) -> Result<Vec<f32>, String> {
     stop_with_trigger(Some(AudioOwner::Dictation(recording_id)), trigger)
-}
-
-pub(crate) fn stop_query_recording(query_pass_id: u64) -> Result<Vec<f32>, String> {
-    stop(Some(AudioOwner::Query(query_pass_id)))
-}
-
-/// Clone the live query buffer without stopping capture.
-///
-/// Returns `None` when this pass is not the recording owner. The clone is a
-/// snapshot; later PCM stays in the retained buffer for the authoritative pass.
-pub(crate) fn peek_query_samples(query_pass_id: u64) -> Option<Vec<f32>> {
-    let (response_sender, response_receiver) = mpsc::channel();
-    supervisor()
-        .sender
-        .send(SupervisorMessage::Peek {
-            owner: AudioOwner::Query(query_pass_id),
-            max_output_samples: None,
-            response: response_sender,
-        })
-        .ok()?;
-    response_receiver
-        .recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT)
-        .ok()?
 }
 
 /// Clone the live dictation buffer without stopping capture. The authoritative
@@ -2398,13 +2350,6 @@ pub(crate) fn cancel_dictation_capture(
     reason: AudioCancelReason,
 ) -> Result<bool, String> {
     cancel(Some(AudioOwner::Dictation(recording_id)), reason, false)
-}
-
-pub(crate) fn cancel_query_capture(
-    query_pass_id: u64,
-    reason: AudioCancelReason,
-) -> Result<bool, String> {
-    cancel(Some(AudioOwner::Query(query_pass_id)), reason, false)
 }
 
 pub(crate) fn cancel_preview_capture(
@@ -2663,8 +2608,8 @@ mod tests {
             Duration::ZERO
         );
         for owner in [
-            AudioOwner::Query(1),
-            AudioOwner::Query(1),
+            AudioOwner::Preview(1),
+            AudioOwner::Preview(1),
             AudioOwner::Preview(1),
         ] {
             for trigger in [
@@ -3546,7 +3491,7 @@ mod tests {
             pcm.open();
             // FIFO barrier through supervisor: PCM without Stopped must not seal.
             assert_eq!(
-                start(&supervisor, AudioOwner::Query(705)).recv().unwrap(),
+                start(&supervisor, AudioOwner::Preview(705)).recv().unwrap(),
                 Err(AudioStartError::AudioRecovering)
             );
             assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
@@ -3674,8 +3619,8 @@ mod tests {
             assert!(supervisor.public.owns(owner));
             for next in [
                 AudioOwner::Dictation(701),
-                AudioOwner::Query(701),
-                AudioOwner::Query(701),
+                AudioOwner::Preview(701),
+                AudioOwner::Preview(701),
                 AudioOwner::Preview(701),
             ] {
                 assert_eq!(
@@ -3706,7 +3651,7 @@ mod tests {
                 // A round trip proves unconfirmed exit publishes guidance
                 // immediately, independently of the long-stop deadline.
                 assert_eq!(
-                    start(&supervisor, AudioOwner::Query(706)).recv().unwrap(),
+                    start(&supervisor, AudioOwner::Preview(706)).recv().unwrap(),
                     Err(AudioStartError::AudioRecovering)
                 );
                 assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
@@ -4480,92 +4425,6 @@ mod tests {
     }
 
     #[test]
-    fn query_peek_clones_samples_without_stopping_capture() {
-        let (supervisor, gate, _, sink, _) =
-            harness(AudioInitPhase::FirstBufferWait, SupervisorConfig::default());
-        let owner = AudioOwner::Query(56);
-        assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
-
-        let (peek_sender, peek_receiver) = mpsc::channel();
-        supervisor
-            .sender
-            .send(SupervisorMessage::Peek {
-                owner,
-                max_output_samples: None,
-                response: peek_sender,
-            })
-            .unwrap();
-        assert_eq!(
-            peek_receiver
-                .recv_timeout(Duration::from_millis(100))
-                .unwrap(),
-            None,
-            "starting capture must not expose a buffer"
-        );
-
-        gate.open();
-        wait_until("query capture did not become ready", || {
-            sink.events
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(_, event)| *event == AudioLifecycleEvent::Ready)
-        });
-
-        let (peek_sender, peek_receiver) = mpsc::channel();
-        supervisor
-            .sender
-            .send(SupervisorMessage::Peek {
-                owner,
-                max_output_samples: None,
-                response: peek_sender,
-            })
-            .unwrap();
-        assert_eq!(
-            peek_receiver
-                .recv_timeout(Duration::from_millis(100))
-                .unwrap(),
-            Some(vec![0.25])
-        );
-        assert!(supervisor.public.is_active());
-
-        let (stale_sender, stale_receiver) = mpsc::channel();
-        supervisor
-            .sender
-            .send(SupervisorMessage::Peek {
-                owner: AudioOwner::Query(99),
-                max_output_samples: None,
-                response: stale_sender,
-            })
-            .unwrap();
-        assert_eq!(
-            stale_receiver
-                .recv_timeout(Duration::from_millis(100))
-                .unwrap(),
-            None
-        );
-        assert!(supervisor.public.is_active());
-
-        let (stop_sender, stop_receiver) = mpsc::channel();
-        supervisor
-            .sender
-            .send(SupervisorMessage::Stop {
-                trigger: DictationStopTrigger::Other,
-                owner: Some(owner),
-                response: stop_sender,
-            })
-            .unwrap();
-        assert_eq!(
-            stop_receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Ok(vec![0.25])
-        );
-        wait_until("query peek stop did not finish teardown", || {
-            !supervisor.public.is_active()
-        });
-        shutdown(&supervisor);
-    }
-
-    #[test]
     fn stale_worker_generation_cannot_activate_current_attempt() {
         let (supervisor, gate, _, sink, active_flags) =
             harness(AudioInitPhase::StreamBuild, SupervisorConfig::default());
@@ -4944,7 +4803,7 @@ mod tests {
             sink.clone(),
             SupervisorConfig::default(),
         );
-        let owner = AudioOwner::Query(81);
+        let owner = AudioOwner::Preview(81);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
         wait_until("runtime failure did not reach lifecycle sink", || {
             sink.events.lock().unwrap().iter().any(|(_, event)| {
@@ -4976,7 +4835,7 @@ mod tests {
                 })
                 .count(),
             1,
-            "query runtime failure must be reported exactly once"
+            "preview runtime failure must be reported exactly once"
         );
         shutdown(&supervisor);
     }
@@ -5122,7 +4981,7 @@ mod tests {
     }
 
     #[test]
-    fn dictation_and_query_share_system_default_and_explicit_id_contracts() {
+    fn dictation_and_preview_share_system_default_and_explicit_id_contracts() {
         let specs = Arc::new(Mutex::new(Vec::new()));
         let supervisor = spawn_supervisor(
             Arc::new(SpecCaptureFactory {
@@ -5133,12 +4992,15 @@ mod tests {
         );
         for (owner, device_id) in [
             (AudioOwner::Dictation(90), None),
-            (AudioOwner::Query(90), None),
+            (AudioOwner::Preview(90), None),
             (
                 AudioOwner::Dictation(91),
                 Some("raw-coreaudio-uid".to_string()),
             ),
-            (AudioOwner::Query(91), Some("raw-coreaudio-uid".to_string())),
+            (
+                AudioOwner::Preview(91),
+                Some("raw-coreaudio-uid".to_string()),
+            ),
         ] {
             assert_eq!(
                 start_with_device(&supervisor, owner, device_id)
@@ -5155,12 +5017,15 @@ mod tests {
             *specs.lock().unwrap(),
             vec![
                 (AudioOwner::Dictation(90), None),
-                (AudioOwner::Query(90), None),
+                (AudioOwner::Preview(90), None),
                 (
                     AudioOwner::Dictation(91),
                     Some("raw-coreaudio-uid".to_string())
                 ),
-                (AudioOwner::Query(91), Some("raw-coreaudio-uid".to_string())),
+                (
+                    AudioOwner::Preview(91),
+                    Some("raw-coreaudio-uid".to_string())
+                ),
             ]
         );
         shutdown(&supervisor);

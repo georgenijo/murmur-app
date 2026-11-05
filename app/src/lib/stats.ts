@@ -1,11 +1,4 @@
 import { clearDurableBlob, saveDurableBlob, STATS_STORE } from './durableUserData';
-import {
-  QUERY_PROVIDER_IDS,
-  isQueryProviderId,
-  isQueryUsage,
-  type QueryUsage,
-} from './queryUsage';
-import type { QueryProviderId } from './settings';
 import { addActivityCompletion, sanitizeActivityStats, type ActivityCompletion, type ActivityStats } from './activityStats';
 
 export const STATS_CHANGED_EVENT = 'murmur-stats-changed';
@@ -20,63 +13,6 @@ export interface DayBucket {
 
 export type DailyBuckets = Record<string, DayBucket>;
 
-export const QUERY_FAILURE_CODES = [
-  'not_configured',
-  'invalid_executable',
-  'invalid_arguments',
-  'invalid_timeout',
-  'invalid_environment',
-  'unsupported_capabilities',
-  'trusted_workspace_unavailable',
-  'environment_unavailable',
-  'busy',
-  'audio_start_failed',
-  'audio_capture_failed',
-  'audio_not_ready',
-  'audio_stalled',
-  'audio_recovering',
-  'audio_recovery_stalled',
-  'no_speech',
-  'transcription_failed',
-  'empty_query',
-  'query_too_large',
-  'spawn_failed',
-  'timed_out',
-  'exit_nonzero',
-  'provider_not_authenticated',
-  'provider_error',
-  'empty_answer',
-  'clipboard_unavailable',
-  'output_too_large',
-  'process_failed',
-  'termination_unconfirmed',
-  'cancelled',
-  'unknown',
-] as const;
-
-export type QueryFailureCode = typeof QUERY_FAILURE_CODES[number];
-
-export interface QueryProviderStats {
-  queriesRun: number;
-  successfulQueries: number;
-  failedQueries: number;
-  inputTokens: number;
-  outputTokens: number;
-  reportedCostUsd: number;
-}
-
-export interface QueryStats extends QueryProviderStats {
-  byProvider: Record<QueryProviderId, QueryProviderStats>;
-  failuresByErrorCode: Partial<Record<QueryFailureCode, number>>;
-}
-
-export interface QueryCompletion {
-  provider: QueryProviderId;
-  succeeded: boolean;
-  errorCode: string | null;
-  usage: QueryUsage | null;
-}
-
 export interface DictationStats {
   totalWords: number;
   totalRecordings: number;
@@ -85,37 +21,7 @@ export interface DictationStats {
   // Per-day breakdown for the usage dashboard. Absent on stats saved before
   // this map existed — back-filled to {} on load (see loadStats).
   dailyBuckets: DailyBuckets;
-  // Voice Query stores content-free counters only. Question, answer, command,
-  // stderr, paths, and credentials are not accepted by this schema.
-  query: QueryStats;
   activity: ActivityStats;
-}
-
-const EMPTY_PROVIDER_STATS: QueryProviderStats = {
-  queriesRun: 0,
-  successfulQueries: 0,
-  failedQueries: 0,
-  inputTokens: 0,
-  outputTokens: 0,
-  reportedCostUsd: 0,
-};
-
-function emptyProviderBreakdown(): Record<QueryProviderId, QueryProviderStats> {
-  return {
-    claude: { ...EMPTY_PROVIDER_STATS },
-    codex: { ...EMPTY_PROVIDER_STATS },
-    grok: { ...EMPTY_PROVIDER_STATS },
-    cursor: { ...EMPTY_PROVIDER_STATS },
-    custom: { ...EMPTY_PROVIDER_STATS },
-  };
-}
-
-function emptyQueryStats(): QueryStats {
-  return {
-    ...EMPTY_PROVIDER_STATS,
-    byProvider: emptyProviderBreakdown(),
-    failuresByErrorCode: {},
-  };
 }
 
 const DEFAULT_STATS: DictationStats = {
@@ -124,7 +30,6 @@ const DEFAULT_STATS: DictationStats = {
   totalDurationSeconds: 0,
   wpmSamples: [],
   dailyBuckets: {},
-  query: emptyQueryStats(),
   activity: sanitizeActivityStats(undefined),
 };
 
@@ -176,51 +81,6 @@ function safeCost(value: unknown): number {
     : 0;
 }
 
-function sanitizeProviderStats(raw: unknown): QueryProviderStats {
-  if (!raw || typeof raw !== 'object') return { ...EMPTY_PROVIDER_STATS };
-  const stats = raw as Record<string, unknown>;
-  return {
-    queriesRun: safeCount(stats.queriesRun),
-    successfulQueries: safeCount(stats.successfulQueries),
-    failedQueries: safeCount(stats.failedQueries),
-    inputTokens: safeCount(stats.inputTokens),
-    outputTokens: safeCount(stats.outputTokens),
-    reportedCostUsd: safeCost(stats.reportedCostUsd),
-  };
-}
-
-function isQueryFailureCode(value: string): value is QueryFailureCode {
-  return (QUERY_FAILURE_CODES as readonly string[]).includes(value);
-}
-
-function sanitizeFailures(raw: unknown): Partial<Record<QueryFailureCode, number>> {
-  if (!raw || typeof raw !== 'object') return {};
-  const failures: Partial<Record<QueryFailureCode, number>> = {};
-  for (const [code, count] of Object.entries(raw as Record<string, unknown>)) {
-    if (isQueryFailureCode(code)) failures[code] = safeCount(count);
-  }
-  return failures;
-}
-
-function sanitizeQueryStats(raw: unknown): QueryStats {
-  const totals = sanitizeProviderStats(raw);
-  const value = raw && typeof raw === 'object'
-    ? raw as Record<string, unknown>
-    : {};
-  const rawProviders = value.byProvider && typeof value.byProvider === 'object'
-    ? value.byProvider as Record<string, unknown>
-    : {};
-  const byProvider = emptyProviderBreakdown();
-  for (const provider of QUERY_PROVIDER_IDS) {
-    byProvider[provider] = sanitizeProviderStats(rawProviders[provider]);
-  }
-  return {
-    ...totals,
-    byProvider,
-    failuresByErrorCode: sanitizeFailures(value.failuresByErrorCode),
-  };
-}
-
 const MAX_WPM_SAMPLES = 100;
 
 function sanitizeStats(value: unknown): DictationStats {
@@ -237,7 +97,6 @@ function sanitizeStats(value: unknown): DictationStats {
     totalDurationSeconds: safeCost(parsed.totalDurationSeconds),
     wpmSamples,
     dailyBuckets: sanitizeBuckets(parsed.dailyBuckets),
-    query: sanitizeQueryStats(parsed.query),
     activity: sanitizeActivityStats(parsed.activity),
   };
 }
@@ -309,65 +168,9 @@ export function updateStats(text: string, durationSeconds: number, modeId?: stri
       totalDurationSeconds: stats.totalDurationSeconds + durationSeconds,
       wpmSamples: newSamples,
       dailyBuckets,
-      query: stats.query,
     });
   } catch {
     console.error('Failed to update stats');
-  }
-}
-
-function addCount(current: number, increment: number): number {
-  return Math.min(Number.MAX_SAFE_INTEGER, current + increment);
-}
-
-function addCost(current: number, increment: number): number {
-  const total = current + increment;
-  return Number.isFinite(total) && total >= 0 ? total : current;
-}
-
-function addCompletion(
-  current: QueryProviderStats,
-  succeeded: boolean,
-  usage: QueryUsage | null,
-): QueryProviderStats {
-  return {
-    queriesRun: addCount(current.queriesRun, 1),
-    successfulQueries: addCount(current.successfulQueries, succeeded ? 1 : 0),
-    failedQueries: addCount(current.failedQueries, succeeded ? 0 : 1),
-    inputTokens: addCount(current.inputTokens, usage?.inputTokens ?? 0),
-    outputTokens: addCount(current.outputTokens, usage?.outputTokens ?? 0),
-    reportedCostUsd: addCost(current.reportedCostUsd, usage?.costUsd ?? 0),
-  };
-}
-
-export function updateQueryStats(completion: QueryCompletion): void {
-  try {
-    if (!isQueryProviderId(completion.provider)) return;
-    const usage = isQueryUsage(completion.usage) ? completion.usage : null;
-    const stats = loadStats();
-    const totals = addCompletion(stats.query, completion.succeeded, usage);
-    const byProvider = {
-      ...stats.query.byProvider,
-      [completion.provider]: addCompletion(
-        stats.query.byProvider[completion.provider],
-        completion.succeeded,
-        usage,
-      ),
-    };
-    const failuresByErrorCode = { ...stats.query.failuresByErrorCode };
-    if (!completion.succeeded) {
-      const code = completion.errorCode && isQueryFailureCode(completion.errorCode)
-        ? completion.errorCode
-        : 'unknown';
-      failuresByErrorCode[code] = addCount(
-        failuresByErrorCode[code] ?? 0,
-        1,
-      );
-    }
-    const query: QueryStats = { ...totals, byProvider, failuresByErrorCode };
-    saveStats({ ...stats, query });
-  } catch {
-    console.error('Failed to update query stats');
   }
 }
 

@@ -455,7 +455,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            query_context_excluded: false,
             mode_id: Some("builtin.email".into()),
         });
         assert_eq!(
@@ -509,7 +508,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            query_context_excluded: false,
             mode_id: Some("builtin.email".into()),
         });
         let github = BrowserSiteIdentity {
@@ -551,7 +549,6 @@ mod tests {
                 writing_style: None,
                 ide_context_enabled: false,
                 ide_project_roots: Vec::new(),
-                query_context_excluded: false,
                 mode_id: Some("builtin.email".into()),
             }],
             site_mode_lookup_enabled: true,

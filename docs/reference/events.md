@@ -84,30 +84,8 @@ the `useMeetings` subscription to this emitted contract.
 | `hotkey-tap-rejected` | `{reason: "second_tap_expired", mode: "double_tap" \| "both"}` | `keyboard.rs` | An idle first tap is not followed by a second within 400ms. Never for holds, combos, processing skips, or valid double-taps. | Overlay — amber timing-miss flash, only when `hotkeyMissFeedback` is on. |
 | `keyboard-listener-error` | `string` | `keyboard.rs` | The rdev listener thread errors. | All three recording hooks; they wait 2s and restart the listener. |
 | `app-disabled-changed` | `boolean` | `commands/keyboard.rs` | Global disable toggled from the tray or the overlay's power button. | Main window, overlay (`useOverlayRuntime`). |
-| `query-follow-up-unavailable` | `{queryPassId}` | `useQueryFlow.ts` | Content-free failure for a refused allocation; clears only the matching pending Ready action. | Query review only (`useQueryReviewDriver`). |
-| `query-toggle` | `{queryPassId, action: "start" \| "stop" \| "follow_up"}` | `keyboard.rs`, `query_flow.rs` | A dedicated query-key double-tap starts a pass, or its next single tap stops capture. A review-only follow-up request targets main; the event cannot authorize a fold without its one-shot Rust-owned request. There is no spoken-keyword trigger. | Main window (`useQueryFlow`). |
 
 **Dead listener:** `useCombinedToggle` registers `hold-down-cancel`, which nothing emits. In Both mode an unpromoted tap emits nothing at all, because no recording was ever started.
-
-## Voice Query
-
-Question and context content never appears in events. Only the dedicated review webview receives answer chunks and listening partials; it pulls the context summary through the gated review-content command.
-
-| Event | Payload | Source | When it fires | Listeners |
-|-------|---------|--------|---------------|-----------|
-| `query-state-changed` | `{queryPassId, state, errorCode, usage}` | `query_flow.rs` | Every content-free state transition: connecting, listening, transcribing, running, ready, or failed. `usage` is null until a structured provider reports numeric token/cache/reasoning counts and optional cost; it never contains content. Typed provider failures use `provider_error`; known authentication failures use the repairable `provider_not_authenticated`. Stderr and provider detail are never included. | Query popover (`useQueryReviewDriver`) and main-window content-free stats aggregation (`useQueryFlow`). |
-| `query-partial` | `{queryPassId, text}` | `query_flow.rs` | A display-only listening transcript snapshot is decoded. Targeted with `emit_to("query-review", …)`, never broadcast. Replaces the previous partial; never feeds the CLI. | Query popover only. |
-| `assistant-conversation-changed` | `{conversationId, queryPassId}` | `assistant.rs` | Native queue, partial answer, or terminal state changed. Fetch the conversation by ID; no content in the notification. | Main only, targeted. |
-| `assistant-state-changed` | `{conversationId, queryPassId, state, errorCode}` | `query_flow.rs` | Exact thread and pass lifecycle, separate from the content-free global query state. | Main only, targeted. |
-| `assistant-partial` | `{conversationId, queryPassId, text}` | `query_flow.rs` | Ephemeral listening transcription for an Assistant voice turn; never saved or sent to Pi. | Main only, targeted. |
-| `assistant-draft-state` | `{conversationId, queryPassId, state, errorCode}` | `query_flow.rs` | Local composer capture lifecycle. Successful finish emits idle before returning final text; idle with cancelled error discards speech. No Pi request. | Main only, targeted. |
-| `assistant-draft-partial` | `{conversationId, queryPassId, text}` | `query_flow.rs` | Ephemeral local ASR preview for the composer. Exact-pass gated; never stored or broadcast to the floating transcript. | Main only, targeted. |
-| `assistant-open-conversation` | `{conversationId}` | `query_flow.rs` | Navigate main to the exact imported Ready popover exchange after explicit persistence consent. | Main only, targeted. |
-| `query-context-resolved` | `{queryPassId}` | `query_flow.rs` | The immutable context snapshot is ready. Targeted to `query-review`; carries no app, window, selection, or summary content and only triggers a gated refresh. | Query popover only. |
-| `query-answer-chunk` | `{queryPassId, sequence, text, replace}` | `query_flow.rs` | A decoded raw chunk or structured Claude/Codex answer chunk accepted within the 256 KiB cap. `replace: true` atomically resets optimistic structured text to the complete raw stream when JSONL parsing falls back, including incomplete EOF without a typed terminal event; otherwise text appends. Targeted with `emit_to("query-review", …)`, never broadcast. | Query popover only. |
-| `query-review-hidden` | `{queryPassId}` | `query_flow.rs` | Exact-pass cancellation/close completes and the popover is hidden. The main window folds an otherwise-unreported cancellation into content-free usage statistics exactly once; malformed and stale payloads cannot clear a newer pass. | Main window and query popover. |
-| `query-busy` | `()` | `keyboard.rs`, `query_flow.rs` | A query press is refused because another pass or pipeline owner is active. | Reserved for UI feedback. |
-| `query-history-changed` | `{kind: "inserted" \| "cleared"}` | `query_history` | A retained record committed or the local query store was purged. The exact two-value payload is content-free and only prompts the main window to refresh through gated IPC. | Main-window Queries workspace. |
 
 ## Overlay
 
@@ -122,7 +100,7 @@ Question and context content never appears in events. Only the dedicated review 
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `performance-run-completed` | `PerformanceRunV1` | `performance_metrics/mod.rs` | A dictation, file, transform, or Voice Query run finishes and is persisted. Voice Query records contain only timings, stable outcome, exit code, and stderr presence—not query, answer, context, or stderr content. | Log viewer (`usePerformanceDiagnostics`). |
+| `performance-run-completed` | `PerformanceRunV1` | `performance_metrics/mod.rs` | A dictation or imported-file run finishes and is persisted. Retired content-free run kinds remain readable. | Log viewer (`usePerformanceDiagnostics`). |
 | `performance-resource-sample` | `ResourceSampleV1` | `performance_metrics/mod.rs` | Once per second from the resource heartbeat: host CPU, main-process CPU/RSS/Rust-heap/FFI-heap, and sidecar process figures. | Log viewer charts. |
 | `performance-diagnostics-cleared` | `()` | `performance_metrics/mod.rs` | Local run history and samples were deleted. | Log viewer (resets views). |
 | `diagnostics-tab-requested` | one of `"events"`, `"runs"`, `"performance"`, `"latency"`, `"reports"`, or `"transforms"` | `commands/performance.rs` | `show_diagnostics_window` shows and focuses the Diagnostics window, then targets the requested validated tab to that window. | Diagnostics window (`DiagnosticsWindowApp`). |
@@ -353,7 +331,6 @@ interface AppearanceChangedEvent {
 Main is the only emitter and themed runtime. It handles
 `matchMedia('(prefers-color-scheme: dark)')` locally while the saved mode is
 System, so OS transitions do not emit appearance events.
-
 
 The optional `production` field on `performance-run-completed` is a versioned,
 content-free companion for native dictation version comparisons. It contains

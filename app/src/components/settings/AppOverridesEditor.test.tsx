@@ -18,7 +18,6 @@ const TERMINAL: AppProfile = {
   writingStyle: null,
   ideContextEnabled: false,
   ideProjectRoots: [],
-  queryContextExcluded: false,
 };
 
 describe('AppOverridesEditor', () => {
@@ -84,17 +83,5 @@ describe('AppOverridesEditor', () => {
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
     expect(onChange).toHaveBeenCalledWith([{ ...TERMINAL, cleanupOverride: false }]);
-  });
-
-  it('persists the explicit deny-only Voice Query context override', async () => {
-    await act(async () => root.render(<AppOverridesEditor profiles={[TERMINAL]} onChange={onChange} />));
-    const toggle = container.querySelector(
-      '[aria-label="Exclude Voice Query context for Terminal"]',
-    ) as HTMLButtonElement;
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-
-    await act(async () => toggle.click());
-
-    expect(onChange).toHaveBeenCalledWith([{ ...TERMINAL, queryContextExcluded: true }]);
   });
 });

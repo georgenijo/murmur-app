@@ -17,11 +17,6 @@ import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
 import { MeetingsPanel } from './components/history/MeetingsPanel';
-import { QueryHistoryPanel } from './components/history/QueryHistoryPanel';
-import { useQueryHistory } from './lib/hooks/useQueryHistory';
-import { AssistantWorkspace } from './components/assistant/AssistantWorkspace';
-import { QueryReviewView } from './components/query-review/QueryReviewApp';
-import './components/assistant/assistant.css';
 import { Button, Input } from './components/ui/FormControls';
 import { Select } from './components/ui/Select';
 import AnimatedSwitch from './components/ui/animated-switch/animated-switch';
@@ -138,7 +133,6 @@ const shortUpdateNotes = `## What's Changed
 const longUpdateNotes = `## New Features
 
 - Smart Auto can select from approved microphones with recent signal.
-- Voice Query can read an explicitly approved workspace for the current session.
 - Meeting review can assign local names to remote speakers.
 
 ## Bug Fixes
@@ -230,30 +224,6 @@ const manyMeetingDetail = (id: string) => {
   };
 };
 
-function QueryHistoryFixture() {
-  const history = useQueryHistory(true);
-  return <QueryHistoryPanel history={history} retentionEnabled />;
-}
-
-const queryHistoryFixture = {
-  schemaVersion: 1,
-  entries: [
-    {
-      schemaVersion: 1, id: 'a'.repeat(32), timestampMs: Date.UTC(2026, 8, 4, 17, 12), provider: 'claude',
-      question: 'What should I review before the launch sync?',
-      answer: 'Three things are worth a look:\n\n1. **Onboarding drop-off** at the microphone step.\n2. Caption export, which still needs a pass.\n3. The meeting list once many sessions pile up.',
-      tokens: null, durationMs: 6_400, errorCode: null,
-    },
-    {
-      schemaVersion: 1, id: 'b'.repeat(32), timestampMs: Date.UTC(2026, 8, 3, 21, 40), provider: 'codex',
-      question: 'Summarize yesterday in one line.',
-      answer: 'Mostly planning: the launch checklist, export formats, and a design review.',
-      tokens: null, durationMs: 3_100, errorCode: null,
-    },
-  ],
-  total: 2, offset: 0, hasMore: false,
-};
-
 mockIPC((command, payload) => {
   // #850 regression states use synthetic captures and record only invoked IDs.
   if (requestedState === 'copy-diagnostics') {
@@ -287,7 +257,6 @@ mockIPC((command, payload) => {
     if (command === 'get_calendar_permission_status') return permission === 'unknown' || permission === 'loading' ? 'notDetermined' : permission;
     if (command === 'request_system_audio_permission' || command === 'request_calendar_permission') return new Promise(() => {});
   }
-  if (command === 'list_query_history') return queryHistoryFixture;
   if (manyMeetings) {
     if (command === 'get_system_audio_permission_status') return 'unknown';
     if (command === 'list_meetings') {
@@ -501,7 +470,6 @@ const entries: HistoryEntry[] = [
 ];
 
 const shortcutFixtureEnabled = requestedState === 'settings-shortcuts';
-const fixtureQueryHotkey: Settings['queryHotkey'] = shortcutFixtureEnabled ? 'ctrl_l' : null;
 const fixturePasteLastShortcut: Settings['pasteLastShortcut'] = shortcutFixtureEnabled ? 'command_option_v' : null;
 
 const fixtureSettings = {
@@ -515,7 +483,6 @@ const fixtureSettings = {
     ? ['fixture-built-in']
     : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
-  queryHotkey: fixtureQueryHotkey,
   pasteLastShortcut: fixturePasteLastShortcut,
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
     id: 'fixture-github',
@@ -534,7 +501,7 @@ const fixtureSettings = {
   appProfiles: requestedState === 'settings-folding' && query.get('profile') === '1' ? [{
     bundleId: 'com.example.Fixture', label: 'Fixture editor', autoPasteOverride: null,
     cleanupOverride: null, smartFormattingOverride: null, cliFormattingOverride: null,
-    writingStyle: null, ideContextEnabled: false, ideProjectRoots: ['/fixture/project'], queryContextExcluded: false,
+    writingStyle: null, ideContextEnabled: false, ideProjectRoots: ['/fixture/project'],
   }] : [],
 };
 
@@ -556,42 +523,6 @@ localStorage.setItem('dictation-stats', JSON.stringify({
   totalDurationSeconds: 1640,
   wpmSamples: [184, 192, 189, 191],
   dailyBuckets: fixtureBuckets,
-  query: {
-    ...fixtureStats.query,
-    queriesRun: 11,
-    successfulQueries: 9,
-    failedQueries: 2,
-    inputTokens: 4_280,
-    outputTokens: 1_360,
-    reportedCostUsd: 0.084,
-    byProvider: {
-      ...fixtureStats.query.byProvider,
-      claude: {
-        queriesRun: 7,
-        successfulQueries: 6,
-        failedQueries: 1,
-        inputTokens: 2_960,
-        outputTokens: 940,
-        reportedCostUsd: 0.057,
-      },
-      codex: {
-        queriesRun: 4,
-        successfulQueries: 3,
-        failedQueries: 1,
-        inputTokens: 1_320,
-        outputTokens: 420,
-        reportedCostUsd: 0.027,
-      },
-    },
-    failuresByErrorCode: {
-      no_speech: 5,
-      cancelled: 13,
-      audio_recovering: 5,
-      provider_not_authenticated: 1,
-      audio_start_failed: 1,
-      provider_error: 1,
-    },
-  },
   activity: {
     ...fixtureStats.activity,
     meetings: { count: 2, totalMinutes: 44, summariesGenerated: 1 },
@@ -627,7 +558,7 @@ function VisualFixture() {
   const [copyRequestReady, setCopyRequestReady] = React.useState(false);
   React.useEffect(() => { if (copyFixture) setCopyRequestReady(true); }, []);
   const [destination, setDestination] = React.useState<MainDestination>(
-    requestedState === 'insights' ? 'insights' : requestedState.startsWith('assistant') ? 'queries' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
+    requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
   const homeNavigationRef = React.useRef<HTMLButtonElement>(null);
   const restoreHomeNavigationFocusRef = React.useRef(false);
@@ -755,35 +686,6 @@ function VisualFixture() {
                 />
                 <MeetingsPanel meetings={meetings} playbackBusy={false} />
               </section>
-            ) : destination === 'queries' ? (
-              <section className="main-secondary-view" aria-labelledby="queries-view-title">
-                <WorkspacePageHeader
-                  title="Assistant"
-                  titleId="queries-view-title"
-                  description="Talk, type, and pick up where you left off"
-                  back={{ label: 'Back to Home', onActivate: backToHome }}
-                />
-                <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
-                  <button type="button" aria-pressed={requestedState !== 'assistant-history'}>Conversations</button>
-                  <button type="button" aria-pressed={requestedState === 'assistant-history'}>Previous queries</button>
-                </div>
-                {requestedState === 'assistant-history' ? <QueryHistoryFixture /> : <AssistantWorkspace
-                  connected={requestedState !== 'assistant-connect'} configured loading={false} pending={false}
-                  conversations={[{ id: 'fixture', title: 'A quiet evening at home', updatedAtMs: Date.UTC(2026, 8, 13) }]}
-                  selectedId="fixture" confirmationOutcomeUnknownActionIds={[]} messages={requestedState === 'assistant-empty' ? [] : requestedState === 'assistant-long' ? Array.from({ length: 80 }, (_, index) => ({
-                    id: `message-${index}`, role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
-                    text: `Message ${index + 1}. A synthetic conversation for checking scroll boundaries and readable text.`,
-                    status: 'complete' as const, actions: [],
-                  })) : [
-                    { id: 'question', role: 'user', text: 'Is the reading lamp on?', status: 'complete', actions: [] },
-                    { id: 'answer', role: 'assistant', text: 'The reading lamp is reported **on**. The latest report is recent.', status: 'complete', actions: [] },
-                  ]} phase={requestedState === 'assistant-listening' ? 'listening' : 'idle'} error={null} voiceAvailable
-                  dictation={requestedState === 'assistant-listening' ? { passId: 1, text: 'What needs my attention tomorrow?', status: 'partial' } : null}
-                  onConnect={async () => {}} onDisconnect={async () => {}} onNew={async () => {}} onSelect={async () => {}}
-                  onDelete={async () => {}} onSend={async () => true} onVoice={async () => {}} onFinishVoice={async () => {}} onStop={async () => {}}
-                  onConfirmAction={async () => {}} onCancelAction={async () => {}} onRefreshAction={async () => {}} onSettings={() => {}}
-                />}
-              </section>
             ) : (
               <HomeDashboard
                 historyEntries={historyEntries}
@@ -803,7 +705,7 @@ function VisualFixture() {
                 onStop={() => {}}
                 onOpenInsights={() => setDestination('insights')}
                 discovery={query.get('checklist') === 'hidden' ? undefined : {
-                  completed: ['voice_query', 'meeting', 'correction'],
+                  completed: ['meeting', 'correction'],
                   onAction: () => {},
                   onDismiss: () => {},
                 }}
@@ -963,19 +865,6 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
       </main>
     ) : requestedState === 'typography' ? (
       <TypographyFixture />
-    ) : requestedState === 'query-review' ? (
-      <div className="h-screen w-full">
-      <QueryReviewView driver={{
-        state: 'ready', errorCode: 'auto_copy_disabled', question: 'Is the living-room light on?',
-        answer: query.has('long') ? 'This is a long answer.\n\n'.repeat(80) : 'Yes—the living-room light is on.',
-        partial: '', errorDetail: null, usage: null, signInFix: null, signInStatus: null,
-        signInBusy: false, contextSummary: 'Context: T3 Code — window title · no readable selection',
-        capabilitySummary: 'Restricted · no trusted workspace · CLI inference may use network',
-        canOpenInAssistant: true, assistantBusy: false, assistantOpenError: null,
-        followUpBusy: false, followUpError: null, cancel: () => {}, copy: () => {},
-        followUp: async () => {}, signIn: async () => {}, openInAssistant: async () => {},
-      }} />
-      </div>
     ) : requestedState === 'update-flow' ? (
       <UpdateFlowFixture />
     ) : requestedState === 'select-fold-review' ? (

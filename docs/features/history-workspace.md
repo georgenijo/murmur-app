@@ -2,11 +2,9 @@
 
 ## Overview
 
-History has three deliberately separate workspaces: Transcripts, Meetings, and
-Queries. Transcription history turns the plain reverse-chronological list into
+History has separate Transcripts and Meetings workspaces. Transcription history turns the plain reverse-chronological list into
 something you can search, narrow, and export. Meetings use their own searchable
-SQLite sessions. Queries expose only explicitly retained Voice Query content;
-they never join transcript export or Correct and Teach.
+SQLite sessions.
 
 Everything here is local. The transcript durable source of truth is `history.json` in the
 per-bundle app data directory; `localStorage` under `dictation-history` is a
@@ -26,36 +24,6 @@ copying delivered text into the unknown raw-recognition field. Normal dictation
 audio is never part of history.
 
 Settings → Model & Output → Output includes **Save Transcription History**. Turning it off makes the single `addEntry` boundary discard new microphone and imported-file transcripts before they reach React state, localStorage, or `history.json`. Current transcription delivery and content-free usage statistics continue normally. Previously saved entries remain visible until the user explicitly clears them, so changing a preference never silently deletes data.
-
-Voice Query has a different, off-by-default boundary. Settings → Text → Voice
-Query includes **Keep Voice Query history on this Mac**. When enabled for a
-pass, Rust stores the original question and answer with bounded metadata in a
-separate local SQLite database. History → Queries loads at most 50 records at a
-time, filters by provider, searches saved questions and answers with a bounded
-case-insensitive substring, and offers **Delete all query history** with an
-explicit confirmation dialog. The dialog explains that all retained query
-records will be removed, including records hidden by search or provider filters;
-Cancel leaves them intact, and dictation and meeting history are unaffected.
-Search, provider, pagination, and the matching total
-compose at the requester-gated Rust boundary. The store keeps at most 200 newest
-entries. Turning the toggle off affects new passes only; it never silently
-deletes old records. Every
-recognized query is retained when this explicit local-history consent is on,
-including a query that appended app/window/selection context to its provider
-prompt or used raw structured-provider fallback. Context is not stored as a
-separate field, but a retained answer may quote context that was sent to its
-CLI.
-
-Query records are never cached in localStorage or merged into
-`dictation-history`. They are not editable, teachable, searchable through the
-transcript index, copied into transcript exports, or included in saved files.
-Query-history search text is likewise excluded from exports, logs, and telemetry.
-There is no separate app/window/selection context or composed-prompt field in
-the store. Stderr/error detail, paths, argv, and environment values are also
-excluded. Because a saved answer can quote context or raw provider output,
-enabling Voice Query history is explicit local consent to retain the complete
-question-and-answer result. The provider filter, search, and pagination cross
-only main-window-gated IPC, and live change events contain no content.
 
 Writes publish atomically through Rust with owner-only file permissions and
 never log transcript content. A
@@ -181,8 +149,6 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
 | `app/src/components/history/HistoryFilterMenu.tsx` | The single Filter menu and its trigger label |
-| `app/src/lib/hooks/useQueryHistory.ts` | Active-workspace-only paged query-history reads, provider filter, live refresh, and purge |
-| `app/src/components/history/QueryHistoryPanel.tsx` | Local question/answer cards and explicit confirmation before purge; no export or edit path |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |
 
 ## Tests

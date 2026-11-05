@@ -139,19 +139,6 @@ controller.
 
 ---
 
-## Voice Query
-
-### `useQueryFlow` (main window)
-Owns the global Voice Query shortcut lifecycle. It preflights the immutable provider command before arming the listener, starts or finishes the exact `queryPassId`, and records one content-free completion after terminal or hidden events.
-
-### `useQueryHistory` (main window)
-Pages the opt-in Rust-owned query-history store with a provider filter and a 200-entry frontend cap. Request generations prevent stale refreshes from replacing newer state, and `query-history-changed` refreshes or clears the active view.
-
-### `useQueryReviewDriver` (query review window)
-Validates pass-scoped state, partial, context, chunk, and hidden events. Sequence gaps switch answer streaming to the Rust-owned snapshot, while terminal snapshots prevent late chunks from duplicating text. It exposes cancel, copy, sign-in repair, and review state.
-
----
-
 ## Overlay window
 
 ### `useModeRuntime`
@@ -203,9 +190,6 @@ error; it never changes dictation state.
 ---
 
 ## Settings surfaces
-
-### `useVoiceQuerySettings`
-Owns provider discovery, protected environment names, validation, preflight, sign-in repair, and Voice Query settings actions. Generation checks prevent stale provider switches, tests, and sign-in polls from changing a newer configuration.
 
 ### `useKnowledge`
 Bounded, paged access to the personal knowledge store (`list_knowledge`) with search/filter, driven by a request object and an `active` gate so closed panels don't query.

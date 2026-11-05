@@ -108,8 +108,8 @@ The app searches these locations in order:
 
 | Permission | Required For | How to Grant |
 |------------|-------------|--------------|
-| **Microphone** | Audio capture — dictation and Voice Query instructions | Prompted in-app by the setup assistant |
-| **Accessibility** | All hotkeys (rdev), auto-paste, and Voice Query selection capture | System Settings > Privacy & Security > Accessibility |
+| **Microphone** | Audio capture — dictation and meetings | Prompted in-app by the setup assistant |
+| **Accessibility** | All hotkeys (rdev) and auto-paste | System Settings > Privacy & Security > Accessibility |
 | **System Audio** (optional, macOS 14.2+) | Meeting playback capture as the Them channel | Explicit check in onboarding or History → Meetings; grant under Privacy & Security > Screen & System Audio Recording |
 
 Under `npm run tauri:dev`, grant these to your *terminal app* — dev builds are

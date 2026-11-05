@@ -163,6 +163,7 @@ pub enum PerformanceRunKindV1 {
     Dictation,
     FileTranscription,
     SelectedTextTransform,
+    /// Retired kind retained solely to read existing content-free diagnostics.
     VoiceQuery,
 }
 
@@ -604,7 +605,7 @@ pub struct PerformanceRunV1 {
     pub input: ContentFreeInputSummaryV1,
     pub resources: ResourceSummaryV1,
     pub follow_ups: Vec<TransformFollowUpV1>,
-    /// Voice Query's direct CLI result. Absent on older records and all other
+    /// Retired CLI result retained for existing diagnostic envelopes. Absent on older records and all other
     /// run kinds so the V1 JSON envelope remains backward compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_process: Option<QueryProcessSummaryV1>,

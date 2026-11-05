@@ -826,7 +826,7 @@ startup or play through a virtual audio device.
 Ordinary builds still run the whole-clip final decoder. The Cargo feature
 `preview-decode-reuse` is **off by default** and enables a Core ML-only
 experiment; it changes no persisted setting and does not affect imported files,
-Voice Query, Transform, Whisper, or CPU Parakeet. Enable only in a test build:
+Whisper or CPU Parakeet. Enable only in a test build:
 `npx tauri build --debug --features preview-decode-reuse`.
 
 The pinned `fluidaudio-rs` revision exposes Parakeet's stateful

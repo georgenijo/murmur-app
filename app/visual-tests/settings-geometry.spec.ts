@@ -4,7 +4,7 @@ const panes = [
   ['General'], ['General', 'Keyboard shortcuts'], ['Recording'], ['Customize'],
   ['Delivery'], ['Meetings'], ['Text & vocabulary'], ['AI & models'], ['Modes'],
   ['Appearance'], ['Performance Lab'], ['Diagnostics'],
-  ['AI & models', 'Speech-to-text'], ['AI & models', 'Voice Query'],
+  ['AI & models', 'Speech-to-text'],
   ['Customize', 'Voice commands'],
   ['Customize', 'App overrides'],
   ['Text & vocabulary', 'Vocabulary'], ['Text & vocabulary', 'Aliases'],

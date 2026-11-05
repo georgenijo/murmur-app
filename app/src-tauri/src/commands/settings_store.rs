@@ -597,7 +597,7 @@ mod tests {
             "diagnostics",
             "overlay",
             "transform-review",
-            "query-review",
+            "unrecognized-window",
             "",
         ] {
             assert!(

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { emitTo, listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { useDictationPartial } from '../../lib/hooks/useDictationPartial';
-import { useQueryAppearance } from '../../lib/hooks/useQueryAppearance';
+import { usePopoverAppearance } from '../../lib/hooks/usePopoverAppearance';
 import { parseSettingsBlob } from '../../lib/settings';
 import { LIVE_WORDS_LIFT_EVENT, LIVE_WORDS_LIFT_REQUEST_EVENT, liveWordsLiftTransition } from '../../lib/overlayMotion';
 import { useLiveWordsMaterial } from '../../lib/hooks/useOverlayMaterial';
@@ -62,7 +62,7 @@ export function DictationPreviewCard({ text, stableText = '', above = false, lif
 }
 
 export function DictationPreviewApp() {
-  useQueryAppearance();
+  usePopoverAppearance();
   const [enabled, setEnabled] = useState(false);
   const [above, setAbove] = useState(false);
   const [lift, setLift] = useState(0);

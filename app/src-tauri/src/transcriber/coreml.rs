@@ -228,13 +228,12 @@ impl CoreMlBackend {
     ) -> Result<String, String> {
         let pass_kind = if pass.is_some() { "preview" } else { "final" };
         let recording_id = pass.and_then(PreviewPass::recording_id);
-        let query_pass_id = pass.and_then(PreviewPass::query_pass_id);
         let engine = self
             .engine
             .as_ref()
             .ok_or_else(|| "Core ML model not loaded. Call load_model() first.".to_string())?;
         let result = engine.transcribe_samples(samples).map_err(|error| {
-            tracing::warn!(target: "pipeline", pass_kind, recording_id, query_pass_id, "coreml_transcription_failed");
+            tracing::warn!(target: "pipeline", pass_kind, recording_id, "coreml_transcription_failed");
             format!("Core ML transcription failed: {error}")
         })?;
         let text = normalize_result_text(&result.text);
@@ -248,7 +247,6 @@ impl CoreMlBackend {
             target: "pipeline",
             pass_kind,
             recording_id,
-            query_pass_id,
             confidence = result.confidence as f64,
             model_processing_ms = (result.processing_time * 1000.0) as u64,
             "coreml_transcription_complete"
@@ -366,9 +364,8 @@ fn report_empty_output(
 ) {
     let pass_kind = if pass.is_some() { "preview" } else { "final" };
     let recording_id = pass.and_then(PreviewPass::recording_id);
-    let query_pass_id = pass.and_then(PreviewPass::query_pass_id);
     if pass.is_some() {
-        tracing::debug!(target: "pipeline", pass_kind, recording_id, query_pass_id, input_sample_count = sample_count, "coreml_empty_output");
+        tracing::debug!(target: "pipeline", pass_kind, recording_id, input_sample_count = sample_count, "coreml_empty_output");
     } else {
         let diagnostics = empty_output_diagnostics(sample_count, raw, normalized);
         tracing::warn!(
@@ -466,16 +463,11 @@ mod tests {
         let subscriber = tracing_subscriber::Registry::default().with(Levels(levels.clone()));
         tracing::subscriber::with_default(subscriber, || {
             report_empty_output(Some(PreviewPass::Dictation(41)), 16_000, ".", "");
-            report_empty_output(Some(PreviewPass::VoiceQuery(42)), 16_000, ".", "");
             report_empty_output(None, 16_000, ".", "");
         });
         assert_eq!(
             *levels.lock().unwrap(),
-            [
-                tracing::Level::DEBUG,
-                tracing::Level::DEBUG,
-                tracing::Level::WARN
-            ]
+            [tracing::Level::DEBUG, tracing::Level::WARN]
         );
     }
 

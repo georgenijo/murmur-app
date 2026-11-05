@@ -726,12 +726,11 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await page.getByRole('button', { name: 'Insights', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Insights' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Developing' })).toHaveCount(0);
-  await expect(page.locator('.usage-analytics-section')).toHaveCount(4);
+  await expect(page.locator('.usage-analytics-section')).toHaveCount(3);
   const sectionBottoms = await page.locator('.usage-analytics-section').evaluateAll((sections) => (
     sections.map((section) => section.getBoundingClientRect().bottom)
   ));
   expect(sectionBottoms[0]).toBe(sectionBottoms[1]);
-  expect(sectionBottoms[2]).toBe(sectionBottoms[3]);
   const [workspaceBox, analyticsBox] = await Promise.all([
     page.locator('.main-dashboard-workspace').boundingBox(),
     page.locator('.usage-dashboard-content').boundingBox(),
@@ -767,7 +766,6 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   expect(fit.datesContained).toBe(true);
   expect(fit.heatmapCellWidth).toBeLessThanOrEqual(32);
   expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
-  expect(fit.sectionBottoms[2]).toBe(fit.sectionBottoms[3]);
   const tiles = view.locator('[aria-label="Usage totals"] > .ui-dashboard-stat');
   await expect(tiles).toHaveCount(10);
   await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(0);
@@ -780,43 +778,14 @@ test('populated Insights keeps all tiles and charts reachable in the default win
     expect(itemBounds.y).toBeGreaterThanOrEqual(viewBounds.y - 1);
     expect(itemBounds.y + itemBounds.height).toBeLessThanOrEqual(viewBounds.y + viewBounds.height + 1);
   }
-  await expect(page.locator('[data-query-note="failures"]')).toContainText('provider not authenticated 1');
   await expect(page.locator('.usage-analytics-section').first()).toHaveCSS('border-top-width', '1px');
-});
-
-test('Voice Query provider columns stay aligned at normal and narrow widths', async ({ page }) => {
-  const assertAlignedColumns = async () => {
-    const table = page.locator('[role="table"][aria-label="Voice Query providers"]');
-    const rows = table.locator('[role="row"]');
-    await expect(rows).toHaveCount(3);
-    const geometry = await rows.evaluateAll((elements) => elements.map((row) => (
-      Array.from(row.children).map((cell) => {
-        const box = cell.getBoundingClientRect();
-        return { left: box.left, right: box.right };
-      })
-    )));
-    for (let column = 0; column < 4; column += 1) {
-      const lefts = geometry.map((row) => row[column].left);
-      expect(Math.max(...lefts) - Math.min(...lefts)).toBeLessThanOrEqual(0.5);
-      if (column > 0) {
-        const rights = geometry.map((row) => row[column].right);
-        expect(Math.max(...rights) - Math.min(...rights)).toBeLessThanOrEqual(0.5);
-      }
-    }
-  };
-
-  await page.goto('/visual-fixtures.html?state=insights&appearance=light');
-  await assertAlignedColumns();
-  await page.setViewportSize({ width: 720, height: 560 });
-  await page.reload();
-  await assertAlignedColumns();
 });
 
 test('secondary destinations share Back behavior and restore focus to Home navigation', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const home = page.getByRole('button', { name: 'Home', exact: true });
 
-  for (const destination of ['Notetaker', 'Assistant', 'Insights'] as const) {
+  for (const destination of ['Notetaker', 'Insights'] as const) {
     await page.getByRole('button', { name: destination, exact: true }).click();
     await expect(page.getByRole('heading', { name: destination, exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Back to Home', exact: true }).click();
@@ -999,7 +968,7 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
   await expect(page.getByRole('button', { name: 'Click to start talking' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
-  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(6);
+  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(5);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });
 
@@ -1015,7 +984,7 @@ test('checklist feature names and pitches stay readable beside the Insights rail
     await page.setViewportSize({ width, height });
     await page.goto('/visual-fixtures.html?state=idle&appearance=light');
     const labels = page.locator('.discovery-checklist-items strong, .discovery-checklist-items small');
-    await expect(labels).toHaveCount(12);
+    await expect(labels).toHaveCount(10);
     const clipped = await labels.evaluateAll((elements) => elements
       .filter((element) => element.scrollWidth > element.clientWidth + 1
         || element.scrollHeight > element.clientHeight + 1)
@@ -1028,25 +997,15 @@ test('the compact 720x560 Insights view stacks analytics without horizontal clip
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=insights&appearance=light');
   const sections = page.locator('.usage-analytics-section');
-  await expect(sections).toHaveCount(4);
+  await expect(sections).toHaveCount(3);
   expect(await sections.evaluateAll((elements) => elements.map((element) => element.dataset.analytics)))
-    .toEqual(['query', 'activity', 'words', 'wpm']);
+    .toEqual(['activity', 'words', 'wpm']);
   const overflow = await page.locator('.insights-view').evaluate((element) => ({
     clientWidth: element.clientWidth,
     scrollWidth: element.scrollWidth,
   }));
   expect(overflow.scrollWidth).toBe(overflow.clientWidth);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights-compact-720x560.png');
-});
-
-test('Voice Query history keeps its heading readable at the narrow window width', async ({ page }) => {
-  await page.setViewportSize({ width: 727, height: 560 });
-  await page.goto('/visual-fixtures.html?state=assistant-history&appearance=dark');
-  const heading = page.getByRole('heading', { name: 'Voice Query history', exact: true });
-  await expect(heading).toBeVisible();
-  // The heading block used to collapse to a one-word column beside the filters.
-  expect((await heading.boundingBox())!.height).toBeLessThan(30);
-  await expect(page.getByRole('region', { name: 'Answer' }).first().locator('ol li')).toHaveCount(3);
 });
 
 for (const width of [720, 800, 880] as const) {
@@ -1067,7 +1026,6 @@ for (const width of [720, 800, 880] as const) {
     expect(inputBox!.x).toBeGreaterThanOrEqual(paneBox!.x);
   });
 }
-
 
 for (const { appearance, width, height, label } of surfaceCases([{ width: 720, height: 560 }, { width: 880, height: 820 }, { width: 1120, height: 820 }])) {
   test.describe(`Insights ${label}`, () => {
@@ -1112,7 +1070,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
       await page.goto(`/visual-fixtures.html?state=idle&appearance=${appearance}`);
       const checklist = page.locator('.discovery-checklist');
       await expect(checklist).toBeVisible();
-      await expect(checklist.locator('li')).toHaveCount(6);
+      await expect(checklist.locator('li')).toHaveCount(5);
       const labels = checklist.locator('strong, small');
       for (const label of await labels.all()) {
         const fit = await label.evaluate(element => ({

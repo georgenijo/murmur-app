@@ -12,7 +12,6 @@ const pages = [
   { path: ['Text & vocabulary'], state: 'settings' },
   { path: ['AI & models'], state: 'settings' },
   { path: ['AI & models', 'Speech-to-text'], state: 'settings' },
-  { path: ['AI & models', 'Voice Query'], state: 'settings' },
 ];
 for (const { path, state } of pages) {
   for (const expanded of [false, true]) {

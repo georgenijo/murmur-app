@@ -79,7 +79,6 @@ describe('home dashboard derivations', () => {
         cliFormattingOverride: null,
         ideContextEnabled: false,
         ideProjectRoots: [],
-        queryContextExcluded: false,
       }],
     }, stats({ dailyBuckets }), new Date(2026, 7, 18));
 
