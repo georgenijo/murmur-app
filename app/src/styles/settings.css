@@ -228,7 +228,7 @@
   opacity: .4;
   pointer-events: none;
   visibility: hidden;
-  transition: grid-template-rows 450ms cubic-bezier(.2, .8, .2, 1),
+  transition: grid-template-rows 450ms cubic-bezier(.4, 0, .2, 1),
     opacity 450ms ease-out, visibility 0s linear 450ms;
 }
 .settings-dependent-branch-open {
@@ -241,6 +241,8 @@
 }
 .settings-dependent-branch-clip { min-height: 0; overflow: hidden; }
 .settings-dependent-branch-content { min-width: 0; }
+/* Keep the full-size controls on their own layer while the grid clips them. */
+.settings-dependent-branch:not(:has(> .settings-dependent-branch-settled)) > .settings-dependent-branch-clip > .settings-dependent-branch-content { transform: translateZ(0); }
 /* Let existing in-row listboxes extend after entry finishes. Closing clips
  * immediately; controls are already inert and AX-hidden. */
 .settings-dependent-branch-settled { overflow: visible; }
@@ -432,8 +434,9 @@
 .settings-rail-search { display: none; }
 .settings-content-container { margin-inline: auto; width: 100%; max-width: var(--settings-content-max); padding: var(--settings-content-top) var(--settings-content-x) var(--settings-content-bottom); }
 .settings-content-topbar { flex: none; min-height: 44px; display: flex; align-items: center; padding: 8px var(--settings-content-x); border-bottom: 1px solid var(--settings-divider); }
-/* Reserve the scrollbar so expanding a fold never changes the content width. */
-.settings-workspace main > .settings-content-topbar + .overflow-y-auto { scrollbar-gutter: stable; }
+/* WebKit needs scroll to reserve the gutter; expanding a fold must not change
+ * the content width. The idle scrollbar track is transparent. */
+.settings-workspace main > .settings-content-topbar + .overflow-y-auto { overflow-y: scroll; scrollbar-gutter: stable; }
 .settings-content-topbar h1 { font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: var(--ui-track-title); }
 .settings-section { margin: 0 0 var(--settings-section-gap); }
 .settings-section:last-child { margin-bottom: 0; }
@@ -482,11 +485,11 @@
 .settings-advanced-toggle:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
 .settings-advanced-chevron { width: 16px; height: 16px; flex: none; color: var(--murmur-on-surface-variant); transition: transform 150ms ease-out; }
 .settings-advanced-toggle[aria-expanded='true'] .settings-advanced-chevron { transform: rotate(180deg); }
-/* Rows reach the card edge so their dividers do; stacks stay inside the row inset.
-   The row inset below the toggle moves above the rows, so the toggle keeps the
-   same rhythm open or closed and the last row ends flush with the card. */
-.settings-advanced:has(> .settings-advanced-toggle[aria-expanded='true'] ~ .settings-advanced-rows) { padding-bottom: 0; }
-.settings-advanced > .settings-advanced-toggle[aria-expanded='true'] ~ .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); margin-top: var(--settings-row-pad); }
+/* Keep row width and toggle spacing constant throughout entry and exit; moving
+   the insets on click rewraps controls before the fold can animate. */
+.settings-advanced:has(> .settings-advanced-rows) { padding-bottom: 0; }
+.settings-advanced:has(> .settings-advanced-rows) > .settings-advanced-toggle { margin-bottom: var(--settings-row-pad); }
+.settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
 .settings-advanced > .settings-row-description { margin-bottom: 0; }

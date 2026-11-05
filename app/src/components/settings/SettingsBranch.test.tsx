@@ -33,14 +33,51 @@ describe('real settings folds', () => {
     await act(async () => root.render(<Form />));
     const input = container.querySelector('input')!;
     input.value = 'draft'; input.focus();
+    const focus = vi.spyOn(container.querySelector('button')!, 'focus');
     await act(async () => container.querySelector('button')!.click());
     expect(container.querySelector('[inert]')?.getAttribute('aria-hidden')).toBe('true');
     expect(document.activeElement).toBe(container.querySelector('button'));
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     await act(async () => vi.advanceTimersByTime(500));
     expect(container.querySelector('input')).toBe(input);
     await act(async () => container.querySelector('button')!.click());
     expect(container.querySelector('[inert]')).toBeNull();
     expect(input.value).toBe('draft');
+  });
+
+  it('follows a closing fold to the new scroll limit and yields to a user gesture', async () => {
+    function Form() {
+      const [open, setOpen] = useState(true);
+      return <div className="scroll-pane"><div className="settings-content-container">
+        <button onClick={() => setOpen(!open)}>Feature</button>
+        <SettingsBranch open={open}><input /></SettingsBranch>
+      </div></div>;
+    }
+    await act(async () => root.render(<Form />));
+    const scroller = container.querySelector('.scroll-pane') as HTMLElement;
+    const branch = container.querySelector('.settings-dependent-branch')!;
+    Object.defineProperties(scroller, { scrollHeight: { value: 1000 }, clientHeight: { value: 400 } });
+    scroller.scrollTop = 600;
+    let height = 500;
+    vi.spyOn(branch, 'getBoundingClientRect').mockImplementation(() => ({ height } as DOMRect));
+    await act(async () => container.querySelector('button')!.click());
+    expect(scroller.scrollTop).toBe(600);
+    height = 250;
+    await act(async () => vi.advanceTimersByTime(16));
+    expect(scroller.scrollTop).toBe(350);
+    height = 0;
+    await act(async () => vi.advanceTimersByTime(16));
+    expect(scroller.scrollTop).toBe(100);
+
+    await act(async () => container.querySelector('button')!.click());
+    height = 500;
+    scroller.scrollTop = 600;
+    await act(async () => container.querySelector('button')!.click());
+    scroller.dispatchEvent(new Event('wheel'));
+    scroller.scrollTop = 420;
+    height = 250;
+    await act(async () => vi.advanceTimersByTime(32));
+    expect(scroller.scrollTop).toBe(420);
   });
 
   it('restores the parent switch instead of its preceding reset button', async () => {
