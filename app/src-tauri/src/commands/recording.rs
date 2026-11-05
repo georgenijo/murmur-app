@@ -970,9 +970,10 @@ impl<'a> IdleGuard<'a> {
     }
 }
 
-impl Drop for IdleGuard<'_> {
-    fn drop(&mut self) {
+impl IdleGuard<'_> {
+    fn finish(&mut self, on_idle: impl FnOnce(&crate::state::DictationState)) {
         if !self.disarmed {
+            self.disarmed = true;
             self.app_state.clear_active_context(self.recording_id);
             // Lock first, then check recording_id — prevents TOCTOU where
             // a concurrent start advances the ID between our check and the
@@ -989,7 +990,14 @@ impl Drop for IdleGuard<'_> {
             }
             transition_dictation_status(self.recording_id, &mut dictation, DictationStatus::Idle);
             keyboard::set_processing(false);
+            on_idle(&dictation);
         }
+    }
+}
+
+impl Drop for IdleGuard<'_> {
+    fn drop(&mut self) {
+        self.finish(|_| {});
     }
 }
 
@@ -3202,15 +3210,15 @@ pub async fn process_audio(
     let t_parse = std::time::Instant::now();
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
         .map_err(|e| {
-            if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            guard.finish(|_| {
                 let _ = app_handle.emit("recording-status-changed", "idle");
-            }
+            });
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
-        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+        guard.finish(|_| {
             let _ = app_handle.emit("recording-status-changed", "idle");
-        }
+        });
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -5663,9 +5671,9 @@ async fn stop_native_recording_for(
                 DictationErrorCode::StopFinalizationFailed,
             );
             tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
-            if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+            guard.finish(|_| {
                 let _ = app_handle.emit("recording-status-changed", "idle");
-            }
+            });
             complete_dictation_performance(
                 &state.performance,
                 rid,
@@ -5715,10 +5723,9 @@ async fn stop_native_recording_for(
             interruption_error.unwrap_or(DictationErrorCode::EmptyAudio),
         );
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
-        // guard drops on return, resetting status to Idle
-        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+        guard.finish(|_| {
             let _ = app_handle.emit("recording-status-changed", "idle");
-        }
+        });
         performance_guard.finish(
             RunOutcomeV1::NoSpeech,
             vec![StageTimingV1::measured(
@@ -5750,9 +5757,9 @@ async fn stop_native_recording_for(
         );
         tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
-        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
+        guard.finish(|_| {
             let _ = app_handle.emit("recording-status-changed", "idle");
-        }
+        });
         performance_guard.finish(
             RunOutcomeV1::NoSpeech,
             vec![StageTimingV1::measured(
@@ -7857,6 +7864,34 @@ pub(crate) mod tests {
         }
         let dictation = app_state.dictation.lock().unwrap();
         assert_eq!(dictation.status, DictationStatus::Idle);
+    }
+
+    #[test]
+    fn idle_guard_finishes_before_notification_and_ignores_superseded_recordings() {
+        let app_state = AppState::default();
+        let rid = app_state.next_recording_id();
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        let mut guard = IdleGuard::new(&app_state, rid);
+        let mut notified = false;
+        guard.finish(|dictation| {
+            assert_eq!(dictation.status, DictationStatus::Idle);
+            notified = true;
+        });
+        assert!(notified);
+        app_state.next_recording_id();
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        drop(guard);
+        assert_eq!(
+            app_state.dictation.lock_or_recover().status,
+            DictationStatus::Recording
+        );
+
+        let mut stale = IdleGuard::new(&app_state, rid);
+        stale.finish(|_| panic!("superseded recording must not publish idle"));
+        assert_eq!(
+            app_state.dictation.lock_or_recover().status,
+            DictationStatus::Recording
+        );
     }
 
     #[test]

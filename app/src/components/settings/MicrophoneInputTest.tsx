@@ -563,17 +563,20 @@ export function MicrophoneInputTest({
   }), [defaultInputId, microphone, previewMicrophone, smartAutoRequest]);
   const previousPreviewConfigurationRef = useRef(previewConfigurationKey);
   const previousMonitoringActiveRef = useRef(monitoringActive);
+  const previousDictationBusyRef = useRef(dictationBusy);
 
   useEffect(() => {
     const configurationChanged = previousPreviewConfigurationRef.current !== previewConfigurationKey;
     const monitoringReentered = monitoringActive && !previousMonitoringActiveRef.current;
+    const dictationFinished = previousDictationBusyRef.current && !dictationBusy;
+    previousDictationBusyRef.current = dictationBusy;
     previousPreviewConfigurationRef.current = previewConfigurationKey;
     previousMonitoringActiveRef.current = monitoringActive;
-    if (configurationChanged || monitoringReentered) {
+    if (configurationChanged || monitoringReentered || dictationFinished) {
       setAutoStartSuspended(false);
       setActionError(null);
     }
-  }, [monitoringActive, previewConfigurationKey]);
+  }, [dictationBusy, monitoringActive, previewConfigurationKey]);
 
   useEffect(() => {
     if (!subscriptionsReady) return;
