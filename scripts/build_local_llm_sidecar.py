@@ -23,6 +23,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 TAURI_ROOT = ROOT / "app" / "src-tauri"
+# Keep Cargo fingerprints and CMake caches from before the no-OpenSSL setting
+# out of this build: llama-cpp-sys-2 skips configure when a CMake cache exists.
+LLM_TARGET_DIR = TAURI_ROOT / "target" / "local-llm-no-openssl-v1"
 SIDECAR_NAME = "murmur-llm-sidecar"
 CAPTURE_HELPER_NAME = "murmur-capture-helper"
 CAPTURE_AGENT_NAME = "murmur-capture-agent"
@@ -148,12 +151,19 @@ def main() -> int:
     env.update(
         {
             "LLAMA_BUILD_SHARED_LIBS": "OFF",
+            # llama-cpp-sys-2 0.1.151 forwards CMAKE_* variables verbatim, not
+            # LLAMA_OPENSSL. Its transitive `common` feature configures httplib
+            # even with llama-cpp-2's default features disabled. Disable the
+            # optional package lookup so this local-only helper never depends
+            # on the runner's OpenSSL installation (or enables HTTPS support).
+            "CMAKE_DISABLE_FIND_PACKAGE_OpenSSL": "TRUE",
             "MACOSX_DEPLOYMENT_TARGET": "14.0",
             "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
             "MURMUR_APP_VERSION": app_version,
         }
     )
-    subprocess.run(command, cwd=TAURI_ROOT, env=env, check=True)
+    sidecar_env = {**env, "CARGO_TARGET_DIR": str(LLM_TARGET_DIR)}
+    subprocess.run(command, cwd=TAURI_ROOT, env=sidecar_env, check=True)
 
     capture_command = ["cargo", "build", "-p", CAPTURE_HELPER_NAME]
     if args.release:
@@ -175,7 +185,9 @@ def main() -> int:
     subprocess.run(capture_command, cwd=TAURI_ROOT, env=worker_env, check=True)
     build_capture_agent(profile, env)
 
-    llm_destination = publish_binary(SIDECAR_NAME, profile)
+    llm_destination = publish_binary(
+        SIDECAR_NAME, profile, built_path=LLM_TARGET_DIR / profile / SIDECAR_NAME
+    )
     capture_destination = publish_binary(CAPTURE_HELPER_NAME, profile)
     capture_agent_destination = publish_binary(CAPTURE_AGENT_NAME, profile)
     capture_worker_destination = publish_binary(

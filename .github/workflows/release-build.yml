@@ -118,7 +118,8 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
-          shared-key: macos-release-v1
+          # Do not restore pre-fix llama.cpp CMake caches from macos-release-v1.
+          shared-key: macos-release-v2
           key: profile-release
           add-job-id-key: false
           save-if: ${{ needs.context.outputs.cache-write == 'true' }}

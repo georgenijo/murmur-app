@@ -378,7 +378,7 @@ def validate_release_build(workflow: str) -> int:
     assert "signature.json" in capture_evidence
     assert "codesign.txt" not in capture_evidence
     assert "designated-requirement.txt" not in capture_evidence
-    assert "shared-key: macos-release-v1" in workflow
+    assert "shared-key: macos-release-v2" in workflow
     assert "Print :CFBundleExecutable" in workflow
     assert '$(ls "$APP/Contents/MacOS/" | head -1)' not in workflow
     assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") == 1
@@ -433,6 +433,7 @@ def validate_release_rehearsal(workflow: str) -> int:
         in workflow
     )
     assert "macos-release-v1" not in workflow
+    assert "macos-release-v2" not in workflow
     assert workflow.count("--no-sign") == 1
     assert '"proxy": "unsigned-release-build"' in workflow
     assert '"workflow_sha": os.environ["WORKFLOW_SHA"]' in workflow
