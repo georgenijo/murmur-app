@@ -23,7 +23,9 @@ Preparation succeeding means the release started. The release is complete when
 **Release**, including its **OTA canary** job, is green. That job installs the
 previous public signed build into a disposable profile on a GitHub-hosted Mac,
 performs the real update, and verifies all six stages plus the installed bundle
-version. Its summary links to the public release; its result JSON is retained
+version. The disposable profile contains setup-complete settings and a real,
+checksum-pinned Whisper Tiny model so older clients pass their setup gate;
+dictation stays disabled and no OS permissions are granted. Its summary links to the public release; its result JSON is retained
 as an Actions artifact. No agent or connection to a personal Mac is needed.
 
 If main moves before the push, the workflow fails without overwriting it.

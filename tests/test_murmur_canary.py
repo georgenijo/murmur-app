@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import json
 import plistlib
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -164,6 +165,7 @@ def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatc
     monkeypatch.setattr(canary, "previous_release", lambda repo, tag: "v0.31.3")
     monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (app, str(app / "Contents/MacOS/ui")))
     monkeypatch.setenv("MURMUR_UPDATER_CANARY_DRY_RUN", "1")
+    monkeypatch.setattr(canary, "prepare_isolated_profile", lambda root: (root / "home", root / "models"))
     environments = []
 
     def launch(*args, **kwargs):
@@ -185,3 +187,31 @@ def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatc
     assert environments[0]["HOME"] == str(tmp_path / "home")
     assert environments[0]["CFFIXED_USER_HOME"] == str(tmp_path / "home")
     assert "MURMUR_UPDATER_CANARY_DRY_RUN" not in environments[0]
+    assert environments[0]["WHISPER_MODEL_DIR"] == str(tmp_path / "models")
+
+
+def test_isolated_profile_bootstraps_public_client_and_pins_model(monkeypatch, tmp_path):
+    fixture = b"real model bytes stand-in for this unit test"
+    monkeypatch.setattr(canary, "CANARY_MODEL_SHA256", hashlib.sha256(fixture).hexdigest())
+    downloads = []
+
+    def download(command, check):
+        downloads.append(command)
+        Path(command[-1]).write_bytes(fixture)
+
+    monkeypatch.setattr(canary.subprocess, "run", download)
+    home, models = canary.prepare_isolated_profile(tmp_path)
+    settings = json.loads((home / "Library/Application Support/com.localdictation/settings.json").read_text())
+    assert settings["launchOnboardingComplete"] is True
+    assert settings["model"] == "tiny.en"
+    assert settings["disabled"] is True
+    assert (models / "ggml-tiny.en.bin").read_bytes() == fixture
+    canary.prepare_isolated_profile(tmp_path)
+    assert len(downloads) == 1
+
+
+def test_isolated_profile_rejects_corrupt_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(canary.subprocess, "run", lambda command, check: Path(command[-1]).write_bytes(b"corrupt"))
+    with pytest.raises(canary.CanaryError, match="checksum"):
+        canary.prepare_isolated_profile(tmp_path)
+    assert not (tmp_path / "models/ggml-tiny.en.bin").exists()
