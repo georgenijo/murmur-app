@@ -6,9 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.60.2] - 2026-11-04
+
+### Added
+
+- Cancel or go Back during a model download, and resume an interrupted download where the server supports it (#947).
+- Check free disk space before downloading and extracting a model (#957).
+
 ### Fixed
 
 - Refresh stale update discoveries before downloading so a newer release can install in one update cycle (#836).
+- Keep stop shortcuts and stop controls working when setup is rerun during dictation or a meeting (#943).
+- Disarm recording hotkeys behind the missing-model download screen (#954).
+- Stop ⌘, ⌘K and open-settings during setup from opening Settings or the palette after setup completes (#956).
+- Fail slow model downloads only when they stall, not after a fixed 15-minute total (#947).
+- Stop marking every model Installed when the model catalog check fails (#945).
+- Show installed Whisper Tiny, Small and Medium in the setup model picker (#946).
+- Finish setup only after the model configuration is confirmed (#951).
+- Keep the user's model choice when going Back to the Model step (#955).
+- Show the System Audio denial banner reliably, and subscribe meetings to permission changes (#953).
+- Allow re-checking System Audio permission after it shows Granted (#948).
+- Hold background update notifications until setup is finished (#949).
+- Move focus to each setup step's heading and announce permission errors (#950).
+- Correct model, ggml and event payload docs, and hide the dev-build permission Reset that targeted the wrong app identity (#952).
 
 ## [0.60.1] - 2026-11-04
 
