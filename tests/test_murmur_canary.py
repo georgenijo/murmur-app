@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import json
+import plistlib
 from types import SimpleNamespace
 
 import pytest
@@ -151,3 +153,35 @@ def test_fleet_wrapper_preserves_success(monkeypatch) -> None:
     )
 
     assert canary.run_fleet_canary(["fleet", "exec"]) == 0
+
+
+@pytest.mark.parametrize("installed_version", ["0.31.4", "0.31.3"])
+def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatch, tmp_path, installed_version):
+    app = tmp_path / "Murmur Canary.app"
+    (app / "Contents").mkdir(parents=True)
+    with (app / "Contents/Info.plist").open("wb") as stream:
+        plistlib.dump({"CFBundleShortVersionString": installed_version}, stream)
+    monkeypatch.setattr(canary, "previous_release", lambda repo, tag: "v0.31.3")
+    monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (app, str(app / "Contents/MacOS/ui")))
+    monkeypatch.setenv("MURMUR_UPDATER_CANARY_DRY_RUN", "1")
+    environments = []
+
+    def launch(*args, **kwargs):
+        environments.append(kwargs["env"])
+        (tmp_path / "result.json").write_text(json.dumps(passing_result()))
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setattr(canary.subprocess, "Popen", launch)
+    stopped = []
+    monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid))
+    args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
+                           dry_run=False, isolated=True, timeout=1)
+    if installed_version == "0.31.4":
+        assert canary.run_remote(args) == 0
+    else:
+        with pytest.raises(canary.CanaryError, match="installed bundle version"):
+            canary.run_remote(args)
+    assert stopped == [123]
+    assert environments[0]["HOME"] == str(tmp_path / "home")
+    assert environments[0]["CFFIXED_USER_HOME"] == str(tmp_path / "home")
+    assert "MURMUR_UPDATER_CANARY_DRY_RUN" not in environments[0]

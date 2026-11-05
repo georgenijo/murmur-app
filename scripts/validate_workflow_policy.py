@@ -11,6 +11,8 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 RELEASE_BUILD_WORKFLOW = ROOT / ".github/workflows/release-build.yml"
 RELEASE_REHEARSAL_WORKFLOW = ROOT / ".github/workflows/release-rehearsal.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
+RELEASE_START_WORKFLOW = ROOT / ".github/workflows/release-start.yml"
+OTA_CANARY_WORKFLOW = ROOT / ".github/workflows/ota-canary.yml"
 CARGO_TOML = ROOT / "app/src-tauri/Cargo.toml"
 
 CI_GUARD = (
@@ -444,11 +446,53 @@ def validate_release_profile(cargo_toml: str) -> None:
     assert re.search(r"^strip\s*=\s*false\s*$", profile, re.MULTILINE)
 
 
+def validate_release_start(workflow: str) -> None:
+    assert "name: Release Murmur" in workflow
+    assert "\n  workflow_dispatch:" in workflow
+    assert "options: [patch, minor]" in workflow
+    assert "group: release-start" in workflow
+    assert "cancel-in-progress: false" in workflow
+    for marker in (
+        '[ "$GITHUB_REF" != "refs/heads/main" ]',
+        '[ -z "$RELEASE_TOKEN" ]',
+        "token: ${{ secrets.RELEASE_TOKEN }}",
+        "run: python3 scripts/release_start.py --bump \"$BUMP\" --expected-sha \"$GITHUB_SHA\"",
+        "timeout-minutes: 5",
+    ):
+        assert marker in workflow
+    assert "self-hosted" not in workflow
+
+
+def validate_ota_canary(workflow: str) -> None:
+    assert "\n  workflow_call:" in workflow
+    assert "\n  workflow_dispatch:" in workflow
+    assert "\n  pull_request:" in workflow
+    assert scalar(job_block(workflow, "canary"), "runs-on") == "macos-latest"
+    assert "contents: read" in workflow
+    assert "secrets." not in workflow
+    assert "contents: write" not in workflow
+    assert "self-hosted" not in workflow
+    assert "--remote --isolated" in workflow
+    assert '--root "$RUNNER_TEMP/murmur-ota-canary"' in workflow
+    assert "ref: ${{ inputs.source_sha || github.sha }}" in workflow
+    assert "persist-credentials: false" in workflow
+    assert "--dry-run" not in workflow
+    assert "timeout-minutes: 20" in workflow
+
+
 def validate_promotion_policy(workflow: str) -> int:
     assert "tags:\n      - 'v*'" in workflow
     assert "workflow_run:\n    workflows: [Release Build]\n    types: [completed]" in workflow
     assert "\n  workflow_dispatch:" in workflow
     assert "self-hosted" not in workflow
+    canary = job_block(workflow, "ota-canary")
+    assert "needs: [resolve, promote]" in canary
+    assert "needs.resolve.outputs.publish == 'true'" in canary
+    assert "needs.promote.result == 'success'" in canary
+    assert "needs.resolve.outputs.already-published == 'true'" in canary
+    assert "uses: ./.github/workflows/ota-canary.yml" in canary
+    assert "source_sha: ${{ needs.resolve.outputs.source-sha }}" in canary
+    assert "tag: ${{ needs.resolve.outputs.tag }}" in canary
     assert "actions/cache" not in workflow
     assert "swatinem/rust-cache" not in workflow
     assert scalar(job_block(workflow, "promote"), "needs") == "resolve"
@@ -572,6 +616,8 @@ def main() -> None:
     release_build_cases = validate_release_build(release_build)
     rehearsal_jobs = validate_release_rehearsal(release_rehearsal)
     validate_release_profile(cargo_toml)
+    validate_release_start(RELEASE_START_WORKFLOW.read_text())
+    validate_ota_canary(OTA_CANARY_WORKFLOW.read_text())
     publication_steps = validate_promotion_policy(release)
 
     print(

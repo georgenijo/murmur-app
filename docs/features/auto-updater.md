@@ -53,8 +53,15 @@ than the release. The legacy bridge manifest intentionally omits this policy.
 
 ## Post-release OTA canary
 
-The trusted Mac mini has an opt-in canary installation in a dedicated
-`Murmur OTA Canary` directory. The release operator runs:
+The release workflow automatically runs the OTA canary on a GitHub-hosted Mac
+using a disposable bundle and an isolated profile (`HOME` and
+`CFFIXED_USER_HOME`). The **Release** workflow stays incomplete until this job
+passes; a failure means the already-public release is not verified. The
+[OTA Canary workflow](https://github.com/georgenijo/murmur-app/actions/workflows/ota-canary.yml)
+also supports manual verification of an existing public release.
+
+The trusted Mac mini retains an opt-in canary installation in a dedicated
+`Murmur OTA Canary` directory for manual recovery. The operator can run:
 
 ```bash
 python3 scripts/murmur_canary_fleet.py --tag vX.Y.Z
