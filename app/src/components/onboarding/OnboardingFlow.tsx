@@ -1,8 +1,9 @@
 import { AppSurface } from '../ui/AppSurface';
+import { showMainWindow } from '../../lib/windows';
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Accessibility, AudioLines, CalendarDays, Check, CircleAlert, Cpu, Keyboard, Mic, Sparkles } from 'lucide-react';
+import { Accessibility, AudioLines, CalendarDays, Check, CircleAlert, Cpu, Keyboard, LoaderCircle, Mic, Minus, Sparkles } from 'lucide-react';
 import { Select } from '../ui/Select';
 import { Button } from '../ui/FormControls';
 import {
@@ -61,6 +62,9 @@ const STEP_ORDER: Step[] = [
   'done',
 ];
 
+/** Longest the microphone step waits for an answer before re-enabling its actions. */
+const MIC_PROMPT_WAIT_MS = 15_000;
+
 interface Props {
   initialModel: ModelOption;
   /** Configured recording trigger, so the final tip shows the real binding. */
@@ -91,12 +95,47 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [step, setStep] = useState<Step>('welcome');
   const [actionTarget, setActionTarget] = useState<HTMLElement | null>(null);
   const stepContentRef = useRef<HTMLDivElement>(null);
-  const previousStepRef = useRef(step);
+  const previousStepRef = useRef<Step | null>(null);
+  const activeStep = useRef<Step>(step);
+  const [direction, setDirection] = useState<'forward' | 'back'>('forward');
+  // Permission observations are tracked outside rendering: entry probes establish
+  // a baseline, while requests and later polls can announce a fresh grant.
+  const [freshGrant, setFreshGrant] = useState<Step | null>(null);
+  const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const permissionGrants = useRef<Partial<Record<Step, boolean>>>({});
+  const micSettingsOpened = useRef(false);
+  const micAutoRequested = useRef(false);
+  const micPromptPending = useRef(false);
+  const micWaitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [micWaiting, setMicWaiting] = useState(false);
+  // Ends the dialog wait once macOS answers, or after a bounded timeout when no
+  // prompt appeared (for example a dev session whose terminal owns the prompt).
+  const endMicWait = useCallback(() => {
+    if (micWaitTimer.current !== null) clearTimeout(micWaitTimer.current);
+    micWaitTimer.current = null;
+    micPromptPending.current = false;
+    micPending.current = false;
+    setMicWaiting(false);
+  }, []);
+  useEffect(() => () => {
+    if (micWaitTimer.current !== null) clearTimeout(micWaitTimer.current);
+  }, []);
+
+  const observePermission = useCallback((permission: Step, granted: boolean, baseline = false) => {
+    const previous = permissionGrants.current[permission];
+    permissionGrants.current[permission] = granted;
+    if (activeStep.current === permission && !granted) setFreshGrant(null);
+    if (baseline || previous !== false || !granted || activeStep.current !== permission) return;
+    setFreshGrant(permission);
+    if ((permission === 'accessibility' || (permission === 'microphone' && micSettingsOpened.current)) && !document.hasFocus()) {
+      // A failed foreground request must not prevent navigation or discard the grant.
+      void showMainWindow().catch(() => {});
+    }
+  }, []);
   const isDev = import.meta.env.DEV;
   const permissionOwner = isDev ? 'your terminal app' : 'Murmur';
 
   const [micStatus, setMicStatus] = useState<MicPermissionStatus>('unknown');
-  const [micRequested, setMicRequested] = useState(false);
   const [micBusy, setMicBusy] = useState(false);
   const micPending = useRef(false);
   const [axBusy, setAxBusy] = useState(false);
@@ -127,8 +166,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [modelDownloading, setModelDownloading] = useState(false);
 
   useEffect(() => {
-    // Leave initial focus alone, including StrictMode's effect replay. Only
-    // navigation moves focus; permission polling must preserve the active control.
+    // Focus Welcome once (also under StrictMode), then each new step heading.
+    // This puts Return in the default scope; permission polling never moves focus.
     if (previousStepRef.current === step) return;
     previousStepRef.current = step;
     stepContentRef.current?.querySelector('h1')?.focus();
@@ -155,15 +194,23 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       // keep previous value; a probe glitch must not flip the UI
     }
     if (seq !== pollSeq.current) return; // superseded by a newer probe
+    observePermission('microphone', mic === 'granted');
     setMicStatus(mic);
-    if (ax !== null) setAxGranted(ax);
-  }, []);
+    // request_microphone_access is fire-and-forget. Only a resolved TCC status
+    // ends the dialog wait; resolving the IPC promise does not mean an answer.
+    if (micPromptPending.current && mic !== 'notDetermined') endMicWait();
+    if (ax !== null) {
+      observePermission('accessibility', ax);
+      setAxGranted(ax);
+    }
+  }, [observePermission, endMicWait]);
 
   useEffect(() => {
     refreshPermissions();
     const id = setInterval(refreshPermissions, 1000);
     window.addEventListener('focus', refreshPermissions);
     return () => {
+      ++pollSeq.current;
       clearInterval(id);
       window.removeEventListener('focus', refreshPermissions);
     };
@@ -173,10 +220,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     if (step !== 'systemAudio') return;
     const seq = ++systemAudioProbeSeq.current;
     void getSystemAudioPermissionStatus().then((status) => {
-      if (seq === systemAudioProbeSeq.current) setSystemAudioStatus(status);
+      if (seq === systemAudioProbeSeq.current) {
+        observePermission('systemAudio', status === 'granted', true);
+        setSystemAudioStatus(status);
+      }
     }).catch(() => {});
     return () => { ++systemAudioProbeSeq.current; };
-  }, [step]);
+  }, [step, observePermission]);
 
   // Calendar access is optional. Keep even its passive permission probe out of
   // the welcome and unrelated setup steps so onboarding never touches EventKit
@@ -184,12 +234,15 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   useEffect(() => {
     if (step !== 'calendar') return;
     let stale = false;
-    const refreshCalendarPermission = () => {
+    const refreshCalendarPermission = (baseline = false) => {
       const seq = ++calendarProbeSeq.current;
       setCalendarError(null);
       void getCalendarPermissionStatus().then(
         (status) => {
-          if (!stale && seq === calendarProbeSeq.current) setCalendarStatus(status);
+          if (!stale && seq === calendarProbeSeq.current) {
+            observePermission('calendar', status === 'granted', baseline);
+            setCalendarStatus(status);
+          }
         },
         () => {
           if (!stale && seq === calendarProbeSeq.current) {
@@ -199,13 +252,14 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       );
     };
 
-    refreshCalendarPermission();
-    window.addEventListener('focus', refreshCalendarPermission);
+    refreshCalendarPermission(true);
+    const onFocus = () => refreshCalendarPermission();
+    window.addEventListener('focus', onFocus);
     return () => {
       stale = true;
-      window.removeEventListener('focus', refreshCalendarPermission);
+      window.removeEventListener('focus', onFocus);
     };
-  }, [step]);
+  }, [step, observePermission]);
 
   const preferredModel = modelInstalled
     ? installedModel
@@ -227,33 +281,69 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   const stepIndex = STEP_ORDER.indexOf(step);
-  const goNext = () => setStep(STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)]);
-  const goBack = () => setStep(STEP_ORDER[Math.max(stepIndex - 1, 0)]);
+  const navigate = useCallback((next: Step, backwards = false) => {
+    if (advanceTimer.current !== null) clearTimeout(advanceTimer.current);
+    advanceTimer.current = null;
+    activeStep.current = next;
+    setFreshGrant(null);
+    setDirection(backwards ? 'back' : 'forward');
+    setStep(next);
+  }, []);
+  const goNext = () => navigate(STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)]);
+  const goBack = () => navigate(STEP_ORDER[Math.max(stepIndex - 1, 0)], true);
+
+  useEffect(() => {
+    if (freshGrant !== step) return;
+    advanceTimer.current = setTimeout(() => {
+      if (activeStep.current === step) navigate(STEP_ORDER[STEP_ORDER.indexOf(step) + 1]);
+    }, 900);
+    return () => {
+      if (advanceTimer.current !== null) clearTimeout(advanceTimer.current);
+      advanceTimer.current = null;
+    };
+  }, [freshGrant, step, navigate]);
 
   const micGranted = micStatus === 'granted';
   const micDenied = micStatus === 'denied';
 
-  const handleAllowMic = async () => {
+  const handleAllowMic = useCallback(async () => {
     if (micPending.current) return;
     micPending.current = true;
+    micAutoRequested.current = true;
+    micPromptPending.current = micStatus === 'notDetermined';
+    setMicWaiting(micPromptPending.current);
     setMicBusy(true);
     setMicError(null);
-    setMicRequested(true);
     try {
       // Fires the native TCC dialog when the status is notDetermined; the
       // 1s poll picks up the answer.
       await requestMicrophoneAccess();
     } catch (error) {
+      micPromptPending.current = false;
+      setMicWaiting(false);
       setMicError(typeof error === 'string' ? error : 'Could not request microphone access.');
     } finally {
-      micPending.current = false;
+      if (micPromptPending.current) {
+        micWaitTimer.current = setTimeout(endMicWait, MIC_PROMPT_WAIT_MS);
+      } else {
+        micPending.current = false;
+      }
       setMicBusy(false);
     }
-  };
+  }, [micStatus, endMicWait]);
+
+  useEffect(() => {
+    if (step !== 'microphone' || micStatus !== 'notDetermined' || micAutoRequested.current) return;
+    const timer = setTimeout(() => {
+      if (!micAutoRequested.current && activeStep.current === 'microphone') void handleAllowMic();
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [step, micStatus, handleAllowMic]);
 
   const handleOpenMicSettings = async () => {
     setMicError(null);
     try {
+      micSettingsOpened.current = true;
       await openMicrophoneSettings();
     } catch (error) {
       setMicError(typeof error === 'string' ? error : 'Could not open System Settings.');
@@ -263,10 +353,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const handleResetMic = async () => {
     setMicError(null);
     try {
+      micSettingsOpened.current = true;
       await resetMicrophonePermission();
       // After a reset the status returns to notDetermined, so the in-app
       // prompt button works again.
-      setMicRequested(false);
+      endMicWait();
     } catch (error) {
       setMicError(
         typeof error === 'string'
@@ -315,11 +406,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const handleRequestSystemAudio = async () => {
     if (systemAudioPending.current) return;
     systemAudioPending.current = true;
+    permissionGrants.current.systemAudio ??= false;
     ++systemAudioProbeSeq.current;
     setSystemAudioError(null);
     setSystemAudioBusy(true);
     try {
       const access = await requestSystemAudioPermission();
+      observePermission('systemAudio', access.permission === 'granted');
       setSystemAudioStatus(access.permission);
       if (access.needsRelaunch) {
         setSystemAudioError(
@@ -337,6 +430,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const handleRequestCalendar = async () => {
     if (calendarRequestPending.current) return;
     calendarRequestPending.current = true;
+    permissionGrants.current.calendar ??= false;
     const mutationSeq = ++calendarMutationSeq.current;
     ++calendarProbeSeq.current;
     setCalendarError(null);
@@ -345,6 +439,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       const status = await requestCalendarPermission();
       if (mutationSeq === calendarMutationSeq.current) {
         ++calendarProbeSeq.current;
+        observePermission('calendar', status === 'granted');
         setCalendarStatus(status);
       }
     } catch {
@@ -375,6 +470,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       await resetCalendarPermission();
       if (mutationSeq === calendarMutationSeq.current) {
         ++calendarProbeSeq.current;
+        observePermission('calendar', false);
         setCalendarStatus('notDetermined');
       }
     } catch {
@@ -387,7 +483,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   const permissionStatusMessage = step === 'microphone'
-    ? `Microphone access ${micGranted ? 'granted' : micDenied ? 'denied' : micRequested ? 'waiting for your answer in the macOS dialog' : 'not yet granted'}.`
+    ? `Microphone access ${micGranted ? 'granted' : micDenied ? 'denied' : micWaiting ? 'waiting for your answer in the macOS dialog' : 'not yet granted'}.`
     : step === 'accessibility'
     ? `Accessibility access ${axGranted === true ? 'granted' : axGranted === null ? 'being checked' : 'not granted'}.`
     : step === 'systemAudio'
@@ -409,7 +505,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             <span>Step {stepIndex + 1} of {STEP_ORDER.length}</span>
           </div>
           <ActionTarget.Provider value={actionTarget}>
-          <div className="onboarding-content" key={step}>
+          <div className="onboarding-content" data-direction={direction} key={step}>
             {step === 'welcome' && <>
               <StepHeading icon={Sparkles} title="Welcome to Murmur" subtitle="Dictation runs on your Mac. Saved history and retained meeting audio stay local." />
               <p className="onboarding-copy">Setup covers permissions, an offline transcription model, and your recording shortcut.</p>
@@ -417,21 +513,23 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
             {step === 'microphone' && <>
               <StepHeading icon={Mic} title="Microphone access" subtitle="Murmur records your speech for local transcription. Audio is discarded after transcription." />
-              <StatusRow tone={micGranted ? 'success' : micDenied ? 'error' : 'neutral'} text={micGranted ? 'Microphone access granted' : micDenied ? 'Microphone access denied' : micRequested ? 'Waiting for your answer in the macOS dialog…' : 'Microphone access not yet granted'} />
+              <PermissionCard icon={Mic} label="Microphone" state={micGranted ? 'granted' : micDenied ? 'denied' : 'notSet'} waiting={micBusy || micWaiting} fresh={freshGrant === step} />
+              {micWaiting && <p className="onboarding-copy">Waiting for your answer in the macOS dialog…</p>}
               {micDenied && <><p className="onboarding-copy">Enable {permissionOwner} under Privacy &amp; Security → Microphone, then come back. This screen updates automatically.</p>{isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetMic}>Reset permission…</button>}</>}
               {micError && <ErrorMessage message={micError} />}
-              <WizardNavigationRow onBack={goBack} onNext={micGranted ? goNext : micDenied ? handleOpenMicSettings : handleAllowMic} onSkip={goNext} nextEnabled={!micBusy} defaultAction={micGranted} nextLabel={micDenied ? 'Open System Settings…' : 'Continue'} skippable={!micGranted} skipLabel="Skip for now" />
+              <WizardNavigationRow onBack={goBack} onNext={micGranted ? goNext : micDenied ? handleOpenMicSettings : handleAllowMic} onSkip={goNext} nextEnabled={!micBusy && !micWaiting} defaultAction={micGranted} nextLabel={micDenied ? 'Open System Settings…' : 'Continue'} skippable={!micGranted && !micWaiting && !micBusy} skipLabel="Skip for now" />
             </>}
             {step === 'accessibility' && <>
               <StepHeading icon={Accessibility} title="Accessibility access" subtitle="Use the global recording key and auto-paste while Murmur is in the background." />
-              <StatusRow tone={axGranted ? 'success' : 'neutral'} text={axGranted ? 'Accessibility access granted' : 'Accessibility access not granted'} />
+              <PermissionCard icon={Accessibility} label="Accessibility" state={axGranted ? 'granted' : 'notSet'} waiting={axBusy || axGranted === null} fresh={freshGrant === step} />
               {!axGranted && <><p className="onboarding-copy">Turn on {permissionOwner} in System Settings, then come back. This screen updates automatically.</p>{axRequested && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetAx}>Murmur is listed but still not detected? Reset permission…</button>)}</>}
               {axError && <ErrorMessage message={axError} />}
               <WizardNavigationRow onBack={goBack} onNext={axGranted ? goNext : handleGrantAx} onSkip={goNext} nextEnabled={!axBusy} defaultAction={axGranted === true} nextLabel={axGranted ? 'Continue' : 'Open System Settings…'} skippable={!axGranted} skipLabel="Skip for now" />
             </>}
             {step === 'systemAudio' && <>
               <StepHeading icon={AudioLines} title="System audio access" subtitle="Optional for meetings. Capture audio from your Mac alongside your microphone." />
-              <StatusRow tone={systemAudioStatus === 'granted' ? 'success' : systemAudioStatus === 'denied' ? 'error' : 'neutral'} text={systemAudioBusy ? 'Waiting for macOS…' : systemAudioStatus === 'granted' ? 'System audio access granted' : systemAudioStatus === 'denied' ? 'System audio access denied' : systemAudioStatus === 'unsupported' ? 'System audio is unavailable' : 'System audio access not yet granted'} />
+              <PermissionCard icon={AudioLines} label="System audio" state={systemAudioStatus} waiting={systemAudioBusy} fresh={freshGrant === step} />
+              {systemAudioStatus === 'unknown' && <p className="onboarding-copy">Continue shows the macOS permission prompt.</p>}
               <p className="onboarding-copy">{systemAudioStatus === 'unsupported' ? 'Meeting capture requires macOS 14.2 or newer. Dictation is still available.' : 'macOS may list Murmur under Privacy & Security → Screen & System Audio Recording.'}</p>
               {(systemAudioStatus === 'denied' || systemAudioStatus === 'granted') && <button className="onboarding-link" disabled={systemAudioBusy} onClick={() => void handleRequestSystemAudio()}>{systemAudioStatus === 'denied' ? 'Check again' : 'Re-check system audio access'}</button>}
               {systemAudioError && <ErrorMessage message={systemAudioError} />}
@@ -439,7 +537,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
             {step === 'calendar' && <>
               <StepHeading icon={CalendarDays} title="Calendar access" subtitle="Optional for meetings. Offer event names and attendees for you to confirm, without changing your calendar." />
-              <StatusRow tone={calendarStatus === 'granted' ? 'success' : calendarStatus === 'denied' ? 'error' : 'neutral'} text={calendarBusy ? 'Waiting for macOS…' : calendarStatus === 'granted' ? 'Calendar access granted' : calendarStatus === 'denied' ? 'Calendar access denied' : calendarStatus === 'restricted' ? 'Calendar access restricted' : calendarStatus === 'unsupported' ? 'Calendar access unavailable' : 'Calendar access not yet requested'} />
+              <PermissionCard icon={CalendarDays} label="Calendar" state={calendarStatus} waiting={calendarBusy} fresh={freshGrant === step} />
+              {calendarStatus === 'notDetermined' && <p className="onboarding-copy">Continue shows the macOS permission prompt.</p>}
               <p className="onboarding-copy">{calendarStatus === 'denied' ? `Enable ${permissionOwner} under Privacy & Security → Calendars, or name meetings manually.` : calendarStatus === 'restricted' || calendarStatus === 'unsupported' ? 'You can still name meetings manually.' : 'Calendar details stay on this Mac.'}</p>
               {calendarStatus === 'denied' && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" disabled={calendarBusy} onClick={handleResetCalendar}>Reset Calendar permission…</button>)}
               {calendarError && <ErrorMessage message={calendarError} />}
@@ -491,11 +590,21 @@ function DevPermissionHelp() {
 }
 
 function StepHeading({ icon: Icon, title, subtitle }: { icon: typeof Mic; title: string; subtitle: string }) {
-  return <header className="onboarding-heading"><div className="onboarding-icon"><Icon aria-hidden="true" size={20} /></div><h1 tabIndex={-1}>{title}</h1><p>{subtitle}</p></header>;
+  return <header className="onboarding-heading"><div className="onboarding-icon"><Icon aria-hidden="true" /></div><h1 tabIndex={-1}>{title}</h1><p>{subtitle}</p></header>;
 }
 
-function StatusRow({ tone, text }: { tone: 'success' | 'error' | 'neutral'; text: string }) {
-  return <div className="onboarding-status" data-tone={tone}>{tone === 'success' ? <Check aria-hidden="true" size={16} /> : <CircleAlert aria-hidden="true" size={16} />}<span>{text}</span></div>;
+function PermissionCard({ icon: Icon, label, state, waiting = false, fresh = false }: { icon: typeof Mic; label: string; state: string; waiting?: boolean; fresh?: boolean }) {
+  const granted = state === 'granted';
+  const denied = state === 'denied';
+  const StatusIcon = granted ? Check : waiting ? LoaderCircle : denied || state === 'restricted' ? CircleAlert : Minus;
+  const text = granted ? 'Allowed' : waiting ? 'Waiting for macOS…' : denied ? 'Denied' : state === 'restricted' ? 'Restricted' : state === 'unsupported' ? 'Unavailable' : 'Not set';
+  return <div className="dialog-card onboarding-permission-card">
+    <Icon aria-hidden="true" size={20} />
+    <span className="onboarding-permission-label">{label}</span>
+    <span className="onboarding-permission-state" data-tone={granted ? 'success' : denied ? 'error' : 'neutral'} data-fresh={granted && fresh}>
+      <StatusIcon aria-hidden="true" size={16} className={waiting && !granted ? 'onboarding-spinner' : undefined} />{text}
+    </span>
+  </div>;
 }
 
 function ErrorMessage({ message }: { message: string }) {
@@ -503,7 +612,7 @@ function ErrorMessage({ message }: { message: string }) {
 }
 
 function SummaryRow({ ok, label, okText, missingText }: { ok: boolean; label: string; okText: string; missingText: string }) {
-  return <div className="onboarding-summary-row"><span aria-hidden="true" className={ok ? 'text-success' : 'text-on-surface-variant'}>{ok ? '✓' : '–'}</span><strong>{label}</strong><span>{ok ? okText : missingText}</span></div>;
+  return <div className="onboarding-summary-row"><span aria-hidden="true" className={ok ? 'text-success' : 'text-on-surface-variant'}>{ok ? <Check size={16} /> : <Minus size={16} />}</span><strong>{label}</strong><span>{ok ? okText : missingText}</span></div>;
 }
 
 function WizardNavigationRow({ onBack, backDisabled = false, hideBack = false, onNext, onSkip, nextEnabled, nextLabel, defaultAction = false, skippable = false, skipLabel = 'Skip' }: { onBack: () => void; backDisabled?: boolean; hideBack?: boolean; onNext: () => void; onSkip?: () => void; nextEnabled: boolean; nextLabel: string; defaultAction?: boolean; skippable?: boolean; skipLabel?: string }) {

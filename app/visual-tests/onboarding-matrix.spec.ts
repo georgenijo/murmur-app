@@ -9,7 +9,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
     test.use({ viewport: { width, height }, colorScheme: appearance });
     for (const permission of permissions) {
       test(`${permission} permission steps have one primary and safe Return behavior`, async ({ page }) => {
-        await page.emulateMedia({ colorScheme: appearance });
+        await page.emulateMedia({ colorScheme: appearance, reducedMotion: 'reduce' });
         await page.goto(`/visual-fixtures.html?state=copy-onboarding&permission=${permission}&appearance=${appearance}`);
         await page.getByRole('button', { name: 'Get started', exact: true }).click();
         let progressBounds: { x: number; y: number; width: number; height: number } | null = null;
@@ -19,14 +19,12 @@ for (const { appearance, width, height, label } of surfaceCases()) {
           await expect(page.getByRole('progressbar', { name: `Step ${index + 2} of 8` })).toHaveAttribute('aria-valuenow', String(index + 2));
           await expect(page.locator('.onboarding-progress-wrap')).toContainText(`Step ${index + 2} of 8`);
           // Wait for the fixture's asynchronous probes before checking the actions.
-          const status = page.locator('.onboarding-status').first();
-          const expectedStatus = index === 0
-            ? permission === 'granted' ? 'Microphone access granted' : permission === 'denied' ? 'Microphone access denied' : 'Microphone access not yet granted'
-            : index === 1
-              ? permission === 'granted' ? 'Accessibility access granted' : 'Accessibility access not granted'
-              : index === 2
-                ? permission === 'granted' ? 'System audio access granted' : permission === 'denied' ? 'System audio access denied' : 'System audio access not yet granted'
-                : permission === 'granted' ? 'Calendar access granted' : permission === 'denied' ? 'Calendar access denied' : permission === 'restricted' ? 'Calendar access restricted' : permission === 'unsupported' ? 'Calendar access unavailable' : 'Calendar access not yet requested';
+          const status = page.locator('.onboarding-permission-state');
+          const expectedStatus = permission === 'granted' ? 'Allowed'
+            : index === 1 ? permission === 'loading' ? 'Waiting for macOS…' : 'Not set'
+            : permission === 'denied' ? 'Denied'
+            : index === 3 && permission === 'restricted' ? 'Restricted'
+            : index === 3 && permission === 'unsupported' ? 'Unavailable' : 'Not set';
           await expect(status).toHaveText(expectedStatus);
 
           const isNavigation = permission === 'granted' || (index === 3 && ['restricted', 'unsupported'].includes(permission));
@@ -56,7 +54,9 @@ for (const { appearance, width, height, label } of surfaceCases()) {
               await expect(primary).toBeDisabled();
               await expect(primary).not.toHaveAttribute('data-default-button');
             } else if (index === 0) {
-              await expect(status).toHaveText('Waiting for your answer in the macOS dialog…');
+              // An unknown status and resolved fire-and-forget request keep the manual fallback available.
+              await expect(status).toHaveText('Not set');
+              await expect(primary).toBeEnabled();
             } else {
               await expect(page.getByText(/^In this development session, grant access to the terminal app/)).toBeVisible();
               await expect(page.getByRole('button', { name: /Reset the permission/ })).toHaveCount(0);

@@ -378,7 +378,10 @@ describe('OnboardingFlow', () => {
     expect(primary.disabled).toBe(true);
     expect(mocks.requestMicrophoneAccess).toHaveBeenCalledTimes(1);
     await act(async () => request.resolve(undefined));
-    expect(primary.disabled).toBe(false);
+    expect(primary.disabled).toBe(true); // Native request returns before the dialog is answered.
+    mocks.checkMicrophonePermissionStatus.mockResolvedValue('denied');
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(getButton('Open System Settings…').disabled).toBe(false);
   });
 
   it('offers System Settings as the primary action when microphone access is denied', async () => {
@@ -496,7 +499,7 @@ describe('OnboardingFlow', () => {
     await clickButton('Continue');
 
     expect(container.textContent).not.toContain('Meeting audio capture failed');
-    expect(container.textContent).toContain('System audio access granted');
+    expect(container.querySelector('.onboarding-permission-state')?.textContent).toBe('Allowed');
   });
 
   it('asks for a relaunch when macOS reports access but the tap is refused', async () => {
@@ -533,7 +536,7 @@ describe('OnboardingFlow', () => {
     await clickButton('Continue');
     expect(mocks.requestCalendarPermission).toHaveBeenCalledTimes(1);
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('Calendar access granted');
+    expect(container.querySelector('.onboarding-permission-state')?.textContent).toBe('Allowed');
   });
 
   it('keeps Calendar request errors local and content-free', async () => {
@@ -592,7 +595,7 @@ describe('OnboardingFlow', () => {
     await act(async () => request.resolve('granted'));
     await settle();
 
-    expect(container.textContent).toContain('Calendar access granted');
+    expect(container.querySelector('.onboarding-permission-state')?.textContent).toBe('Allowed');
     expect(expectNavigation('Continue').actionButtons[0].disabled).toBe(false);
   });
 
@@ -625,7 +628,7 @@ describe('OnboardingFlow', () => {
     await settle();
 
     expect(mocks.getCalendarPermissionStatus).toHaveBeenCalledTimes(2);
-    expect(container.textContent).toContain('Calendar access granted');
+    expect(container.querySelector('.onboarding-permission-state')?.textContent).toBe('Allowed');
     expect(expectNavigation('Continue').actionButtons[0].disabled).toBe(false);
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();

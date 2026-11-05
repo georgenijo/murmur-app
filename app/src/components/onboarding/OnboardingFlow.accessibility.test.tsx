@@ -58,6 +58,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     axGranted = true;
     calendarStatus = 'notDetermined';
     failedCommand = undefined;
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     native.listen.mockResolvedValue(() => {});
     native.invoke.mockImplementation(async (command: string) => {
       if (command === failedCommand) throw new Error('Native permission request failed');
@@ -72,6 +73,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
           permission: 'granted', captureReady: true, audioFlowing: false, needsRelaunch: false,
         };
         case 'request_calendar_permission': return 'granted';
+        case 'show_main_window':
         case 'request_microphone_access':
         case 'request_accessibility_permission':
         case 'request_microphone_permission':
@@ -92,15 +94,16 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     container.remove();
     vi.useRealTimers();
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
     vi.resetAllMocks();
   });
 
-  it('preserves initial focus, then focuses every heading on forward and backward navigation', async () => {
+  it('focuses Welcome at mount, then every heading on forward and backward navigation', async () => {
     const outside = document.createElement('button');
     document.body.appendChild(outside);
     outside.focus();
     await render();
-    expect(document.activeElement).toBe(outside);
+    expectHeadingFocus('Welcome to Murmur');
     outside.remove();
 
     const steps = [
@@ -120,6 +123,225 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
       await click('Back');
       expectHeadingFocus(title);
     }
+  });
+
+  const advance = async (milliseconds: number) => {
+    await act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
+  };
+  const refresh = async () => {
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+  };
+  const requestCount = () => native.invoke.mock.calls.filter(([command]) => command === 'request_microphone_access').length;
+  const expectStep = (title: string) => expect(container.querySelector('h1')?.textContent).toBe(title);
+
+  it('Return on the initially focused Welcome heading starts setup', async () => {
+    await render();
+    expectHeadingFocus('Welcome to Murmur');
+    await act(async () => {
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    });
+    expectHeadingFocus('Microphone access');
+  });
+
+  it('auto-requests the mic once after settling, preserves the native dialog wait, and does not repeat on revisit', async () => {
+    vi.useFakeTimers();
+    micStatus = 'notDetermined';
+    await toStep('microphone');
+    await advance(599);
+    expect(requestCount()).toBe(0);
+    await advance(1);
+    expect(requestCount()).toBe(1);
+    expect(container.textContent).toContain('Waiting for your answer in the macOS dialog…');
+    expect(button('Continue').disabled).toBe(true);
+    expect(Array.from(container.querySelectorAll('button')).some(node => node.textContent === 'Skip for now')).toBe(false);
+    await refresh();
+    await advance(2000);
+    expect(requestCount()).toBe(1);
+    await click('Back');
+    await click('Get started');
+    await advance(1000);
+    expect(requestCount()).toBe(1);
+    micStatus = 'denied';
+    await refresh();
+    expect(button('Skip for now').disabled).toBe(false);
+    expect(button('Open System Settings…').disabled).toBe(false);
+  });
+
+  it('re-enables mic actions when no macOS answer arrives', async () => {
+    vi.useFakeTimers();
+    micStatus = 'notDetermined';
+    await toStep('microphone');
+    await advance(600);
+    expect(requestCount()).toBe(1);
+    await advance(14_999);
+    expect(button('Continue').disabled).toBe(true);
+    await advance(1);
+    expect(container.textContent).not.toContain('Waiting for your answer in the macOS dialog…');
+    expect(button('Continue').disabled).toBe(false);
+    expect(button('Skip for now').disabled).toBe(false);
+    expect(requestCount()).toBe(1);
+  });
+
+  it.each(['granted', 'denied', 'unknown'])('never auto-requests a %s microphone', async status => {
+    vi.useFakeTimers();
+    micStatus = status;
+    await toStep('microphone');
+    await advance(2000);
+    expect(requestCount()).toBe(0);
+    expectStep('Microphone access');
+    if (status === 'unknown') {
+      await click('Continue');
+      expect(requestCount()).toBe(1);
+      expect(button('Skip for now').disabled).toBe(false);
+    }
+  });
+
+  it('cancels the mic settle timer when leaving the step and on unmount', async () => {
+    vi.useFakeTimers();
+    micStatus = 'notDetermined';
+    await toStep('microphone');
+    await advance(300);
+    await click('Back');
+    await advance(600);
+    expect(requestCount()).toBe(0);
+    await click('Get started');
+    await act(async () => root.render(<div />));
+    await advance(600);
+    expect(requestCount()).toBe(0);
+  });
+
+  it.each(['microphone', 'accessibility'] as const)('shows and announces a fresh %s grant before advancing exactly once', async step => {
+    vi.useFakeTimers();
+    micStatus = step === 'microphone' ? 'notDetermined' : 'granted';
+    axGranted = false;
+    await toStep(step);
+    if (step === 'microphone') await advance(600);
+    if (step === 'microphone') micStatus = 'granted';
+    else axGranted = true;
+    await refresh();
+    const title = step === 'microphone' ? 'Microphone access' : 'Accessibility access';
+    expectStep(title);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(`${title} granted.`);
+    expect(container.querySelector('[data-fresh="true"]')?.textContent).toBe('Allowed');
+    await advance(899);
+    expectStep(title);
+    await refresh(); // A repeated grant must not restart the timer.
+    await advance(1);
+    expectStep(step === 'microphone' ? 'Accessibility access' : 'System audio access');
+    await advance(2000);
+    expectStep(step === 'microphone' ? 'Accessibility access' : 'System audio access');
+  });
+
+  it.each(['microphone', 'accessibility'] as const)('does not auto-advance an already granted %s on arrival', async step => {
+    vi.useFakeTimers();
+    await toStep(step);
+    await advance(2000);
+    expectStep(step === 'microphone' ? 'Microphone access' : 'Accessibility access');
+    expect(button('Continue').hasAttribute('data-default-button')).toBe(true);
+    expect(container.querySelector('[data-fresh="true"]')).toBeNull();
+  });
+
+  it.each(['Back', 'Continue'] as const)('manual %s cancels a pending automatic advance, including revisits', async action => {
+    vi.useFakeTimers();
+    axGranted = false;
+    await toStep('accessibility');
+    axGranted = true;
+    await refresh();
+    await advance(400);
+    await click(action);
+    if (action === 'Back') await click('Continue');
+    await advance(1200);
+    expectStep(action === 'Back' ? 'Accessibility access' : 'System audio access');
+  });
+
+  it('a grant detected after Skip does not schedule navigation on another step', async () => {
+    vi.useFakeTimers();
+    axGranted = false;
+    await toStep('accessibility');
+    await click('Skip for now');
+    axGranted = true;
+    await refresh();
+    await advance(2000);
+    expectStep('System audio access');
+  });
+
+  it.each([false, true])('foregrounds a fresh Accessibility grant only when unfocused (focused=%s)', async focused => {
+    vi.useFakeTimers();
+    vi.mocked(document.hasFocus).mockReturnValue(focused);
+    axGranted = false;
+    await toStep('accessibility');
+    expect(native.invoke).not.toHaveBeenCalledWith('request_accessibility_permission');
+    await click('Open System Settings…');
+    axGranted = true;
+    await advance(1000); // The interval detects the System Settings round-trip.
+    expect(native.invoke.mock.calls.filter(([command]) => command === 'show_main_window')).toHaveLength(focused ? 0 : 1);
+    await advance(900);
+    expectStep('System audio access');
+  });
+
+  it.each(['Open System Settings…', 'Reset permission…'])('foregrounds a denied microphone grant after %s', async action => {
+    vi.useFakeTimers();
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    micStatus = 'denied';
+    await toStep('microphone');
+    await click(action);
+    micStatus = 'granted';
+    await advance(1000);
+    expect(native.invoke).toHaveBeenCalledWith('show_main_window');
+    await advance(900);
+    expectStep('Accessibility access');
+  });
+
+  it.each(['systemAudio', 'calendar'] as const)('auto-advances a fresh optional %s grant after an explicit request', async step => {
+    vi.useFakeTimers();
+    await toStep(step);
+    expect(native.invoke).not.toHaveBeenCalledWith(step === 'systemAudio' ? 'request_system_audio_permission' : 'request_calendar_permission');
+    expect(container.textContent).toContain('Continue shows the macOS permission prompt.');
+    await click('Continue');
+    expect(container.querySelector('[data-fresh="true"]')?.textContent).toBe('Allowed');
+    await advance(900);
+    expectStep(step === 'systemAudio' ? 'Calendar access' : 'Transcription model');
+  });
+
+  it.each(['systemAudio', 'calendar'] as const)('does not auto-advance an already granted optional %s entry probe', async step => {
+    vi.useFakeTimers();
+    if (step === 'calendar') calendarStatus = 'granted';
+    if (step === 'systemAudio') {
+      // Override just this status, retaining the normal mocks for the rest of setup.
+      const invoke = native.invoke.getMockImplementation()!;
+      native.invoke.mockImplementation((command: string) => command === 'get_system_audio_permission_status' ? Promise.resolve('granted') : invoke(command));
+    }
+    await toStep(step);
+    await advance(2000);
+    expectStep(step === 'systemAudio' ? 'System audio access' : 'Calendar access');
+    expect(button('Continue').hasAttribute('data-default-button')).toBe(true);
+    expect(container.querySelector('[data-fresh="true"]')).toBeNull();
+  });
+
+  it('a revoked grant cancels its pending navigation', async () => {
+    vi.useFakeTimers();
+    axGranted = false;
+    await toStep('accessibility');
+    axGranted = true;
+    await refresh();
+    await advance(400);
+    axGranted = false;
+    await refresh();
+    await advance(900);
+    expectStep('Accessibility access');
+    expect(container.querySelector('[data-fresh="true"]')).toBeNull();
+  });
+
+  it('foreground failure does not block advancement after a grant', async () => {
+    vi.useFakeTimers();
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    failedCommand = 'show_main_window';
+    axGranted = false;
+    await toStep('accessibility');
+    axGranted = true;
+    await refresh();
+    await advance(900);
+    expectStep('System audio access');
   });
 
   it('announces a polled grant without taking focus from the current control', async () => {

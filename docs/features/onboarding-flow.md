@@ -15,15 +15,23 @@ active, because leaving the step cannot cancel the underlying download safely:
 2. **Microphone** — fires the *native* macOS permission dialog in-app via the
    `request_microphone_access` command (`AVCaptureDevice.requestAccessForMediaType`,
    fire-and-forget; never opens the device, so it can't duck other apps' audio —
-   see issue #177). Skippable; Continue requests access until granted, then advances.
+   see issue #177). On arrival with `notDetermined`, wait 600 ms for the explanation
+   to render, then request once per wizard session. Back cancels an unfired timer;
+   revisits, permission polls, and StrictMode effect replay never duplicate a request.
+   The IPC returns immediately; the waiting card and disabled Continue persist until
+   polling detects a grant, denial, or unknown result. Skip is hidden while the
+   native dialog is pending. Unknown status retains a manual Continue fallback;
+   denied status offers System Settings and the existing reset path.
 3. **Accessibility** — explains the global recording key + auto-paste need,
    triggers `request_accessibility_permission` (system dialog + opens the pane).
-   Skippable.
+   Skippable; never opens System Settings automatically on arrival.
 4. **System Audio (optional)** — creates a short-lived native tap only after an
-   explicit click, reports granted/denied/unsupported, and links a denial to
+   explicit Continue click (with copy explaining that macOS will ask for permission),
+   reports granted/denied/unsupported, and links a denial to
    Privacy & Security → Screen & System Audio Recording. Skippable.
 5. **Calendar (optional)** — reads Calendar permission status only while this
-   step is visible. The native permission prompt requires an explicit click.
+   step is visible. The native permission prompt requires an explicit Continue click,
+   explained below the permission card.
    Denied and restricted states explain that manual meeting names still work;
    recovery links to Privacy & Security → Calendars, with a reset action for a
    denied TCC entry. Skippable.
@@ -46,11 +54,26 @@ whole wizard lifetime, so a grant made during the System Settings roundtrip
 flips the step live. System Audio and Calendar status reads run only when their
 respective optional steps are visible. Calendar refreshes again on window focus
 while its step remains visible. Neither access request runs without an explicit
-click. The wishy-washy TCC states are handled explicitly:
+click.
+
+On any permission step, a fresh transition from not granted to granted announces
+success through the persistent live region, animates the Allowed check, and advances
+after 900 ms. Already-granted permissions on arrival (including the optional steps'
+initial passive probes) stay visible with Continue as the Return default. Manual
+Back, Skip, Continue, step changes, and unmount cancel pending navigation, so late
+answers on another step never advance it. Reduced motion removes the slide/check
+animations but preserves the delay and automatic navigation.
+
+A fresh Accessibility grant detected while Murmur is unfocused invokes
+`show_main_window` before the delayed advance. The same applies to a denied
+microphone permission granted after opening System Settings. Foreground failures
+do not discard the grant or block navigation.
+
+The wishy-washy TCC states are handled explicitly:
 
 | State | UI |
 |-------|-----|
-| mic `notDetermined` / `unknown` | "Continue" → native in-app dialog |
+| mic `notDetermined` / `unknown` | Settled, once-only auto-request for `notDetermined`; manual Continue fallback for `unknown` |
 | mic `denied` | Open System Settings + "Reset the permission" (`tccutil reset` via `reset_microphone_permission`) — the reset returns the status to `notDetermined`, so the in-app dialog works again |
 | accessibility not granted | "Open System Settings…" (dialog + pane); after an attempt, a reset path for the listed-but-stale entry (common after reinstall/rebuild — see DEVELOPMENT.md) |
 | system audio `unknown` / `denied` | "Continue" runs an explicit check; denial makes "Open System Settings…" the primary action, with a quiet re-check. Passive status reads never create a tap. |
@@ -63,10 +86,21 @@ click. The wishy-washy TCC states are handled explicitly:
 
 Every step heading is programmatically focusable. Continue, Skip, and Back move
 focus to the new heading, including Welcome on return; the initial Welcome
-mount preserves existing focus. Permission polling and window-focus refreshes
+mount also focuses its heading once, enabling Return → Get started and title
+announcement by VoiceOver. Permission polling and window-focus refreshes
 do not move focus. Permission failures use alerts, while a persistent polite
 status region announces permission-state changes. Decorative checkmarks are
-hidden from assistive technology.
+hidden from assistive technology; status pills and summary rows retain meaningful
+text alongside Lucide icons.
+
+The fixed 520×500 frame uses a centered setup-assistant hero (64 px accent-tinted
+icon tile and 24 px title), full-width permission/model/shortcut cards, and a pinned
+navigation row. Step content scrolls without moving progress or navigation. Forward
+and Back entry transitions fade and slide 12 px in opposite directions over 220 ms;
+progress dots transition over 200 ms, fresh checks over 160 ms. All colors use
+semantic appearance tokens, and new recurring geometry uses `--ui-*` tokens.
+Playwright screenshot assertions disable animations; the onboarding matrix also
+uses reduced motion for deterministic geometry checks.
 
 In `tauri:dev`, permission guidance names the launching terminal. Microphone,
 Accessibility, and Calendar Reset actions are hidden because their native

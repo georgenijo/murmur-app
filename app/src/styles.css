@@ -70,6 +70,19 @@
   --ui-font-label: 0.8125rem;
   --ui-font-body: 0.875rem;
   --ui-font-title: 0.875rem;
+  --ui-font-onboarding-title: 1.5rem;
+  --ui-leading-onboarding-title: 1.75rem;
+  --ui-onboarding-frame-width: 520px;
+  --ui-onboarding-frame-height: 500px;
+  --ui-onboarding-copy-width: 420px;
+  --ui-onboarding-hero-size: 64px;
+  --ui-onboarding-hero-radius: 16px;
+  --ui-onboarding-icon-size: 30px;
+  --ui-onboarding-card-height: 52px;
+  --ui-onboarding-step-distance: 12px;
+  --ui-onboarding-step-duration: 220ms;
+  --ui-onboarding-progress-duration: 200ms;
+  --ui-onboarding-check-duration: 160ms;
   --ui-font-page-title: 1.25rem;
   /* Fixed line heights for small UI text (font-size/line-height): 14/20,
      13/18, 12/16 and 11/16 px. Long-form prose keeps its relative leading. */
@@ -1589,28 +1602,48 @@ body.overlay-window {
 
 /* The setup frame stays fixed while its content scrolls independently. */
 .onboarding-outer { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px 24px; }
-.onboarding-frame { width: min(520px, 100%); height: min(500px, 100%); min-height: 0; display: flex; flex-direction: column; }
+.onboarding-frame { width: min(var(--ui-onboarding-frame-width), 100%); height: min(var(--ui-onboarding-frame-height), 100%); min-height: 0; display: flex; flex-direction: column; }
 .onboarding-progress-wrap { display: flex; align-items: center; justify-content: space-between; flex: none; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
 .onboarding-progress { display: flex; align-items: center; gap: 8px; height: 20px; }
-.onboarding-progress span { width: 6px; height: 6px; border-radius: var(--ui-radius-pill); background: var(--murmur-on-surface-variant); }
+.onboarding-progress span { transition: width var(--ui-onboarding-progress-duration) ease-out, background-color var(--ui-onboarding-progress-duration) ease-out, opacity var(--ui-onboarding-progress-duration) ease-out; width: 6px; height: 6px; border-radius: var(--ui-radius-pill); background: var(--murmur-on-surface-variant); }
 .onboarding-progress span[data-state='current'] { width: 24px; background: var(--murmur-primary); }
 .onboarding-progress span[data-state='complete'] { background: var(--murmur-primary); opacity: .6; }
-.onboarding-content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 2px 12px; }
-.onboarding-heading { margin-bottom: 20px; }
-.onboarding-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--ui-radius-control); background: var(--ui-tint-accent-strong); color: var(--murmur-primary); margin-bottom: 12px; }
-.onboarding-heading h1 { font-size: var(--ui-font-page-title); line-height: 26px; font-weight: 600; color: var(--murmur-on-surface); margin: 0 0 4px; outline: none; }
+.onboarding-content { --ui-onboarding-step-offset: var(--ui-onboarding-step-distance); animation: onboarding-step-in var(--ui-onboarding-step-duration) ease-out both; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 2px 12px; }
+.onboarding-heading { margin-bottom: 20px; text-align: center; }
+.onboarding-icon { display: flex; align-items: center; justify-content: center; width: var(--ui-onboarding-hero-size); height: var(--ui-onboarding-hero-size); border-radius: var(--ui-onboarding-hero-radius); background: color-mix(in srgb, var(--murmur-primary) 12%, transparent); color: var(--murmur-primary); margin: 0 auto 16px; }
+.onboarding-icon svg { width: var(--ui-onboarding-icon-size); height: var(--ui-onboarding-icon-size); }
+.onboarding-heading h1 { font-size: var(--ui-font-onboarding-title); line-height: var(--ui-leading-onboarding-title); letter-spacing: -0.01em; font-weight: 600; color: var(--murmur-on-surface); margin: 0 0 4px; outline: none; }
 .onboarding-heading p, .onboarding-copy { font-size: var(--ui-font-body); line-height: var(--ui-leading-body); color: var(--murmur-on-surface-variant); }
-.onboarding-copy { margin-top: 10px; }
+.onboarding-heading p { max-width: var(--ui-onboarding-copy-width); margin: 8px auto 0; }
+.onboarding-copy { margin-top: 10px; text-align: center; }
+.onboarding-shortcut .onboarding-copy { text-align: left; }
+.onboarding-permission-card { display: flex; align-items: center; gap: 12px; min-height: var(--ui-onboarding-card-height); padding: 12px 16px; font-size: var(--ui-font-body); color: var(--murmur-on-surface-variant); }
+.onboarding-permission-label { flex: 1; color: var(--murmur-on-surface); font-weight: var(--ui-weight-label); }
+.onboarding-permission-state { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--ui-radius-pill); background: var(--murmur-surface-container); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.onboarding-permission-state[data-tone='success'] { color: var(--murmur-success); background: color-mix(in srgb, var(--murmur-success) 10%, transparent); }
+.onboarding-permission-state[data-tone='error'] { color: var(--murmur-error); background: color-mix(in srgb, var(--murmur-error) 10%, transparent); }
+.onboarding-permission-state[data-fresh='true'] svg { animation: onboarding-check-in var(--ui-onboarding-check-duration) ease-out both; }
+.onboarding-spinner { animation: onboarding-spin 1s linear infinite; }
+.onboarding-content[data-direction='back'] { --ui-onboarding-step-offset: calc(-1 * var(--ui-onboarding-step-distance)); }
+@keyframes onboarding-step-in { from { opacity: 0; transform: translateX(var(--ui-onboarding-step-offset)); } to { opacity: 1; transform: translateX(0); } }
+@keyframes onboarding-check-in { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: scale(1); } }
+@keyframes onboarding-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-content { --ui-onboarding-step-offset: var(--ui-onboarding-step-distance); animation: none; }
+  .onboarding-progress span { transition: none; }
+  .onboarding-permission-state[data-fresh='true'] svg, .onboarding-spinner { animation: none; }
+}
 .onboarding-status { min-height: 24px; display: flex; align-items: center; gap: 8px; font-size: var(--ui-font-body); color: var(--murmur-on-surface-variant); }
 .onboarding-status[data-tone='success'] svg { color: var(--murmur-success); }
 .onboarding-status[data-tone='error'] svg { color: var(--murmur-error); }
 .onboarding-error { margin-top: 12px; font-size: var(--ui-font-body); }
-.onboarding-link { display: block; margin-top: 12px; color: var(--murmur-on-surface-variant); text-decoration: underline; font-size: var(--ui-font-caption); }
+.onboarding-link { display: block; margin-left: auto; margin-right: auto; margin-top: 12px; color: var(--murmur-on-surface-variant); text-decoration: underline; font-size: var(--ui-font-caption); }
 .onboarding-link:hover { color: var(--murmur-on-surface); }
 .onboarding-actions { flex: none; padding-top: 12px; }
 .onboarding-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .onboarding-nav-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .onboarding-shortcut { padding: 16px; }
+.onboarding-content > .onboarding-label { text-align: center; }
 .onboarding-label { font-size: var(--ui-font-body); font-weight: 600; color: var(--murmur-on-surface); margin: 12px 0 8px; }
 .onboarding-shortcut .onboarding-label:first-child { margin-top: 0; }
 .onboarding-segmented { display: flex; background: var(--ui-tint-sunken); }
