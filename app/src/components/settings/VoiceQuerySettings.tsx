@@ -308,7 +308,7 @@ export function VoiceQuerySettings({
 
       <SettingsBranch open={settings.queryHotkey !== null}>
           <SettingsRow targetId="query-key" title={<>Query shortcut</>} disabled={settings.queryHotkey === null} onReset={settings.queryHotkey !== DEFAULT_SETTINGS.queryHotkey ? () => { void vm.toggleVoiceQuery(); } : undefined} control={<Select
-              value={settings.queryHotkey ?? QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value ?? 'shift_r'}
+              value={settings.queryHotkey ?? QUERY_KEY_OPTIONS[0]?.value ?? 'shift_r'}
               disabled={settings.queryHotkey === null}
               onChange={(value) => vm.updateQueryHotkey(value as QueryKey)}
               items={QUERY_KEY_OPTIONS}

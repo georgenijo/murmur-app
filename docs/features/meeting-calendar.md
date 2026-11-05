@@ -16,7 +16,7 @@ naming available.
 macOS 14 and later require full event authorization to read Calendar data.
 Murmur declares `NSCalendarsFullAccessUsageDescription`, grants the signed host
 `com.apple.security.personal-information.calendars`, and requests access through
-EventKit. Capture and local-LLM helpers do not receive this entitlement.
+EventKit. Capture helpers do not receive this entitlement.
 Its adapter exposes only reads and never calls event save,
 remove, or commit methods. The permission request starts on the main thread and
 retains its native store until completion. Passive status reads call the native

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 
-export type CustomizationDestination = 'text' | 'commands' | 'styles' | 'modes' | 'transforms';
+export type CustomizationDestination = 'text' | 'commands' | 'styles' | 'modes';
 
 const DESTINATIONS: ReadonlyArray<{
   id: CustomizationDestination;
@@ -26,11 +26,6 @@ const DESTINATIONS: ReadonlyArray<{
     id: 'modes',
     title: 'Modes',
     description: 'Build reusable behavior and assign it to apps or browser sites',
-  },
-  {
-    id: 'transforms',
-    title: 'Selected-text rewrite',
-    description: 'Configure on-device rewrites and saved instructions',
   },
 ];
 

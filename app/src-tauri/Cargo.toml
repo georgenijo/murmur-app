@@ -9,9 +9,7 @@ default-run = "ui"
 [workspace]
 members = [
     "crates/capture-helper-protocol",
-    "crates/local-llm-protocol",
     "sidecars/capture",
-    "sidecars/local-llm",
 ]
 default-members = ["."]
 resolver = "2"
@@ -21,10 +19,8 @@ name = "ui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [features]
-# Exposes LlmSidecar::for_test + scenario env injection into the local-LLM
-# helper. Off by default so the injection path is not linkable in a release
-# binary (debug_assertions also enables it for the standard test build).
-llm-test-support = []
+# Test-only capture helper executable injection.
+capture-test-support = []
 # Private corpus capture/replay tools. Off by default: production builds do not
 # compile the corpus command module or register its IPC surface.
 internal-benchmark = []
@@ -70,10 +66,6 @@ aho-corasick = "1"
 regex = "1"
 libc = "0.2"
 rusqlite = { version = "0.40.1", default-features = false, features = ["backup", "bundled"] }
-# Local-LLM sidecar supervisor (#312): the app links ONLY the protocol crate,
-# never llama-cpp-2. sha2 verifies the pinned transform model before spawn and
-# while streaming its download; sysinfo reads the child helper's RSS by pid.
-murmur-local-llm-protocol = { path = "crates/local-llm-protocol" }
 murmur-capture-helper-protocol = { path = "crates/capture-helper-protocol" }
 sha2 = "0.10"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
@@ -82,14 +74,6 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # already links statically, so the app carries exactly one ONNX Runtime.
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "alternative-backend", "api-24"] }
 realfft = "3"
-
-# Test-support helper: a protocol-v1 mock of the local-LLM sidecar, driven by
-# scenario env vars. It is an example target so `cargo test` builds it for the
-# integration suite without exposing it to Tauri's automatic `--bins` bundle.
-[[example]]
-name = "mock_llm_helper"
-path = "tests/support/mock_llm_helper.rs"
-test = false
 
 [dev-dependencies]
 tempfile = "3"

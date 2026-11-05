@@ -7,19 +7,16 @@ describe('bezelCue', () => {
     const cases: [OverlayIndicator, string, string][] = [
       [{ kind: 'calibrating' }, 'arrows', 'Calibrating'],
       [{ kind: 'cancelled' }, 'cross', 'Cancelled'],
-      [{ kind: 'secureField' }, 'warn', 'Secure field'],
       [{ kind: 'microphoneFailure', failure: 'chooseMicrophone' }, 'warn', 'No mic'],
       [{ kind: 'microphoneFailure', failure: 'openMicrophoneSettings' }, 'warn', 'Mic denied'],
       [{ kind: 'microphoneFailure', failure: 'waitForPartialTranscription' }, 'warn', 'Mic lost'],
       [{ kind: 'microphoneFailure', failure: 'retry' }, 'warn', 'Mic failed'],
-      [{ kind: 'transformBusy' }, 'warn', 'Busy'],
       [{ kind: 'hotkeyMiss' }, 'warn', 'Tap missed'],
       [{ kind: 'meeting', processing: false }, 'dot', 'Meeting'],
       [{ kind: 'meeting', processing: true }, 'spinner', 'Finishing'],
       [{ kind: 'starting', slow: true }, 'ring', 'Connecting'],
       [{ kind: 'recovering' }, 'spinner', 'Recovering'],
       [{ kind: 'processing' }, 'spinner', 'Transcribing…'],
-      [{ kind: 'transforming' }, 'spinner', 'Rewriting'],
     ];
     for (const [indicator, glyph, word] of cases) {
       expect(bezelCue(indicator)).toEqual({ glyph, word });

@@ -10,20 +10,18 @@ interface UseEscapeCancelProps {
 }
 
 interface EscapeCancelPayload {
-  transformPassId: number | null;
-  queryPassId?: number | null;
+  queryPassId: number | null;
 }
 
 function isEscapeCancelPayload(value: unknown): value is EscapeCancelPayload {
   if (!value || typeof value !== 'object') return false;
-  const transformPassId = (value as Record<string, unknown>).transformPassId;
   const queryPassId = (value as Record<string, unknown>).queryPassId;
   const validPassId = (passId: unknown) => passId === null || (
       typeof passId === 'number'
       && Number.isSafeInteger(passId)
       && passId > 0
     );
-  return validPassId(transformPassId) && (queryPassId === undefined || validPassId(queryPassId));
+  return validPassId(queryPassId);
 }
 
 const MAX_IN_FLIGHT_ESCAPE_TARGETS = 8;
@@ -44,31 +42,19 @@ export function useEscapeCancel({ status, enabled }: UseEscapeCancelProps) {
       if (cancelled) return;
       if (!isEscapeCancelPayload(event.payload)) return;
 
-      const transformPassId = event.payload.transformPassId;
       const queryPassId = event.payload.queryPassId ?? null;
-      const target = transformPassId !== null
-        ? `transform:${transformPassId}`
-        : queryPassId !== null
+      const target = queryPassId !== null
           ? `query:${queryPassId}`
           : DICTATION_ESCAPE_TARGET;
       if (cancellingTargets.has(target)) return;
       if (cancellingTargets.size >= MAX_IN_FLIGHT_ESCAPE_TARGETS) return;
       cancellingTargets.add(target);
       try {
-        if (transformPassId !== null) {
-          await invoke('cancel_transform', { transformPassId });
-          return;
-        }
         if (queryPassId !== null) {
           await invoke('cancel_query', { queryPassId });
           return;
         }
 
-        // Rust emits a null pass only when physical Escape did not target an
-        // active/queued transform. ReviewPending is also globally correlated
-        // across the brief transition-before-focus handoff; Applying has no
-        // global Escape action. A null target can therefore only fall back to
-        // dictation cancellation.
         if (statusRef.current === 'idle') return;
         await cancelRecording();
       } catch (err) {

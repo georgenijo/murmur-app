@@ -47,7 +47,6 @@ describe('local activity statistics', () => {
 
   it('preserves counters across interleaved dictation, query, and activity writes and repeated loads', () => {
     updateActivityStats({ kind: 'meeting', durationMs: 90_000 }, '2026-08');
-    updateActivityStats({ kind: 'meeting_summary' });
     updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Exact saved name' }, '2026-08');
     updateActivityStats({ kind: 'transform', outcome: 'approved', presetName: 'Exact saved name' }, '2026-08');
     updateActivityStats({ kind: 'correction_proposed' });
@@ -61,7 +60,7 @@ describe('local activity statistics', () => {
     expect(stats.totalWords).toBe(4);
     expect(stats.query.successfulQueries).toBe(1);
     expect(stats.activity).toMatchObject({
-      meetings: { count: 1, totalMinutes: 1.5, summariesGenerated: 1 },
+      meetings: { count: 1, totalMinutes: 1.5, summariesGenerated: 0 },
       transforms: { runs: 1, approved: 1, byPresetName: { 'Exact saved name': { runs: 1, approved: 1 } } },
       corrections: { proposed: 1, taught: 1, byScope: { project: 1 } },
       recordingsByMode: { 'mode-id': 1 }, pasteLastUses: 1,

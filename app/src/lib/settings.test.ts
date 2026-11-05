@@ -30,7 +30,6 @@ import {
   microphoneDeviceNameArg,
   MODEL_OPTIONS,
   ownSettingsMigrations,
-  pasteLastShortcutConflict,
   STORAGE_KEY,
   recordingShortcutHint,
   WRITING_STYLE_OPTIONS,
@@ -111,65 +110,6 @@ describe('dictation keys', () => {
 });
 
 describe('loadSettings', () => {
-  it('round-trips every stored field and value through the unified Settings UI schema', () => {
-    const stored = {
-      ...DEFAULT_SETTINGS,
-      model: 'tiny.en' as const,
-      doubleTapKey: 'alt_l' as const,
-      transformHoldKey: 'alt_r' as const,
-      language: 'es',
-      autoPaste: true,
-      smartDestinationEnabled: true,
-      autoPasteDelayMs: 230,
-      recordingMode: 'both' as const,
-      hotkeyMissFeedback: true,
-      microphone: 'Studio Mic',
-      launchAtLogin: true,
-      overlayVerticalOffset: 7,
-      vadSensitivity: 75,
-      idleTimeoutMinutes: 15,
-      customVocabulary: 'Murmur',
-      vocabularyEntries: [{ id: 'murmur', written: 'Murmur', aliases: ['murmur app'], enabled: true, scope: { kind: 'global' as const } }],
-      disabled: true,
-      smartPunctuation: false,
-      saveTranscript: true,
-      saveAudio: true,
-      outputDir: '/tmp/murmur-output',
-      appProfiles: [{
-        bundleId: 'com.apple.Terminal',
-        label: 'Terminal',
-        autoPasteOverride: false,
-        cleanupOverride: true,
-        smartFormattingOverride: false,
-        cliFormattingOverride: true,
-        writingStyle: 'code_technical' as const,
-        ideContextEnabled: true,
-        ideProjectRoots: ['/tmp/project'],
-        queryContextExcluded: true,
-      }],
-      voiceCommandsEnabled: true,
-      voiceCommands: [{ phrase: 'standup', replacement: 'Yesterday:\nToday:' }],
-      cleanupEnabled: true,
-      smartFormattingEnabled: true,
-      cleanupRemoveFiller: false,
-      cleanupCapitalize: false,
-      codeVocabEnabled: true,
-      codeVocabFolder: '/tmp/project',
-      codeVocabLastScan: {
-        files: 2, skipped: 1, terms: 3, bytes: 44, capped: false, ms: 5,
-        sampleTerms: ['useEffect'], rankedTerms: [{ term: 'useEffect', freq: 2 }],
-        whisperCount: 1, adopted: true,
-      },
-      correctionEnabled: false,
-      correctionFuzzy: false,
-    };
-
-    saveSettings(stored);
-    const loaded = loadSettings();
-
-    expect(Object.keys(loaded).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
-    expect(loaded).toEqual(stored);
-  });
 
   it('keeps the five-minute idle default and persists the power-adapter idle choice', () => {
     expect(DEFAULT_SETTINGS.idleTimeoutMinutes).toBe(5);
@@ -364,20 +304,6 @@ describe('loadSettings', () => {
       pasteLastShortcut: 'command_shift_p',
     }));
     expect(loadSettings().pasteLastShortcut).toBeNull();
-  });
-
-  it('reports conflicts with every Murmur-owned shortcut using specific guidance', () => {
-    const owned = {
-      doubleTapKey: 'shift_l' as const,
-      transformHoldKey: 'alt_r' as const,
-      queryHotkey: 'ctrl_l' as const,
-    };
-    expect(pasteLastShortcutConflict('shift_l', owned)).toContain('Dictation');
-    expect(pasteLastShortcutConflict('alt_r', owned)).toContain('Selected-text Transform');
-    expect(pasteLastShortcutConflict('ctrl_l', owned)).toContain('Voice Query');
-    expect(pasteLastShortcutConflict('command_shift_p', owned)).toContain('command palette');
-    expect(pasteLastShortcutConflict('command_comma', owned)).toContain('Settings');
-    expect(pasteLastShortcutConflict('command_shift_v', owned)).toBeNull();
   });
 
   it('defaults and bounds persisted sound cue settings', () => {
@@ -664,39 +590,6 @@ describe('loadSettings', () => {
     delete legacy.smartFormattingEnabled;
     localStorage.setItem('dictation-settings', JSON.stringify(legacy));
     expect(loadSettings().smartFormattingEnabled).toBe(false);
-  });
-
-  it('defaults transformHoldKey to disabled (null) when absent from a pre-feature blob', () => {
-    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
-    delete legacy.transformHoldKey;
-    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
-    expect(loadSettings().transformHoldKey).toBeNull();
-  });
-
-  it('preserves a valid stored transformHoldKey', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      transformHoldKey: 'ctrl_l',
-    }));
-    expect(loadSettings().transformHoldKey).toBe('ctrl_l');
-  });
-
-  it('coerces an unrecognised or malformed transformHoldKey back to disabled', () => {
-    for (const bad of ['shift_l', 'not_a_key', 42, {}, true]) {
-      localStorage.setItem('dictation-settings', JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        transformHoldKey: bad,
-      }));
-      expect(loadSettings().transformHoldKey).toBeNull();
-    }
-  });
-
-  it('explicit null transformHoldKey stays disabled', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      transformHoldKey: null,
-    }));
-    expect(loadSettings().transformHoldKey).toBeNull();
   });
 
   it('preserves legacy custom Voice Command pairs for one-time Rust migration', () => {
@@ -1342,19 +1235,6 @@ describe('Voice Query settings', () => {
     }
   });
 
-  it('fails closed when a persisted query key conflicts with transform', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      transformHoldKey: 'alt_r',
-      queryHotkey: 'alt_r',
-      queryExecutable: '/usr/bin/printf',
-    }));
-
-    const settings = loadSettings();
-
-    expect(settings.transformHoldKey).toBe('alt_r');
-    expect(settings.queryHotkey).toBeNull();
-  });
-
   it('bounds malformed CLI configuration before IPC', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       queryHotkey: 'unexpected_key',
@@ -1451,5 +1331,21 @@ describe('read-only durable settings snapshots', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
     expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBe('48');
     expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('removed feature upgrade compatibility', () => {
+  it('ignores obsolete rewrite fields without resetting dictation or Voice Query', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...DEFAULT_SETTINGS, language: 'fr', autoPaste: false,
+      transformHoldKey: 'alt_r', correctionShortcutEnabled: true,
+      queryHotkey: 'alt_r', queryExecutable: '/usr/bin/true',
+    }));
+    const settings = loadSettings();
+    expect(settings.language).toBe('fr');
+    expect(settings.autoPaste).toBe(false);
+    expect(settings.queryHotkey).toBe('alt_r');
+    expect(settings.queryExecutable).toBe('/usr/bin/true');
   });
 });

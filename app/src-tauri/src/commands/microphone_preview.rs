@@ -134,11 +134,7 @@ pub async fn start_microphone_preview(
                 "Finish the current meeting transcript before testing the microphone".to_string(),
             );
         }
-        if state.app_state.transform_status().blocks_recording()
-            || state.transform_runtime.is_transform_busy()
-        {
-            return Err("Finish the current transform before testing the microphone".to_string());
-        }
+
         if state.query.status().blocks_capture() {
             return Err(
                 "Finish the current voice query's recording before testing the microphone"

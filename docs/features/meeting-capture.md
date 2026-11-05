@@ -3,61 +3,15 @@
 Meeting Capture is an explicit, local-only long-form recording mode for macOS
 14.2 and newer. It records the selected microphone and Mac playback as separate
 streams, transcribes both incrementally with the selected local model, and
-stores an ordered transcript in SQLite. After capture, an explicit action can
-derive a local summary, decisions, action items, and open questions.
-
-## Derived artifact foundation
-
-Meeting summaries use the portable `murmur.meeting-artifact.v1` contract. Every
-summary, decision, action item, and open question carries one or more source
-segment IDs. Action owners and due dates are nullable; absent, informal, or
-unsupported values remain `null` and are displayed as Unknown rather than
-being guessed.
-
-Long transcripts are divided in capture order with both character and
-segment-count bounds. Partial artifacts merge with a fan-in of eight and repeat
-hierarchically until one bounded artifact remains. Duplicate claims are folded
-deterministically. Validation rejects unknown schema fields, oversized arrays
-or text, malformed values, and source IDs that do not belong to the meeting.
-
-Artifacts export as Markdown, plain text, or self-identifying JSON. All three
-retain source-segment provenance; Markdown and text render unknown action
-owners/dates explicitly. The foundation is local and pure: it does not upload
-transcripts or log meeting content.
-
-## Local summary execution
-
-Completed and interrupted meetings with finalized transcript text expose a
-**Summarize** action. The coordinator chunks the immutable ordered transcript,
-runs one request at a time through the signed local-LLM sidecar, validates exact
-JSON and source provenance after every request, merges bounded results
-deterministically, and atomically upserts one artifact for the session. Retry
-replaces the artifact only after the new result fully succeeds.
-
-The UI shows chunk progress, elapsed runtime, cancellation, retry, and the final
-summary with source segment IDs. Cancellation targets the exact generation and
-keeps any prior artifact. Summary ownership blocks competing capture and model
-work until the sidecar exits. Runtime and peak helper RSS remain content-free
-status evidence.
+stores an ordered transcript in SQLite. After capture, users can
+review the durable transcript and speaker labels.
 
 ## Review workspace
 
-Notetaker presents the generated result as a separate draft over immutable
-transcript evidence. A user can set per-session display labels for the canonical
-`Me` and `Them` channels, edit existing sourced claims, reorder or remove list
-items, select transcript sources to add a decision, action item, or open question,
-and save a revisioned reviewed snapshot. Existing claim edits never carry source
-IDs; Rust restores them from the exact generated or reviewed base. New claims
-carry selected segment IDs in the same revision-checked save request, without a
-client key. Rust validates their session sources and assigns opaque identities
-before committing.
-
-Regeneration replaces only the generated draft. A saved review remains active
-until the user separately confirms replacement from an exact generated revision.
-Source buttons move focus to the cited transcript segment. Markdown, plain-text,
-and JSON exports share one bounded reviewed-meeting snapshot containing display
-labels, canonical channels, the active document, provenance, and transcript.
-See [Meeting Review Workspace](meeting-review-workspace.md).
+Notetaker lists saved sessions with their durable transcripts and speaker labels.
+Users can rename a meeting, name it from Calendar, change per-session speaker
+display labels, copy or export the transcript, and play retained audio. See
+[Meeting transcript workspace](meeting-review-workspace.md).
 
 ## User contract
 
@@ -72,7 +26,7 @@ See [Meeting Review Workspace](meeting-review-workspace.md).
 - The overlay shows a persistent two-dot meeting state from accepted start
   through capture stop. A spinner remains while final durable chunks transcribe.
 - Dictation, file transcription, benchmarks, corpus capture, selected-text
-  transform, meeting capture, and interrupted-meeting recovery refuse to start
+  meeting capture, and interrupted-meeting recovery refuse to start
   over one another instead of contending for Core Audio or the model.
 - Audio retention is off by default. A chunk WAV is deleted only after its
   transcript commits. Users may retain audio and set age/session-count caps.

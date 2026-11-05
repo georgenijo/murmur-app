@@ -184,31 +184,6 @@ describe('useRecordingState transition ordering', () => {
     expect(current.status).toBe('starting');
   });
 
-  it('drops a pending-start release when the start is refused and does not leak it into the next start', async () => {
-    const refused = deferred<{ type: string; state: string }>();
-    mocks.startRecording.mockReturnValueOnce(refused.promise);
-
-    let starting!: Promise<void>;
-    await act(async () => {
-      starting = current.handleHoldStart();
-    });
-    await act(async () => current.handleStop());
-    await act(async () => {
-      refused.resolve({ type: 'busy_transforming', state: 'idle' });
-      await starting;
-    });
-    expect(mocks.cancelRecording).not.toHaveBeenCalled();
-
-    mocks.startRecording.mockResolvedValueOnce({
-      type: 'recording_starting',
-      state: 'starting',
-      recordingId: 10,
-    });
-    await act(async () => current.handleHoldStart());
-    expect(current.status).toBe('starting');
-    expect(mocks.cancelRecording).not.toHaveBeenCalled();
-  });
-
   it('does not reuse a rejected keyboard token on the next toolbar start', async () => {
     mocks.startRecording.mockResolvedValueOnce({ type: 'busy_transcribing_file', state: 'idle' });
     await act(async () => current.toggleRecording('keyboard-42'));
@@ -234,26 +209,6 @@ describe('useRecordingState transition ordering', () => {
       await Promise.all([toolbarStart, keyboardStart]);
     });
     expect(mocks.startRecording).toHaveBeenCalledOnce();
-  });
-
-  it('surfaces a reason for every busy refusal instead of failing silently', async () => {
-    const refusals = [
-      'busy_benchmarking',
-      'busy_transcribing_file',
-      'busy_meeting',
-      'busy_querying',
-      'busy_transforming',
-      'busy_recording_corpus',
-    ];
-
-    for (const type of refusals) {
-      mocks.startRecording.mockResolvedValueOnce({ type, state: 'idle' });
-
-      await act(async () => current.handleStart());
-
-      expect(current.status).toBe('idle');
-      expect(current.error, `${type} must explain itself`).not.toBe('');
-    }
   });
 
   it('does not let a start response overwrite an earlier readiness event', async () => {

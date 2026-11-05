@@ -2898,14 +2898,6 @@ async fn run_transcription_pipeline(
                         recovery_target,
                         recovery_smart_destination,
                         paste_delay_ms,
-                        crate::correct_and_teach::teaching_context(
-                            context.app.bundle_id.as_deref(),
-                            context
-                                .matched_profile
-                                .as_ref()
-                                .map(|profile| profile.label.as_str()),
-                            context.teaching_project_root.as_deref(),
-                        ),
                     );
                 }
                 if let injector::InjectionOutcome::ClipboardOnly(reason) = result.outcome {
@@ -3107,25 +3099,6 @@ pub async fn process_audio(
     if state.app_state.meeting_blocks_asr() {
         return Err("Cannot process audio while a meeting transcript is active.".to_string());
     }
-    // Auto-dismiss a parked transform review, refuse on an active transform
-    // (issue #338 — same policy as start_native_recording). The in-lock
-    // transform guard below stays as a race guard.
-    {
-        let fx = crate::transform_flow::TauriFlowEffects {
-            app: &app_handle,
-            state: &state,
-        };
-        crate::transform_flow::clear_parked_review_for_pipeline_work(
-            &state.app_state,
-            &fx,
-            "process_audio",
-            "Cannot process audio while a transform is in progress.",
-        )?;
-    }
-    // Only one heavy inference runtime may be resident: stop any local-LLM
-    // helper before recording. Fail-fast no-op while a transform is in flight —
-    // the is_transform_busy guard below then refuses this recording.
-    state.transform_runtime.shutdown();
     let (rid, delivery_target, site_identity, smart_enabled) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
@@ -3141,20 +3114,12 @@ pub async fn process_audio(
             tracing::warn!(target: "pipeline", "process_audio: blocked — benchmark in progress");
             return Err("Cannot process audio while a benchmark is in progress.".to_string());
         }
-        if state.app_state.transform_status().blocks_recording() {
-            tracing::warn!(target: "pipeline", "process_audio: blocked — transform in progress");
-            return Err("Cannot process audio while a transform is in progress.".to_string());
-        }
+
         if state.query.status().blocks_capture() {
             tracing::warn!(target: "pipeline", "process_audio: blocked — voice query is capturing");
             return Err("Cannot process audio while a voice query is listening.".to_string());
         }
-        // Mutual exclusion with the local-LLM transform runtime: only one heavy
-        // inference runtime may be resident. Refuse while a transform is active.
-        if state.transform_runtime.is_transform_busy() {
-            tracing::warn!(target: "pipeline", "process_audio: blocked — transform runtime busy");
-            return Err("Cannot process audio while a text transform is in progress.".to_string());
-        }
+
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
         }
@@ -3353,13 +3318,6 @@ pub async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Va
         "model": dictation.model_name,
         "language": dictation.language
     }))
-}
-
-/// Current phase of the AX-selection transform pipeline (issue #312).
-/// Independent of `get_status`'s dictation state — see `TransformStatus`.
-#[tauri::command]
-pub fn transform_status(state: tauri::State<'_, State>) -> crate::state::TransformStatus {
-    state.app_state.transform_status()
 }
 
 /// Privacy-safe shape for configuration telemetry. User-entered values (profile
@@ -5120,19 +5078,11 @@ pub(crate) fn dictation_start_blocker(
     if state.benchmark.is_running() {
         return blocked("busy_benchmarking", "idle");
     }
-    // A transform pass (issue #312) holds the shared Whisper backend,
-    // clipboard, and AX surface.
-    if state.app_state.transform_status().blocks_recording() {
-        return blocked("busy_transforming", "idle");
-    }
+
     if state.query.status().blocks_capture() {
         return blocked("busy_querying", "idle");
     }
-    // Only one heavy inference runtime may be resident: refuse to record
-    // while a local-LLM transform is in flight (supervisor busy).
-    if state.transform_runtime.is_transform_busy() {
-        return blocked("busy_transforming", "idle");
-    }
+
     match status {
         DictationStatus::Starting => blocked("already_starting", "starting"),
         DictationStatus::Recording => blocked("already_recording", "recording"),
@@ -5177,39 +5127,6 @@ pub async fn start_native_recording(
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }
-    // A transform review parked at ReviewPending — failed (#327) or ready
-    // (#329) — is auto-dismissed so the dictation key just works instead of
-    // silently refusing until the popover is manually dismissed. Pressing the
-    // mic with an Approve/Retry popover up discards the proposal, exactly as
-    // if the user had pressed Cancel first. Active transform phases
-    // (Capturing/Listening/Thinking/Applying) still block via the
-    // transform_status guard below.
-    {
-        let fx = crate::transform_flow::TauriFlowEffects {
-            app: &app_handle,
-            state: &state,
-        };
-        let dismissed_transform_pass_id = state.app_state.active_transform_pass_id();
-        if crate::transform_flow::dismiss_review_for_recording(&state.app_state, &fx) {
-            if let Some(transform_pass_id) = dismissed_transform_pass_id {
-                state.transform_diagnostics.phase(
-                    transform_pass_id,
-                    "supersession",
-                    "completed",
-                    None,
-                    None,
-                );
-                state
-                    .transform_diagnostics
-                    .finish(transform_pass_id, "superseded");
-            }
-            tracing::info!(target: "pipeline", "start_native_recording: auto-dismissed transform review");
-        }
-    }
-    // Stop any resident local-LLM helper before recording (fail-fast no-op
-    // while a transform is in flight; the is_transform_busy guard below then
-    // refuses this recording).
-    state.transform_runtime.shutdown();
     let origin = match origin.as_deref() {
         Some("hold") => "hold",
         _ => "toggle",
@@ -5288,15 +5205,6 @@ pub async fn start_native_recording(
                             None,
                         ),
                     };
-                // A new recording invalidates any stale transform session
-                // (issue #312 PR-B2) — the guards above already ensure no
-                // transform is in progress, but a completed one (applied or
-                // not) must not survive into the recording that's about to
-                // start. Only reached here, AFTER the Recording/Processing
-                // early-returns above, so a redundant start call while a
-                // recording is already in flight can never wipe a session a
-                // pending undo still needs.
-                crate::transform_apply::clear_session(&state.app_state);
                 let rid = state.app_state.next_recording_id();
                 let gesture = gesture_claim.accepted(origin == "hold");
                 crate::audio::prepare::capture_claimed(
@@ -6218,33 +6126,6 @@ pub async fn transcribe_file(
         return Err("Already transcribing a file.".to_string());
     }
     drop(transition);
-    // Auto-dismiss a parked transform review, refuse on an active transform
-    // (issue #338 — same policy as start_native_recording; a parked review
-    // never finishes on its own, so "wait for the transform" would never
-    // resolve). The in-lock transform guard below stays as a race guard.
-    // Note: file_transcribing was claimed above, so release it on refusal.
-    {
-        let fx = crate::transform_flow::TauriFlowEffects {
-            app: &app_handle,
-            state: &state,
-        };
-        if let Err(refusal) = crate::transform_flow::clear_parked_review_for_pipeline_work(
-            &state.app_state,
-            &fx,
-            "transcribe_file",
-            "Wait for the transform to finish before transcribing a file.",
-        ) {
-            state
-                .app_state
-                .file_transcribing
-                .store(false, Ordering::SeqCst);
-            return Err(refusal);
-        }
-    }
-    // Only one heavy inference runtime may be resident: stop any local-LLM
-    // helper before running the file transcription (fail-fast no-op while a
-    // transform is in flight).
-    state.transform_runtime.shutdown();
     let _file_guard = FileTranscribeGuard {
         app_state: &state.app_state,
         app_handle: Some(app_handle.clone()),
@@ -6259,11 +6140,7 @@ pub async fn transcribe_file(
         if state.corpus.is_active() {
             return Err("Finish the corpus recording before transcribing a file.".to_string());
         }
-        // Transform's Thinking phase (issue #312) will share this same Whisper
-        // backend, so it must be mutually exclusive with file transcription too.
-        if state.app_state.transform_status().blocks_recording() {
-            return Err("Wait for the transform to finish before transcribing a file.".to_string());
-        }
+
         if state.query.status().blocks_capture() {
             return Err(
                 "Wait for the voice query to finish listening before transcribing a file."
@@ -6669,15 +6546,13 @@ pub(crate) mod tests {
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
-                meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
                 assistant: crate::assistant::AssistantStore::default(),
-                transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
-                ),
+
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
@@ -6687,9 +6562,6 @@ pub(crate) mod tests {
                 ),
                 overlay_frame: std::sync::Mutex::new(None),
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
-                transform_popover_anchor: std::sync::Mutex::new(None),
-                transform_main_was_visible: std::sync::Mutex::new(None),
-                transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
                 query: crate::query_flow::QueryCoordinator::default(),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -7166,23 +7038,18 @@ pub(crate) mod tests {
             meeting_store: Default::default(),
             meetings: Default::default(),
             meeting_suggestions: Default::default(),
-            meeting_summaries: Default::default(),
             delivery_recovery: Default::default(),
             correct_and_teach: Default::default(),
             capture_health: Default::default(),
             performance: Default::default(),
             query_history: Default::default(),
             assistant: Default::default(),
-            transform_diagnostics: Default::default(),
             dictation_diagnostics: Default::default(),
             notch_info: Default::default(),
             display_snapshot: Default::default(),
             overlay_calibration: Default::default(),
             overlay_frame: Default::default(),
             overlay_layout: Default::default(),
-            transform_popover_anchor: Default::default(),
-            transform_main_was_visible: Default::default(),
-            transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
             query: Default::default(),
         });
         let transition = state.app_state.recording_transition.lock().await;
@@ -7231,15 +7098,13 @@ pub(crate) mod tests {
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
-                meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
                 assistant: crate::assistant::AssistantStore::default(),
-                transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
-                ),
+
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
@@ -7249,9 +7114,6 @@ pub(crate) mod tests {
                 ),
                 overlay_frame: std::sync::Mutex::new(None),
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
-                transform_popover_anchor: std::sync::Mutex::new(None),
-                transform_main_was_visible: std::sync::Mutex::new(None),
-                transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
                 query: crate::query_flow::QueryCoordinator::default(),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -7365,15 +7227,13 @@ pub(crate) mod tests {
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
-                meeting_summaries: crate::commands::meeting_summary::MeetingSummaryCoordinator::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
                 correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
                 query_history: crate::query_history::QueryHistoryStore::default(),
                 assistant: crate::assistant::AssistantStore::default(),
-                transform_diagnostics: crate::transform_diagnostics::TransformDiagnostics::default(
-                ),
+
                 dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
                 ),
                 notch_info: std::sync::Mutex::new(None),
@@ -7383,9 +7243,6 @@ pub(crate) mod tests {
                 ),
                 overlay_frame: std::sync::Mutex::new(None),
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
-                transform_popover_anchor: std::sync::Mutex::new(None),
-                transform_main_was_visible: std::sync::Mutex::new(None),
-                transform_runtime: Arc::new(crate::llm_sidecar::LlmSidecar::new()),
                 query: crate::query_flow::QueryCoordinator::default(),
             })
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

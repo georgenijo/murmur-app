@@ -10,22 +10,19 @@ import type { MicrophoneFailureCue } from '../../lib/hooks/useOverlayRuntime';
  */
 export type OverlayIndicator =
   | { kind: 'cancelled' }
-  | { kind: 'secureField' }
-  | { kind: 'transformBusy' }
   | { kind: 'hotkeyMiss' }
   | { kind: 'microphoneFailure'; failure: MicrophoneFailureCue }
   | { kind: 'starting'; slow: boolean }
   | { kind: 'recording' }
   | { kind: 'recovering' }
   | { kind: 'processing' }
-  | { kind: 'transforming' }
   | { kind: 'calibrating' }
   | { kind: 'meeting'; processing: boolean }
   | { kind: 'clipboardOnly' }
   | { kind: 'idle'; dimmed: boolean };
 
 const PRIORITY_CUES = new Set<OverlayIndicator['kind']>([
-  'calibrating', 'cancelled', 'secureField', 'microphoneFailure', 'transformBusy', 'hotkeyMiss',
+  'calibrating', 'cancelled', 'microphoneFailure', 'hotkeyMiss',
 ]);
 
 export interface OverlayVisual {
@@ -62,9 +59,6 @@ export function deriveVisual(
   showCancelled: boolean,
   showHotkeyMiss: boolean,
   disabled: boolean,
-  transforming: boolean = false,
-  showSecureField: boolean = false,
-  showTransformBusy: boolean = false,
   showMicrophoneFailure: MicrophoneFailureCue | false | null = false,
   stillConnecting: boolean = false,
   calibrating: boolean = false,
@@ -76,12 +70,8 @@ export function deriveVisual(
     indicator = { kind: 'calibrating' };
   } else if (showCancelled) {
     indicator = { kind: 'cancelled' };
-  } else if (showSecureField) {
-    indicator = { kind: 'secureField' };
   } else if (showMicrophoneFailure) {
     indicator = { kind: 'microphoneFailure', failure: showMicrophoneFailure };
-  } else if (showTransformBusy) {
-    indicator = { kind: 'transformBusy' };
   } else if (showHotkeyMiss) {
     indicator = { kind: 'hotkeyMiss' };
   } else if (meetingPhase !== 'idle' && meetingPhase !== 'failed') {
@@ -94,8 +84,6 @@ export function deriveVisual(
     indicator = { kind: 'recovering' };
   } else if (status === 'processing') {
     indicator = { kind: 'processing' };
-  } else if (transforming) {
-    indicator = { kind: 'transforming' };
   } else if (showClipboardOnly) {
     indicator = { kind: 'clipboardOnly' };
   } else {

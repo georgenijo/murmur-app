@@ -4,8 +4,7 @@
     "externalBin": [
       "binaries/murmur-capture-agent",
       "binaries/murmur-capture-helper",
-      "binaries/murmur-capture-worker",
-      "binaries/murmur-llm-sidecar"
+      "binaries/murmur-capture-worker"
     ]
   }
 }

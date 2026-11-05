@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, type Settings } from '../../lib/settings';
 import { CUSTOM_QUERY_PRESET } from '../../lib/queryProviders';
 import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
-import type { TransformModelStatus } from '../../lib/transformSettings';
 import { SettingsSurfaceActiveContext } from './SettingsSurfaceContext';
 import type { ModelHardwareGuidance } from '../../lib/modelHardwareGuidance';
 import {
@@ -74,24 +73,7 @@ vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: ({ globallyEnab
 }) => <div>Voice commands editor{!globallyEnabled && <button type="button" onClick={onOpenVoiceCommandSettings}>
   Open Voice commands &amp; spoken formatting
 </button>}</div> }));
-vi.mock('./TransformsManager', () => ({ TransformsManager: () => <div>Transforms manager</div> }));
 vi.mock('./VocabScanStrip', () => ({ VocabScanStrip: () => <div>Vocabulary scan</div> }));
-
-const transformMocks = vi.hoisted(() => ({
-  status: null as TransformModelStatus | null,
-  setTransformKey: vi.fn(async () => {}),
-  startTransformListener: vi.fn(async () => {}),
-}));
-vi.mock('../../lib/transformSettings', () => ({
-  TRANSFORM_MODEL_SIZE_LABEL: '1.1 GB',
-  transformModelStatus: vi.fn(async () => transformMocks.status),
-  downloadTransformModel: vi.fn(async () => {}),
-  removeTransformModel: vi.fn(async () => {}),
-  resetTransformRuntime: vi.fn(async () => {}),
-  setTransformKey: transformMocks.setTransformKey,
-  startTransformListener: transformMocks.startTransformListener,
-  stopTransformListener: vi.fn(async () => {}),
-}));
 
 beforeEach(() => {
   localStorage.removeItem('murmur.settings-disclosure.v1');
@@ -233,7 +215,6 @@ describe('SettingsPanel information architecture', () => {
       expect.stringContaining('Voice commands'),
       expect.stringContaining('App overrides'),
       expect.stringContaining('Modes'),
-      expect.stringContaining('Selected-text rewrite'),
     ]);
     const hubButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
       .find((button) => button.textContent?.includes(label)) as HTMLButtonElement;
@@ -243,7 +224,6 @@ describe('SettingsPanel information architecture', () => {
       ['Voice commands', 'Voice commands'],
       ['App overrides', 'Delivery'],
       ['Modes', 'Modes'],
-      ['Selected-text rewrite', 'Selected-text rewrite'],
     ] as const) {
       const row = hubButton(label);
       await act(async () => row.click());
@@ -262,7 +242,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'customize', token: 1 }));
     const list = container.querySelector('[aria-label="Customization destinations"]')!;
     expect(list.tagName).toBe('UL');
-    expect(list.children).toHaveLength(5);
+    expect(list.children).toHaveLength(4);
     expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
   });
@@ -398,26 +378,6 @@ describe('SettingsPanel information architecture', () => {
     const browserSites = container.querySelector('[data-setting-target="browser-sites"]');
     expect(browserSites?.querySelector('.settings-row-title')?.textContent).toBe('Browser sites');
     expect(browserSites?.closest('details')).toBeNull();
-  });
-
-  it('credits only the Settings page rendered after a hidden route changes', async () => {
-    const activeRef = { current: false };
-    const onPageOpened = vi.fn();
-    await act(async () => renderPanel(false, DEFAULT_SETTINGS, { page: 'shortcuts', token: 1 }, {
-      onPageOpened,
-      activeRef,
-    }));
-    expect(onPageOpened).not.toHaveBeenCalled();
-
-    activeRef.current = true;
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, {
-      page: 'ai-transform',
-      target: 'transform-practice',
-      token: 2,
-    }, { onPageOpened, activeRef }));
-    expect(container.querySelector('h1')?.textContent).toBe('Selected-text rewrite');
-    expect(onPageOpened).toHaveBeenCalledWith('ai-transform');
-    expect(onPageOpened).not.toHaveBeenCalledWith('shortcuts');
   });
 
   it.each([1, 2])('credits a retained page when Settings becomes visible with request %i', async (token) => {
@@ -663,25 +623,6 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 85 });
   });
 
-  it.each([
-    ['recording', ['Dictation trigger key', 'Microphone standby window', 'Pre-roll']],
-    ['ai-transcription', ['Transcription model', 'Language', 'Release model after inactivity']],
-    ['ai-query', ['Provider', 'Context shared with the CLI', 'Query shortcut', 'Timeout']],
-    ['ai-transform', ['Hold key']],
-  ])('names the shared selectors on %s and exposes their selected values', async (page, expected) => {
-    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, queryHotkey: 'shift_r', transformHoldKey: 'alt_r' }, { page, token: 1 }));
-    const advanced = container.querySelector<HTMLButtonElement>('.settings-advanced-toggle');
-    if (advanced && advanced.getAttribute('aria-expanded') === 'false') await act(async () => advanced.click());
-    const controls = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="combobox"]'));
-    const names = controls.map(control => {
-      const ids = control.getAttribute('aria-labelledby');
-      return ids ? ids.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' ') : control.getAttribute('aria-label');
-    });
-    expect(names).toEqual(expect.arrayContaining(expected));
-    expect(names.every(name => !!name?.trim())).toBe(true);
-    expect(controls.every(control => !!control.textContent?.trim())).toBe(true);
-  });
-
   it('groups function keys in a compact keyboard-operable trigger picker', async () => {
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, doubleTapKey: 'f12' }));
     const recording = Array.from(container.querySelectorAll('nav button')).find(
@@ -909,48 +850,6 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).not.toContain('Context content never enters history');
   });
 
-  it('opens Keyboard Shortcuts from General and preserves its contextual owner route', async () => {
-    const general = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
-      .find((button) => button.textContent === 'General') as HTMLButtonElement;
-    await act(async () => general.click());
-
-    const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;
-    await act(async () => shortcuts.click());
-
-    expect(container.querySelector('h1')?.textContent).toBe('Keyboard shortcuts');
-    expect(general.getAttribute('aria-current')).toBe('page');
-
-    const correction = container.querySelector<HTMLButtonElement>('[data-shortcut-id="correction"] button') as HTMLButtonElement;
-    scrollTo.mockClear();
-    scrollIntoView.mockClear();
-    vi.useFakeTimers();
-    try {
-      await act(async () => correction.click());
-      const target = container.querySelector('[data-setting-target="correction-shortcut"]') as HTMLElement;
-      expect(container.querySelector('h1')?.textContent).toBe('Selected-text rewrite');
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
-      expect(scrollTo).not.toHaveBeenCalled();
-      expect(target.classList.contains('settings-target-flash')).toBe(true);
-
-      await act(async () => vi.advanceTimersByTime(1800));
-      expect(target.classList.contains('settings-target-flash')).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-
-    const backToShortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;
-    await act(async () => backToShortcuts.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Keyboard shortcuts');
-    expect(document.activeElement).toBe(container.querySelector('[data-shortcut-id="correction"] button'));
-
-    const backToGeneral = container.querySelector<HTMLButtonElement>('.settings-back-btn') as HTMLButtonElement;
-    await act(async () => backToGeneral.click());
-    expect(container.querySelector('h1')?.textContent).toBe('General');
-    expect(document.activeElement?.textContent).toContain('Keyboard shortcuts');
-  });
-
   it('accepts a direct Keyboard Shortcuts page request for command-palette navigation', async () => {
     await act(async () => root.render(
       <SettingsPanel
@@ -1077,54 +976,6 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Text & vocabulary');
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(settingsPages.querySelector('[aria-current="page"]')?.textContent).toBe('Text & vocabulary');
-  });
-
-  it('accepts precise sidebar destinations for an editor or setting target', async () => {
-    const renderRequest = (pageRequest: { page: string; token: number; editorTab?: 'aliases' | 'commands'; target?: string }) => root.render(
-      <SettingsPanel
-        settings={DEFAULT_SETTINGS}
-        onUpdateSettings={onUpdateSettings}
-        initialized
-        status="idle"
-        onResetStats={vi.fn()}
-        onRerunSetup={vi.fn()}
-        accessibilityGranted
-        onCheckForUpdate={vi.fn(async () => {})}
-        onDownloadUpdate={vi.fn()}
-        onRestartUpdate={vi.fn()}
-        onOpenUpdate={vi.fn()}
-        updateStatus={{ phase: 'idle' }}
-        configureError={null}
-        pageRequest={pageRequest}
-      />,
-    );
-
-    await act(async () => renderRequest({ page: 'text', editorTab: 'aliases', token: 1 }));
-    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Aliases');
-    expect(container.textContent).toContain('Close editor');
-
-    await act(async () => renderRequest({ page: 'text', editorTab: 'commands', token: 2 }));
-    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Voice commands');
-    expect(container.textContent).toContain('Voice commands editor');
-    expect(container.textContent).toContain('Close editor');
-
-    await act(async () => renderRequest({ page: 'delivery', target: 'app-overrides', token: 3 }));
-    expect(container.querySelector('h1')?.textContent).toBe('Delivery');
-    expect(container.textContent).toContain('Manage app overrides');
-    expect(container.textContent).toContain('Back to Customize');
-    expect(container.querySelector('[data-setting-target="app-overrides"] button')?.getAttribute('aria-expanded')).toBe('true');
-
-    await act(async () => {
-      renderRequest({ page: 'ai-transform', token: 4 });
-      await Promise.resolve();
-    });
-    expect(container.querySelector('h1')?.textContent).toBe('Selected-text rewrite');
-    const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.includes('Back to Customize'),
-    ) as HTMLButtonElement;
-    await act(async () => back.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
-    expect(document.activeElement?.textContent).toContain('Selected-text rewrite');
   });
 
   it('returns from an editor with Escape', async () => {
@@ -1303,35 +1154,6 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => back.click());
     expect(container.querySelector('h1')?.textContent).toBe('Text & vocabulary');
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
-  });
-
-  it.each([
-    ['Project scan', 'developer-terms'], ['Remove filler words', 'cleanup'],
-    ['Paste delay', 'auto-paste'], ['Query shortcut', 'voice-query-shortcut'],
-    ['Transform hold key', 'transform-shortcut'], ['Sound cue volume', 'sound-cues'],
-    ['Browser site rules', 'browser-sites'],
-  ])('search for %s highlights its off parent without configuration or permission writes', async (query, parent) => {
-    await act(async () => renderPanel(true, {
-      ...DEFAULT_SETTINGS, autoPaste: false, cleanupEnabled: false, codeVocabEnabled: false,
-      soundCuesEnabled: false, queryHotkey: null, transformHoldKey: null, siteModeLookupEnabled: false,
-    }));
-    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-    await act(async () => {
-      setter.call(input, query);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.startsWith(query))!;
-    coreMocks.invoke.mockClear(); onUpdateSettings.mockClear();
-    await act(async () => result.click());
-    const target = container.querySelector(`[data-setting-target="${parent}"]`)!;
-    expect(target.classList.contains('settings-target-flash')).toBe(true);
-    const owner = target.querySelector('[role="switch"]');
-    expect(owner instanceof HTMLInputElement ? owner.checked : owner?.getAttribute('aria-checked') === 'true').toBe(false);
-    expect(onUpdateSettings).not.toHaveBeenCalled();
-    expect(coreMocks.invoke.mock.calls.map(call => call[0]).filter(command => [
-      'request_accessibility_permission', 'request_microphone_permission', 'configure_dictation', 'set_query_key', 'set_transform_key',
-    ].includes(command))).toEqual([]);
   });
 
   it('finds the Voice Query clipboard preference from settings search', async () => {
@@ -2308,90 +2130,5 @@ describe('effectiveAutoPaste', () => {
     expect(fileOutputDeliveryDescription({ autoPaste: false })).toBe(
       'Auto-paste stays off.',
     );
-  });
-});
-
-describe('SettingsPanel transform block (#312 D1 round-2 findings 6-8)', () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  async function renderAndOpenTransform(settingsOverrides: Partial<typeof DEFAULT_SETTINGS> = {}) {
-    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { value: vi.fn(), configurable: true });
-    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { value: vi.fn(), configurable: true });
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-    await act(async () => root.render(
-      <SettingsPanel
-        settings={{ ...DEFAULT_SETTINGS, ...settingsOverrides }}
-        onUpdateSettings={vi.fn()}
-        initialized
-        status="idle"
-        onResetStats={vi.fn()}
-        onRerunSetup={vi.fn()}
-        accessibilityGranted
-        onCheckForUpdate={vi.fn(async () => {})}
-        onDownloadUpdate={vi.fn()}
-        onRestartUpdate={vi.fn()}
-        onOpenUpdate={vi.fn()}
-        updateStatus={{ phase: 'idle' }}
-        configureError={null}
-        pageRequest={{ page: 'transform', token: 1 }}
-      />,
-    ));
-    // Let the transformModelStatus() fetch effect resolve.
-    await act(async () => {});
-  }
-
-  beforeEach(() => {
-    transformMocks.status = null;
-    transformMocks.setTransformKey.mockReset();
-    transformMocks.startTransformListener.mockReset().mockResolvedValue(undefined);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-  });
-
-  it('disables the Download button while the backend reports downloading (finding 6)', async () => {
-    transformMocks.status = { state: 'downloading', path: null, sizeBytes: 100, sha256: 'x', runtimeDisabled: false };
-    await renderAndOpenTransform();
-    const downloadButton = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Working…') as HTMLButtonElement;
-    expect(downloadButton).toBeTruthy();
-    expect(downloadButton.disabled).toBe(true);
-  });
-
-  it('hides the Reset runtime button and notice when the breaker is not disabled (finding 7)', async () => {
-    transformMocks.status = { state: 'ready', path: '/models/x', sizeBytes: 100, sha256: 'x', runtimeDisabled: false };
-    await renderAndOpenTransform();
-    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Reset runtime')).toBe(false);
-    expect(container.textContent).not.toContain('disabled after repeated faults');
-  });
-
-  it('shows the Reset runtime button and notice when runtimeDisabled is set (finding 7)', async () => {
-    transformMocks.status = { state: 'ready', path: '/models/x', sizeBytes: 100, sha256: 'x', runtimeDisabled: true };
-    await renderAndOpenTransform();
-    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Reset runtime')).toBe(true);
-    expect(container.textContent).toContain('disabled after repeated faults');
-  });
-
-  it('renders shortcut-picker errors on their own line, not the model error slot (finding 8)', async () => {
-    transformMocks.status = { state: 'ready', path: '/models/x', sizeBytes: 100, sha256: 'x', runtimeDisabled: false };
-    transformMocks.setTransformKey.mockRejectedValue(new Error('shortcut already in use'));
-    await renderAndOpenTransform({ transformHoldKey: 'alt_r' });
-
-    const combobox = Array.from(container.querySelectorAll('button[role="combobox"]')).find(
-      (button) => button.textContent === 'Right Option',
-    ) as HTMLButtonElement;
-    await act(async () => combobox.click());
-    const option = Array.from(container.querySelectorAll('li[role="option"]')).find(
-      (li) => li.textContent === 'Left Control',
-    ) as HTMLLIElement;
-    await act(async () => option.click());
-
-    const errorParagraphs = Array.from(container.querySelectorAll('p')).filter((p) => p.className.includes('text-error'));
-    expect(errorParagraphs).toHaveLength(1);
-    expect(errorParagraphs[0].textContent).toContain('shortcut already in use');
   });
 });

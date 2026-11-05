@@ -83,19 +83,6 @@ Use **Hold Down**, **Double-Tap**, or **Both** on Left Shift, Left Option, or
 Right Control. Murmur rejects modifier-plus-letter shortcuts, long taps, slow
 double-taps, and repeated-key noise so normal typing stays normal.
 
-## Say it better, without starting over
-
-Selected-text **Transform** turns voice into an editing gesture:
-
-> Select a paragraph → hold the Transform key → say “shorter and more direct” →
-> inspect the word diff → Approve, Retry, Cancel, or Undo.
-
-The pinned Qwen2.5-1.5B model runs in a separately signed, sandboxed llama.cpp
-helper with no network entitlement. It never auto-applies. Secure fields and
-unprovable Accessibility states fail closed.
-
-[See how Transform handles native, browser, and Electron apps →](docs/features/selected-text-transform.md)
-
 ## Install in a minute
 
 1. [Download the latest `.dmg`](https://github.com/georgenijo/murmur-app/releases/latest).
@@ -192,7 +179,6 @@ Rust/Tauri coordinator ───────► signed capture worker (CPAL / AU
                                       ▼
                          clipboard ─► paste / files
 
-Selected text ─► AX capture ─► instruction ASR ─► local-LLM sidecar
                                                         │
                                                         ▼
                                                review ─► approved apply
@@ -212,10 +198,7 @@ cleanup → voice commands → smart correction → smart formatting
 ```
 
 Monotonic generation IDs and immutable recording snapshots guard asynchronous
-work. The rewrite LLM remains out of process because llama.cpp and whisper.cpp
-vendor incompatible ggml runtimes.
-
-[Read the architecture guide →](docs/ARCHITECTURE.md)
+work. [Read the architecture guide →](docs/ARCHITECTURE.md)
 
 </details>
 
@@ -233,8 +216,8 @@ vendor incompatible ggml runtimes.
 git clone https://github.com/georgenijo/murmur-app.git
 cd murmur-app
 
-# Required first on Apple Silicon macOS; builds all four bundled helpers.
-python3 scripts/build_local_llm_sidecar.py
+# Required first on Apple Silicon macOS; builds all three capture helpers.
+python3 scripts/build_capture_helpers.py
 
 cd app
 npm ci
@@ -279,7 +262,6 @@ murmur-app/
 │   └── src-tauri/
 │       ├── src/                     Rust app, capture policy, ASR, transforms
 │       ├── sidecars/capture/        Signed capture helper/worker
-│       ├── sidecars/local-llm/      Sandboxed llama.cpp rewrite helper
 │       ├── crates/                  Versioned helper protocols
 │       └── tests/                   Rust integration suites
 ├── bench/                           Speech/accuracy fixtures

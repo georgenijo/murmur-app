@@ -373,13 +373,7 @@ fn idle(state: &State) -> bool {
     state.app_state.dictation.lock_or_recover().status == crate::state::DictationStatus::Idle
         && !state.app_state.file_transcribing.load(Ordering::SeqCst)
         && !state.app_state.meeting_blocks_asr()
-        && !state
-            .app_state
-            .meeting_summary_active
-            .load(Ordering::SeqCst)
         && !crate::meeting_diarization::is_active()
-        && !state.app_state.transform_status().blocks_recording()
-        && !state.transform_runtime.is_transform_busy()
         && !state.query.status().blocks_pipeline()
         && !state.benchmark.is_running()
         && !state.microphone_startup_benchmark.is_active()

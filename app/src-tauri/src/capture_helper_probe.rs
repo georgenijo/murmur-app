@@ -37,7 +37,7 @@ enum SpawnPlan {
     Production {
         observe_for: Duration,
     },
-    #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+    #[cfg(any(debug_assertions, feature = "capture-test-support"))]
     Test(TestCaptureProbeConfig),
 }
 
@@ -47,7 +47,7 @@ impl SpawnPlan {
             Self::Production { .. } => {
                 bundled_sibling(CAPTURE_HELPER_NAME).map_err(|_| CaptureProbeError::SpawnFailed)
             }
-            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+            #[cfg(any(debug_assertions, feature = "capture-test-support"))]
             Self::Test(config) => Ok(config.helper_path.clone()),
         }
     }
@@ -55,7 +55,7 @@ impl SpawnPlan {
     fn scenario_environment(&self) -> &[(String, String)] {
         match self {
             Self::Production { .. } => &[],
-            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+            #[cfg(any(debug_assertions, feature = "capture-test-support"))]
             Self::Test(config) => &config.scenario_environment,
         }
     }
@@ -63,7 +63,7 @@ impl SpawnPlan {
     fn handshake_timeout(&self) -> Duration {
         match self {
             Self::Production { .. } => DEFAULT_HANDSHAKE_TIMEOUT,
-            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+            #[cfg(any(debug_assertions, feature = "capture-test-support"))]
             Self::Test(config) => config.handshake_timeout,
         }
     }
@@ -71,7 +71,7 @@ impl SpawnPlan {
     fn observe_for(&self) -> Duration {
         match self {
             Self::Production { observe_for } => *observe_for,
-            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+            #[cfg(any(debug_assertions, feature = "capture-test-support"))]
             Self::Test(config) => config.observe_for,
         }
     }
@@ -79,7 +79,7 @@ impl SpawnPlan {
     fn cancel_grace(&self) -> Duration {
         match self {
             Self::Production { .. } => CANCEL_GRACE,
-            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+            #[cfg(any(debug_assertions, feature = "capture-test-support"))]
             Self::Test(config) => config.cancel_grace,
         }
     }
@@ -89,7 +89,7 @@ impl SpawnPlan {
             Self::Production { .. } => {
                 crate::commands::permissions::check_microphone_permission_status()
             }
-            #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+            #[cfg(any(debug_assertions, feature = "capture-test-support"))]
             Self::Test(config) => {
                 let status = config
                     .permission_status_sequence
@@ -306,7 +306,7 @@ impl CaptureProbeSupervisor {
         }
     }
 
-    #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+    #[cfg(any(debug_assertions, feature = "capture-test-support"))]
     pub fn for_test(config: TestCaptureProbeConfig) -> Self {
         Self {
             plan: SpawnPlan::Test(config),
@@ -348,7 +348,7 @@ impl CaptureProbeSupervisor {
                 .map_err(|_| CaptureProbeError::SpawnFailed)?;
         let pid = child.pid();
         *ownership = Some(child);
-        #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+        #[cfg(any(debug_assertions, feature = "capture-test-support"))]
         if let SpawnPlan::Test(config) = &self.plan {
             if let Some(signal) = &config.spawned_signal {
                 let _ = signal.send(pid);

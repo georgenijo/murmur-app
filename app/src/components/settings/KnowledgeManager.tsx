@@ -240,7 +240,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
       <div className="grid gap-2 md:grid-cols-[minmax(180px,1fr)_repeat(3,minmax(105px,auto))]">
         <input disabled={bulkBusy} value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search personal knowledge" placeholder="Search knowledge…" className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs outline-none focus:border-primary" />
         <select disabled={bulkBusy} aria-label="Filter knowledge type" value={kind} onChange={(event) => setKind(event.target.value as KnowledgeKind | 'all')} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
-          <option value="all">All types</option><option value="replacement_rule">Replacements</option><option value="vocabulary_term">Vocabulary</option><option value="snippet">Snippets</option><option value="transform">Transforms</option>
+          <option value="all">All types</option><option value="replacement_rule">Replacements</option><option value="vocabulary_term">Vocabulary</option><option value="snippet">Snippets</option>
         </select>
         <select disabled={bulkBusy} aria-label="Filter enabled state" value={enabled} onChange={(event) => setEnabled(event.target.value as typeof enabled)} className="rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2 py-2 text-xs">
           <option value="all">Any state</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>

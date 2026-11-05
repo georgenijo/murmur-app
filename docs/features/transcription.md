@@ -566,8 +566,7 @@ reference commit even that is rescoring. It keeps the greedy decode, then
 compares the transducer's own forward score for a candidate term against the
 heard span. Hex found token boosting during greedy decoding either never let a
 term start or raised WER. A second ggml copy cannot link into the app crate
-because it clashes with whisper.cpp's ggml. An isolated signed sidecar (like
-`sidecars/local-llm`) would add a second Parakeet runtime, a GGUF model, and
+because it clashes with whisper.cpp's ggml. An additional isolated helper would add a second Parakeet runtime, a GGUF model, and
 Metal memory alongside Core ML. A prototype isn't justified until #827 shows
 misses that text correction cannot reach. The most promising follow-up is
 Hex-style transducer-score rescoring inside FluidAudio's own TDT decoder,

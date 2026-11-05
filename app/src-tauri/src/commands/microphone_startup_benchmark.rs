@@ -1052,13 +1052,7 @@ pub async fn run_microphone_startup_benchmark(
                     .to_string(),
             );
         }
-        if state.app_state.transform_status().blocks_recording()
-            || state.transform_runtime.is_transform_busy()
-        {
-            return Err(
-                "Wait for the transform to finish before testing the microphone".to_string(),
-            );
-        }
+
         if state.query.status().blocks_pipeline() {
             return Err(
                 "Wait for the voice query to finish before testing the microphone".to_string(),

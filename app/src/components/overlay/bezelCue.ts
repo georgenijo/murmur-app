@@ -29,7 +29,6 @@ export function bezelCue(
   switch (indicator.kind) {
     case 'calibrating': return { glyph: 'arrows', word: 'Calibrating' };
     case 'cancelled': return { glyph: 'cross', word: 'Cancelled' };
-    case 'secureField': return { glyph: 'warn', word: 'Secure field' };
     case 'microphoneFailure':
       return {
         glyph: 'warn',
@@ -37,7 +36,6 @@ export function bezelCue(
           ? MICROPHONE_WORDS[indicator.failure as keyof typeof MICROPHONE_WORDS]
           : 'Mic failed',
       };
-    case 'transformBusy': return { glyph: 'warn', word: 'Busy' };
     case 'hotkeyMiss': return { glyph: 'warn', word: 'Tap missed' };
     case 'meeting':
       return indicator.processing ? { glyph: 'spinner', word: 'Finishing' } : { glyph: 'dot', word: 'Meeting' };
@@ -45,7 +43,6 @@ export function bezelCue(
     case 'recording': return { glyph: 'dot', word: '' };
     case 'recovering': return { glyph: 'spinner', word: 'Recovering' };
     case 'processing': return { glyph: 'spinner', word: 'Transcribing…' };
-    case 'transforming': return { glyph: 'spinner', word: 'Rewriting' };
     case 'clipboardOnly':
       switch (deliveryCue?.kind) {
         case 'auto_pasted': return { glyph: 'check', word: 'Pasted' };

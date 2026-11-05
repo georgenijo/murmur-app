@@ -46,8 +46,8 @@ the minimum gap passes. Other query failures clear the snapshot and wait for a
 new activation, activity change, Calendar notification, or horizon deadline;
 the worker's own completion does not create a repeated error retry loop.
 
-Dictation, every transform phase, active query capture or answer generation,
-meeting capture/recovery/summary, file transcription, microphone previews,
+Dictation, active query capture or answer generation,
+meeting capture/recovery, file transcription, microphone previews,
 benchmarks, shared backend changes, model loading/warming/unloading, live
 dictation preview workers (including cancellation cleanup), speaker
 analysis, and disabled-app state suppress prompts. Model lifecycle and benchmark
@@ -56,9 +56,7 @@ retain their exact recording lease until blocking work and owned preview resourc
 finish, even if the awaiting task is cancelled; releasing that lease wakes the
 coordinator without clearing a current prompt. A suppressed event can still prompt
 after Murmur becomes idle if it remains current.
-Accepted transform and correction starts emit `transform-capture-starting`
-before arming the microphone. The coordinator clears a visible suggestion then,
-without waiting for a potentially slow AX selection or the first review event.
+
 
 Prompt publication does not open a tap, claim audio, or prepare a model. Accept
 sends only the opaque prompt token to the main window. `start_meeting` acquires

@@ -118,8 +118,6 @@ fn app_idle(state: &State) -> bool {
         && !crate::audio_lifecycle::is_audio_active()
         && !state.app_state.file_transcribing.load(Ordering::SeqCst)
         && !state.benchmark.is_running()
-        && !state.app_state.transform_status().blocks_recording()
-        && !state.transform_runtime.is_transform_busy()
         && state.app_state.dictation.lock_or_recover().status == crate::state::DictationStatus::Idle
 }
 

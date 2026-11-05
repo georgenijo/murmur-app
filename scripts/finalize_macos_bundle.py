@@ -14,7 +14,6 @@ HELPERS = {
     "murmur-capture-agent": "com.localdictation.capture-agent",
     "murmur-capture-helper": "com.localdictation.capture-helper",
     "murmur-capture-worker": "com.localdictation.capture-worker",
-    "murmur-llm-sidecar": "com.localdictation.local-llm-sidecar",
 }
 CAPTURE_AGENT_PLIST = "com.localdictation.capture-agent.plist"
 CAPTURE_AGENT_MACH_SERVICE = "com.localdictation.capture-agent.xpc"
@@ -215,13 +214,6 @@ def main() -> int:
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--identity", required=True)
     parser.add_argument("--main-entitlements", type=Path, required=True)
-    parser.add_argument(
-        "--llm-helper-entitlements",
-        "--helper-entitlements",
-        dest="llm_helper_entitlements",
-        type=Path,
-        required=True,
-    )
     parser.add_argument("--capture-helper-entitlements", type=Path, required=True)
     parser.add_argument("--capture-worker-entitlements", type=Path, required=True)
     parser.add_argument("--capture-agent-entitlements", type=Path, required=True)
@@ -288,12 +280,6 @@ def main() -> int:
         args.capture_worker_entitlements,
         HELPERS["murmur-capture-worker"],
     )
-    sign(
-        helpers["murmur-llm-sidecar"],
-        args.identity,
-        args.llm_helper_entitlements,
-        HELPERS["murmur-llm-sidecar"],
-    )
     sign(main_binary, args.identity, args.main_entitlements)
     sign(app, args.identity, args.main_entitlements)
 
@@ -312,11 +298,6 @@ def main() -> int:
         entitlements(helpers["murmur-capture-worker"]),
         args.capture_worker_entitlements,
         "capture worker",
-    )
-    require_exact(
-        entitlements(helpers["murmur-llm-sidecar"]),
-        args.llm_helper_entitlements,
-        "local-LLM helper",
     )
     require_exact(entitlements(main_binary), args.main_entitlements, "main executable")
     with launchd_plist.open("rb") as handle:

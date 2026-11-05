@@ -17,9 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--llm-helper", "--helper", dest="llm_helper", type=Path, required=True
-    )
     parser.add_argument("--capture-agent", type=Path, required=True)
     parser.add_argument("--capture-helper", type=Path, required=True)
     parser.add_argument("--capture-worker", type=Path, required=True)
@@ -42,7 +39,7 @@ def main() -> int:
         "CFBundleIdentifier": "com.localdictation.signing-probe",
         "CFBundleName": "MurmurSigningProbe",
         "CFBundlePackageType": "APPL",
-        "CFBundleVersion": "1",
+        "CFBundleVersion": json.loads((ROOT / "app/src-tauri/tauri.conf.json").read_text())["version"],
     }
     with (app / "Contents" / "Info.plist").open("wb") as handle:
         plistlib.dump(info, handle)
@@ -62,7 +59,6 @@ def main() -> int:
         ],
         check=True,
     )
-    shutil.copy2(args.llm_helper, macos / "murmur-llm-sidecar")
     shutil.copy2(args.capture_agent, macos / "murmur-capture-agent")
     shutil.copy2(args.capture_helper, macos / "murmur-capture-helper")
     shutil.copy2(args.capture_worker, macos / "murmur-capture-worker")
@@ -77,8 +73,6 @@ def main() -> int:
             "-",
             "--main-entitlements",
             str(ROOT / "app" / "src-tauri" / "entitlements.plist"),
-            "--helper-entitlements",
-            str(ROOT / "app" / "src-tauri" / "local-llm-sidecar.entitlements.plist"),
             "--capture-agent-entitlements",
             str(ROOT / "app" / "src-tauri" / "capture-agent.entitlements.plist"),
             "--capture-agent-info-plist",
@@ -116,7 +110,6 @@ def main() -> int:
             "capture_agent": str(macos / "murmur-capture-agent"),
             "capture": str(macos / "murmur-capture-helper"),
             "capture_worker": str(macos / "murmur-capture-worker"),
-            "local_llm": str(macos / "murmur-llm-sidecar"),
         },
         "identity": "adhoc",
         "main_sandboxed": False,
@@ -125,7 +118,6 @@ def main() -> int:
         "capture_worker_inherits_agent_sandbox": True,
         "capture_agent_sandboxed": True,
         "capture_agent_audio_input": True,
-        "llm_helper_sandboxed": True,
         "result": "passed",
     }
     print(json.dumps(result, sort_keys=True))

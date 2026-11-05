@@ -379,9 +379,9 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
   await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
-  await expect(customizationList.getByRole('button')).toHaveCount(5);
+  await expect(customizationList.getByRole('button')).toHaveCount(4);
   expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
-  for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes', 'Selected-text rewrite']) {
+  for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes']) {
     await expect(customizationList.getByRole('button', { name: new RegExp(`^${label}`) })).toHaveCount(1);
   }
   await expect(customizationList).not.toContainText(/\b0[1-5]\b/);
@@ -769,8 +769,8 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
   expect(fit.sectionBottoms[2]).toBe(fit.sectionBottoms[3]);
   const tiles = view.locator('[aria-label="Usage totals"] > .ui-dashboard-stat');
-  await expect(tiles).toHaveCount(12);
-  await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(1);
+  await expect(tiles).toHaveCount(10);
+  await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(0);
   for (const item of [...await tiles.all(), ...await view.locator('.usage-analytics-section').all()]) {
     await item.scrollIntoViewIfNeeded();
     await expect(item).toBeInViewport();
@@ -825,19 +825,17 @@ test('secondary destinations share Back behavior and restore focus to Home navig
   }
 });
 
-test('meeting review keeps provenance, actions, and transcript evidence usable at normal and narrow widths', async ({ page }) => {
+test('meeting transcripts and speaker labels remain usable at normal and narrow widths', async ({ page }) => {
   await page.setViewportSize({ width: 880, height: 720 });
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
   const fixture = page.locator('[data-visual-ready="true"]');
-  await expect(page.getByRole('heading', { name: 'Meeting review' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Summary source 1/ })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Transcript', exact: true })).toBeVisible();
   await page.mouse.move(0, 0);
   await expect(fixture).toHaveScreenshot('light-meeting-review.png');
 
   await page.setViewportSize({ width: 720, height: 560 });
   await page.reload();
-  await expect(page.getByRole('button', { name: 'Copy review' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy transcript' })).toBeVisible();
   await page.mouse.move(0, 0);
   await expect(fixture).toHaveScreenshot('light-meeting-review-narrow.png');
 });
@@ -863,7 +861,7 @@ test('meeting captions explain segment timing and keep copy and export reachable
   ] as const) {
     await page.setViewportSize({ width, height });
     await page.goto(`/visual-fixtures.html?state=meetings-review&appearance=${appearance}`);
-    await page.getByRole('combobox', { name: 'Meeting review export format' }).selectOption(format);
+    await page.getByRole('combobox', { name: 'Meeting transcript export format' }).selectOption(format);
     await expect(page.getByRole('button', { name: 'Copy captions' })).toBeVisible();
     await expect(page.getByText('One caption per recorded speech segment', { exact: false })).toBeVisible();
     const exportButton = page.getByRole('button', { name: 'Export…', exact: true });
@@ -1001,7 +999,7 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
   await expect(page.getByRole('button', { name: 'Click to start talking' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
-  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(7);
+  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(6);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });
 
@@ -1017,23 +1015,13 @@ test('checklist feature names and pitches stay readable beside the Insights rail
     await page.setViewportSize({ width, height });
     await page.goto('/visual-fixtures.html?state=idle&appearance=light');
     const labels = page.locator('.discovery-checklist-items strong, .discovery-checklist-items small');
-    await expect(labels).toHaveCount(14);
+    await expect(labels).toHaveCount(12);
     const clipped = await labels.evaluateAll((elements) => elements
       .filter((element) => element.scrollWidth > element.clientWidth + 1
         || element.scrollHeight > element.clientHeight + 1)
       .map((element) => element.textContent));
     expect(clipped, `Checklist text at ${width}x${height}`).toEqual([]);
   }
-});
-
-test('Transform practice shows the real hold-flow instructions', async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/visual-fixtures.html?state=settings-transform-practice&appearance=light');
-  await expect(page.getByRole('heading', { name: 'Practice on sample text' })).toBeVisible();
-  await page.getByRole('button', { name: 'Select sample text' }).click();
-  await expect(page.locator('.transform-practice [role="status"]')).toContainText('make this shorter');
-  await page.locator('[data-testid=settings-content]').evaluate(element => { element.scrollTop = element.scrollHeight; });
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-settings-transform-practice.png');
 });
 
 test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {
@@ -1124,7 +1112,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
       await page.goto(`/visual-fixtures.html?state=idle&appearance=${appearance}`);
       const checklist = page.locator('.discovery-checklist');
       await expect(checklist).toBeVisible();
-      await expect(checklist.locator('li')).toHaveCount(7);
+      await expect(checklist.locator('li')).toHaveCount(6);
       const labels = checklist.locator('strong, small');
       for (const label of await labels.all()) {
         const fit = await label.evaluate(element => ({

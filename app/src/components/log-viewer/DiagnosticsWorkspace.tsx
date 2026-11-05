@@ -10,7 +10,6 @@ import { EventRow } from './EventRow';
 import { PerformanceView } from './PerformanceView';
 import { RunsView } from './RunsView';
 import { ReportCompareView } from './ReportCompareView';
-import { TransformDiagnosticsView } from './TransformDiagnosticsView';
 import {
   DictationCaptureStatusBadge,
   DictationDiagnosticsView,
@@ -26,7 +25,7 @@ import {
   type CorrelationFilter,
 } from '../../lib/eventFilters';
 
-export type DiagnosticsTab = 'events' | 'performance' | 'latency' | 'runs' | 'transforms' | 'dictation' | 'reports';
+export type DiagnosticsTab = 'events' | 'performance' | 'latency' | 'runs' | 'dictation' | 'reports';
 const MAX_RENDERED_EVENTS = 100;
 const TABS: { id: DiagnosticsTab; label: string }[] = [
   { id: 'events', label: 'Events' },
@@ -34,7 +33,6 @@ const TABS: { id: DiagnosticsTab; label: string }[] = [
   { id: 'performance', label: 'Performance' },
   { id: 'latency', label: 'Latency' },
   { id: 'reports', label: 'Compare' },
-  { id: 'transforms', label: 'Transform' },
   { id: 'dictation', label: 'Dictation' },
 ];
 
@@ -328,16 +326,6 @@ export function DiagnosticsWorkspace({
             onShowEvents={showCorrelatedEvents}
             store={storeHealthEnabled ? storeHealth : undefined}
           />
-        </div>
-      )}
-      {tab === 'transforms' && (
-        <div
-          role="tabpanel"
-          id="diagnostics-panel-transforms"
-          aria-labelledby="diagnostics-tab-transforms"
-          className="flex-1 overflow-y-auto"
-        >
-          <TransformDiagnosticsView />
         </div>
       )}
       {tab === 'dictation' && (

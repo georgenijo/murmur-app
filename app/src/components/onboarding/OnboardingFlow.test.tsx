@@ -190,7 +190,7 @@ describe('OnboardingFlow', () => {
   it('scopes local processing to dictation and rewrite while disclosing optional provider content', async () => {
     await renderFlow();
     const copy = container.textContent?.replace(/\s+/g, ' ');
-    expect(copy).toContain('Dictation and selected-text rewrites run on your Mac');
+    expect(copy).toContain('Dictation runs on your Mac');
     expect(copy).toContain('Saved history and retained meeting audio are stored locally');
     expect(copy).toContain('Optional Voice Query and Assistant use a provider you configure');
     expect(copy).toContain('may receive questions, context, and files you allow');

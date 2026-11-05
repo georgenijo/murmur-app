@@ -72,21 +72,6 @@ describe('useDeliveryRecoveryListeners', () => {
     expect(notice).toBeNull();
   });
 
-  it('clears its timer and both listeners on unmount', async () => {
-    await act(async () => {
-      mocks.handlers.get('delivery-retry-feedback')?.({
-        payload: { kind: 'failed', message: 'Try again.' },
-      });
-    });
-    expect(vi.getTimerCount()).toBe(1);
-
-    await act(async () => root.unmount());
-    expect(vi.getTimerCount()).toBe(0);
-    expect(mocks.unlistens.get('delivery-retry-feedback')).toHaveBeenCalledOnce();
-    expect(mocks.unlistens.get('correction-start-failed')).toHaveBeenCalledOnce();
-    root = createRoot(container);
-  });
-
   it('does not let an older feedback timer clear a newer pending notice', async () => {
     await act(async () => {
       mocks.handlers.get('delivery-retry-feedback')?.({
@@ -103,17 +88,5 @@ describe('useDeliveryRecoveryListeners', () => {
       message: 'Trying delivery again…',
       retryable: true,
     });
-  });
-
-  it('keeps a newer correction notice after prior retry feedback expires', async () => {
-    await act(async () => {
-      mocks.handlers.get('delivery-retry-feedback')?.({
-        payload: { kind: 'clipboard_only', message: 'Copied.' },
-      });
-      mocks.handlers.get('correction-start-failed')?.({ payload: 'Correction unavailable.' });
-    });
-
-    await act(async () => vi.advanceTimersByTime(5000));
-    expect(notice).toEqual({ message: 'Correction unavailable.', retryable: false });
   });
 });

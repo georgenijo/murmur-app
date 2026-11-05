@@ -128,14 +128,13 @@ describe('queryCommand', () => {
 describe('queryCommandFingerprintFor', () => {
   it('changes when any tracked field changes', () => {
     const command = queryCommand(DEFAULT_SETTINGS);
-    const base = queryCommandFingerprintFor(command, null);
-    expect(queryCommandFingerprintFor({ ...command, executable: '/other' }, null)).not.toBe(base);
-    expect(queryCommandFingerprintFor(command, 'alt_r')).not.toBe(base);
+    const base = queryCommandFingerprintFor(command);
+    expect(queryCommandFingerprintFor({ ...command, executable: '/other' })).not.toBe(base);
   });
 
   it('is stable for identical inputs', () => {
     const command = queryCommand(DEFAULT_SETTINGS);
-    expect(queryCommandFingerprintFor(command, null)).toBe(queryCommandFingerprintFor(command, null));
+    expect(queryCommandFingerprintFor(command)).toBe(queryCommandFingerprintFor(command));
   });
 });
 

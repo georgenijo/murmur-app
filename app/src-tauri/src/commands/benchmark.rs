@@ -57,26 +57,10 @@ pub async fn run_benchmark(
     // (issue #338 — this path previously ignored the transform status
     // entirely and would run a benchmark right over a parked review). The
     // in-lock guard below stays as a race guard.
-    {
-        let fx = crate::transform_flow::TauriFlowEffects {
-            app: &app_handle,
-            state: &state,
-        };
-        crate::transform_flow::clear_parked_review_for_pipeline_work(
-            &state.app_state,
-            &fx,
-            "run_benchmark",
-            "Wait for the transform to finish before benchmarking",
-        )?;
-    }
+
     {
         let dictation = state.app_state.dictation.lock_or_recover();
-        // An ACTIVE transform (Capturing/Listening/Thinking/Applying) holds
-        // the shared Whisper backend / mic / AX surface — refuse, matching
-        // every other work-starting entry point (issue #338).
-        if state.app_state.transform_status().blocks_recording() {
-            return Err("Wait for the transform to finish before benchmarking".to_string());
-        }
+
         // Deliberately the strict predicate, not `blocks_capture`: a query in
         // `Running` still has a CLI child competing for CPU, which would skew
         // the latency numbers this harness exists to measure.
@@ -103,10 +87,6 @@ pub async fn run_benchmark(
     }
     drop(transition);
     crate::meeting_suggestions::busy_changed(&app_handle);
-    // Only one heavy inference runtime may be resident: stop any local-LLM
-    // helper before benchmarking (fail-fast no-op while a transform is in
-    // flight). The benchmark slot is already claimed above.
-    state.transform_runtime.shutdown();
     let guard = BenchmarkRunGuard(coordinator.clone(), app_handle.clone());
     super::models::ensure_vad_model(&app_handle)
         .await

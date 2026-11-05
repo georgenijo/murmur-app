@@ -21,7 +21,6 @@ vi.mock('../meetings', async (original) => ({
   listMeetings: mocks.list,
   saveMeetingMetadata: mocks.metadata,
   getMeetingStatus: mocks.status,
-  getMeetingSummaryStatus: vi.fn(async () => ({ phase: 'idle', sessionId: null })),
   getSystemAudioPermissionStatus: vi.fn(async () => 'granted'),
 }));
 
@@ -68,7 +67,7 @@ describe('useMeetings selected meeting finalization', () => {
 
   it.each([['idle', 'complete'], ['failed', 'failed']] as const)('reloads persisted selected detail on %s without re-clicking', async (phase, storedStatus) => {
     await act(async () => current.select('first'));
-    const format = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting review export format"]')!;
+    const format = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting transcript export format"]')!;
     await act(async () => { format.value = 'srt'; format.dispatchEvent(new Event('change', { bubbles: true })); });
     const captions = () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Copy captions')!;
     expect(captions().disabled).toBe(true);
@@ -157,32 +156,6 @@ describe('useMeetings selected meeting finalization', () => {
     mocks.get.mockResolvedValue(workspace('first', 'complete'));
     await status('idle', null, 2);
     expect(current.detail?.session.status).toBe('complete');
-  });
-
-  it('keeps capture refresh independent of unsaved review drafts and concurrent metadata saves', async () => {
-    await act(async () => current.select('first'));
-    const reviewState = current.detail!;
-    const edit = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Edit review…')!;
-    await act(async () => edit.click());
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Review summary"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'Unsaved synthetic edit');
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await status('processing');
-    const pending = deferred<MeetingDetail>();
-    mocks.get.mockReturnValueOnce(pending.promise);
-    const saved = { ...reviewState, session: { ...reviewState.session, title: 'New title', titleSource: 'manual' as const } };
-    const metadata = deferred<MeetingDetail>();
-    mocks.metadata.mockReturnValue(metadata.promise);
-    let saving!: Promise<boolean>;
-    await act(async () => { saving = current.saveMetadata({ sessionId: 'first', title: 'New title', attendees: [] }); });
-    await status('idle', null);
-    await act(async () => { metadata.resolve(saved); await saving; });
-    await act(async () => pending.resolve({ ...workspace('first', 'complete'), generated: { ...reviewState.generated!, revision: 2 } }));
-    expect(current.detail?.session).toMatchObject({ status: 'complete', title: 'New title' });
-    expect(current.detail?.generated).toBe(reviewState.generated);
-    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Review summary"]')?.value).toBe('Unsaved synthetic edit');
   });
 
   it('reports a current failed refresh and leaves detail intact; obsolete failures do not affect a new selection', async () => {

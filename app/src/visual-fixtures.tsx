@@ -7,7 +7,6 @@ import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
 import { ModelDownloader } from './components/ModelDownloader';
-import { TransformDiagnosticsView } from './components/log-viewer/TransformDiagnosticsView';
 import { DictationDiagnosticsView } from './components/log-viewer/DictationDiagnosticsView';
 import { RunsView } from './components/log-viewer/RunsView';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
@@ -56,7 +55,6 @@ const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
 const copyFixture = requestedState === 'settings-copy';
 const copyKnowledge = [
-  { id: 'copy-transform', payload: { kind: 'transform', name: 'Meeting notes', instruction: 'Summarize decisions and action items.' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', createdAtMs: 1, updatedAtMs: 2, revision: 1 },
   { id: 'copy-command', payload: { kind: 'replacement_rule', source: 'insert greeting', replacement: 'Hello, team' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', voiceCommand: { commandType: 'text_replacement', allowClipboardRead: false }, createdAtMs: 1, updatedAtMs: 2, revision: 1 },
 ];
 const appearance = query.get('appearance') === 'dark' ? 'dark' : 'light';
@@ -350,9 +348,7 @@ mockIPC((command, payload) => {
     { selectionToken: 'first-event', title: 'Orion planning', attendees: ['Alex Example', 'Casey Example'], startMs: Date.UTC(2026, 7, 31, 14), endMs: Date.UTC(2026, 7, 31, 15) },
     { selectionToken: 'second-event', title: 'Design review', attendees: ['Jordan Example'], startMs: Date.UTC(2026, 7, 31, 14, 30), endMs: Date.UTC(2026, 7, 31, 15, 30) },
   ];
-  if (command === 'get_meeting_summary_status') {
-    return { generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null };
-  }
+
   if (command === 'list_meetings') {
     return requestedState === 'meetings-empty'
       ? { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 }
@@ -454,9 +450,7 @@ mockIPC((command, payload) => {
   if (command === 'upsert_knowledge') return { ...copyKnowledge[1], ...((payload as Record<string, unknown> | undefined)?.draft as object) };
   if (command === 'delete_knowledge') return 1;
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
-  if (command === 'transform_model_status') {
-    return { state: 'ready', path: '/fixture/transform.gguf', sizeBytes: 986_000_000, sha256: 'fixture', runtimeDisabled: false };
-  }
+
   if (command.includes('version')) return '0.27.0';
   return null;
 }, { shouldMockEvents: true });
@@ -510,7 +504,6 @@ const entries: HistoryEntry[] = [
 ];
 
 const shortcutFixtureEnabled = requestedState === 'settings-shortcuts';
-const fixtureTransformHoldKey: Settings['transformHoldKey'] = shortcutFixtureEnabled ? 'alt_r' : null;
 const fixtureQueryHotkey: Settings['queryHotkey'] = shortcutFixtureEnabled ? 'ctrl_l' : null;
 const fixturePasteLastShortcut: Settings['pasteLastShortcut'] = shortcutFixtureEnabled ? 'command_option_v' : null;
 
@@ -525,7 +518,6 @@ const fixtureSettings = {
     ? ['fixture-built-in']
     : [],
   siteModeLookupEnabled: requestedState === 'settings-site-modes',
-  transformHoldKey: requestedState === 'settings-transform-practice' ? 'alt_r' : fixtureTransformHoldKey,
   queryHotkey: fixtureQueryHotkey,
   pasteLastShortcut: fixturePasteLastShortcut,
   browserSiteRules: requestedState === 'settings-site-modes' ? [{
@@ -620,7 +612,6 @@ function VisualFixture() {
     || requestedState === 'settings-general'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-shortcuts'
-    || requestedState === 'settings-transform-practice'
     || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
   const homeSidebar = useHomeSidebar(requestedState === 'home-sidebar-collapsed', settingsOpen);
@@ -661,8 +652,7 @@ function VisualFixture() {
   }, [meetings.select]);
 
   if (requestedState === 'copy-diagnostics') return <div data-visual-ready="true" className="h-full overflow-auto bg-background text-on-surface">
-    {query.get('panel') === 'transform' ? <TransformDiagnosticsView />
-      : query.get('panel') === 'runs' ? <RunsView runs={[]} loading={false} error={null} cleared={false} clearing={false} clearError={null} onRetry={() => {}}
+    {query.get('panel') === 'runs' ? <RunsView runs={[]} loading={false} error={null} cleared={false} clearing={false} clearError={null} onRetry={() => {}}
         onClear={async () => { document.documentElement.setAttribute('data-copy-cleared-runs', 'true'); }} onShowEvents={() => {}} />
       : <DictationDiagnosticsView />}
   </div>;
@@ -740,9 +730,7 @@ function VisualFixture() {
                 ? { page: 'appearance', token: 1 }
             : requestedState === 'settings-shortcuts'
             ? { page: 'shortcuts', token: 1 }
-            : requestedState === 'settings-transform-practice'
-              ? { page: 'ai-transform', target: 'transform-practice', token: 1 }
-            : undefined}
+                        : undefined}
         />
       ) : (
         <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -765,7 +753,7 @@ function VisualFixture() {
                 <WorkspacePageHeader
                   title="Notetaker"
                   titleId="meetings-view-title"
-                  description="Local meeting transcripts and summaries"
+                  description="Local meeting transcripts with speaker separation"
                   back={{ label: 'Back to Home', onActivate: backToHome }}
                 />
                 <MeetingsPanel meetings={meetings} playbackBusy={false} />
@@ -818,7 +806,7 @@ function VisualFixture() {
                 onStop={() => {}}
                 onOpenInsights={() => setDestination('insights')}
                 discovery={query.get('checklist') === 'hidden' ? undefined : {
-                  completed: ['transform', 'voice_query', 'meeting', 'correction'],
+                  completed: ['voice_query', 'meeting', 'correction'],
                   onAction: () => {},
                   onDismiss: () => {},
                 }}

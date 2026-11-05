@@ -140,22 +140,8 @@ export interface SaveMeetingReviewRequest {
   newClaims?: NewReviewClaim[];
 }
 
-export type MeetingSummaryPhase = 'idle' | 'running' | 'cancelling' | 'complete' | 'failed' | 'cancelled';
-export interface MeetingSummaryStatus {
-  generation: number;
-  sessionId: string | null;
-  phase: MeetingSummaryPhase;
-  completedChunks: number;
-  totalChunks: number;
-  elapsedMs: number;
-  peakRssMb: number;
-  errorCode: string | null;
-}
 
-export const IDLE_MEETING_SUMMARY_STATUS: MeetingSummaryStatus = {
-  generation: 0, sessionId: null, phase: 'idle', completedChunks: 0,
-  totalChunks: 0, elapsedMs: 0, peakRssMb: 0, errorCode: null,
-};
+
 
 export type MeetingSearchField = 'summary' | 'decision' | 'action_item' | 'open_question' | 'transcript' | 'title';
 
@@ -268,27 +254,9 @@ export async function saveMeetingMetadata(request: SaveMeetingMetadataRequest): 
   return invoke('save_meeting_metadata', { request });
 }
 
-export async function restoreMeetingReviewFromGenerated(
-  sessionId: string,
-  generatedRevision: number,
-  expectedReviewRevision: number | null,
-): Promise<MeetingDetail> {
-  return invoke('restore_meeting_review_from_generated', {
-    request: { sessionId, generatedRevision, expectedReviewRevision },
-  });
-}
 
-export async function getMeetingSummaryStatus(): Promise<MeetingSummaryStatus> {
-  return invoke('get_meeting_summary_status');
-}
 
-export async function startMeetingSummary(sessionId: string): Promise<MeetingSummaryStatus> {
-  return invoke('start_meeting_summary', { sessionId });
-}
 
-export async function cancelMeetingSummary(): Promise<boolean> {
-  return invoke('cancel_meeting_summary');
-}
 
 export async function deleteMeeting(id: string): Promise<void> {
   await invoke('delete_meeting', { id });

@@ -125,11 +125,11 @@ impl ManagedChild {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .env_clear();
-        #[cfg(any(debug_assertions, feature = "llm-test-support"))]
+        #[cfg(any(debug_assertions, feature = "capture-test-support"))]
         for (key, value) in test_environment {
             command.env(key, value);
         }
-        #[cfg(not(any(debug_assertions, feature = "llm-test-support")))]
+        #[cfg(not(any(debug_assertions, feature = "capture-test-support")))]
         let _ = test_environment;
 
         Self::spawn_command(command)

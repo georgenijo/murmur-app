@@ -30,8 +30,8 @@ fn validate_dictation_key(hotkey: &str) -> Result<(), String> {
     }
 }
 
-fn validate_transform_or_query_key(hotkey: &str) -> Result<(), String> {
-    if keyboard::is_transform_or_query_key_id(hotkey) {
+fn validate_query_key(hotkey: &str) -> Result<(), String> {
+    if keyboard::is_query_key_id(hotkey) {
         Ok(())
     } else {
         Err("Unsupported shortcut key. Choose one from Settings.".to_string())
@@ -148,10 +148,8 @@ pub fn set_paste_last_shortcut(
     if keyboard::is_dictation_key_id(&shortcut) {
         return Err("That shortcut is already assigned to Dictation.".to_string());
     }
-    if keyboard::query_key_conflicts_with_transform(&shortcut) {
-        return Err("That shortcut is already assigned to Selected-text Transform.".to_string());
-    }
-    if keyboard::transform_key_conflicts_with_query(&shortcut) {
+
+    if keyboard::key_conflicts_with_query(&shortcut) {
         return Err("That shortcut is already assigned to Voice Query.".to_string());
     }
     if shortcut == "command_shift_p" {
@@ -173,74 +171,6 @@ pub fn set_paste_last_shortcut(
     keyboard::start_paste_last_listener(app_handle, &shortcut)
 }
 
-// -- Transform hotkey (issue #312, PR-B1) --
-//
-// A second, independent hold-down shortcut coexisting with the dictation
-// listener on the same shared rdev thread (see `keyboard::TRANSFORM_DETECTOR`
-// / `keyboard::ensure_listener_thread_spawned`). No mode parameter — the
-// transform hotkey is always hold-down.
-
-#[tauri::command]
-pub fn start_transform_listener(
-    app_handle: tauri::AppHandle,
-    hotkey: String,
-) -> Result<(), String> {
-    if keyboard::is_dictation_key_id(&hotkey) {
-        tracing::error!(target: "keyboard", "start_transform_listener: rejected dictation key '{}'", hotkey);
-        return Err(format!(
-            "'{}' is reserved for the dictation hotkey and cannot be used as the transform hotkey.",
-            hotkey
-        ));
-    }
-    validate_transform_or_query_key(&hotkey)?;
-    if keyboard::transform_key_conflicts_with_query(&hotkey) {
-        return Err("That key is already assigned to Voice Query.".to_string());
-    }
-    if !injector::is_accessibility_enabled() {
-        return Err(
-            "Accessibility permission is required. Please grant it in System Settings.".to_string(),
-        );
-    }
-    keyboard::start_transform_listener(app_handle, &hotkey);
-    tracing::info!(target: "keyboard", "Transform listener started: key={}", hotkey);
-    Ok(())
-}
-
-#[tauri::command]
-pub fn stop_transform_listener() {
-    keyboard::stop_transform_listener();
-    tracing::info!(target: "keyboard", "Transform listener stopped");
-}
-
-#[tauri::command]
-pub fn set_transform_key(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
-    if keyboard::is_dictation_key_id(&hotkey) {
-        tracing::error!(target: "keyboard", "set_transform_key: rejected dictation key '{}'", hotkey);
-        return Err(format!(
-            "'{}' is reserved for the dictation hotkey and cannot be used as the transform hotkey.",
-            hotkey
-        ));
-    }
-    validate_transform_or_query_key(&hotkey)?;
-    if keyboard::transform_key_conflicts_with_query(&hotkey) {
-        return Err("That key is already assigned to Voice Query.".to_string());
-    }
-    let should_release = keyboard::set_transform_key(&hotkey);
-    if should_release {
-        if let Some((pass_id, elapsed_ms)) = keyboard::take_transform_hold_context() {
-            crate::transform_trace::key_stop(pass_id, elapsed_ms, "key_reconfigured");
-            let _ = app_handle.emit(
-                "transform-key-released",
-                serde_json::json!({ "transformPassId": pass_id }),
-            );
-        }
-        tracing::info!(target: "keyboard", "Transform key changed while held — emitted released; updated to: {}", hotkey);
-    } else {
-        tracing::info!(target: "keyboard", "Transform key updated to: {}", hotkey);
-    }
-    Ok(())
-}
-
 // -- Voice-query hotkey (#538) --
 
 #[tauri::command]
@@ -248,10 +178,8 @@ pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: String) -> Res
     if keyboard::is_dictation_key_id(&hotkey) {
         return Err("That key is reserved for dictation.".to_string());
     }
-    if keyboard::query_key_conflicts_with_transform(&hotkey) {
-        return Err("That key is already assigned to Selected-text Transform.".to_string());
-    }
-    validate_transform_or_query_key(&hotkey)?;
+
+    validate_query_key(&hotkey)?;
     if !injector::is_accessibility_enabled() {
         return Err(
             "Accessibility permission is required. Please grant it in System Settings.".to_string(),
@@ -278,7 +206,7 @@ mod tests {
         registration.0 = None;
         assert!(registration.sync("alt_l", "both", true));
     }
-    use super::{validate_dictation_key, validate_transform_or_query_key};
+    use super::{validate_dictation_key, validate_query_key};
 
     #[test]
     fn dictation_ipc_accepts_only_picker_keys() {
@@ -293,10 +221,10 @@ mod tests {
     #[test]
     fn transform_and_query_keep_their_opposite_side_modifier_set() {
         for key in ["shift_r", "alt_r", "ctrl_l"] {
-            assert!(validate_transform_or_query_key(key).is_ok(), "{key}");
+            assert!(validate_query_key(key).is_ok(), "{key}");
         }
         for key in ["shift_l", "alt_l", "ctrl_r", "f1", "f20", "mouse_4"] {
-            assert!(validate_transform_or_query_key(key).is_err(), "{key}");
+            assert!(validate_query_key(key).is_err(), "{key}");
         }
     }
 }

@@ -55,7 +55,6 @@ export default defineConfig(async () => ({
         main: resolve(__dirname, "index.html"),
         diagnostics: resolve(__dirname, "diagnostics.html"),
         overlay: resolve(__dirname, "overlay.html"),
-        "transform-review": resolve(__dirname, "transform-review.html"),
         "query-review": resolve(__dirname, "query-review.html"),
         "dictation-preview": resolve(__dirname, "dictation-preview.html"),
       },

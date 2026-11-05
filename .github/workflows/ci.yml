@@ -246,18 +246,16 @@ jobs:
         run: |
           cd app/src-tauri
           mkdir -p binaries
-          for helper in capture-agent capture-helper capture-worker llm-sidecar; do
+          for helper in capture-agent capture-helper capture-worker; do
             : > "binaries/murmur-$helper-aarch64-apple-darwin"
             chmod +x "binaries/murmur-$helper-aarch64-apple-darwin"
           done
 
       - name: Lint Rust
         # --workspace covers the capture worker and protocol crates; default-members
-        # is ["."] so a bare cargo clippy would skip them. Exclude the llama sidecar:
-        # CI stubs that externalBin and must not compile llama-cpp-2. --all-targets
-        # so `tests/` and `examples/` are type-checked too. Clippy performs the
+        # --all-targets ensures `tests/` and `examples/` are type-checked too. Clippy performs the
         # full compile check, so there is no separate `cargo check` pass.
-        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings
+        run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings
 
   rust-macos:
     needs: changes
@@ -302,9 +300,9 @@ jobs:
           # evicts main's and the release build's caches.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build capture isolation helpers and stub local-LLM externalBin
+      - name: Build capture isolation helpers
         # PR CI compiles the Swift agent with warnings as errors and builds the
-        # Rust worker protocol. Only the heavyweight local-LLM sidecar is stubbed.
+        # Rust worker protocol.
         run: |
           cd app/src-tauri
           mkdir -p binaries
@@ -323,8 +321,6 @@ jobs:
             cargo build -p murmur-capture-helper
           cp target/capture-worker-build/debug/murmur-capture-helper \
             binaries/murmur-capture-worker-aarch64-apple-darwin
-          : > binaries/murmur-llm-sidecar-aarch64-apple-darwin
-          chmod +x binaries/murmur-llm-sidecar-aarch64-apple-darwin
 
       - name: Build test binaries
         # Build examples first, then every test target in one invocation.
@@ -332,11 +328,10 @@ jobs:
         # without asking Cargo to rebuild with a different feature graph.
         run: >-
           cd app/src-tauri &&
-          cargo build --workspace --exclude murmur-llm-sidecar
-          --example mock_llm_helper --example murmur-eval &&
-          cargo nextest list --workspace --exclude murmur-llm-sidecar
+          cargo build --workspace
+          --example murmur-eval &&
+          cargo nextest list --workspace
           --lib --bin murmur-capture-helper --test topology_watch
-          --test llm_sidecar_integration --test transform_flow_integration
           --message-format json --list-type binaries-only > target/ci-test-binaries.json &&
           cargo metadata --format-version 1 > target/ci-cargo-metadata.json
 
@@ -361,17 +356,6 @@ jobs:
           cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
           --binaries-metadata target/ci-test-binaries.json
           -E 'package(=murmur-capture-helper)'
-
-      - name: Run hardware-free integration suites
-        if: needs.changes.outputs.verified != 'true'
-        # These two drive the real supervisors against mock helpers — no model,
-        # no microphone, no permissions. The remaining suites in `tests/` need
-        # hardware or downloaded models and stay out of CI deliberately.
-        run: >-
-          cd app/src-tauri &&
-          cargo test --workspace --exclude murmur-llm-sidecar
-          --test llm_sidecar_integration --test transform_flow_integration
-          -- --test-threads=1
 
       - name: Run deterministic dictation evaluation
         if: needs.changes.outputs.verified != 'true'

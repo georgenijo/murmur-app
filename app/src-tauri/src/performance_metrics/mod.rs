@@ -377,19 +377,6 @@ impl PerformanceMetrics {
         )
     }
 
-    pub(crate) fn begin_selected_text_transform(
-        &self,
-        transform_pass_id: u64,
-        runtimes: Vec<RuntimeIdentityV1>,
-    ) -> Result<ActiveRunV1, String> {
-        self.begin(
-            PerformanceRunKindV1::SelectedTextTransform,
-            RunCorrelationV1::SelectedTextTransform { transform_pass_id },
-            runtimes,
-            ContentFreeInputSummaryV1::default(),
-        )
-    }
-
     pub(crate) fn begin_voice_query(&self, query_pass_id: u64) -> Result<ActiveRunV1, String> {
         self.begin(
             PerformanceRunKindV1::VoiceQuery,
@@ -546,26 +533,6 @@ impl PerformanceMetrics {
         Ok(())
     }
 
-    pub(crate) fn append_transform_follow_up(
-        &self,
-        transform_pass_id: u64,
-        follow_up: TransformFollowUpV1,
-    ) -> Result<Option<PerformanceRunV1>, String> {
-        let _operation_guard = self
-            .operation_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let result = self
-            .repository(PerformanceStoreOperationV1::Write)
-            .and_then(|repository| {
-                repository.append_transform_follow_up(
-                    &RunCorrelationV1::SelectedTextTransform { transform_pass_id },
-                    follow_up,
-                )
-            });
-        self.observe(result)
-    }
-
     pub(crate) fn list(&self, limit: u32) -> Result<PerformanceRunListV1, String> {
         let _operation_guard = self
             .operation_lock
@@ -709,12 +676,6 @@ impl PerformanceRunGuard {
         let _ = self.metrics.record_stage(&self.correlation, timing);
     }
 
-    /// Leave a deliberately long-lived run active across command boundaries.
-    /// The next command creates its own panic guard for the same correlation.
-    pub(crate) fn defer(mut self) {
-        self.finished = true;
-    }
-
     pub(crate) fn finish(
         mut self,
         outcome: RunOutcomeV1,
@@ -807,34 +768,6 @@ mod tests {
             RunOutcomeV1::Failed {
                 stage: PerformanceStageV1::ModelLoad,
                 ..
-            }
-        ));
-    }
-
-    #[test]
-    fn deferred_transform_run_is_closed_by_the_next_command_guard() {
-        let (_temp, metrics) = metrics();
-        let correlation = RunCorrelationV1::SelectedTextTransform {
-            transform_pass_id: 8,
-        };
-        metrics
-            .begin_selected_text_transform(8, Vec::new())
-            .unwrap();
-        metrics
-            .guard(correlation.clone(), PerformanceStageV1::SelectedTextCapture)
-            .defer();
-        assert!(metrics.list(10).unwrap().runs.is_empty());
-
-        let mut next_command = metrics.guard(correlation, PerformanceStageV1::InstructionCapture);
-        next_command.enter(PerformanceStageV1::InstructionAsr);
-        drop(next_command);
-        let runs = metrics.list(10).unwrap().runs;
-        assert_eq!(runs.len(), 1);
-        assert!(matches!(
-            runs[0].outcome,
-            RunOutcomeV1::Failed {
-                stage: PerformanceStageV1::InstructionAsr,
-                error_code: StableRunErrorV1::InternalEarlyExit,
             }
         ));
     }

@@ -314,7 +314,6 @@ impl PreparationReason {
 pub enum UnloadReason {
     ModelChanged,
     IdleTimeout,
-    MemoryPressure,
 }
 
 impl UnloadReason {
@@ -322,7 +321,6 @@ impl UnloadReason {
         match self {
             Self::ModelChanged => "modelChanged",
             Self::IdleTimeout => "idleTimeout",
-            Self::MemoryPressure => "memoryPressure",
         }
     }
 }
@@ -1500,7 +1498,7 @@ mod tests {
             .prepare(None, "fake-translation", PreparationReason::Recording)
             .unwrap();
         assert!(manager
-            .unload(None, UnloadReason::MemoryPressure)
+            .unload(None, UnloadReason::ModelChanged)
             .unwrap()
             .is_some());
         assert!(manager

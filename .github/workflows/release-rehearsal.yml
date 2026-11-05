@@ -147,13 +147,13 @@ jobs:
           fi
           echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> "$GITHUB_ENV"
 
-      - name: Build local-LLM sidecar
+      - name: Build capture helpers
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-        run: python3 scripts/build_local_llm_sidecar.py --release
+        run: python3 scripts/build_capture_helpers.py --release
 
       - name: Build unsigned macOS release proxy
         id: build

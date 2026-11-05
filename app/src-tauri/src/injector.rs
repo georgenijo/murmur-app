@@ -710,28 +710,6 @@ fn inject_text_with_policy(
     }
 }
 
-/// Simulate Cmd+V using native CoreGraphics events. Event posting itself has no
-/// failure result, but construction can fail; in that case retain the proven
-/// System Events path as a compatibility fallback.
-///
-/// `pub(crate)` (rather than private) so the transform apply/undo fallback
-/// path (`transform_apply.rs`, issue #312 PR-B2) can reuse this exact
-/// primitive after its own AX write attempt fails, instead of duplicating
-/// the CGEvent/osascript machinery.
-#[cfg(target_os = "macos")]
-pub(crate) fn simulate_paste() -> Result<(), String> {
-    match simulate_paste_native() {
-        Ok(()) => {
-            tracing::info!(target: "pipeline", "simulate_paste: native CGEvent completed");
-            Ok(())
-        }
-        Err(native_err) => {
-            tracing::warn!(target: "pipeline", "simulate_paste: native CGEvent failed: {}; falling back to osascript", native_err);
-            simulate_paste_osascript()
-        }
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn create_native_paste_events(
 ) -> Result<(core_graphics::event::CGEvent, core_graphics::event::CGEvent), String> {
@@ -750,21 +728,11 @@ fn create_native_paste_events(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn simulate_paste_native() -> Result<(), String> {
-    post_paste_native(3)
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn simulate_smart_paste_native_guarded(
     authority: Option<&PasteAttempt>,
     final_check: impl FnOnce() -> bool,
 ) -> Result<PostDecision, String> {
     post_paste_native_guarded(10, authority, final_check)
-}
-
-#[cfg(target_os = "macos")]
-fn post_paste_native(hold_ms: u64) -> Result<(), String> {
-    post_paste_native_guarded(hold_ms, None, || true).map(|_| ())
 }
 
 #[cfg(target_os = "macos")]
@@ -806,23 +774,6 @@ fn post_paste_native_guarded(
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn simulate_paste_native() -> Result<(), String> {
     Err("native paste is unavailable on this platform".to_string())
-}
-
-#[cfg(target_os = "macos")]
-fn simulate_paste_osascript() -> Result<(), String> {
-    tracing::info!(target: "pipeline", "simulate_paste: using osascript compatibility fallback");
-
-    let output = run_osascript_with_timeout(
-        r#"tell application "System Events" to keystroke "v" using command down"#,
-    )?;
-
-    if output.status.success() {
-        tracing::info!(target: "pipeline", "simulate_paste: osascript fallback completed successfully");
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("osascript failed: {}", stderr))
-    }
 }
 
 #[cfg(target_os = "macos")]

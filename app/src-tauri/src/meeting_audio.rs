@@ -134,8 +134,6 @@ pub(crate) fn require_main_window(label: &str) -> Result<(), String> {
 pub(crate) fn capture_busy(state: &State) -> bool {
     state.app_state.dictation.lock_or_recover().status != crate::state::DictationStatus::Idle
         || state.app_state.meeting_blocks_asr()
-        || state.app_state.transform_status().blocks_recording()
-        || state.transform_runtime.is_transform_busy()
         || state.query.status().blocks_pipeline()
         || state.app_state.microphone_preview.is_active()
         || state.microphone_startup_benchmark.is_active()

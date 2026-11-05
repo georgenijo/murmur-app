@@ -7,7 +7,7 @@ import tempfile
 import tomllib
 import unittest
 
-from scripts.build_local_llm_sidecar import unexpected_dynamic_dependencies
+from scripts.build_capture_helpers import unexpected_dynamic_dependencies
 from scripts.capture_helper_evidence import (
     ALLOWED_PROBE_OUTCOMES,
     CAPTURE_AGENT_ENTITLEMENTS,
@@ -280,7 +280,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         "sha256": "a" * 64,
         "architecture": "arm64",
         "designated_requirement": (
-            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'identifier "com.localdictation.capture-worker" and anchor apple generic '
             'and certificate leaf[subject.OU] = "ABCDE12345"'
         ),
         "team_id": "ABCDE12345",
@@ -324,26 +324,26 @@ class ReleaseArtifactTests(unittest.TestCase):
     def _rerecord_macos_with_helper(self, helper: dict) -> None:
         macos = self.artifacts / "macos"
         (macos / "provenance.json").unlink(missing_ok=True)
-        create_provenance("macos", "darwin-aarch64", macos, SHA, RUN_ID, helper=helper)
+        create_provenance("macos", "darwin-aarch64", macos, SHA, RUN_ID, capture_worker=helper)
 
     def test_helper_provenance_recorded_and_validated(self) -> None:
         self._rerecord_macos_with_helper(self.HELPER)
-        result = validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
-        self.assertEqual(result["platforms"]["macos"]["helper"], self.HELPER)
+        result = validate_release(self.artifacts, SHA, RUN_ID, require_macos_capture_worker=True)
+        self.assertEqual(result["platforms"]["macos"]["capture_worker"], self.HELPER)
 
     def test_helper_unquoted_team_id_requirement_is_valid(self) -> None:
         dr = (
-            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'identifier "com.localdictation.capture-worker" and anchor apple generic '
             'and certificate leaf[subject.OU] = ABCDE12345'
         )
         helper = {**self.HELPER, "designated_requirement": dr}
         self._rerecord_macos_with_helper(helper)
-        result = validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
-        self.assertEqual(result["platforms"]["macos"]["helper"], helper)
+        result = validate_release(self.artifacts, SHA, RUN_ID, require_macos_capture_worker=True)
+        self.assertEqual(result["platforms"]["macos"]["capture_worker"], helper)
 
     def test_require_macos_helper_fails_without_block(self) -> None:
-        with self.assertRaisesRegex(ArtifactError, "missing the required local-LLM helper"):
-            validate_release(self.artifacts, SHA, RUN_ID, require_macos_helper=True)
+        with self.assertRaisesRegex(ArtifactError, "missing the required capture worker"):
+            validate_release(self.artifacts, SHA, RUN_ID, require_macos_capture_worker=True)
 
     def test_capture_helper_provenance_is_required_and_validated(self) -> None:
         macos = self.artifacts / "macos"
@@ -354,14 +354,14 @@ class ReleaseArtifactTests(unittest.TestCase):
             macos,
             SHA,
             RUN_ID,
-            helper=self.HELPER,
+            capture_worker=self.HELPER,
             capture_helper=self.CAPTURE_HELPER,
         )
         result = validate_release(
             self.artifacts,
             SHA,
             RUN_ID,
-            require_macos_helper=True,
+            require_macos_capture_worker=True,
             require_macos_capture_helper=True,
         )
         self.assertEqual(
@@ -469,7 +469,7 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def test_helper_designated_requirement_wrong_team_rejected(self) -> None:
         dr = (
-            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'identifier "com.localdictation.capture-worker" and anchor apple generic '
             'and certificate leaf[subject.OU] = "ZZZZZ99999"'
         )
         with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
@@ -477,7 +477,7 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def test_helper_designated_requirement_team_prefix_rejected(self) -> None:
         dr = (
-            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'identifier "com.localdictation.capture-worker" and anchor apple generic '
             'and certificate leaf[subject.OU] = ABCDE12345EXTRA'
         )
         with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
@@ -485,7 +485,7 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def test_helper_designated_requirement_wrong_operator_rejected(self) -> None:
         dr = (
-            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'identifier "com.localdictation.capture-worker" and anchor apple generic '
             'and certificate leaf[subject.OU] != ABCDE12345'
         )
         with self.assertRaisesRegex(ArtifactError, "designated_requirement must pin"):
@@ -493,9 +493,9 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def test_helper_designated_requirement_or_branch_rejected(self) -> None:
         requirements = (
-            'identifier "com.localdictation.local-llm-sidecar" or anchor apple generic '
+            'identifier "com.localdictation.capture-worker" or anchor apple generic '
             'and certificate leaf[subject.OU] = ABCDE12345',
-            'identifier "com.localdictation.local-llm-sidecar" and anchor apple generic '
+            'identifier "com.localdictation.capture-worker" and anchor apple generic '
             'and certificate leaf[subject.OU] = ABCDE12345 or cdhash H"deadbeefcafe"',
         )
         for dr in requirements:
@@ -507,13 +507,13 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def test_helper_designated_requirement_clause_prefix_decoys_rejected(self) -> None:
         requirements = (
-            'notidentifier "com.localdictation.local-llm-sidecar" '
+            'notidentifier "com.localdictation.capture-worker" '
             'and anchor apple generic '
             'and certificate leaf[subject.OU] = ABCDE12345',
-            'identifier "com.localdictation.local-llm-sidecar" '
+            'identifier "com.localdictation.capture-worker" '
             'and xanchor apple generic '
             'and certificate leaf[subject.OU] = ABCDE12345',
-            'identifier "com.localdictation.local-llm-sidecar" '
+            'identifier "com.localdictation.capture-worker" '
             'and anchor apple generic '
             'and not certificate leaf[subject.OU] = ABCDE12345',
         )
@@ -529,21 +529,19 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir = app / "Contents" / "MacOS"
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
-        helper = executable_dir / "murmur-llm-sidecar"
         capture_agent = executable_dir / "murmur-capture-agent"
         capture_helper = executable_dir / "murmur-capture-helper"
         capture_worker = executable_dir / "murmur-capture-worker"
         main.write_bytes(b"main")
-        helper.write_bytes(b"helper")
         capture_agent.write_bytes(b"capture agent")
         capture_helper.write_bytes(b"capture helper")
         capture_worker.write_bytes(b"capture worker")
 
         require_exact_macos_executables(
-            app, main, [capture_agent, capture_helper, capture_worker, helper]
+            app, main, [capture_agent, capture_helper, capture_worker]
         )
 
-        for unexpected in ("mock_llm_helper", "murmur-eval"):
+        for unexpected in ("unexpected-helper", "murmur-eval"):
             with self.subTest(unexpected=unexpected):
                 extra = executable_dir / unexpected
                 extra.write_bytes(b"developer tool")
@@ -551,7 +549,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     SystemExit, "app bundle executables differ"
                 ):
                     require_exact_macos_executables(
-                        app, main, [capture_agent, capture_helper, capture_worker, helper]
+                        app, main, [capture_agent, capture_helper, capture_worker]
                     )
                 extra.unlink()
 
@@ -560,18 +558,16 @@ class ReleaseArtifactTests(unittest.TestCase):
         executable_dir = app / "Contents" / "MacOS"
         executable_dir.mkdir(parents=True)
         main = executable_dir / "ui"
-        helper = executable_dir / "murmur-llm-sidecar"
         capture_agent = executable_dir / "murmur-capture-agent"
         capture_helper = executable_dir / "murmur-capture-helper"
         capture_worker = executable_dir / "murmur-capture-worker"
         main.write_bytes(b"main")
-        helper.write_bytes(b"helper")
         capture_agent.write_bytes(b"capture agent")
         capture_worker.write_bytes(b"capture worker")
 
         with self.assertRaisesRegex(SystemExit, "app bundle executables differ"):
             require_exact_macos_executables(
-                app, main, [capture_agent, capture_helper, capture_worker, helper]
+                app, main, [capture_agent, capture_helper, capture_worker]
             )
 
     def test_embedded_info_plist_accepts_otool_short_final_word(self) -> None:
@@ -679,7 +675,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     "CFBundleVersion": "__MURMUR_VERSION__",
                 },
             )
-        build_script = (root / "scripts/build_local_llm_sidecar.py").read_text()
+        build_script = (root / "scripts/build_capture_helpers.py").read_text()
         self.assertIn('"capture-agent-info.plist"', build_script)
         self.assertIn('"__info_plist"', build_script)
 
@@ -696,7 +692,6 @@ class ReleaseArtifactTests(unittest.TestCase):
             "capture-agent.entitlements.plist",
             "capture-helper.entitlements.plist",
             "capture-worker.entitlements.plist",
-            "local-llm-sidecar.entitlements.plist",
         ):
             with self.subTest(filename=filename), (tauri_root / filename).open("rb") as handle:
                 self.assertNotIn(calendar_key, plistlib.load(handle))

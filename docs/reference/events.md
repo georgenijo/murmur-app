@@ -33,7 +33,6 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 | `dictation-delivery-outcome` | `{recordingId, outcome}` where `outcome` is `"clipboardOnly"` \| `"autoPastePosted"` \| `"clipboardWriteFailed"` \| `"unconfirmed"` | `commands/recording.rs` | Once after the current recording's text-delivery attempt. Content-free and generation-gated; stale/cancelled recordings do not emit. | Overlay (`useOverlayRuntime`): shows the bounded manual-paste cue only for `clipboardOnly`, and newer outcomes clear older cues. |
 | `file-output-failed` | `string` (hint) | `commands/recording.rs` | Saving the transcript/audio file failed; clipboard delivery still happened. | Main window. |
 | `file-transcription-status-changed` | `boolean` | `commands/recording.rs` | `true` when an imported-file transcription starts, `false` when it finishes or aborts. Gates dictation and transform. | Main window (`useFileTranscription`). |
-| `correction-start-failed` | `string` | `correction_shortcut.rs` | A correction shortcut could not start or finish its exact transform pass. Targeted to `main`; the main window is then shown. | Main banner (`useDeliveryRecoveryListeners`). |
 | `delivery-retry-feedback` | `{kind, message}`, where `kind` is `"auto_pasted"` \| `"clipboard_only"` \| `"empty"` \| `"busy"` \| `"failed"` | `delivery_recovery.rs` | Each `retry_last_delivery` attempt publishes its bounded result, including no prior delivery and concurrent retry refusals. | Main banner (`useDeliveryRecoveryListeners`). The initiating overlay uses its command's returned result so unrelated or stale broadcasts cannot revive a cue. |
 | `corpus-recording-status` | `{state, error}`, where `state` is `"starting"` \| `"recording"` \| `"saving"` \| `"recovering"` \| `"idle"` \| `"error"` | `commands/corpus.rs` | Each personal-corpus capture transition. `error` is null outside the error state. | Settings corpus recorder. |
 
@@ -56,7 +55,6 @@ sanitized, and the fleet log shipper drops the entire `meeting` stream.
 | `meeting-segment-finalized` | `MeetingSegment` | `meeting_capture.rs` | After a pending chunk transcribes and its final segment transaction commits. | Main (`useMeetings` bounded live transcript). |
 | `meeting-speakers-updated` | `{sessionId}` | `meeting_diarization.rs` | The current idle-only speaker pass commits conservative remote-speaker assignments for the exact meeting session. Contains no transcript, speaker name, or turn data. | Main (`useMeetings` refreshes meeting detail). |
 | `meeting-segment-failed` | `{sessionId, segmentId, errorCode}` | `meeting_capture.rs` | A durable pending chunk could not be read or transcribed and transitioned to failed. Contains no text/path. | Main (`useMeetings` actionable warning). |
-| `meeting-summary-status-changed` | `MeetingSummaryStatus {generation, sessionId, phase, completedChunks, totalChunks, elapsedMs, peakRssMb, errorCode}` | `commands/meeting_summary.rs` | On summary start, chunk progress, cancellation, completion, or failure. Contains no transcript or derived content. | Main (`useMeetings` progress and result refresh). |
 | `meeting-suggestion-changed` | `{token, title, startMs, endMs} \| null` | `meeting_suggestions.rs` | A consented Calendar suggestion appears, expires, is invalidated, or is dismissed. Sent only to main and overlay; contains a private event title and must never be logged. | Main and overlay suggestion hooks. |
 | `accept-meeting-suggestion` | `{token}` | Overlay frontend, targeted to main | Explicit Accept click. Carries no title or attendee override and starts no capture itself. | Main routes the token through `useMeetings.start` to normal `start_meeting` admission. |
 | `meeting-audio-invalidated` | `{sessionId: string \| null}` | `meeting_audio.rs`, called by meeting deletion and pruning | Before retained audio for the selected session may be removed. Pruning, including meeting-start retention, emits only for sessions selected for removal; no-op pruning emits nothing. A null session ID is reserved for Delete all. Pending byte reads are also revoked. Sent only to main. | Main playback hook stops sources and discards stale reads and decodes. |
@@ -75,7 +73,6 @@ the `useMeetings` subscription to this emitted contract.
 |-------|---------|--------|---------------|-----------|
 | `download-progress` | `{modelName, attemptId, requestId, received, total, phase, repeatedRepair}` | `commands/models.rs` | During the exact requested model attempt. Byte downloads use `downloading`; Core ML uses `preparing`, `repairing`, `initializing`, and `validating`; archive extraction uses `installing`. `total` may be 0. Consumers lock to the first positive attempt ID for their requested model and ignore unrelated/stale events. Owned callers additionally match their request ID. | Settings download UI, `ModelDownloader`, onboarding, Performance Lab. |
 | `model-runtime-status-changed` | `ModelRuntimeSnapshot` | `model_runtime.rs` | On every lifecycle transition (selecting, loading, warming, ready, unloading, failed). Generation-ordered, so a stale load can't overwrite a newer status. | Settings, onboarding, Performance Lab. |
-| `transform-model-download-progress` | `{received, total, phase}` — `phase` is `"downloading"` \| `"installed"` | `commands/transform_model.rs` | While streaming the pinned local-LLM GGUF, and once on successful publication. | Settings → Transform. |
 
 ## Keyboard
 
@@ -91,24 +88,6 @@ the `useMeetings` subscription to this emitted contract.
 | `query-toggle` | `{queryPassId, action: "start" \| "stop" \| "follow_up"}` | `keyboard.rs`, `query_flow.rs` | A dedicated query-key double-tap starts a pass, or its next single tap stops capture. A review-only follow-up request targets main; the event cannot authorize a fold without its one-shot Rust-owned request. There is no spoken-keyword trigger. | Main window (`useQueryFlow`). |
 
 **Dead listener:** `useCombinedToggle` registers `hold-down-cancel`, which nothing emits. In Both mode an unpromoted tap emits nothing at all, because no recording was ever started.
-
-## Selected-text transform
-
-Transform events carry a `transformPassId` where a pass exists, so a delayed handler can prove whether it still owns the flow. State and lifecycle events carry no instruction, selection, or proposal text. The targeted `transform-proposal-chunk` event carries proposal text only to the transform-review window.
-
-| Event | Payload | Source | When it fires | Listeners |
-|-------|---------|--------|---------------|-----------|
-| `transform-key-pressed` | `{transformPassId}` | `keyboard.rs` | The transform hold key goes down. The pass ID is assigned here, in the rdev callback. | Main window (`useTransformFlow`). |
-| `transform-key-released` | `{transformPassId}` | `keyboard.rs`, `commands/keyboard.rs` | The transform key is released, or the listener is torn down while it is held. | Main window (`useTransformFlow`). |
-| `transform-capture-starting` | `null` | `transform_flow.rs` | Accepted transform, correction, or retry immediately before microphone arm, including the interval before AX selection completes. Targeted to the main window; carries no content. | Meeting suggestion coordinator and main retained-audio playback hook. |
-| `transform-state-changed` | `{state, transformPassId, errorCode?}` — `state` is `connecting` \| `recovering` \| `listening` \| `thinking` \| `ready` \| `failed` \| `applied`; `errorCode` is a stable enum (`audio_stalled`, `audio_recovery_stalled`, `audio_not_ready`, `model_not_downloaded`, `timeout`, `output_invalid`, `crashed`, `target_gone`, `selection_changed`, `paste_failed`, …) | `transform_flow.rs` | Every review-state transition. Deliberately carries no text — the popover fetches content separately via `get_transform_review_content`. | Transform popover (`useTransformReviewDriver`). |
-| `transform-proposal-chunk` | `{transformPassId, sequence, text}` | `transform_flow.rs` | A current Thinking pass receives a proposal chunk. Targeted only to `transform-review`; sequence zero expands the popover before delivery. | Transform popover (`useTransformReviewDriver`). |
-| `transform-review-hidden` | `()` | `transform_flow.rs` | The popover has been hidden (cancel, linger expiry, teardown). | Popover, main window. |
-| `transform-busy` | `()` | `transform_flow.rs` | A transform keypress was refused because dictation, a benchmark, a file transcription, or another transform owns the pipeline. | Overlay — amber busy flash, so the press is never silently ignored. |
-| `transform-secure-field` | `()` | `transform_flow.rs` | Capture refused because the focused element is (or cannot be proven not to be) a secure field. No content is shown. | Overlay flash only. |
-| `transform-capture-failed` | `()` | `transform_flow.rs` | The isolated audio worker interrupted a selected-text transform. The backend clears the active transform pass and returns to idle before emitting. | No current frontend listener; retained as a backend failure notification contract. |
-| `transform-apply-failed` | `string` (stable error code) | `transform_apply.rs` | Apply or undo write-back failed. | Popover — surfaces the failure inline while keeping Undo available. |
-| `escape-cancel` | `{transformPassId, queryPassId}` | `keyboard.rs` | Escape snapshots the active transform first, otherwise the active query, otherwise dictation. Exact pass IDs prevent delayed cancellation from reaching a newer flow. | Main window (`useEscapeCancel`) routes to scoped cancellation. |
 
 ## Voice Query
 

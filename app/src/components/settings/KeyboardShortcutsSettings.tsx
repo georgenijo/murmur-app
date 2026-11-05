@@ -1,7 +1,6 @@
 import { MAIN_WINDOW_SHORTCUTS } from '../../lib/keyboardShortcuts';
 import {
   QUERY_KEY_OPTIONS,
-  TRANSFORM_KEY_OPTIONS,
   pasteLastShortcutLabel,
   recordingShortcutHint,
   type Settings,
@@ -10,17 +9,14 @@ import { SettingsSection } from './SettingsSection';
 
 export type GlobalShortcutId =
   | 'recording'
-  | 'transform'
   | 'voice-query'
   | 'paste-last'
   | 'correction';
 
 export type ShortcutOwnerDestination =
   | { shortcutId: 'recording'; page: 'recording'; target: 'trigger-key' }
-  | { shortcutId: 'transform'; page: 'ai-transform'; target: 'transform-shortcut' }
   | { shortcutId: 'voice-query'; page: 'ai-query'; target: 'voice-query-shortcut' }
   | { shortcutId: 'paste-last'; page: 'delivery'; target: 'paste-last-shortcut' }
-  | { shortcutId: 'correction'; page: 'ai-transform'; target: 'correction-shortcut' };
 
 interface KeyboardShortcutsSettingsProps {
   settings: Settings;
@@ -43,16 +39,14 @@ function configuredBinding(label: string, paused: boolean): GlobalShortcutRow['b
 }
 
 function keyOptionLabel(
-  key: Settings['transformHoldKey'] | Settings['queryHotkey'],
+  key: Settings['queryHotkey'],
 ): string | null {
   if (key === null) return null;
-  return TRANSFORM_KEY_OPTIONS.find((option) => option.value === key)?.label
-    ?? QUERY_KEY_OPTIONS.find((option) => option.value === key)?.label
+  return QUERY_KEY_OPTIONS.find((option) => option.value === key)?.label
     ?? null;
 }
 
 function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
-  const transformKey = keyOptionLabel(settings.transformHoldKey);
   const queryKey = keyOptionLabel(settings.queryHotkey);
   const pasteLast = pasteLastShortcutLabel(settings.pasteLastShortcut);
 
@@ -65,14 +59,6 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
         settings.disabled,
       ),
       ownerLabel: 'Recording',
-    },
-    {
-      destination: { shortcutId: 'transform', page: 'ai-transform', target: 'transform-shortcut' },
-      label: 'Selected-text transform',
-      binding: transformKey === null
-        ? { kind: 'off', label: null }
-        : configuredBinding(`Hold ${transformKey}`, settings.disabled),
-      ownerLabel: 'Selected-text rewrite',
     },
     {
       destination: { shortcutId: 'voice-query', page: 'ai-query', target: 'voice-query-shortcut' },
@@ -89,14 +75,6 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
         ? { kind: 'off', label: null }
         : configuredBinding(pasteLast, false),
       ownerLabel: 'Delivery',
-    },
-    {
-      destination: { shortcutId: 'correction', page: 'ai-transform', target: 'correction-shortcut' },
-      label: 'Correct last dictation',
-      binding: settings.correctionShortcutEnabled
-        ? configuredBinding('⌘⇧E', settings.disabled)
-        : { kind: 'off', label: '⌘⇧E' },
-      ownerLabel: 'Selected-text rewrite',
     },
   ];
 }
@@ -130,7 +108,7 @@ export function KeyboardShortcutsSettings({
       <div data-setting-target="shortcuts" className="settings-stack">
         {settings.disabled && (
           <p role="status" className="settings-callout text-xs leading-relaxed text-on-surface" data-tone="accent">
-            Murmur is disabled, so recording, transform, Voice Query, and correction shortcuts are paused. Paste last remains available, and every saved binding is shown below.
+            Murmur is disabled, so recording and Voice Query shortcuts are paused. Paste last remains available, and every saved binding is shown below.
           </p>
         )}
         <section aria-labelledby="global-shortcuts-title">

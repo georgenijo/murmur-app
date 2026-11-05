@@ -187,7 +187,6 @@ failures continue to use their existing stable errors.
 | Main-process RSS | Physical resident memory in bytes |
 | Rust heap | Bytes in Murmur's dedicated Rust malloc zone on macOS |
 | FFI/native heap | Bytes in all other malloc zones; not an RSS component and not a complete GPU/unified-memory measurement |
-| Sidecar CPU/RSS | Signed local-LLM helper process only; sampled by its atomic resident PID, including model handshake |
 
 The first host/process CPU observation needs a prior counter baseline and is
 therefore unavailable rather than reported as zero. Rust/FFI heap breakdown is

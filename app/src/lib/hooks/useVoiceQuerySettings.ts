@@ -70,7 +70,6 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
   const queryProviderSwitchRef = useRef<{ generation: number; hotkey: QueryKey } | null>(null);
   const queryCommandFingerprint = queryCommandFingerprintFor(
     queryCommand(settings),
-    settings.transformHoldKey,
   );
   const queryCommandFingerprintRef = useRef(queryCommandFingerprint);
 
@@ -168,7 +167,7 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
       setQueryConfigError('Choose the absolute path to a CLI executable before enabling Voice Query.');
       return;
     }
-    const key = QUERY_KEY_OPTIONS.find((option) => option.value !== settings.transformHoldKey)?.value;
+    const key = QUERY_KEY_OPTIONS[0]?.value;
     if (!key) {
       setQueryConfigError('No dedicated shortcut is available.');
       return;
@@ -221,8 +220,7 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
     // any different edit still changes the fingerprint and wins the race.
     queryCommandFingerprintRef.current = queryCommandFingerprintFor(
       command,
-      settings.transformHoldKey,
-    );
+      );
     setQueryConfigError(null);
     setQueryConfigNotice(hotkeyToPreserve !== null
       ? `Checking ${selected.label} before keeping Voice Query enabled…`
@@ -441,10 +439,6 @@ export function useVoiceQuerySettings({ settings, onUpdateSettings, active }: Us
   };
 
   const updateQueryHotkey = (value: QueryKey) => {
-    if (value === settings.transformHoldKey) {
-      setQueryConfigError('That key is already assigned to Selected-text Transform.');
-      return;
-    }
     setQueryConfigError(null);
     onUpdateSettings({ queryHotkey: value });
   };

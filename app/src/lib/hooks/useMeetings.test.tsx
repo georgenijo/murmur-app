@@ -32,10 +32,8 @@ vi.mock('../meetings', async (importOriginal) => {
     startMeeting: meetingMocks.startMeeting,
     saveMeetingMetadata: meetingMocks.saveMeetingMetadata,
     getMeetingStatus: vi.fn(async () => original.IDLE_MEETING_STATUS),
-    getMeetingSummaryStatus: vi.fn(async () => original.IDLE_MEETING_SUMMARY_STATUS),
     getSystemAudioPermissionStatus: vi.fn(async () => 'granted'),
     listMeetings: meetingMocks.listMeetings,
-    cancelMeetingSummary: vi.fn(async () => false),
     copyMeeting: vi.fn(async () => {}),
     deleteAllMeetings: vi.fn(async () => {}),
     deleteMeeting: vi.fn(async () => {}),
@@ -46,7 +44,6 @@ vi.mock('../meetings', async (importOriginal) => {
     restoreMeetingReviewFromGenerated: meetingMocks.restoreMeetingReviewFromGenerated,
     saveMeetingExport: vi.fn(),
     saveMeetingReview: meetingMocks.saveMeetingReview,
-    startMeetingSummary: vi.fn(),
     stopMeeting: vi.fn(async () => {}),
   };
 });
@@ -144,16 +141,6 @@ describe('useMeetings remote speaker refresh', () => {
     expect(controller().page).toEqual(latest);
     expect(controller().appliedQuery).toBe('new');
     expect(controller().loading).toBe(false);
-  });
-
-  it('refreshes an active search after saving or restoring a review', async () => {
-    meetingMocks.saveMeetingReview.mockResolvedValue(detail('first', 'Team'));
-    meetingMocks.restoreMeetingReviewFromGenerated.mockResolvedValue(detail('first', 'Team'));
-    await act(async () => controller().refresh('reviewword'));
-    meetingMocks.listMeetings.mockClear();
-    await act(async () => controller().saveReview({ sessionId: 'first', expectedReviewRevision: null, base: { kind: 'labels_only' }, labels: { me: 'Me', them: 'Team' }, document: null }));
-    await act(async () => controller().restoreReview('first', 1, null));
-    expect(meetingMocks.listMeetings.mock.calls).toEqual([['reviewword'], ['reviewword']]);
   });
 
   it('loads older meetings for the applied search, deduplicates overlap, and blocks double requests', async () => {

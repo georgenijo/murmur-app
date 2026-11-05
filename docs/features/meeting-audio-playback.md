@@ -61,15 +61,11 @@ unlinked files even when an old open descriptor remains readable.
 
 ## Pausing and deletion
 
-Playback pauses when dictation, a meeting, a transform, a query, or a microphone
+Playback pauses when dictation, a meeting, a query, or a microphone
 test becomes active. A native busy snapshot covers initial state and explicit
 Play requests; events stop already scheduled sources. A playback generation
 prevents delayed reads and decodes from restarting paused or deleted audio.
 Calendar access and model installation are unrelated to playback admission.
-The shared `transform-capture-starting` event pauses playback before accepted
-transform, correction, and retry microphone arms, including slow AX selection.
-Terminal `transform-review-hidden` and `transform-capture-failed` notifications
-refresh the busy state; explicit Play always checks the native owners again.
 
 Deleting one meeting invalidates its playback. Pruning invalidates only sessions
 selected for removal, including retention applied at meeting start. A no-op prune

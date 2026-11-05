@@ -16,14 +16,7 @@ const DICTATION_KEY_IDS = [
 export type DictationKey = (typeof DICTATION_KEY_IDS)[number];
 export type FunctionDictationKey = (typeof FUNCTION_DICTATION_KEY_IDS)[number];
 
-/**
- * Independent hotkey for the AX-selection transform shortcut (issue #312).
- * Deliberately a distinct id set from `DictationKey`: the transform key is
- * meant to coexist with whichever dictation hotkey is configured, so its
- * modifier options live on the opposite side of the keyboard.
- */
-export type TransformKey = 'alt_r' | 'ctrl_l' | 'shift_r';
-export type QueryKey = TransformKey;
+export type QueryKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type PasteLastShortcut =
   | 'command_shift_v'
   | 'command_option_v'
@@ -292,9 +285,6 @@ const MAX_SAMPLE_TERMS = 50;
 export interface Settings {
   model: ModelOption;
   doubleTapKey: DictationKey;
-  /** Independent transform-shortcut hotkey (issue #312). `null` = disabled;
-   * no settings UI exposes this yet. */
-  transformHoldKey: TransformKey | null;
   /** Independent double-tap voice-query shortcut. `null` keeps the integration off. */
   queryHotkey: QueryKey | null;
   /** Provider preset metadata; `custom` preserves the original generic bridge. */
@@ -317,7 +307,6 @@ export interface Settings {
   autoPasteDelayMs: number;
   /** Global Paste Last chord. `null` disables it. */
   pasteLastShortcut: PasteLastShortcut | null;
-  correctionShortcutEnabled: boolean;
   recordingMode: RecordingMode;
   hotkeyMissFeedback: boolean;
   /** Play local output-only feedback for dictation lifecycle transitions. */
@@ -510,16 +499,11 @@ export function recordingShortcutHint(mode: RecordingMode, key: DictationKey): s
   return `Hold ${label}`;
 }
 
-/** Allow-list of transform hold-key options, shared by the Settings Transform
- * section's picker (issue #312 D1) and migration/validation, so both draw from
- * a single source of truth. Kept alongside `DICTATION_KEY_OPTIONS`. */
-export const TRANSFORM_KEY_OPTIONS: { value: TransformKey; label: string }[] = [
+export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = [
   { value: 'alt_r', label: 'Right Option' },
   { value: 'ctrl_l', label: 'Left Control' },
   { value: 'shift_r', label: 'Right Shift' },
 ];
-
-export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = TRANSFORM_KEY_OPTIONS;
 
 export const PASTE_LAST_SHORTCUT_OPTIONS: {
   value: PasteLastShortcut | 'disabled';
@@ -538,15 +522,13 @@ export function pasteLastShortcutLabel(shortcut: PasteLastShortcut | null): stri
 
 export function pasteLastShortcutConflict(
   shortcut: string | null,
-  settings: Pick<Settings, 'doubleTapKey' | 'transformHoldKey' | 'queryHotkey'>,
+  settings: Pick<Settings, 'doubleTapKey' | 'queryHotkey'>,
 ): string | null {
   if (shortcut === null) return null;
   if (shortcut === settings.doubleTapKey) {
     return 'That shortcut is already assigned to Dictation. Choose another Paste Last shortcut.';
   }
-  if (shortcut === settings.transformHoldKey) {
-    return 'That shortcut is already assigned to Selected-text Transform. Choose another Paste Last shortcut.';
-  }
+
   if (shortcut === settings.queryHotkey) {
     return 'That shortcut is already assigned to Voice Query. Choose another Paste Last shortcut.';
   }
@@ -614,7 +596,6 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'parakeet-tdt-0.6b-v3-coreml',
   doubleTapKey: 'shift_l',
   // Disabled by default — no settings UI to configure it yet (Phase D).
-  transformHoldKey: null,
   queryHotkey: null,
   queryProvider: 'custom',
   queryExecutable: '',
@@ -634,7 +615,6 @@ export const DEFAULT_SETTINGS: Settings = {
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
   pasteLastShortcut: null,
-  correctionShortcutEnabled: false,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -1157,26 +1137,11 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
             || !validPasteLastShortcuts.has(parsed.pasteLastShortcut)
             || pasteLastShortcutConflict(parsed.pasteLastShortcut, {
               doubleTapKey: parsed.doubleTapKey ?? DEFAULT_SETTINGS.doubleTapKey,
-              transformHoldKey: parsed.transformHoldKey ?? DEFAULT_SETTINGS.transformHoldKey,
               queryHotkey: parsed.queryHotkey ?? DEFAULT_SETTINGS.queryHotkey,
             }) !== null
           )
         ) {
           parsed.pasteLastShortcut = null;
-        }
-      }
-
-      // transformHoldKey: `null` (disabled) or one of TRANSFORM_KEY_OPTIONS.
-      // Anything else — including an absent field on pre-feature blobs, or a
-      // tampered/unrecognised id — coerces back to disabled rather than
-      // silently arming an unexpected shortcut.
-      {
-        const validTransformKeys = new Set<string>(TRANSFORM_KEY_OPTIONS.map((o) => o.value));
-        if (
-          parsed.transformHoldKey !== null
-          && (typeof parsed.transformHoldKey !== 'string' || !validTransformKeys.has(parsed.transformHoldKey))
-        ) {
-          parsed.transformHoldKey = DEFAULT_SETTINGS.transformHoldKey;
         }
       }
 
@@ -1230,12 +1195,7 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       if (typeof parsed.retainQueryHistory !== 'boolean') {
         parsed.retainQueryHistory = DEFAULT_SETTINGS.retainQueryHistory;
       }
-      if (
-        parsed.queryHotkey !== null
-        && parsed.queryHotkey === parsed.transformHoldKey
-      ) {
-        parsed.queryHotkey = null;
-      }
+
 
       // outputDir feeds a filesystem path on the Rust side — coerce anything
       // non-string back to the default (empty = app-chosen Documents/Murmur).
@@ -1361,9 +1321,7 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       if (typeof parsed.hotkeyMissFeedback !== 'boolean') {
         parsed.hotkeyMissFeedback = DEFAULT_SETTINGS.hotkeyMissFeedback;
       }
-      if (typeof parsed.correctionShortcutEnabled !== 'boolean') {
-        parsed.correctionShortcutEnabled = DEFAULT_SETTINGS.correctionShortcutEnabled;
-      }
+
       if (typeof parsed.soundCuesEnabled !== 'boolean') {
         parsed.soundCuesEnabled = DEFAULT_SETTINGS.soundCuesEnabled;
       }

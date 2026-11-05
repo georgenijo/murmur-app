@@ -14,7 +14,6 @@ import {
 import type { HistoryEntry } from '../history';
 import { SITE_MODE_BROWSERS, type Settings } from '../settings';
 import { loadStats } from '../stats';
-import type { MeetingRuntimeStatus } from '../meetings';
 
 interface UseDiscoveryOptions {
   enabled: boolean;
@@ -80,11 +79,6 @@ export function useDiscovery({ enabled, settings, statsVersion, historyEntries }
         const bundleId = browserBundleId(payload);
         if (!disposed && bundleId !== null && browserIds.has(bundleId)) {
           setState(enqueueDiscoveryHint('browser_modes'));
-        }
-      }),
-      listen<MeetingRuntimeStatus>('meeting-status-changed', ({ payload }) => {
-        if (!disposed && payload.phase === 'processing' && payload.sessionId !== null) {
-          setState(enqueueDiscoveryHint('meeting_summaries'));
         }
       }),
     ];

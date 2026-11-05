@@ -140,7 +140,6 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
       'Performance',
       'Latency',
       'Compare',
-      'Transform',
       'Dictation',
     ]);
     expect(container.textContent).not.toContain('Metrics');
@@ -164,9 +163,9 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     expect(container.textContent).toContain('Report comparison');
 
     await act(async () => (tabs[5] as HTMLButtonElement).click());
-    expect(container.querySelector('#diagnostics-panel-transforms')).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-dictation')).not.toBeNull();
     expect(tabs[5].getAttribute('aria-selected')).toBe('true');
-    expect(container.textContent).toContain('Transform diagnostics');
+    expect(container.textContent).toContain('Dictation');
   });
 
   it('pops out the currently selected diagnostics tab', async () => {

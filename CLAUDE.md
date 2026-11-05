@@ -1,7 +1,7 @@
 # Murmur agent guide
 
 Privacy-first macOS voice-to-text app built with Tauri 2, Rust, and React.
-Transcription and selected-text rewriting run locally. Optional Voice Query
+Transcription runs locally. Optional Voice Query
 runs a user-configured CLI that may send content to a cloud service.
 `AGENTS.md` is a symlink to this file. Edit this file only.
 
@@ -10,7 +10,7 @@ runs a user-configured CLI that may send content to a cloud service.
 - [Architecture](docs/ARCHITECTURE.md): module ownership, data flow, and native boundaries.
 - [Features](docs/FEATURES.md): feature index and links to detailed behavior.
 - [Development](docs/DEVELOPMENT.md): setup, permissions, builds, and troubleshooting.
-- [API reference](docs/reference/commands.md): 244 registered commands.
+- [API reference](docs/reference/commands.md): 210 registered commands.
 
 Read the documentation relevant to the task. Search the source for individual
 files and symbols instead of maintaining another file inventory here.
@@ -20,7 +20,7 @@ files and symbols instead of maintaining another file inventory here.
 Run each command from the repository root:
 
 ```bash
-python3 scripts/build_local_llm_sidecar.py
+python3 scripts/build_capture_helpers.py
 (cd app && npm run tauri:dev)
 (cd app/src-tauri && cargo check)
 (cd app/src-tauri && cargo test -- --test-threads=1)
@@ -61,11 +61,10 @@ receipts, or follow-up questions to routine work. For a requested run, use
 ## Constraints worth preserving
 
 - Keep transcript, audio, clipboard, selection, and private-corpus content out of public logs and reports. Follow each feature's consent and retention rules.
-- Recheck recording and transform generation ownership before async continuations mutate shared state. Resolve recording configuration once at recording start.
-- Keep transcript transforms behind the ordered pipeline entry point. Refuse ambiguous corrections and unprovable secure-field access.
+- Recheck recording generation ownership before async continuations mutate shared state. Resolve recording configuration once at recording start.
+- Keep transcript transforms behind the ordered pipeline entry point. Refuse unprovable secure-field access.
 - Rust owns native window geometry. Dispatch `NSWindow` mutations onto the main thread.
 - Call `set_is_main_thread(false)` before the rdev listener to avoid macOS TIS/TSM crashes.
-- Keep `llama-cpp-2` in the signed LLM sidecar. Linking it into the app conflicts with whisper's ggml.
 - Follow the [UI design system](docs/features/ui-design-system.md) for shared controls, spacing, and reduced motion.
 
 ## Finish and clean up

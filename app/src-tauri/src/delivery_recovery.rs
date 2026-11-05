@@ -14,7 +14,6 @@ pub(crate) struct LastDelivery {
     pub(crate) target: DeliveryTargetSnapshot,
     smart_destination: crate::smart_destination::Snapshot,
     delay_ms: u64,
-    pub(crate) teaching_context: Option<crate::correct_and_teach::TeachingContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +95,6 @@ impl DeliveryRecoveryState {
         target: DeliveryTargetSnapshot,
         smart_destination: crate::smart_destination::Snapshot,
         delay_ms: u64,
-        teaching_context: Option<crate::correct_and_teach::TeachingContext>,
     ) {
         if text.trim().is_empty() {
             return;
@@ -107,16 +105,7 @@ impl DeliveryRecoveryState {
             target,
             smart_destination,
             delay_ms: delay_ms.min(500),
-            teaching_context,
         });
-    }
-
-    pub(crate) fn correct(&self, recording_id: u64, original: &str, corrected: &str) {
-        if let Some(latest) = self.latest.lock_or_recover().as_mut() {
-            if latest.recording_id == recording_id && latest.text == original {
-                latest.text = corrected.to_string();
-            }
-        }
     }
 
     pub(crate) fn latest(&self) -> Option<LastDelivery> {
@@ -450,7 +439,6 @@ mod tests {
             DeliveryTargetSnapshot::Incomplete,
             crate::smart_destination::Snapshot::Disabled,
             900,
-            None,
         );
         state.remember(
             2,
@@ -458,7 +446,6 @@ mod tests {
             DeliveryTargetSnapshot::SelfTarget,
             crate::smart_destination::Snapshot::Unavailable,
             0,
-            None,
         );
         let latest = state.latest().expect("delivery retained");
         assert_eq!(latest.text, "hello");
@@ -476,7 +463,6 @@ mod tests {
                 DeliveryTargetSnapshot::Incomplete,
                 crate::smart_destination::Snapshot::Disabled,
                 0,
-                None,
             )
         };
         remember(1);
@@ -490,32 +476,6 @@ mod tests {
         assert_eq!(state.latest().unwrap().recording_id, 3);
         state.forget_through(3);
         assert!(state.latest().is_none());
-    }
-    #[test]
-    fn corrections_build_on_approved_text_and_cannot_replace_a_newer_delivery() {
-        let state = DeliveryRecoveryState::default();
-        state.remember(
-            41,
-            "Tori Friday".into(),
-            DeliveryTargetSnapshot::Incomplete,
-            crate::smart_destination::Snapshot::Disabled,
-            0,
-            None,
-        );
-        state.correct(41, "Tori Friday", "TAURI Friday");
-        assert_eq!(state.latest().unwrap().text, "TAURI Friday");
-        state.correct(41, "Tori Friday", "stale");
-        assert_eq!(state.latest().unwrap().text, "TAURI Friday");
-        state.remember(
-            42,
-            "Tori Friday".into(),
-            DeliveryTargetSnapshot::Incomplete,
-            crate::smart_destination::Snapshot::Disabled,
-            0,
-            None,
-        );
-        state.correct(41, "Tori Friday", "wrong recording");
-        assert_eq!(state.latest().unwrap().text, "Tori Friday");
     }
 
     #[test]
@@ -560,53 +520,5 @@ mod tests {
             &target,
             &DeliveryTargetSnapshot::Complete(changed)
         ));
-    }
-
-    #[test]
-    fn smart_recovery_never_downgrades_to_normal_app_paste() {
-        use crate::frontmost::{
-            AppTransitionSnapshot, DeliveryTargetIdentity, ProcessInstanceToken,
-        };
-
-        let target = DeliveryTargetSnapshot::Complete(DeliveryTargetIdentity {
-            bundle_id: "com.example.Editor".into(),
-            process_id: 42,
-            process_instance: ProcessInstanceToken::for_test(7),
-            window_token: None,
-            transitions: AppTransitionSnapshot {
-                activation_generation: 0,
-                space_generation: 0,
-            },
-        });
-        let smart = crate::smart_destination::Snapshot::Target {
-            token: 9,
-            revision: 3,
-            identity: target.clone(),
-            current_app: true,
-        };
-        let state = DeliveryRecoveryState::default();
-        state.remember(7, "original".into(), target, smart, 0, None);
-        state.correct(7, "original", "corrected");
-
-        let latest = state.latest().expect("smart recovery retained");
-        assert_eq!(
-            recovery_route(&latest.smart_destination),
-            RecoveryRoute::VerifiedSmartDestination,
-            "a consumed or unconfirmed smart token must fail closed instead of posting Cmd+V",
-        );
-        assert_eq!(latest.text, "corrected");
-        assert_eq!(
-            recovery_route(&crate::smart_destination::Snapshot::Unavailable),
-            RecoveryRoute::VerifiedSmartDestination,
-        );
-        assert_eq!(
-            recovery_route(&crate::smart_destination::Snapshot::Disabled),
-            RecoveryRoute::NormalPaste,
-        );
-        assert_eq!(
-            recovery_route(&crate::smart_destination::Snapshot::Unverified),
-            RecoveryRoute::NormalPaste,
-            "a recording that never proved a field uses the normal retry policy",
-        );
     }
 }

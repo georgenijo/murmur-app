@@ -30,8 +30,8 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             validate_ci(configured)
         step = named_step_block(workflow, "Configure test-only Rust library", 6)
         late = workflow.replace(step, "", 1).replace(
-            "      - name: Build capture isolation helpers and stub local-LLM externalBin\n",
-            step + "      - name: Build capture isolation helpers and stub local-LLM externalBin\n",
+            "      - name: Build capture isolation helpers\n",
+            step + "      - name: Build capture isolation helpers\n",
             1,
         )
         self.assertNotEqual(workflow, late)
@@ -137,7 +137,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "        uses: dtolnay/rust-toolchain@1.96.0\n",
             "          components: clippy, rustfmt\n",
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
-            "        run: cd app/src-tauri && cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings\n",
+            "        run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings\n",
             "          --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'\n",
             "          tool: cargo-nextest@0.9.150\n",
         ):
@@ -147,24 +147,16 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
-    def test_ci_clippy_and_tests_cannot_drop_workspace_exclude(self) -> None:
+    def test_ci_clippy_and_tests_cannot_drop_workspace(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         for old, new in (
             (
-                "cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets",
+                "cargo clippy --workspace --all-targets",
                 "cargo clippy --all-targets",
             ),
             (
-                "cargo nextest list --workspace --exclude murmur-llm-sidecar",
-                "cargo nextest list",
-            ),
-            (
-                "cargo clippy --workspace --exclude murmur-llm-sidecar",
-                "cargo clippy --workspace",
-            ),
-            (
-                "cargo nextest list --workspace --exclude murmur-llm-sidecar",
                 "cargo nextest list --workspace",
+                "cargo nextest list",
             ),
         ):
             with self.subTest(rewrite=f"{old} -> {new}"):
@@ -318,13 +310,12 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
     def test_rust_test_prebuild_builds_examples_before_test_targets(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         examples = (
-            "          cargo build --workspace --exclude murmur-llm-sidecar\n"
-            "          --example mock_llm_helper --example murmur-eval &&\n"
+            "          cargo build --workspace\n"
+            "          --example murmur-eval &&\n"
         )
         tests = (
-            "          cargo nextest list --workspace --exclude murmur-llm-sidecar\n"
+            "          cargo nextest list --workspace\n"
             "          --lib --bin murmur-capture-helper --test topology_watch\n"
-            "          --test llm_sidecar_integration --test transform_flow_integration\n"
             "          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&\n"
             "          cargo metadata --format-version 1 > target/ci-cargo-metadata.json\n"
         )

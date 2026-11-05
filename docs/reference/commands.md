@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 244 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 210 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -21,7 +21,6 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
 | `transcribe_file` | `file_path: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
-| `transform_status` | — | `TransformStatus` | Current selected-text transform state (used to arbitrate against dictation). |
 | `preview_vocabulary_aliases` | `entries`, `voice_commands`, `text`, `cli_formatting` | `Result<String, String>` | Runs alias + command resolution over sample text in memory. No persistence, no delivery. |
 | `scan_code_vocab` | `folder: String`, `scan_id: String` | `Result<VocabScanSummary, String>` | Breadth-first identifier scan of a project folder with throttled progress events. Returns ranked terms, counts, cap state, and whether the result was adopted. |
 | `cancel_code_vocab_scan` | `scan_id: String` | `bool` | Cancels only the matching scan. |
@@ -73,7 +72,6 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `save_meeting_metadata` | `request: {sessionId, title: string \| null, attendees: string[]}` | `Result<MeetingWorkspace, String>` | Main-window-only transactional save of a title and ordered attendee list. Rust assigns `manual` to a non-null title and clears the source with the title. Titles and attendees allow at most 200 characters each, and a meeting allows at most 100 attendees. The command refreshes title search without changing transcript or review data. |
 | `rename_meeting_remote_speaker` | `session_id: String`, `speaker_id: u32`, `label: String` | `Result<MeetingWorkspace, String>` | Validates and saves one session-scoped display label for a remote speaker, then returns the updated meeting workspace. Transcript evidence remains unchanged. |
 | `save_meeting_review` | `request` | `Result<MeetingWorkspace, String>` | Revision-checks a complete edit, restores existing claims' source IDs from the server-owned base, and validates selected session sources and assigns opaque keys for `newClaims`. Atomically saves labels, the reviewed snapshot and its search index. |
-| `restore_meeting_review_from_generated` | `request` | `Result<MeetingWorkspace, String>` | Explicitly replaces a saved review from the exact generated revision after checking the current review revision. Raw transcript evidence is unchanged. |
 | `get_meeting_review_export` | `id`, `format` | `Result<String, String>` | Renders one bounded reviewed-meeting snapshot as Markdown, plain text, or schema-v2 JSON for explicit clipboard copy. Document exports include the title and attendees. |
 | `save_meeting_review_export` | `id`, `format`, `path` | `Result<u64, String>` | Renders and atomically saves the same reviewed-meeting snapshot after enforcing the matching `.md`, `.txt`, or `.json` extension. |
 | `delete_meeting` | `id` | `Result<(), String>` | Main-window-only deletion of one inactive session, segments/FTS rows, and owned chunk audio. Invalidates playback before deletion. File cleanup failures preserve the session row so deletion can be retried. |
@@ -136,14 +134,6 @@ and available only to the main window and overlay.
 Accept routes through `start_meeting`; there is no separate capture entry point.
 See [Meeting suggestions](../features/meeting-suggestions.md) for deadlines and eligibility.
 
-## Meeting summaries (`commands/meeting_summary.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `start_meeting_summary` | `sessionId` | `Result<MeetingSummaryStatus, String>` | Starts explicit, cancellable schema-v1 summary/action-item derivation for a completed meeting through the signed local sidecar; refuses competing owners. |
-| `get_meeting_summary_status` | — | `MeetingSummaryStatus` | Current generation, session, phase, bounded chunk progress, elapsed runtime, helper peak RSS, and stable content-free error code. |
-| `cancel_meeting_summary` | — | `bool` | Cancels the exact active generation and in-flight sidecar request; a previously stored artifact remains intact. |
-
 ## Microphone input test (`commands/microphone_preview.rs`)
 
 Mutating commands are gated to the main window; the cached Auto status also
@@ -180,9 +170,6 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |
 | `set_paste_last_shortcut` | `enabled: bool` | `Result<(), String>` | Arms or disarms global ⌘⇧V on the shared rdev listener. Enabling requires Accessibility permission. |
-| `start_transform_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent transform hold key. Rejects the active dictation key. |
-| `stop_transform_listener` | — | `()` | Disarms the transform key. |
-| `set_transform_key` | `hotkey: String` | `Result<(), String>` | Changes the transform key at runtime. |
 | `start_query_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent Voice Query double-tap key on the shared rdev thread. Rejects dictation and transform conflicts. |
 | `stop_query_listener` | — | `()` | Disarms the query key without stopping the shared listener thread. |
 
@@ -240,41 +227,6 @@ from query-review. Local deletion does not erase Pi's separately retained remote
 | `list_query_history` | `offset: Option<u32>`, `limit: Option<u32>`, `provider: Option<QueryProviderId>`, `search: Option<String>` | `Result<QueryHistoryPageV1, String>` | Main-window-only, newest-first page from the separate opt-in query store. Defaults to 50 entries, caps requests at 100, and composes provider with bounded case-insensitive question/answer substring search; it never has a separate context, stderr/detail, executable/argv/environment, or secrets field, though a retained answer may quote context sent to its CLI. |
 | `clear_query_history` | — | `Result<(), String>` | Main-window-only direct purge of every retained Voice Query record and recovery artifact. Advances the store clear epoch so an older in-flight pass cannot reinsert content after deletion. |
 
-## Selected-text transform (`transform_flow.rs`, `transform_apply.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `start_transform_capture` | `device_name: Option<String>`, `transform_pass_id: u64` | `Result<(), String>` | Begins a pass: arms the mic, freezes the AX selection snapshot, shows the popover in `listening`. Refuses (with a stable error code) when dictation, a benchmark, a file transcription, or another transform owns the pipeline. |
-| `finish_transform_instruction` | `transform_pass_id: u64` | `Result<(), String>` | Stops the instruction mic, transcribes it (cleanup-only), expands preset/saved-transform names, and runs the sidecar. `listening` → `thinking` → `ready`/`failed`. |
-| `start_dictation_correction` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<(), String>` | Main-window-only correction start against the frozen latest delivery. |
-| `set_correction_shortcut` | `enabled: bool, device_name: Option<String>, smart_auto: Option<SmartAutoRequest>` | `Result<(), String>` | Main-window-only opt-in ⌘⇧E registration on the shared keyboard listener. |
-| `retry_transform_instruction` | `device_name: Option<String>, transform_pass_id: u64` | `Result<(), String>` | Re-arms listening for a new instruction against the **same** frozen selection, keeping the pass ID and advancing the attempt counter. |
-| `approve_transform` | `transform_pass_id: u64` | `Result<(), String>` | Applies the proposal through `transform_apply` (AX set-value, else paste fallback with clipboard restore) and schedules the linger-hide. |
-| `cancel_transform` | `transform_pass_id: Option<u64>` | `Result<(), String>` | Scoped cancellation. A no-op if that pass no longer owns the flow, so a delayed Escape cannot cancel the next pass. Idempotent. |
-| `undo_transform_and_close` | `transform_pass_id: u64` | `Result<(), String>` | Restores the frozen original and closes the popover. On failure the Applied session is kept and `applied` is re-emitted with an error code so Undo stays available. |
-| `apply_transform_result` | — | `Result<String, String>` | Lower-level write-back entry point. |
-| `undo_transform` | — | `Result<(), String>` | Lower-level undo entry point. |
-
-## Transform review popover (`commands/transform_popover.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_transform_popover_geometry` | `anchor: Option<Rect>` | `TransformPopoverGeometry` | `{compact, expanded}` boxes resolved against the selection anchor and the active screen — 8px below, flipped above when it would clip, clamped horizontally, or centered at 38% screen height with no anchor. Pure `popover_geometry_for()`, asserted by a shared fixture. |
-| `show_transform_popover` | `anchor: Option<Rect>` | `Result<(), String>` | Sizes/positions to the compact box, applies the non-activating window treatment, shows it, and caches the anchor. |
-| `hide_transform_popover` | — | `Result<(), String>` | Hides the popover. |
-| `set_transform_popover_expanded` | `expanded: bool` | `Result<PopoverBox, String>` | Resizes between compact (listening/thinking) and expanded (ready/failed) against the cached anchor; returns the applied box as an acknowledgment. |
-| `set_transform_popover_focusable` | `focusable: bool` | `Result<(), String>` | `false` during listening/thinking so focus is never stolen; `true` at ready/failed so Enter/Esc/Cmd+R reach the webview. |
-| `get_transform_review_content` | `transform_pass_id: u64` | `TransformReviewContent` | `{instruction, original, proposed}`. Fetched on each state change rather than broadcast, so sensitive text never rides an event payload. |
-
-## Transform model (`commands/transform_model.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `transform_model_status` | — | `TransformModelStatus` | Install state, size, and platform support for the pinned local LLM. |
-| `download_transform_model` | — | `Result<(), String>` | Streams the pinned GGUF to a `.partial`, hashes while streaming, fsyncs, then atomically publishes under its SHA-256 directory. Exact size and hash are enforced. |
-| `remove_transform_model` | — | `Result<(), String>` | Shuts the helper down first, then deletes the hash directory and any partial. |
-| `reset_transform_runtime` | — | `()` | Clears the circuit breaker after repeated helper faults. |
-
 ## Smart Auto-Stop (`commands/smart_turn.rs`)
 
 | Command | Parameters | Returns | Description |
@@ -283,17 +235,6 @@ from query-review. Local deletion does not erase Pi's separately retained remote
 | `download_smart_turn_model` | — | `Result<(), String>` | User-initiated. Streams the pinned ONNX file to a `.partial`, hashes while streaming, fsyncs, then atomically publishes under its SHA-256 directory. Exact size and hash are enforced. |
 | `remove_smart_turn_model` | — | `Result<(), String>` | Drops the loaded session, then deletes the hash directory and any partial. |
 | `check_smart_turn` | — | `Result<SmartTurnCheckResult, String>` | Scores whether the in-flight dictation's speaker has finished: peeks the last 8 s at 16 kHz (capture keeps running) and runs the model on a blocking worker. Tagged `outcome`: `scored` (`recordingId`, `probability`, `inferenceMs`), `notRecording`, `tooShort`, or `unavailable` (`reason`: `not_installed`, `busy`, `load_failed`, `inference_failed`). Nothing is persisted. |
-
-## Transform diagnostics (`commands/transform_diagnostics.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `list_transform_attempts` | `limit: Option<usize>` | `Result<TransformAttemptListV1, String>` | Bounded, content-free per-pass records including refused, cancelled, and superseded passes. |
-| `arm_next_transform_diagnostic_capture` | — | `Result<CaptureArmStatusV1, String>` | Arms one consented content capture. In-memory only, single pass, 10-minute expiry. |
-| `get_transform_diagnostic_capture_status` | — | `Result<CaptureArmStatusV1, String>` | Whether an arm is live and when it expires. |
-| `list_transform_diagnostic_captures` | — | `Result<Vec<DiagnosticCaptureSummaryV1>, String>` | Stored captures (max 3, 7-day expiry). |
-| `get_transform_diagnostic_capture` | `capture_id: String` | `Result<Option<DiagnosticCaptureV1>, String>` | Full capture for in-app review. There is no export path. |
-| `delete_transform_diagnostic_capture` | `capture_id: String` | `Result<(), String>` | Deletes one capture. |
 
 ## Models (`commands/models.rs`)
 
