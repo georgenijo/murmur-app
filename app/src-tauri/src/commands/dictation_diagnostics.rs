@@ -96,7 +96,7 @@ mod tests {
     fn only_diagnostics_windows_can_access_private_captures() {
         assert!(require_diagnostics_window("main").is_ok());
         assert!(require_diagnostics_window("diagnostics").is_ok());
-        for label in ["overlay", "transform-review", "query-review", ""] {
+        for label in ["overlay", "transform-review", "unrecognized-window", ""] {
             assert!(require_diagnostics_window(label).is_err());
         }
     }
@@ -108,7 +108,7 @@ mod tests {
             "diagnostics",
             "overlay",
             "transform-review",
-            "query-review",
+            "unrecognized-window",
             "",
         ] {
             assert!(require_main_window(label).is_err());

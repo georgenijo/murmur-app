@@ -84,7 +84,7 @@ instead points to the launching terminal in System Settings. For a built
 murmur-app/
 ├── app/
 │   ├── src/                     # React frontend
-│   │   ├── components/          # UI (settings, overlay, log-viewer, query-review, …)
+│   │   ├── components/          # UI (settings, overlay, log-viewer, …)
 │   │   └── lib/                 # hooks, settings, pure logic
 │   └── src-tauri/
 │       ├── src/                 # Rust backend (see docs/ARCHITECTURE.md for the module map)

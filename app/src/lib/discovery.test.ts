@@ -19,9 +19,7 @@ const emptyEvidence = (): DiscoveryEvidence => ({
   transforms: 0,
   meetings: 0,
   correctionsTaught: 0,
-  queriesRun: 0,
   modeBindings: [],
-  voiceQueryConfigured: false,
 });
 
 describe('post-setup discovery state', () => {
@@ -33,9 +31,7 @@ describe('post-setup discovery state', () => {
       transforms: 8,
       meetings: 3,
       correctionsTaught: 2,
-      queriesRun: 5,
       modeBindings: ['com.example.Mail:builtin.email'],
-      voiceQueryConfigured: true,
     });
     expect(loadDiscoveryState()?.completed).toEqual([]);
 
@@ -44,14 +40,13 @@ describe('post-setup discovery state', () => {
       transforms: 9,
       meetings: 4,
       correctionsTaught: 3,
-      queriesRun: 6,
       modeBindings: [
         'com.example.Mail:builtin.email',
         'com.example.Chat:builtin.messages',
       ],
     });
     expect(loadDiscoveryState()?.completed).toEqual([
-      'meeting', 'correction', 'voice_query', 'mode_binding',
+      'meeting', 'correction', 'mode_binding',
     ]);
   });
 
@@ -60,11 +55,10 @@ describe('post-setup discovery state', () => {
       ...emptyEvidence(),
       meetings: 1,
       correctionsTaught: 1,
-      voiceQueryConfigured: true,
       modeBindings: ['com.example.Editor:builtin.technical'],
     });
     expect(loadDiscoveryState()?.completed).toEqual([
-      'meeting', 'correction', 'voice_query', 'mode_binding',
+      'meeting', 'correction', 'mode_binding',
     ]);
     resetDiscovery();
     initializeGrandfatheredDiscovery(emptyEvidence());

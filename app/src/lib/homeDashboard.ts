@@ -5,7 +5,7 @@ import {
   type DictationStats,
 } from './stats';
 
-export type MainDestination = 'home' | 'meetings' | 'queries' | 'insights';
+export type MainDestination = 'home' | 'meetings' | 'insights';
 
 export interface UsageOverview {
   totalWords: number;

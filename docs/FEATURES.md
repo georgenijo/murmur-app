@@ -164,20 +164,6 @@ Opt-in, per-profile, memory-only index of user-selected local roots. Corrects un
 
 ---
 
-## 6. Voice query
-
-**[docs/features/voice-query.md](features/voice-query.md)**
-
-Double-tap a dedicated key, ask a question, and stream an answer from an explicitly configured CLI into a popover.
-
-- Opt-in with no default executable and explicit warning that the chosen CLI may use cloud services.
-- Local ASR; the transcript is one literal final argv element passed through direct process spawn with no shell or interpolation.
-- Ask follow-up from a Ready popover to include its previous question and answer in a fresh bounded query, with no persistent conversation.
-- Owned process group with confirmed termination on cancel, timeout, Escape, and app exit.
-- Question, answer, and context stay out of telemetry, logs, stats, diagnostics, and file output. An off-by-default setting may retain only questions and answers in a separate bounded Rust-owned local history store. Successful final answers are copied once by default; users can disable automatic copy and use the review popover's manual Copy action instead. Voice Query never auto-pastes.
-
----
-
 ## 7. Interface
 
 ### Main window
@@ -208,7 +194,7 @@ Older stats load with zeroed new counters.
 Home keeps inspectable vocabulary, app-style, and
 regular-use milestones—not a tuning percentage, acoustic-training claim, or
 fabricated unlock. The full Insights page reserves its width for aligned Voice
-Query totals and interactive activity, words-per-day, and WPM charts. File
+Interactive activity, words-per-day, and WPM charts. File
 drag-and-drop, the command palette, history actions, and cancelable
 file-transcription toasts remain available.
 
@@ -216,10 +202,6 @@ file-transcription toasts remain available.
 The Transcripts tab provides match highlighting and Mic/File filters over a
 rolling 200-entry history. The Meetings tab lists and searches durable Me/Them
 sessions, supports copy/text export, and deletes one or all sessions locally.
-The Queries tab pages through the separate opt-in Voice Query store by provider
-and can delete it after an explicit confirmation. Query context and teaching
-context are never exported.
-
 ### Command palette — [features/command-palette.md](features/command-palette.md)
 `⌘K` opens a keyboard-first launcher for every settings page and the common main-window actions, with deterministic tiered ranking. `⌘F` focuses transcript search, `⌘,` opens Settings → General, and `⌘L` opens Settings → Performance.
 
@@ -262,7 +244,7 @@ redesigned surfaces visually consistent as features evolve.
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 
 The eight-step first-launch assistant is followed by a dismissible Home
-checklist for Command Palette, app-bound Modes, Transform, Voice Query,
+checklist for Command Palette, app-bound Modes,
 meetings, Correct and Teach, and shortcuts. Real local counters and explicit
 configuration complete operational rows. Four content-free, once-only hints
 react to existing hotkey, history, browser teaching-context, and meeting events.
@@ -322,7 +304,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 210 registered commands |
+| Rust backend | `app/src-tauri/src/` — 172 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

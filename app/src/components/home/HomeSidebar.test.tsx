@@ -34,23 +34,23 @@ describe('HomeSidebar labeled navigation', () => {
     ));
 
     const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'));
-    const labels = ['Home', 'Notetaker', 'Assistant', 'Insights'];
+    const labels = ['Home', 'Notetaker', 'Insights'];
     expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual(labels);
     expect(buttons.map((button) => button.querySelector('.home-nav-label')?.textContent)).toEqual(labels);
-    expect(buttons).toHaveLength(4);
+    expect(buttons).toHaveLength(3);
     expect(container.querySelector('nav')?.id).toBe('test-main-nav');
     expect(container.querySelector('.home-sidebar-heading button')).toBeNull();
 
-    for (const [index, destination] of ['home', 'meetings', 'queries', 'insights'].entries()) {
+    for (const [index, destination] of ['home', 'meetings', 'insights'].entries()) {
       expect(buttons[index].type).toBe('button');
       expect(buttons[index].tabIndex).toBe(0);
       await act(async () => buttons[index].click());
       expect(onNavigate).toHaveBeenNthCalledWith(index + 1, destination);
     }
-    expect(onNavigate).toHaveBeenCalledTimes(4);
+    expect(onNavigate).toHaveBeenCalledTimes(3);
   });
 
-  it.each(['home', 'queries'] as const)('keeps the privacy assurance scoped to dictation on %s', async (active) => {
+  it.each(['home', 'meetings'] as const)('keeps the privacy assurance scoped to dictation on %s', async (active) => {
     await act(async () => root.render(<HomeSidebar active={active} onNavigate={() => {}} />));
     expect(container.querySelector('.home-privacy-note')?.textContent).toContain('Dictation stays on this Mac.');
     expect(container.textContent).not.toContain('Everything stays');
@@ -59,14 +59,14 @@ describe('HomeSidebar labeled navigation', () => {
   it('preserves the Home focus ref and exposes only the selected destination as current', async () => {
     const homeButtonRef = createRef<HTMLButtonElement>();
     await act(async () => root.render(
-      <HomeSidebar active="queries" homeButtonRef={homeButtonRef} onNavigate={() => {}} />,
+      <HomeSidebar active="meetings" homeButtonRef={homeButtonRef} onNavigate={() => {}} />,
     ));
 
     expect(homeButtonRef.current?.getAttribute('aria-label')).toBe('Home');
     homeButtonRef.current?.focus();
     expect(document.activeElement).toBe(homeButtonRef.current);
     expect(Array.from(container.querySelectorAll('nav [aria-current="page"]'))
-      .map((button) => button.getAttribute('aria-label'))).toEqual(['Assistant']);
+      .map((button) => button.getAttribute('aria-label'))).toEqual(['Notetaker']);
   });
 
   it('does not duplicate visible labels in hover or focus tooltips', async () => {
@@ -148,7 +148,6 @@ describe('HomeSidebar labeled navigation', () => {
     await act(async () => root.render(null));
     expect(release).toHaveBeenCalledExactlyOnceWith(7);
   });
-
 
   it('cancels pointerup when the viewport crosses the breakpoint before its media event arrives', async () => {
     const media = { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() };

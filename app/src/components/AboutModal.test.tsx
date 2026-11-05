@@ -38,7 +38,7 @@ describe('AboutModal lifecycle', () => {
       expect(document.activeElement).toBe(close);
     }
     expect(dialog.textContent).toContain('including Whisper and Parakeet');
-    expect(dialog.textContent).toContain('questions, shared app context, and permitted files');
+    expect(dialog.textContent).toContain('Audio and transcripts stay on this Mac');
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(opener);

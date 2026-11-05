@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name, handler) =>
   mocks.listeners.set(name, handler);
   return () => { if (mocks.listeners.get(name) === handler) mocks.listeners.delete(name); };
 }) }));
-vi.mock('../../lib/hooks/useQueryAppearance', () => ({ useQueryAppearance: () => {} }));
+vi.mock('../../lib/hooks/usePopoverAppearance', () => ({ usePopoverAppearance: () => {} }));
 import { mountDictationPreview } from './bootstrap';
 import { DEFAULT_SETTINGS, STORAGE_KEY } from '../../lib/settings';
 afterEach(() => { localStorage.clear(); mocks.listeners.clear(); vi.clearAllMocks(); });

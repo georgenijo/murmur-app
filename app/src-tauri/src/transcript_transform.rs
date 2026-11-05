@@ -98,30 +98,6 @@ impl TranscriptStageConfig {
             text_register: crate::state::TextRegister::Verbatim,
         }
     }
-
-    /// Cleanup-only configuration for a spoken transform *instruction* (issue
-    /// #312 PR-C2). An instruction is a prompt, not dictation output: it must
-    /// never run voice-commands, CLI canonicalization, smart formatting, or
-    /// the IDE-context stage (all of which rewrite dictated prose/code and
-    /// would corrupt the natural-language instruction). Only lightweight
-    /// filler removal + sentence capitalization run, so "um, make this, uh,
-    /// more concise" becomes a clean prompt.
-    pub(crate) fn instruction_cleanup() -> Self {
-        Self {
-            cleanup_enabled: true,
-            cleanup_remove_filler: true,
-            cleanup_capitalize: true,
-            voice_commands_enabled: false,
-            smart_correction_enabled: false,
-            homophone_context_enabled: false,
-            smart_formatting_enabled: false,
-            spoken_structure_policy: crate::spoken_structure::SpokenStructurePolicy::Off,
-            spoken_numbers_enabled: false,
-            ide_context_enabled: false,
-            cli_command_enabled: false,
-            text_register: crate::state::TextRegister::Everyday,
-        }
-    }
 }
 
 /// Immutable privacy-safe metadata and stage selection for one transformation
@@ -843,43 +819,6 @@ mod tests {
         true
     }
 
-    #[test]
-    fn instruction_cleanup_runs_cleanup_only_never_prose_or_command_stages() {
-        // Issue #312 PR-C2: a spoken transform instruction is a prompt, not
-        // dictation output. Cleanup may run (filler removal + capitalization),
-        // but voice-commands, CLI canonicalization, smart-formatting, and the
-        // IDE-context stage must all be OFF so the natural-language instruction
-        // is never rewritten as if it were dictated prose/code.
-        let cfg = TranscriptStageConfig::instruction_cleanup();
-        assert!(cfg.cleanup_enabled);
-        assert!(cfg.cleanup_remove_filler);
-        assert!(cfg.cleanup_capitalize);
-        assert!(
-            !cfg.voice_commands_enabled,
-            "voice-commands must be OFF for instructions"
-        );
-        assert!(
-            !cfg.cli_command_enabled,
-            "CLI formatting must be OFF for instructions"
-        );
-        assert!(
-            !cfg.smart_formatting_enabled,
-            "smart-formatting must be OFF for instructions"
-        );
-        assert!(
-            !cfg.spoken_numbers_enabled,
-            "spoken numbers must be OFF for instructions"
-        );
-        assert!(
-            !cfg.smart_correction_enabled,
-            "smart-correction must be OFF for instructions"
-        );
-        assert!(
-            !cfg.ide_context_enabled,
-            "IDE-context must be OFF for instructions"
-        );
-    }
-
     fn live_context(stages: TranscriptStageConfig) -> TranscriptContext {
         TranscriptContext {
             session_id: 7,
@@ -1586,15 +1525,6 @@ mod tests {
         assert_eq!(output.text, "857 and 10,103,445");
         assert_eq!(output.stages[6].stage, SPOKEN_NUMBERS_STAGE);
         assert!(output.stages[6].changed);
-
-        let instruction = transform_transcript(
-            "make this three paragraphs".to_string(),
-            &live_context(TranscriptStageConfig::instruction_cleanup()),
-            TranscriptTransformResources::empty(),
-        )
-        .unwrap();
-        assert_eq!(instruction.text, "Make this three paragraphs");
-        assert_eq!(instruction.stages[6].outcome, StageOutcome::Skipped);
     }
 
     #[test]

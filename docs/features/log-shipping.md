@@ -111,7 +111,7 @@ transport type, `DeviceIsRunningSomewhere`, and — for aggregates — the
   engine queue.
 - **murmur internal audio owners** — what Murmur itself holds at collection
   time: capture lifecycle phase/owner, microphone preview, meeting capture and
-  its ASR flags, Voice Query, dictation, transform, file transcription, and
+  its ASR flags, dictation, file transcription, and
   model-runtime lifecycle. Every read goes through `MutexExt::try_lock_or_recover`
   and reports `<busy>` on contention rather than waiting, so the probe never
   joins the queue it is describing.

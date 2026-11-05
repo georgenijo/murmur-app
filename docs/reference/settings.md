@@ -35,7 +35,7 @@ main-window rows from `keyboardShortcuts.ts`. Each global row reports its live
 binding and availability, then links to the page that owns the setting. Returning
 from an owner restores focus to the source row. The same detail page is available
 from the `Settings: Keyboard Shortcuts` command in the command palette. When
-Murmur is disabled, the page marks recording and Voice Query
+Murmur is disabled, the page marks recording
 correction shortcuts as paused while retaining their configured binding labels.
 Paste Last remains available, matching the native listener behavior.
 
@@ -101,17 +101,6 @@ interface Settings {
   smartAutoAllowContinuity: boolean;
   disabled: boolean;
 
-
-  // Voice Query (configured CLI)
-  queryHotkey: QueryKey | null;            // null = disabled (default)
-  queryProvider: QueryProviderId;           // preset metadata; default "custom"
-  queryExecutable: string;                 // absolute executable path
-  queryArguments: string[];                // fixed argv before question
-  queryTimeoutSeconds: number;             // 5–300, default 60
-  queryContextLevel: QueryContextLevel;     // none | application | selection
-  queryAutomaticallyCopyAnswers: boolean;  // default true; immutable per pass
-  retainQueryHistory: boolean;             // opt-in local question/answer history
-
   // Delivery
   autoPaste: boolean;
   smartDestinationEnabled: boolean;
@@ -169,14 +158,6 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'parakeet-tdt-0.6b-v3-coreml',
   doubleTapKey: 'shift_l',
   // Disabled by default — no settings UI to configure it yet (Phase D).
-  queryHotkey: null,
-  queryProvider: 'custom',
-  queryExecutable: '',
-  queryArguments: [],
-  queryTimeoutSeconds: 60,
-  queryContextLevel: 'none',
-  queryAutomaticallyCopyAnswers: true,
-  retainQueryHistory: false,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -292,23 +273,6 @@ model-selection side effects.
 | `soundCueVolume` | `number` | `45` | Integer 0–100 | Volume used for runtime cues and Settings previews. |
 | `meetingSoundCuesEnabled` | `boolean` | `false` | `true` / `false` | Opts meeting capture into lifecycle cues; recurring meeting cues are suppressed by default. |
 
-### Voice Query
-
-| Setting | Type | Default | Valid Options/Range | Description |
-|---------|------|---------|-------------------|-------------|
-| `queryHotkey` | `QueryKey \| null` | `null` | `'alt_r'`, `'ctrl_l'`, `'shift_r'`, or `null` | Dedicated double-tap-to-start / single-tap-to-stop shortcut. |
-| `queryProvider` | `QueryProviderId` | `'custom'` | `'claude'`, `'codex'`, `'grok'`, `'cursor'`, or `'custom'` | Chooses discovery/auth metadata, recommended argv, and the post-spawn output adapter. Claude recommends bounded safe-mode stream JSON, Codex recommends `exec --json`, and Cursor uses Ask mode with explicit trust for Murmur's private isolated app-data workspace; every provider still uses the generic direct-spawn bridge. When Voice Query is enabled, changing provider temporarily clears the shortcut, validates and preflights the exact new preset command, and restores the same shortcut only if that current check succeeds. Failure leaves it disabled; stale checks cannot re-enable a later provider. Changing provider while already disabled does not enable it. Unknown persisted values fail closed to Custom. |
-| `queryExecutable` | `string` | `''` | Absolute executable path, at most 4096 bytes | Exact CLI program to spawn. Murmur never provides a default and never invokes a shell. |
-| `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question and any opted-in context, which together remain one final argv element. |
-| `queryTimeoutSeconds` | `number` | `60` | Integer 5–300 | Deadline after which the owned CLI process group is terminated and confirmed empty. |
-| `queryContextLevel` | `QueryContextLevel` | `'none'` | `'none'`, `'application'`, `'selection'` | Opt-in immutable per-pass context. Application adds the native app name and AX window title; Selection additionally includes selected text bounded to 8 KiB on a UTF-8 boundary after secure-field-aware capture. All context stays inside the one final prompt argv element and is summarized visibly in the popover. |
-| `queryAutomaticallyCopyAnswers` | `boolean` | `true` | `true` / `false` | Snapshotted at pass start. When true, one current valid terminal success copies its final bounded answer exactly once, unless a later Murmur clipboard write superseded it; clipboard failure leaves the provider outcome Ready. When false, the pass does not read or write the clipboard and the requester-gated review popover's manual Copy action remains available. Failed, cancelled, timed-out, empty, and stale passes never copy. A malformed structured response can remain a Ready raw-fallback answer, but reports `auto_copy_unavailable` and requires manual Copy. Voice Query never auto-pastes. A missing or malformed persisted value migrates to `true` to preserve the behavior shipped before this setting. |
-| `retainQueryHistory` | `boolean` | `false` | `true` / `false` | Snapshotted at pass start. When true, every recognized pass stores its original question and answer plus bounded content-free metadata in the separate Rust-owned query-history SQLite store, including passes that appended app context or used raw structured-provider fallback. Context and composed prompts are never stored as separate fields, but a retained answer may quote context sent to a CLI. Stderr/detail, argv, paths, environment, and secrets never enter the store. Turning retention off affects new passes; existing records remain until History → Queries → Delete all query history. |
-
-Declared provider environment values are not settings fields. Rust stores only `CLAUDE_CONFIG_DIR` and/or `CODEX_HOME` under owner-only app data; `HOME`, base allowlist overrides, API keys, tokens, and arbitrary names are rejected. Webviews can stage a replacement value for Save, but saved values are never returned to the frontend or copied into localStorage. Settings receives configured names only.
-
-The Settings disclosure explicitly states that the configured CLI may send the question, enabled context, or answer to cloud services and that Murmur cannot control its network behavior. Enabling validates the configuration immediately; Test runs a bounded preset auth probe and keeps its stdout/stderr within Settings. The known nested Codex macOS-platform-binary `ENOENT` is replaced Rust-side with a concise reinstall/update diagnosis, so its Node stack and install path are not returned. Provider-reported numeric usage is shown per Ready pass and aggregated into the local Stats store by provider and stable failure code; Reset Stats clears those counters. No query content is stored in Stats. The automatic-copy and opt-in query-history settings do not restart a listener or alter the active pass; each changed value applies to the next pass. See [Voice Query](../features/voice-query.md).
-
 ### Recording Mode Details
 
 | Mode | Trigger Key Label | Behavior |
@@ -374,11 +338,7 @@ The store reports recovered, reinitialized, and unavailable states visibly. Enab
 
 ## Per-App Profiles
 
-`appProfiles` is an array of `{ bundleId, label, writingStyle, autoPasteOverride, cleanupOverride, smartFormattingOverride, cliFormattingOverride, ideContextEnabled, ideProjectRoots, queryContextExcluded }`. `writingStyle` is `null` (Inherit), `conversational`, `polished`, `code_technical`, `verbatim`, or `notes`. It is an explicit user choice; bundle identifiers and labels never classify apps automatically. Boolean overrides fine-tune the resolved style/global value for a matching frontmost bundle identifier; `null` means "inherit." Existing, missing, and malformed persisted style/override fields migrate to `null`.
-
 `ideContextEnabled` defaults to `false` and must be enabled on the exact matching profile. `ideProjectRoots` persists only the explicit user-selected root strings, trimmed, deduplicated, and capped at four. Filenames, symbols, source snippets, and scan results are memory-only and are not settings fields. The roots therefore remain visible in Settings and in any direct inspection or backup of the existing settings JSON; there is no hidden export path.
-
-`queryContextExcluded` defaults to `false`. When true on the first matching profile, it forces Voice Query context off for that app even when the global or provider-preset level requests app/window or selection context. It is deny-only and cannot opt an app into context.
 
 `siteModeLookupEnabled` defaults to `false`. When enabled,
 `browserSiteRules` contains `BrowserSiteRule {id, browserBundleId, host,
@@ -425,13 +385,14 @@ New text replacements and snippets are Rust-owned knowledge records rather than 
 
 ## Persistence and Migration
 
-Voice Query capability consent is intentionally not a Settings field. The
-native chooser and explicit confirmation store the canonical folder and exact
-Claude command in Rust memory only. Every launch starts Restricted. Settings
-reads the session status through `get_query_capabilities`; paths never enter
-`settings.json` or localStorage. Revocation affects subsequent queries; cancel
-an active query to stop its frozen grant. Only Claude trusted read-only is
-supported; web, command execution, writes, MCP and plugins remain disabled.
+On upgrade, startup removes the retired Voice Query store
+`query-history/query-history.sqlite3` and Assistant mirror
+`assistant/conversations-v1.json`, including only their `-wal`, `-shm`, and
+`-journal` companions. These private questions and answers no longer have a
+view or deletion UI. Cleanup pins directories, refuses symlink traversal,
+never reads or logs content, and warns without blocking startup on failure.
+Other app data and remote provider sessions are untouched. Old settings with
+these retired fields still load; active dictation and meeting preferences survive.
 
 ### Storage
 
@@ -443,7 +404,7 @@ The blob is opaque to Rust. The host validates only the container — at most 1 
 
 ### Boot Hydration
 
-Each window entry (`main.tsx`, `overlay.tsx`, `query-review.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
+Each window entry (`main.tsx`, `overlay.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
 
 1. Outside Tauri (plain browser, tests) it is a no-op and `localStorage` remains the only store.
 2. `load_settings_blob` returns a blob → it is written into `localStorage` verbatim. Disk wins; the cache may be stale or evicted.
@@ -525,11 +486,6 @@ On main-window boot, hydration loads `history.json`, `stats.json`, and
 durable file is absent, the corresponding existing localStorage blob migrates
 to disk once. Failures are isolated per file and never block boot. Theme-library
 disk commands are additionally restricted to the main window.
-
-Voice Query history is intentionally outside this cache contract. Its content
-stays in `query-history/query-history.sqlite3` and enters main-window memory
-only through bounded paging while History → Queries is active. It has no
-localStorage key, cache migration, dictation export, or Stats mirror.
 
 Other localStorage caches and browser-scoped state:
 

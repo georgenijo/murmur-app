@@ -179,21 +179,16 @@ pub(crate) fn set_window_level_and_activation(
 /// bar. This is what boring.notch, mew-notch, and Murmur's own overlay use.
 pub(crate) const ABOVE_MENU_BAR_LEVEL: isize = 25;
 
-/// Shared show/hide/reposition transport for the small, non-activating
-/// notch-anchored popovers (`commands/query_popover.rs`,
-/// `commands/dictation_preview.rs`). Both windows need the exact same
-/// treatment — raised above the menu bar via
-/// [`set_window_level_and_activation`], never focusable, shown/hidden by
-/// window label — so this holds it once instead of twice. Geometry (the
-/// `(x, y, width, height)` frame) stays the caller's responsibility: each
-/// popover has its own anchor and sizing rules.
+/// Show/hide/reposition transport for the non-activating dictation preview.
+/// Geometry stays in `commands/dictation_preview.rs`; native window mutations
+/// are dispatched onto the main thread.
 pub(crate) struct PopoverSpec {
-    /// The Tauri window label, e.g. `"query-review"` or `"dictation-preview"`.
+    /// The Tauri window label, e.g. `"dictation-preview"`.
     pub label: &'static str,
     /// Whether the window should let clicks/text-selection pass through to
     /// whatever is underneath instead of capturing them. `true` for a purely
     /// informational overlay (dictation preview); `false` for a popover the
-    /// user interacts with (voice-query answer).
+    /// user interacts with.
     pub ignore_cursor_events: bool,
 }
 
@@ -222,7 +217,7 @@ impl PopoverSpec {
 
     /// Resize and reposition to `frame` without touching level, activation,
     /// focus, or visibility. Used by popovers that reposition while already
-    /// visible (voice-query's compact/expanded transition).
+    /// visible.
     pub(crate) fn reposition(
         &self,
         app: &tauri::AppHandle,

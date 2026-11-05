@@ -135,7 +135,7 @@ describe('home dashboard interactions', () => {
     expect(container.querySelector('.home-talk-destination')?.textContent).toBe('Clipboard only');
   });
 
-  it('keeps the sidebar focused on the four primary destinations', async () => {
+  it('keeps the sidebar focused on the three primary destinations', async () => {
     const onNavigate = vi.fn();
     await act(async () => root.render(
       <HomeSidebar active="home" onNavigate={onNavigate} />,
@@ -147,7 +147,7 @@ describe('home dashboard interactions', () => {
 
     expect(onNavigate).toHaveBeenCalledWith('insights');
     expect(Array.from(container.querySelectorAll('nav button')).map((item) => item.getAttribute('aria-label'))).toEqual([
-      'Home', 'Notetaker', 'Assistant', 'Insights',
+      'Home', 'Notetaker', 'Insights',
     ]);
     expect(container.textContent).not.toContain('Customize');
     expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Dictation stays on this Mac.');

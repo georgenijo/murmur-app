@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 210 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 172 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -108,7 +108,7 @@ than JSON or base64.
 |---------|-----------|---------|-------------|
 | `get_meeting_audio_manifest` | `sessionId`, `fromMs?`, `channel?: all \| me \| them`, `cursor?: {startMs, segmentId}`, `limit?` | `Result<AudioManifest, String>` | Metadata-only timeline of retained final/failed chunks for a finished session. Defaults to position zero, All, and 128 entries; caps pages at 256. Uses `(startMs, segmentId)` keyset pagination and includes chunks overlapping `fromMs`. The global duration is independent of the selected channel. |
 | `read_meeting_audio_range` | `sessionId`, `segmentId`, `offsetBytes`, `lengthBytes` | `Result<binary response, String>` | Revalidates session/segment ownership and retained-audio consent, refuses symlinks and nonregular files, validates mono 16 kHz PCM16 WAV structure, and returns at most 64 KiB. A file may be at most 512 KiB; exact EOF returns an empty response. Busy capture and invalidated reads fail without returning audio. |
-| `get_meeting_audio_capture_busy` | — | `Result<bool, String>` | Native playback-admission snapshot for dictation, meeting/recovery/summary, transform, query, microphone preview/startup checks, and actual capture activity. Performs no Calendar or model-installation probe. |
+| `get_meeting_audio_capture_busy` | — | `Result<bool, String>` | Native playback-admission snapshot for dictation, meeting/recovery, microphone preview/startup checks, and actual capture activity. Performs no Calendar or model-installation probe. |
 | `get_meeting_bundle_preview` | `id` | `Result<BundlePreview, String>` | Main-window-only size check for a with-audio export: `audioSegments`, `audioBytes`, `unavailableSegments` (retained rows whose WAV is missing or unreadable), and `maxAudioBytes` (2 GiB). Refused for sessions without retained audio, unfinished sessions, busy capture, or when no audio file is readable. |
 | `save_meeting_bundle_export` | `id`, `format`, `path` | `Result<BundleReceipt, String>` | Main-window-only. Atomically writes a `.zip` holding `review.<ext>` (byte-for-byte the document export for `format`), every readable retained WAV as `audio/segment-<id>-<me\|them>.wav` stored without re-encoding, and `manifest.json`. Missing segments are omitted and listed in the manifest (`complete: false`); the receipt returns `bytes`, `includedSegments`, and `omittedSegments`. Audio over 2 GiB, retention off, or no readable audio is refused. |
 
@@ -170,62 +170,12 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |
 | `set_paste_last_shortcut` | `enabled: bool` | `Result<(), String>` | Arms or disarms global ⌘⇧V on the shared rdev listener. Enabling requires Accessibility permission. |
-| `start_query_listener` | `hotkey: String` | `Result<(), String>` | Arms the independent Voice Query double-tap key on the shared rdev thread. Rejects dictation and transform conflicts. |
-| `stop_query_listener` | — | `()` | Disarms the query key without stopping the shared listener thread. |
 
 ## Delivery recovery (`delivery_recovery.rs`)
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `retry_last_delivery` | — | `Result<RetryResult, String>` | Re-delivers the latest process-memory final text through the normal secure injector. Returns explicit `auto_pasted`, `clipboard_only`, `empty`, `busy`, or `failed` feedback without recording, retranscription, History, statistics, or learning changes. |
-
-## Voice Query (`query_flow.rs`)
-
-Assistant commands reuse the same coordinator, local ASR, and managed CLI ownership.
-All are main-window-only except the exact-pass `open_query_in_assistant` handoff
-from query-review. Local deletion does not erase Pi's separately retained remote session.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_assistant_connection` | `command: QueryCommandConfig` | `Result<AssistantConnection, String>` | Checks explicit consent against the current canonical Custom executable and fixed argv. |
-| `connect_assistant` | `command: QueryCommandConfig`, `consent: bool` | `Result<(), String>` | Saves explicit Mac and remote Pi persistence consent for the configured Custom Pi bridge. |
-| `disconnect_assistant` | — | `Result<(), String>` | Revokes future Assistant dispatch; retains conversations. |
-| `list_assistant_conversations` | — | `Result<Vec<ConversationSummary>, String>` | Lists bounded local conversations newest-first. |
-| `create_assistant_conversation` | `consent: bool` | `Result<Conversation, String>` | Creates a local UUID conversation after explicit connection. |
-| `get_assistant_conversation` | `conversation_id: String` | `Result<Conversation, String>` | Hydrates messages and exact active pass from the private native mirror. |
-| `delete_assistant_conversation` | `conversation_id: String` | `Result<(), String>` | Deletes only the local inactive conversation; refuses active ownership. |
-| `send_assistant_message` | `conversation_id: String`, `message: String`, `command: QueryCommandConfig`, `consent: bool` | `Result<AssistantReceipt, String>` | Queues a bounded typed message and runs the connected Pi bridge asynchronously without opening the popover or changing clipboard. |
-| `confirm_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Loads the durable action and its bound connection, conversation, request, and parameter digest before dispatching a native-authorized confirmation through the V2 bridge. |
-| `cancel_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Loads the same durable bound action fields before dispatching cancellation through the V2 bridge. |
-| `refresh_assistant_action` | `action_id: String` | `Result<AssistantReceipt, String>` | Requests the bound action's current status without confirming or retrying its write. |
-| `start_assistant_voice` | `conversation_id: String`, `command: QueryCommandConfig`, `consent: bool`, `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<AssistantReceipt, String>` | Starts the shared real capture pipeline for a thread. Finish and cancellation use existing exact-pass commands. |
-| `start_assistant_dictation` | `conversation_id: String`, `command: QueryCommandConfig`, `consent: bool`, `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>` | `Result<AssistantDraftReceipt, String>` | Main-only local composer capture; returns `{queryPassId, conversationId}`. Validates connection binding, reserves the shared microphone/ASR owner, and emits only main-targeted `assistant-draft-state` and `assistant-draft-partial`. Creates no messages and never starts Pi or the popover. |
-| `finish_assistant_dictation` | `query_pass_id: u64` | `Result<AssistantDraftText, String>` | Main-only exact-pass stop and local transcription; returns `{text}` and releases ownership to Idle. Text remains an editable unsent composer draft; no history, session text, provider dispatch, or clipboard write. Cancellation uses `cancel_query`. |
-| `open_query_in_assistant` | `query_pass_id: u64`, `consent: bool` | `Result<Conversation, String>` | Imports the exact Ready exchange from the connected Custom Pi bridge, focuses main, and navigates to that conversation. |
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `list_query_provider_presets` | — | `Result<Vec<QueryProviderPreset>, String>` | Main-window-only provider metadata and local executable discovery for Claude, Codex, Grok, Cursor, and Custom. Presets are data; they do not create alternate spawn paths. |
-| `load_query_environment` | `provider: QueryProviderId` | `Result<Vec<String>, String>` | Main-window-only list of configured environment **names**. Saved values remain Rust-side and are never returned to a webview. |
-| `save_query_environment` | `provider: QueryProviderId`, `variables: Vec<QueryEnvironmentVariable>` | `Result<(), String>` | Main-window-only owner-permission storage for permitted absolute config-directory values. Non-empty entries merge by name; an empty list clears the provider and recovers a malformed/future store by replacing it with an empty current-version store. Base allowlist overrides and secret variable names are rejected. |
-| `validate_query_command` | `command: QueryCommandConfig` | `Result<QueryCommandValidation, String>` | Main-window preflight used before enabling the shortcut. Resolves the exact executable and validates argv, timeout, provider, and Rust-owned declared environment. |
-| `test_query_provider` | `command: QueryCommandConfig` | `Result<QueryProviderTestResult, String>` | Main-window-only bounded auth probe through `spawn_user_cli`; returns sanitized 16 KiB stdout/stderr tails only to Settings and emits no content telemetry. |
-| `launch_query_provider_sign_in` | `command: QueryCommandConfig` | `Result<(), String>` | Main-window-only explicit repair action that opens the preset's interactive login in Terminal. Normal query and probe execution remain direct, shell-free spawns. |
-| `launch_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<(), String>` | Query-review-only equivalent using the exact failed pass's immutable provider, executable, and Rust-owned environment. |
-| `probe_query_sign_in_for_pass` | `query_pass_id: u64` | `Result<bool, String>` | Query-review-only bounded re-probe used after interactive sign-in; no stdout/stderr content crosses this IPC boundary. |
-| `start_query_capture` | `device_name: Option<String>`, `query_pass_id: u64`, `command: QueryCommandConfig` | `Result<(), String>` | Revalidates the configured provider/executable/fixed argv; freezes local ASR, Rust-owned environment, requested `none` / `application` / `selection` context, and `retainQueryHistory` consent for the exact pass; then starts query capture. |
-| `request_query_follow_up` | `query_pass_id: u64` | `Result<(), String>` | Query-review-only, content-free request for an exact Ready pass; the main window snapshots current Settings before allocating and starting capture. |
-| `allocate_query_follow_up` | `query_pass_id: u64` | `Result<u64, String>` | Main-only, one-shot consumption of a Rust-owned review request. Reserves a fresh pass and retains only the previous original question/answer in memory; duplicate, stale, cancelled, or child-owned passes are refused. |
-| `finish_query_capture` | `query_pass_id: u64` | `Result<(), String>` | Stops capture, transcribes locally, folds any exact previous question/answer and frozen context with the new question as one bounded final argv element, and streams bounded stdout to the query popover. |
-| `cancel_query` | `query_pass_id: u64`, `follow_up_from_pass_id: Option<u64>` | `Result<(), String>` | Cancels the exact pass, confirms capture/owned process-group teardown, and hides the popover. Stale IDs no-op. The optional source ID is query-review-only and resolves its Rust-owned pending successor when Close/Escape beats the new state event. |
-| `copy_query_answer` | `query_pass_id: u64` | `Result<(), String>` | Copies a completed answer. It never pastes into another app. |
-| `get_query_review_content` | — | `QueryReviewContent` | Returns `{queryPassId, answer, errorDetail, provider, usage, signInFix, contextSummary, capabilitySummary}` only to `query-review`. The capability summary includes the frozen trusted path when enabled. Other windows receive empty content. |
-| `get_query_capabilities` | — | `CapabilityStatus` | Main-only session profile and canonical trusted path. Never persisted in frontend storage. |
-| `choose_query_workspace` | — | `Option<String>` | Main-only native folder selection; stages a canonical folder without granting access. |
-| `confirm_query_workspace` | `command: QueryCommandConfig`, `expected_directory: String` | `CapabilityStatus` | Main-only explicit consent; verifies the displayed canonical folder and Claude capability flags, then binds the pending folder to the exact command. |
-| `revoke_query_capabilities` | — | `CapabilityStatus` | Main-only revocation invalidates pending selection/confirmation and grants. Existing query snapshots require cancellation to stop. |
-| `list_query_history` | `offset: Option<u32>`, `limit: Option<u32>`, `provider: Option<QueryProviderId>`, `search: Option<String>` | `Result<QueryHistoryPageV1, String>` | Main-window-only, newest-first page from the separate opt-in query store. Defaults to 50 entries, caps requests at 100, and composes provider with bounded case-insensitive question/answer substring search; it never has a separate context, stderr/detail, executable/argv/environment, or secrets field, though a retained answer may quote context sent to its CLI. |
-| `clear_query_history` | — | `Result<(), String>` | Main-window-only direct purge of every retained Voice Query record and recovery artifact. Advances the store clear epoch so an older in-flight pass cannot reinsert content after deletion. |
 
 ## Smart Auto-Stop (`commands/smart_turn.rs`)
 

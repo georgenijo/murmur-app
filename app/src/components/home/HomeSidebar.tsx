@@ -14,13 +14,12 @@ interface HomeSidebarProps {
   onNavigate: (destination: MainDestination) => void;
 }
 
-type IconName = 'home' | 'meeting' | 'query' | 'insights';
+type IconName = 'home' | 'meeting' | 'insights';
 
 function NavIcon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
     home: <><path d="M4 10.5 12 4l8 6.5V20H5V10.5Z" /><path d="M9 20v-6h6v6" /></>,
     meeting: <><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h6" /></>,
-    query: <><path d="M5 5h14v11H9l-4 4V5Z" /><path d="M9 9h6M9 12h4" /></>,
     insights: <><path d="M5 19V9M10 19V5M15 19v-7M20 19V3" /></>,
   };
   return (
@@ -34,7 +33,6 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate, sidebar, navId,
   const destinations = [
     { id: 'home', label: 'Home', icon: 'home' },
     { id: 'meetings', label: 'Notetaker', icon: 'meeting' },
-    { id: 'queries', label: 'Assistant', icon: 'query' },
     { id: 'insights', label: 'Insights', icon: 'insights' },
   ] as const;
   return (

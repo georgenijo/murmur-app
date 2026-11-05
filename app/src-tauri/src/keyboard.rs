@@ -197,10 +197,12 @@ impl DoubleTapDetector {
     }
 
     /// Process a keyboard event. Returns true if a double-tap was detected.
+    #[cfg(test)]
     fn handle_event(&mut self, event_type: &EventType) -> bool {
         self.handle_event_with_shortcut_modifiers(event_type, false)
     }
 
+    #[cfg(test)]
     fn handle_event_with_shortcut_modifiers(
         &mut self,
         event_type: &EventType,
@@ -827,7 +829,7 @@ fn apply_prepare_signal(
                 let Some(state) = handle.try_state::<crate::State>() else {
                     return;
                 };
-                // Same transition as toolbar, query, transform, meeting, and
+                // Same transition as toolbar, meeting, and
                 // preview claims. Keep it through the preparation slot claim.
                 let Some(_transition) = crate::audio::prepare::admission_transition(
                     &state.app_state.recording_transition,
@@ -917,23 +919,6 @@ fn schedule_second_tap_expiry(
     });
 }
 
-fn schedule_query_second_tap_expiry(generation: u64, started_at: Instant) {
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(
-            DOUBLE_TAP_WINDOW_MS as u64 + 5,
-        ));
-        if !QUERY_ACTIVE.load(Ordering::SeqCst)
-            || QUERY_GENERATION.load(Ordering::SeqCst) != generation
-        {
-            return;
-        }
-        let mut detector = QUERY_DETECTOR.lock_or_recover();
-        if let Some(detector) = detector.as_mut() {
-            let _ = detector.expire_second_tap_wait(started_at);
-        }
-    });
-}
-
 fn listener_context_matches(mode: DetectorMode, generation: u64) -> bool {
     listener_context_is_current(
         LISTENER_ACTIVE.load(Ordering::SeqCst),
@@ -979,20 +964,9 @@ pub fn is_dictation_key_id(hotkey: &str) -> bool {
     DICTATION_KEY_IDS.contains(&hotkey)
 }
 
-/// The opposite-side modifiers available to Voice Query. Function keys belong
-/// exclusively to dictation.
-pub fn is_query_key_id(hotkey: &str) -> bool {
-    matches!(hotkey, "shift_r" | "alt_r" | "ctrl_l")
-}
-
 /// Map hotkey string from settings to rdev Key.
 ///
-/// The three modifiers and F1–F20 back the dictation hotkey (`DictationKey` in
-/// settings.ts). `alt_r` / `ctrl_l` / `shift_r` back the independent Voice Query
-/// hotkey. Both listeners share this mapping. The two id sets are kept disjoint
-/// by explicit validation at the Voice Query command boundary
-/// (see `commands/keyboard.rs`) — nothing here would reject the overlap on
-/// its own.
+/// The dictation and Paste Last listeners share this mapping.
 fn hotkey_to_rdev_key(hotkey: &str) -> Option<Key> {
     match hotkey {
         "shift_l" => Some(Key::ShiftLeft),
@@ -1488,12 +1462,6 @@ pub fn set_processing(processing: bool) {
                 d.reset();
             }
         }
-        if let Ok(mut det) = QUERY_DETECTOR.lock() {
-            if let Some(d) = det.as_mut() {
-                d.reset();
-                d.recording = false;
-            }
-        }
     } else if was_processing && !processing {
         // Exiting processing: reset detectors with cooldown so rapid
         // post-processing taps don't immediately toggle.
@@ -1562,9 +1530,6 @@ static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
 
-static QUERY_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
-static QUERY_ACTIVE: AtomicBool = AtomicBool::new(false);
-static QUERY_GENERATION: AtomicU64 = AtomicU64::new(0);
 static PASTE_LAST_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PasteLastShortcut {
@@ -1799,11 +1764,8 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 shortcut_modifiers.update(&event.event_type);
                 let repeated_function_press = pressed_function_keys.update(&event.event_type);
 
-                // The dictation listener (LISTENER_ACTIVE) and the transform
-                // hotkey (TRANSFORM_ACTIVE) are independent; either one being
-                // active is enough to keep processing events on this thread.
+                // Dictation and Paste Last independently keep this thread active.
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst)
-                    && !QUERY_ACTIVE.load(Ordering::SeqCst)
                     && !PASTE_LAST_ACTIVE.load(Ordering::SeqCst)
                 {
                     return;
@@ -1847,29 +1809,6 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             d.last_fired_at = Some(Instant::now());
                         }
                     }
-                    {
-                        let mut det = QUERY_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Some(d) = det.as_mut() {
-                            d.reset();
-                            d.recording = false;
-                            d.last_fired_at = Some(Instant::now());
-                        }
-                    }
-                    let state = handle.state::<crate::State>();
-                    let query_pass_id = {
-                        let status = state.query.status();
-                        state.query.active_pass_id().filter(|_| {
-                            matches!(
-                                status,
-                                crate::query_flow::QueryStatus::Connecting
-                                    | crate::query_flow::QueryStatus::Listening
-                                    | crate::query_flow::QueryStatus::Transcribing
-                                    | crate::query_flow::QueryStatus::Running
-                                    | crate::query_flow::QueryStatus::Ready
-                                    | crate::query_flow::QueryStatus::Failed
-                            )
-                        })
-                    };
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTION.invalidate();
                     invalidate_preparation(crate::audio::prepare::InvalidateReason::Escape);
@@ -1879,12 +1818,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         event_code = "keyboard.escape_cancel",
                         "escape-cancel emitted"
                     );
-                    let _ = handle.emit(
-                        "escape-cancel",
-                        serde_json::json!({
-                            "queryPassId": query_pass_id,
-                        }),
-                    );
+                    let _ = handle.emit("escape-cancel", ());
                     return;
                 }
 
@@ -1892,62 +1826,6 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     return;
                 }
 
-                if QUERY_ACTIVE.load(Ordering::SeqCst) {
-                    let (fired, was_recording, wait_started_at) = {
-                        let mut det = QUERY_DETECTOR.lock_or_recover();
-                        if let Some(detector) = det.as_mut() {
-                            let was_recording = detector.recording;
-                            let previous_wait = detector.second_tap_wait_started_at();
-                            let fired = detector.handle_event(&event.event_type);
-                            let wait_started_at = detector
-                                .second_tap_wait_started_at()
-                                .filter(|started_at| Some(*started_at) != previous_wait);
-                            (fired, was_recording, wait_started_at)
-                        } else {
-                            (false, false, None)
-                        }
-                    };
-                    if let Some(started_at) = wait_started_at {
-                        schedule_query_second_tap_expiry(
-                            QUERY_GENERATION.load(Ordering::SeqCst),
-                            started_at,
-                        );
-                    }
-                    if fired {
-                        let state = handle.state::<crate::State>();
-                        if was_recording {
-                            set_query_recording_state(false);
-                            if let Some(query_pass_id) = state.query.active_pass_id() {
-                                let _ = handle.emit(
-                                    "query-toggle",
-                                    serde_json::json!({
-                                        "queryPassId": query_pass_id,
-                                        "action": "stop",
-                                    }),
-                                );
-                            }
-                        } else if let Some(query_pass_id) = state.query.allocate_keyboard_pass() {
-                            // Own the key immediately, including while the audio
-                            // helper is still connecting. A single tap can then
-                            // cancel before listening begins.
-                            set_query_recording_state(true);
-                            let _ = handle.emit(
-                                "query-toggle",
-                                serde_json::json!({
-                                    "queryPassId": query_pass_id,
-                                    "action": "start",
-                                }),
-                            );
-                        } else {
-                            let _ = handle.emit("query-busy", ());
-                        }
-                    }
-                }
-
-                // The dictation dispatch below is only relevant while the
-                // dictation listener itself is active (it may be false here if
-                // only the transform hotkey brought this callback past the top
-                // gate).
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
                     return;
                 }
@@ -2354,57 +2232,6 @@ pub fn set_recording_state(recording: bool) {
         .unwrap_or_else(|p| p.into_inner());
     if let Some(d) = det.as_mut() {
         d.recording = recording;
-    }
-}
-
-pub fn key_conflicts_with_query(hotkey: &str) -> bool {
-    let target = hotkey_to_rdev_key(hotkey);
-    QUERY_DETECTOR
-        .lock_or_recover()
-        .as_ref()
-        .is_some_and(|detector| detector.target_key.is_some() && detector.target_key == target)
-}
-
-pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: &str) {
-    let target = hotkey_to_rdev_key(hotkey);
-    {
-        let mut detector = QUERY_DETECTOR.lock_or_recover();
-        match detector.as_mut() {
-            Some(detector) => {
-                detector.set_target(target);
-                detector.recording = false;
-            }
-            None => {
-                let mut next = DoubleTapDetector::new();
-                next.set_target(target);
-                *detector = Some(next);
-            }
-        }
-    }
-    QUERY_GENERATION.fetch_add(1, Ordering::SeqCst);
-    QUERY_ACTIVE.store(true, Ordering::SeqCst);
-    ensure_listener_thread_spawned(app_handle);
-}
-
-pub fn stop_query_listener() {
-    QUERY_ACTIVE.store(false, Ordering::SeqCst);
-    QUERY_GENERATION.fetch_add(1, Ordering::SeqCst);
-    let mut detector = QUERY_DETECTOR.lock_or_recover();
-    if let Some(detector) = detector.as_mut() {
-        detector.set_target(None);
-        detector.recording = false;
-        detector.reset();
-    }
-}
-
-pub(crate) fn query_listener_active() -> bool {
-    QUERY_ACTIVE.load(Ordering::SeqCst)
-}
-
-pub fn set_query_recording_state(recording: bool) {
-    let mut detector = QUERY_DETECTOR.lock_or_recover();
-    if let Some(detector) = detector.as_mut() {
-        detector.recording = recording;
     }
 }
 
@@ -4271,10 +4098,6 @@ mod tests {
         assert!(!is_dictation_key_id("ctrl_l"));
         assert!(!is_dictation_key_id("not_a_real_key"));
         assert!(!is_dictation_key_id(""));
-        assert!(is_query_key_id("shift_r"));
-        assert!(is_query_key_id("alt_r"));
-        assert!(is_query_key_id("ctrl_l"));
-        assert!(!is_query_key_id("f1"));
     }
 
     /// Collect every tracing field emitted by `f` as `name=value` lines.

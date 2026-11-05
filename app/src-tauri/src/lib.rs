@@ -10,7 +10,6 @@ mod audio_lifecycle;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
-mod assistant;
 pub mod benchmark;
 mod browser_site;
 mod calendar;
@@ -45,6 +44,7 @@ mod injector;
 mod keyboard;
 mod knowledge_store;
 pub mod launch;
+mod legacy_query_cleanup;
 mod legacy_transform_cleanup;
 mod log_shipper;
 pub mod managed_child;
@@ -70,13 +70,7 @@ mod platform;
 mod preview_pause;
 #[cfg(feature = "preview-decode-reuse")]
 mod preview_reuse;
-mod query_adapter;
-mod query_capabilities;
-mod query_flow;
-mod query_history;
-mod query_provider;
 mod resource_monitor;
-mod selection;
 mod smart_auto_probe;
 mod smart_destination;
 mod smart_formatting;
@@ -192,8 +186,6 @@ pub(crate) struct State {
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
-    pub(crate) query_history: query_history::QueryHistoryStore,
-    pub(crate) assistant: assistant::AssistantStore,
     pub(crate) dictation_diagnostics: dictation_diagnostics::DictationDiagnostics,
     /// Cached overlay screen geometry
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
@@ -210,8 +202,6 @@ pub(crate) struct State {
     /// click-through dictation preview follows this actual frame.
     pub(crate) overlay_frame: Mutex<Option<commands::overlay::OverlayFrame>>,
     pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
-    /// Session-only voice-query state plus exact owned CLI child (#538).
-    pub(crate) query: query_flow::QueryCoordinator,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -250,15 +240,12 @@ pub fn run() {
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
-            query_history: query_history::QueryHistoryStore::default(),
-            assistant: assistant::AssistantStore::default(),
             dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
             notch_info: Mutex::new(None),
             display_snapshot: Mutex::new(None),
             overlay_calibration: Mutex::new(commands::overlay::OverlayCalibrationState::default()),
             overlay_frame: Mutex::new(None),
             overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
-            query: query_flow::QueryCoordinator::default(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
@@ -318,44 +305,6 @@ pub fn run() {
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
             commands::keyboard::set_paste_last_shortcut,
-            commands::keyboard::start_query_listener,
-            commands::keyboard::stop_query_listener,
-            query_flow::start_query_capture,
-            query_flow::get_assistant_connection,
-            query_flow::connect_assistant,
-            query_flow::disconnect_assistant,
-            query_flow::list_assistant_conversations,
-            query_flow::create_assistant_conversation,
-            query_flow::get_assistant_conversation,
-            query_flow::delete_assistant_conversation,
-            query_flow::send_assistant_message,
-            query_flow::confirm_assistant_action,
-            query_flow::cancel_assistant_action,
-            query_flow::refresh_assistant_action,
-            query_flow::start_assistant_voice,
-            query_flow::start_assistant_dictation,
-            query_flow::finish_assistant_dictation,
-            query_flow::open_query_in_assistant,
-            query_flow::finish_query_capture,
-            query_flow::cancel_query,
-            query_flow::copy_query_answer,
-            query_flow::request_query_follow_up,
-            query_flow::allocate_query_follow_up,
-            query_flow::get_query_review_content,
-            query_capabilities::get_query_capabilities,
-            query_capabilities::choose_query_workspace,
-            query_capabilities::confirm_query_workspace,
-            query_capabilities::revoke_query_capabilities,
-            query_flow::list_query_provider_presets,
-            query_flow::load_query_environment,
-            query_flow::save_query_environment,
-            query_flow::validate_query_command,
-            query_flow::test_query_provider,
-            query_flow::launch_query_provider_sign_in,
-            query_flow::launch_query_sign_in_for_pass,
-            query_flow::probe_query_sign_in_for_pass,
-            commands::query_history::list_query_history,
-            commands::query_history::clear_query_history,
             commands::knowledge::get_knowledge_store_status,
             commands::knowledge::retry_knowledge_store,
             commands::knowledge::list_knowledge,
@@ -483,7 +432,6 @@ pub fn run() {
                 if window.label() == "main" || window.label() == "diagnostics" {
                     api.prevent_close();
                     if window.label() == "main" {
-                        query_flow::cancel_assistant_for_window_close(window.app_handle().clone());
                         commands::microphone_preview::cancel_for_window_close(
                             window.app_handle().clone(),
                         );
@@ -520,10 +468,12 @@ pub fn run() {
             if let Some(diagnostics_window) = app.get_webview_window("diagnostics") {
                 commands::native_window::hide_titlebar_separator(&diagnostics_window);
             }
-            commands::query_popover::apply_initial_size(app.handle());
             commands::dictation_preview::apply_initial_size(app.handle());
 
             let app_data_root = app.path().app_data_dir()?;
+            if legacy_query_cleanup::cleanup(&app_data_root).is_err() {
+                tracing::warn!(target: "system", "legacy conversation cleanup failed");
+            }
             if legacy_transform_cleanup::cleanup(&app_data_root).is_err() {
                 tracing::warn!(target: "system", "legacy transform capture cleanup failed");
             }
@@ -549,24 +499,6 @@ pub fn run() {
                     target: "system",
                     diagnostics_available = false,
                     "performance diagnostics store unavailable: {}",
-                    error
-                );
-            }
-            let query_history_root = app.path().app_data_dir()?.join("query-history");
-            if app.state::<State>().assistant.initialize(
-                app.path().app_data_dir()?.join("assistant"), Some(app.handle().clone())
-            ).is_err() {
-                tracing::warn!(target: "system", "Assistant local store is unavailable");
-            }
-            if let Err(error) = app
-                .state::<State>()
-                .query_history
-                .initialize(query_history_root, Some(app.handle().clone()))
-            {
-                tracing::warn!(
-                    target: "system",
-                    query_history_available = false,
-                    "Voice Query history store unavailable: {}",
                     error
                 );
             }
@@ -809,7 +741,6 @@ pub fn run() {
                 let _ = meeting_diarization::cancel_all();
                 state.meetings.shutdown(_app_handle);
                 state.meeting_suggestions.shutdown();
-                state.query.shutdown();
             }
         }
     });

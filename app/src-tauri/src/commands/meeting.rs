@@ -72,9 +72,6 @@ fn clamp_max_sessions(max_sessions: u32) -> u32 {
 }
 
 fn meeting_conflict(state: &State) -> Option<&'static str> {
-    if state.query.status().blocks_pipeline() {
-        return Some("Finish or cancel the active voice query before starting a meeting.");
-    }
     if state.microphone_startup_benchmark.is_active() {
         return Some("Wait for the microphone startup check to finish before starting a meeting.");
     }

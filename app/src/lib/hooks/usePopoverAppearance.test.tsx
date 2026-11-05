@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { createAppearanceDocument, writeAppearanceDocument } from '../appearance';
-import { useQueryAppearance } from './useQueryAppearance';
+import { usePopoverAppearance } from './usePopoverAppearance';
 
 it('follows saved and system appearance without changing settings or native theme', async () => {
   const add = vi.fn();
@@ -12,7 +12,7 @@ it('follows saved and system appearance without changing settings or native them
   const host = document.createElement('div');
   const root = createRoot(host);
   const before = window.localStorage.getItem('murmur-appearance');
-  function Harness() { useQueryAppearance(); return null; }
+  function Harness() { usePopoverAppearance(); return null; }
   try {
     writeAppearanceDocument(createAppearanceDocument('dark'));
     const stored = window.localStorage.getItem('murmur-appearance');

@@ -1204,83 +1204,6 @@ describe('durable settings store', () => {
   });
 });
 
-describe('Voice Query settings', () => {
-  it('is fully opt-in with no default executable', () => {
-    expect(DEFAULT_SETTINGS.queryHotkey).toBeNull();
-    expect(DEFAULT_SETTINGS.queryProvider).toBe('custom');
-    expect(DEFAULT_SETTINGS.queryExecutable).toBe('');
-    expect(DEFAULT_SETTINGS.queryArguments).toEqual([]);
-    expect(DEFAULT_SETTINGS.queryTimeoutSeconds).toBe(60);
-    expect(DEFAULT_SETTINGS.queryContextLevel).toBe('none');
-    expect(DEFAULT_SETTINGS.queryAutomaticallyCopyAnswers).toBe(true);
-    expect(DEFAULT_SETTINGS.retainQueryHistory).toBe(false);
-  });
-
-  it('keeps auto-copy on for old or malformed documents and preserves an explicit opt-out', () => {
-    for (const [stored, expected] of [
-      [undefined, true],
-      ['yes', true],
-      [null, true],
-      [false, false],
-      [true, true],
-    ] as const) {
-      const settings = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
-      if (stored === undefined) {
-        delete settings.queryAutomaticallyCopyAnswers;
-      } else {
-        settings.queryAutomaticallyCopyAnswers = stored;
-      }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-      expect(loadSettings().queryAutomaticallyCopyAnswers).toBe(expected);
-    }
-  });
-
-  it('bounds malformed CLI configuration before IPC', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      queryHotkey: 'unexpected_key',
-      queryProvider: 'untrusted-provider',
-      queryExecutable: 42,
-      queryArguments: [...Array.from({ length: 40 }, (_, index) => `arg-${index}`), 7],
-      queryTimeoutSeconds: 999,
-      queryContextLevel: 'desktop_screenshot',
-      queryAutomaticallyCopyAnswers: 'sometimes',
-      retainQueryHistory: 'yes',
-    }));
-
-    const settings = loadSettings();
-
-    expect(settings.queryHotkey).toBeNull();
-    expect(settings.queryProvider).toBe('custom');
-    expect(settings.queryExecutable).toBe('');
-    expect(settings.queryArguments).toHaveLength(32);
-    expect(settings.queryArguments.every((argument) => typeof argument === 'string')).toBe(true);
-    expect(settings.queryTimeoutSeconds).toBe(60);
-    expect(settings.queryContextLevel).toBe('none');
-    expect(settings.queryAutomaticallyCopyAnswers).toBe(true);
-    expect(settings.retainQueryHistory).toBe(false);
-  });
-
-  it('keeps valid context levels and fails closed for per-app exclusions', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      queryContextLevel: 'selection',
-      appProfiles: [
-        { bundleId: 'com.example.Private', queryContextExcluded: true },
-        { bundleId: 'com.example.Legacy' },
-        { bundleId: 'com.example.Tampered', queryContextExcluded: 'yes' },
-      ],
-    }));
-
-    const settings = loadSettings();
-    expect(settings.queryContextLevel).toBe('selection');
-    expect(settings.appProfiles.map((profile) => profile.queryContextExcluded)).toEqual([
-      true,
-      false,
-      false,
-    ]);
-  });
-});
-
 describe('microphoneDeviceNameArg', () => {
   it('drops the system-default sentinel so Rust picks the default input device', () => {
     // `DEFAULT_SETTINGS.microphone` is a sentinel, not a CoreAudio UID.
@@ -1315,7 +1238,6 @@ describe('warm microphone standby consent', () => {
   });
 });
 
-
 describe('read-only durable settings snapshots', () => {
   it('validates a legacy snapshot without overwriting cache, disk or migration keys', () => {
     mocks.isTauri.mockReturnValue(true);
@@ -1334,18 +1256,20 @@ describe('read-only durable settings snapshots', () => {
   });
 });
 
-
 describe('removed feature upgrade compatibility', () => {
-  it('ignores obsolete rewrite fields without resetting dictation or Voice Query', () => {
+  it('ignores obsolete rewrite fields without resetting dictation', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       ...DEFAULT_SETTINGS, language: 'fr', autoPaste: false,
       transformHoldKey: 'alt_r', correctionShortcutEnabled: true,
-      queryHotkey: 'alt_r', queryExecutable: '/usr/bin/true',
+      queryHotkey: 'alt_r', queryExecutable: '/usr/bin/true', queryArguments: { obsolete: true },
+      assistantConnection: { obsolete: true }, meetingRetainAudio: true,
     }));
     const settings = loadSettings();
     expect(settings.language).toBe('fr');
     expect(settings.autoPaste).toBe(false);
-    expect(settings.queryHotkey).toBe('alt_r');
-    expect(settings.queryExecutable).toBe('/usr/bin/true');
+    expect(settings.meetingRetainAudio).toBe(true);
+    expect(settings).not.toHaveProperty('queryHotkey');
+    expect(settings).not.toHaveProperty('queryArguments');
+    expect(settings).not.toHaveProperty('assistantConnection');
   });
 });

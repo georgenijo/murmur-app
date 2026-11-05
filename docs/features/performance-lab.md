@@ -35,7 +35,7 @@ missing. It exercises the signed production capture worker and its real
 AUHAL/CPAL setup budgets. Each cycle stops only after the exact worker has exited,
 joined, and returned the single-owner lifecycle to Idle; a later cycle can never
 overlap a recovering predecessor. The action refuses while dictation,
-Voice Query, meeting capture, file transcription, corpus recording, model
+Meeting capture, file transcription, corpus recording, model
 preparation, or another benchmark owns the relevant runtime.
 
 Live progress is correlated by a frontend UUID and a Rust-monotonic benchmark
@@ -89,7 +89,7 @@ disfluencies, long passages, pauses, faster delivery, and quieter delivery.
 This is a capture-only path. It uses the same signed microphone worker and mono
 16 kHz resampling as production dictation, but it does not load a transcription
 model, write transcript history, touch the clipboard, auto-paste, or run a text
-transform. Recording is mutually exclusive with dictation, file transcription, Voice Query,
+transform. Recording is mutually exclusive with dictation, file transcription,
 meeting capture, and Performance Lab runs.
 
 Recordings are stored outside the repository at:

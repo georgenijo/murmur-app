@@ -1,3 +1,4 @@
+import { MeetingsPanel } from './components/history';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
 import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
@@ -21,9 +22,6 @@ import { saveHistoryExport } from './lib/historyExport';
 import { PermissionsBanner } from './components/PermissionsBanner';
 import { AboutModal } from './components/AboutModal';
 import { MainHeader } from './components/MainHeader';
-import { MeetingsPanel, QueryHistoryPanel } from './components/history';
-import { AssistantPage } from './components/assistant/AssistantPage';
-import { isConversationId } from './lib/assistant';
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
@@ -37,12 +35,10 @@ import { useHistoryManagement } from './lib/hooks/useHistoryManagement';
 import { useLocalStats } from './lib/hooks/useLocalStats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { useMeetingSuggestionAcceptance } from './lib/hooks/useMeetingSuggestionAcceptance';
-import { isQueryHistorySurfaceActive, useQueryHistory } from './lib/hooks/useQueryHistory';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
-import { useQueryFlow, type QuerySetupStatus } from './lib/hooks/useQueryFlow';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
@@ -60,7 +56,7 @@ import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
 import { setTrayUpdateAvailable } from './lib/updater';
-import { loadStats, resetStats, updateQueryStats, type QueryCompletion } from './lib/stats';
+import { loadStats, resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
 import { isOnboardingComplete, markOnboardingComplete, resetOnboarding } from './lib/onboarding';
@@ -91,7 +87,7 @@ import {
   retryLastDelivery,
   setPasteLastShortcut,
 } from './lib/deliveryRecovery';
-import { microphoneDeviceNameArg, pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
+import { pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -139,10 +135,6 @@ function App() {
   }, [homeSidebar.collapsed]);
 
   const { settings, getCurrentSettings, getConfirmedSettings, updateSettings, configureOnboarding, applyExternalSettings, configureError } = useSettings();
-  const [querySetupStatus, setQuerySetupStatus] = useState<QuerySetupStatus | null>(null);
-  useEffect(() => {
-    setQuerySetupStatus(null);
-  }, [settings.queryProvider, settings.queryExecutable, settings.queryArguments]);
   const {
     notice: deliveryRecoveryNotice,
     presentNotice: presentDeliveryRecoveryNotice,
@@ -163,28 +155,8 @@ function App() {
   }, [settings.model, updateSettings]);
   const { initialized, error: initError } = useInitialization(getConfirmedSettings, getCurrentSettings);
   const [mainDestination, setMainDestination] = useState<MainDestination>('home');
-  const [assistantTab, setAssistantTab] = useState<'chat' | 'history'>('chat');
-  const [requestedAssistantId, setRequestedAssistantId] = useState<string | null>(null);
   const homeNavigationRef = useRef<HTMLButtonElement>(null);
   const restoreHomeNavigationFocusRef = useRef(false);
-  const queryHistorySurfaceActive = isQueryHistorySurfaceActive({
-    queriesSelected: mainDestination === 'queries',
-    settingsOpen: isSettingsOpen,
-    onboardingState,
-    modelReady,
-  });
-  const queryHistory = useQueryHistory(queryHistorySurfaceActive && assistantTab === 'history');
-  useEffect(() => {
-    let disposed = false;
-    let stop: (() => void) | undefined;
-    void listen<{ conversationId: string }>('assistant-open-conversation', ({ payload }) => {
-      if (disposed || !isConversationId(payload?.conversationId)) return;
-      setRequestedAssistantId(payload.conversationId);
-      setAssistantTab('chat'); setMainDestination('queries'); setIsSettingsOpen(false);
-    }).then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => {});
-    return () => { disposed = true; stop?.(); };
-  }, []);
-
   // First-launch gate: is the currently-selected model present? Checked once on
   // mount (not reactively) so changing models in Settings uses the inline
   // download flow there rather than re-showing this full-screen downloader.
@@ -242,8 +214,6 @@ function App() {
   }, [
     configureOnboarding,
     settings.appProfiles,
-    settings.queryExecutable,
-    settings.queryHotkey,
   ]);
 
   // Keep settings in sync when the overlay's quick controls change them.
@@ -305,14 +275,6 @@ function App() {
   const handleResetStats = useCallback(() => {
     resetStats();
   }, []);
-  const handleQueryCompleted = useCallback((completion: QueryCompletion) => {
-    updateQueryStats(completion);
-  }, []);
-  const handleQuerySetupStatusChange = useCallback((next: QuerySetupStatus) => {
-    setQuerySetupStatus(next);
-    if (next.state === 'ready') completeChecklistItem('voice_query');
-    if (next.state === 'failed') updateSettings({ queryHotkey: null });
-  }, [updateSettings]);
   // Keep the global hotkeys disarmed until onboarding and model setup complete — accessibility
   // can be granted mid-wizard, and a hold/double-tap must not start a recording
   // behind the OnboardingFlow screen.
@@ -331,27 +293,6 @@ function App() {
     silenceMs: settings.autoStopSilenceMs,
     smartEnabled: settings.smartAutoStopEnabled,
     onAutoStop: () => handleStop('auto_stop'),
-  });
-  useQueryFlow({
-    enabled: hotkeysArmed
-      && settings.queryHotkey !== null
-      && settings.queryExecutable.trim().length > 0,
-    initialized,
-    accessibilityGranted,
-    queryHotkey: settings.queryHotkey,
-    microphone: settings.microphone,
-    smartAuto: smartAutoMicrophoneRequest(settings),
-    automaticallyCopyAnswers: settings.queryAutomaticallyCopyAnswers,
-    command: {
-      provider: settings.queryProvider,
-      executable: settings.queryExecutable,
-      arguments: settings.queryArguments,
-      timeoutSeconds: settings.queryTimeoutSeconds,
-      contextLevel: settings.queryContextLevel,
-      retainQueryHistory: settings.retainQueryHistory,
-    },
-    onQueryCompleted: handleQueryCompleted,
-    onSetupStatusChange: handleQuerySetupStatusChange,
   });
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({
@@ -501,7 +442,7 @@ function App() {
     if (setupRequestPendingRef.current) return;
     setupRequestPendingRef.current = true;
     try {
-      // This native ownership check also covers transform/Voice Query capture
+      // This native ownership check covers all active capture
       // and startup before the main window receives its lifecycle event.
       const nativeBusy = await getMeetingAudioCaptureBusy();
       if (nativeBusy || captureBusyRef.current || isCaptureBusy()) {
@@ -704,20 +645,6 @@ function App() {
         section: 'Navigation',
         keywords: ['system audio', 'calls', 'me', 'them'],
         run: () => { closeSettings('programmatic'); setMainDestination('meetings'); },
-      },
-      {
-        id: 'show-query-history',
-        title: 'Show Voice Query history',
-        section: 'Navigation',
-        keywords: ['questions', 'answers', 'agent', 'queries'],
-        run: () => { closeSettings('programmatic'); setAssistantTab('history'); setMainDestination('queries'); },
-      },
-      {
-        id: 'show-assistant',
-        title: 'Open Assistant',
-        section: 'Navigation',
-        keywords: ['pi', 'chat', 'conversation', 'voice'],
-        run: () => { closeSettings('programmatic'); setAssistantTab('chat'); setMainDestination('queries'); },
       },
       {
         id: 'settings-shortcuts',
@@ -956,28 +883,6 @@ function App() {
                   />
                   <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
                 </section>
-              ) : mainDestination === 'queries' ? (
-                <section className="main-secondary-view" aria-labelledby="queries-view-title">
-                  <WorkspacePageHeader
-                    title="Assistant"
-                    titleId="queries-view-title"
-                    description="Talk, type, and pick up where you left off"
-                    back={{ label: 'Back to Home', onActivate: backToHome }}
-                  />
-                  <div className="assistant-surface-tabs" role="group" aria-label="Assistant views">
-                    <button type="button" aria-pressed={assistantTab === 'chat'} onClick={() => setAssistantTab('chat')}>Conversations</button>
-                    <button type="button" aria-pressed={assistantTab === 'history'} onClick={() => setAssistantTab('history')}>Previous queries</button>
-                  </div>
-                  {queryHistorySurfaceActive && (assistantTab === 'history'
-                    ? <QueryHistoryPanel history={queryHistory} retentionEnabled={settings.retainQueryHistory} />
-                    : <AssistantPage
-                      command={{ provider: settings.queryProvider, executable: settings.queryExecutable, arguments: settings.queryArguments, timeoutSeconds: settings.queryTimeoutSeconds, contextLevel: 'none', retainQueryHistory: false }}
-                      deviceName={microphoneDeviceNameArg(settings.microphone)} smartAuto={smartAutoMicrophoneRequest(settings)}
-                      voiceAvailable={initialized && modelReady === true && status === 'idle'} requestedId={requestedAssistantId}
-                      onSettings={() => openSettingsPage('voice-query')}
-                    />
-                  )}
-                </section>
               ) : (
                 <InsightsView
                   modes={settings.modes}
@@ -1042,7 +947,6 @@ function App() {
               onOpenUpdate={showAvailableUpdate}
               updateStatus={updateStatus}
               configureError={configureError}
-              querySetupStatus={querySetupStatus}
               pageRequest={settingsPageRequest}
               onLatencyViewChange={trackSettingsView}
               activeRef={settingsActiveRef}

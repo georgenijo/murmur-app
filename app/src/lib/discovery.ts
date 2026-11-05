@@ -7,7 +7,6 @@ export const DISCOVERY_CHANGED_EVENT = 'murmur-discovery-changed';
 export const CHECKLIST_ITEM_IDS = [
   'command_palette',
   'mode_binding',
-  'voice_query',
   'meeting',
   'correction',
   'shortcuts',
@@ -33,7 +32,6 @@ export function checklistDestination(id: ChecklistItemId): DiscoveryDestination 
   switch (id) {
     case 'command_palette': return { kind: 'palette' };
     case 'mode_binding': return { kind: 'settings', page: 'modes', target: 'modes' };
-    case 'voice_query': return { kind: 'settings', page: 'ai-query', target: 'voice-query-provider' };
     case 'meeting': return { kind: 'main', page: 'meetings' };
     case 'correction': return { kind: 'teach' };
     case 'shortcuts': return { kind: 'settings', page: 'shortcuts', target: 'shortcuts' };
@@ -60,16 +58,14 @@ export interface DiscoveryEvidence {
   transforms: number;
   meetings: number;
   correctionsTaught: number;
-  queriesRun: number;
   modeBindings: string[];
-  voiceQueryConfigured: boolean;
 }
 
 interface DiscoveryStateV1 {
   version: 1;
   checklistDismissed: boolean;
   completed: ChecklistItemId[];
-  baseline: Omit<DiscoveryEvidence, 'voiceQueryConfigured'>;
+  baseline: DiscoveryEvidence;
   pendingHints: DiscoveryHintId[];
   dismissedHints: DiscoveryHintId[];
 }
@@ -100,10 +96,10 @@ function unique<T extends string>(values: T[]): T[] {
 
 function parseState(value: unknown): DiscoveryStateV1 | null {
   if (!isRecord(value) || value.version !== 1 || typeof value.checklistDismissed !== 'boolean'
-    || !isStringArray(value.completed) || !value.completed.every(isChecklistItemId)
+    || !isStringArray(value.completed)
     || !isRecord(value.baseline) || !isCount(value.baseline.transforms)
     || !isCount(value.baseline.meetings) || !isCount(value.baseline.correctionsTaught)
-    || !isCount(value.baseline.queriesRun) || !isStringArray(value.baseline.modeBindings)
+    || !isStringArray(value.baseline.modeBindings)
     || !isStringArray(value.pendingHints) || !value.pendingHints.every(isHintId)
     || !isStringArray(value.dismissedHints) || !value.dismissedHints.every(isHintId)) return null;
   const dismissedHints = unique(value.dismissedHints);
@@ -111,12 +107,11 @@ function parseState(value: unknown): DiscoveryStateV1 | null {
   return {
     version: 1,
     checklistDismissed: value.checklistDismissed,
-    completed: unique(value.completed),
+    completed: unique(value.completed.filter(isChecklistItemId)),
     baseline: {
       transforms: value.baseline.transforms,
       meetings: value.baseline.meetings,
       correctionsTaught: value.baseline.correctionsTaught,
-      queriesRun: value.baseline.queriesRun,
       modeBindings: unique(value.baseline.modeBindings),
     },
     pendingHints,
@@ -125,19 +120,17 @@ function parseState(value: unknown): DiscoveryStateV1 | null {
 }
 
 export function discoveryEvidence(
-  settings: Pick<Settings, 'appProfiles' | 'queryHotkey' | 'queryExecutable'>,
+  settings: Pick<Settings, 'appProfiles'>,
   stats: DictationStats,
 ): DiscoveryEvidence {
   return {
     transforms: stats.activity.transforms.runs,
     meetings: stats.activity.meetings.count,
     correctionsTaught: stats.activity.corrections.taught,
-    queriesRun: stats.query.queriesRun,
     modeBindings: settings.appProfiles
       .filter((profile) => typeof profile.modeId === 'string' && profile.modeId.length > 0)
       .map((profile) => `${profile.bundleId}:${profile.modeId}`)
       .sort(),
-    voiceQueryConfigured: settings.queryHotkey !== null && settings.queryExecutable.trim().length > 0,
   };
 }
 
@@ -169,7 +162,6 @@ function initialState(evidence: DiscoveryEvidence, completed: ChecklistItemId[])
       transforms: evidence.transforms,
       meetings: evidence.meetings,
       correctionsTaught: evidence.correctionsTaught,
-      queriesRun: evidence.queriesRun,
       modeBindings: evidence.modeBindings,
     },
     pendingHints: [],
@@ -189,7 +181,6 @@ export function initializeGrandfatheredDiscovery(evidence: DiscoveryEvidence): D
   const completed: ChecklistItemId[] = [];
   if (evidence.meetings > 0) completed.push('meeting');
   if (evidence.correctionsTaught > 0) completed.push('correction');
-  if (evidence.queriesRun > 0 || evidence.voiceQueryConfigured) completed.push('voice_query');
   if (evidence.modeBindings.length > 0) completed.push('mode_binding');
   return saveState(initialState(evidence, completed));
 }
@@ -202,19 +193,16 @@ export function syncDiscoveryEvidence(evidence: DiscoveryEvidence): DiscoverySta
     transforms: Math.min(state.baseline.transforms, evidence.transforms),
     meetings: Math.min(state.baseline.meetings, evidence.meetings),
     correctionsTaught: Math.min(state.baseline.correctionsTaught, evidence.correctionsTaught),
-    queriesRun: Math.min(state.baseline.queriesRun, evidence.queriesRun),
   };
   const completed = new Set(state.completed);
   if (evidence.meetings > baseline.meetings) completed.add('meeting');
   if (evidence.correctionsTaught > baseline.correctionsTaught) completed.add('correction');
-  if (evidence.queriesRun > baseline.queriesRun) completed.add('voice_query');
   if (evidence.modeBindings.some((binding) => !state.baseline.modeBindings.includes(binding))) {
     completed.add('mode_binding');
   }
   const baselineChanged = baseline.transforms !== state.baseline.transforms
     || baseline.meetings !== state.baseline.meetings
-    || baseline.correctionsTaught !== state.baseline.correctionsTaught
-    || baseline.queriesRun !== state.baseline.queriesRun;
+    || baseline.correctionsTaught !== state.baseline.correctionsTaught;
   if (completed.size === state.completed.length && !baselineChanged) return state;
   return saveState({ ...state, baseline, completed: [...completed] });
 }

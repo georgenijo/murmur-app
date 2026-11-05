@@ -44,7 +44,7 @@ export function useDiscovery({ enabled, settings, statsVersion, historyEntries }
   );
   const evidence = useMemo(
     () => discoveryEvidence(settings, loadStats()),
-    [settings.appProfiles, settings.queryExecutable, settings.queryHotkey, statsVersion],
+    [settings.appProfiles, statsVersion],
   );
 
   useEffect(() => {

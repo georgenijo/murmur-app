@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getActivityInsights } from './activityStats';
-import { loadStats, resetStats, saveStats, updateActivityStats, updateQueryStats, updateStats } from './stats';
+import { loadStats, resetStats, saveStats, updateActivityStats, updateStats } from './stats';
 import { STATS_STORE } from './durableUserData';
 
 beforeEach(() => localStorage.clear());
@@ -45,7 +45,7 @@ describe('local activity statistics', () => {
     });
   });
 
-  it('preserves counters across interleaved dictation, query, and activity writes and repeated loads', () => {
+  it('preserves counters across interleaved dictation and activity writes and repeated loads', () => {
     updateActivityStats({ kind: 'meeting', durationMs: 90_000 }, '2026-08');
     updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Exact saved name' }, '2026-08');
     updateActivityStats({ kind: 'transform', outcome: 'approved', presetName: 'Exact saved name' }, '2026-08');
@@ -53,12 +53,10 @@ describe('local activity statistics', () => {
     updateActivityStats({ kind: 'correction_taught', scope: 'project' });
     updateActivityStats({ kind: 'paste_last' });
     updateStats('one two three four', 3, 'mode-id');
-    updateQueryStats({ provider: 'claude', succeeded: true, errorCode: null, usage: null });
     const stats = loadStats();
     saveStats(stats);
     expect(loadStats()).toEqual(stats);
     expect(stats.totalWords).toBe(4);
-    expect(stats.query.successfulQueries).toBe(1);
     expect(stats.activity).toMatchObject({
       meetings: { count: 1, totalMinutes: 1.5, summariesGenerated: 0 },
       transforms: { runs: 1, approved: 1, byPresetName: { 'Exact saved name': { runs: 1, approved: 1 } } },

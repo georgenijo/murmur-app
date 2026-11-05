@@ -45,9 +45,6 @@ import {
   modelDownloadPercent,
   type ModelDownloadProgress,
 } from '../../lib/modelDownload';
-import { useVoiceQuerySettings } from '../../lib/hooks/useVoiceQuerySettings';
-import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
-import { VoiceQuerySettings } from './VoiceQuerySettings';
 import { TranscriptionModelStorage } from './TranscriptionModelStorage';
 import type { DictationStatus } from '../../lib/types';
 import { UpdateIndicator } from '../UpdateIndicator';
@@ -230,7 +227,6 @@ interface SettingsPanelProps {
   onOpenUpdate: () => void;
   updateStatus: UpdateStatus;
   configureError: string | null;
-  querySetupStatus?: QuerySetupStatus | null;
   /** External navigation request. The token makes a repeat request for the
    *  page you are already on still register. */
   pageRequest?: SettingsPageRequest | null;
@@ -258,7 +254,7 @@ export const SETTINGS_TOOLS = [
   { id: 'diagnostics', label: 'Diagnostics', icon: 'diagnostics' },
 ] as const;
 
-const AI_DETAIL_PAGES = ['ai-query', 'ai-transcription'] as const;
+const AI_DETAIL_PAGES = ['ai-transcription'] as const;
 const GENERAL_DETAIL_PAGES = ['shortcuts'] as const;
 
 interface SettingTargetRequest {
@@ -306,7 +302,6 @@ export function resolvePage(page: string | undefined): string {
   if (page === 'model' || page === 'transcription') return 'ai-transcription';
   if (page === 'benchmark') return 'performance';
   if (page === 'text-vocabulary') return 'text';
-  if (page === 'voice-query' || page === 'query') return 'ai-query';
   if (page === 'app') return 'general';
   return DEFAULT_SETTINGS_PAGE;
 }
@@ -336,8 +331,6 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'smart-formatting', title: 'Structured writing', detail: 'Format spoken lists and symbols', keywords: 'smart formatting' },
   { page: 'text', target: 'voice-commands', title: 'Voice commands & spoken formatting', detail: 'Enable custom commands and spoken formatting tokens', keywords: 'voice commands snippets replacement new line period scratch that' },
   { page: 'ai-transcription', target: 'model-idle-timeout', title: 'Release model after inactivity', detail: 'Free idle model memory', keywords: 'timeout power adapter' },
-  { page: 'ai-query', target: 'query-key', title: 'Query shortcut', detail: 'Choose the dedicated Voice Query key', keywords: 'hotkey' },
-  { page: 'ai-query', target: 'query-timeout', title: 'Query timeout', detail: 'Bound provider execution time', keywords: 'seconds minutes' },
   { page: 'meetings', target: 'meeting-calendar', title: 'Calendar suggestion access', detail: 'Manage permission for meeting suggestions', keywords: 'calendar settings permission' },
   { page: 'meetings', target: 'meeting-echo-cancellation', title: 'Reduce speaker echo', detail: 'Experimental meeting echo removal', keywords: 'audio processing' },
   { page: 'general', target: 'overlay-placement', title: 'Recording overlay', detail: 'Notch island or floating pill', keywords: 'placement external display pretend notch waveform bottom' },
@@ -360,15 +353,13 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'meetings', target: 'meeting-retention', title: 'Meeting retention', detail: 'Set age and session limits', keywords: 'history days sessions sqlite' },
   { page: 'ai-transcription', target: 'transcription-model', title: 'Speech-to-text model', detail: 'Select and manage the local recognition model', keywords: 'whisper parakeet core ml download speech model' },
   { page: 'ai-transcription', target: 'language', title: 'Transcription language', detail: 'Choose a fixed language or automatic detection', keywords: 'multilingual auto detect' },
-  { page: 'ai-query', target: 'voice-query-provider', title: 'Voice Query provider', detail: 'Configure the CLI agent used for spoken questions', keywords: 'agent command executable codex claude cloud answer hotkey provider' },
-  { page: 'ai-query', target: 'voice-query-copy', title: 'Voice Query clipboard', detail: 'Automatically copy successful answers to the clipboard', keywords: 'clipboard copy automatic answers response' },
   { page: 'text', target: 'punctuation', title: 'Smart punctuation', detail: 'Add punctuation and sentence capitalization', keywords: 'automatic punctuation' },
   { page: 'text', target: 'cleanup', title: 'Transcript cleanup', detail: 'Remove filler words and tidy transcript spacing', keywords: 'filler capitalization' },
   { page: 'text', target: 'text-editors', title: 'Vocabulary & aliases', detail: 'Manage preferred words and spoken variants', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
   { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at login', detail: 'Start Murmur when you sign in', keywords: 'startup autostart' },
   { page: 'general', target: 'overlay-calibration', title: 'Calibrate overlay position', detail: 'Fine-tune the overlay position around your Mac’s notch', keywords: 'calibrate calibration overlay position vertical notch dynamic island' },
-  { page: 'shortcuts', target: 'shortcuts', title: 'Keyboard shortcuts', detail: 'See every global and main-window shortcut', keywords: 'hotkey key binding command control recording transform query paste correction' },
+  { page: 'shortcuts', target: 'shortcuts', title: 'Keyboard shortcuts', detail: 'See every global and main-window shortcut', keywords: 'hotkey key binding command control recording paste' },
   { page: 'general', target: 'setup', title: 'Setup assistant', detail: 'Re-check permissions and model setup', keywords: 'onboarding microphone accessibility' },
   { page: 'general', target: 'updates', title: 'Updates', detail: 'Check for a newer Murmur release', keywords: 'version upgrade' },
   { page: 'performance', target: 'performance', title: 'Performance Lab', detail: 'Compare installed models on this Mac', keywords: 'benchmark speed accuracy' },
@@ -447,7 +438,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   onOpenUpdate,
   updateStatus,
   configureError,
-  querySetupStatus = null,
   pageRequest = null,
   onLatencyViewChange,
   activeRef,
@@ -808,12 +798,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     }
   };
 
-  const voiceQueryVm = useVoiceQuerySettings({
-    settings,
-    onUpdateSettings,
-    active: activeCat === 'ai-query',
-  });
-
   const isRecording = status !== 'idle';
   const isDoubleTap = settings.recordingMode === 'double_tap';
   const isBoth = settings.recordingMode === 'both';
@@ -907,12 +891,9 @@ export const SettingsPanel = memo(function SettingsPanel({
     openPage('general', 'programmatic');
   };
 
-  const enabledFeaturePages = [
-    { enabled: settings.queryHotkey !== null, page: 'ai-query', label: 'Voice Query', icon: 'ai' },
-  ].filter(item => item.enabled);
   const navPageIsActive = (page: string) => (
     page === 'ai'
-      ? activeCat === 'ai' || (activeCat.startsWith('ai-') && !enabledFeaturePages.some(item => item.page === activeCat))
+      ? activeCat === 'ai' || (activeCat.startsWith('ai-'))
       : page === 'general' ? activeCat === 'general' || activeCat === 'shortcuts' : activeCat === page
   );
 
@@ -922,7 +903,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       ?? SETTINGS_TOOLS.find((tool) => tool.id === page)?.label
       ?? page;
   };
-  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text', 'ai-query': 'Voice Query',
+  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text',
       shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
@@ -971,10 +952,6 @@ export const SettingsPanel = memo(function SettingsPanel({
               </button>
             );
           })}
-          {enabledFeaturePages.map(item => <button key={item.page} type="button"
-            aria-label={item.label} title={item.label} aria-current={activeCat === item.page ? 'page' : undefined}
-            className="settings-nav-item flex w-full items-center text-left"
-            onClick={() => openPage(item.page)}><SettingsNavIcon icon={item.icon} /><span className="min-w-0 truncate">{item.label}</span></button>)}
           {settings.codeVocabEnabled && <button type="button" aria-label="Project scan" title="Project scan"
             className="settings-nav-item flex w-full items-center text-left" onClick={(event) => openEditor('scan', event.currentTarget)}>
             <SettingsNavIcon icon="text" /><span className="min-w-0 truncate">Project scan</span></button>}
@@ -1277,30 +1254,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               </span>
               <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
             </button>
-            <button
-              type="button"
-              onClick={() => openPage('ai-query')}
-              className="flex w-full items-center gap-4 px-1 py-1 text-left hover:text-primary"
-            >
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="ai" /></span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">Voice Query</span>
-                <span className="mt-0.5 block truncate text-xs text-on-surface-variant">{settings.queryProvider === 'custom' ? 'Custom CLI' : settings.queryProvider} · {settings.queryHotkey === null ? 'Shortcut off' : 'Shortcut on'}</span>
-              </span>
-              <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
-            </button>
+
           </SettingsSection>
-
-          <VoiceQuerySettings
-            settings={settings}
-            onUpdateSettings={onUpdateSettings}
-            activePage={activeCat}
-            accessibilityGranted={accessibilityGranted}
-            onRequestAccessibility={requestAccessibility}
-            vm={voiceQueryVm}
-            setupStatus={querySetupStatus}
-          />
-
 
           <SettingsSection hideHeading pageId="ai-transcription" activePage={activeCat} title="Speech-to-text">
             <SettingsRow title={<>Transcription model</>} targetId="transcription-model" disabled={isRecording} onReset={settings.model !== DEFAULT_SETTINGS.model ? () => onUpdateSettings({ model: DEFAULT_SETTINGS.model }) : undefined} control={<Select

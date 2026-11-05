@@ -3,19 +3,19 @@ import { expect, test } from '@playwright/test';
 for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }, { width: 720, height: 560 }]) {
   test(`window chrome and navigation stay fixed at ${size.width}x${size.height}`, async ({ page }) => {
     await page.setViewportSize(size);
-    for (const state of ['idle', 'settings', 'assistant-long']) {
+    for (const state of ['idle', 'settings']) {
       await page.goto(`/visual-fixtures.html?state=${state}&appearance=dark`);
       const sidebar = page.locator(state === 'settings' ? '.settings-sidebar' : '.home-sidebar');
       const before = await sidebar.boundingBox();
       expect(before).not.toBeNull();
       expect(before!.width).toBe(state === 'settings' ? (size.width < 768 ? 56 : 240) : (size.width < 768 ? 48 : 256));
       expect(before!.y + before!.height).toBe(size.height);
-      if (state !== 'settings') for (const label of ['Home', 'Notetaker', 'Assistant', 'Insights']) {
+      if (state !== 'settings') for (const label of ['Home', 'Notetaker', 'Insights']) {
         const button = await sidebar.getByRole('button', { name: label, exact: true }).boundingBox();
         expect(button!.y).toBeGreaterThanOrEqual(before!.y);
         expect(button!.y + button!.height).toBeLessThanOrEqual(size.height);
       }
-      const pane = page.locator(state === 'idle' ? '.home-dashboard' : state === 'settings' ? '[data-testid="settings-content"]' : '.assistant-message-list');
+      const pane = page.locator(state === 'idle' ? '.home-dashboard' : state === 'settings' ? '[data-testid="settings-content"]' : '.home-dashboard');
       await expect(pane).toBeVisible();
       await pane.hover();
       for (const delta of [100000, 100000, -100000, -100000]) {

@@ -578,7 +578,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: true,
             ide_project_roots: vec!["/project".to_string()],
-            query_context_excluded: false,
             mode_id: None,
         };
         let knowledge = vec![
@@ -653,7 +652,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: vec!["/project".to_string()],
-            query_context_excluded: false,
             mode_id: None,
         };
         let mut later_enabled_profile = disabled_profile.clone();
@@ -803,7 +801,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            query_context_excluded: false,
             mode_id: None,
         };
         let mut technical = ordinary.clone();
@@ -863,7 +860,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            query_context_excluded: false,
             mode_id: None,
         };
         let mut second = first.clone();
@@ -924,7 +920,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: vec!["/project/one".to_string()],
-            query_context_excluded: false,
             mode_id: None,
         };
         let disabled = CorrectionMatcherSet::build(

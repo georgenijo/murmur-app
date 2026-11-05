@@ -84,7 +84,7 @@ Use these before creating a feature-local control or surface.
 | Native chrome | Traffic lights, Home sidebar toggle, status, updates, and Settings share one row. The toggle starts after the zoom-compensated 80pt controls inset and never acts as a drag region; recording actions live in the dashboard. Collapsed Home and narrow Settings leave the header background unpainted; expanded header paint aligns with its sidebar |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
 | Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
-| Sidebar | App owns Home collapsed state, resizing, and a 256–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, Assistant, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
+| Sidebar | App owns Home collapsed state, resizing, and a 256–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
 | Customize | The gear and `⌘,` open General; Customize is an unordered set of independent destinations, and detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses the 896px shell documented below |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
@@ -92,10 +92,7 @@ Use these before creating a feature-local control or surface.
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
-| Insights | Durable local analytics use the full content width; Voice Query totals/providers use fixed label/value columns and notes occupy separate rows |
-| Secondary pages | Insights, Notetaker, and Assistant use one page header with a visible Back action that returns focus to Home navigation; Assistant retains legacy query history in Previous queries |
-| Assistant | Flat transparent reading surface, no nested message shading; one shared left text gutter across speaker labels, bodies, header and composer text. Compact thread rail uses an outlined selection; connection and delete controls live in keyboard-accessible disclosures. Escape dismisses an open disclosure before canceling a turn. |
-| Voice Query | Theme-aware flat popover, question then answer on one text gutter; compact state header with Close, bounded scrolling body and pinned actions. Technical summaries live in Details rather than the header or footer. Open in Assistant is one explicit handoff, not a nested save dialog. |
+| Secondary pages | Insights and Notetaker use one page header with a visible Back action that returns focus to Home navigation |
 | Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels plus a Daily values disclosure |
 
 ## Input contracts
@@ -302,7 +299,7 @@ these rules govern Murmur’s copy and interactions.
 
 - Use sentence case for labels, buttons, titles, and section headings. Preserve
   proper nouns (Murmur, macOS, Finder, Calendar, Open VSX, model/provider names)
-  and native macOS menu title case. Named features such as Voice Query and
+  and native macOS menu title case. Named features such as
   Smart Auto retain their names; generic commands, modes, and settings do not.
 - Use one `…` character for progress and actions that open a further choice:
   `Saving…`, `Choose folder…`, `Create knowledge…`. Use normal punctuation when

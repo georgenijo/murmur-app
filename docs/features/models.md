@@ -306,7 +306,7 @@ confirmation. After removal the row shows Not installed and Download; the
 runtime publishes the new state without restarting.
 
 `remove_model` accepts only catalog identifiers. It refuses while dictation,
-file transcription, Voice Query capture/transcription, text transforms, meetings,
+file transcription, meetings,
 model preparation, or a model download owns the
 relevant runtime. Selection, runtime use, and the per-model install transaction
 remain locked until deletion and state publication complete. A quarantined

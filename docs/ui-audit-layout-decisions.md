@@ -19,7 +19,6 @@ a workspace, a task, and a saved record:
 | Modes | Named bundles of dictation behavior that can be selected or bound to an app. A mode is not the delivery destination. |
 | Delivery | Where/how the produced text is delivered (clipboard, auto-paste, files). It is not a synonym for a writing style or mode. |
 | Voice commands & spoken formatting | Global switch that gates both replacement commands and spoken formatting. Individual task labels may name the specific capability, not only one half of that global switch. |
-| Voice Query / Assistant | Voice Query is the shortcut-driven question/review flow; Assistant is the persistent conversational workspace. Both use the configured provider, unlike local dictation. They are intentionally distinct tasks, not blanket “local AI” assurances. |
 
 The Customize hub owns the canonical visible destinations, including **App overrides** and **Modes**, without ordered step numbers. Palette Settings entries
 are derived from category labels. This lane groups the palette's default list;
@@ -27,14 +26,9 @@ it does not alter destinations, command availability, or search scoring.
 
 ## Truthful local scope (#889)
 
-Retain the current sidebar's **Dictation stays on this Mac.** It was already
-scoped before this epic. Onboarding now separately names local dictation,
-selected-text rewriting, saved history, and retained meeting audio, then explains
-that optional Voice Query/Assistant may send permitted questions, context, and
-files to the configured provider. No transmission or data leak was observed by
-this audit, and this copy change does not alter provider permissions or consent.
-Settings/About have the same scope but are owned by the other implementation
-lanes.
+The sidebar says **Dictation stays on this Mac.** Onboarding and About now
+name local dictation, saved history, and retained meeting audio. This removal
+retires the provider connection and its consent surface.
 
 ## Activity calendar (#898)
 

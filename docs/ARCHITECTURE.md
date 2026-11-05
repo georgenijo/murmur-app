@@ -7,7 +7,7 @@
 
 ## Overview
 
-Murmur is a privacy-first, local voice dictation app for macOS. Its speech transcription runs on-device on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx). The optional Voice Query bridge can invoke a user-configured third-party CLI whose own network behavior remains outside Murmur's trust boundary.
+Murmur is a privacy-first, local voice dictation app for macOS. Its speech transcription runs on-device on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx).
 
 Built with **Tauri 2** (Rust backend + React frontend). Transcription backends:
 
@@ -26,7 +26,7 @@ Built with **Tauri 2** (Rust backend + React frontend). Transcription backends:
 | Transcription | FluidAudio (Core ML/ANE), whisper-rs → whisper.cpp (Metal), sherpa-onnx (CPU) | Selected per model from one catalog |
 | Text injection | arboard + CGEvent (osascript fallback) | Clipboard-first |
 | Selection capture | Accessibility (AX) APIs + sentinel-guarded clipboard fallback | Secure fields fail closed |
-| Keyboard listening | rdev (git main branch) | Global key events; one background thread, three detectors |
+| Keyboard listening | rdev (git main branch) | Global key events; one background thread for dictation and Paste Last |
 | Local storage | rusqlite (SQLite) | Personal knowledge store + performance diagnostics |
 | Telemetry | tracing + tracing-subscriber | Structured events: ring buffer, JSONL file, real-time frontend emission |
 | System info | sysinfo + custom malloc zone | CPU, RSS, and separated Rust/FFI heap accounting |
@@ -160,12 +160,11 @@ Each window is a separate webview with its own Tauri capability set.
 | Main | `main` | `index.html` | 1120×820, minimum 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, and modals |
 | Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons |
 | Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always on top, transparent, and non-activating |
-| Query Review | `query-review` | `query-review.html` | 440×92 compact, 440×340 expanded | Voice Query answer review. Always on top, transparent, and non-activating |
 | Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML and Whisper Tiny/Base transcript preview under the notch. Always on top, transparent, non-activating, and click-through |
 
-Main and Diagnostics hide on close instead of being destroyed. Overlay calls the shared non-activating window treatment in `commands/native_window.rs`. Query Review and Dictation Preview use its `PopoverSpec` transport, which applies the same window level and activation policy. Every raw `NSWindow` mutation runs on the main thread through `run_on_main_thread`. macOS 26 hard-traps on an off-main mutation (#325).
+Main and Diagnostics hide on close instead of being destroyed. Overlay calls the shared non-activating window treatment in `commands/native_window.rs`. Dictation Preview uses its `PopoverSpec` transport, which applies the same window level and activation policy. Every raw `NSWindow` mutation runs on the main thread through `run_on_main_thread`. macOS 26 hard-traps on an off-main mutation (#325).
 
-Rust owns the native frame for each overlay or popover. `geometry_for()` calculates the Overlay frame. The `frame()` functions in `commands/query_popover.rs` and `commands/dictation_preview.rs` calculate the other two frames. Checked-in Rust and frontend fixtures cover the shared geometry contracts.
+Rust owns the native frame for each overlay or popover. `geometry_for()` calculates the Overlay frame. The `frame()` function in `commands/dictation_preview.rs` calculates the preview frame. Checked-in Rust and frontend fixtures cover the shared geometry contracts.
 
 Main owns appearance writes, the durable saved-theme library, Open VSX
 discovery, and application-level native `setTheme`. Main and Diagnostics resolve System mode to a concrete `data-appearance` with a
@@ -224,7 +223,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 210 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 172 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -258,22 +257,15 @@ stay local and never reach logs or telemetry. See
 | `commands/integrations.rs` | Local Launch Services availability probe for the optional NotchPill companion app |
 | `commands/microphone_preview.rs` | Main-window microphone test lifecycle, input validation, VAD sensitivity, and exact-owner stop |
 | `commands/mode_runtime.rs` | Foreground app and browser-site mode resolution, mode cycling, temporary overrides, and watcher events |
-| `commands/query_history.rs` | Main-window paging, provider filtering, and purge commands for opt-in Voice Query history |
-| `commands/query_popover.rs` | Non-activating Voice Query review geometry and show, resize, and hide transport |
 | `commands/updater.rs` | App-translocation status and opt-in updater canary file transport |
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
 | `dock_watch.rs` | Live Dock accessibility geometry → floating-pill limit, glide, static fallback |
 | `hang_diagnostics.rs` | Server-armed, consent-bound capture-hang bundle collection with bounded native probes and upload |
-| `query_flow.rs` | Voice Query capture, local ASR, literal argv dispatch, bounded stdout/stderr streaming, immutable provider configuration, and exact-pass cancellation |
-| `query_adapter.rs` | Incremental Claude/Codex JSONL answer, typed failure, and pass-scoped usage extraction with non-duplicating raw fallback |
-| `query_provider.rs` | Voice Query preset/discovery data, bounded auth preflight, known auth repair, and Rust-owned declared config-directory environment values |
-| `query_history/` | Off-by-default bounded SQLite question/answer store with main-window-only paging and purge |
-| `assistant.rs` | Explicitly connected Pi conversation mirror; bounded private atomic store, restart interruption, exact-pass partials and local deletion |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
-| `keyboard.rs` | Dictation and Voice Query detectors on one shared rdev thread |
+| `keyboard.rs` | Dictation and Paste Last detectors on one shared rdev thread |
 | `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
 | `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
@@ -304,7 +296,7 @@ stay local and never reach logs or telemetry. See
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `query_history`, `query_popover`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
+Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 
@@ -330,7 +322,7 @@ struct AppState {
 
 Two patterns do most of the concurrency work:
 
-- **Generation counters.** recording and query generation IDs are monotonic. Every async continuation re-checks whether it still owns the current generation before mutating shared state, so a delayed handler can never cancel or overwrite the pass that replaced it.
+- **Generation counters.** recording generation IDs are monotonic. Every async continuation re-checks whether it still owns the current generation before mutating shared state, so a delayed handler can never cancel or overwrite the pass that replaced it.
 - **Immutable snapshots.** A recording resolves its full context (model, language, delivery, profile overrides, vocabulary, transform stage config) once at start. Settings or focus changes mid-recording apply to the *next* session, never the running one.
 
 ### Model runtime (`model_runtime.rs`)
@@ -377,7 +369,7 @@ All backends take one authoritative final-after-stop pass; delivery happens exac
 
 ### `keyboard.rs` — Keyboard Detection
 
-One persistent rdev background thread feeds dictation hold-down and double-tap detectors plus Voice Query.
+One persistent rdev background thread feeds dictation hold-down and double-tap detectors plus Paste Last.
 
 - **Hold-down** — 2 states; press emits `hold-down-start`, release emits `hold-down-stop`. Combos (trigger+letter) cancel.
 - **Double-tap** — 4 states; each tap under 200ms, gap under 400ms. Rejects holds, combos, slow taps, triple-tap spam. Emits `hotkey-tap-rejected` when an idle first tap expires (opt-in overlay feedback).
@@ -408,24 +400,30 @@ tracing event
              +--> 'app-event' emitted to all windows
 ```
 
-Seven streams (tracing targets): `pipeline`, `audio`, `keyboard`, `transform`, `meeting`, `query`, `system`.
+Six active streams plus the retired `query` stream for reading old diagnostics: `pipeline`, `audio`, `keyboard`, `transform`, `meeting`, `system`.
 
-**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform`, `meeting`, and `query` events are stricter still and stripped in *all* builds: every key, type, and stable string value must satisfy that stream's exact allowlist. The `performance.store_operation_failed` system event is likewise reduced in every build to its stable code, operation, safe SQLite class, attempt count, and recording ID. Anything else is dropped at the layer, independent of the call site. Query questions, answers, context, stderr, SQL, database paths, and provider detail therefore cannot enter those events. The fleet shipper also rejects the entire `meeting` stream and malformed JSONL, so meeting content and lifecycle never leave the Mac.
+**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform` and `meeting` events are stricter still and stripped in *all* builds: every key, type, and stable string value must satisfy that stream's exact allowlist. The `performance.store_operation_failed` system event is likewise reduced in every build to its stable code, operation, safe SQLite class, attempt count, and recording ID. Anything else is dropped at the layer, independent of the call site. Transcript content, SQL, database paths, and stderr therefore cannot enter those events. The fleet shipper also rejects the entire `meeting` stream and malformed JSONL, so meeting content and lifecycle never leave the Mac.
 
 ### Local storage
 
-Four SQLite databases and the Assistant mirror, all stored locally:
+Three SQLite databases, all stored locally:
 
 | Store | File | Retention |
 |-------|------|-----------|
 | Personal knowledge | `knowledge/knowledge.sqlite3` | User-managed; versioned migrations, backups, quarantine on corruption |
 | Performance diagnostics | `diagnostics/performance.sqlite3` | 200 completed runs, 600 resource samples, 8 follow-ups per run |
 | Meetings | `meetings/meetings.sqlite3` | User-managed searchable sessions; age/count caps applied before start; audio off by default |
-| Voice Query history | `query-history/query-history.sqlite3` | Off by default; newest 200 question/answer records; direct user purge |
-| Assistant conversations | `assistant/conversations-v1.json` | Explicit Pi connection consent; at most 100 conversations, 200 messages each, 16 MiB total; owner-only, atomic; separate remote Pi retention |
-
 
 ---
+
+On upgrade, startup removes the retired Voice Query store
+`query-history/query-history.sqlite3` and Assistant mirror
+`assistant/conversations-v1.json`, including only their `-wal`, `-shm`, and
+`-journal` companions. These private questions and answers no longer have a
+view or deletion UI. Cleanup pins directories, refuses symlink traversal,
+never reads or logs content, and warns without blocking startup on failure.
+Other app data and remote provider sessions are untouched. Old settings with
+these retired fields still load; active dictation and meeting preferences survive.
 
 ## Launch preparation
 
@@ -458,7 +456,7 @@ theme startup can repair and persist a library and reconcile active selections.
 Deferring only the reads could overwrite durable data with empty or stale
 snapshots. A later change needs mutation replay and a theme readiness boundary.
 Native stores also remain synchronous: knowledge feeds the frozen recording
-context, while Assistant, Query, diagnostics, and meeting recovery currently
+context, while diagnostics and meeting recovery currently
 assume initialization before their commands run. No webview declarations change.
 
 Content-free `system.launch_*` events carry `launch_elapsed_ms` in the structured
@@ -487,7 +485,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-210 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+172 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -499,7 +497,7 @@ See [reference/events.md](reference/events.md) for every Rust → frontend event
 
 | Permission | Required For |
 |-----------|-------------|
-| Microphone | Audio capture — dictation and Voice Query instructions |
+| Microphone | Audio capture — dictation and meetings |
 | Accessibility | Global hotkeys (rdev), auto-paste, AX selection capture, AX write-back |
 | System Audio (optional; macOS 14.2+) | Meeting playback capture as Them; tap exists only during an explicit check or active meeting |
 
@@ -608,7 +606,7 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | Clipboard-first delivery | Reliable across all apps; auto-paste is layered on top and never the only path |
 | Explicit-session CATap | Avoids idle tap churn; setup/teardown is phased, timeout-bounded, and process-isolated |
 | Durable chunk before inference | A crash loses at most each channel's open VAD chunk; published chunks remain recoverable from SQLite + fsynced spool audio |
-| Per-window least privilege | Overlay and query popover get minimal capabilities; only the main window gets the full set |
+| Per-window least privilege | Overlay and dictation preview get minimal capabilities; only the main window gets the full set |
 | Main-only native appearance | Main owns application `setTheme`; transparent glass windows never join theme synchronization |
 | Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read up to 256 KiB of UTF-8, keep exports at 64 KiB, and publish exports atomically without touching the clipboard |
 | Data-only community themes | Open VSX is queried only from an explicit dialog; supported-license packages are checksum/ZIP/identity bounded and only declared workbench colors are converted—extension code and assets never execute |

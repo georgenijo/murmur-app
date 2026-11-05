@@ -255,7 +255,6 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "pipeline.dictation_partial_tick" => Some("pipeline.dictation_partial_tick"),
         "pipeline.preview_vad_disagreement" => Some("pipeline.preview_vad_disagreement"),
-        "query.preview_vad_disagreement" => Some("query.preview_vad_disagreement"),
         "pipeline.dictation_preview_presentation" => {
             Some("pipeline.dictation_preview_presentation")
         }
@@ -288,8 +287,6 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "meeting.permission_probe_started" => Some("meeting.permission_probe_started"),
         "meeting.permission_probe_finished" => Some("meeting.permission_probe_finished"),
         "meeting.permission_probe_failed" => Some("meeting.permission_probe_failed"),
-        "query.pass_state" => Some("query.pass_state"),
-        "query.partial_tick" => Some("query.partial_tick"),
         "updater.check_current" => Some("updater.check_current"),
         "updater.check_failed" => Some("updater.check_failed"),
         "updater.install_blocked" => Some("updater.install_blocked"),
@@ -504,7 +501,7 @@ fn sanitize_dictation_preview_presentation_event(
 fn is_safe_audio_owner_kind(value: &str) -> bool {
     matches!(
         value,
-        "dictation" | "transform" | "query" | "preview" | "microphone_benchmark" | "corpus"
+        "dictation" | "transform" | "preview" | "microphone_benchmark" | "corpus"
     )
 }
 
@@ -1499,7 +1496,7 @@ fn sanitized_summary(
         "Dictation reliability event".to_string()
     } else if matches!(
         data.get("event_code").and_then(serde_json::Value::as_str),
-        Some("pipeline.preview_vad_disagreement" | "query.preview_vad_disagreement")
+        Some("pipeline.preview_vad_disagreement")
     ) {
         "Preview and final VAD disagreement".to_string()
     } else if data.get("event_code").and_then(serde_json::Value::as_str)
@@ -1662,7 +1659,6 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
                 | "meeting_active"
                 | "runtime_busy"
                 | "transform_busy"
-                | "query_busy"
                 | "audio_start_failed"
                 | "no_instruction"
                 | "show_failed"
@@ -1690,88 +1686,6 @@ fn is_safe_transform_string(key: &str, value: &str) -> bool {
                 | "ax_unavailable"
                 | "secure_check_failed"
         ),
-        _ => false,
-    }
-}
-
-fn is_safe_query_string(key: &str, value: &str) -> bool {
-    match key {
-        "event_code" => matches!(value, "query.pass_state" | "query.partial_tick"),
-        "outcome" => matches!(
-            value,
-            "too_short"
-                | "empty"
-                | "emitted"
-                | "in_flight"
-                | "unsupported_model"
-                | "no_session"
-                | "stale"
-                | "stopped"
-                | "backend_unavailable"
-                | "decode_error"
-                | "worker_failed"
-        ),
-        "state" => matches!(
-            value,
-            "idle" | "connecting" | "listening" | "transcribing" | "running" | "ready" | "failed"
-        ),
-        "error_code" => matches!(
-            value,
-            "not_configured"
-                | "invalid_executable"
-                | "invalid_arguments"
-                | "invalid_timeout"
-                | "invalid_environment"
-                | "environment_unavailable"
-                | "busy"
-                | "audio_start_failed"
-                | "audio_capture_failed"
-                | "audio_not_ready"
-                | "audio_stalled"
-                | "audio_recovering"
-                | "audio_recovery_stalled"
-                | "no_speech"
-                | "transcription_failed"
-                | "empty_query"
-                | "query_too_large"
-                | "spawn_failed"
-                | "timed_out"
-                | "exit_nonzero"
-                | "provider_not_authenticated"
-                | "provider_error"
-                | "empty_answer"
-                | "auto_copy_disabled"
-                | "auto_copy_unavailable"
-                | "clipboard_unavailable"
-                | "clipboard_superseded"
-                | "output_too_large"
-                | "process_failed"
-                | "termination_unconfirmed"
-                | "cancelled"
-        ),
-        _ => false,
-    }
-}
-
-fn is_safe_query_field(key: &str, value: &serde_json::Value) -> bool {
-    match key {
-        "event_code" | "state" | "outcome" => value
-            .as_str()
-            .is_some_and(|value| is_safe_query_string(key, value)),
-        "error_code" => {
-            value.is_null()
-                || value
-                    .as_str()
-                    .is_some_and(|value| is_safe_query_string(key, value))
-        }
-        "query_pass_id"
-        | "sample_count"
-        | "input_tokens"
-        | "output_tokens"
-        | "reasoning_output_tokens"
-        | "cached_input_tokens"
-        | "cache_creation_input_tokens"
-        | "cost_microusd" => value.as_u64().is_some(),
         _ => false,
     }
 }
@@ -1902,7 +1816,6 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     let disagreement_owner = match obj.get("event_code").and_then(serde_json::Value::as_str) {
         Some("pipeline.preview_vad_disagreement") => Some("recording_id"),
-        Some("query.preview_vad_disagreement") => Some("query_pass_id"),
         _ => None,
     };
     if let Some(owner_field) = disagreement_owner {
@@ -1972,11 +1885,6 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
             Some(value) => is_safe_transform_string(key, value),
             None => true,
         });
-    } else if stream == "query" {
-        // Query content may contain anything the user can say or an agent can
-        // return. Use an exact key-and-type allowlist, including for structured
-        // values, so future instrumentation cannot accidentally retain it.
-        obj.retain(|key, value| is_safe_query_field(key, value));
     }
     if stream == "meeting" {
         obj.retain(|key, value| match value.as_str() {
@@ -3454,7 +3362,7 @@ mod tests {
             serde_json::json!({
                 "event_code": "audio.device_reresolution_started",
                 "owner": 12,
-                "owner_kind": "query",
+                "owner_kind": "preview",
                 "completed_pass": 1,
                 "next_pass": 2,
                 "retry_delay_ms": 500,
@@ -3585,171 +3493,6 @@ mod tests {
     }
 
     #[test]
-    fn query_event_sanitizer_rejects_question_answer_context_command_and_paths() {
-        let mut data = serde_json::json!({
-            "event_code": "query.pass_state",
-            "query_pass_id": 8,
-            "state": "running",
-            "error_code": "provider_not_authenticated",
-            "question": "SENTINEL_QUESTION ; rm -rf",
-            "answer": "SENTINEL_ANSWER",
-            "text": "SENTINEL_PARTIAL",
-            "partial": "SENTINEL_PARTIAL",
-            "context": "SENTINEL_CONTEXT",
-            "window_title": "SENTINEL_WINDOW",
-            "selection": "SENTINEL_SELECTION",
-            "command": "/Users/private/bin/agent",
-            "arguments": ["SENTINEL_ARGUMENTS"],
-            "structured_answer": { "content": "SENTINEL_OBJECT" },
-            "stderr": "SENTINEL_STDERR secret-token",
-            "unknown_numeric": 42
-        });
-        sanitize_event_data("query", &mut data, true);
-        let encoded = serde_json::to_string(&data).unwrap();
-        assert_eq!(data["event_code"], "query.pass_state");
-        assert_eq!(data["query_pass_id"], 8);
-        assert_eq!(data["state"], "running");
-        assert_eq!(data["error_code"], "provider_not_authenticated");
-        assert!(!encoded.contains("SENTINEL"));
-        assert!(!encoded.contains("/Users/private"));
-        assert!(!encoded.contains("rm -rf"));
-        assert_eq!(data.as_object().unwrap().len(), 4);
-    }
-
-    #[test]
-    fn query_event_sanitizer_allows_a_null_error_code() {
-        let mut data = serde_json::json!({
-            "event_code": "query.pass_state",
-            "query_pass_id": 9,
-            "state": "ready",
-            "error_code": null
-        });
-        sanitize_event_data("query", &mut data, true);
-        assert_eq!(data["error_code"], serde_json::Value::Null);
-        assert_eq!(data.as_object().unwrap().len(), 4);
-    }
-
-    #[test]
-    fn query_event_sanitizer_allows_only_declared_numeric_usage_fields() {
-        let mut data = serde_json::json!({
-            "event_code": "query.pass_state",
-            "query_pass_id": 11,
-            "state": "ready",
-            "error_code": null,
-            "input_tokens": 21,
-            "output_tokens": 13,
-            "reasoning_output_tokens": 5,
-            "cached_input_tokens": 8,
-            "cache_creation_input_tokens": 2,
-            "cost_microusd": 12000,
-            "provider": "claude",
-            "question_bytes": 99,
-            "cost_usd": 0.012,
-            "usage": { "input_tokens": 21 },
-            "answer": "SENTINEL_ANSWER"
-        });
-        sanitize_event_data("query", &mut data, true);
-
-        assert_eq!(data["input_tokens"], 21);
-        assert_eq!(data["output_tokens"], 13);
-        assert_eq!(data["reasoning_output_tokens"], 5);
-        assert_eq!(data["cached_input_tokens"], 8);
-        assert_eq!(data["cache_creation_input_tokens"], 2);
-        assert_eq!(data["cost_microusd"], 12000);
-        assert!(data.get("provider").is_none());
-        assert!(data.get("question_bytes").is_none());
-        assert!(data.get("cost_usd").is_none());
-        assert!(data.get("usage").is_none());
-        assert!(data.get("answer").is_none());
-        assert_eq!(data.as_object().unwrap().len(), 10);
-    }
-
-    #[test]
-    fn query_event_sanitizer_rejects_wrong_usage_field_types() {
-        let mut data = serde_json::json!({
-            "event_code": "query.pass_state",
-            "query_pass_id": 12,
-            "state": "ready",
-            "error_code": null,
-            "input_tokens": "21",
-            "output_tokens": -1,
-            "reasoning_output_tokens": 1.5,
-            "cached_input_tokens": null,
-            "cache_creation_input_tokens": true,
-            "cost_microusd": 0.1
-        });
-        sanitize_event_data("query", &mut data, true);
-
-        assert_eq!(data.as_object().unwrap().len(), 4);
-    }
-
-    #[test]
-    fn query_event_sanitizer_allows_typed_provider_error_without_detail() {
-        let mut data = serde_json::json!({
-            "event_code": "query.pass_state",
-            "query_pass_id": 10,
-            "state": "failed",
-            "error_code": "provider_error",
-            "provider_detail": "SENTINEL_PROVIDER_CONTENT",
-            "usage": { "input_tokens": 12, "output_tokens": 3 }
-        });
-        sanitize_event_data("query", &mut data, true);
-        assert_eq!(data["error_code"], "provider_error");
-        assert!(data.get("provider_detail").is_none());
-        assert!(data.get("usage").is_none());
-    }
-
-    #[test]
-    fn query_event_sanitizer_allows_only_declared_environment_and_clipboard_codes() {
-        for (state, error_code) in [
-            ("failed", "invalid_environment"),
-            ("failed", "environment_unavailable"),
-            ("failed", "audio_capture_failed"),
-            ("ready", "auto_copy_disabled"),
-            ("ready", "auto_copy_unavailable"),
-            ("ready", "clipboard_superseded"),
-        ] {
-            let mut data = serde_json::json!({
-                "event_code": "query.pass_state",
-                "query_pass_id": 13,
-                "state": state,
-                "error_code": error_code,
-            });
-            sanitize_event_data("query", &mut data, true);
-            assert_eq!(data["error_code"], error_code);
-        }
-
-        let mut data = serde_json::json!({
-            "event_code": "query.pass_state",
-            "query_pass_id": 13,
-            "state": "failed",
-            "error_code": "environment_failed: /Users/private/SENTINEL",
-        });
-        sanitize_event_data("query", &mut data, true);
-        assert!(data.get("error_code").is_none());
-    }
-
-    #[test]
-    fn query_event_sanitizer_allows_content_free_partial_ticks() {
-        let mut data = serde_json::json!({
-            "event_code": "query.partial_tick",
-            "query_pass_id": 4,
-            "outcome": "empty",
-            "sample_count": 16000,
-            "text": "SENTINEL_PARTIAL",
-            "partial": "SENTINEL_PARTIAL"
-        });
-        sanitize_event_data("query", &mut data, true);
-        let encoded = serde_json::to_string(&data).unwrap();
-        assert_eq!(data["event_code"], "query.partial_tick");
-        assert_eq!(data["query_pass_id"], 4);
-        assert_eq!(data["outcome"], "empty");
-        assert_eq!(data["sample_count"], 16000);
-        assert!(!encoded.contains("SENTINEL"));
-        assert_eq!(data.as_object().unwrap().len(), 4);
-    }
-
-    #[test]
     fn release_pipeline_preserves_content_free_recording_timings() {
         for code in [
             "audio.recording_status_timing",
@@ -3870,30 +3613,13 @@ mod tests {
             data,
             serde_json::json!({"pass_kind": "preview", "recording_id": 41})
         );
-        for debug_build in [true, false] {
-            for outcome in [
-                "backend_unavailable",
-                "stopped",
-                "decode_error",
-                "worker_failed",
-            ] {
-                let mut data = serde_json::json!({"event_code":"query.partial_tick", "query_pass_id":42, "outcome":outcome, "text":"PRIVATE"});
-                sanitize_event_data("query", &mut data, debug_build);
-                assert_eq!(
-                    data,
-                    serde_json::json!({"event_code":"query.partial_tick", "query_pass_id":42, "outcome":outcome})
-                );
-            }
-        }
     }
 
     #[test]
     fn preview_vad_disagreement_schema_is_exact_in_every_build() {
         for debug_build in [true, false] {
-            for (code, owner) in [
-                ("pipeline.preview_vad_disagreement", "recording_id"),
-                ("query.preview_vad_disagreement", "query_pass_id"),
-            ] {
+            {
+                let (code, owner) = ("pipeline.preview_vad_disagreement", "recording_id");
                 assert_eq!(canonical_event_code(code), Some(code));
                 let mut data = serde_json::json!({
                     "event_code": code, owner: 41, "sample_count": 62_050,

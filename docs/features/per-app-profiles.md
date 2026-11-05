@@ -15,7 +15,7 @@ before Modes have no `modeId` and preserve their delivered behavior exactly.
 4. Matching per-app fine-tuning overrides
 5. One-session overrides
 
-The command palette and tray supply a memory-only **Next recording: <Mode>** selection through the typed one-session input. Its Mode policy applies after profile fine-tuning and is frozen at recording acceptance. Cancelled recordings, failed starts, and phantom captures shorter than 0.3 seconds retain it; a real recording consumes that exact selection before returning Idle. Voice Query and imported/audio-processing sources do not claim it.
+The command palette and tray supply a memory-only **Next recording: <Mode>** selection through the typed one-session input. Its Mode policy applies after profile fine-tuning and is frozen at recording acceptance. Cancelled recordings, failed starts, and phantom captures shorter than 0.3 seconds retain it; a real recording consumes that exact selection before returning Idle. Imported/audio-processing sources do not claim it.
 
 Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, CLI formatting, and local IDE project context. A style and IDE-context opt-in are always explicit user choices; Murmur never infers either one from an app name or bundle identifier.
 
@@ -68,7 +68,7 @@ The snapshot contains only typed values used by the live pipeline:
 
 At the accepted `Idle -> Starting` transition, live dictation takes exactly one native macOS `NSWorkspace` sample. A complete bundle, PID, and launch-instance token from that retained `NSRunningApplication` object become both the immutable profile identity and the private delivery target. The optional focused-window token and content-free activation/Space counters come from the same boundary. This work runs under recording ownership and is included in request-to-first-PCM timing.
 
-Live dictation does not retry this start sample or adopt a later application. An unavailable, partial, changing, or self-owned sample resolves an unmatched global-only context; app-specific IDE/context reads remain disabled and auto-paste later fails closed. Voice Query retains its own exact native one-sample identity boundary, but no System Events fallback can choose a live recording's profile or paste destination. Literal AppleScript `missing value` is normalized to unavailable in the regression seam rather than treated as a bundle identifier.
+Live dictation does not retry this start sample or adopt a later application. An unavailable, partial, changing, or self-owned sample resolves an unmatched global-only context; app-specific IDE/context reads remain disabled and auto-paste later fails closed. No System Events fallback can choose a live recording's profile or paste destination. Literal AppleScript `missing value` is normalized to unavailable in the regression seam rather than treated as a bundle identifier.
 
 Delivery uses a second sample taken at the accepted stop transition, under the
 same ownership lock that commits Processing. That stop anchor authorizes
@@ -99,8 +99,6 @@ Dictation context capture is deny-by-default. A profile may explicitly grant onl
 - Clipboard contents as general transcription context. A matched snippet may read it only when that exact Voice Command carries explicit clipboard permission.
 
 This policy is separate from delivery. Murmur remains clipboard-first: the completed transcript is still written to the clipboard, and existing auto-paste behavior is unchanged. IDE project context does not change those denials: it reads only user-selected roots through the bounded local index described in [Local IDE Symbols and `@file` Context](ide-context.md). Unmatched profiles and app names that merely look like IDEs remain no-ops.
-
-Voice Query has a separate, visible opt-in context level documented in [Voice Query](voice-query.md). A profile's `queryContextExcluded` flag is deny-only: for a matching bundle ID it forces that pass to attach no app name, window title, or selected text, regardless of the global/preset level. It does not weaken the dictation denials above and cannot enable query context.
 
 Writing styles do not change the ASR model, language, file-saving behavior, clipboard write, auto-paste timing, or destination. The explicit Code / technical style activates the globally enabled developer-vocabulary pool for that matching app; Local IDE project context is the other activation signal. Other styles and unmatched apps never receive scanned or built-in developer terms. Preferred spellings retain their own global/app/project scopes. Style telemetry contains only the stable resolved enum plus the existing matched-profile boolean; bundle identifiers, labels, setting values, and transcript content are never logged.
 

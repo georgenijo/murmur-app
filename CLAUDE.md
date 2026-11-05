@@ -1,8 +1,7 @@
 # Murmur agent guide
 
 Privacy-first macOS voice-to-text app built with Tauri 2, Rust, and React.
-Transcription runs locally. Optional Voice Query
-runs a user-configured CLI that may send content to a cloud service.
+Dictation and meeting transcription run locally.
 `AGENTS.md` is a symlink to this file. Edit this file only.
 
 ## Find the relevant context
@@ -10,7 +9,7 @@ runs a user-configured CLI that may send content to a cloud service.
 - [Architecture](docs/ARCHITECTURE.md): module ownership, data flow, and native boundaries.
 - [Features](docs/FEATURES.md): feature index and links to detailed behavior.
 - [Development](docs/DEVELOPMENT.md): setup, permissions, builds, and troubleshooting.
-- [API reference](docs/reference/commands.md): 210 registered commands.
+- [API reference](docs/reference/commands.md): 172 registered commands.
 
 Read the documentation relevant to the task. Search the source for individual
 files and symbols instead of maintaining another file inventory here.

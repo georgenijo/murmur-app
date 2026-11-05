@@ -213,9 +213,7 @@ Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
   overlay's `overlay-live-words-lift` event with the island's own easing. The
   card and the dropdown move together, with no gap or snap on hover-off.
   Native size is at most 460×(104 + 64); height is capped by the remaining
-  work area. Interactive
-  Voice Query controls instead reserve conservative expanded clearance, so
-  hover does not move actions underneath the pointer.
+  work area.
 - State-driven contractions first acknowledge a target while retaining larger
   previous native bounds (`deferShrink`), animate the centered visual surface,
   then serialize an exact-size request after the transition settles. This avoids

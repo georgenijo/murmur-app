@@ -660,24 +660,6 @@ pub(crate) fn internal_owners_report() -> String {
             .load(Ordering::SeqCst),
     ));
 
-    // The active pass ID is an atomic, so it is reportable even when the
-    // status lock itself is contended.
-    let query_pass = state
-        .query
-        .active_pass_id()
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    match state.query.status_if_uncontended() {
-        Some(status) => report.push_str(&format!(
-            "voice query: status={} active_pass={query_pass} holds_microphone={}\n",
-            status.as_str(),
-            status.blocks_capture(),
-        )),
-        None => report.push_str(&format!(
-            "voice query: status=<busy> active_pass={query_pass}\n"
-        )),
-    }
-
     report.push_str(&format!(
         "dictation: status={}\n",
         state

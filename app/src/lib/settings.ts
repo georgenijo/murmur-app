@@ -1,5 +1,4 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { isQueryProviderId } from './queryUsage';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
@@ -16,13 +15,10 @@ const DICTATION_KEY_IDS = [
 export type DictationKey = (typeof DICTATION_KEY_IDS)[number];
 export type FunctionDictationKey = (typeof FUNCTION_DICTATION_KEY_IDS)[number];
 
-export type QueryKey = 'alt_r' | 'ctrl_l' | 'shift_r';
 export type PasteLastShortcut =
   | 'command_shift_v'
   | 'command_option_v'
   | 'command_control_v';
-export type QueryProviderId = 'claude' | 'codex' | 'grok' | 'cursor' | 'custom';
-export type QueryContextLevel = 'none' | 'application' | 'selection';
 
 export type WritingStyle =
   | 'conversational'
@@ -65,8 +61,6 @@ export interface AppProfile {
   ideContextEnabled: boolean;
   /** User-selected local roots. Index contents are never persisted. */
   ideProjectRoots: string[];
-  /** Privacy deny override; can never enable Voice Query context by itself. */
-  queryContextExcluded: boolean;
   /** Reusable Mode applied before this profile's fine-tuning overrides. */
   modeId?: string | null;
 }
@@ -285,21 +279,6 @@ const MAX_SAMPLE_TERMS = 50;
 export interface Settings {
   model: ModelOption;
   doubleTapKey: DictationKey;
-  /** Independent double-tap voice-query shortcut. `null` keeps the integration off. */
-  queryHotkey: QueryKey | null;
-  /** Provider preset metadata; `custom` preserves the original generic bridge. */
-  queryProvider: QueryProviderId;
-  /** Absolute path to the exact user-selected CLI executable. */
-  queryExecutable: string;
-  /** Fixed argv elements placed before the one-element spoken question. */
-  queryArguments: string[];
-  queryTimeoutSeconds: number;
-  /** Optional context appended inside the one literal query argv element. */
-  queryContextLevel: QueryContextLevel;
-  /** Copy successful final answers to the clipboard; snapshotted per query pass. */
-  queryAutomaticallyCopyAnswers: boolean;
-  /** Opt-in Rust-owned local question/answer history; false keeps content ephemeral. */
-  retainQueryHistory: boolean;
   language: string;
   autoPaste: boolean;
   /** Keep delivery associated with the recent text field across supported media controls. */
@@ -499,12 +478,6 @@ export function recordingShortcutHint(mode: RecordingMode, key: DictationKey): s
   return `Hold ${label}`;
 }
 
-export const QUERY_KEY_OPTIONS: { value: QueryKey; label: string }[] = [
-  { value: 'alt_r', label: 'Right Option' },
-  { value: 'ctrl_l', label: 'Left Control' },
-  { value: 'shift_r', label: 'Right Shift' },
-];
-
 export const PASTE_LAST_SHORTCUT_OPTIONS: {
   value: PasteLastShortcut | 'disabled';
   label: string;
@@ -522,16 +495,13 @@ export function pasteLastShortcutLabel(shortcut: PasteLastShortcut | null): stri
 
 export function pasteLastShortcutConflict(
   shortcut: string | null,
-  settings: Pick<Settings, 'doubleTapKey' | 'queryHotkey'>,
+  settings: Pick<Settings, 'doubleTapKey'>,
 ): string | null {
   if (shortcut === null) return null;
   if (shortcut === settings.doubleTapKey) {
     return 'That shortcut is already assigned to Dictation. Choose another Paste Last shortcut.';
   }
 
-  if (shortcut === settings.queryHotkey) {
-    return 'That shortcut is already assigned to Voice Query. Choose another Paste Last shortcut.';
-  }
   if (shortcut === 'command_shift_p') {
     return 'That shortcut opens Murmur\'s command palette. Choose another Paste Last shortcut.';
   }
@@ -540,12 +510,6 @@ export function pasteLastShortcutConflict(
   }
   return null;
 }
-
-export const QUERY_CONTEXT_LEVEL_OPTIONS: { value: QueryContextLevel; label: string }[] = [
-  { value: 'none', label: 'None' },
-  { value: 'application', label: 'App & window' },
-  { value: 'selection', label: 'App, window & selection' },
-];
 
 export const RECORDING_MODE_OPTIONS: { value: RecordingMode; label: string }[] = [
   { value: 'hold_down', label: 'Hold down' },
@@ -596,14 +560,6 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'parakeet-tdt-0.6b-v3-coreml',
   doubleTapKey: 'shift_l',
   // Disabled by default — no settings UI to configure it yet (Phase D).
-  queryHotkey: null,
-  queryProvider: 'custom',
-  queryExecutable: '',
-  queryArguments: [],
-  queryTimeoutSeconds: 60,
-  queryContextLevel: 'none',
-  queryAutomaticallyCopyAnswers: true,
-  retainQueryHistory: false,
   // 'auto' lets Whisper auto-detect the spoken language ("just works"); the
   // non-Whisper models may auto-detect or ignore this value.
   language: 'auto',
@@ -1012,6 +968,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
           ? parsed.settingsVersion
           : 0;
       delete parsed.settingsVersion;
+      for (const key of ['queryHotkey', 'queryProvider', 'queryExecutable', 'queryArguments',
+        'queryTimeoutSeconds', 'queryContextLevel', 'queryAutomaticallyCopyAnswers', 'retainQueryHistory',
+        'assistantConnection']) delete (parsed as unknown as Record<string, unknown>)[key];
       delete parsed.launchOnboardingComplete; // Launch metadata is not capture configuration.
 
       // v2: the original overlay calibration preview moved only DOM content,
@@ -1137,65 +1096,12 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
             || !validPasteLastShortcuts.has(parsed.pasteLastShortcut)
             || pasteLastShortcutConflict(parsed.pasteLastShortcut, {
               doubleTapKey: parsed.doubleTapKey ?? DEFAULT_SETTINGS.doubleTapKey,
-              queryHotkey: parsed.queryHotkey ?? DEFAULT_SETTINGS.queryHotkey,
             }) !== null
           )
         ) {
           parsed.pasteLastShortcut = null;
         }
       }
-
-      // Voice Query is disabled by default. Persisted/tampered values must
-      // stay inside the same explicit opposite-side modifier allow-list as
-      // Transform, and command configuration is bounded before it reaches IPC.
-      {
-        const validQueryKeys = new Set<string>(QUERY_KEY_OPTIONS.map((o) => o.value));
-        if (
-          parsed.queryHotkey !== null
-          && (typeof parsed.queryHotkey !== 'string' || !validQueryKeys.has(parsed.queryHotkey))
-        ) {
-          parsed.queryHotkey = DEFAULT_SETTINGS.queryHotkey;
-        }
-      }
-      if (typeof parsed.queryExecutable !== 'string') {
-        parsed.queryExecutable = DEFAULT_SETTINGS.queryExecutable;
-      } else {
-        parsed.queryExecutable = parsed.queryExecutable.slice(0, 4096);
-      }
-      if (!isQueryProviderId(parsed.queryProvider)) {
-        parsed.queryProvider = DEFAULT_SETTINGS.queryProvider;
-      }
-      if (!Array.isArray(parsed.queryArguments)) {
-        parsed.queryArguments = DEFAULT_SETTINGS.queryArguments;
-      } else {
-        parsed.queryArguments = parsed.queryArguments
-          .filter((argument): argument is string => typeof argument === 'string')
-          .map((argument) => argument.slice(0, 4096))
-          .slice(0, 32);
-      }
-      if (
-        typeof parsed.queryTimeoutSeconds !== 'number'
-        || !Number.isInteger(parsed.queryTimeoutSeconds)
-        || parsed.queryTimeoutSeconds < 5
-        || parsed.queryTimeoutSeconds > 300
-      ) {
-        parsed.queryTimeoutSeconds = DEFAULT_SETTINGS.queryTimeoutSeconds;
-      }
-      if (
-        typeof parsed.queryContextLevel !== 'string'
-        || !QUERY_CONTEXT_LEVEL_OPTIONS.some((option) => option.value === parsed.queryContextLevel)
-      ) {
-        parsed.queryContextLevel = DEFAULT_SETTINGS.queryContextLevel;
-      }
-      // Auto-copy shipped before it became configurable, so pre-feature and
-      // malformed documents retain that behavior. An explicit false is kept.
-      if (typeof parsed.queryAutomaticallyCopyAnswers !== 'boolean') {
-        parsed.queryAutomaticallyCopyAnswers = DEFAULT_SETTINGS.queryAutomaticallyCopyAnswers;
-      }
-      if (typeof parsed.retainQueryHistory !== 'boolean') {
-        parsed.retainQueryHistory = DEFAULT_SETTINGS.retainQueryHistory;
-      }
-
 
       // outputDir feeds a filesystem path on the Rust side — coerce anything
       // non-string back to the default (empty = app-chosen Documents/Murmur).
@@ -1270,8 +1176,6 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
                   .filter((root, index, roots) => roots.indexOf(root) === index)
                   .slice(0, 4)
               : [],
-            queryContextExcluded:
-              typeof p.queryContextExcluded === 'boolean' ? p.queryContextExcluded : false,
             ...(typeof p.modeId === 'string' && p.modeId.trim()
               ? { modeId: p.modeId.trim() }
               : {}),

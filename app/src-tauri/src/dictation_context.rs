@@ -36,7 +36,6 @@ pub struct MatchedAppProfile {
     pub smart_formatting_override: Option<bool>,
     pub writing_style: Option<WritingStyle>,
     pub ide_context_enabled: bool,
-    pub query_context_excluded: bool,
     pub mode_id: Option<String>,
 }
 
@@ -503,7 +502,6 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         smart_formatting_override: profile.smart_formatting_override,
         writing_style: profile.writing_style,
         ide_context_enabled: profile.ide_context_enabled,
-        query_context_excluded: profile.query_context_excluded,
         mode_id: profile.mode_id.clone(),
     });
     let teaching_project_root = explicit_profile
@@ -802,7 +800,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            query_context_excluded: false,
             mode_id: None,
         }
     }
@@ -1126,24 +1123,6 @@ mod tests {
         assert!(!snapshot.delivery.auto_paste);
         assert!(!snapshot.transformations.ide_context_enabled);
         assert_eq!(snapshot.vocabulary.source, VocabularySource::None);
-    }
-
-    #[test]
-    fn matching_profile_carries_voice_query_context_exclusion() {
-        let mut global = DictationState::default();
-        let mut excluded = profile("com.example.Private", None, None);
-        excluded.query_context_excluded = true;
-        global.app_profiles = vec![excluded];
-
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.Private"),
-            SessionOverrides::default(),
-        );
-
-        assert!(snapshot
-            .matched_profile
-            .is_some_and(|profile| profile.query_context_excluded));
     }
 
     #[test]

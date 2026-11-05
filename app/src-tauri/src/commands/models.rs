@@ -395,7 +395,6 @@ pub async fn remove_model(
     if dictation.status != crate::state::DictationStatus::Idle
         || state.app_state.file_transcribing.load(Ordering::SeqCst)
         || state.app_state.meeting_blocks_asr()
-        || state.query.status().blocks_capture()
         || crate::audio_lifecycle::is_audio_active()
     {
         return Err(

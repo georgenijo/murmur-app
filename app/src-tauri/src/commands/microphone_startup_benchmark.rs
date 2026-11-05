@@ -1053,11 +1053,6 @@ pub async fn run_microphone_startup_benchmark(
             );
         }
 
-        if state.query.status().blocks_pipeline() {
-            return Err(
-                "Wait for the voice query to finish before testing the microphone".to_string(),
-            );
-        }
         if dictation.status != DictationStatus::Idle {
             return Err("Stop recording before testing the microphone".to_string());
         }

@@ -679,53 +679,6 @@ fn applied_overlay_position(requested_offset: f64, floating: bool) -> AppliedOve
     }
 }
 
-/// Conservative static placement for the interactive Voice Query popover. It
-/// reserves the largest calibrated expanded overlay box so hover never moves
-/// Copy/Close controls under the pointer. Dictation preview uses the separate
-/// actual-frame follower below.
-pub(crate) fn overlay_popover_fit(
-    app: &tauri::AppHandle,
-    monitor: &tauri::Monitor,
-    popover_height: f64,
-) -> Option<(f64, f64)> {
-    let primary = app.primary_monitor().ok().flatten()?;
-    if primary.position() != monitor.position() || primary.size() != monitor.size() {
-        return None;
-    }
-    let state = app.try_state::<crate::State>()?;
-    let notch = *state.notch_info.lock_or_recover();
-    let mut layout = *state.overlay_layout.lock_or_recover();
-    layout.expanded = true;
-    let geometry = geometry_for_layout(notch, OverlayContent::Controls, layout);
-    let scale = monitor.scale_factor();
-    let frame_top = monitor.position().y as f64 / scale;
-    let work_top = usable_top(
-        frame_top,
-        monitor.work_area().position.y as f64 / scale,
-        notch,
-    );
-    let work_bottom =
-        (monitor.work_area().position.y as f64 + monitor.work_area().size.height as f64) / scale;
-    overlay_popover_fit_for_geometry(frame_top, work_top, work_bottom, popover_height, &geometry)
-}
-
-fn overlay_popover_fit_for_geometry(
-    frame_top: f64,
-    work_top: f64,
-    work_bottom: f64,
-    popover_height: f64,
-    geometry: &OverlayGeometry,
-) -> Option<(f64, f64)> {
-    // The bottom pill leaves the top of the display free.
-    let desired = if geometry.floating {
-        work_top + POPOVER_GAP
-    } else {
-        frame_top + MAX_VERTICAL_OFFSET + geometry.expanded_h + POPOVER_GAP
-    };
-    let top = desired.clamp(work_top, work_bottom);
-    Some((top, popover_height.min((work_bottom - top).max(0.0))))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PopoverWorkArea {
     left: f64,
@@ -736,7 +689,7 @@ struct PopoverWorkArea {
 
 /// Actual-frame placement used only by the click-through live dictation
 /// preview. It follows calibrated overlay movement without changing the
-/// interactive Voice Query surface under the pointer.
+/// overlay controls under the pointer.
 ///
 /// The window anchors to the collapsed surface and reserves `DROPDOWN_H` of
 /// transparent room beyond the card. Hover expansion never moves it: the
@@ -2433,28 +2386,6 @@ mod tests {
                 false
             ),
             Some((100.0, 30.0, 104.0))
-        );
-    }
-
-    #[test]
-    fn query_popovers_keep_conservative_static_clearance() {
-        let notched_g = geometry_for(Some(notched(185.0, 32.0)));
-        assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &notched_g),
-            Some((114.0, 104.0))
-        );
-        let pill_g = geometry_for_layout(
-            Some(notched(185.0, 32.0)),
-            OverlayContent::Controls,
-            pill(OverlayActivity::Idle, true),
-        );
-        assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 32.0, 1440.0, 104.0, &pill_g),
-            Some((38.0, 104.0))
-        );
-        assert_eq!(
-            overlay_popover_fit_for_geometry(0.0, 32.0, 100.0, 104.0, &notched_g),
-            Some((100.0, 0.0))
         );
     }
 

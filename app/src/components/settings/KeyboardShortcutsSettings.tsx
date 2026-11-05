@@ -1,6 +1,5 @@
 import { MAIN_WINDOW_SHORTCUTS } from '../../lib/keyboardShortcuts';
 import {
-  QUERY_KEY_OPTIONS,
   pasteLastShortcutLabel,
   recordingShortcutHint,
   type Settings,
@@ -9,13 +8,11 @@ import { SettingsSection } from './SettingsSection';
 
 export type GlobalShortcutId =
   | 'recording'
-  | 'voice-query'
   | 'paste-last'
   | 'correction';
 
 export type ShortcutOwnerDestination =
   | { shortcutId: 'recording'; page: 'recording'; target: 'trigger-key' }
-  | { shortcutId: 'voice-query'; page: 'ai-query'; target: 'voice-query-shortcut' }
   | { shortcutId: 'paste-last'; page: 'delivery'; target: 'paste-last-shortcut' }
 
 interface KeyboardShortcutsSettingsProps {
@@ -38,16 +35,7 @@ function configuredBinding(label: string, paused: boolean): GlobalShortcutRow['b
   return paused ? { kind: 'paused', label } : { kind: 'on', label };
 }
 
-function keyOptionLabel(
-  key: Settings['queryHotkey'],
-): string | null {
-  if (key === null) return null;
-  return QUERY_KEY_OPTIONS.find((option) => option.value === key)?.label
-    ?? null;
-}
-
 function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
-  const queryKey = keyOptionLabel(settings.queryHotkey);
   const pasteLast = pasteLastShortcutLabel(settings.pasteLastShortcut);
 
   return [
@@ -59,14 +47,6 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
         settings.disabled,
       ),
       ownerLabel: 'Recording',
-    },
-    {
-      destination: { shortcutId: 'voice-query', page: 'ai-query', target: 'voice-query-shortcut' },
-      label: 'Voice Query',
-      binding: queryKey === null
-        ? { kind: 'off', label: null }
-        : configuredBinding(`Double-tap ${queryKey}`, settings.disabled),
-      ownerLabel: 'Voice Query',
     },
     {
       destination: { shortcutId: 'paste-last', page: 'delivery', target: 'paste-last-shortcut' },
@@ -108,7 +88,7 @@ export function KeyboardShortcutsSettings({
       <div data-setting-target="shortcuts" className="settings-stack">
         {settings.disabled && (
           <p role="status" className="settings-callout text-xs leading-relaxed text-on-surface" data-tone="accent">
-            Murmur is disabled, so recording and Voice Query shortcuts are paused. Paste last remains available, and every saved binding is shown below.
+            Murmur is disabled, so recording shortcuts are paused. Paste last remains available, and every saved binding is shown below.
           </p>
         )}
         <section aria-labelledby="global-shortcuts-title">

@@ -167,7 +167,7 @@ export function RunsView({
               <option value="all">All kinds</option>
               <option value="dictation">Dictation</option>
               <option value="fileTranscription">File transcription</option>
-              <option value="voiceQuery">Voice Query</option>
+              <option value="voiceQuery">Voice Query (retired)</option>
             </select>
           </label>
           <label className="text-[10px] font-medium uppercase tracking-wider text-on-surface-variant">
@@ -232,7 +232,7 @@ export function RunsView({
             </div>
             <p className="mt-1 text-xs text-on-surface-variant">
               {cleared
-                ? 'New dictation, file transcription, and Voice Query runs will appear here.'
+                ? 'New dictation and file transcription runs will appear here.'
                 : error
                   ? 'Retry to reconnect to the local diagnostics store.'
                   : 'Complete a local run to create a privacy-safe diagnostic record.'}

@@ -276,7 +276,6 @@ pub(crate) fn is_busy(state: &State) -> bool {
     let dictation = state.app_state.dictation.lock_or_recover().status;
     workload_busy(
         dictation,
-        state.query.status(),
         [
             state
                 .app_state
@@ -311,14 +310,8 @@ fn model_work_busy(
     })
 }
 
-fn workload_busy(
-    dictation: crate::state::DictationStatus,
-    query: crate::query_flow::QueryStatus,
-    owners: [bool; 10],
-) -> bool {
-    dictation != crate::state::DictationStatus::Idle
-        || query.blocks_pipeline()
-        || owners.into_iter().any(|active| active)
+fn workload_busy(dictation: crate::state::DictationStatus, owners: [bool; 10]) -> bool {
+    dictation != crate::state::DictationStatus::Idle || owners.into_iter().any(|active| active)
 }
 
 fn corpus_active(state: &State) -> bool {
@@ -438,7 +431,6 @@ pub(crate) fn initialize(app: tauri::AppHandle) {
     for event in [
         "recording-status-changed",
         "file-transcription-status-changed",
-        "query-state-changed",
         "meeting-status-changed",
         "app-disabled-changed",
         "microphone-preview-status",
@@ -890,19 +882,15 @@ mod tests {
 
     #[test]
     fn suggestions_suppress_all_pipeline_phases_and_owner_flags() {
-        use crate::query_flow::QueryStatus as Q;
         use crate::state::DictationStatus as D;
-        assert!(!workload_busy(D::Idle, Q::Idle, [false; 10]));
+        assert!(!workload_busy(D::Idle, [false; 10]));
         for phase in [D::Starting, D::Recording, D::Recovering, D::Processing] {
-            assert!(workload_busy(phase, Q::Idle, [false; 10]));
-        }
-        for phase in [Q::Connecting, Q::Listening, Q::Transcribing, Q::Running] {
-            assert!(workload_busy(D::Idle, phase, [false; 10]));
+            assert!(workload_busy(phase, [false; 10]));
         }
         for index in 0..10 {
             let mut owners = [false; 10];
             owners[index] = true;
-            assert!(workload_busy(D::Idle, Q::Idle, owners));
+            assert!(workload_busy(D::Idle, owners));
         }
         let mut state = ready(vec![event("live", 1_000, 100_000)]);
         state.evaluate(2_000, Some("us.zoom.xos"), true);
