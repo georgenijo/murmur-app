@@ -620,7 +620,7 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ vadSensitivity: 85 });
   });
 
-  it('groups function keys in a compact keyboard-operable trigger picker', async () => {
+  it('shows a flat keyboard-operable trigger picker', async () => {
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, doubleTapKey: 'f12' }));
     const recording = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Recording',
@@ -630,8 +630,9 @@ describe('SettingsPanel information architecture', () => {
     const picker = container.querySelector<HTMLButtonElement>('[aria-label="Dictation trigger key"]');
     expect(picker?.textContent).toContain('F12');
     await act(async () => picker?.click());
-    expect(Array.from(container.querySelectorAll('[role="group"] > span')).map((group) => group.textContent))
-      .toEqual(expect.arrayContaining(['Modifier keys', 'Function keys']));
+    const listbox = container.querySelector('[role="listbox"]')!;
+    expect(listbox.querySelector('[role="group"]')).toBeNull();
+    expect(listbox.querySelectorAll('[role="option"]')).toHaveLength(23);
 
     await act(async () => {
       picker?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
