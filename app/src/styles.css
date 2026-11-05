@@ -1609,6 +1609,9 @@ body.overlay-window {
 .onboarding-progress span[data-state='current'] { width: 24px; background: var(--murmur-primary); }
 .onboarding-progress span[data-state='complete'] { background: var(--murmur-primary); opacity: .6; }
 .onboarding-content { --ui-onboarding-step-offset: var(--ui-onboarding-step-distance); animation: onboarding-step-in var(--ui-onboarding-step-duration) ease-out both; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 2px 12px; }
+/* Setup steps scroll by trackpad or wheel without a visible scrollbar. */
+.onboarding-content { scrollbar-width: none; }
+.onboarding-content::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .onboarding-heading { margin-bottom: 20px; text-align: center; }
 .onboarding-icon { display: flex; align-items: center; justify-content: center; width: var(--ui-onboarding-hero-size); height: var(--ui-onboarding-hero-size); border-radius: var(--ui-onboarding-hero-radius); background: color-mix(in srgb, var(--murmur-primary) 12%, transparent); color: var(--murmur-primary); margin: 0 auto 16px; }
 .onboarding-icon svg { width: var(--ui-onboarding-icon-size); height: var(--ui-onboarding-icon-size); }
