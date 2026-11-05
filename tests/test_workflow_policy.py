@@ -11,6 +11,8 @@ from scripts.validate_workflow_policy import (
     validate_release_build,
     validate_release_rehearsal,
     validate_release_profile,
+    validate_release_start,
+    validate_ota_canary,
 )
 
 
@@ -18,6 +20,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_release_button_requires_main_credential_and_exact_source(self):
+        workflow = (ROOT / ".github/workflows/release-start.yml").read_text()
+        validate_release_start(workflow)
+        for marker in ('[ "$GITHUB_REF" != "refs/heads/main" ]',
+                       '[ -z "$RELEASE_TOKEN" ]', '--expected-sha "$GITHUB_SHA"',
+                       'token: ${{ secrets.RELEASE_TOKEN }}'):
+            with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                validate_release_start(workflow.replace(marker, "", 1))
+
+    def test_ota_job_cannot_use_personal_runner_or_skip_real_install(self):
+        workflow = (ROOT / ".github/workflows/ota-canary.yml").read_text()
+        validate_ota_canary(workflow)
+        for old, new in (("macos-latest", "self-hosted"),
+                         ("--remote --isolated", "--remote --dry-run"),
+                         ("contents: read", "contents: write"),
+                         ('--root "$RUNNER_TEMP/murmur-ota-canary"', "")):
+            with self.subTest(old=old), self.assertRaises(AssertionError):
+                validate_ota_canary(workflow.replace(old, new, 1))
+
+    def test_publication_includes_ota_gate_and_already_published_recovery(self):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        start = workflow.index("  ota-canary:\n")
+        for marker in ("needs.resolve.outputs.publish == 'true'",
+                       "needs.resolve.outputs.already-published == 'true'",
+                       "source_sha: ${{ needs.resolve.outputs.source-sha }}"):
+            mutated = workflow[:start] + workflow[start:].replace(marker, "", 1)
+            with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                validate_promotion_policy(mutated)
+
     def test_test_library_configuration_precedes_rust_cache(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         configured = workflow.replace(

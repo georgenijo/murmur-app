@@ -9,6 +9,7 @@ dedicated directory, launched with ``MURMUR_UPDATER_CANARY``, and evaluated.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,8 @@ STAGES = ("discover", "policy", "download", "signatureVerify", "install", "relau
 PASS = "passed"
 PENDING = "pending"
 RESULT_FIELDS = ("schemaVersion", "status", "checkedVersion", "offeredVersion", "forced", "dryRun", "stages", "error")
+CANARY_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin"
+CANARY_MODEL_SHA256 = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
 STATUSES = {"pending", "passed", "failed", "dry-run"}
 STAGE_VALUES = {PASS, PENDING, "failed"}
 
@@ -221,10 +224,52 @@ def terminate_and_collect_stderr(process: subprocess.Popen[bytes]) -> str:
     return stderr.decode(errors="replace") if stderr else ""
 
 
+def prepare_isolated_profile(root: Path) -> tuple[Path, Path]:
+    """Bootstrap the already-shipped client's setup gate without personal data.
+
+    Old public clients defer even canary discovery until setup and model install
+    are complete. Seed the durable settings they already understand and provide
+    a real, pinned Whisper model. Dictation stays disabled; no OS permissions
+    are granted and no audio is recorded.
+    """
+    home = root / "home"
+    settings = home / "Library/Application Support/com.localdictation/settings.json"
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({
+        "settingsVersion": 7,
+        "launchOnboardingComplete": True,
+        "model": "tiny.en",
+        "disabled": True,
+        "autoPaste": False,
+        "launchAtLogin": False,
+    }) + "\n")
+    models = root / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    model = models / "ggml-tiny.en.bin"
+
+    def valid() -> bool:
+        if not model.is_file():
+            return False
+        digest = hashlib.sha256()
+        with model.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == CANARY_MODEL_SHA256
+
+    if not valid():
+        subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
+                        "--max-time", "180", "--retry", "2", CANARY_MODEL_URL,
+                        "--output", str(model)], check=True)
+        if not valid():
+            model.unlink(missing_ok=True)
+            raise CanaryError("canary model checksum does not match the pinned fixture")
+    return home, models
+
+
 def run_remote(args: argparse.Namespace) -> int:
     tag = args.tag
     expected_version = tag.removeprefix("v")
-    root = Path(args.root).expanduser()
+    root = Path(args.root).expanduser().resolve()
     previous = previous_release(args.repository, tag)
     previous_version = previous.removeprefix("v")
     app_path, executable = install_previous_bundle(
@@ -237,6 +282,14 @@ def run_remote(args: argparse.Namespace) -> int:
     print(f"Canary source: {previous} ({app_path})", flush=True)
     environment = os.environ.copy()
     environment["MURMUR_UPDATER_CANARY"] = str(result_path)
+    environment.pop("MURMUR_UPDATER_CANARY_DRY_RUN", None)
+    if args.isolated:
+        # Foundation uses CFFIXED_USER_HOME while Rust uses HOME. Set both so
+        # the original and relaunched app share only this disposable profile.
+        home, models = prepare_isolated_profile(root)
+        environment["HOME"] = str(home)
+        environment["CFFIXED_USER_HOME"] = str(home)
+        environment["WHISPER_MODEL_DIR"] = str(models)
     if args.dry_run:
         environment["MURMUR_UPDATER_CANARY_DRY_RUN"] = "1"
     print(shlex.join([f"MURMUR_UPDATER_CANARY={result_path}", *(["MURMUR_UPDATER_CANARY_DRY_RUN=1"] if args.dry_run else []), *command]), flush=True)
@@ -250,11 +303,22 @@ def run_remote(args: argparse.Namespace) -> int:
                     result = json.loads(result_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     result = None
+                # Shipped clients can start the hook twice as setup settles.
+                # The duplicate reports "busy" while the original real update
+                # is still running. Wait for its final result; this state can
+                # never satisfy the gate or extend the existing deadline.
+                if (isinstance(result, dict) and result.get("status") == "failed"
+                        and result.get("error") == "Updater check already in progress."):
+                    result = None
                 if isinstance(result, dict) and result.get("status") in ("passed", "failed", "dry-run"):
                     if args.dry_run:
                         evaluate_dry_run_result(result, previous_version, expected_version)
                     else:
                         evaluate_canary_result(result, previous_version, expected_version)
+                        with (app_path / "Contents" / "Info.plist").open("rb") as info:
+                            installed = plistlib.load(info).get("CFBundleShortVersionString")
+                        if installed != expected_version:
+                            raise CanaryError(f"installed bundle version {installed!r} does not match {expected_version}")
                     print(json.dumps(result, sort_keys=True), flush=True)
                     return 0
             if process.poll() is not None and not result_path.exists():
@@ -283,6 +347,7 @@ def main() -> int:
     parser.add_argument("--root", default=DEFAULT_ROOT, help=argparse.SUPPRESS)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--dry-run", action="store_true", help="launch discovery/policy only; never download or install the update")
+    parser.add_argument("--isolated", action="store_true", help="use a disposable app profile under the canary root")
     parser.add_argument("--remote", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.remote:
@@ -295,6 +360,8 @@ def main() -> int:
     ]
     if args.dry_run:
         remote.append("--dry-run")
+    if args.isolated:
+        remote.append("--isolated")
     outer_timeout = args.timeout + 120
     command = ["fleet", "exec", "--timeout", str(outer_timeout), args.node, "--", shlex.join(remote)]
     print("Running OTA canary on Fleet node", args.node, flush=True)

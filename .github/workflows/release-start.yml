@@ -1,0 +1,53 @@
+name: Release Murmur
+run-name: Release Murmur (${{ inputs.bump }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Patch for fixes, minor for features
+        type: choice
+        options: [patch, minor]
+        default: patch
+        required: true
+
+# Serialize requests without cancelling a release already being prepared.
+concurrency:
+  group: release-start
+  cancel-in-progress: false
+
+permissions:
+  # generate-notes needs contents: write; pushing uses RELEASE_TOKEN below.
+  contents: write
+  checks: read
+  actions: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require main and release credential
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "ERROR: run Release Murmur from main"
+            exit 1
+          fi
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "ERROR: configure the RELEASE_TOKEN repository secret; see docs/release.md"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # The built-in GITHUB_TOKEN cannot trigger the push release workflows.
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Prepare and start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+        run: python3 scripts/release_start.py --bump "$BUMP" --expected-sha "$GITHUB_SHA"
