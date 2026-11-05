@@ -168,9 +168,9 @@ Opt-in, per-profile, memory-only index of user-selected local roots. Corrects un
 
 ### Main window
 The native title row keeps app status, updates, and Settings aligned with the
-macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker,
-Queries, and Insights. A single gear/keyboard entry opens General and
-the complete Settings workspace; customization no longer competes with the four
+macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker, and
+Insights. A single gear/keyboard entry opens General and
+the complete Settings workspace; customization no longer competes with the three
 primary destinations in the Home sidebar. Home uses
 one 64px row for the real recording state and configured shortcut, with this
 month's word and dictation totals beside it, then gives Recent Dictations the

@@ -149,8 +149,6 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
 | `app/src/components/history/HistoryFilterMenu.tsx` | The single Filter menu and its trigger label |
-| `app/src/lib/hooks/useQueryHistory.ts` | Active-workspace-only paged query-history reads, provider filter, live refresh, and purge |
-| `app/src/components/history/QueryHistoryPanel.tsx` | Local question/answer cards and explicit confirmation before purge; no export or edit path |
 | `app/src-tauri/src/commands/export.rs` | `save_text_export` — validation and atomic write |
 
 ## Tests
