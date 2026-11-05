@@ -148,6 +148,12 @@ def main() -> int:
     env.update(
         {
             "LLAMA_BUILD_SHARED_LIBS": "OFF",
+            # llama-cpp-sys-2 0.1.151 forwards CMAKE_* variables verbatim, not
+            # LLAMA_OPENSSL. Its transitive `common` feature configures httplib
+            # even with llama-cpp-2's default features disabled. Disable the
+            # optional package lookup so this local-only helper never depends
+            # on the runner's OpenSSL installation (or enables HTTPS support).
+            "CMAKE_DISABLE_FIND_PACKAGE_OpenSSL": "TRUE",
             "MACOSX_DEPLOYMENT_TARGET": "14.0",
             "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
             "MURMUR_APP_VERSION": app_version,
