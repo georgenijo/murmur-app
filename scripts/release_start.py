@@ -25,6 +25,18 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class ScheduledSkip(Exception):
+    def __init__(self, level: str, message: str):
+        self.level = level
+        super().__init__(message)
+
+
+def skip_or_fail(scheduled: bool, level: str, message: str) -> None:
+    if scheduled:
+        raise ScheduledSkip(level, message)
+    raise ReleaseVersionError(message)
+
+
 def output(command: list[str], root: Path) -> str:
     return subprocess.check_output(command, cwd=root, text=True).strip()
 
@@ -67,7 +79,9 @@ def ensure_notes(root: Path, notes: str) -> None:
     path.write_text(text[:match.start()] + "## [Unreleased]\n\n" + notes.strip() + "\n\n" + text[match.end():])
 
 
-def start_release(bump: str, expected_sha: str, repository: str, *, root: Path = ROOT) -> tuple[str, str]:
+def start_release(bump: str, expected_sha: str, repository: str, *, root: Path = ROOT, scheduled: bool = False) -> tuple[str, str]:
+    if scheduled and bump != "patch":
+        raise ReleaseVersionError("scheduled releases must use patch")
     if not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
         raise ReleaseVersionError("expected SHA must be a full commit SHA")
     if output(["git", "status", "--porcelain"], root):
@@ -82,13 +96,16 @@ def start_release(bump: str, expected_sha: str, repository: str, *, root: Path =
     version = next_version(current, bump)
     latest = api(repository, "releases/latest", root)
     if latest.get("tag_name") != f"v{current}":
-        raise ReleaseVersionError("current version must already be the latest public release; finish or recover it first")
+        skip_or_fail(scheduled, "warning", "current version must already be the latest public release; finish or recover it first")
     previous_sha = output(["git", "rev-list", "-n", "1", f"v{current}"], root)
     subprocess.run(["git", "merge-base", "--is-ancestor", previous_sha, head], cwd=root, check=True)
     if previous_sha == head:
-        raise ReleaseVersionError("there are no new commits to release")
+        skip_or_fail(scheduled, "notice", "there are no new commits to release" if not scheduled else "nothing to release")
     checks = api(repository, f"commits/{head}/check-runs?check_name=ci-pass&filter=latest&per_page=100", root)
-    require_green_ci(checks["check_runs"], head)
+    try:
+        require_green_ci(checks["check_runs"], head)
+    except ReleaseVersionError as error:
+        skip_or_fail(scheduled, "warning", str(error))
 
     # Preserve curated notes. Generate them from merged PRs when none were added.
     changelog = (root / "CHANGELOG.md").read_text()
@@ -116,10 +133,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bump", choices=("patch", "minor"), required=True)
     parser.add_argument("--expected-sha", required=True)
+    parser.add_argument("--scheduled", action="store_true")
     args = parser.parse_args()
     repository = os.environ["GITHUB_REPOSITORY"]
     try:
-        version, sha = start_release(args.bump, args.expected_sha, repository)
+        version, sha = start_release(args.bump, args.expected_sha, repository, scheduled=args.scheduled)
+    except ScheduledSkip as skip:
+        message = f"Scheduled release skipped: {skip}"
+        print(f"::{skip.level}::{message}")
+        if path := os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(path, "a") as stream:
+                stream.write(f"{message}\n")
+        return 0
     except (OSError, KeyError, ReleaseVersionError, subprocess.CalledProcessError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
