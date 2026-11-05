@@ -36,6 +36,11 @@ import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 import { SettingsBranch } from './SettingsBranch';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 
+// The start command currently returns this plain string for dictation contention.
+const DICTATION_BUSY_ERROR = 'Finish the current dictation before testing the microphone';
+
+type SuspensionReason = 'dictation' | 'other' | null;
+
 interface MicrophoneInputTestProps {
   microphone: string;
   devices: AudioDeviceDescriptor[];
@@ -298,7 +303,16 @@ export function MicrophoneInputTest({
   const [status, setStatus] = useState<MicrophonePreviewStatus>(IDLE_MICROPHONE_PREVIEW);
   const [operation, setOperation] = useState<'idle' | 'starting' | 'switching'>('idle');
   const [previewDevice, setPreviewDevice] = useState<string | null>(null);
-  const [autoStartSuspended, setAutoStartSuspended] = useState(false);
+  const [suspensionReason, setSuspensionReasonState] = useState<SuspensionReason>(null);
+  const suspensionReasonRef = useRef<SuspensionReason>(null);
+  const setSuspensionReason = useCallback((reason: SuspensionReason) => {
+    suspensionReasonRef.current = reason;
+    setSuspensionReasonState(reason);
+  }, []);
+  const dictationFinishedEpochRef = useRef(0);
+  const retriedDictationEpochRef = useRef<number | null>(null);
+  const [lateRetry, setLateRetry] = useState(0);
+  const lateRetryPendingRef = useRef(false);
   const [subscriptionsReady, setSubscriptionsReady] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [vadError, setVadError] = useState<string | null>(null);
@@ -328,11 +342,11 @@ export function MicrophoneInputTest({
     statusRef.current = next;
     setStatus(next);
     if (next.state === 'error') {
-      setAutoStartSuspended(true);
+      setSuspensionReason('other');
       setActionError(next.message ?? 'Microphone preview stopped.');
     }
     if (next.previewId === null) setPreviewDevice(null);
-  }, []);
+  }, [setSuspensionReason]);
 
   const syncVadSensitivity = useCallback((previewId: number, sensitivity: number) => {
     const update = async () => {
@@ -406,7 +420,7 @@ export function MicrophoneInputTest({
         if (!disposed && eventVersionRef.current === versionBeforeSnapshot) applyStatus(snapshot);
       } catch (error) {
         if (!disposed) {
-          setAutoStartSuspended(true);
+          setSuspensionReason('other');
           setActionError(String(error));
         }
       } finally {
@@ -423,7 +437,7 @@ export function MicrophoneInputTest({
       const previewId = statusRef.current.previewId;
       if (previewId !== null) void cancelMicrophonePreview(previewId).catch(() => {});
     };
-  }, [applyStatus, syncVadSensitivity]);
+  }, [applyStatus, setSuspensionReason, syncVadSensitivity]);
 
   useEffect(() => {
     let frame = 0;
@@ -498,7 +512,13 @@ export function MicrophoneInputTest({
     if (operationRef.current) return operationRef.current;
     const promise = task().finally(() => {
       operationRef.current = null;
-      if (mountedRef.current) setOperation('idle');
+      if (mountedRef.current) {
+        setOperation('idle');
+        if (lateRetryPendingRef.current) {
+          lateRetryPendingRef.current = false;
+          setLateRetry((retry) => retry + 1);
+        }
+      }
     });
     operationRef.current = promise;
     return promise;
@@ -532,6 +552,7 @@ export function MicrophoneInputTest({
   const previewMicrophone = smartAutoSelection?.device.id ?? microphone;
   const smartAutoUnavailable = smartAutoActive && smartAutoSelection === null;
   const start = useCallback(() => runExclusive(async () => {
+    const startEpoch = dictationFinishedEpochRef.current;
     setOperation('starting');
     setActionError(null);
     setPreviewDevice(previewMicrophone);
@@ -549,11 +570,24 @@ export function MicrophoneInputTest({
     } catch (error) {
       if (mountedRef.current) {
         setPreviewDevice(null);
-        setAutoStartSuspended(true);
-        setActionError(String(error));
+        const isDictationError = String(error) === DICTATION_BUSY_ERROR;
+        const finishedEpoch = dictationFinishedEpochRef.current;
+        const retryLateRejection = isDictationError
+          && finishedEpoch !== startEpoch
+          && retriedDictationEpochRef.current !== finishedEpoch
+          && suspensionReasonRef.current !== 'other';
+        if (retryLateRejection) {
+          retriedDictationEpochRef.current = finishedEpoch;
+          lateRetryPendingRef.current = true;
+          setSuspensionReason(null);
+          setActionError(null);
+        } else if (suspensionReasonRef.current !== 'other') {
+          setSuspensionReason(isDictationError ? 'dictation' : 'other');
+          setActionError(String(error));
+        }
       }
     }
-  }), [applyStatus, previewMicrophone, runExclusive, smartAutoRequest, vadSensitivity]);
+  }), [applyStatus, previewMicrophone, runExclusive, setSuspensionReason, smartAutoRequest, vadSensitivity]);
 
   const previewConfigurationKey = useMemo(() => JSON.stringify({
     defaultInputId,
@@ -572,11 +606,12 @@ export function MicrophoneInputTest({
     previousDictationBusyRef.current = dictationBusy;
     previousPreviewConfigurationRef.current = previewConfigurationKey;
     previousMonitoringActiveRef.current = monitoringActive;
-    if (configurationChanged || monitoringReentered || dictationFinished) {
-      setAutoStartSuspended(false);
+    if (dictationFinished) dictationFinishedEpochRef.current += 1;
+    if (configurationChanged || monitoringReentered || (dictationFinished && suspensionReasonRef.current === 'dictation')) {
+      setSuspensionReason(null);
       setActionError(null);
     }
-  }, [dictationBusy, monitoringActive, previewConfigurationKey]);
+  }, [dictationBusy, monitoringActive, previewConfigurationKey, setSuspensionReason]);
 
   useEffect(() => {
     if (!subscriptionsReady) return;
@@ -587,7 +622,7 @@ export function MicrophoneInputTest({
     }
     const previewId = statusRef.current.previewId;
     if (previewId === null) {
-      if (!autoStartSuspended) void start();
+      if (suspensionReason === null) void start();
       return;
     }
     if (previewDevice !== null && previewDevice !== previewMicrophone) {
@@ -598,7 +633,7 @@ export function MicrophoneInputTest({
           applyStatus(await stopMicrophonePreview(previewId));
         } catch (error) {
           if (mountedRef.current) {
-            setAutoStartSuspended(true);
+            setSuspensionReason('other');
             setActionError(String(error));
           }
         }
@@ -606,7 +641,8 @@ export function MicrophoneInputTest({
     }
   }, [
     applyStatus,
-    autoStartSuspended,
+    suspensionReason,
+    lateRetry,
     dictationBusy,
     inventoryAvailable,
     microphone,
@@ -617,6 +653,7 @@ export function MicrophoneInputTest({
     ready,
     runExclusive,
     smartAutoUnavailable,
+    setSuspensionReason,
     start,
     status.previewId,
     subscriptionsReady,
@@ -640,14 +677,14 @@ export function MicrophoneInputTest({
         // previous worker has confirmed teardown.
         onChange(nextMicrophone);
         if (mountedRef.current) {
-          setAutoStartSuspended(true);
+          setSuspensionReason('other');
           setActionError(String(error));
         }
         return;
       }
       onChange(nextMicrophone);
     });
-  }, [applyStatus, onChange, runExclusive]);
+  }, [applyStatus, onChange, runExclusive, setSuspensionReason]);
 
   const ownsPreview = status.previewId !== null;
   const busy = operation !== 'idle';
@@ -656,7 +693,7 @@ export function MicrophoneInputTest({
     setActionError(null);
     setVadError(null);
     applyStatus(IDLE_MICROPHONE_PREVIEW);
-    setAutoStartSuspended(false);
+    setSuspensionReason(null);
   };
   const helperText = actionError ?? vadError ?? status.message ?? (
     dictationBusy
@@ -843,7 +880,7 @@ export function MicrophoneInputTest({
         <p className={`mt-2 text-xs ${actionError || vadError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || vadError || status.message ? 'alert' : undefined}>
           {helperText}
         </p>
-        {autoStartSuspended && status.previewId === null && monitoringActive && (
+        {suspensionReason !== null && status.previewId === null && monitoringActive && (
           <button
             type="button"
             className="mt-2 rounded-lg border border-outline-variant px-2 py-1 text-xs text-on-surface disabled:opacity-50"

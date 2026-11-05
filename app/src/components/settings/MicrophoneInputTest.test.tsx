@@ -765,6 +765,72 @@ describe('MicrophoneInputTest', () => {
     expect(container.textContent).not.toContain('Retry microphone preview');
   });
 
+  it('retries once when a dictation rejection arrives after dictation finishes', async () => {
+    let rejectStart!: (reason: string) => void;
+    let starts = 0;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') {
+        starts += 1;
+        if (starts === 1) return new Promise((_, reject) => { rejectStart = reject; });
+        return active;
+      }
+      if (command === 'update_microphone_preview_vad_sensitivity' || command === 'cancel_microphone_preview') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    dictationBusy = true;
+    await render();
+    dictationBusy = false;
+    await render();
+    await act(async () => rejectStart('Finish the current dictation before testing the microphone'));
+    expect(starts).toBe(2);
+    expect(container.textContent).not.toContain('Finish the current dictation before testing the microphone');
+    expect(container.textContent).not.toContain('Retry microphone preview');
+  });
+
+  it('does not repeatedly retry a late dictation rejection in the same epoch', async () => {
+    let rejectStart!: (reason: string) => void;
+    let starts = 0;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') {
+        starts += 1;
+        if (starts === 1) return new Promise((_, reject) => { rejectStart = reject; });
+        throw 'Finish the current dictation before testing the microphone';
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    dictationBusy = true;
+    await render();
+    dictationBusy = false;
+    await render();
+    await act(async () => rejectStart('Finish the current dictation before testing the microphone'));
+    expect(starts).toBe(2);
+    expect(container.textContent).toContain('Retry microphone preview');
+  });
+
+  it('keeps a non-dictation start failure suspended through a dictation cycle', async () => {
+    let starts = 0;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') {
+        starts += 1;
+        throw 'Microphone access denied';
+      }
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    dictationBusy = true;
+    await render();
+    dictationBusy = false;
+    await render();
+    expect(starts).toBe(1);
+    expect(container.textContent).toContain('Microphone access denied');
+    expect(container.textContent).toContain('Retry microphone preview');
+  });
+
   it('does not reopen a terminally failed preview until an explicit retry', async () => {
     await render();
     await emitStatus({
@@ -775,6 +841,10 @@ describe('MicrophoneInputTest', () => {
       message: 'The microphone format is unsupported.',
     });
     await emitStatus(idle);
+    dictationBusy = true;
+    await render();
+    dictationBusy = false;
+    await render();
 
     vadSensitivity = 55;
     await render();
