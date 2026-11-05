@@ -17,6 +17,14 @@ settles, the clip releases overflow so existing select menus remain usable.
 Closing immediately applies `inert` and `aria-hidden`, disables pointer input,
 and restores contained focus to the owner. The clip remains during exit.
 
+The Settings scroll pane always reserves its scrollbar width, including in
+WKWebView. Advanced row widths and toggle insets stay constant during folding;
+the clipped controls use a compositor layer while animating. Collapse follows
+the fold's visible height when the current scroll position would become invalid.
+If the collapsed page is shorter than the viewport, temporary trailing space
+prevents an early scroll clamp and is removed at rest. User scroll, pointer and
+keyboard input cancel that adjustment. Focus restoration does not scroll early.
+
 Rare Advanced children use that same transition with `unmountOnClose`:
 initially absent, mounted for entry, inert throughout exit, then genuinely
 unmounted. Rapid reversal cancels disposal. Backend values are never reset by
