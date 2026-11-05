@@ -303,6 +303,13 @@ def run_remote(args: argparse.Namespace) -> int:
                     result = json.loads(result_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     result = None
+                # Shipped clients can start the hook twice as setup settles.
+                # The duplicate reports "busy" while the original real update
+                # is still running. Wait for its final result; this state can
+                # never satisfy the gate or extend the existing deadline.
+                if (isinstance(result, dict) and result.get("status") == "failed"
+                        and result.get("error") == "Updater check already in progress."):
+                    result = None
                 if isinstance(result, dict) and result.get("status") in ("passed", "failed", "dry-run"):
                     if args.dry_run:
                         evaluate_dry_run_result(result, previous_version, expected_version)

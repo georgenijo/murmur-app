@@ -157,7 +157,8 @@ def test_fleet_wrapper_preserves_success(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("installed_version", ["0.31.4", "0.31.3"])
-def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatch, tmp_path, installed_version):
+@pytest.mark.parametrize("transient_busy", [False, True])
+def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatch, tmp_path, installed_version, transient_busy):
     app = tmp_path / "Murmur Canary.app"
     (app / "Contents").mkdir(parents=True)
     with (app / "Contents/Info.plist").open("wb") as stream:
@@ -170,10 +171,14 @@ def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatc
 
     def launch(*args, **kwargs):
         environments.append(kwargs["env"])
-        (tmp_path / "result.json").write_text(json.dumps(passing_result()))
-        return SimpleNamespace(pid=123)
+        result = passing_result()
+        if transient_busy:
+            result.update(status="failed", error="Updater check already in progress.")
+        (tmp_path / "result.json").write_text(json.dumps(result))
+        return SimpleNamespace(pid=123, poll=lambda: None)
 
     monkeypatch.setattr(canary.subprocess, "Popen", launch)
+    monkeypatch.setattr(canary.time, "sleep", lambda seconds: (tmp_path / "result.json").write_text(json.dumps(passing_result())))
     stopped = []
     monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid))
     args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
