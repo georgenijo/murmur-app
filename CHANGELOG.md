@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-## [0.60.2] - 2026-11-04
+## [0.60.3] - 2026-11-04
 
 ### Added
 
@@ -29,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - Hold background update notifications until setup is finished (#949).
 - Move focus to each setup step's heading and announce permission errors (#950).
 - Correct model, ggml and event payload docs, and hide the dev-build permission Reset that targeted the wrong app identity (#952).
+- Build the local-LLM helper without OpenSSL so signed release builds work on the current macOS runner image (#966).
 
 ## [0.60.1] - 2026-11-04
 
