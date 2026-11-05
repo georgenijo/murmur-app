@@ -14,6 +14,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
   let axGranted: boolean;
   let calendarStatus: string;
   let failedCommand: string | undefined;
+  let accessibilityGate: Promise<void> | null;
 
   const button = (label: string) => {
     const result = Array.from(container.querySelectorAll('button')).find(
@@ -58,13 +59,18 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     axGranted = true;
     calendarStatus = 'notDetermined';
     failedCommand = undefined;
+    accessibilityGate = null;
     vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     native.listen.mockResolvedValue(() => {});
     native.invoke.mockImplementation(async (command: string) => {
       if (command === failedCommand) throw new Error('Native permission request failed');
       switch (command) {
         case 'check_microphone_permission_status': return micStatus;
-        case 'check_accessibility_permission': return axGranted;
+        case 'check_accessibility_permission': {
+          const gate = accessibilityGate;
+          if (gate) await gate;
+          return axGranted;
+        }
         case 'get_system_audio_permission_status': return 'unknown';
         case 'get_calendar_permission_status': return calendarStatus;
         case 'get_model_runtime_catalog': return [{ modelName: 'base.en', installState: 'installed' }];
@@ -316,6 +322,24 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     micStatus = 'granted';
     await advance(1000);
     expect(native.invoke).toHaveBeenCalledWith('show_main_window');
+    await advance(900);
+    expectStep('Accessibility access');
+  });
+
+  it('keeps a denied microphone baseline when Settings grants before the entry probe finishes', async () => {
+    vi.useFakeTimers();
+    micStatus = 'denied';
+    await render();
+    let release = () => {};
+    accessibilityGate = new Promise<void>(resolve => { release = resolve; });
+    await click('Get started'); // The entry probe now waits on Accessibility.
+    await click('Open System Settings…');
+    micStatus = 'granted';
+    accessibilityGate = null;
+    await refresh(); // Supersedes the pending entry probe.
+    expect(container.querySelector('[data-fresh="true"]')?.textContent).toBe('Allowed');
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('Microphone access granted.');
+    await act(async () => release());
     await advance(900);
     expectStep('Accessibility access');
   });

@@ -358,6 +358,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     setMicError(null);
     try {
       micSettingsOpened.current = true;
+      permissionGrants.current.microphone ??= false;
       await openMicrophoneSettings();
     } catch (error) {
       setMicError(typeof error === 'string' ? error : 'Could not open System Settings.');
@@ -368,6 +369,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     setMicError(null);
     try {
       micSettingsOpened.current = true;
+      permissionGrants.current.microphone ??= false;
       await resetMicrophonePermission();
       // After a reset the status returns to notDetermined, so the in-app
       // prompt button works again.
