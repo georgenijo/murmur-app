@@ -71,6 +71,15 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 validate_release_build(mutated)
 
+    def test_release_build_rejects_pre_openssl_fix_cache(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        mutated = workflow.replace(
+            "shared-key: macos-release-v2", "shared-key: macos-release-v1", 1
+        )
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_release_build(mutated)
+
     def test_publication_never_lets_an_older_release_become_latest(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         for old, new in (
@@ -507,7 +516,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
         mutated = workflow.replace(
             "macos-release-rehearsal-${{ needs.context.outputs.source-sha }}",
-            "macos-release-v1",
+            "macos-release-v2",
             1,
         )
         with self.assertRaises(AssertionError):

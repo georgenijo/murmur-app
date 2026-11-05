@@ -147,6 +147,10 @@ The helper build script disables optional OpenSSL discovery with
 environment alone has no effect. Its transitive `common` feature still configures
 httplib even with `llama-cpp-2` default features disabled. Disabling discovery
 builds httplib without HTTPS support and avoids depending on Homebrew OpenSSL.
+The sidecar uses `target/local-llm-no-openssl-v1` so stale Cargo artifacts and
+CMake caches in the previous target directory cannot bypass this setting.
+The release cache namespace is `macos-release-v2`; rehearsal caches are already
+isolated by source SHA.
 Use the helper build script for both local and CI builds; the release build and
 both release rehearsals already use it. PR Rust CI stubs the LLM helper and
 excludes its crate from compilation.
