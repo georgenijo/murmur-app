@@ -511,6 +511,7 @@
 .settings-segmented { height: var(--ui-segment-height); border-radius: 8px; padding: 2px; gap: 2px; border: 0; }
 .settings-segmented-btn { padding-inline: 12px; white-space: nowrap; height: 28px; border-radius: 6px; font-size: 14px; line-height: 20px; }
 .settings-segmented-btn[data-selected='true'] { background: var(--ui-segment-selected); box-shadow: var(--ui-segment-shadow); outline: 0; }
+.settings-segmented-btn[data-selected='true']:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 1px; }
 .settings-segmented-btn:disabled { opacity: var(--ui-disabled-opacity); }
 .settings-target-flash { animation: settings-search-target-pulse var(--settings-search-pulse-duration) ease-in-out 2; }
 @keyframes settings-search-target-pulse { 0%, 100% { box-shadow: inset 0 0 0 0 transparent; } 50% { box-shadow: inset 0 0 0 2px var(--settings-search-pulse-ring); } }

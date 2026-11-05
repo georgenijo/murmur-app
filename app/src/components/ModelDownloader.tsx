@@ -54,6 +54,7 @@ interface Props {
     label: string;
     disabled: boolean;
     onActivate: () => void;
+    isNavigation: boolean;
   }) => ReactNode;
 }
 
@@ -362,6 +363,7 @@ export function ModelDownloadPanel({
           label: primaryLabel,
           disabled: isDownloading,
           onActivate: activatePrimary,
+          isNavigation: selectedInstalled,
         }) : (
           <button
             type="button"
