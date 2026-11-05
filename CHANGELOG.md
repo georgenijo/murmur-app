@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-11-05
+
+### Changed
+
+- Redesign first-launch setup with a centered, Apple-style layout, permission status pills, and direction-aware step transitions. The microphone prompt now appears on its own when you reach that step, granted permissions advance the wizard automatically, and Murmur returns to the front after you allow Accessibility in System Settings. Return on Welcome starts setup, and the step content scrolls without a visible scrollbar (#969).
+
 ## [0.61.0] - 2026-11-05
 
 ### Removed
