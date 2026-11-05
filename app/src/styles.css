@@ -70,6 +70,7 @@
   --ui-font-label: 0.8125rem;
   --ui-font-body: 0.875rem;
   --ui-font-title: 0.875rem;
+  --ui-font-page-title: 1.25rem;
   /* Fixed line heights for small UI text (font-size/line-height): 14/20,
      13/18, 12/16 and 11/16 px. Long-form prose keeps its relative leading. */
   --ui-leading-body: 1.25rem;
@@ -1585,3 +1586,38 @@ body.overlay-window {
   .main-app-shell > .settings-window-header,
   .settings-window-header { background-image: none; }
 }
+
+/* The setup frame stays fixed while its content scrolls independently. */
+.onboarding-outer { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px 24px; }
+.onboarding-frame { width: min(520px, 100%); height: min(500px, 100%); min-height: 0; display: flex; flex-direction: column; }
+.onboarding-progress-wrap { display: flex; align-items: center; justify-content: space-between; flex: none; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.onboarding-progress { display: flex; align-items: center; gap: 8px; height: 20px; }
+.onboarding-progress span { width: 6px; height: 6px; border-radius: var(--ui-radius-pill); background: var(--murmur-on-surface-variant); }
+.onboarding-progress span[data-state='current'] { width: 24px; background: var(--murmur-primary); }
+.onboarding-progress span[data-state='complete'] { background: var(--murmur-primary); opacity: .6; }
+.onboarding-content { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 2px 12px; }
+.onboarding-heading { margin-bottom: 20px; }
+.onboarding-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--ui-radius-control); background: var(--ui-tint-accent-strong); color: var(--murmur-primary); margin-bottom: 12px; }
+.onboarding-heading h1 { font-size: var(--ui-font-page-title); line-height: 26px; font-weight: 600; color: var(--murmur-on-surface); margin: 0 0 4px; outline: none; }
+.onboarding-heading p, .onboarding-copy { font-size: var(--ui-font-body); line-height: var(--ui-leading-body); color: var(--murmur-on-surface-variant); }
+.onboarding-copy { margin-top: 10px; }
+.onboarding-status { min-height: 24px; display: flex; align-items: center; gap: 8px; font-size: var(--ui-font-body); color: var(--murmur-on-surface-variant); }
+.onboarding-status[data-tone='success'] svg { color: var(--murmur-success); }
+.onboarding-status[data-tone='error'] svg { color: var(--murmur-error); }
+.onboarding-error { margin-top: 12px; font-size: var(--ui-font-body); }
+.onboarding-link { display: block; margin-top: 12px; color: var(--murmur-on-surface-variant); text-decoration: underline; font-size: var(--ui-font-caption); }
+.onboarding-link:hover { color: var(--murmur-on-surface); }
+.onboarding-actions { flex: none; padding-top: 12px; }
+.onboarding-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.onboarding-nav-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.onboarding-shortcut { padding: 16px; }
+.onboarding-label { font-size: var(--ui-font-body); font-weight: 600; color: var(--murmur-on-surface); margin: 12px 0 8px; }
+.onboarding-shortcut .onboarding-label:first-child { margin-top: 0; }
+.onboarding-segmented { display: flex; background: var(--ui-segment-track); }
+.onboarding-segmented button { flex: 1; color: var(--murmur-on-surface-variant); }
+.onboarding-segmented button[data-selected='true'] { color: var(--murmur-on-surface); }
+.onboarding-summary { overflow: hidden; }
+.onboarding-summary-row { display: grid; grid-template-columns: 16px 100px 1fr; gap: 8px; padding: 8px 12px; font-size: var(--ui-font-caption); color: var(--murmur-on-surface-variant); }
+.onboarding-summary-row + .onboarding-summary-row { border-top: 1px solid var(--ui-hairline); }
+.onboarding-summary-row strong { color: var(--murmur-on-surface); font-weight: 600; }
+.onboarding-segmented { background: var(--ui-tint-sunken); }

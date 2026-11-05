@@ -251,6 +251,7 @@ mockIPC((command, payload) => {
   }
   if (requestedState === 'copy-onboarding') {
     const permission = query.get('permission') ?? 'unknown';
+    if (command === 'get_model_runtime_catalog' && query.get('installed') === 'true') return [{ modelName: fixtureSettings.model, installState: 'installed' }];
     if (command === 'check_microphone_permission_status') return permission;
     if (command === 'check_accessibility_permission') return permission === 'loading' ? new Promise(() => {}) : permission === 'granted';
     if (command === 'get_system_audio_permission_status') return permission === 'granted' || permission === 'denied' ? permission : 'unknown';

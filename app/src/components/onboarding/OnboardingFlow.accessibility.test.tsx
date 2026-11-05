@@ -126,7 +126,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     vi.useFakeTimers();
     micStatus = 'notDetermined';
     await toStep('microphone');
-    const allow = button('Allow microphone access…');
+    const allow = button('Continue');
     allow.focus();
     const status = container.querySelector('[role="status"]');
     expect(status?.textContent).toBe('Microphone access not yet granted.');
@@ -147,10 +147,10 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
   });
 
   it.each([
-    ['microphone', 'request_microphone_access', 'Allow microphone access…', 'Could not request microphone access.'],
-    ['accessibility', 'request_accessibility_permission', 'Grant accessibility access…', 'Could not open System Settings.'],
-    ['systemAudio', 'request_system_audio_permission', 'Allow system audio access', 'Could not check System Audio access.'],
-    ['calendar', 'request_calendar_permission', 'Allow Calendar access', 'Could not request Calendar access.'],
+    ['microphone', 'request_microphone_access', 'Continue', 'Could not request microphone access.'],
+    ['accessibility', 'request_accessibility_permission', 'Open System Settings…', 'Could not open System Settings.'],
+    ['systemAudio', 'request_system_audio_permission', 'Continue', 'Could not check System Audio access.'],
+    ['calendar', 'request_calendar_permission', 'Continue', 'Could not request Calendar access.'],
   ] as const)('announces %s permission errors as alerts', async (step, command, action, message) => {
     micStatus = 'notDetermined';
     axGranted = false;
@@ -164,10 +164,10 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
 
   it('announces optional permission grants through the persistent status region', async () => {
     await toStep('systemAudio');
-    await click('Allow system audio access');
+    await click('Continue');
     expect(container.querySelector('[role="status"]')?.textContent).toBe('System audio access granted.');
     await click('Continue');
-    await click('Allow Calendar access');
+    await click('Continue');
     expect(container.querySelector('[role="status"]')?.textContent).toBe('Calendar access granted.');
   });
 
@@ -185,7 +185,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     };
     expectDevRecovery();
     await click('Skip for now');
-    await click('Grant accessibility access…');
+    await click('Open System Settings…');
     expectDevRecovery();
     await click('Skip for now');
     await click('Skip meetings for now');
@@ -198,11 +198,13 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     axGranted = false;
     calendarStatus = 'denied';
     await toStep('microphone');
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    expect(container.textContent).not.toContain('terminal app that launched');
     await click('Reset permission…');
     expect(native.invoke).toHaveBeenCalledWith('reset_microphone_permission');
     await click('Skip for now');
-    await click('Grant accessibility access…');
-    await click('Murmur is listed and enabled, but still not detected? Reset the permission');
+    await click('Open System Settings…');
+    await click('Murmur is listed but still not detected? Reset permission…');
     expect(native.invoke).toHaveBeenCalledWith('reset_accessibility_permission');
     await click('Skip for now');
     await click('Skip meetings for now');

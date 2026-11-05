@@ -6,16 +6,16 @@ permissions were a dismissible banner.
 
 ## Flow
 
-Eight steps with centered progress at the top and a shared bottom navigation
-row after Welcome: Back stays left, while an optional Skip and the primary
-action stay right. Back remains visible but disabled while a model download is
+Eight steps share a fixed frame with progress and a step caption at the top,
+a scrollable content region, and a pinned bottom navigation row. Back stays
+left, while an optional Skip and the primary action stay right. Back remains visible but disabled while a model download is
 active, because leaving the step cannot cancel the underlying download safely:
 
 1. **Welcome** — explains that dictation runs on this Mac, saved history and retained meeting audio stay local.
 2. **Microphone** — fires the *native* macOS permission dialog in-app via the
    `request_microphone_access` command (`AVCaptureDevice.requestAccessForMediaType`,
    fire-and-forget; never opens the device, so it can't duck other apps' audio —
-   see issue #177). Skippable, but Continue stays disabled until granted.
+   see issue #177). Skippable; Continue requests access until granted, then advances.
 3. **Accessibility** — explains the global recording key + auto-paste need,
    triggers `request_accessibility_permission` (system dialog + opens the pane).
    Skippable.
@@ -50,14 +50,14 @@ click. The wishy-washy TCC states are handled explicitly:
 
 | State | UI |
 |-------|-----|
-| mic `notDetermined` / `unknown` | "Allow Microphone Access" → native in-app dialog |
+| mic `notDetermined` / `unknown` | "Continue" → native in-app dialog |
 | mic `denied` | Open System Settings + "Reset the permission" (`tccutil reset` via `reset_microphone_permission`) — the reset returns the status to `notDetermined`, so the in-app dialog works again |
-| accessibility not granted | Grant button (dialog + pane); after an attempt, a reset path for the listed-but-stale entry (common after reinstall/rebuild — see DEVELOPMENT.md) |
-| system audio `unknown` / `denied` | Explicit check button; denial links to Screen & System Audio Recording. Passive status reads never create a tap. |
+| accessibility not granted | "Open System Settings…" (dialog + pane); after an attempt, a reset path for the listed-but-stale entry (common after reinstall/rebuild — see DEVELOPMENT.md) |
+| system audio `unknown` / `denied` | "Continue" runs an explicit check; denial makes "Open System Settings…" the primary action, with a quiet re-check. Passive status reads never create a tap. |
 | system audio `unsupported` | Meeting capture requires macOS 14.2+, while the rest of Murmur remains available. |
-| calendar `notDetermined` | "Allow Calendar Access" opens the native prompt. No Calendar event query runs during onboarding. |
-| calendar `denied` | Manual naming explanation, Calendars settings link, and a reset action so macOS can ask again. |
-| calendar `restricted` / `unsupported` | Manual naming remains available; restricted access links to Calendars settings. |
+| calendar `notDetermined` | "Continue" opens the native prompt. No Calendar event query runs during onboarding. |
+| calendar `denied` | Manual naming explanation, "Open System Settings…" primary action, and a quiet reset action so macOS can ask again. |
+| calendar `restricted` / `unsupported` | Manual naming remains available; Continue advances. |
 
 ## Accessibility and development recovery
 

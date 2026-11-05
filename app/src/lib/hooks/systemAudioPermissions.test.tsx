@@ -133,7 +133,7 @@ describe('System Audio native permission contract', () => {
     const pending = deferred<string>();
     passiveStatus = pending.promise;
     await enterSystemAudio();
-    await click('Allow system audio access');
+    await click('Continue');
     expect(container.textContent).toContain('System audio access granted');
     await act(async () => pending.resolve('unknown'));
     expect(container.textContent).toContain('System audio access granted');

@@ -65,8 +65,8 @@ describe('onboarding model state with native IPC boundaries', () => {
   const done = async () => {
     await click('Continue'); // model -> hotkey
     await click('Double-tap');
-    const key = container.querySelector<HTMLSelectElement>('#onboarding-trigger-key')!;
-    await act(async () => { key.value = 'f12'; key.dispatchEvent(new Event('change', { bubbles: true })); });
+    await act(async () => container.querySelector<HTMLButtonElement>('[role="combobox"]')!.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.trim() === 'F12')!.click());
     await click('Continue'); // hotkey -> summary
     await click('Start using Murmur');
   };
