@@ -1862,6 +1862,14 @@ fn admit_assistant(
     ))
 }
 
+fn assistant_admission_blocked(
+    benchmark_running: bool,
+    meeting_blocks_asr: bool,
+    app_disabled: bool,
+) -> bool {
+    benchmark_running || meeting_blocks_asr || app_disabled
+}
+
 #[tauri::command]
 pub(crate) async fn send_assistant_message(
     app_handle: tauri::AppHandle,
@@ -1878,6 +1886,13 @@ pub(crate) async fn send_assistant_message(
         return Err("empty_query".into());
     }
     let _transition = state.app_state.recording_transition.lock().await;
+    if assistant_admission_blocked(
+        state.benchmark.is_running(),
+        state.app_state.meeting_blocks_asr(),
+        crate::keyboard::is_app_disabled(),
+    ) {
+        return Err("busy".into());
+    }
 
     #[cfg(feature = "internal-benchmark")]
     if state.corpus.is_active() {
@@ -4447,6 +4462,14 @@ pub(crate) fn get_query_review_content(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_assistant_admission_blocks_each_competing_owner() {
+        assert!(!super::assistant_admission_blocked(false, false, false));
+        assert!(super::assistant_admission_blocked(true, false, false));
+        assert!(super::assistant_admission_blocked(false, true, false));
+        assert!(super::assistant_admission_blocked(false, false, true));
+    }
+
     use super::*;
 
     #[test]

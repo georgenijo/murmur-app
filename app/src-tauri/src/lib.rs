@@ -45,6 +45,7 @@ mod injector;
 mod keyboard;
 mod knowledge_store;
 pub mod launch;
+mod legacy_transform_cleanup;
 mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
@@ -522,7 +523,11 @@ pub fn run() {
             commands::query_popover::apply_initial_size(app.handle());
             commands::dictation_preview::apply_initial_size(app.handle());
 
-            let performance_root = app.path().app_data_dir()?.join("diagnostics");
+            let app_data_root = app.path().app_data_dir()?;
+            if legacy_transform_cleanup::cleanup(&app_data_root).is_err() {
+                tracing::warn!(target: "system", "legacy transform capture cleanup failed");
+            }
+            let performance_root = app_data_root.join("diagnostics");
             if let Err(error) = app
                 .state::<State>()
                 .capture_health
