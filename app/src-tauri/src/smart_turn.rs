@@ -319,7 +319,7 @@ impl Predictor for OnnxPredictor {
 /// inference is ~10 ms of CPU and must not compete with transcription.
 fn load_onnx(path: &Path) -> Result<Box<dyn Predictor>, String> {
     let (size, sha) =
-        crate::llm_sidecar::model_file_digest(path).map_err(|error| error.to_string())?;
+        crate::model_digest::model_file_digest(path).map_err(|error| error.to_string())?;
     if size != MODEL_SIZE_BYTES || sha != MODEL_SHA256 {
         return Err("Smart Turn model failed verification".to_string());
     }

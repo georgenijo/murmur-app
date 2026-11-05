@@ -208,6 +208,9 @@ fn unavailable(inner: &mut KnowledgeStoreInner, error: String) -> KnowledgeStore
     inner.status.clone()
 }
 
+// Bound legacy saved instructions without depending on an inference runtime.
+pub(crate) const MAX_INSTRUCTION_BYTES: usize = 4 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,7 +647,7 @@ mod tests {
         );
 
         // A right-at-the-limit instruction (in bytes) still saves fine.
-        let at_limit = "y".repeat(murmur_local_llm_protocol::MAX_INSTRUCTION_BYTES);
+        let at_limit = "y".repeat(crate::knowledge_store::MAX_INSTRUCTION_BYTES);
         assert!(store
             .upsert_manual(transform_draft("right at limit", &at_limit))
             .is_ok());

@@ -22,7 +22,6 @@ const STOP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum AudioOwner {
     Dictation(u64),
-    Transform(u64),
     Query(u64),
     Preview(u64),
     MicrophoneBenchmark(u64),
@@ -34,7 +33,6 @@ impl AudioOwner {
     pub(crate) fn telemetry_id(self) -> u64 {
         match self {
             Self::Dictation(id)
-            | Self::Transform(id)
             | Self::Query(id)
             | Self::Preview(id)
             | Self::MicrophoneBenchmark(id) => id,
@@ -46,7 +44,6 @@ impl AudioOwner {
     pub(crate) fn kind(self) -> &'static str {
         match self {
             Self::Dictation(_) => "dictation",
-            Self::Transform(_) => "transform",
             Self::Query(_) => "query",
             Self::Preview(_) => "preview",
             Self::MicrophoneBenchmark(_) => "microphone_benchmark",
@@ -302,15 +299,6 @@ impl PublicState {
             == Some(owner)
     }
 
-    fn is_still_connecting_for(&self, owner: AudioOwner) -> bool {
-        self.still_connecting.load(Ordering::SeqCst)
-            && *self
-                .owner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                == Some(owner)
-    }
-
     fn preview_owner(&self) -> Option<u64> {
         match *self
             .owner
@@ -399,13 +387,7 @@ impl LifecycleSink for ProductionLifecycleSink {
                     event,
                 );
             }
-            AudioOwner::Transform(transform_pass_id) => {
-                crate::transform_flow::handle_audio_lifecycle(
-                    app_handle.clone(),
-                    transform_pass_id,
-                    event,
-                );
-            }
+
             AudioOwner::Query(query_pass_id) => {
                 crate::query_flow::handle_audio_lifecycle(app_handle.clone(), query_pass_id, event);
             }
@@ -1567,8 +1549,7 @@ fn handle_worker_event(
                 // worker exit. Transform audio has no partial-transcript path,
                 // so preserve its typed, content-free failure before recovery.
                 let report_failure = match current.owner {
-                    AudioOwner::Transform(_)
-                    | AudioOwner::Query(_)
+                    AudioOwner::Query(_)
                     | AudioOwner::Preview(_)
                     | AudioOwner::MicrophoneBenchmark(_) => Some(failure),
                     #[cfg(feature = "internal-benchmark")]
@@ -2243,21 +2224,6 @@ pub(crate) fn start_dictation_recording(
     )
 }
 
-pub(crate) fn start_transform_recording(
-    app_handle: Option<tauri::AppHandle>,
-    device_id: Option<String>,
-    transform_pass_id: u64,
-) -> Result<(), String> {
-    send_start(
-        AudioOwner::Transform(transform_pass_id),
-        app_handle,
-        device_id,
-        "transform",
-        false,
-    )
-    .map_err(|error| error.to_string())
-}
-
 pub(crate) fn start_query_recording(
     app_handle: Option<tauri::AppHandle>,
     device_id: Option<String>,
@@ -2397,10 +2363,6 @@ pub(crate) fn stop_corpus_recording(capture_id: u64) -> Result<Vec<f32>, String>
     stop(Some(AudioOwner::Corpus(capture_id)))
 }
 
-pub(crate) fn stop_current_recording() -> Result<Vec<f32>, String> {
-    stop(None)
-}
-
 fn stop(owner: Option<AudioOwner>) -> Result<Vec<f32>, String> {
     stop_with_trigger(owner, DictationStopTrigger::Other)
 }
@@ -2469,10 +2431,6 @@ pub(crate) fn cancel_corpus_capture(
     reason: AudioCancelReason,
 ) -> Result<bool, String> {
     cancel(Some(AudioOwner::Corpus(capture_id)), reason, false)
-}
-
-pub(crate) fn cancel_current(reason: AudioCancelReason) -> Result<(), String> {
-    cancel(None, reason, false).map(|_| ())
 }
 
 pub(crate) fn cancel_starting_for_environment_change(reason: AudioCancelReason) {
@@ -2636,18 +2594,6 @@ pub(crate) fn is_dictation_recording(recording_id: u64) -> bool {
         .is_recording_for(AudioOwner::Dictation(recording_id))
 }
 
-pub(crate) fn is_transform_recording(transform_pass_id: u64) -> bool {
-    supervisor()
-        .public
-        .is_recording_for(AudioOwner::Transform(transform_pass_id))
-}
-
-pub(crate) fn is_transform_still_connecting(transform_pass_id: u64) -> bool {
-    supervisor()
-        .public
-        .is_still_connecting_for(AudioOwner::Transform(transform_pass_id))
-}
-
 #[cfg(target_os = "macos")]
 pub(crate) fn register_sleep_wake_observer() {
     use objc2_app_kit::{
@@ -2717,7 +2663,7 @@ mod tests {
             Duration::ZERO
         );
         for owner in [
-            AudioOwner::Transform(1),
+            AudioOwner::Query(1),
             AudioOwner::Query(1),
             AudioOwner::Preview(1),
         ] {
@@ -3728,7 +3674,7 @@ mod tests {
             assert!(supervisor.public.owns(owner));
             for next in [
                 AudioOwner::Dictation(701),
-                AudioOwner::Transform(701),
+                AudioOwner::Query(701),
                 AudioOwner::Query(701),
                 AudioOwner::Preview(701),
             ] {
@@ -4998,7 +4944,7 @@ mod tests {
             sink.clone(),
             SupervisorConfig::default(),
         );
-        let owner = AudioOwner::Transform(81);
+        let owner = AudioOwner::Query(81);
         assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
         wait_until("runtime failure did not reach lifecycle sink", || {
             sink.events.lock().unwrap().iter().any(|(_, event)| {
@@ -5030,7 +4976,7 @@ mod tests {
                 })
                 .count(),
             1,
-            "transform runtime failure must be reported exactly once"
+            "query runtime failure must be reported exactly once"
         );
         shutdown(&supervisor);
     }
@@ -5176,7 +5122,7 @@ mod tests {
     }
 
     #[test]
-    fn dictation_and_transform_share_system_default_and_explicit_id_contracts() {
+    fn dictation_and_query_share_system_default_and_explicit_id_contracts() {
         let specs = Arc::new(Mutex::new(Vec::new()));
         let supervisor = spawn_supervisor(
             Arc::new(SpecCaptureFactory {
@@ -5187,15 +5133,12 @@ mod tests {
         );
         for (owner, device_id) in [
             (AudioOwner::Dictation(90), None),
-            (AudioOwner::Transform(90), None),
+            (AudioOwner::Query(90), None),
             (
                 AudioOwner::Dictation(91),
                 Some("raw-coreaudio-uid".to_string()),
             ),
-            (
-                AudioOwner::Transform(91),
-                Some("raw-coreaudio-uid".to_string()),
-            ),
+            (AudioOwner::Query(91), Some("raw-coreaudio-uid".to_string())),
         ] {
             assert_eq!(
                 start_with_device(&supervisor, owner, device_id)
@@ -5212,15 +5155,12 @@ mod tests {
             *specs.lock().unwrap(),
             vec![
                 (AudioOwner::Dictation(90), None),
-                (AudioOwner::Transform(90), None),
+                (AudioOwner::Query(90), None),
                 (
                     AudioOwner::Dictation(91),
                     Some("raw-coreaudio-uid".to_string())
                 ),
-                (
-                    AudioOwner::Transform(91),
-                    Some("raw-coreaudio-uid".to_string())
-                ),
+                (AudioOwner::Query(91), Some("raw-coreaudio-uid".to_string())),
             ]
         );
         shutdown(&supervisor);

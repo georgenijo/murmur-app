@@ -48,14 +48,10 @@ function meetingsController(remove: (id: string) => Promise<boolean>): ReturnTyp
     permission: 'granted', access: null,
     page: { sessions: [detail.session], searchMatches: {}, total: 1, offset: 0, limit: 50 },
     detail, appliedQuery: '', liveSegments: [], loading: false, loadingMore: false, hasMore: false, loadMore: vi.fn(), error: null,
-    summaryStatus: {
-      generation: 0, sessionId: null, phase: 'idle', completedChunks: 0, totalChunks: 0,
-      elapsedMs: 0, peakRssMb: 0, errorCode: null,
-    },
     refresh: vi.fn(), select: vi.fn(), start: vi.fn(), stop: vi.fn(), requestPermission: vi.fn(),
     openSystemAudioPreferences: vi.fn(), copy: vi.fn(), exportReview: vi.fn(), previewBundle: vi.fn(), exportBundle: vi.fn(), saveReview: vi.fn(),
-    saveMetadata: vi.fn(), applyCalendarEvent: vi.fn(), restoreReview: vi.fn(),
-    renameRemoteSpeaker: vi.fn(), remove, clear: vi.fn(), summarize: vi.fn(), cancelSummary: vi.fn(),
+    saveMetadata: vi.fn(), applyCalendarEvent: vi.fn(),
+    renameRemoteSpeaker: vi.fn(), remove, clear: vi.fn(),
   };
 }
 

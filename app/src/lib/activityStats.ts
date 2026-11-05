@@ -26,7 +26,6 @@ export interface ActivityStats {
 
 export type ActivityCompletion =
   | { kind: 'meeting'; durationMs: number }
-  | { kind: 'meeting_summary' }
   | { kind: 'transform'; outcome: keyof TransformCounts; presetName: string | null }
   | { kind: 'correction_proposed' }
   | { kind: 'correction_taught'; scope: KnowledgeScope['kind'] }
@@ -112,7 +111,6 @@ export function addActivityCompletion(
       next.monthlyBuckets[month] = bucket;
       break;
     }
-    case 'meeting_summary': next.meetings.summariesGenerated++; break;
     case 'transform': {
       next.transforms[completion.outcome]++;
       const bucket = activityMonth(next.monthlyBuckets[month]);

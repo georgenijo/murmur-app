@@ -110,7 +110,7 @@ The original PR body left two gates unresolved: production-bundle dual-channel s
 
 6. Fail open at every boundary. Missing model means no pass starts. Model load, worker exit, deadline, low confidence, incomplete audio, or store conflict leaves channel attribution and text untouched. Commit all accepted speaker assignments and the label rows together only after a complete pass validates against the same session generation.
 
-Reuse the existing ownership code instead of creating a second process system. `app/src-tauri/src/managed_child.rs` owns child process groups and termination. `app/src-tauri/src/coreml_installer.rs` shows the same-signed worker protocol and deadline pattern. `app/src-tauri/src/meeting_capture.rs` already carries meeting generations, spools WAVs, and rejects stale continuation work. `app/src-tauri/src/capture_helper_probe.rs` has confirmed-termination evidence. `app/src-tauri/src/llm_sidecar.rs` and `app/src-tauri/src/commands/meeting_summary.rs` show child RSS sampling and cancellable status publication. The new worker protocol should carry no audio paths supplied by the frontend and no text, labels, or embeddings.
+Reuse the existing ownership code instead of creating a second process system. `app/src-tauri/src/managed_child.rs` owns child process groups and termination. `app/src-tauri/src/coreml_installer.rs` shows the same-signed worker protocol and deadline pattern. `app/src-tauri/src/meeting_capture.rs` already carries meeting generations, spools WAVs, and rejects stale continuation work. `app/src-tauri/src/capture_helper_probe.rs` has confirmed-termination evidence. The new worker protocol should carry no audio paths supplied by the frontend and no text, labels, or embeddings.
 
 ## Reproduction commands
 

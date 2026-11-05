@@ -4,9 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InsightsView } from '../../components/home/InsightsView';
 import { useLocalStats } from './useLocalStats';
 import { loadStats, resetStats, updateStats } from '../stats';
-import { getActivityInsights } from '../activityStats';
 import { LOCAL_STATS_COMPLETION } from '../localStatsEvents';
-import { IDLE_MEETING_STATUS, IDLE_MEETING_SUMMARY_STATUS } from '../meetings';
+import { IDLE_MEETING_STATUS } from '../meetings';
 import { confirmLearnedCorrection, proposeLearnedCorrection, proposeSpecificLearnedCorrection } from '../correctAndTeach';
 
 const mocks = vi.hoisted(() => ({
@@ -29,9 +28,7 @@ function emit(name: string, payload: unknown) {
   listener({ payload });
 }
 
-function transform(passId: number, attempt: number, outcome: string, presetName: string | null = 'Shorten') {
-  emit(LOCAL_STATS_COMPLETION, { kind: 'transform', passId, attempt, outcome, presetName });
-}
+
 
 function Harness() {
   const statsVersion = useLocalStats();
@@ -61,51 +58,6 @@ describe('main local stats completion ownership', () => {
     vi.useRealTimers();
   });
 
-  it('counts retries independently, deduplicates receipts, and handles approval before Ready', async () => {
-    await act(async () => {
-      transform(1, 1, 'approved');
-      transform(1, 1, 'undone');
-    });
-    expect(loadStats().activity.transforms.runs).toBe(0);
-    await act(async () => {
-      transform(1, 1, 'runs');
-      transform(1, 1, 'runs');
-      transform(1, 1, 'approved');
-      transform(1, 1, 'undone');
-      transform(1, 2, 'runs', 'Exact saved name');
-      transform(1, 2, 'approved', 'Exact saved name');
-      transform(2, 1, 'runs', null);
-      transform(3, 1, 'failed');
-      transform(0, 1, 'runs');
-    });
-    expect(loadStats().activity.transforms).toEqual({
-      runs: 3, approved: 2, undone: 1,
-      byPresetName: {
-        Shorten: { runs: 1, approved: 1, undone: 1 },
-        'Exact saved name': { runs: 1, approved: 1, undone: 0 },
-      },
-    });
-    expect(container.textContent).toContain('67% approved');
-    expect(container.textContent).toContain('At 40 typing wpm, minus dictation time');
-  });
-
-  it('keeps an approval in the proposal month across midnight, even after duplicate Ready', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 7, 31, 23, 59));
-    await act(async () => transform(10, 1, 'runs'));
-    vi.setSystemTime(new Date(2026, 8, 1, 0, 1));
-    await act(async () => {
-      transform(10, 1, 'runs');
-      transform(10, 1, 'approved');
-      transform(10, 1, 'undone');
-    });
-    const stats = loadStats();
-    expect(stats.activity.monthlyBuckets['2026-08']).toMatchObject({ runs: 1, approved: 1, undone: 1 });
-    expect(stats.activity.monthlyBuckets['2026-09']).toBeUndefined();
-    expect(getActivityInsights(stats, new Date(2026, 7, 31)).approvalRate).toBe(100);
-    expect(getActivityInsights(stats, new Date(2026, 8, 1)).approvalRate).toBe(0);
-  });
-
   it('uses frozen native capture duration and successful terminal generation, never the display timer', async () => {
     await act(async () => {
       emit('meeting-status-changed', IDLE_MEETING_STATUS);
@@ -116,11 +68,8 @@ describe('main local stats completion ownership', () => {
       emit('meeting-status-changed', { ...IDLE_MEETING_STATUS, generation: 2, sessionId: 'failed-session', phase: 'processing', elapsedMs: 99_000 });
       emit('meeting-status-changed', { ...IDLE_MEETING_STATUS, generation: 2, phase: 'failed' });
       emit('meeting-status-changed', { ...IDLE_MEETING_STATUS, generation: 1 });
-      emit('meeting-summary-status-changed', { ...IDLE_MEETING_SUMMARY_STATUS, generation: 3, sessionId: 'private-session', phase: 'complete' });
-      emit('meeting-summary-status-changed', { ...IDLE_MEETING_SUMMARY_STATUS, generation: 3, sessionId: 'private-session', phase: 'complete' });
-      emit('meeting-summary-status-changed', { ...IDLE_MEETING_SUMMARY_STATUS, generation: 4, sessionId: 'private-session', phase: 'cancelled' });
     });
-    expect(loadStats().activity.meetings).toEqual({ count: 1, totalMinutes: 1.5, summariesGenerated: 1 });
+    expect(loadStats().activity.meetings).toEqual({ count: 1, totalMinutes: 1.5, summariesGenerated: 0 });
     expect(container.textContent).toContain('1.5 minutes');
     expect(JSON.stringify(loadStats())).not.toContain('private-session');
   });
@@ -176,22 +125,17 @@ describe('main local stats completion ownership', () => {
   it('updates the mounted Insights when dictation finishes and when counters reset', async () => {
     await act(async () => {
       updateStats('one two three four', 2, 'builtin.technical');
-      transform(80, 1, 'runs');
       emit('delivery-retry-feedback', { kind: 'auto_pasted' });
     });
     expect(container.textContent).toContain('Technical');
     expect(loadStats().activity.recordingsByMode).toEqual({ 'builtin.technical': 1 });
     await act(async () => resetStats());
     await act(async () => {
-      transform(80, 1, 'approved');
-      transform(80, 1, 'runs');
     });
     expect(loadStats().activity.transforms.runs).toBe(0);
     expect(loadStats().activity.transforms.approved).toBe(0);
     expect(loadStats().activity.pasteLastUses).toBe(0);
     expect(container.textContent).toContain('None yet');
-    await act(async () => transform(81, 1, 'runs'));
-    expect(loadStats().activity.transforms.runs).toBe(1);
   });
 
   it('drops listeners on unmount and does not count restored historical statuses', async () => {

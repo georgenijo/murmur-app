@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 
 import { DEFAULT_SETTINGS } from '../settings';
-import { IDLE_MEETING_STATUS } from '../meetings';
 import { initializeDiscoveryAfterSetup, loadDiscoveryState, type DiscoveryEvidence } from '../discovery';
 import { addHistoryEntry, type HistoryEntry } from '../history';
 import { useDiscovery } from './useDiscovery';
@@ -69,36 +68,30 @@ describe('discovery event receipts', () => {
         text: 'SECRET TRANSCRIPT',
         teachingContext: { appBundleId: 'com.apple.Safari', appLabel: 'SECRET WINDOW' },
       });
-      emit('meeting-status-changed', {
-        ...IDLE_MEETING_STATUS,
-        generation: 1,
-        sessionId: 'SECRET SESSION',
-        phase: 'processing',
-      });
       entries = [{ id: 'SECRET ENTRY', text: 'SECRET HISTORY', timestamp: 1, duration: 1 }];
       root.render(<Harness />);
     });
 
     expect(loadDiscoveryState()?.pendingHints).toEqual([
-      'double_tap_timing', 'browser_modes', 'meeting_summaries', 'correct_and_teach',
+      'double_tap_timing', 'browser_modes', 'correct_and_teach',
     ]);
     expect(localStorage.getItem('murmur_discovery_v1')).not.toContain('SECRET');
 
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => root.render(<Harness />));
-    expect(loadDiscoveryState()?.pendingHints).toHaveLength(4);
+    expect(loadDiscoveryState()?.pendingHints).toHaveLength(3);
   });
 
   it('updates a mounted checklist when a real activity counter changes', async () => {
     expect(container.textContent).toBe('');
     await act(async () => {
-      updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: null });
+      updateActivityStats({ kind: 'meeting', durationMs: 1000 });
       statsVersion += 1;
       root.render(<Harness />);
     });
-    expect(container.textContent).toContain('transform');
-    expect(loadDiscoveryState()?.completed).toContain('transform');
+    expect(container.textContent).toContain('meeting');
+    expect(loadDiscoveryState()?.completed).toContain('meeting');
   });
 
   it('detects a new entry by identity when retained history stays at its cap', async () => {

@@ -112,7 +112,7 @@ describe('RunsView', () => {
       .toContain('No hold-to-talk release recorded yet');
   });
 
-  it('filters first-class run kinds and preserves every terminal outcome', async () => {
+  it('filters current run kinds and reads legacy terminal outcomes', async () => {
     await renderRuns();
     expect(container.textContent).toContain('Dictation');
     expect(container.textContent).toContain('File transcription');
@@ -124,11 +124,12 @@ describe('RunsView', () => {
 
     const kindSelect = container.querySelectorAll('select')[0] as HTMLSelectElement;
     await act(async () => {
-      kindSelect.value = 'selectedTextTransform';
+      kindSelect.value = 'voiceQuery';
       kindSelect.dispatchEvent(new Event('change', { bubbles: true }));
     });
     const tableBodyText = container.querySelector('tbody')?.textContent ?? '';
-    expect(tableBodyText).toContain('Selected-text transform');
+    expect(tableBodyText).toContain('Voice Query');
+    expect(tableBodyText).not.toContain('Selected-text transform');
     expect(tableBodyText).not.toContain('File transcription');
     expect(tableBodyText).not.toContain('Dictation');
   });

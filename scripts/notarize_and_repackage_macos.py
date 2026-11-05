@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Notarize a finalized Murmur .app and rebuild the DMG and updater archive.
 
-The signed-local-LLM ADR requires the release pipeline to build the app with
+The release pipeline builds the app with
 ``--no-sign``, sign nested code inside-out with per-binary entitlements via
 ``finalize_macos_bundle.py``, and only then notarize. Because Tauri's own signing
-path cannot give the helper its stricter sandbox entitlements, the DMG and the
+path cannot give capture helpers their dedicated entitlements, the DMG and the
 updater ``.app.tar.gz`` must be produced from the *finalized, notarized* app
 rather than from Tauri's stock bundle output. This script performs exactly that
 post-finalization repackaging so the release build and the non-publishing signing

@@ -24,13 +24,11 @@ mod commands;
 pub mod coreml_installer;
 mod correct_and_teach;
 mod correction;
-mod correction_shortcut;
 mod delivery_recovery;
 mod diarization_assignment;
 mod diarization_audio;
 mod diarization_model;
 mod dictation_context;
-mod dictation_correction;
 mod dictation_diagnostics;
 #[cfg(test)]
 mod dictation_diagnostics_contract;
@@ -47,7 +45,7 @@ mod injector;
 mod keyboard;
 mod knowledge_store;
 pub mod launch;
-pub mod llm_sidecar;
+mod legacy_transform_cleanup;
 mod log_shipper;
 pub mod managed_child;
 mod meeting_artifact;
@@ -62,6 +60,7 @@ mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
 mod model_artifact;
+mod model_digest;
 mod model_download;
 mod model_hardware_guidance;
 mod model_runtime;
@@ -89,11 +88,6 @@ mod state;
 pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
-mod transform_apply;
-mod transform_diagnostics;
-pub mod transform_flow;
-mod transform_presets;
-mod transform_trace;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
@@ -194,7 +188,6 @@ pub(crate) struct State {
     pub(crate) meeting_store: meeting_store::MeetingStore,
     pub(crate) meetings: meeting_capture::MeetingCoordinator,
     pub(crate) meeting_suggestions: meeting_suggestions::MeetingSuggestions,
-    pub(crate) meeting_summaries: commands::meeting_summary::MeetingSummaryCoordinator,
     pub(crate) delivery_recovery: delivery_recovery::DeliveryRecoveryState,
     pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
@@ -202,7 +195,6 @@ pub(crate) struct State {
     pub(crate) query_history: query_history::QueryHistoryStore,
     pub(crate) assistant: assistant::AssistantStore,
     pub(crate) dictation_diagnostics: dictation_diagnostics::DictationDiagnostics,
-    pub(crate) transform_diagnostics: transform_diagnostics::TransformDiagnostics,
     /// Cached overlay screen geometry
     /// (physical-or-synthetic-notch width, measured menu-bar height) from the
     /// primary NSScreen. Refreshed on the main thread after display changes.
@@ -218,67 +210,8 @@ pub(crate) struct State {
     /// click-through dictation preview follows this actual frame.
     pub(crate) overlay_frame: Mutex<Option<commands::overlay::OverlayFrame>>,
     pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
-    /// The selection-bounds anchor from the most recent `show_transform_popover`
-    /// call, so `set_transform_popover_expanded` can resize/reposition for a
-    /// new size class without the caller re-supplying the anchor.
-    pub(crate) transform_popover_anchor: Mutex<Option<commands::transform_popover::Rect>>,
-    /// Main-window visibility snapshotted at the FIRST popover show of a
-    /// transform pass (issue #329): `Some(was_visible)` while a popover is up,
-    /// `None` otherwise. `set_transform_popover_focusable`'s activation guard
-    /// reads this sticky value instead of a per-call snapshot — rapid repeated
-    /// transform-key presses interleave focus calls, and a per-call snapshot
-    /// taken while a previous `set_focus` had transiently surfaced the main
-    /// window would record "visible" and disable the re-hide guard, leaking
-    /// the main window onto the screen.
-    pub(crate) transform_main_was_visible: Mutex<Option<bool>>,
-    /// Host-side supervisor for the signed local-LLM transform sidecar (#312).
-    pub(crate) transform_runtime: std::sync::Arc<llm_sidecar::LlmSidecar>,
     /// Session-only voice-query state plus exact owned CLI child (#538).
     pub(crate) query: query_flow::QueryCoordinator,
-}
-
-/// Production mutual-exclusion bridge: lets the sidecar refuse to start over a
-/// heavy ASR runtime and release the ASR model (via the existing
-/// `MemoryPressure` unload path) before it spawns.
-struct AppHostGuard {
-    app: tauri::AppHandle,
-}
-
-impl llm_sidecar::HostGuard for AppHostGuard {
-    fn heavy_runtime_active(&self) -> Option<&'static str> {
-        use tauri::Manager;
-        let state = self.app.state::<State>();
-        if state.benchmark.is_running() {
-            return Some("benchmark");
-        }
-        if state
-            .app_state
-            .file_transcribing
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Some("fileTranscription");
-        }
-        if state
-            .app_state
-            .meeting_inference_active
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            return Some("meeting");
-        }
-        if state.app_state.dictation.lock_or_recover().status != state::DictationStatus::Idle {
-            return Some("recording");
-        }
-        None
-    }
-
-    fn release_asr(&self) {
-        use tauri::Manager;
-        let state = self.app.state::<State>();
-        let _ = state
-            .app_state
-            .model_runtime
-            .unload(Some(&self.app), model_runtime::UnloadReason::MemoryPressure);
-    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -313,7 +246,6 @@ pub fn run() {
             meeting_store: meeting_store::MeetingStore::default(),
             meetings: meeting_capture::MeetingCoordinator::default(),
             meeting_suggestions: meeting_suggestions::MeetingSuggestions::default(),
-            meeting_summaries: commands::meeting_summary::MeetingSummaryCoordinator::default(),
             delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
             correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
@@ -321,21 +253,16 @@ pub fn run() {
             query_history: query_history::QueryHistoryStore::default(),
             assistant: assistant::AssistantStore::default(),
             dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
-            transform_diagnostics: transform_diagnostics::TransformDiagnostics::default(),
             notch_info: Mutex::new(None),
             display_snapshot: Mutex::new(None),
             overlay_calibration: Mutex::new(commands::overlay::OverlayCalibrationState::default()),
             overlay_frame: Mutex::new(None),
             overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
-            transform_popover_anchor: Mutex::new(None),
-            transform_main_was_visible: Mutex::new(None),
-            transform_runtime: std::sync::Arc::new(llm_sidecar::LlmSidecar::new()),
             query: query_flow::QueryCoordinator::default(),
         })
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
-            correction_shortcut::set_correction_shortcut,
             commands::recording::process_audio,
             commands::recording::get_status,
             commands::recording::configure_dictation,
@@ -391,21 +318,8 @@ pub fn run() {
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
             commands::keyboard::set_paste_last_shortcut,
-            commands::keyboard::start_transform_listener,
-            commands::keyboard::stop_transform_listener,
-            commands::keyboard::set_transform_key,
             commands::keyboard::start_query_listener,
             commands::keyboard::stop_query_listener,
-            commands::recording::transform_status,
-            transform_apply::apply_transform_result,
-            transform_apply::undo_transform,
-            transform_flow::start_transform_capture,
-            transform_flow::start_dictation_correction,
-            transform_flow::finish_transform_instruction,
-            transform_flow::retry_transform_instruction,
-            transform_flow::approve_transform,
-            transform_flow::cancel_transform,
-            transform_flow::undo_transform_and_close,
             query_flow::start_query_capture,
             query_flow::get_assistant_connection,
             query_flow::connect_assistant,
@@ -480,7 +394,6 @@ pub fn run() {
             meeting_audio::read_meeting_audio_range,
             meeting_audio::get_meeting_audio_capture_busy,
             commands::meeting::save_meeting_review,
-            commands::meeting::restore_meeting_review_from_generated,
             commands::meeting::get_meeting_review_export,
             commands::meeting::save_meeting_review_export,
             meeting_bundle::get_meeting_bundle_preview,
@@ -488,9 +401,6 @@ pub fn run() {
             commands::meeting::delete_meeting,
             commands::meeting::delete_all_meetings,
             commands::meeting::prune_meetings,
-            commands::meeting_summary::start_meeting_summary,
-            commands::meeting_summary::get_meeting_summary_status,
-            commands::meeting_summary::cancel_meeting_summary,
             commands::export::save_text_export,
             commands::mode_exchange::read_modes_file,
             commands::settings_store::load_settings_blob,
@@ -525,12 +435,6 @@ pub fn run() {
             commands::dictation_diagnostics::get_dictation_diagnostic_capture,
             commands::dictation_diagnostics::delete_dictation_diagnostic_capture,
             commands::dictation_diagnostics::upload_dictation_diagnostic_capture,
-            commands::transform_diagnostics::arm_next_transform_diagnostic_capture,
-            commands::transform_diagnostics::get_transform_diagnostic_capture_status,
-            commands::transform_diagnostics::list_transform_attempts,
-            commands::transform_diagnostics::list_transform_diagnostic_captures,
-            commands::transform_diagnostics::get_transform_diagnostic_capture,
-            commands::transform_diagnostics::delete_transform_diagnostic_capture,
             commands::models::check_model_exists,
             commands::models::check_specific_model_exists,
             commands::models::get_model_runtime_catalog,
@@ -539,10 +443,6 @@ pub fn run() {
             commands::models::download_model,
             commands::models::cancel_model_download,
             commands::models::remove_model,
-            commands::transform_model::transform_model_status,
-            commands::transform_model::download_transform_model,
-            commands::transform_model::remove_transform_model,
-            commands::transform_model::reset_transform_runtime,
             commands::smart_turn::smart_turn_model_status,
             commands::smart_turn::download_smart_turn_model,
             commands::smart_turn::remove_smart_turn_model,
@@ -567,12 +467,6 @@ pub fn run() {
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
             commands::dictation_preview::show_dictation_preview,
-            commands::transform_popover::get_transform_popover_geometry,
-            commands::transform_popover::show_transform_popover,
-            commands::transform_popover::hide_transform_popover,
-            commands::transform_popover::set_transform_popover_expanded,
-            commands::transform_popover::set_transform_popover_focusable,
-            commands::transform_popover::get_transform_review_content,
             telemetry::get_event_history,
             telemetry::clear_event_history,
             resource_monitor::get_resource_usage,
@@ -629,7 +523,11 @@ pub fn run() {
             commands::query_popover::apply_initial_size(app.handle());
             commands::dictation_preview::apply_initial_size(app.handle());
 
-            let performance_root = app.path().app_data_dir()?.join("diagnostics");
+            let app_data_root = app.path().app_data_dir()?;
+            if legacy_transform_cleanup::cleanup(&app_data_root).is_err() {
+                tracing::warn!(target: "system", "legacy transform capture cleanup failed");
+            }
+            let performance_root = app_data_root.join("diagnostics");
             if let Err(error) = app
                 .state::<State>()
                 .capture_health
@@ -669,18 +567,6 @@ pub fn run() {
                     target: "system",
                     query_history_available = false,
                     "Voice Query history store unavailable: {}",
-                    error
-                );
-            }
-            if let Err(error) = app
-                .state::<State>()
-                .transform_diagnostics
-                .initialize(performance_root.join("transforms"))
-            {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "transform diagnostics store unavailable: {}",
                     error
                 );
             }
@@ -745,26 +631,6 @@ pub fn run() {
             // Periodic heartbeat: memory telemetry + idle timeout
             resource_monitor::start_heartbeat(app.handle().clone());
 
-            // Install the local-LLM mutual-exclusion bridge and start its
-            // maintenance reaper (RSS ceiling + idle unload).
-            {
-                let state = app.state::<State>();
-                state
-                    .transform_runtime
-                    .set_host_guard(std::sync::Arc::new(AppHostGuard {
-                        app: app.handle().clone(),
-                    }));
-                let sidecar = std::sync::Arc::clone(&state.transform_runtime);
-                tauri::async_runtime::spawn(async move {
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_secs(30));
-                    loop {
-                        interval.tick().await;
-                        sidecar.maintenance_tick();
-                    }
-                });
-            }
-
             // Cache notch dimensions on the main thread (safe for NSScreen APIs).
             // The placement worker re-checks them right after the observers
             // below are registered, while the menu bar settles.
@@ -810,7 +676,6 @@ pub fn run() {
             // Overwrite the transform-review window's initial size from Rust's
             // COMPACT_W/COMPACT_H so tauri.conf.json's matching literal is only
             // ever a startup-flash guard, never the source of truth.
-            commands::transform_popover::apply_initial_compact_size(app.handle());
 
             // Restore tray icon (removed by PR #63 overlay work).
             let idle_icon_data = commands::tray::make_tray_icon_data();
@@ -944,7 +809,6 @@ pub fn run() {
                 let _ = meeting_diarization::cancel_all();
                 state.meetings.shutdown(_app_handle);
                 state.meeting_suggestions.shutdown();
-                state.transform_runtime.shutdown();
                 state.query.shutdown();
             }
         }

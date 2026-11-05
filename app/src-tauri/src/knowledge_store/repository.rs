@@ -90,7 +90,7 @@ impl KnowledgeRepository {
             .clamp(1, MAX_PAGE_SIZE);
         let offset = request.offset.unwrap_or(0);
         let mut joins = String::new();
-        let mut where_parts = Vec::new();
+        let mut where_parts = vec!["e.kind != 'transform'".to_string()];
         let mut values = Vec::<Value>::new();
 
         if let Some(query) = request
@@ -853,15 +853,11 @@ fn validate_payload(payload: &KnowledgePayload) -> Result<(), String> {
             if content.is_empty() {
                 return Err("Transform instructions must be 1 to 4,096 bytes.".to_string());
             }
-            // The local-LLM sidecar protocol caps instruction bytes at
-            // MAX_INSTRUCTION_BYTES (4096); enforce the same bound (bytes,
-            // not chars) here so an oversized saved transform is rejected at
-            // save time instead of saving fine and always failing later with
-            // an opaque invalid_request (issue #312 round 2 D1 fix #3).
-            if content.len() > murmur_local_llm_protocol::MAX_INSTRUCTION_BYTES {
+            // Preserve the legacy saved-instruction byte bound for old imports.
+            if content.len() > crate::knowledge_store::MAX_INSTRUCTION_BYTES {
                 return Err(format!(
                     "Transform instructions must be at most {} bytes.",
-                    murmur_local_llm_protocol::MAX_INSTRUCTION_BYTES
+                    crate::knowledge_store::MAX_INSTRUCTION_BYTES
                 ));
             }
         }
@@ -967,18 +963,13 @@ fn validate_voice_command_conflicts_tx(
 
 /// Reject an exact duplicate saved-transform name (issue #312 round 2 D1
 /// fix #5). Uses the same normalization as preset matching and
-/// `transform_flow::resolve_saved_transform` (case- and punctuation-
-/// insensitive) so two names that would be indistinguishable when spoken
-/// cannot both be saved. Preset-name/alias shadowing is intentionally NOT
-/// rejected here — it is only a UI-level warning, since a saved transform
-/// with that name is still valid data (it is simply unreachable by voice
-/// until renamed or the preset changes).
+/// Preserve legacy instruction-name uniqueness when importing old data.
 fn validate_transform_name_conflict_tx(
     transaction: &rusqlite::Transaction<'_>,
     name: &str,
     editing_id: Option<&str>,
 ) -> Result<(), String> {
-    let normalized = crate::transform_presets::normalize(name);
+    let normalized = normalize_legacy_instruction_name(name);
     if normalized.is_empty() {
         return Ok(());
     }
@@ -991,7 +982,7 @@ fn validate_transform_name_conflict_tx(
             ..
         } = &existing.payload
         {
-            if crate::transform_presets::normalize(existing_name) == normalized {
+            if normalize_legacy_instruction_name(existing_name) == normalized {
                 return Err("A saved transform with that name already exists.".to_string());
             }
         }
@@ -1301,6 +1292,14 @@ fn storage_error() -> String {
 
 fn validation_error() -> String {
     "Knowledge record validation failed.".to_string()
+}
+
+fn normalize_legacy_instruction_name(name: &str) -> String {
+    name.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ emitted through `dictation-settings`.
 The native Settings workspace opens on **General**. The gear button, `⌘,`, and
 overlay Settings action all open this same page. **Customize** remains available
 in the sidebar as a hub of independent destinations: **Text & vocabulary**,
-**Voice commands**, **App overrides**, **Modes**, and **Selected-text rewrite**.
+**Voice commands**, **App overrides**, **Modes**.
 Each destination opens its owning page or editor, shows **Back to Customize**,
 and restores focus to its source row on return. Contextual links from Home use
 the same routes, so they cannot leave the user trapped in a detail page.
@@ -35,7 +35,7 @@ main-window rows from `keyboardShortcuts.ts`. Each global row reports its live
 binding and availability, then links to the page that owns the setting. Returning
 from an owner restores focus to the source row. The same detail page is available
 from the `Settings: Keyboard Shortcuts` command in the command palette. When
-Murmur is disabled, the page marks recording, transform, Voice Query, and
+Murmur is disabled, the page marks recording and Voice Query
 correction shortcuts as paused while retaining their configured binding labels.
 Paste Last remains available, matching the native listener behavior.
 
@@ -101,8 +101,6 @@ interface Settings {
   smartAutoAllowContinuity: boolean;
   disabled: boolean;
 
-  // Transform (selected-text rewrite)
-  transformHoldKey: TransformKey | null;   // null = disabled (default)
 
   // Voice Query (configured CLI)
   queryHotkey: QueryKey | null;            // null = disabled (default)
@@ -119,7 +117,6 @@ interface Settings {
   smartDestinationEnabled: boolean;
   autoPasteDelayMs: number;
   pasteLastShortcut: PasteLastShortcut | null;
-  correctionShortcutEnabled: boolean;
   retainHistory: boolean;
   meetingRetainAudio: boolean;
   meetingDiarization: boolean;
@@ -172,7 +169,6 @@ export const DEFAULT_SETTINGS: Settings = {
   model: 'parakeet-tdt-0.6b-v3-coreml',
   doubleTapKey: 'shift_l',
   // Disabled by default — no settings UI to configure it yet (Phase D).
-  transformHoldKey: null,
   queryHotkey: null,
   queryProvider: 'custom',
   queryExecutable: '',
@@ -190,7 +186,6 @@ export const DEFAULT_SETTINGS: Settings = {
   // focus asynchronously can still opt into a settling delay in Settings.
   autoPasteDelayMs: 0,
   pasteLastShortcut: null,
-  correctionShortcutEnabled: false,
   recordingMode: 'hold_down',
   hotkeyMissFeedback: false,
   soundCuesEnabled: true,
@@ -297,17 +292,11 @@ model-selection side effects.
 | `soundCueVolume` | `number` | `45` | Integer 0–100 | Volume used for runtime cues and Settings previews. |
 | `meetingSoundCuesEnabled` | `boolean` | `false` | `true` / `false` | Opts meeting capture into lifecycle cues; recurring meeting cues are suppressed by default. |
 
-### Transform Settings
-
-| Setting | Type | Default | Valid Options/Range | Description |
-|---------|------|---------|-------------------|-------------|
-| `transformHoldKey` | `TransformKey \| null` | `null` | `'alt_r'` (Right Option), `'ctrl_l'` (Left Control), `'shift_r'` (Right Shift), or `null` to disable | The independent hold key for selected-text transform. Deliberately a distinct id set from `doubleTapKey` so the two shortcuts coexist; the picker rejects the active dictation key. Anything unrecognized — including an absent field on pre-feature settings — coerces back to `null` rather than silently arming a shortcut.<br><br>The transform **model**, saved transforms, and presets are not localStorage settings: the model install lives on disk under the app models directory, and saved transforms are knowledge-store records. See [Selected-text Transform](../features/selected-text-transform.md). |
-
 ### Voice Query
 
 | Setting | Type | Default | Valid Options/Range | Description |
 |---------|------|---------|-------------------|-------------|
-| `queryHotkey` | `QueryKey \| null` | `null` | `'alt_r'`, `'ctrl_l'`, `'shift_r'`, or `null` | Dedicated double-tap-to-start / single-tap-to-stop shortcut. It may not equal `transformHoldKey`; a persisted conflict disables Voice Query. |
+| `queryHotkey` | `QueryKey \| null` | `null` | `'alt_r'`, `'ctrl_l'`, `'shift_r'`, or `null` | Dedicated double-tap-to-start / single-tap-to-stop shortcut. |
 | `queryProvider` | `QueryProviderId` | `'custom'` | `'claude'`, `'codex'`, `'grok'`, `'cursor'`, or `'custom'` | Chooses discovery/auth metadata, recommended argv, and the post-spawn output adapter. Claude recommends bounded safe-mode stream JSON, Codex recommends `exec --json`, and Cursor uses Ask mode with explicit trust for Murmur's private isolated app-data workspace; every provider still uses the generic direct-spawn bridge. When Voice Query is enabled, changing provider temporarily clears the shortcut, validates and preflights the exact new preset command, and restores the same shortcut only if that current check succeeds. Failure leaves it disabled; stale checks cannot re-enable a later provider. Changing provider while already disabled does not enable it. Unknown persisted values fail closed to Custom. |
 | `queryExecutable` | `string` | `''` | Absolute executable path, at most 4096 bytes | Exact CLI program to spawn. Murmur never provides a default and never invokes a shell. |
 | `queryArguments` | `string[]` | `[]` | At most 32 fixed arguments, 4096 bytes each and 32 KiB total | Passed literally before the locally transcribed question and any opted-in context, which together remain one final argv element. |
@@ -337,7 +326,6 @@ The Settings disclosure explicitly states that the configured CLI may send the q
 | `autoPaste` | `boolean` | `false` | `true` / `false` | Stored preference for automatically pasting transcribed text after clipboard copy. Requires macOS Accessibility permission. Text is always copied. When either file-output toggle is on, the UI shows auto-paste unavailable without overwriting this preference. An enabled preference is labeled paused and resumes when file output is off; a disabled preference remains off. |
 | `smartDestinationEnabled` | `boolean` | `false` | `true` / `false` | macOS-only opt-in that keeps dictation associated with the recent text field while supported media controls are used. The switch is available only while auto-paste is active and file output is off. If auto-paste or file output makes it unavailable, the enabled preference remains stored and resumes when delivery is eligible again. If no field can be proven, delivery uses normal auto-paste; secure fields, media without a retained field, and changed destinations stay on the clipboard. Missing or malformed persisted values fail closed to `false`. |
 | `autoPasteDelayMs` | `number` | `0` | 0-500 ms, step 10 in UI | Delay in milliseconds before auto-paste fires, to allow window focus to settle. Zero uses the immediate native-paste fast path; increase it only for apps that move focus asynchronously. The backend clamps this value to the 0-500 range. The UI slider only appears when `autoPaste` is enabled. |
-| `correctionShortcutEnabled` | `boolean` | `false` | `true` / `false` | Enables ⌘⇧E to start or finish a spoken correction of the latest delivery. The configured microphone and local transform model are used. |
 | `pasteLastShortcut` | `PasteLastShortcut \| null` | `null` | `'command_shift_v'` (⌘⇧V), `'command_option_v'` (⌘⌥V), `'command_control_v'` (⌘⌃V), or `null` to disable | Configures the global Paste Last / Retry Delivery chord. Changes take effect immediately; invalid or Murmur-owned conflicting identifiers fail closed, and native registration failure leaves the last working value selected. Retried text stays memory-only and uses the normal secure delivery checks. Settings v4 migrates the former `pasteLastShortcutEnabled: true` to ⌘⇧V and `false`/absent to Disabled. |
 | `retainHistory` | `boolean` | `true` | `true` / `false` | Persist new microphone and imported-file transcripts in the local History workspace. When false, delivery and content-free statistics continue but new transcript content is discarded at the history boundary. Existing entries remain until explicitly cleared. |
 | `saveTranscript` | `boolean` | `false` | `true` / `false` | When enabled, each live dictation's transcript is written to a sequentially numbered `.txt` (`murmur-0001`, `murmur-0002`, …) in the output folder. When `saveTranscript` or `saveAudio` is on, auto-paste is suppressed (clipboard copy still happens). |
@@ -455,7 +443,7 @@ The blob is opaque to Rust. The host validates only the container — at most 1 
 
 ### Boot Hydration
 
-Each window entry (`main.tsx`, `overlay.tsx`, `transform-review.tsx`, `query-review.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
+Each window entry (`main.tsx`, `overlay.tsx`, `query-review.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
 
 1. Outside Tauri (plain browser, tests) it is a no-op and `localStorage` remains the only store.
 2. `load_settings_blob` returns a blob → it is written into `localStorage` verbatim. Disk wins; the cache may be stale or evicted.
@@ -493,7 +481,7 @@ A `settings.json` that is oversized, not UTF-8, not valid JSON, or not a JSON ob
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
 5. Validates `model` against the macOS catalog allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to Core ML Parakeet v3. `language` is validated against `LANGUAGE_OPTIONS` the same way.
-6. Coerces `smartDestinationEnabled` to `false` unless it is a boolean, coerces `transformHoldKey` to `null` unless it matches `TRANSFORM_KEY_OPTIONS`, and sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
+6. Coerces `smartDestinationEnabled` to `false` unless it is a boolean, sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
 7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`).
 8. If not found or on parse error, returns `DEFAULT_SETTINGS`.
 

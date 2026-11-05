@@ -35,7 +35,6 @@ CI_BUILD_JOBS = (
 CI_RUST_TEST_STEPS = (
     "Run tests",
     "Run capture worker unit tests",
-    "Run hardware-free integration suites",
     "Run deterministic dictation evaluation",
 )
 SEMVER = re.compile(
@@ -210,7 +209,7 @@ def validate_ci(ci: str) -> int:
     ):
         assert marker in validation, marker
     capture_build = named_step_block(
-        rust_macos, "Build capture isolation helpers and stub local-LLM externalBin", 6
+        rust_macos, "Build capture isolation helpers", 6
     )
     assert "uses: dtolnay/rust-toolchain@1.96.0" in named_step_block(
         rust_macos, "Install Rust", 6
@@ -223,7 +222,7 @@ def validate_ci(ci: str) -> int:
     # Clippy's --all-targets pass is the compile check for tests and examples.
     lint_step = named_step_block(rust_lint, "Lint Rust", 6)
     assert (
-        "cargo clippy --workspace --exclude murmur-llm-sidecar --all-targets -- -D warnings"
+        "cargo clippy --workspace --all-targets -- -D warnings"
         in lint_step
     )
     assert "cargo clippy" not in capture_build
@@ -251,13 +250,13 @@ def validate_ci(ci: str) -> int:
     # examples before the test targets, or the run steps recompile the app crate.
     test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
     example_build = test_build.find(
-        "cargo build --workspace --exclude murmur-llm-sidecar"
-        " --example mock_llm_helper --example murmur-eval"
+        "cargo build --workspace"
+        " --example murmur-eval"
     )
     test_prebuild = test_build.find(
-        "cargo nextest list --workspace --exclude murmur-llm-sidecar --lib"
+        "cargo nextest list --workspace --lib"
         " --bin murmur-capture-helper --test topology_watch"
-        " --test llm_sidecar_integration --test transform_flow_integration"
+        ""
     )
     assert 0 <= example_build < test_prebuild, "build examples, then every test target"
     assert (
@@ -290,10 +289,6 @@ def validate_ci(ci: str) -> int:
     )
     assert "continue-on-error: true" in npm_audit
     assert "npm audit --audit-level=high" in npm_audit
-    llm_target = "binaries/murmur-llm-sidecar-aarch64-apple-darwin"
-    assert capture_build.count(f": > {llm_target}") == 1
-    assert capture_build.count(f"chmod +x {llm_target}") == 1
-
     cases = (
         ("push", "chore: bump version to 0.17.0", False),
         ("push", "chore: bump version", False),

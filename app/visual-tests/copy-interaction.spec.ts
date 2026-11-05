@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 
-const panes = ['general', 'recording', 'delivery', 'meetings', 'text', 'ai', 'ai-transcription', 'ai-transform', 'ai-query', 'modes', 'appearance', 'performance', 'diagnostics', 'shortcuts'];
-const editors = ['aliases', 'knowledge', 'commands', 'transforms', 'scan', 'vocabulary'];
+const panes = ['general', 'recording', 'delivery', 'meetings', 'text', 'ai', 'ai-transcription', 'ai-query', 'modes', 'appearance', 'performance', 'diagnostics', 'shortcuts'];
+const editors = ['aliases', 'knowledge', 'commands', 'scan', 'vocabulary'];
 for (const appearance of ['light', 'dark']) {
   for (const pane of [...panes, ...editors.map((editor) => `editor-${editor}`)]) {
     test(`${appearance} copy audit ${pane}`, async ({ page }) => {

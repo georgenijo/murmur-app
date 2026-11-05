@@ -393,7 +393,7 @@ export function useMeetingAudio({ sessionId, captureBusy }: { sessionId: string 
         if (!disposed && current === ticket) playback.monitoringRecovered(busy);
       } catch { if (!disposed && current === ticket) playback.monitoringFailed(); }
     };
-    const events = ['transform-capture-starting', 'transform-state-changed', 'transform-review-hidden', 'transform-capture-failed', 'query-state-changed', 'microphone-preview-status', 'microphone-startup-benchmark-progress', 'recording-status-changed', 'meeting-status-changed', 'meeting-summary-status-changed'];
+    const events = ['query-state-changed', 'microphone-preview-status', 'microphone-startup-benchmark-progress', 'recording-status-changed', 'meeting-status-changed', ];
     const subscriptions = events.map(name => listen<unknown>(name, ({ payload }) => {
         playback.pause();
         playback.setMonitoredBusy(true);

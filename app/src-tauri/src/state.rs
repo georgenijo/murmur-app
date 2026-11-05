@@ -18,52 +18,6 @@ pub enum DictationStatus {
     Processing,
 }
 
-/// Status of the AX-selection transform pipeline (issue #312). Deliberately a
-/// separate field on `AppState`, NOT a `DictationStatus` variant — dictation
-/// recording/processing and a transform pass are independent activities that
-/// each need to know about (and block) the other, not a shared state machine.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TransformStatus {
-    #[default]
-    Idle,
-    /// Reading the AX selection (`selection::capture_selection`).
-    Capturing,
-    /// Selection captured; the microphone owner is still initializing.
-    Connecting,
-    /// Selection captured and microphone ready; recording the instruction.
-    Listening,
-    /// Running the transform (LLM call or equivalent) on the captured text.
-    Thinking,
-    /// Transform result is ready and awaiting user confirmation/edit.
-    ReviewPending,
-    /// Writing the accepted result back (clipboard/injection).
-    Applying,
-}
-
-impl TransformStatus {
-    /// Human-readable event/telemetry string, used for transform-trace
-    /// transitions (see `transform_trace::transition` callers).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Capturing => "capturing",
-            Self::Connecting => "connecting",
-            Self::Listening => "listening",
-            Self::Thinking => "thinking",
-            Self::ReviewPending => "review_pending",
-            Self::Applying => "applying",
-        }
-    }
-
-    /// Whether this status should block starting a new dictation recording.
-    /// Only `Idle` allows recording to start — every other transform phase is
-    /// actively using the shared pipeline/clipboard/AX surface.
-    pub fn blocks_recording(self) -> bool {
-        self != Self::Idle
-    }
-}
-
 /// Per-app dictation profile. When the frontmost macOS app's bundle id matches
 /// `bundle_id`, each `*_override` (when `Some`) replaces the corresponding global
 /// setting in the immutable recording-start snapshot. `None` means "no override
@@ -513,8 +467,6 @@ pub struct AppState {
     /// of crash-durable pending chunks. Other ASR entry points fail fast while
     /// this is set instead of waiting behind an invisible model lock.
     pub meeting_inference_active: AtomicBool,
-    /// Owns the signed local-LLM while deriving a meeting artifact.
-    pub meeting_summary_active: AtomicBool,
     /// Monotonic revision for settings and vocabulary inputs captured by each
     /// immutable dictation context snapshot.
     pub settings_revision: AtomicU64,
@@ -543,52 +495,6 @@ pub struct AppState {
     /// Short-lived local project indexes for explicitly opted-in app profiles.
     /// Contents (symbols and root-relative filenames) are never serialized.
     pub ide_context: Mutex<crate::ide_context::IdeContextStore>,
-    /// Current phase of the AX-selection transform pipeline (issue #312).
-    /// Independent of `dictation.status` — see `TransformStatus`'s doc comment.
-    pub transform_status: Mutex<TransformStatus>,
-    /// Process-local monotonic ID allocator for physical transform-key passes.
-    pub transform_pass_sequence: AtomicU64,
-    /// The pass that currently owns the transform lifecycle. Zero means none.
-    pub active_transform_pass_id: AtomicU64,
-    /// Highest transform pass explicitly cancelled by the user. Selection
-    /// capture runs asynchronously, so it must be able to distinguish a late
-    /// capture abort from an ordinary capture failure even before the cancel
-    /// path has finished clearing `active_transform_pass_id`.
-    cancelled_transform_pass_id: AtomicU64,
-    /// One-based spoken-instruction attempt within the active pass. Retries
-    /// keep the pass ID and advance only this counter.
-    pub transform_instruction_attempt: AtomicU64,
-    /// The single active transform session (captured selection + proposed
-    /// replacement + applied flag), if any (issue #312, PR-B2). See
-    /// `transform_apply::TransformSession` and its setter/getter helpers —
-    /// accessed through those, not locked directly, everywhere except
-    /// `transform_apply.rs` itself.
-    pub transform_session: Mutex<Option<crate::transform_apply::TransformSession>>,
-    /// Monotonic generation counter stamped onto every new `TransformSession`
-    /// (issue #312 PR-B2). See `next_transform_session_generation`.
-    pub transform_session_generation: AtomicU64,
-    /// Monotonic epoch bumped at the start of every apply/undo AND on cancel
-    /// (issue #312 PR-C2, B2 review nit N1). A `run_apply` paste fallback
-    /// schedules a ~300ms-delayed clipboard restore off the main thread; if a
-    /// newer apply/undo (or a cancel) begins inside that window, that stale
-    /// restore would clobber the newer op's house-rule clipboard write. The
-    /// delayed restore captures the epoch it was scheduled under and no-ops if
-    /// this counter has since advanced.
-    pub transform_apply_epoch: AtomicU64,
-    /// Abort handle for the in-flight sidecar transform task (issue #312
-    /// PR-C2). `finish_transform_instruction` spawns the `sidecar.transform`
-    /// future as a task and stores its abort handle here so `cancel_transform`
-    /// can abort the outer `tokio::spawn` wrapper. **Dropping that future does
-    /// not clear the sidecar's busy flag** — `BusyGuard` only drops when the
-    /// inner `spawn_blocking` work finishes. Callers must also invoke
-    /// `LlmSidecar::cancel_inflight_request` so the blocking loop sends a
-    /// protocol Cancel and settles promptly (see `cancel_transform`).
-    pub transform_inflight:
-        Mutex<Option<(tokio::task::AbortHandle, crate::llm_sidecar::CancelToken)>>,
-    /// Pass-scoped warm-on-arm cancellation token. A short tap or capture
-    /// failure cancels the helper/model handshake promptly so dictation is not
-    /// blocked behind abandoned prewarm work.
-    pub transform_prewarm: Mutex<Option<(u64, crate::llm_sidecar::CancelToken)>>,
 }
 
 impl AppState {
@@ -598,7 +504,6 @@ impl AppState {
     pub fn meeting_blocks_asr(&self) -> bool {
         self.meeting_active.load(Ordering::SeqCst)
             || self.meeting_inference_active.load(Ordering::SeqCst)
-            || self.meeting_summary_active.load(Ordering::SeqCst)
     }
 
     /// Increment and return the next recording ID.
@@ -671,11 +576,6 @@ impl AppState {
         self.cancelled_id.load(Ordering::SeqCst) >= id
     }
 
-    /// Current transform pipeline phase. Independent of `dictation.status`.
-    pub fn transform_status(&self) -> TransformStatus {
-        *self.transform_status.lock_or_recover()
-    }
-
     /// Non-blocking dictation phase read for hang diagnostics. `None` means
     /// the lock was contended, which is itself a reportable fact — a probe
     /// investigating a stall must never join the queue behind it.
@@ -683,122 +583,6 @@ impl AppState {
         self.dictation
             .try_lock_or_recover()
             .map(|dictation| dictation.status)
-    }
-
-    /// Non-blocking sibling of [`AppState::transform_status`], for the same
-    /// reason as [`AppState::dictation_status_if_uncontended`].
-    pub fn transform_status_if_uncontended(&self) -> Option<TransformStatus> {
-        self.transform_status
-            .try_lock_or_recover()
-            .map(|status| *status)
-    }
-
-    pub fn next_transform_pass_id(&self) -> u64 {
-        self.transform_pass_sequence.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    pub fn active_transform_pass_id(&self) -> Option<u64> {
-        match self.active_transform_pass_id.load(Ordering::SeqCst) {
-            0 => None,
-            id => Some(id),
-        }
-    }
-
-    pub fn activate_transform_pass(&self, pass_id: u64) {
-        debug_assert_ne!(pass_id, 0);
-        self.transform_instruction_attempt
-            .store(1, Ordering::SeqCst);
-        self.active_transform_pass_id
-            .store(pass_id, Ordering::SeqCst);
-    }
-
-    pub fn clear_transform_pass(&self, pass_id: u64) -> bool {
-        self.active_transform_pass_id
-            .compare_exchange(pass_id, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-    }
-
-    pub fn mark_transform_pass_cancelled(&self, pass_id: u64) {
-        self.cancelled_transform_pass_id
-            .fetch_max(pass_id, Ordering::SeqCst);
-    }
-
-    pub fn is_transform_pass_cancelled(&self, pass_id: u64) -> bool {
-        pass_id != 0 && self.cancelled_transform_pass_id.load(Ordering::SeqCst) >= pass_id
-    }
-
-    pub fn current_instruction_attempt(&self) -> u64 {
-        self.transform_instruction_attempt
-            .load(Ordering::SeqCst)
-            .max(1)
-    }
-
-    pub fn next_instruction_attempt(&self) -> u64 {
-        self.transform_instruction_attempt
-            .fetch_add(1, Ordering::SeqCst)
-            + 1
-    }
-
-    /// Set the transform pipeline phase. Independent of `dictation.status`.
-    pub fn set_transform_status(&self, status: TransformStatus) {
-        let mut current = self.transform_status.lock_or_recover();
-        let from = *current;
-        *current = status;
-        crate::smart_auto_probe::wake();
-        if let Some(pass_id) = self.active_transform_pass_id() {
-            crate::transform_trace::transition(pass_id, from.as_str(), status.as_str(), true);
-        }
-    }
-
-    /// Atomically check-and-set the transform pipeline phase: transitions to
-    /// `to` only if the current phase is exactly `from`, returning whether it
-    /// did. Both the read and the write happen under a single lock
-    /// acquisition, closing the TOCTOU window a separate
-    /// `transform_status() == X` check followed by `set_transform_status(Y)`
-    /// would leave open between two concurrent `apply_transform_result`/
-    /// `undo_transform` command invocations (issue #312 PR-B2 review).
-    pub fn try_transition_transform_status(
-        &self,
-        from: TransformStatus,
-        to: TransformStatus,
-    ) -> bool {
-        let mut status = self.transform_status.lock_or_recover();
-        let actual = *status;
-        let won = actual == from;
-        if won {
-            *status = to;
-            crate::smart_auto_probe::wake();
-        }
-        if let Some(pass_id) = self.active_transform_pass_id() {
-            crate::transform_trace::transition(pass_id, actual.as_str(), to.as_str(), won);
-        }
-        won
-    }
-
-    /// Next generation id for a new `TransformSession` (issue #312 PR-B2).
-    /// Monotonically increasing so a `set_applied` call that was dispatched
-    /// against an OLDER session (e.g. a slow main-thread apply still
-    /// in-flight when the user starts a new transform pass) can detect it no
-    /// longer applies and no-op instead of mutating the session that replaced
-    /// it.
-    pub fn next_transform_session_generation(&self) -> u64 {
-        self.transform_session_generation
-            .fetch_add(1, Ordering::SeqCst)
-            + 1
-    }
-
-    /// Bump and return the next apply epoch (issue #312 PR-C2, nit N1). Called
-    /// at the start of every apply/undo and by `cancel_transform`, so any
-    /// clipboard restore still pending from an earlier op sees a changed epoch
-    /// and declines to run.
-    pub fn next_transform_apply_epoch(&self) -> u64 {
-        self.transform_apply_epoch.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    /// Current apply epoch, read by a pending clipboard restore to decide
-    /// whether it is still the most recent op (see `next_transform_apply_epoch`).
-    pub fn transform_apply_epoch(&self) -> u64 {
-        self.transform_apply_epoch.load(Ordering::SeqCst)
     }
 }
 
@@ -821,7 +605,6 @@ impl Default for AppState {
             meeting_generation: AtomicU64::new(0),
             meeting_active: AtomicBool::new(false),
             meeting_inference_active: AtomicBool::new(false),
-            meeting_summary_active: AtomicBool::new(false),
             settings_revision: AtomicU64::new(0),
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),
@@ -830,16 +613,6 @@ impl Default for AppState {
             correction_matcher: Mutex::new(None),
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
-            transform_status: Mutex::new(TransformStatus::default()),
-            transform_pass_sequence: AtomicU64::new(0),
-            active_transform_pass_id: AtomicU64::new(0),
-            cancelled_transform_pass_id: AtomicU64::new(0),
-            transform_instruction_attempt: AtomicU64::new(1),
-            transform_session: Mutex::new(None),
-            transform_session_generation: AtomicU64::new(0),
-            transform_apply_epoch: AtomicU64::new(0),
-            transform_inflight: Mutex::new(None),
-            transform_prewarm: Mutex::new(None),
         }
     }
 }
@@ -1006,175 +779,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn transform_status_defaults_to_idle_and_does_not_block_recording() {
-        let state = AppState::default();
-        assert_eq!(state.transform_status(), TransformStatus::Idle);
-        assert!(!state.transform_status().blocks_recording());
-    }
-
-    #[test]
-    fn transform_status_setter_getter_roundtrip() {
-        let state = AppState::default();
-        for status in [
-            TransformStatus::Capturing,
-            TransformStatus::Connecting,
-            TransformStatus::Listening,
-            TransformStatus::Thinking,
-            TransformStatus::ReviewPending,
-            TransformStatus::Applying,
-            TransformStatus::Idle,
-        ] {
-            state.set_transform_status(status);
-            assert_eq!(state.transform_status(), status);
-        }
-    }
-
-    #[test]
-    fn try_transition_transform_status_only_succeeds_when_current_matches_from() {
-        let state = AppState::default();
-        assert_eq!(state.transform_status(), TransformStatus::Idle);
-
-        // Wrong `from` -- no transition, status untouched.
-        assert!(!state.try_transition_transform_status(
-            TransformStatus::ReviewPending,
-            TransformStatus::Applying
-        ));
-        assert_eq!(state.transform_status(), TransformStatus::Idle);
-
-        // Correct `from` -- transitions and reports success.
-        assert!(state
-            .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
-        assert_eq!(state.transform_status(), TransformStatus::Capturing);
-
-        // A second call with the same `from` now fails -- status already moved on,
-        // modeling two concurrent callers racing for the same transition.
-        assert!(!state
-            .try_transition_transform_status(TransformStatus::Idle, TransformStatus::Capturing));
-        assert_eq!(state.transform_status(), TransformStatus::Capturing);
-    }
-
-    #[test]
-    fn transform_session_generation_is_monotonic() {
-        let state = AppState::default();
-        assert_eq!(state.next_transform_session_generation(), 1);
-        assert_eq!(state.next_transform_session_generation(), 2);
-        assert_eq!(state.next_transform_session_generation(), 3);
-    }
-
-    #[test]
-    fn transform_pass_ids_are_monotonic_and_stale_clears_cannot_remove_new_pass() {
-        let state = AppState::default();
-        let first = state.next_transform_pass_id();
-        let second = state.next_transform_pass_id();
-        assert_eq!((first, second), (1, 2));
-
-        state.activate_transform_pass(first);
-        assert_eq!(state.active_transform_pass_id(), Some(first));
-        state.activate_transform_pass(second);
-        assert!(!state.clear_transform_pass(first));
-        assert_eq!(state.active_transform_pass_id(), Some(second));
-        assert!(state.clear_transform_pass(second));
-        assert_eq!(state.active_transform_pass_id(), None);
-    }
-
-    #[test]
-    fn transform_cancel_marker_is_visible_before_active_pass_is_cleared() {
-        let state = AppState::default();
-        state.activate_transform_pass(11);
-        state.mark_transform_pass_cancelled(11);
-
-        assert!(state.is_transform_pass_cancelled(11));
-        assert_eq!(state.active_transform_pass_id(), Some(11));
-        assert!(!state.is_transform_pass_cancelled(12));
-    }
-
-    #[test]
-    fn retries_keep_pass_id_and_advance_instruction_attempt() {
-        let state = AppState::default();
-        state.activate_transform_pass(7);
-        assert_eq!(state.current_instruction_attempt(), 1);
-        assert_eq!(state.next_instruction_attempt(), 2);
-        assert_eq!(state.active_transform_pass_id(), Some(7));
-    }
-
-    #[test]
-    fn every_non_idle_transform_status_blocks_recording_start() {
-        for status in [
-            TransformStatus::Capturing,
-            TransformStatus::Connecting,
-            TransformStatus::Listening,
-            TransformStatus::Thinking,
-            TransformStatus::ReviewPending,
-            TransformStatus::Applying,
-        ] {
-            assert!(
-                status.blocks_recording(),
-                "{status:?} should block a new recording from starting"
-            );
-        }
-        assert!(!TransformStatus::Idle.blocks_recording());
-    }
-
-    #[test]
-    fn dictation_status_and_transform_status_are_independent_fields() {
-        // "vice versa": neither status field's mutation affects the other —
-        // they are two independent activities tracked on the same AppState,
-        // not variants of a single shared state machine.
-        let state = AppState::default();
-
-        state.dictation.lock_or_recover().status = DictationStatus::Recording;
-        assert_eq!(state.transform_status(), TransformStatus::Idle);
-
-        state.set_transform_status(TransformStatus::Thinking);
-        assert_eq!(
-            state.dictation.lock_or_recover().status,
-            DictationStatus::Recording
-        );
-
-        state.dictation.lock_or_recover().status = DictationStatus::Idle;
-        assert_eq!(state.transform_status(), TransformStatus::Thinking);
-    }
-
-    #[test]
-    fn transform_status_serde_form_matches_as_str() {
-        // Regression guard: `#[serde(rename_all = "snake_case")]` must produce
-        // the same wire string as `as_str()` for every variant. Before this
-        // fix, `rename_all = "lowercase"` serialized `ReviewPending` as
-        // "reviewpending", diverging from `as_str()`'s "review_pending".
-        for status in [
-            TransformStatus::Idle,
-            TransformStatus::Capturing,
-            TransformStatus::Connecting,
-            TransformStatus::Listening,
-            TransformStatus::Thinking,
-            TransformStatus::ReviewPending,
-            TransformStatus::Applying,
-        ] {
-            let serialized = serde_json::to_string(&status).unwrap();
-            let expected = format!("\"{}\"", status.as_str());
-            assert_eq!(
-                serialized, expected,
-                "serde form of {status:?} must match as_str()"
-            );
-        }
-    }
-
-    #[test]
-    fn transform_status_telemetry_strings_are_stable_and_content_free() {
-        let cases = [
-            (TransformStatus::Idle, "idle"),
-            (TransformStatus::Capturing, "capturing"),
-            (TransformStatus::Connecting, "connecting"),
-            (TransformStatus::Listening, "listening"),
-            (TransformStatus::Thinking, "thinking"),
-            (TransformStatus::ReviewPending, "review_pending"),
-            (TransformStatus::Applying, "applying"),
-        ];
-        for (status, expected) in cases {
-            assert_eq!(status.as_str(), expected);
-        }
     }
 }

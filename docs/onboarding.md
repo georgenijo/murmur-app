@@ -17,7 +17,7 @@ permission guidance, recording state, retained PCM, and transcription.
 ```bash
 # Build the bundled helpers FIRST — on macOS, tauri dev/build and even
 # cargo check/test fail on a fresh clone until this binary exists.
-python3 scripts/build_local_llm_sidecar.py
+python3 scripts/build_capture_helpers.py
 
 cd app && npm ci
 ```
@@ -108,8 +108,8 @@ The app searches these locations in order:
 
 | Permission | Required For | How to Grant |
 |------------|-------------|--------------|
-| **Microphone** | Audio capture — dictation and transform instructions | Prompted in-app by the setup assistant |
-| **Accessibility** | All hotkeys (rdev), auto-paste, and transform selection capture / write-back | System Settings > Privacy & Security > Accessibility |
+| **Microphone** | Audio capture — dictation and Voice Query instructions | Prompted in-app by the setup assistant |
+| **Accessibility** | All hotkeys (rdev), auto-paste, and Voice Query selection capture | System Settings > Privacy & Security > Accessibility |
 | **System Audio** (optional, macOS 14.2+) | Meeting playback capture as the Them channel | Explicit check in onboarding or History → Meetings; grant under Privacy & Security > Screen & System Audio Recording |
 
 Under `npm run tauri:dev`, grant these to your *terminal app* — dev builds are
@@ -131,19 +131,9 @@ Release and dev builds write to the same local directory:
 [`tools/murmur-diag/README.md`](../tools/murmur-diag/README.md) for local MCP
 diagnostics.
 
-## Transform model
-
-The selected-text transform uses a separate, optional local LLM: Qwen2.5-1.5B-Instruct Q4_K_M (~1.1 GB), downloaded from **Settings → Transform**. It is pinned by exact size and SHA-256, verified again before every spawn, and stored at:
-
-```text
-~/Library/Application Support/local-dictation/models/transform-llm/<sha256>/qwen2.5-1.5b-instruct-q4_k_m.gguf
-```
-
-Remove it from the same page. The helper process is shut down first so the file is not open. If repeated faults trip the circuit breaker, **Reset runtime** re-enables it.
-
 ## Diagnostics data
 
-Local run history and CPU/memory samples live in `diagnostics/performance.sqlite3` under the Tauri app-data directory (`~/Library/Application Support/com.localdictation/`, or `com.localdictation.dev` in dev builds). They are content-free and bounded (200 runs, 600 samples), and are cleared from Settings → Performance. Explicitly consented transform content captures live beside them under `diagnostics/transforms/` with restrictive permissions, a 3-capture cap, and a 7-day expiry.
+Local run history and CPU/memory samples live in `diagnostics/performance.sqlite3` under the Tauri app-data directory (`~/Library/Application Support/com.localdictation/`, or `com.localdictation.dev` in dev builds). They are content-free and bounded (200 runs, 600 samples), and are cleared from Settings → Performance.
 
 ## Personal knowledge data
 

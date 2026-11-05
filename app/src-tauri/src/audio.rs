@@ -1331,14 +1331,6 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
     crate::audio_inventory::available_devices()
 }
 
-pub fn start_transform_capture_audio(
-    app_handle: Option<tauri::AppHandle>,
-    device_id: Option<String>,
-    transform_pass_id: u64,
-) -> Result<(), String> {
-    crate::audio_lifecycle::start_transform_recording(app_handle, device_id, transform_pass_id)
-}
-
 pub fn start_query_capture_audio(
     app_handle: Option<tauri::AppHandle>,
     device_id: Option<String>,
@@ -3592,18 +3584,6 @@ pub(crate) fn spawn_capture_worker(
             let _ = event_sender.send(AudioWorkerEvent::ThreadExited { owner });
         })
         .map_err(|error| format!("Failed to spawn capture supervisor thread: {error}"))
-}
-
-pub fn stop_recording() -> Result<Vec<f32>, String> {
-    crate::audio_lifecycle::stop_current_recording()
-}
-
-pub fn cancel_recording(reason: crate::audio_lifecycle::AudioCancelReason) -> Result<(), String> {
-    crate::audio_lifecycle::cancel_current(reason)
-}
-
-pub fn is_recording() -> bool {
-    crate::audio_lifecycle::is_audio_active()
 }
 
 pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {

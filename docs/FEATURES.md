@@ -61,7 +61,7 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
   **Them** on separate native channels; no diarization or cloud processing.
 - VAD-sized chunks transcribe incrementally through the selected shared model,
   with a distinct meeting overlay and mutual exclusion from dictation,
-  transforms, imported files, corpus capture, and benchmarks.
+  imported files, corpus capture, and benchmarks.
 - Searchable sessions and segments are durable in SQLite. Chunk WAVs are
   fsynced before pending rows and deleted only after transcript commit unless
   audio retention is enabled.
@@ -131,7 +131,7 @@ Turns clear spoken enumerations into lists; applies explicitly cued email/URL gr
 Single owner for spoken punctuation, lines, paragraphs, quotes, parentheses, slashes, symbols, ASR-punctuation arbitration, and sentence-boundary-aware `scratch that`. Basic/Extended/Union policy preserves existing Voice Commands and Smart Formatting enablement without double-processing.
 
 ### Spoken numbers — [features/spoken-number-formatting.md](features/spoken-number-formatting.md)
-Renders English cardinals as digits under a Mode-aware policy. Prose Modes keep small counts such as "two of them" as words. Technical and Terminal convert eagerly and join digit runs (`8080`) and dotted versions. Every policy renders times (`4:30 PM`), dates and years (`September 17, 2026`), labels (`step 3`), and versions (`2.17.2`), and leaves hyphenated compounds (`two-factor`) alone. Invalid scale order fails closed at the last unambiguous group. Verbatim, imported audio, and transform instructions remain literal.
+Renders English cardinals as digits under a Mode-aware policy. Prose Modes keep small counts such as "two of them" as words. Technical and Terminal convert eagerly and join digit runs (`8080`) and dotted versions. Every policy renders times (`4:30 PM`), dates and years (`September 17, 2026`), labels (`step 3`), and versions (`2.17.2`), and leaves hyphenated compounds (`two-factor`) alone. Invalid scale order fails closed at the last unambiguous group. Verbatim, imported audio, and query instructions remain literal.
 
 ### CLI command formatting — [features/cli-command-formatting.md](features/cli-command-formatting.md)
 Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and similar commands — versions, flags, paths, operators, quotes, canonical aliases. Detection is prefix/trigger/profile bounded; project `package.json` names extend the local lexicon; ordinary prose is untouched.
@@ -145,14 +145,11 @@ Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and sim
 ### Voice Commands 2.0 — [features/voice-commands.md](features/voice-commands.md)
 Typed, persistent local commands: text replacements and multiline snippets, deterministic `{{date}}` / `{{time}}` variables, explicitly permitted `{{clipboard}}` insertion, global and per-app scopes, conflict validation, and a no-paste preview/test UI.
 
-### Correct last dictation — [features/dictation-correction.md](features/dictation-correction.md)
-Explicit spoken correction of the latest delivery through the existing local model, literal spelled-letter preservation, reviewed copy or matching-selection replacement, and separate optional teaching. Available from the command palette and an opt-in ⌘⇧E shortcut.
-
 ### Correct and Teach — [features/correct-and-teach.md](features/correct-and-teach.md)
 Edit the newest history entry and Murmur proposes **one bounded replacement** to learn, scoped global / app / project. Uses uniquely provable case-insensitive context alignment, so casing differences can't widen a one-word fix into a sentence rule; ambiguous alignments fail closed. **Teach specific term** lets you select one exact heard term inside a longer sentence when automatic extraction is too broad. Nothing persists without explicit confirmation.
 
 ### Personal knowledge store — [features/personal-knowledge-store.md](features/personal-knowledge-store.md)
-Versioned local SQLite store for replacement rules, vocabulary terms, snippets, and saved transforms. Bounded search, scoped inspection, create/edit/enable/disable/delete, atomic export/import, visible recovery state, confirmed delete-all, deterministic migration with backup recovery and quarantine.
+Versioned local SQLite store for replacement rules, vocabulary terms, snippets. Bounded search, scoped inspection, create/edit/enable/disable/delete, atomic export/import, visible recovery state, confirmed delete-all, deterministic migration with backup recovery and quarantine.
 
 ### Per-app dictation context — [features/per-app-profiles.md](features/per-app-profiles.md)
 Per-bundle-ID profiles override auto-paste, cleanup, smart formatting, and CLI formatting, and select an explicit **Writing Style** (Inherit / Conversational / Polished prose / Code-technical / Verbatim / Notes). Resolved once into an immutable recording-start snapshot; app type is never inferred and app content is never captured. A bounded memory-only running-app picker with manual bundle-ID fallback fills the profile list.
@@ -164,23 +161,6 @@ ship with the app; legacy profiles remain unbound and behavior-compatible.
 
 ### IDE context — [features/ide-context.md](features/ide-context.md)
 Opt-in, per-profile, memory-only index of user-selected local roots. Corrects unique project symbols and canonicalizes explicitly triggered `@file` mentions to root-relative text. Never reads screen, selection, or clipboard. Ambiguous or stale references stay unchanged. Index contents are never persisted — only the chosen root strings are.
-
----
-
-## 5. Selected-text transform
-
-**[docs/features/selected-text-transform.md](features/selected-text-transform.md)** · ADR: [signed local-LLM sidecar](decisions/2026-07-20-signed-local-llm-sidecar.md)
-
-Hold a dedicated key with text selected in any app, speak an instruction, review a local LLM's proposal, approve or undo.
-
-- **Independent hotkey** (`alt_r` / `ctrl_l` / `shift_r`), rejects the dictation key. Off by default.
-- **Signed local sidecar** running Qwen2.5-1.5B-Instruct Q4_K_M — size + SHA-256 pinned, spawned with empty env and the model as a read-only fd, no network, hardened runtime + App Sandbox.
-- **Review-first**: a word diff in a non-focusable popover. Approve writes via AX set-value or a clipboard-restoring paste fallback; Undo restores the frozen original. It never auto-applies.
-- **Presets and saved transforms**: Shorten, Bullets, Professional, Fix grammar, Casual, plus user-defined transforms. Presets shadow saved transforms with the same normalized name.
-- **Selection capture** works in AX-native apps directly, and in Chromium/Electron webviews via an AX retry ladder then a sentinel-guarded synthetic Cmd+C that snapshots and restores the entire pasteboard.
-- **Fail-closed**: positively detected secure fields, denied Accessibility, and *errored* secure-field checks all refuse — the clipboard fallback never runs where a password field can't be ruled out.
-- **Escape cancels** during capture, listening, and thinking, carrying the exact pass ID so a delayed handler can't cancel the next pass.
-- Mutually exclusive with dictation in both directions; a refused keypress flashes an amber busy indicator instead of failing silently.
 
 ---
 
@@ -216,13 +196,7 @@ typing time saved at 40 words per minute minus dictation time, the most-used
 Mode, this month's completed meetings and capture minutes, this month's
 transform proposals and approval rate, and corrections taught.
 
-Local counters also retain meeting summary completions; transform runs,
-approvals, and successful undos by exact preset name; corrections proposed
-and taught; taught corrections by global/app/project scope; recordings by
-Mode ID; and successful Paste Last uses from every entry point. Each successful
-selected-text proposal counts as one run, including retries. Approvals and undos
-belong to the proposal's month. Dictation correction reviews do not count as
-selected-text transforms. Meeting minutes use native capture elapsed time
+Local counters retain corrections proposed and taught, scope choices, recordings by Mode, and successful Paste Last uses. Meeting minutes use native capture elapsed time
 before processing, excluding the UI timer and transcript processing time.
 
 Main owns stats writes. Other webviews send completion receipts containing
@@ -255,7 +229,7 @@ Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mi
 ### Settings — [reference/settings.md](reference/settings.md)
 Settings opens on **General**. The **Customize** page is a compact hub of
 independent destinations: **Text & vocabulary**, **Voice commands**, **App
-overrides**, **Modes**, and **Selected-text rewrite**. Every hub destination has
+overrides**, and **Modes**. Every hub destination has
 a visible route back. Returning restores keyboard focus to the destination that
 opened it. The persistent Settings navigation also exposes
 Modes, General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
@@ -311,7 +285,7 @@ Static white waveform icon. Menu: Show Murmur, Disable Murmur (check item), Quit
 
 ### Performance workspace — [features/log-viewer.md](features/log-viewer.md)
 Embedded under Settings → Model → Advanced with **Events**, **Runs**,
-**Performance**, **Compare**, and **Transform** tabs. Stream chips (`pipeline`,
+**Performance**, **Compare** tabs. Stream chips (`pipeline`,
 `audio`, `keyboard`, `transform`, `system`) and level filters, expandable JSON
 rows, auto-scroll that disengages on manual scroll, copy-all and clear.
 
@@ -333,15 +307,10 @@ SHA-256-verified 20-clip voice corpus against baseline and candidate commits.
 The compile-time feature, recorder IPC, separate bundle/data/log namespace,
 headless runner, and regression gate are excluded from normal distribution.
 
-### Transform diagnostics
-Every transform-key hold is recorded as a content-free `TransformAttemptV1` with ordered enum-only phase outcomes — including refused, cancelled, and superseded passes. **Capture next transform** is an explicit, confirmed, in-memory arm that stores one pass's real content locally (`0700`/`0600`, max 3, 7-day expiry, no export) for cases where exact content must be inspected.
-
----
-
 ## 9. Platform, privacy, distribution
 
 - macOS 14+ on Apple Silicon. App builds fail explicitly for non-macOS targets.
-- Developer ID signed and notarized; hardened runtime; sidecar ships with split entitlements; release finalization fails closed on any unexpected bundle executable.
+- Developer ID signed and notarized; hardened runtime; capture helpers ship with dedicated entitlements; release finalization fails closed on any unexpected bundle executable.
 - Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
 - **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained, apart from disclosed bounded temporary system audio for opted-in speaker refinement.
@@ -353,9 +322,8 @@ Every transform-key hold is recorded as a content-free `TransformAttemptV1` with
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 244 registered commands |
+| Rust backend | `app/src-tauri/src/` — 210 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
-| LLM sidecar | `app/src-tauri/sidecars/local-llm/`, protocol in `crates/local-llm-protocol` |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
 | Benchmark fixtures | `bench/` |

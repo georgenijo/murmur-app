@@ -10,7 +10,7 @@ import type { OverlayGeometry } from '../lib/overlayGeometry';
 import type { DictationStatus } from '../lib/types';
 
 const noop = () => {};
-const variants = ['idle', 'recording', 'processing', 'cancelled', 'secure', 'miss', 'microphone', 'delivery', 'expanded', 'meeting'] as const;
+const variants = ['idle', 'recording', 'processing', 'cancelled', 'miss', 'microphone', 'delivery', 'expanded', 'meeting'] as const;
 type Variant = typeof variants[number];
 const controlsStates = ['idle', 'starting', 'still-connecting', 'recording', 'recovering'] as const;
 type ControlsState = typeof controlsStates[number];
@@ -39,11 +39,9 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
     : geometry[geometryKey(variant, pill, external)];
   const status: DictationStatus = variant === 'expanded'
     ? controlsState === 'still-connecting' ? 'starting' : controlsState
-    : recording || ['cancelled', 'secure', 'miss', 'microphone'].includes(variant)
+    : recording || ['cancelled', 'miss', 'microphone'].includes(variant)
       ? 'recording' : variant === 'processing' ? 'processing' : 'idle';
-  const visual = deriveVisual(status, variant === 'cancelled', variant === 'miss', false, false,
-    variant === 'secure', false, variant === 'microphone' ? 'chooseMicrophone' : null,
-    false, false, 'idle', variant === 'delivery');
+  const visual = deriveVisual(status, variant === 'cancelled', variant === 'miss', false, variant === 'microphone' ? 'chooseMicrophone' : null, false, false, 'idle', variant === 'delivery');
   useLayoutEffect(() => {
     if (status !== 'recording') return;
     barRefs.current.forEach((el, i) => {

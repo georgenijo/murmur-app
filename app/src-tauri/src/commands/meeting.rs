@@ -2,8 +2,7 @@ use crate::meeting_capture::{
     MeetingCaptureConfig, MeetingRuntimeStatus, SystemAudioAccess, SystemAudioPermissionState,
 };
 use crate::meeting_review::{
-    MeetingReviewExportFormat, MeetingWorkspace, RestoreMeetingReviewRequest,
-    SaveMeetingReviewRequest,
+    MeetingReviewExportFormat, MeetingWorkspace, SaveMeetingReviewRequest,
 };
 use crate::meeting_store::{
     MeetingPage, MeetingRepository, MeetingSession, MeetingStoreStatus, SaveMeetingMetadataRequest,
@@ -83,13 +82,7 @@ fn meeting_conflict(state: &State) -> Option<&'static str> {
     if state.corpus.is_active() {
         return Some("Finish the corpus recording before starting a meeting.");
     }
-    if state
-        .app_state
-        .meeting_summary_active
-        .load(Ordering::SeqCst)
-    {
-        return Some("Wait for the meeting summary to finish or cancel it first.");
-    }
+
     if state.app_state.meeting_active.load(Ordering::SeqCst) {
         return Some("A meeting is already active.");
     }
@@ -109,11 +102,7 @@ fn meeting_conflict(state: &State) -> Option<&'static str> {
     if state.benchmark.is_running() {
         return Some("Wait for the benchmark to finish before starting a meeting.");
     }
-    if state.app_state.transform_status().blocks_recording()
-        || state.transform_runtime.is_transform_busy()
-    {
-        return Some("Finish or cancel the active text transform before starting a meeting.");
-    }
+
     if state.app_state.dictation.lock_or_recover().status != DictationStatus::Idle {
         return Some("Wait for dictation to finish before starting a meeting.");
     }
@@ -167,7 +156,6 @@ pub async fn start_meeting(
         || state.meeting_store.repository(),
         |id| crate::meeting_audio::invalidate_playback(&app, Some(id)),
     )?;
-    state.transform_runtime.shutdown();
     if let Err(error) = state.meetings.start(app, repository.clone(), config) {
         state
             .app_state
@@ -413,21 +401,6 @@ pub fn save_meeting_review(
 }
 
 #[tauri::command]
-pub fn restore_meeting_review_from_generated(
-    request: RestoreMeetingReviewRequest,
-    state: tauri::State<'_, State>,
-) -> Result<MeetingWorkspace, String> {
-    let id = request.session_id.trim();
-    if state.meetings.status().session_id.as_deref() == Some(id) && state.meetings.is_active() {
-        return Err("Stop this meeting before editing its review.".into());
-    }
-    state
-        .meeting_store
-        .repository()?
-        .restore_review_from_generated(request)
-}
-
-#[tauri::command]
 pub fn get_meeting_review_export(
     id: String,
     format: MeetingReviewExportFormat,
@@ -469,16 +442,6 @@ pub fn delete_meeting(
     if state.meetings.status().session_id.as_deref() == Some(id) && state.meetings.is_active() {
         return Err("Stop this meeting before deleting it.".to_string());
     }
-    let summary = state.meeting_summaries.status();
-    if summary.session_id.as_deref() == Some(id)
-        && matches!(
-            summary.phase,
-            crate::commands::meeting_summary::MeetingSummaryPhase::Running
-                | crate::commands::meeting_summary::MeetingSummaryPhase::Cancelling
-        )
-    {
-        return Err("Cancel this meeting summary before deleting it.".to_string());
-    }
     crate::meeting_diarization::cancel_session(id)?;
     crate::meeting_audio::invalidate_playback(&app, Some(id));
     state.meeting_store.repository()?.delete_session(id)
@@ -494,13 +457,7 @@ pub fn delete_all_meetings(
     if state.meetings.is_active() {
         return Err("Stop the active meeting before deleting meeting history.".to_string());
     }
-    if matches!(
-        state.meeting_summaries.status().phase,
-        crate::commands::meeting_summary::MeetingSummaryPhase::Running
-            | crate::commands::meeting_summary::MeetingSummaryPhase::Cancelling
-    ) {
-        return Err("Cancel the active meeting summary before deleting meeting history.".into());
-    }
+
     crate::meeting_diarization::cancel_all()?;
     crate::meeting_audio::invalidate_playback(&app, None);
     state.meeting_store.repository()?.delete_all()

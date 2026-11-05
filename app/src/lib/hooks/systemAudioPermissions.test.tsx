@@ -5,7 +5,7 @@ import { PermissionsBanner } from '../../components/PermissionsBanner';
 import { OnboardingFlow } from '../../components/onboarding/OnboardingFlow';
 import { useMeetings } from './useMeetings';
 import { DEFAULT_SETTINGS } from '../settings';
-import { IDLE_MEETING_STATUS, IDLE_MEETING_SUMMARY_STATUS, type SystemAudioAccess } from '../meetings';
+import { IDLE_MEETING_STATUS, type SystemAudioAccess } from '../meetings';
 import deniedAccess from '../fixtures/system-audio-access.json';
 
 const native = vi.hoisted(() => ({
@@ -47,7 +47,6 @@ describe('System Audio native permission contract', () => {
         case 'get_system_audio_permission_status': return passiveStatus;
         case 'request_system_audio_permission': return probeResult;
         case 'get_meeting_status': return IDLE_MEETING_STATUS;
-        case 'get_meeting_summary_status': return IDLE_MEETING_SUMMARY_STATUS;
         case 'list_meetings': return { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
         default: return undefined;
       }

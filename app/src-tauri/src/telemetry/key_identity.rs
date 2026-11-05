@@ -218,7 +218,7 @@ fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
         "target_key" => {
             matches!(value, "none" | "other")
                 || crate::keyboard::is_dictation_key_id(value)
-                || crate::keyboard::is_transform_or_query_key_id(value)
+                || crate::keyboard::is_query_key_id(value)
         }
         "modifier_edge" => matches!(value, "press" | "release" | "not_modifier"),
         "caller_file" => {

@@ -10,22 +10,19 @@ import type { MicrophoneFailureCue } from '../../lib/hooks/useOverlayRuntime';
  */
 export type OverlayIndicator =
   | { kind: 'cancelled' }
-  | { kind: 'secureField' }
-  | { kind: 'transformBusy' }
   | { kind: 'hotkeyMiss' }
   | { kind: 'microphoneFailure'; failure: MicrophoneFailureCue }
   | { kind: 'starting'; slow: boolean }
   | { kind: 'recording' }
   | { kind: 'recovering' }
   | { kind: 'processing' }
-  | { kind: 'transforming' }
   | { kind: 'calibrating' }
   | { kind: 'meeting'; processing: boolean }
   | { kind: 'clipboardOnly' }
   | { kind: 'idle'; dimmed: boolean };
 
 const PRIORITY_CUES = new Set<OverlayIndicator['kind']>([
-  'calibrating', 'cancelled', 'secureField', 'microphoneFailure', 'transformBusy', 'hotkeyMiss',
+  'calibrating', 'cancelled', 'microphoneFailure', 'hotkeyMiss',
 ]);
 
 export interface OverlayVisual {
@@ -45,26 +42,14 @@ export interface OverlayVisual {
  * Pure derivation of the overlay's top-bar visual state from status, transient
  * flashes, and global-disable. No React or timers live here.
  *
- * Priority: cancelled > secure-field flash > microphone failure >
- * transform-busy flash > hotkey-miss > starting > recording > recovering >
- * processing > transforming > clipboard-only > idle.
- *
- * `transforming` and `showSecureField` (issue #312 PR-C2) are the transform
- * flow's overlay affordances: the "transforming…" indicator shown while
- * the local LLM is thinking, and a brief flash when a password/secure field is
- * refused. `showTransformBusy` (issue #329) flashes when a transform keypress
- * was refused because dictation/benchmark/file-transcription/a mid-flight
- * transform owns the pipeline. All default off so the dictation call sites
- * are unchanged.
+ * Priority: calibration > cancelled > microphone failure > hotkey miss >
+ * meeting > starting > recording > recovering > processing > clipboard-only > idle.
  */
 export function deriveVisual(
   status: DictationStatus,
   showCancelled: boolean,
   showHotkeyMiss: boolean,
   disabled: boolean,
-  transforming: boolean = false,
-  showSecureField: boolean = false,
-  showTransformBusy: boolean = false,
   showMicrophoneFailure: MicrophoneFailureCue | false | null = false,
   stillConnecting: boolean = false,
   calibrating: boolean = false,
@@ -76,12 +61,8 @@ export function deriveVisual(
     indicator = { kind: 'calibrating' };
   } else if (showCancelled) {
     indicator = { kind: 'cancelled' };
-  } else if (showSecureField) {
-    indicator = { kind: 'secureField' };
   } else if (showMicrophoneFailure) {
     indicator = { kind: 'microphoneFailure', failure: showMicrophoneFailure };
-  } else if (showTransformBusy) {
-    indicator = { kind: 'transformBusy' };
   } else if (showHotkeyMiss) {
     indicator = { kind: 'hotkeyMiss' };
   } else if (meetingPhase !== 'idle' && meetingPhase !== 'failed') {
@@ -94,8 +75,6 @@ export function deriveVisual(
     indicator = { kind: 'recovering' };
   } else if (status === 'processing') {
     indicator = { kind: 'processing' };
-  } else if (transforming) {
-    indicator = { kind: 'transforming' };
   } else if (showClipboardOnly) {
     indicator = { kind: 'clipboardOnly' };
   } else {

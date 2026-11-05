@@ -14,21 +14,6 @@ function tile(label: string) {
 beforeEach(() => localStorage.clear());
 
 describe('InsightsView transform tile', () => {
-  it('shows the empty state alongside unchanged Mode and monthly totals', () => {
-    expect(tile('Most-used transform')).toContain('None yet');
-    expect(tile('Most-used transform')).toContain('0 runs');
-    expect(tile('Most-used mode')).toContain('None yet');
-    expect(tile('Transforms this month')).toContain('0% approved');
-    expect(tile('Paste last')).toContain('0');
-    expect(tile('Paste last')).toContain('successful uses');
-  });
-
-  it('displays the saved transform name and all-time run count', () => {
-    updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Weekly notes' }, '2026-01');
-    updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Weekly notes' });
-    expect(tile('Most-used transform')).toContain('Weekly notes');
-    expect(tile('Most-used transform')).toContain('2 runs');
-  });
 
   it('displays the successful Paste last count', () => {
     updateActivityStats({ kind: 'paste_last' });

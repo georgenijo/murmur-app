@@ -15,7 +15,6 @@ SCHEMA_VERSION = 1
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TEAM_ID_RE = re.compile(r"^[A-Z0-9]{10}$")
-LLM_HELPER_IDENTIFIER = "com.localdictation.local-llm-sidecar"
 CAPTURE_AGENT_IDENTIFIER = "com.localdictation.capture-agent"
 CAPTURE_WORKER_IDENTIFIER = "com.localdictation.capture-worker"
 CAPTURE_HELPER_IDENTIFIER = "com.localdictation.capture-helper"
@@ -93,8 +92,7 @@ def _require_helper(
 ) -> dict[str, Any]:
     """Validate the shape of one signed helper provenance block.
 
-    The signed-local-LLM ADR requires provenance to additionally record the
-    helper hash, architecture, designated requirement, Team ID, and entitlement
+    Record the capture helper hash, architecture, designated requirement, Team ID, and entitlement
     digest. This checks internal consistency; the workflow that records it proves
     those values against the finalized bundle.
     """
@@ -160,7 +158,6 @@ def create_provenance(
     root: Path,
     commit_sha: str,
     run_id: str | int,
-    helper: dict[str, Any] | None = None,
     capture_agent: dict[str, Any] | None = None,
     capture_worker: dict[str, Any] | None = None,
     capture_helper: dict[str, Any] | None = None,
@@ -204,12 +201,6 @@ def create_provenance(
             for path in files
         ],
     }
-    if helper is not None:
-        if platform != "macos":
-            raise ArtifactError("helper provenance is only recorded for macos")
-        payload["helper"] = _require_helper(
-            helper, LLM_HELPER_IDENTIFIER, "local-LLM helper"
-        )
     if capture_helper is not None:
         if platform != "macos":
             raise ArtifactError(
@@ -245,7 +236,6 @@ def validate_platform(
     root: Path,
     expected_sha: str,
     expected_run_id: str | int,
-    require_helper: bool = False,
     require_capture_agent: bool = False,
     require_capture_worker: bool = False,
     require_capture_helper: bool = False,
@@ -302,18 +292,6 @@ def validate_platform(
     if updater not in files or signature not in files:
         raise ArtifactError(f"{platform} updater files are absent from the artifact set")
 
-    helper = payload.get("helper")
-    if helper is not None:
-        if platform != "macos":
-            raise ArtifactError(f"{platform} provenance must not carry a helper block")
-        payload["helper"] = _require_helper(
-            helper, LLM_HELPER_IDENTIFIER, "local-LLM helper"
-        )
-    elif require_helper:
-        raise ArtifactError(
-            f"{platform} provenance is missing the required local-LLM helper block"
-        )
-
     capture_helper = payload.get("capture_helper")
     if capture_helper is not None:
         if platform != "macos":
@@ -364,7 +342,6 @@ def validate_release(
     expected_sha: str,
     expected_run_id: str | int,
     output: Path | None = None,
-    require_macos_helper: bool = False,
     require_macos_capture_agent: bool = False,
     require_macos_capture_worker: bool = False,
     require_macos_capture_helper: bool = False,
@@ -375,7 +352,6 @@ def validate_release(
             artifacts_root / platform,
             expected_sha,
             expected_run_id,
-            require_helper=(require_macos_helper and platform == "macos"),
             require_capture_agent=(
                 require_macos_capture_agent and platform == "macos"
             ),
@@ -587,11 +563,6 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--artifacts", type=Path, required=True)
     record.add_argument("--commit-sha", required=True)
     record.add_argument("--run-id", required=True)
-    record.add_argument("--helper-sha256")
-    record.add_argument("--helper-arch")
-    record.add_argument("--helper-designated-requirement")
-    record.add_argument("--helper-team-id")
-    record.add_argument("--helper-entitlement-sha256")
     record.add_argument("--capture-helper-sha256")
     record.add_argument("--capture-helper-arch")
     record.add_argument("--capture-helper-designated-requirement")
@@ -613,11 +584,6 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument("--expected-sha", required=True)
     validate.add_argument("--expected-run-id", required=True)
     validate.add_argument("--output", type=Path, required=True)
-    validate.add_argument(
-        "--require-macos-helper",
-        action="store_true",
-        help="fail unless the macOS provenance records the local-LLM helper block",
-    )
     validate.add_argument(
         "--require-macos-capture-agent",
         action="store_true",
@@ -652,23 +618,6 @@ def _parser() -> argparse.ArgumentParser:
     highest = subparsers.add_parser("highest-release")
     highest.add_argument("--releases", type=Path, required=True)
     return parser
-
-
-def _helper_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
-    provided = {
-        "sha256": args.helper_sha256,
-        "architecture": args.helper_arch,
-        "designated_requirement": args.helper_designated_requirement,
-        "team_id": args.helper_team_id,
-        "entitlement_sha256": args.helper_entitlement_sha256,
-    }
-    supplied = {key: value for key, value in provided.items() if value}
-    if not supplied:
-        return None
-    if len(supplied) != len(provided):
-        missing = sorted(set(provided) - set(supplied))
-        raise ArtifactError(f"incomplete helper provenance arguments: missing {missing}")
-    return supplied
 
 
 def _capture_helper_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -757,7 +706,6 @@ def main() -> None:
                 args.expected_sha,
                 args.expected_run_id,
                 args.output,
-                require_macos_helper=args.require_macos_helper,
                 require_macos_capture_agent=args.require_macos_capture_agent,
                 require_macos_capture_worker=args.require_macos_capture_worker,
                 require_macos_capture_helper=args.require_macos_capture_helper,

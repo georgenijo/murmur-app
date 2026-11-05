@@ -276,15 +276,13 @@ pub(crate) fn is_busy(state: &State) -> bool {
     let dictation = state.app_state.dictation.lock_or_recover().status;
     workload_busy(
         dictation,
-        state.app_state.transform_status(),
         state.query.status(),
         [
-            state.transform_runtime.is_transform_busy()
-                || state
-                    .app_state
-                    .dictation_partial_in_flight_id
-                    .load(Ordering::SeqCst)
-                    != 0
+            state
+                .app_state
+                .dictation_partial_in_flight_id
+                .load(Ordering::SeqCst)
+                != 0
                 || model_work_busy(state.app_state.model_runtime.lifecycle_states()),
             state.app_state.meeting_blocks_asr(),
             state.app_state.file_transcribing.load(Ordering::SeqCst),
@@ -315,12 +313,10 @@ fn model_work_busy(
 
 fn workload_busy(
     dictation: crate::state::DictationStatus,
-    transform: crate::state::TransformStatus,
     query: crate::query_flow::QueryStatus,
     owners: [bool; 10],
 ) -> bool {
     dictation != crate::state::DictationStatus::Idle
-        || transform.blocks_recording()
         || query.blocks_pipeline()
         || owners.into_iter().any(|active| active)
 }
@@ -442,11 +438,8 @@ pub(crate) fn initialize(app: tauri::AppHandle) {
     for event in [
         "recording-status-changed",
         "file-transcription-status-changed",
-        "transform-state-changed",
-        "transform-capture-starting",
         "query-state-changed",
         "meeting-status-changed",
-        "meeting-summary-status-changed",
         "app-disabled-changed",
         "microphone-preview-status",
         "benchmark-progress",
@@ -898,28 +891,18 @@ mod tests {
     #[test]
     fn suggestions_suppress_all_pipeline_phases_and_owner_flags() {
         use crate::query_flow::QueryStatus as Q;
-        use crate::state::{DictationStatus as D, TransformStatus as T};
-        assert!(!workload_busy(D::Idle, T::Idle, Q::Idle, [false; 10]));
+        use crate::state::DictationStatus as D;
+        assert!(!workload_busy(D::Idle, Q::Idle, [false; 10]));
         for phase in [D::Starting, D::Recording, D::Recovering, D::Processing] {
-            assert!(workload_busy(phase, T::Idle, Q::Idle, [false; 10]));
-        }
-        for phase in [
-            T::Capturing,
-            T::Connecting,
-            T::Listening,
-            T::Thinking,
-            T::ReviewPending,
-            T::Applying,
-        ] {
-            assert!(workload_busy(D::Idle, phase, Q::Idle, [false; 10]));
+            assert!(workload_busy(phase, Q::Idle, [false; 10]));
         }
         for phase in [Q::Connecting, Q::Listening, Q::Transcribing, Q::Running] {
-            assert!(workload_busy(D::Idle, T::Idle, phase, [false; 10]));
+            assert!(workload_busy(D::Idle, phase, [false; 10]));
         }
         for index in 0..10 {
             let mut owners = [false; 10];
             owners[index] = true;
-            assert!(workload_busy(D::Idle, T::Idle, Q::Idle, owners));
+            assert!(workload_busy(D::Idle, Q::Idle, owners));
         }
         let mut state = ready(vec![event("live", 1_000, 100_000)]);
         state.evaluate(2_000, Some("us.zoom.xos"), true);

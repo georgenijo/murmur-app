@@ -2,10 +2,10 @@
 
 ## Prerequisites
 
-- macOS 14+ on Apple Silicon (Core ML/ANE and the local-LLM sidecar are Apple Silicon only)
+- macOS 14+ on Apple Silicon (Core ML/ANE requires Apple Silicon)
 - Node.js 18+
 - Rust (install via rustup)
-- Python 3 (for the sidecar and packaging scripts)
+- Python 3 (for capture-helper and packaging scripts)
 
 ## Setup
 
@@ -14,7 +14,7 @@ git clone https://github.com/georgenijo/murmur-app.git
 cd murmur-app
 
 # 1. Build the bundled macOS helpers FIRST
-python3 scripts/build_local_llm_sidecar.py
+python3 scripts/build_capture_helpers.py
 
 # 2. Install Node dependencies
 cd app && npm install
@@ -24,15 +24,14 @@ npm run tauri:dev
 ```
 
 > **Step 1 is not optional on macOS.** `tauri.macos.conf.json` declares the
-> local-LLM and capture-helper externalBin entries, so `tauri dev`, `tauri build`, **and even
+> capture-helper externalBin entries, so `tauri dev`, `tauri build`, **and even
 > `cargo check` / `cargo test`** fail on a fresh clone until the binary exists at
-> the two target-triple-suffixed binaries under `app/src-tauri/binaries/`. The
+> the three target-triple-suffixed binaries under `app/src-tauri/binaries/`. The
 > binaries are gitignored; release CI builds them before bundling. If you only need the Rust
 > crate to compile, a stub file at that path is enough.
 
 A transcription model is downloaded through the app's first-launch setup
-assistant — you do not need to place model files by hand. The pinned transform
-LLM is a separate, optional download from **Settings → Transform**.
+assistant — you do not need to place model files by hand.
 
 ## Commands
 
@@ -44,7 +43,7 @@ cd app && npm run tauri build      # production .app and .dmg
 
 # Tests
 cd app/src-tauri && cargo test -- --test-threads=1   # Rust (timing-sensitive; keep single-threaded)
-cd app/src-tauri && cargo nextest run --workspace --exclude murmur-llm-sidecar --lib  # Rust unit tests, one process per test (exactly what CI runs)
+cd app/src-tauri && cargo nextest run --workspace --lib  # Rust unit tests, one process per test (exactly what CI runs)
 cd app && npm test                                   # frontend vitest
 cd app && npx tsc --noEmit                           # TypeScript
 ```
@@ -85,18 +84,18 @@ instead points to the launching terminal in System Settings. For a built
 murmur-app/
 ├── app/
 │   ├── src/                     # React frontend
-│   │   ├── components/          # UI (settings, overlay, log-viewer, transform-review, …)
+│   │   ├── components/          # UI (settings, overlay, log-viewer, query-review, …)
 │   │   └── lib/                 # hooks, settings, pure logic
 │   └── src-tauri/
 │       ├── src/                 # Rust backend (see docs/ARCHITECTURE.md for the module map)
-│       ├── sidecars/local-llm/  # the signed murmur-llm-sidecar crate
-│       ├── crates/              # local-llm-protocol
+│       ├── sidecars/capture/    # signed capture helpers
+│       ├── crates/              # capture-helper-protocol
 │       ├── binaries/            # built sidecar (gitignored)
 │       └── tests/               # integration tests
 ├── bench/                       # benchmark audio fixtures
 ├── docs/                        # architecture, features, references, decisions
 ├── prompts/                     # agent prompt files (work / chat / release / bug / swarm)
-├── scripts/                     # sidecar build, notarization, release artifacts
+├── scripts/                     # capture helper build, notarization, release artifacts
 ├── tests/                       # release-artifact and workflow-policy tests (Python)
 └── tools/murmur-diag/           # local MCP log-diagnostics tool
 ```
@@ -129,32 +128,6 @@ Structured JSONL rotates at 5 MB. In-app: **Settings → Performance**. See
 
 ## Common Issues
 
-### Sidecar binary not found
-
-```
-failed to bundle project: `murmur-llm-sidecar-aarch64-apple-darwin` not found
-```
-
-Run `python3 scripts/build_local_llm_sidecar.py`. This also breaks plain
-`cargo check`/`cargo test`, because Tauri's build script validates externalBin
-entries.
-
-### Sidecar CMake cannot find `OpenSSL::SSL`
-
-The helper build script disables optional OpenSSL discovery with
-`CMAKE_DISABLE_FIND_PACKAGE_OpenSSL=TRUE`. The pinned `llama-cpp-sys-2` forwards
-`CMAKE_*` environment variables verbatim; setting `LLAMA_OPENSSL=OFF` in the
-environment alone has no effect. Its transitive `common` feature still configures
-httplib even with `llama-cpp-2` default features disabled. Disabling discovery
-builds httplib without HTTPS support and avoids depending on Homebrew OpenSSL.
-The sidecar uses `target/local-llm-no-openssl-v1` so stale Cargo artifacts and
-CMake caches in the previous target directory cannot bypass this setting.
-The release cache namespace is `macos-release-v2`; rehearsal caches are already
-isolated by source SHA.
-Use the helper build script for both local and CI builds; the release build and
-both release rehearsals already use it. PR Rust CI stubs the LLM helper and
-excludes its crate from compilation.
-
 ### Permission prompt on every rebuild
 
 Dev builds get a different signature each time. Grant Accessibility to your
@@ -169,7 +142,7 @@ resetting `com.localdictation.dev` would not reset the terminal's permission.
 When you copy a freshly built `.app` over the old one, macOS keeps the old
 Accessibility entry — but it is stale, because the new binary has a different
 signature. Microphone carries over fine; anything keyboard-related (double-tap,
-auto-paste, transform hold key) silently fails.
+auto-paste) silently fails.
 
 ```bash
 tccutil reset Accessibility com.localdictation
@@ -182,13 +155,6 @@ built `.app` to exercise that path.
 ### "No input device available"
 
 Grant Microphone to your terminal app, then restart the dev server.
-
-### Transform crashes / popover misbehaves only in a real build
-
-The transform popover's `NSWindow` treatment is raw AppKit and must run on the
-main thread. `?mock=1` and `tauri dev` do not exercise that path — press the real
-transform hold key on a built `.app` to smoke-test it (this is what reproduced
-[#325](https://github.com/georgenijo/murmur-app/issues/325) immediately).
 
 ### Model not found
 

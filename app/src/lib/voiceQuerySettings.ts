@@ -1,4 +1,4 @@
-import type { QueryProviderId, Settings, TransformKey } from './settings';
+import type { QueryProviderId, Settings } from './settings';
 import type {
   QueryCommandConfig,
   QueryProviderTestResult,
@@ -65,7 +65,6 @@ export function queryCommand(settings: Settings): QueryCommandConfig {
 
 export function queryCommandFingerprintFor(
   command: QueryCommandConfig,
-  transformHoldKey: TransformKey | null,
 ): string {
   return JSON.stringify([
     command.provider,
@@ -73,6 +72,5 @@ export function queryCommandFingerprintFor(
     command.arguments,
     command.timeoutSeconds,
     command.contextLevel,
-    transformHoldKey,
   ]);
 }

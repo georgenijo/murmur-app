@@ -118,7 +118,6 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri
-          # Do not restore pre-fix llama.cpp CMake caches from macos-release-v1.
           shared-key: macos-release-v2
           key: profile-release
           add-job-id-key: false
@@ -137,7 +136,7 @@ jobs:
           fi
           echo "RUSTFLAGS=-C link-arg=$CLANG_RT -C link-arg=-mmacosx-version-min=14.0 -C link-arg=-Wl,-rpath,/usr/lib/swift" >> "$GITHUB_ENV"
 
-      - name: Build local-LLM sidecar
+      - name: Build capture helpers
         env:
           MACOSX_DEPLOYMENT_TARGET: "14.0"
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
@@ -145,10 +144,9 @@ jobs:
           CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
         run: |
           # RUSTFLAGS (libclang_rt for ggml-metal symbols) is already exported by
-          # the previous step; the sidecar links the same Metal ggml backend and
           # needs it too. The script places the arm64 binary at the target-triple
           # path Tauri's macOS externalBin overlay expects.
-          python3 scripts/build_local_llm_sidecar.py --release
+          python3 scripts/build_capture_helpers.py --release
 
       - name: Import Developer ID certificate
         env:
@@ -218,7 +216,6 @@ jobs:
             --app "$APP" \
             --identity "$APPLE_SIGNING_IDENTITY" \
             --main-entitlements app/src-tauri/entitlements.plist \
-            --llm-helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
             --capture-agent-entitlements app/src-tauri/capture-agent.entitlements.plist \
             --capture-agent-info-plist app/src-tauri/capture-agent-info.plist \
             --capture-helper-info-plist app/src-tauri/sidecars/capture/Info.plist \
@@ -340,27 +337,16 @@ jobs:
           ARCH=$(uname -m)
           [ "$ARCH" = "arm64" ] && ARCH=aarch64
 
-          # Record local-LLM helper provenance from the finalized bundle: hash,
-          # architecture, designated requirement, Team ID, and entitlement digest.
+          # Record capture helper provenance from the finalized bundle.
           APP=$(find app/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
-          HELPER="$APP/Contents/MacOS/murmur-llm-sidecar"
           CAPTURE_AGENT="$APP/Contents/MacOS/murmur-capture-agent"
           CAPTURE_HELPER="$APP/Contents/MacOS/murmur-capture-helper"
           CAPTURE_WORKER="$APP/Contents/MacOS/murmur-capture-worker"
-          if [ ! -f "$HELPER" ] || [ ! -f "$CAPTURE_AGENT" ] || \
+          if [ ! -f "$CAPTURE_AGENT" ] || \
              [ ! -f "$CAPTURE_HELPER" ] || [ ! -f "$CAPTURE_WORKER" ]; then
             echo "ERROR: finalized bundle is missing a required helper"
             exit 1
           fi
-          HELPER_SHA=$(shasum -a 256 "$HELPER" | awk '{print $1}')
-          HELPER_ARCH=$(lipo -archs "$HELPER" | tr -d ' \n')
-          HELPER_DR=$(codesign -d -r- "$HELPER" 2>&1 | sed -n 's/^#* *designated => //p')
-          if [ -z "$HELPER_DR" ]; then
-            echo "ERROR: could not read the helper designated requirement"
-            exit 1
-          fi
-          codesign -d --entitlements :- --xml "$HELPER" > "$RUNNER_TEMP/helper-entitlements.xml" 2>/dev/null
-          HELPER_ENT_SHA=$(shasum -a 256 "$RUNNER_TEMP/helper-entitlements.xml" | awk '{print $1}')
           CAPTURE_HELPER_SHA=$(shasum -a 256 "$CAPTURE_HELPER" | awk '{print $1}')
           CAPTURE_HELPER_ARCH=$(lipo -archs "$CAPTURE_HELPER" | tr -d ' \n')
           CAPTURE_HELPER_DR=$(codesign -d -r- "$CAPTURE_HELPER" 2>&1 | sed -n 's/^#* *designated => //p')
@@ -395,11 +381,6 @@ jobs:
             --artifacts release-artifacts \
             --commit-sha "$SOURCE_SHA" \
             --run-id "$GITHUB_RUN_ID" \
-            --helper-sha256 "$HELPER_SHA" \
-            --helper-arch "$HELPER_ARCH" \
-            --helper-designated-requirement "$HELPER_DR" \
-            --helper-team-id "$APPLE_TEAM_ID" \
-            --helper-entitlement-sha256 "$HELPER_ENT_SHA" \
             --capture-agent-sha256 "$CAPTURE_AGENT_SHA" \
             --capture-agent-arch "$CAPTURE_AGENT_ARCH" \
             --capture-agent-designated-requirement "$CAPTURE_AGENT_DR" \

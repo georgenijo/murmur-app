@@ -2,9 +2,8 @@
 
 Issue [#351](https://github.com/georgenijo/murmur-app/issues/351) defines the
 versioned, local data layer used by the Diagnostics performance workspace.
-Dictation, imported-file, selected-text transform, and Voice Query runs share this contract.
-Transform metrics reuse #332's canonical `transform_pass_id`; the existing
-content-free transform trace remains the only structured trace source.
+Dictation, imported-file, and Voice Query runs share this contract.
+Older records for retired flows remain readable without producing new records.
 
 ## Storage and retention
 
@@ -18,7 +17,6 @@ It is separate from logs, transcription history, settings, personal knowledge,
 and Performance Lab/evaluation reports. The store keeps:
 
 - the newest 200 completed runs;
-- at most eight apply/undo follow-up attempts per completed transform run;
 - active content-free lifecycle rows so early exits and restart interruption can
   close a run exactly once;
 - the newest 600 one-second resource samples (a ten-minute window).
@@ -68,10 +66,9 @@ quarantined evidence, and a healthy database is never quarantined.
 `PerformanceRunV1` contains:
 
 - an opaque random `runId`;
-- kind (`dictation`, `fileTranscription`, `selectedTextTransform`, or `voiceQuery`);
+- kind (`dictation`, `fileTranscription`, or `voiceQuery` for new runs);
 - start/finish UTC timestamps and exactly one terminal outcome;
-- the existing `recordingId`, a dedicated `fileRunId`, the canonical
-  `transformPassId`, or the monotonic `queryPassId`;
+- the existing `recordingId`, a dedicated `fileRunId`, or the monotonic `queryPassId`;
 - catalog-backed model, backend, accelerator, and warm/cold state;
 - typed stage measurements;
 - content-free audio duration or bounded size/token fields;
@@ -149,27 +146,11 @@ The new build reads older diagnostic records. Older builds do not recognize
 the added stage in new records; downgrading does not provide forward-compatible
 diagnostic history. This does not change dictation or meeting history formats.
 
-### Selected-text transform stages
-
-- selected-text capture;
-- instruction audio capture and cleanup-only ASR;
-- sidecar spawn/model-load and generation as separate timings;
-- review-ready completion or a stable terminal failure, cancellation, or
-  timeout.
-
-The run starts only after the canonical pass wins the transform pipeline claim.
-It closes at review-ready or the first terminal outcome. Apply and Undo happen
-after that completion, so their measured duration and completed/failed outcome
-are appended as bounded correlated follow-up records rather than changing the
-run's single terminal outcome. Retry keeps #332's same pass ID and does not
-create a competing trace identity.
-
 ### Voice Query stages
 
 - instruction capture is presented as **Capture**;
 - instruction ASR is presented as **Transcription**;
-- sidecar spawn/load is reused as **Provider spawn** for the directly spawned
-  CLI process;
+- CLI process startup is presented as **Provider spawn**;
 - generation is the time to **First answer**;
 - total processing is presented as **Total**.
 
@@ -187,19 +168,15 @@ failures continue to use their existing stable errors.
 | Main-process RSS | Physical resident memory in bytes |
 | Rust heap | Bytes in Murmur's dedicated Rust malloc zone on macOS |
 | FFI/native heap | Bytes in all other malloc zones; not an RSS component and not a complete GPU/unified-memory measurement |
-| Sidecar CPU/RSS | Signed local-LLM helper process only; sampled by its atomic resident PID, including model handshake |
 
 The first host/process CPU observation needs a prior counter baseline and is
 therefore unavailable rather than reported as zero. Rust/FFI heap breakdown is
 unavailable on unsupported platforms. Accelerator identity is recorded, but
 GPU or ANE utilization is not estimated.
 
-Only one transform request can own the helper at a time. Resource samples in
-the transform run's wall-clock interval are therefore attributable to that
-pass; an idle/nonresident helper yields `unavailable { reason: noSamples }`.
-Non-transform run summaries mark the sidecar scope `notApplicable`. A vanished
-PID or failed process read is `sampleFailed`, and unsupported platforms report
-`unsupportedPlatform`.
+Legacy helper-resource fields remain in the versioned record format for decoding
+older reports. New samples leave them unavailable; current charts show the host
+and main process only.
 
 ## Privacy
 
@@ -231,7 +208,7 @@ never enter this event.
 
 The TypeScript guards reject unsupported schemas before UI code consumes them.
 The Diagnostics Performance tab uses these samples for synchronized, explicitly
-scoped host, main-process, and sidecar cards and charts. The Runs tab reads the
+scoped host and main-process cards and charts. The Runs tab reads the
 bounded records directly, then uses `get_performance_run` for detail. Its phase
 waterfall preserves canonical stage order and availability but does not infer
 absolute offsets that V1 does not record. Correlated Events navigation matches
@@ -328,7 +305,7 @@ dictation records, separately from imported Performance Lab and evaluation
 reports in Reports. It does not query the log receiver or upload diagnostics.
 
 Comparisons use only the newest 200 completed runs across all run kinds.
-Older baseline rows are deleted as new dictation, file, transform, or Voice
+Older baseline rows are deleted as new dictation, file, or Voice
 Query runs complete. Version selectors and counts describe this retained
 window, not a version's complete history. Compare soon after a release;
 a baseline is not preserved as a durable snapshot. There is no separate

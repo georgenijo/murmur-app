@@ -1,12 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   DISCOVERY_STORAGE_KEY,
-  checklistDestination,
   completeChecklistItem,
   dismissDiscoveryChecklist,
   dismissDiscoveryHint,
   enqueueDiscoveryHint,
-  hintDestination,
   initializeDiscoveryAfterSetup,
   initializeGrandfatheredDiscovery,
   loadDiscoveryState,
@@ -53,20 +51,20 @@ describe('post-setup discovery state', () => {
       ],
     });
     expect(loadDiscoveryState()?.completed).toEqual([
-      'transform', 'meeting', 'correction', 'voice_query', 'mode_binding',
+      'meeting', 'correction', 'voice_query', 'mode_binding',
     ]);
   });
 
   it('grandfathers only real usage and explicit configuration', () => {
     initializeGrandfatheredDiscovery({
       ...emptyEvidence(),
-      transforms: 1,
+      meetings: 1,
       correctionsTaught: 1,
       voiceQueryConfigured: true,
       modeBindings: ['com.example.Editor:builtin.technical'],
     });
     expect(loadDiscoveryState()?.completed).toEqual([
-      'transform', 'correction', 'voice_query', 'mode_binding',
+      'meeting', 'correction', 'voice_query', 'mode_binding',
     ]);
     resetDiscovery();
     initializeGrandfatheredDiscovery(emptyEvidence());
@@ -74,11 +72,11 @@ describe('post-setup discovery state', () => {
   });
 
   it('lowers a baseline after statistics reset so the next action completes', () => {
-    initializeDiscoveryAfterSetup({ ...emptyEvidence(), transforms: 12 });
+    initializeDiscoveryAfterSetup({ ...emptyEvidence(), meetings: 12 });
     syncDiscoveryEvidence(emptyEvidence());
     expect(loadDiscoveryState()?.completed).toEqual([]);
-    syncDiscoveryEvidence({ ...emptyEvidence(), transforms: 1 });
-    expect(loadDiscoveryState()?.completed).toContain('transform');
+    syncDiscoveryEvidence({ ...emptyEvidence(), meetings: 1 });
+    expect(loadDiscoveryState()?.completed).toContain('meeting');
   });
 
   it('persists checklist visibility and once-only hint delivery across reloads', () => {
@@ -104,20 +102,6 @@ describe('post-setup discovery state', () => {
 
     resetDiscovery();
     expect(localStorage.getItem(DISCOVERY_STORAGE_KEY)).toBeNull();
-  });
-
-  it('wires every checklist and hint to its exact destination', () => {
-    expect(checklistDestination('command_palette')).toEqual({ kind: 'palette' });
-    expect(checklistDestination('mode_binding')).toEqual({ kind: 'settings', page: 'modes', target: 'modes' });
-    expect(checklistDestination('transform')).toEqual({ kind: 'settings', page: 'ai-transform', target: 'transform-practice' });
-    expect(checklistDestination('voice_query')).toEqual({ kind: 'settings', page: 'ai-query', target: 'voice-query-provider' });
-    expect(checklistDestination('meeting')).toEqual({ kind: 'main', page: 'meetings' });
-    expect(checklistDestination('correction')).toEqual({ kind: 'teach' });
-    expect(checklistDestination('shortcuts')).toEqual({ kind: 'settings', page: 'shortcuts', target: 'shortcuts' });
-    expect(hintDestination('double_tap_timing')).toEqual({ kind: 'settings', page: 'recording', target: 'hotkey-feedback' });
-    expect(hintDestination('correct_and_teach')).toEqual({ kind: 'teach' });
-    expect(hintDestination('browser_modes')).toEqual({ kind: 'settings', page: 'modes', target: 'modes' });
-    expect(hintDestination('meeting_summaries')).toEqual({ kind: 'main', page: 'meetings' });
   });
 
   it('clears discovery whenever either setup entry point calls the shared reset', () => {

@@ -524,13 +524,8 @@ describe("semantic theme token debt gate", () => {
   it("locks transparent bodies and unsynchronized always-dark glass", () => {
     const css = readFileSync("./src/styles.css", "utf8");
     const overlayHtml = readFileSync("./overlay.html", "utf8");
-    const transformHtml = readFileSync("./transform-review.html", "utf8");
     const queryHtml = readFileSync("./query-review.html", "utf8");
     const overlay = readFileSync("./src/components/OverlayWidget.tsx", "utf8");
-    const transform = readFileSync(
-      "./src/components/transform-review/TransformReviewApp.tsx",
-      "utf8",
-    );
     const alwaysDarkSource = sources
       .filter((path) => {
         const name = sourceName(path);
@@ -546,12 +541,8 @@ describe("semantic theme token debt gate", () => {
       /body\.overlay-window\s*\{[^}]*background:\s*transparent/s,
     );
     expect(overlayHtml).toContain('<body class="overlay-window">');
-    expect(transformHtml).toContain('<body class="overlay-window">');
     expect(queryHtml).toContain('<body class="overlay-window">');
     expect(overlayHtml).toMatch(
-      /html, body, #root[\s\S]*background:\s*transparent/,
-    );
-    expect(transformHtml).toMatch(
       /html, body, #root[\s\S]*background:\s*transparent/,
     );
     expect(queryHtml).toMatch(
@@ -566,8 +557,6 @@ describe("semantic theme token debt gate", () => {
     expect(liveWords).not.toContain('--murmur-');
     // The window stays transparent; the inner review surface is opaque so
     // text contrast does not depend on the desktop behind it.
-    expect(transform).toContain("background: 'rgb(20, 20, 20)'");
-    expect(transform).not.toContain("background: 'rgba(20, 20, 20,");
     expect(alwaysDarkSource).not.toContain("useAppearance");
     expect(alwaysDarkSource).not.toContain("appearance-changed");
     expect(alwaysDarkSource).not.toContain("--murmur-");

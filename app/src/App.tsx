@@ -42,7 +42,6 @@ import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
 import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
 import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
-import { useTransformFlow } from './lib/hooks/useTransformFlow';
 import { useQueryFlow, type QuerySetupStatus } from './lib/hooks/useQueryFlow';
 import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
@@ -81,8 +80,6 @@ import {
   checkAccessibilityPermission,
   checkMicrophonePermissionStatus,
   checkModelExists,
-  setCorrectionShortcut,
-  startDictationCorrection,
 } from './lib/dictation';
 import { getModelRuntimeCatalog } from './lib/modelRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -253,28 +250,6 @@ function App() {
   useOverlaySettingsSync(applyExternalSettings);
 
   useEffect(() => {
-    const smartAuto = smartAutoMicrophoneRequest(settings);
-    void setCorrectionShortcut(
-      settings.correctionShortcutEnabled === true && !settings.disabled,
-      smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
-      smartAuto,
-    ).catch(() => presentDeliveryRecoveryNotice({
-      message: 'Could not enable the correction shortcut.',
-      retryable: false,
-    }));
-  }, [
-    settings.correctionShortcutEnabled,
-    settings.disabled,
-    settings.microphone,
-    settings.smartAutoMicrophoneEnabled,
-    settings.smartAutoProbeEnabled,
-    settings.smartAutoApprovedDeviceIds,
-    settings.smartAutoPreferredDeviceIds,
-    settings.smartAutoAllowContinuity,
-    presentDeliveryRecoveryNotice,
-  ]);
-
-  useEffect(() => {
     const requested = settings.pasteLastShortcut;
     const generation = ++pasteLastShortcutGenerationRef.current;
     void setPasteLastShortcut(requested)
@@ -356,17 +331,6 @@ function App() {
     silenceMs: settings.autoStopSilenceMs,
     smartEnabled: settings.smartAutoStopEnabled,
     onAutoStop: () => handleStop('auto_stop'),
-  });
-  // Independent AX-selection transform hotkey (issue #312). Enabled only when
-  // the user has configured a transform key; drives capture -> instruction ->
-  // review via the transform-review popover window.
-  useTransformFlow({
-    enabled: hotkeysArmed && settings.transformHoldKey !== null,
-    initialized,
-    accessibilityGranted,
-    transformHoldKey: settings.transformHoldKey,
-    microphone: settings.microphone,
-    smartAuto: smartAutoMicrophoneRequest(settings),
   });
   useQueryFlow({
     enabled: hotkeysArmed
@@ -693,22 +657,6 @@ function App() {
         run: () => { void pickMediaFiles(); },
       },
       {
-        id: 'correct-last-dictation',
-        title: 'Correct last dictation…',
-        section: 'History',
-        keywords: ['fix', 'spelling', 'voice', 'correction'],
-        run: () => {
-          const smartAuto = smartAutoMicrophoneRequest(settings);
-          void startDictationCorrection(
-            smartAuto ? null : microphoneDeviceNameArg(settings.microphone),
-            smartAuto,
-          ).catch((error: unknown) => presentDeliveryRecoveryNotice({
-            message: String(error),
-            retryable: false,
-          }));
-        },
-      },
-      {
         id: 'paste-last',
         title: 'Paste last or retry delivery',
         section: 'History',
@@ -1003,7 +951,7 @@ function App() {
                   <WorkspacePageHeader
                     title="Notetaker"
                     titleId="meetings-view-title"
-                    description="Local meeting transcripts and summaries"
+                    description="Local meeting transcripts with speaker separation"
                     back={{ label: 'Back to Home', onActivate: backToHome }}
                   />
                   <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />

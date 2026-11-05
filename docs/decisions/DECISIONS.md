@@ -1081,18 +1081,6 @@ contract without giving user-controlled colors an accessibility escape hatch.
 
 ---
 
-## 2026-07-20: Selected-text transform Phase D wrap (#312)
-
-**Decision:** Ship settings + presets + docs for local selected-text transform without expanding scope into AX webview special-cases. Built-in presets (Shorten / Bullets / Professional / Fix grammar / Casual) and user-defined `KnowledgeKind::Transform` names expand in `finish_transform_instruction` before the sidecar runs. Settings owns hold-key wiring, model download/remove/reset, and saved-transform CRUD. Cursor-chat and similar webviews remain best-effort (documented limitation, not a blocker). Native smoke and issue acceptance checkboxes stay a separate pass on a built `.app`.
-
-**Rationale:** Phases A–C delivered the signed sidecar, AX capture/apply, review popover, and end-to-end flow. Phase D only exposes configuration and documents the contract; dogfood follow-ups must not grow apply semantics or link llama into the app crate.
-
-**Status:** active
-
-**References:** issue #312; ADR `2026-07-20-signed-local-llm-sidecar.md`; `docs/features/selected-text-transform.md`; branches `issue/312-transform-flow`, `issue/312-transform-settings`.
-
----
-
 ## 2026-07-20: Overlay geometry & lifecycle contract locked (#280)
 
 **Decision:** Five locked outcomes of the overlay architecture review (issue #280; PRs #290, #299, #301):
@@ -1107,43 +1095,5 @@ contract without giving user-controlled colors an accessibility escape hatch.
 **Status:** active
 
 **References:** issue #280 (review memo + drift note), PR #290 (PR1 geometry contract), PR #299 (replacement PR2 expansion controller), PR #301 (replacement PR3 component split), `docs/features/overlay.md`.
-
----
-
-## 2026-07-20: Local LLMs require a signed, sandboxed macOS-arm64 sidecar
-
-**Decision:** Issue #312 (originally #300, superseded) proposes a purpose-built macOS 14 Apple Silicon helper using an exactly pinned static llama.cpp/Metal runtime, a single hash-pinned Qwen2.5 1.5B Q4_K_M model, bounded stdin/stdout IPC, a verified inherited model descriptor, and dedicated App Sandbox entitlements. The helper has no network, files-by-path, shell, tools, clipboard, accessibility, automation, app group, XPC, or cloud fallback. Linux reports the capability as unsupported.
-
-**Rationale:** The active 2026-06-23 decision proves in-process Whisper + llama.cpp is unsafe because their ggml ABIs collide. Tauri's stock macOS signer also applies one entitlement set to the app and external binaries, so a repository-owned no-sign/finalize path is required to preserve a stricter helper sandbox. The design is accepted only after the inherited-descriptor/Metal and split-entitlement signing gates pass, followed by a signed/notarized/quarantined non-publishing rehearsal.
-
-**Status:** active — ADR accepted 2026-07-21 after the CI signing rehearsal (run 29793936645) delivered the outstanding notarization/staple/Gatekeeper/probe evidence; see [ADR](2026-07-20-signed-local-llm-sidecar.md)
-
-**References:** issue #312 (originally #300, superseded); unblocks #312 phases B–D (originally #254).
-
----
-
-## 2026-06-23: In-process Tier 3 abandoned (ggml ABI clash); deferred to a sidecar
-
-**Decision:** Tiers 1–2 (no-LLM post-model correction) ship as planned. Tier 3 (local-LLM cleanup) is NOT shipped in-process — the `llama-cpp-2` integration and dormant settings/module were removed from the app crate. Tier 3 is deferred to a future sidecar-process design. This supersedes the Tier-3 portion of the entry below (Tiers 1–2 portion still stands).
-
-**Rationale:** `whisper-rs` and `llama-cpp-2` each statically vendor their own `ggml`. They link (matching symbol names) but **SIGSEGV at runtime** — an ABI mismatch between two ggml versions in one process — reproduced in both CPU (`MURMUR_T3_GPU_LAYERS=0`) and Metal modes during model load. Proven by isolation: a standalone binary linking only `llama-cpp-2` loads the GGUF and generates text fine (`MODEL LOADED OK`); the same code inside the app (which also links whisper) crashes. The only viable local-LLM path is a separate sidecar process (proven to run in isolation), which is a substantial new subsystem (persistent helper binary, IPC, lifecycle, Tauri `externalBin` bundling + codesign, model-download UX) with a CI signing/bundling path that can't be validated locally before pushing — too much risk for this release. A secondary finding: the 0.5B model wrapped its output in a ```` ```php ```` code fence (weak instruction-following), so Tier 3 would also need the 1.5B variant + output sanitization + prompt tuning. Working inference code is parked for the sidecar effort.
-
-**Status:** active
-
-**References:** branch `feat/post-model-correction`; commit removing in-process Tier 3; scratchpad `t3probe` (standalone proof) + `correction_model.rs.sidecar-ref` (parked impl).
-
----
-
-## 2026-06-23: Post-model correction layer — 3 tiers, local-only Tier 3, no routing
-
-**Status (Tier 3 portion):** superseded by 2026-06-23 (in-process Tier 3 abandoned). Tiers 1–2 portion active.
-
-**Decision:** Add a post-model TEXT correction layer that runs on every ASR backend, beside the existing cleanup + voice-command passes. Tier 1 = exact spoken→written term map (Aho-Corasick, single pass). Tier 2 = sounds-like match (Metaphone phonetic key + edit-distance, confidence cutoff, fires only near vocab). Both no-LLM, built on settings-change, target <1ms, logged as a `correction_ms` telemetry phase; one unified vocab config feeds both. Tier 3 = optional model cleanup using a **100% local** model only: Qwen2.5-1.5B-Instruct (Q4_K_M GGUF) via `llama-cpp-2` + Metal (Apache-2.0), with Qwen2.5-0.5B-Instruct as an optional "fast mode." The Tier 3 backend is a trait so a future BYO-OpenAI-compatible cloud option can plug in if approved. Smart per-input routing is dropped in favor of a single configurable backend.
-
-**Rationale:** Vocab previously fed Whisper's `initial_prompt`, a silent no-op on the default Parakeet/sherpa engine (parakeet.rs:208) — moving correction post-model fixes it for every engine and is the only place that can do camelCase/abbrev orthography. Cursor "Composer 2.5 Fast" was the only permitted cloud model, but live probing of `api.cursor.com` with a valid Admin-scoped key confirmed there is NO headless chat/completions endpoint: `/v1/me`, `/v1/models`, `/v0/agents` return 200 but only expose account/model-metadata/repo-bound Cloud Agents; every inference verb (`/v1/chat/completions`, `/v1/responses`, `/v1/completions`, `/v1/chat`, `/v1/messages`, `/v1/generate`) 404s. Composer has "no external API." Per the "no substitute" directive, cloud is dropped (kept as a trait seam). Routing was dropped because its "large input → bigger model = faster" premise only held for cloud; locally a bigger model is *slower* on long input and multiple resident models waste RAM. Mitigations: optional 0.5B fast-mode + a length-guard that skips Tier 3 on very long inputs.
-
-**Status:** active
-
-**References:** branch `feat/post-model-correction`; parakeet.rs:208; recording.rs (post-transcription pipeline, insertion after voice_commands); Qwen2.5 GGUF (Apache-2.0) via `llama-cpp-2`; Cursor probe — `/v1/me`,`/v1/models`,`/v0/agents` = 200, all inference verbs = 404.
 
 ---

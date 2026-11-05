@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { surfaceCases } from './surface-matrix';
 
-const panes = ['general', 'recording', 'text', 'delivery', 'meetings', 'ai-transcription', 'ai-query', 'ai-transform'] as const;
+const panes = ['general', 'recording', 'text', 'delivery', 'meetings', 'ai-transcription', 'ai-query'] as const;
 async function open(page: Page, pane: string, appearance = 'light', motion: 'reduce' | 'no-preference' = 'reduce') {
   await page.emulateMedia({ reducedMotion: motion, colorScheme: appearance as 'light' | 'dark' });
   await page.goto(`/visual-fixtures.html?state=settings-folding&page=${pane}&appearance=${appearance}`);
@@ -15,7 +15,6 @@ for (const [pane, label, sheet] of [
   ['text', 'Knowledge Manage', 'Knowledge'],
   ['text', 'Voice commands Create', 'Voice commands'],
   ['text', 'Manage project scan', 'Project scan'],
-  ['ai-transform', 'Manage', 'Saved transforms'],
   ['delivery', 'Manage app overrides', 'App overrides'],
   ['customize', 'Voice commands', 'Voice commands'],
   ['modes', 'Add an app', 'App overrides'],
@@ -91,9 +90,9 @@ for (const appearance of ['light', 'dark']) {
     await page.keyboard.press('Escape');
     await expect(page.getByRole('button', { name: 'Create theme', exact: true })).toBeFocused();
   });
-  for (const [tab, label] of [['vocabulary', 'Vocabulary'], ['aliases', 'Aliases'], ['knowledge', 'Knowledge'], ['commands', 'Voice commands'], ['scan', 'Manage project scan'], ['transforms', 'Manage'], ['app-overrides', 'Manage app overrides']] as const) {
+  for (const [tab, label] of [['vocabulary', 'Vocabulary'], ['aliases', 'Aliases'], ['knowledge', 'Knowledge'], ['commands', 'Voice commands'], ['scan', 'Manage project scan'], ['app-overrides', 'Manage app overrides']] as const) {
     test(`${appearance} ${tab} editor sheet retains owner`, async ({ page }) => {
-      await open(page, tab === 'transforms' ? 'ai-transform' : tab === 'app-overrides' ? 'delivery' : 'text', appearance);
+      await open(page, tab === 'app-overrides' ? 'delivery' : 'text', appearance);
       if (tab === 'app-overrides') await advanced(page).click();
       if (tab === 'scan') {
         await advanced(page).click();
@@ -170,7 +169,6 @@ for (const [query, parent, child] of [
   ['Remove filler words', 'cleanup', 'cleanup-filler'],
   ['Paste delay', 'auto-paste', 'paste-delay'],
   ['Query shortcut', 'voice-query-shortcut', 'query-key'],
-  ['Transform hold key', 'transform-shortcut', 'transform-key'],
   ['Browser site rules', 'browser-sites', 'browser-site-rules'],
 ] as const) {
   test(`search for ${query} reveals its off parent without enabling anything`, async ({ page }) => {
@@ -259,7 +257,7 @@ test('search reveals Advanced once and lets the user close it again', async ({ p
 test('enabled feature navigation has exactly one current page', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-shortcuts&appearance=light');
   const nav = page.getByRole('navigation', { name: 'Settings pages' });
-  for (const name of ['Voice Query', 'Selected-text rewrite']) {
+  for (const name of ['Voice Query']) {
     await nav.getByRole('button', { name, exact: true }).click();
     await expect(nav.locator('[aria-current="page"]')).toHaveCount(1);
     await expect(nav.getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'page');

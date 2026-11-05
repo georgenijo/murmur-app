@@ -65,21 +65,21 @@ describe('useEscapeCancel', () => {
     });
   }
 
-  async function pressEscape(payload: unknown = { transformPassId: null }) {
+  async function pressEscape(payload: unknown = { queryPassId: null }) {
     await act(async () => {
       await mocks.listeners.get('escape-cancel')?.({ payload });
     });
   }
 
-  it('routes a correlated Escape to only that exact transform pass', async () => {
+  it('routes a correlated Escape to only that exact query pass', async () => {
     mocks.invoke.mockResolvedValue(undefined);
     await renderHook('processing');
 
-    await pressEscape({ transformPassId: 41 });
+    await pressEscape({ queryPassId: 41 });
 
     expect(mocks.invoke).toHaveBeenCalledOnce();
-    expect(mocks.invoke).toHaveBeenCalledWith('cancel_transform', {
-      transformPassId: 41,
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', {
+      queryPassId: 41,
     });
     expect(mocks.cancelRecording).not.toHaveBeenCalled();
   });
@@ -88,7 +88,7 @@ describe('useEscapeCancel', () => {
     mocks.invoke.mockResolvedValue(undefined);
     await renderHook('idle');
 
-    await pressEscape({ transformPassId: null, queryPassId: 42 });
+    await pressEscape({ queryPassId: 42 });
 
     expect(mocks.invoke).toHaveBeenCalledOnce();
     expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', {
@@ -98,7 +98,7 @@ describe('useEscapeCancel', () => {
   });
 
   it.each(['recording', 'processing'] as const)(
-    'retains dictation cancellation for a null transform target while dictation is %s',
+    'retains dictation cancellation for a null query target while dictation is %s',
     async (status) => {
       mocks.cancelRecording.mockResolvedValue(undefined);
       await renderHook(status);
@@ -127,17 +127,17 @@ describe('useEscapeCancel', () => {
     let first!: Promise<void>;
     await act(async () => {
       first = Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-        payload: { transformPassId: 51 },
+        payload: { queryPassId: 51 },
       }));
       await Promise.resolve();
       await mocks.listeners.get('escape-cancel')?.({
-        payload: { transformPassId: 51 },
+        payload: { queryPassId: 51 },
       });
     });
 
     expect(mocks.invoke).toHaveBeenCalledOnce();
-    expect(mocks.invoke).toHaveBeenCalledWith('cancel_transform', {
-      transformPassId: 51,
+    expect(mocks.invoke).toHaveBeenCalledWith('cancel_query', {
+      queryPassId: 51,
     });
 
     cancellation.resolve();
@@ -147,8 +147,8 @@ describe('useEscapeCancel', () => {
   it('does not let an in-flight stale pass suppress cancellation of a newer pass', async () => {
     const firstCancellation = deferred<void>();
     mocks.invoke.mockImplementation(
-      (_command: string, args?: { transformPassId?: number }) => (
-        args?.transformPassId === 61 ? firstCancellation.promise : Promise.resolve()
+      (_command: string, args?: { queryPassId?: number }) => (
+        args?.queryPassId === 61 ? firstCancellation.promise : Promise.resolve()
       ),
     );
     await renderHook('idle');
@@ -156,17 +156,17 @@ describe('useEscapeCancel', () => {
     let first!: Promise<void>;
     await act(async () => {
       first = Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-        payload: { transformPassId: 61 },
+        payload: { queryPassId: 61 },
       }));
       await Promise.resolve();
       await mocks.listeners.get('escape-cancel')?.({
-        payload: { transformPassId: 62 },
+        payload: { queryPassId: 62 },
       });
     });
 
     expect(mocks.invoke.mock.calls).toEqual([
-      ['cancel_transform', { transformPassId: 61 }],
-      ['cancel_transform', { transformPassId: 62 }],
+      ['cancel_query', { queryPassId: 61 }],
+      ['cancel_query', { queryPassId: 62 }],
     ]);
 
     firstCancellation.resolve();
@@ -176,17 +176,17 @@ describe('useEscapeCancel', () => {
   it('bounds distinct in-flight cancellation targets and releases capacity on settle', async () => {
     const cancellations = Array.from({ length: 9 }, () => deferred<void>());
     mocks.invoke.mockImplementation(
-      (_command: string, args?: { transformPassId?: number }) => (
-        cancellations[(args?.transformPassId ?? 1) - 1].promise
+      (_command: string, args?: { queryPassId?: number }) => (
+        cancellations[(args?.queryPassId ?? 1) - 1].promise
       ),
     );
     await renderHook('idle');
 
     const pending: Promise<void>[] = [];
     await act(async () => {
-      for (let transformPassId = 1; transformPassId <= 9; transformPassId += 1) {
+      for (let queryPassId = 1; queryPassId <= 9; queryPassId += 1) {
         pending.push(Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-          payload: { transformPassId },
+          payload: { queryPassId },
         })));
       }
       await Promise.resolve();
@@ -197,7 +197,7 @@ describe('useEscapeCancel', () => {
     await act(async () => pending[0]);
     await act(async () => {
       pending.push(Promise.resolve(mocks.listeners.get('escape-cancel')?.({
-        payload: { transformPassId: 9 },
+        payload: { queryPassId: 9 },
       })));
       await Promise.resolve();
     });
@@ -210,12 +210,12 @@ describe('useEscapeCancel', () => {
   it.each([
     null,
     {},
-    { transformPassId: undefined },
-    { transformPassId: 0 },
-    { transformPassId: -1 },
-    { transformPassId: 1.5 },
-    { transformPassId: Number.MAX_SAFE_INTEGER + 1 },
-    { transformPassId: '41' },
+    { queryPassId: undefined },
+    { queryPassId: 0 },
+    { queryPassId: -1 },
+    { queryPassId: 1.5 },
+    { queryPassId: Number.MAX_SAFE_INTEGER + 1 },
+    { queryPassId: '41' },
   ])('fails closed for malformed payload %#', async (payload) => {
     await renderHook('recording');
 
@@ -237,7 +237,7 @@ describe('useEscapeCancel', () => {
 
     await act(async () => root.unmount());
     rootMounted = false;
-    await listener?.({ payload: { transformPassId: 71 } });
+    await listener?.({ payload: { queryPassId: 71 } });
 
     expect(mocks.unlisten).toHaveBeenCalledOnce();
     expect(mocks.invoke).not.toHaveBeenCalled();

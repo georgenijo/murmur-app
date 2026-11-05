@@ -16,8 +16,7 @@ pub enum KnowledgeKind {
     ReplacementRule,
     VocabularyTerm,
     Snippet,
-    /// User-defined selected-text transform (issue #312 D1): spoken name expands
-    /// to a full rewrite instruction before the local LLM runs.
+    /// Retired instruction payload, preserved for existing knowledge backups.
     Transform,
 }
 

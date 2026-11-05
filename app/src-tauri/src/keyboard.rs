@@ -626,10 +626,12 @@ impl HoldDownDetector {
     }
 
     /// Process a keyboard event. Returns Start, Stop, or None.
+    #[cfg(test)]
     fn handle_event(&mut self, event_type: &EventType) -> HoldDownEvent {
         self.handle_event_with_shortcut_modifiers(event_type, false)
     }
 
+    #[cfg(test)]
     fn handle_event_with_shortcut_modifiers(
         &mut self,
         event_type: &EventType,
@@ -977,19 +979,18 @@ pub fn is_dictation_key_id(hotkey: &str) -> bool {
     DICTATION_KEY_IDS.contains(&hotkey)
 }
 
-/// The opposite-side modifiers available to Selected-text Transform and Voice
-/// Query. Function keys belong exclusively to dictation.
-pub fn is_transform_or_query_key_id(hotkey: &str) -> bool {
+/// The opposite-side modifiers available to Voice Query. Function keys belong
+/// exclusively to dictation.
+pub fn is_query_key_id(hotkey: &str) -> bool {
     matches!(hotkey, "shift_r" | "alt_r" | "ctrl_l")
 }
 
 /// Map hotkey string from settings to rdev Key.
 ///
 /// The three modifiers and F1–F20 back the dictation hotkey (`DictationKey` in
-/// settings.ts). `alt_r` / `ctrl_l` / `shift_r` back the independent transform
-/// hotkey (`TransformKey`, issue #312) — same function since both listeners
-/// share this mapping. The two id sets are kept disjoint by convention plus
-/// an explicit `is_dictation_key_id` check at the transform command boundary
+/// settings.ts). `alt_r` / `ctrl_l` / `shift_r` back the independent Voice Query
+/// hotkey. Both listeners share this mapping. The two id sets are kept disjoint
+/// by explicit validation at the Voice Query command boundary
 /// (see `commands/keyboard.rs`) — nothing here would reject the overlap on
 /// its own.
 fn hotkey_to_rdev_key(hotkey: &str) -> Option<Key> {
@@ -1561,32 +1562,6 @@ static ACTIVE_MODE: Mutex<DetectorMode> = Mutex::new(DetectorMode::DoubleTap);
 static DOUBLE_TAP_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static HOLD_DOWN_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
 
-// -- Transform hotkey (issue #312) --
-//
-// A second, independent hold-down detector for the "transform" shortcut
-// (AX selected-text capture + LLM transform, PR-B1). It reuses the plain
-// `HoldDownDetector` state machine but is entirely separate from the
-// dictation detectors above: its own target key, its own Mutex, its own
-// active flag. It is fed from the SAME shared rdev callback (see the
-// `TRANSFORM_DETECTOR` handling block in `start_listener`'s callback) so no
-// second `rdev::listen()` thread is ever spawned — rdev only tolerates one
-// listener per process. Starting/stopping the transform listener never
-// touches `DOUBLE_TAP_DETECTOR` / `HOLD_DOWN_DETECTOR` or `ACTIVE_MODE`.
-static TRANSFORM_DETECTOR: Mutex<Option<HoldDownDetector>> = Mutex::new(None);
-/// Physical hold identity, independent of whether the backend accepts the pass.
-/// A refused press still gets a complete start/stop trace under its own ID and
-/// can never overwrite the active flow's correlation ID.
-static TRANSFORM_HOLD_CONTEXT: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
-/// Gates transform-detector processing independent of `LISTENER_ACTIVE`
-/// (which only reflects the dictation listener). Lets the transform hotkey
-/// work even if, hypothetically, it were started before the dictation
-/// listener.
-static TRANSFORM_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-// -- Voice-query hotkey (#538) --
-// Independent double-tap/single-tap detector on the same rdev callback. Query
-// keys share the opposite-side modifier allow-list with Transform, so the
-// command boundary rejects a physical-key collision between the two.
 static QUERY_DETECTOR: Mutex<Option<DoubleTapDetector>> = Mutex::new(None);
 static QUERY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static QUERY_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -1828,17 +1803,13 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 // hotkey (TRANSFORM_ACTIVE) are independent; either one being
                 // active is enough to keep processing events on this thread.
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst)
-                    && !TRANSFORM_ACTIVE.load(Ordering::SeqCst)
                     && !QUERY_ACTIVE.load(Ordering::SeqCst)
                     && !PASTE_LAST_ACTIVE.load(Ordering::SeqCst)
-                    && !crate::correction_shortcut::enabled()
                 {
                     return;
                 }
                 LAST_RDEV_CALLBACK_AT_MS.store(now_unix_ms(), Ordering::SeqCst);
                 LAST_TAP_SILENCE_WARNING_AT_MS.store(0, Ordering::SeqCst);
-
-                crate::correction_shortcut::handle(&handle, &event.event_type);
 
                 let mode = {
                     let m = ACTIVE_MODE.lock_or_recover();
@@ -1876,18 +1847,6 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             d.last_fired_at = Some(Instant::now());
                         }
                     }
-                    // Also reset the transform detector (issue #312) — this
-                    // branch returns before the transform block below runs, so
-                    // without this the detector could be left mid-hold (stale
-                    // `Held` state) across an Escape, exactly like the
-                    // dictation detectors above would be without their resets.
-                    {
-                        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Some(d) = det.as_mut() {
-                            d.reset();
-                            d.last_stopped_at = Some(Instant::now());
-                        }
-                    }
                     {
                         let mut det = QUERY_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                         if let Some(d) = det.as_mut() {
@@ -1896,21 +1855,8 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             d.last_fired_at = Some(Instant::now());
                         }
                     }
-                    let held_transform_pass_id =
-                        take_transform_hold_context().map(|(pass_id, elapsed_ms)| {
-                            crate::transform_trace::key_stop(pass_id, elapsed_ms, "escape");
-                            pass_id
-                        });
                     let state = handle.state::<crate::State>();
-                    let transform_pass_id =
-                        transform_escape_target_pass_id(&state.app_state, held_transform_pass_id);
-                    if let Some(transform_pass_id) = transform_pass_id {
-                        mark_transform_pass_cancelled_on_escape(
-                            &state.app_state,
-                            transform_pass_id,
-                        );
-                    }
-                    let query_pass_id = if transform_pass_id.is_none() {
+                    let query_pass_id = {
                         let status = state.query.status();
                         state.query.active_pass_id().filter(|_| {
                             matches!(
@@ -1923,8 +1869,6 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     | crate::query_flow::QueryStatus::Failed
                             )
                         })
-                    } else {
-                        None
                     };
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTION.invalidate();
@@ -1938,7 +1882,6 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     let _ = handle.emit(
                         "escape-cancel",
                         serde_json::json!({
-                            "transformPassId": transform_pass_id,
                             "queryPassId": query_pass_id,
                         }),
                     );
@@ -1947,102 +1890,6 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
 
                 if APP_DISABLED.load(Ordering::SeqCst) {
                     return;
-                }
-
-                // Transform hotkey (issue #312): an independent hold-down
-                // detector fed unconditionally of `mode`/dictation state, since
-                // it targets a distinct key from the dictation hotkey and has
-                // its own start/stop lifecycle. Runs on every event so it keeps
-                // working across dictation mode switches. Not gated by
-                // IS_PROCESSING — the transform shortcut targets already-typed
-                // text and its use is independent of live dictation.
-                //
-                // Gated by TRANSFORM_ACTIVE so that `set_transform_key` alone
-                // (which arms TRANSFORM_DETECTOR with a target key but does not
-                // start the listener) can never cause event emission — only
-                // `start_transform_listener` flips TRANSFORM_ACTIVE. Without
-                // this gate, a stray `set_transform_key` call before the
-                // listener starts would let the detector fire silently.
-                if TRANSFORM_ACTIVE.load(Ordering::SeqCst) {
-                    let transform_result = {
-                        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Some(d) = det.as_mut() {
-                            d.handle_event(&event.event_type)
-                        } else {
-                            HoldDownEvent::None
-                        }
-                    };
-                    match transform_result {
-                        HoldDownEvent::Start => {
-                            // A new transform pass invalidates any stale session
-                            // (issue #312 PR-B2) left over from a previous
-                            // capture/review/apply — this is the earliest point
-                            // in the transform lifecycle, before capture even runs.
-                            // Gated on TransformStatus being Idle or ReviewPending:
-                            // if a transform is actively mid-flight (Capturing/
-                            // Listening/Thinking/Applying), a stray or racing
-                            // hotkey press must not blow away the session that
-                            // pass owns out from under it.
-                            let state = handle.state::<crate::State>();
-                            let app_state = &state.app_state;
-                            let pass_id = app_state.next_transform_pass_id();
-                            *TRANSFORM_HOLD_CONTEXT.lock_or_recover() =
-                                Some((pass_id, Instant::now()));
-                            crate::transform_trace::key_start(pass_id);
-                            // N2 (B2 review): every session clear must be paired
-                            // with the matching status transition so the status
-                            // is never left stranded at ReviewPending with no
-                            // session. From Idle, just clear (status already
-                            // Idle). From ReviewPending, atomically move
-                            // ReviewPending -> Idle and only then clear — a
-                            // mid-flight pass (Capturing/Listening/Thinking/
-                            // Applying) is left untouched. Both arms share
-                            // `supersede_idle_transform_pass`, which the
-                            // correction shortcut and the ⌘K correction command
-                            // also call so an applied review's lingering pass
-                            // never blocks a chained correction.
-                            // Match correction starts and linger retirement: no
-                            // delayed cleanup may hide a newly claimed pass.
-                            let _dictation = app_state.dictation.lock_or_recover();
-                            let at_pass_boundary = match app_state.transform_status() {
-                                crate::state::TransformStatus::Idle => true,
-                                crate::state::TransformStatus::ReviewPending => app_state
-                                    .try_transition_transform_status(
-                                        crate::state::TransformStatus::ReviewPending,
-                                        crate::state::TransformStatus::Idle,
-                                    ),
-                                _ => false,
-                            };
-                            if at_pass_boundary {
-                                crate::transform_flow::supersede_idle_transform_pass(
-                                    app_state,
-                                    &state.transform_diagnostics,
-                                    &state.transform_main_was_visible,
-                                );
-                                app_state.activate_transform_pass(pass_id);
-                            }
-                            drop(_dictation);
-                            let _ = handle.emit(
-                                "transform-key-pressed",
-                                serde_json::json!({ "transformPassId": pass_id }),
-                            );
-                        }
-                        HoldDownEvent::Stop => {
-                            if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
-                                let reason = match event.event_type {
-                                    EventType::KeyRelease(_) => "released",
-                                    EventType::KeyPress(_) => "combo_cancelled",
-                                    _ => "detector_stop",
-                                };
-                                crate::transform_trace::key_stop(pass_id, elapsed_ms, reason);
-                                let _ = handle.emit(
-                                    "transform-key-released",
-                                    serde_json::json!({ "transformPassId": pass_id }),
-                                );
-                            }
-                        }
-                        HoldDownEvent::None => {}
-                    }
                 }
 
                 if QUERY_ACTIVE.load(Ordering::SeqCst) {
@@ -2419,76 +2266,6 @@ pub fn stop_paste_last_listener() {
     configure_paste_last_shortcut(None).expect("disabling Paste Last is infallible");
 }
 
-/// Publish cancellation for the exact physical transform pass whose hold
-/// context Escape consumed.
-///
-/// This marker is deliberately written before the frontend's asynchronous
-/// `escape-cancel` listener runs. A new pass can already be queued in
-/// `start_transform_capture` behind an older pass's slow AX capture while the
-/// public transform status is still Idle. The queued command checks this
-/// marker before claiming Capturing, so it cannot start after the Escape that
-/// ended its physical hold. Active phases are not torn down here; their
-/// existing frontend-owned `cancel_transform` path remains the sole teardown
-/// owner.
-fn mark_transform_pass_cancelled_on_escape(
-    app_state: &crate::state::AppState,
-    transform_pass_id: u64,
-) -> bool {
-    if app_state.active_transform_pass_id() != Some(transform_pass_id) {
-        return false;
-    }
-    app_state.mark_transform_pass_cancelled(transform_pass_id);
-    true
-}
-
-fn choose_transform_escape_target(
-    held_transform_pass_id: Option<u64>,
-    active_before: Option<u64>,
-    status: crate::state::TransformStatus,
-    active_after: Option<u64>,
-) -> Option<u64> {
-    // The active ID and status are stored independently. Reading the active ID
-    // on both sides of the status snapshot makes a pass handoff observable:
-    // if ownership changed, fail closed instead of correlating Escape to the
-    // newer pass with the older pass's phase.
-    if active_before != active_after {
-        return None;
-    }
-    let active_pass_id = active_after?;
-    match status {
-        // Idle is cancellable only for the exact physical hold whose start is
-        // queued behind another transition. An unrelated Idle owner is not an
-        // Escape target.
-        crate::state::TransformStatus::Idle if held_transform_pass_id == Some(active_pass_id) => {
-            Some(active_pass_id)
-        }
-        crate::state::TransformStatus::Capturing
-        | crate::state::TransformStatus::Connecting
-        | crate::state::TransformStatus::Listening
-        | crate::state::TransformStatus::Thinking
-        // ReviewPending is included in the global handoff because the status
-        // transition happens before the popover becomes focusable. Once the
-        // popover is focused, its local Escape handler may race this route;
-        // both carry the same exact pass and backend cancellation is
-        // idempotent.
-        | crate::state::TransformStatus::ReviewPending => Some(active_pass_id),
-        // Applying has no Escape action. A mismatched/refused hold cannot
-        // change that ownership rule.
-        crate::state::TransformStatus::Idle
-        | crate::state::TransformStatus::Applying => None,
-    }
-}
-
-fn transform_escape_target_pass_id(
-    app_state: &crate::state::AppState,
-    held_transform_pass_id: Option<u64>,
-) -> Option<u64> {
-    let active_before = app_state.active_transform_pass_id();
-    let status = app_state.transform_status();
-    let active_after = app_state.active_transform_pass_id();
-    choose_transform_escape_target(held_transform_pass_id, active_before, status, active_after)
-}
-
 /// Stop processing keyboard events (the thread stays alive but idle).
 pub fn stop_listener() {
     crate::audio_lifecycle::gesture::clear_pending();
@@ -2580,97 +2357,12 @@ pub fn set_recording_state(recording: bool) {
     }
 }
 
-// -- Transform hotkey lifecycle (issue #312, PR-B1) --
-//
-// Independent of `start_listener` / `stop_listener` / `set_target_key` above:
-// none of these three functions touch `DOUBLE_TAP_DETECTOR`, `HOLD_DOWN_DETECTOR`,
-// `ACTIVE_MODE`, or `LISTENER_ACTIVE`.
-
-/// Start (or reconfigure) the transform hold-down detector and ensure the
-/// shared rdev thread is running. Safe to call whether or not the dictation
-/// listener has been started — spawning is idempotent (see
-/// `ensure_listener_thread_spawned`).
-pub fn start_transform_listener(app_handle: tauri::AppHandle, hotkey: &str) {
-    let target = hotkey_to_rdev_key(hotkey);
-    {
-        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-        match det.as_mut() {
-            Some(d) => {
-                let _ = d.set_target(target);
-            }
-            None => {
-                let mut d = HoldDownDetector::new();
-                let _ = d.set_target(target);
-                *det = Some(d);
-            }
-        }
-    }
-    TRANSFORM_ACTIVE.store(true, Ordering::SeqCst);
-    ensure_listener_thread_spawned(app_handle);
-}
-
-/// Disable the transform hotkey (target key cleared, detector reset). Leaves
-/// the shared rdev thread and the dictation listener untouched — dictation
-/// keeps working exactly as before this was ever called.
-pub fn stop_transform_listener() {
-    TRANSFORM_ACTIVE.store(false, Ordering::SeqCst);
-    let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(d) = det.as_mut() {
-        let _ = d.set_target(None);
-        d.reset();
-    }
-    if let Some((pass_id, elapsed_ms)) = take_transform_hold_context() {
-        crate::transform_trace::key_stop(pass_id, elapsed_ms, "listener_stopped");
-    }
-}
-
-/// Update the transform target key without stopping the detector. Returns
-/// `true` if the detector was mid-hold (caller should emit
-/// `transform-key-released`), mirroring `set_target_key`'s hold-down contract.
-pub fn set_transform_key(hotkey: &str) -> bool {
-    let target = hotkey_to_rdev_key(hotkey);
-    let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-    match det.as_mut() {
-        Some(d) => d.set_target(target),
-        None => {
-            let mut d = HoldDownDetector::new();
-            let was_held = d.set_target(target);
-            *det = Some(d);
-            was_held
-        }
-    }
-}
-
-pub fn transform_key_conflicts_with_query(hotkey: &str) -> bool {
+pub fn key_conflicts_with_query(hotkey: &str) -> bool {
     let target = hotkey_to_rdev_key(hotkey);
     QUERY_DETECTOR
         .lock_or_recover()
         .as_ref()
         .is_some_and(|detector| detector.target_key.is_some() && detector.target_key == target)
-}
-
-pub fn query_key_conflicts_with_transform(hotkey: &str) -> bool {
-    let target = hotkey_to_rdev_key(hotkey);
-    TRANSFORM_DETECTOR
-        .lock_or_recover()
-        .as_ref()
-        .is_some_and(|detector| detector.target_key.is_some() && detector.target_key == target)
-}
-
-/// Consume the current physical transform hold and return its privacy-safe
-/// correlation/timing metadata.
-pub fn take_transform_hold_context() -> Option<(u64, u64)> {
-    TRANSFORM_HOLD_CONTEXT
-        .lock_or_recover()
-        .take()
-        .map(|(pass_id, started)| (pass_id, started.elapsed().as_millis() as u64))
-}
-
-/// Whether the transform hotkey is currently enabled (a listener was started
-/// and not since stopped). Test/diagnostic surface only.
-#[cfg(test)]
-pub(crate) fn is_transform_active() -> bool {
-    TRANSFORM_ACTIVE.load(Ordering::SeqCst)
 }
 
 pub fn start_query_listener(app_handle: tauri::AppHandle, hotkey: &str) {
@@ -4565,29 +4257,6 @@ mod tests {
         set_app_disabled(false);
     }
 
-    // -- Transform hotkey tests (issue #312, PR-B1) --
-    //
-    // These exercise the module-level wiring (`set_transform_key`,
-    // `stop_transform_listener`, the `TRANSFORM_DETECTOR`/`TRANSFORM_ACTIVE`
-    // statics) directly, without going through `start_transform_listener`
-    // (which needs a real `tauri::AppHandle` to spawn the rdev thread and so
-    // isn't exercised by these pure unit tests). The underlying state machine
-    // (`HoldDownDetector`) is already covered exhaustively by the
-    // `hold_*` tests above — these confirm the transform wiring reuses it
-    // correctly and stays isolated from the dictation detectors.
-
-    /// Reset all transform-related global state to a known baseline so tests
-    /// don't leak state into each other (tests run --test-threads=1, but order
-    /// is not guaranteed).
-    fn reset_transform_state() {
-        TRANSFORM_ACTIVE.store(false, Ordering::SeqCst);
-        let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-        *det = None;
-        *TRANSFORM_HOLD_CONTEXT
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = None;
-    }
-
     #[test]
     fn dictation_key_ids_are_rejected_for_transform() {
         assert!(is_dictation_key_id("shift_l"));
@@ -4602,266 +4271,10 @@ mod tests {
         assert!(!is_dictation_key_id("ctrl_l"));
         assert!(!is_dictation_key_id("not_a_real_key"));
         assert!(!is_dictation_key_id(""));
-        assert!(is_transform_or_query_key_id("shift_r"));
-        assert!(is_transform_or_query_key_id("alt_r"));
-        assert!(is_transform_or_query_key_id("ctrl_l"));
-        assert!(!is_transform_or_query_key_id("f1"));
-    }
-
-    #[test]
-    fn transform_set_key_arms_detector_independent_of_active_flag() {
-        reset_transform_state();
-        assert!(!is_transform_active());
-
-        // set_transform_key alone (no start_transform_listener) should still
-        // arm the detector with a target key; TRANSFORM_ACTIVE is untouched —
-        // mirrors set_target_key's relationship to LISTENER_ACTIVE.
-        let was_held = set_transform_key("alt_l");
-        assert!(!was_held);
-        assert!(!is_transform_active());
-
-        {
-            let det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            assert_eq!(det.as_ref().unwrap().target_key, Some(Key::Alt));
-        }
-
-        reset_transform_state();
-    }
-
-    #[test]
-    fn transform_hold_context_is_consumed_once() {
-        reset_transform_state();
-        *TRANSFORM_HOLD_CONTEXT
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some((41, Instant::now()));
-        let (pass_id, _elapsed_ms) = take_transform_hold_context().unwrap();
-        assert_eq!(pass_id, 41);
-        assert_eq!(take_transform_hold_context(), None);
-    }
-
-    #[test]
-    fn escape_marks_only_the_exact_active_transform_pass() {
-        let app_state = crate::state::AppState::default();
-        app_state.activate_transform_pass(41);
-
-        assert!(!mark_transform_pass_cancelled_on_escape(&app_state, 40));
-        assert!(!app_state.is_transform_pass_cancelled(40));
-
-        assert!(mark_transform_pass_cancelled_on_escape(&app_state, 41));
-        assert!(app_state.is_transform_pass_cancelled(41));
-        // The synchronous keyboard branch only publishes the marker. The
-        // existing async owner still performs active-phase teardown.
-        assert_eq!(
-            app_state.transform_status(),
-            crate::state::TransformStatus::Idle
-        );
-        assert_eq!(app_state.active_transform_pass_id(), Some(41));
-    }
-
-    #[test]
-    fn escape_marker_does_not_tear_down_active_transform_phases() {
-        for (pass_id, status) in [
-            (51, crate::state::TransformStatus::Capturing),
-            (52, crate::state::TransformStatus::Connecting),
-            (53, crate::state::TransformStatus::Listening),
-            (54, crate::state::TransformStatus::Thinking),
-        ] {
-            let app_state = crate::state::AppState::default();
-            app_state.activate_transform_pass(pass_id);
-            app_state.set_transform_status(status);
-
-            assert!(mark_transform_pass_cancelled_on_escape(&app_state, pass_id));
-            assert!(app_state.is_transform_pass_cancelled(pass_id));
-            assert_eq!(app_state.transform_status(), status);
-            assert_eq!(app_state.active_transform_pass_id(), Some(pass_id));
-        }
-    }
-
-    #[test]
-    fn escape_target_uses_exact_queued_active_or_review_handoff_pass() {
-        use crate::state::TransformStatus;
-
-        assert_eq!(
-            choose_transform_escape_target(Some(41), Some(41), TransformStatus::Idle, Some(41)),
-            Some(41),
-            "the exact queued physical hold is cancellable before it claims Capturing"
-        );
-        for status in [
-            TransformStatus::Capturing,
-            TransformStatus::Connecting,
-            TransformStatus::Listening,
-            TransformStatus::Thinking,
-            // Deterministic seam for ReviewPending-before-set_focusable(true).
-            TransformStatus::ReviewPending,
-        ] {
-            assert_eq!(
-                choose_transform_escape_target(None, Some(42), status, Some(42)),
-                Some(42)
-            );
-            assert_eq!(
-                choose_transform_escape_target(Some(99), Some(42), status, Some(42)),
-                Some(42),
-                "a refused hold falls back to the actual active transform"
-            );
-        }
-        for status in [TransformStatus::Idle, TransformStatus::Applying] {
-            assert_eq!(
-                choose_transform_escape_target(None, Some(43), status, Some(43)),
-                None
-            );
-            assert_eq!(
-                choose_transform_escape_target(Some(43), Some(43), status, Some(43)),
-                if status == TransformStatus::Idle {
-                    Some(43)
-                } else {
-                    None
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn escape_target_fails_closed_when_active_ownership_changes_during_snapshot() {
-        assert_eq!(
-            choose_transform_escape_target(
-                Some(51),
-                Some(51),
-                crate::state::TransformStatus::Thinking,
-                Some(52),
-            ),
-            None
-        );
-        assert_eq!(
-            choose_transform_escape_target(
-                None,
-                Some(51),
-                crate::state::TransformStatus::Thinking,
-                None,
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn transform_detector_starts_and_stops_like_hold_down() {
-        reset_transform_state();
-        set_transform_key("ctrl_l");
-
-        let start = {
-            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            det.as_mut().unwrap().handle_event(&press(Key::ControlLeft))
-        };
-        assert_eq!(start, HoldDownEvent::Start);
-
-        let stop = {
-            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            det.as_mut()
-                .unwrap()
-                .handle_event(&release(Key::ControlLeft))
-        };
-        assert_eq!(stop, HoldDownEvent::Stop);
-
-        reset_transform_state();
-    }
-
-    #[test]
-    fn transform_key_change_while_held_reports_should_release() {
-        reset_transform_state();
-        set_transform_key("shift_r");
-        {
-            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            let started = det.as_mut().unwrap().handle_event(&press(Key::ShiftRight));
-            assert_eq!(started, HoldDownEvent::Start);
-        }
-
-        // Changing key while held should report `true` so the command layer
-        // emits transform-key-released, exactly like update_keyboard_key does
-        // for the dictation hotkey.
-        let should_release = set_transform_key("alt_r");
-        assert!(should_release);
-
-        reset_transform_state();
-    }
-
-    #[test]
-    fn stop_transform_listener_clears_active_and_resets_detector() {
-        reset_transform_state();
-        set_transform_key("shift_r");
-        TRANSFORM_ACTIVE.store(true, Ordering::SeqCst);
-        {
-            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            det.as_mut().unwrap().handle_event(&press(Key::ShiftRight));
-        }
-
-        stop_transform_listener();
-
-        assert!(!is_transform_active());
-        {
-            let det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            let d = det.as_ref().unwrap();
-            assert_eq!(d.state, HoldState::Idle);
-            assert_eq!(d.target_key, None);
-        }
-
-        reset_transform_state();
-    }
-
-    #[test]
-    fn transform_detector_is_isolated_from_dictation_detectors() {
-        reset_transform_state();
-        set_transform_key("ctrl_l");
-
-        // Prime the dictation hold-down detector on a DIFFERENT key.
-        {
-            let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            let d = det.get_or_insert_with(HoldDownDetector::new);
-            let _ = d.set_target(Some(Key::ShiftLeft));
-        }
-
-        // Press the transform key — must not start the dictation detector.
-        {
-            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            let started = det.as_mut().unwrap().handle_event(&press(Key::ControlLeft));
-            assert_eq!(started, HoldDownEvent::Start);
-        }
-        {
-            let det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            assert_eq!(det.as_ref().unwrap().state, HoldState::Idle);
-        }
-
-        // Press the dictation key — must not affect the transform detector.
-        {
-            let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            let started = det.as_mut().unwrap().handle_event(&press(Key::ShiftLeft));
-            assert_eq!(started, HoldDownEvent::Start);
-        }
-        {
-            let det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            assert_eq!(det.as_ref().unwrap().state, HoldState::Held);
-        }
-
-        // Clean up both.
-        {
-            let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            det.as_mut().unwrap().reset();
-        }
-        reset_transform_state();
-    }
-
-    #[test]
-    fn no_transform_target_key_never_fires() {
-        reset_transform_state();
-        // Detector exists but with no target key set (e.g. "unset" hotkey).
-        set_transform_key("not_a_real_key");
-        {
-            let mut det = TRANSFORM_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
-            let result = det
-                .as_mut()
-                .unwrap()
-                .handle_event(&press(Key::ControlRight));
-            assert_eq!(result, HoldDownEvent::None);
-        }
-        reset_transform_state();
+        assert!(is_query_key_id("shift_r"));
+        assert!(is_query_key_id("alt_r"));
+        assert!(is_query_key_id("ctrl_l"));
+        assert!(!is_query_key_id("f1"));
     }
 
     /// Collect every tracing field emitted by `f` as `name=value` lines.

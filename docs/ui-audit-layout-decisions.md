@@ -18,12 +18,10 @@ a workspace, a task, and a saved record:
 | App overrides | Customize destination for per-app behavior. The internal `styles` ID remains a compatibility detail, not user-facing terminology. A **writing style** can describe an output preference, but help must not direct users to an absent “Styles” destination. |
 | Modes | Named bundles of dictation behavior that can be selected or bound to an app. A mode is not the delivery destination. |
 | Delivery | Where/how the produced text is delivered (clipboard, auto-paste, files). It is not a synonym for a writing style or mode. |
-| Selected-text rewrite | Customize/settings destination and the task of rewriting a selection locally. **Transform** remains the name of a saved instruction or a recorded rewrite run in diagnostics/Insights. Existing “Transform sample text” discovery copy immediately explains that task as an “on-device selected-text rewrite.” Do not rename storage IDs or run kinds for copy consistency. |
 | Voice commands & spoken formatting | Global switch that gates both replacement commands and spoken formatting. Individual task labels may name the specific capability, not only one half of that global switch. |
-| Voice Query / Assistant | Voice Query is the shortcut-driven question/review flow; Assistant is the persistent conversational workspace. Both use the configured provider, unlike local dictation/rewrite. They are intentionally distinct tasks, not blanket “local AI” assurances. |
+| Voice Query / Assistant | Voice Query is the shortcut-driven question/review flow; Assistant is the persistent conversational workspace. Both use the configured provider, unlike local dictation. They are intentionally distinct tasks, not blanket “local AI” assurances. |
 
-The Customize hub owns the canonical visible destinations **App overrides** and
-**Selected-text rewrite**, without ordered step numbers. Palette Settings entries
+The Customize hub owns the canonical visible destinations, including **App overrides** and **Modes**, without ordered step numbers. Palette Settings entries
 are derived from category labels. This lane groups the palette's default list;
 it does not alter destinations, command availability, or search scoring.
 

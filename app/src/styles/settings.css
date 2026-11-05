@@ -590,7 +590,6 @@
 
 .settings-picker { min-width: 0; width: var(--settings-control-max); user-select: none; -webkit-user-select: none; }
 .settings-page .settings-page-title { font-size: 16px; line-height: 24px; font-weight: 600; letter-spacing: 0; }
-.settings-rows > .transform-practice { margin-top: 0; padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; box-shadow: none; border-inline: 0; border-bottom: 0; }
 @media (max-width: 767px) { .settings-tools-eyebrow { display: none; } }
 
 @media (max-width: 767px) {

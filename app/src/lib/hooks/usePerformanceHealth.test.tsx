@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(async (command: string) => {
     if (command === 'get_status') return { state: 'idle' };
-    if (command === 'transform_status') return 'idle';
     if (command === 'get_capture_health_history') {
       return {
         schemaVersion: 1,
@@ -53,7 +52,7 @@ describe('usePerformanceHealth capture hydration', () => {
     });
 
     expect(mocks.invoke).toHaveBeenCalledWith('get_capture_health_history');
-    expect(mocks.invoke).not.toHaveBeenCalledWith('get_event_history');
+    expect(mocks.invoke.mock.calls.map(([command]) => command)).toEqual(['get_status', 'get_capture_health_history']);
     expect(container.textContent).toBe('healthy');
   });
 

@@ -5,14 +5,11 @@ import { applyMeetingCalendarEvent } from '../calendar';
 import { smartAutoMicrophoneRequest, type Settings } from '../settings';
 import {
   IDLE_MEETING_STATUS,
-  IDLE_MEETING_SUMMARY_STATUS,
-  cancelMeetingSummary,
   copyMeeting,
   deleteAllMeetings,
   deleteMeeting,
   getMeeting,
   getMeetingStatus,
-  getMeetingSummaryStatus,
   getSystemAudioPermissionStatus,
   listMeetings,
   openSystemAudioPreferences,
@@ -20,18 +17,15 @@ import {
   previewMeetingBundle,
   requestSystemAudioPermission,
   renameMeetingRemoteSpeaker,
-  restoreMeetingReviewFromGenerated,
   saveMeetingBundle,
   saveMeetingExport,
   saveMeetingReview,
   saveMeetingMetadata,
   startMeeting,
-  startMeetingSummary,
   stopMeeting,
   type MeetingDetail,
   type MeetingPage,
   type MeetingRuntimeStatus,
-  type MeetingSummaryStatus,
   type MeetingSegment,
   type MeetingReviewExportFormat,
   type SaveMeetingReviewRequest,
@@ -60,7 +54,6 @@ export function useMeetings(settings: Settings) {
   const pageCursorRef = useRef<{ offset: number; limit: number } | null>(null);
   const listRequestRef = useRef<'refresh' | 'more' | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [summaryStatus, setSummaryStatus] = useState<MeetingSummaryStatus>(IDLE_MEETING_SUMMARY_STATUS);
   const queryRef = useRef('');
   const [appliedQuery, setAppliedQuery] = useState('');
   const searchTicketRef = useRef(0);
@@ -232,7 +225,6 @@ export function useMeetings(settings: Settings) {
         runtimeStatusRef.current = next;
         setStatus(next);
       }),
-      getMeetingSummaryStatus().then(setSummaryStatus),
       getSystemAudioPermissionStatus().then((next) => {
         if (permissionRevision.current === initialPermissionRevision) setPermission(next);
       }),
@@ -292,13 +284,6 @@ export function useMeetings(settings: Settings) {
         'meeting-segment-failed',
         () => setError('A meeting transcript chunk could not be transcribed. Its local audio remains available until you delete the meeting.'),
       ),
-      listen<MeetingSummaryStatus>('meeting-summary-status-changed', (event) => {
-        setSummaryStatus(event.payload);
-        if (event.payload.phase === 'complete') {
-          void refresh();
-          if (selectedIdRef.current === event.payload.sessionId) void select(event.payload.sessionId);
-        }
-      }),
       listen<{ sessionId: string }>('meeting-speakers-updated', (event) => {
         if (selectedIdRef.current === event.payload.sessionId) {
           void select(event.payload.sessionId);
@@ -520,26 +505,6 @@ export function useMeetings(settings: Settings) {
     }
   }, [refresh]);
 
-  const restoreReview = useCallback(async (
-    sessionId: string,
-    generatedRevision: number,
-    expectedReviewRevision: number | null,
-  ) => {
-    setError(null);
-    try {
-      const next = await restoreMeetingReviewFromGenerated(
-        sessionId,
-        generatedRevision,
-        expectedReviewRevision,
-      );
-      if (selectedIdRef.current === sessionId) setDetail(next);
-      await refresh();
-      return true;
-    } catch (cause) {
-      setError(String(cause));
-      return false;
-    }
-  }, [refresh]);
 
   const renameRemoteSpeaker = useCallback(async (
     sessionId: string,
@@ -571,25 +536,6 @@ export function useMeetings(settings: Settings) {
     }
   }, []);
 
-  const summarize = useCallback(async (sessionId: string) => {
-    setError(null);
-    try {
-      setSummaryStatus(await startMeetingSummary(sessionId));
-    } catch (cause) {
-      setError(String(cause));
-    }
-  }, []);
-
-  const cancelSummary = useCallback(async () => {
-    try {
-      if (await cancelMeetingSummary()) {
-        setSummaryStatus((current) => ({ ...current, phase: 'cancelling' }));
-      }
-    } catch (cause) {
-      setError(String(cause));
-    }
-  }, []);
-
   return {
     status,
     permission,
@@ -602,7 +548,6 @@ export function useMeetings(settings: Settings) {
     hasMore,
     loadMore,
     error,
-    summaryStatus,
     refresh,
     select,
     start,
@@ -616,11 +561,8 @@ export function useMeetings(settings: Settings) {
     saveReview,
     saveMetadata,
     applyCalendarEvent,
-    restoreReview,
     renameRemoteSpeaker,
     remove,
     clear,
-    summarize,
-    cancelSummary,
   };
 }

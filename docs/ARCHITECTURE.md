@@ -7,12 +7,11 @@
 
 ## Overview
 
-Murmur is a privacy-first, local voice dictation app for macOS. Its speech transcription and selected-text rewriting run on-device: transcription on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx), and rewriting through a signed local-LLM helper process. The optional Voice Query bridge can invoke a user-configured third-party CLI whose own network behavior remains outside Murmur's trust boundary.
+Murmur is a privacy-first, local voice dictation app for macOS. Its speech transcription runs on-device on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx). The optional Voice Query bridge can invoke a user-configured third-party CLI whose own network behavior remains outside Murmur's trust boundary.
 
-Built with **Tauri 2** (Rust backend + React frontend). Two shipped inference stacks:
+Built with **Tauri 2** (Rust backend + React frontend). Transcription backends:
 
 - **In-process transcription** — Core ML / whisper.cpp / sherpa-onnx behind one `TranscriptionBackend` trait.
-- **Out-of-process rewriting** — a separate signed `murmur-llm-sidecar` executable runs llama.cpp. The app crate must **never** link `llama-cpp-2` directly: its ggml ABI clashes with whisper's.
 
 ---
 
@@ -25,7 +24,6 @@ Built with **Tauri 2** (Rust backend + React frontend). Two shipped inference st
 | Audio capture | cpal + Core Audio CATap | Signed worker owns microphone AUHAL and explicit-session System Audio tap; host resamples channels independently to 16kHz mono |
 | VAD | Silero v5.1.2 via whisper-rs | Filters silence before transcription; thread-local cached context |
 | Transcription | FluidAudio (Core ML/ANE), whisper-rs → whisper.cpp (Metal), sherpa-onnx (CPU) | Selected per model from one catalog |
-| Local rewriting | `murmur-llm-sidecar` (llama.cpp, Qwen2.5-1.5B-Instruct Q4_K_M) | Separate signed process, model passed as read-only fd |
 | Text injection | arboard + CGEvent (osascript fallback) | Clipboard-first |
 | Selection capture | Accessibility (AX) APIs + sentinel-guarded clipboard fallback | Secure fields fail closed |
 | Keyboard listening | rdev (git main branch) | Global key events; one background thread, three detectors |
@@ -109,16 +107,12 @@ bounded speaker turns --> conservative assignment to complete Them segments
 session-scoped Speaker N labels + meeting-speakers-updated --> temporary WAV deleted
 ```
 
-Meeting capture is mutually exclusive with dictation, transforms, imported-file
+Meeting capture is mutually exclusive with dictation, imported-file
 transcription, corpus capture, and benchmarks. The worker owns tap teardown;
 normal stop waits for a teardown receipt and the host confirms termination.
-After capture finishes, the user can explicitly summarize the stored transcript.
 AEC3 is constructed only for an opted-in meeting. It uses the System stream as
 a private render reference, never changes Them, and bypasses to raw microphone
 PCM on initialization, processing, or backlog failure.
-The signed local-LLM sidecar processes bounded chunks serially, validates every
-derived claim against stored segment IDs, and atomically replaces the session's
-schema-v1 artifact. Summary generation is cancellable and owns the heavy runtime.
 See [Meeting Capture](features/meeting-capture.md).
 
 Calendar naming is an explicit review action, separate from capture. The main
@@ -157,51 +151,21 @@ connection serves the whole operation, and a separate single-slot permit keeps
 playback's two-slot pool free. See
 [Meeting review workspace](features/meeting-review-workspace.md#export-with-audio).
 
-### Selected-text transform
-
-```text
-Transform hold key down (rdev, assigns a monotonic transform_pass_id)
-    |
-Async mic ownership starts immediately (before capture — Chromium capture can take >1s)
-    |
-selection.rs freezes an AX selection snapshot
-    |-- secure/password field --> fail closed, no popover content
-    +-- no AX selection --> AX retry ladder, then sentinel-guarded synthetic Cmd+C
-    |
-Popover shows 'connecting' until selection + exact mic owner are both ready
-    |
-Popover shows 'listening' (non-focusable, never steals focus)
-    |
-Key release --> instruction ASR (cleanup-only transcript path)
-    |
-expand_instruction(): built-in preset > saved transform > raw text
-    |
-llm_sidecar: spawn + handshake (if cold) --> generate --> 'thinking' to 'ready'
-    |
-User reviews a word diff. Approve --> transform_apply (AX set-value, or paste
-fallback with full-pasteboard save/restore). Undo restores the frozen original.
-```
-
-Dictation and transform are mutually exclusive in both directions (status guards, sidecar busy guard, helper shutdown before recording).
-
----
-
-## Six-window architecture
+## Five-window architecture
 
 Each window is a separate webview with its own Tauri capability set.
 
 | Window | Label | Entry point | Size | Purpose |
 |--------|-------|-------------|------|---------|
 | Main | `main` | `index.html` | 1120×820, minimum 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, and modals |
-| Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons, and transform traces |
+| Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons |
 | Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always on top, transparent, and non-activating |
-| Transform Review | `transform-review` | `transform-review.html` | 320×76 compact | Transform proposal review. Non-focusable until `ready` or `failed` |
 | Query Review | `query-review` | `query-review.html` | 440×92 compact, 440×340 expanded | Voice Query answer review. Always on top, transparent, and non-activating |
 | Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML and Whisper Tiny/Base transcript preview under the notch. Always on top, transparent, non-activating, and click-through |
 
-Main and Diagnostics hide on close instead of being destroyed. Overlay and Transform Review call the shared non-activating window treatment in `commands/native_window.rs`. Query Review and Dictation Preview use its `PopoverSpec` transport, which applies the same window level and activation policy. Every raw `NSWindow` mutation runs on the main thread through `run_on_main_thread`. macOS 26 hard-traps on an off-main mutation (#325).
+Main and Diagnostics hide on close instead of being destroyed. Overlay calls the shared non-activating window treatment in `commands/native_window.rs`. Query Review and Dictation Preview use its `PopoverSpec` transport, which applies the same window level and activation policy. Every raw `NSWindow` mutation runs on the main thread through `run_on_main_thread`. macOS 26 hard-traps on an off-main mutation (#325).
 
-Rust owns the native frame for each overlay or popover. `geometry_for()` and `popover_geometry_for()` calculate the Overlay and Transform Review frames. The `frame()` functions in `commands/query_popover.rs` and `commands/dictation_preview.rs` calculate the other two frames. Checked-in Rust and frontend fixtures cover the shared geometry contracts.
+Rust owns the native frame for each overlay or popover. `geometry_for()` calculates the Overlay frame. The `frame()` functions in `commands/query_popover.rs` and `commands/dictation_preview.rs` calculate the other two frames. Checked-in Rust and frontend fixtures cover the shared geometry contracts.
 
 Main owns appearance writes, the durable saved-theme library, Open VSX
 discovery, and application-level native `setTheme`. Main and Diagnostics resolve System mode to a concrete `data-appearance` with a
@@ -210,7 +174,7 @@ cache to avoid a wrong-theme first paint. Library variants are compiled into
 that small active document, so first paint never depends on the larger library
 or a network. The Diagnostics pop-out observes the
 same local storage as Main so its latency table updates while the user
-navigates. Overlay and transform-review remain unsynchronized transparent,
+navigates. Overlay remains unsynchronized transparent,
 always-dark glass surfaces.
 
 ---
@@ -260,7 +224,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 244 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 210 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -279,13 +243,11 @@ stay local and never reach logs or telemetry. See
 | `cli_command.rs` | Spoken CLI command grammar and lexicon |
 | `correct_and_teach.rs` | Bounded local diff proposals from a user's edit; never writes without confirmation |
 | `correction.rs` | Smart Correction matcher (exact + fuzzy tiers) |
-| `correction_shortcut.rs` | Command-Shift-E chord state and dispatch for correcting the latest delivered dictation |
 | `delivery_recovery.rs` | Generation-bound last-delivery memory and one-at-a-time clipboard or paste retry |
 | `diarization_assignment.rs` | Validation of bounded speaker turns and conservative assignment to complete remote meeting segments |
 | `diarization_audio.rs` | Private temporary owner for up to two hours of 16 kHz remote meeting audio. Drop deletes the WAV |
 | `diarization_model.rs` | Locked download, SHA-256 validation, status, and removal for the pinned Core ML speaker model |
 | `dictation_context.rs` | Immutable per-recording context snapshot resolution |
-| `dictation_correction.rs` | Spoken correction parsing, local-model edit instructions, and validation of corrected text |
 | `dictation_diagnostics.rs` | Explicit one-shot private dictation capture store with bounded text, retention, deletion, and upload |
 | `dictation_diagnostics_contract.rs` | Cross-path tests for diagnostic arming, exact recording ownership, content bounds, revocation, and corrupt-data removal |
 | `dictation_telemetry.rs` | Stable content-free lifecycle telemetry and error classification for accepted live dictations |
@@ -294,7 +256,6 @@ stay local and never reach logs or telemetry. See
 | `commands/corpus.rs` | Guided capture-only personal corpus recording, WAV integrity checks, quality reports, and benchmark fixture loading |
 | `commands/dictation_diagnostics.rs` | Window-gated arm, status, list, read, delete, and upload commands for private dictation captures |
 | `commands/integrations.rs` | Local Launch Services availability probe for the optional NotchPill companion app |
-| `commands/meeting_summary.rs` | Generation-gated, cancellable local meeting summary flow with source-backed artifact publication |
 | `commands/microphone_preview.rs` | Main-window microphone test lifecycle, input validation, VAD sensitivity, and exact-owner stop |
 | `commands/mode_runtime.rs` | Foreground app and browser-site mode resolution, mode cycling, temporary overrides, and watcher events |
 | `commands/query_history.rs` | Main-window paging, provider filtering, and purge commands for opt-in Voice Query history |
@@ -312,15 +273,14 @@ stay local and never reach logs or telemetry. See
 | `assistant.rs` | Explicitly connected Pi conversation mirror; bounded private atomic store, restart interruption, exact-pass partials and local deletion |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
-| `keyboard.rs` | Hold-down, double-tap, and transform-hold detectors on one shared rdev thread |
+| `keyboard.rs` | Dictation and Voice Query detectors on one shared rdev thread |
 | `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
 | `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
-| `meeting_artifact.rs` | Bounded, source-segment-backed summary artifact parsing, validation, chunking, and merge |
+| `meeting_artifact.rs` | Legacy stored artifact validation for database compatibility |
 | `meeting_diarization.rs` | Idle-only speaker worker ownership, foreground preemption, bounded retries, turn validation, and assignment publication |
 | `meeting_diarization_probe.rs` | Debug-only hardware proof for diarization preemption and seeded meeting-review fixtures |
 | `meeting_review.rs` | Meeting review validation, edits, export rendering, and session-scoped speaker-label resolution |
-| `llm_sidecar.rs` | Host supervisor for the signed local-LLM helper: spawn, handshake, RSS ceilings, idle unload, circuit breaker |
 | `log_shipper.rs` | Tails privacy-stripped telemetry JSONL to bounded NDJSON batches and advances its durable offset only after acknowledgment |
 | `model_runtime.rs` | Model catalog + lifecycle manager (load/warm/readiness/unload, generation-ordered status events) |
 | `microphone_auto.rs` | Cached-only Smart Auto input policy that freezes an eligible stable microphone ID for one recording |
@@ -340,16 +300,11 @@ stay local and never reach logs or telemetry. See
 | `telemetry.rs` | Structured event system: `TauriEmitterLayer`, ring buffer, JSONL, privacy stripping |
 | `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml implementations |
 | `transcript_transform.rs` | The ordered post-recognition pipeline and its stage contracts |
-| `transform_apply.rs` | Approve/undo write-back — the only path that writes into the target app |
-| `transform_diagnostics.rs` | Per-attempt transform records and consented content captures |
-| `transform_flow.rs` | End-to-end transform orchestrator and its Tauri commands |
-| `transform_presets.rs` | Built-in spoken presets (Shorten, Bullets, Professional, Fix grammar, Casual) |
-| `transform_trace.rs` | Pass-scoped correlation tracing |
 | `vad.rs` | Silero VAD filtering, thread-local context cache |
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `meeting_summary`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `query_history`, `query_popover`, `recording`, `settings_store`, `theme`, `transform_diagnostics`, `transform_model`, `transform_popover`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
+Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `query_history`, `query_popover`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 
@@ -359,7 +314,7 @@ enum TransformStatus { /* Idle, Capturing, Connecting, Listening, Thinking, Revi
 
 struct AppState {
     dictation: Mutex<DictationState>,
-    recording_transition: tokio::sync::Mutex<()>,   // serializes start/stop/cancel/transform
+    recording_transition: tokio::sync::Mutex<()>,   // serializes start/stop/cancel
     model_runtime: ModelRuntimeManager,
     recording_id: AtomicU64,                        // generation counter; supersedes stale work
     meeting_generation: AtomicU64,
@@ -369,17 +324,13 @@ struct AppState {
     settings_revision: AtomicU64,
     correction_matcher: Mutex<...>,                 // immutable, swapped by generation
     ide_context: Mutex<IdeContextStore>,
-    transform_status: Mutex<TransformStatus>,
-    transform_pass_sequence: AtomicU64,             // monotonic per physical key hold
-    transform_session: Mutex<Option<TransformSession>>,
-    transform_apply_epoch: AtomicU64,               // guards clipboard restore races
     // ...
 }
 ```
 
 Two patterns do most of the concurrency work:
 
-- **Generation counters.** `recording_id` and `transform_pass_id` are monotonic. Every async continuation re-checks whether it still owns the current generation before mutating shared state, so a delayed handler can never cancel or overwrite the pass that replaced it.
+- **Generation counters.** recording and query generation IDs are monotonic. Every async continuation re-checks whether it still owns the current generation before mutating shared state, so a delayed handler can never cancel or overwrite the pass that replaced it.
 - **Immutable snapshots.** A recording resolves its full context (model, language, delivery, profile overrides, vocabulary, transform stage config) once at start. Settings or focus changes mid-recording apply to the *next* session, never the running one.
 
 ### Model runtime (`model_runtime.rs`)
@@ -400,7 +351,7 @@ Each entry declares its backend, accelerator, capabilities (multilingual, transl
 
 The manager serializes load/warm/readiness/unload, emits generation-ordered `model-runtime-status-changed` events, and reports a `LoadReport` (`lock_wait_ms`, `load_ms`, `cache_hit`) that feeds the performance record. Idle release is user-configurable (`idleTimeoutMinutes`, including a power-adapter-only keep-loaded policy).
 
-**Warm-on-record:** `start_native_recording` kicks off `spawn_model_preparation()` immediately after audio capture starts, so model load overlaps with the user still speaking. By the time the key is released the model is usually resident. (The transform sidecar does **not** do this yet — see issue #340.)
+**Warm-on-record:** `start_native_recording` kicks off `spawn_model_preparation()` immediately after audio capture starts, so model load overlaps with the user still speaking. By the time the key is released the model is usually resident.
 
 ### `transcriber/` — Inference Backends
 
@@ -424,24 +375,13 @@ trait TranscriptionBackend: Send + Sync {
 
 All backends take one authoritative final-after-stop pass; delivery happens exactly once. Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
 
-### `llm_sidecar.rs` — Local LLM Supervisor
-
-The helper is a separate signed executable (`murmur-llm-sidecar`), packaged as a Tauri `externalBin`, running with hardened runtime and App Sandbox.
-
-- **Model pin:** Qwen2.5-1.5B-Instruct Q4_K_M, ~1.1 GB, exact byte size **and** SHA-256 verified at download and again before every spawn.
-- **Spawn hardening:** empty environment, fixed cwd, no path arguments, no network. The model is handed over as an inherited read-only file descriptor (fd 3), so the helper never resolves a path itself.
-- **Handshake:** nonce + protocol + model-id verification within a deadline; a mismatch is a hard failure, not a downgrade.
-- **Resource ceilings:** RSS warn at 2 GB, kill at 3 GB. Idle unload after inactivity. A circuit breaker (3 faults in a 10-minute window) disables the runtime until `reset_transform_runtime`.
-- **Maintenance:** a 30-second tokio interval task runs `maintenance_tick()` for idle unload and RSS enforcement; `RunEvent::Exit` shuts the helper down so it never outlives the app.
-
 ### `keyboard.rs` — Keyboard Detection
 
-One persistent rdev background thread feeds three detectors: hold-down, double-tap, and transform-hold.
+One persistent rdev background thread feeds dictation hold-down and double-tap detectors plus Voice Query.
 
 - **Hold-down** — 2 states; press emits `hold-down-start`, release emits `hold-down-stop`. Combos (trigger+letter) cancel.
 - **Double-tap** — 4 states; each tap under 200ms, gap under 400ms. Rejects holds, combos, slow taps, triple-tap spam. Emits `hotkey-tap-rejected` when an idle first tap expires (opt-in overlay feedback).
 - **Both** — deferred hold promotion: a 200ms timer thread with an atomic invalidation counter decides tap-vs-hold. Releasing before 200ms invalidates the timer; still held at 200ms promotes to a hold.
-- **Transform hold** — an independent key (`alt_r` / `ctrl_l` / `shift_r`, rejects the dictation key). Each physical hold gets a monotonic `transform_pass_id` assigned *in the rdev callback*, which is then carried explicitly through every event, command, and worker — correlation never relies on an ambient tracing span.
 
 **macOS thread safety.** rdev's key translation uses TIS/TSM APIs that must run on the main thread. `rdev::set_is_main_thread(false)` is called before `listen()`, which makes rdev marshal only those calls to main via `dispatch_sync` while the listener loop stays on its background thread. Without it, the app silently segfaults.
 
@@ -484,7 +424,6 @@ Four SQLite databases and the Assistant mirror, all stored locally:
 | Voice Query history | `query-history/query-history.sqlite3` | Off by default; newest 200 question/answer records; direct user purge |
 | Assistant conversations | `assistant/conversations-v1.json` | Explicit Pi connection consent; at most 100 conversations, 200 messages each, 16 MiB total; owner-only, atomic; separate remote Pi retention |
 
-Transform diagnostic captures (explicitly consented, content-bearing) live under `diagnostics/transforms/transform-captures/` in a `0700` directory with `0600` files: max 3 retained, 7-day expiry, symlink targets refused, no export path.
 
 ---
 
@@ -548,7 +487,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-244 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+210 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -560,7 +499,7 @@ See [reference/events.md](reference/events.md) for every Rust → frontend event
 
 | Permission | Required For |
 |-----------|-------------|
-| Microphone | Audio capture — dictation and transform instructions |
+| Microphone | Audio capture — dictation and Voice Query instructions |
 | Accessibility | Global hotkeys (rdev), auto-paste, AX selection capture, AX write-back |
 | System Audio (optional; macOS 14.2+) | Meeting playback capture as Them; tap exists only during an explicit check or active meeting |
 
@@ -575,12 +514,11 @@ Murmur uses two roots — a legacy one from before the rename, and the Tauri app
 ```text
 ~/Library/Application Support/local-dictation/
 ├── models/                    # whisper .bin files, Silero VAD, sherpa-onnx bundle
-│   └── transform-llm/<sha256>/qwen2.5-1.5b-instruct-q4_k_m.gguf
 └── logs/                      # app.log, events.jsonl (+ .dev variants)
 
 ~/Library/Application Support/com.localdictation/        (com.localdictation.dev in dev)
 ├── knowledge/                 # knowledge.sqlite3, backups/, quarantine/
-├── diagnostics/               # performance.sqlite3, transforms/
+├── diagnostics/               # performance.sqlite3
 └── meetings/                  # meetings.sqlite3, backups/, quarantine/, audio/
 ```
 
@@ -593,7 +531,7 @@ Core ML models are managed by FluidAudio under `~/Library/Application Support/Fl
 ### Dev
 
 ```bash
-python3 scripts/build_local_llm_sidecar.py   # once, before anything else on macOS
+python3 scripts/build_capture_helpers.py   # once, before anything else on macOS
 cd app && npm install
 cd app && npm run tauri:dev                  # hot reload, isolated dev bundle/data
 cd app && npm run tauri build                # .app and .dmg
@@ -601,19 +539,19 @@ cd app/src-tauri && cargo test -- --test-threads=1
 cd app && npx tsc --noEmit && npm test
 ```
 
-`tauri.macos.conf.json` declares the `murmur-llm-sidecar` externalBin, so on macOS both `tauri dev` and `cargo check`/`cargo test` fail on a fresh clone until that binary exists. The build script produces a real helper on arm64 macOS and is a no-op elsewhere. See [DEVELOPMENT.md](DEVELOPMENT.md).
+`tauri.macos.conf.json` declares the three capture-helper executables. Build them before `tauri dev`, `cargo check`, or `cargo test`. See [DEVELOPMENT.md](DEVELOPMENT.md).
 
 `tauri.dev.conf.json` overrides only `identifier` → `com.localdictation.dev` and `productName` → `Local Dictation Dev`, so dev installs alongside the release build.
 
 ### Release pipeline
 
 1. Push a `chore: bump version ...` commit to trusted `main`.
-2. `Release Build` runs frontend verification and macOS signing/notarization (including the sidecar's split entitlements) concurrently, with launch smoke tests.
+2. `Release Build` runs frontend verification and macOS signing/notarization (including capture helper entitlements) concurrently, with launch smoke tests.
 3. Artifacts plus SHA-256 provenance are stored under names keyed by the exact commit SHA.
 4. The completed-build event verifies the trusted push, version-bump message, matching versions, exact run ID, source SHA, and immutable artifacts.
 5. Promotion creates `vX.Y.Z`, verifies remote `.sig` files, generates `latest-v2.json` plus the legacy-safe `latest.json`, then publishes.
 
-Release finalization **fails closed** on any unexpected executable in the bundle: only the Murmur binary and the signed sidecar may ship (#324). Manual dispatches are rehearsal-only. See [release.md](release.md).
+Release finalization **fails closed** on any unexpected executable in the bundle: only the Murmur binary and its three capture helpers may ship (#324). Manual dispatches are rehearsal-only. See [release.md](release.md).
 
 ### Release profile
 
@@ -636,7 +574,6 @@ strip = false   # retain Tauri's updater bundle-type marker
 | Keyboard heartbeat | App lifetime | Trace-level liveness check every 60s |
 | Resource heartbeat (tokio) | App lifetime | 1s CPU/RSS sample → diagnostics; idle-timeout enforcement |
 | Sidecar maintenance (tokio) | App lifetime | 30s tick: RSS ceiling + idle unload |
-| `murmur-llm-sidecar` process | On demand | Out-of-process llama.cpp; killed on idle, fault, or app exit |
 | Sidecar reader thread | Per spawn | Reads the helper's protocol stream |
 | Audio capture | Per recording | cpal stream + mono mix |
 | Meeting capture worker | Per explicit meeting/probe | Microphone AUHAL plus CATap/aggregate/IOProc; dual bounded callback rings |
@@ -652,13 +589,11 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 
 | Decision | Rationale |
 |----------|-----------|
-| Out-of-process LLM sidecar | llama.cpp's ggml ABI clashes with whisper's; isolation also gives per-process RSS ceilings, a kill switch, and a smaller signed attack surface |
 | Model handed to the helper as fd 3 | The helper takes no paths and needs no filesystem reach; pinning is enforced host-side by size + SHA-256 |
 | One model catalog, fail-closed | Unknown identifiers error instead of silently substituting a model with different accuracy/latency |
 | Warm-on-record | Model load overlaps with speech instead of being charged to the user after key release |
 | Generation counters everywhere | A delayed continuation can observe that it lost ownership rather than corrupting the pass that replaced it |
 | Immutable per-recording context | Settings or focus changes mid-utterance can't reinterpret a recording already in flight |
-| Review-first transform | The LLM never writes into another app without explicit approval; Undo restores the frozen original |
 | Secure-field fail-closed | An *errored* AX secure-field check is treated as "possibly a password field" — no read, no clipboard fallback |
 | Transform telemetry allow-list | String keys and values must be in a stable vocabulary; leakage is prevented at the layer, not at the call site |
 | Ordered transcript pipeline | One entry point, declared stage order and failure policy, per-stage timing — instead of ad-hoc string munging per backend |
@@ -673,7 +608,7 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | Clipboard-first delivery | Reliable across all apps; auto-paste is layered on top and never the only path |
 | Explicit-session CATap | Avoids idle tap churn; setup/teardown is phased, timeout-bounded, and process-isolated |
 | Durable chunk before inference | A crash loses at most each channel's open VAD chunk; published chunks remain recoverable from SQLite + fsynced spool audio |
-| Per-window least privilege | Overlay and transform popover get minimal capabilities; only the main window gets the full set |
+| Per-window least privilege | Overlay and query popover get minimal capabilities; only the main window gets the full set |
 | Main-only native appearance | Main owns application `setTheme`; transparent glass windows never join theme synchronization |
 | Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read up to 256 KiB of UTF-8, keep exports at 64 KiB, and publish exports atomically without touching the clipboard |
 | Data-only community themes | Open VSX is queried only from an explicit dialog; supported-license packages are checksum/ZIP/identity bounded and only declared workbench colors are converted—extension code and assets never execute |

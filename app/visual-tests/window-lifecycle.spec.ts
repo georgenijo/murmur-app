@@ -57,7 +57,7 @@ for (const appearance of ['light', 'dark']) {
       // horizontal scroll or put its actionable right edge off screen.
       await expectNoHorizontalClipping(page, label);
     }
-    for (const detail of ['Speech-to-text', 'Voice Query', 'Selected-text rewrite']) {
+    for (const detail of ['Speech-to-text', 'Voice Query']) {
       await nav.getByRole('button', { name: 'AI & models', exact: true }).click();
       await page.locator('main').getByRole('button', { name: new RegExp(`^${detail}`) }).click();
       await expect(page.locator('.settings-card-body')).toBeVisible();

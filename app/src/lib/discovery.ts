@@ -7,7 +7,6 @@ export const DISCOVERY_CHANGED_EVENT = 'murmur-discovery-changed';
 export const CHECKLIST_ITEM_IDS = [
   'command_palette',
   'mode_binding',
-  'transform',
   'voice_query',
   'meeting',
   'correction',
@@ -20,7 +19,6 @@ export const DISCOVERY_HINT_IDS = [
   'double_tap_timing',
   'correct_and_teach',
   'browser_modes',
-  'meeting_summaries',
 ] as const;
 
 export type DiscoveryHintId = (typeof DISCOVERY_HINT_IDS)[number];
@@ -35,7 +33,6 @@ export function checklistDestination(id: ChecklistItemId): DiscoveryDestination 
   switch (id) {
     case 'command_palette': return { kind: 'palette' };
     case 'mode_binding': return { kind: 'settings', page: 'modes', target: 'modes' };
-    case 'transform': return { kind: 'settings', page: 'ai-transform', target: 'transform-practice' };
     case 'voice_query': return { kind: 'settings', page: 'ai-query', target: 'voice-query-provider' };
     case 'meeting': return { kind: 'main', page: 'meetings' };
     case 'correction': return { kind: 'teach' };
@@ -52,7 +49,6 @@ export function hintDestination(id: DiscoveryHintId): DiscoveryDestination {
     case 'double_tap_timing': return { kind: 'settings', page: 'recording', target: 'hotkey-feedback' };
     case 'correct_and_teach': return { kind: 'teach' };
     case 'browser_modes': return { kind: 'settings', page: 'modes', target: 'modes' };
-    case 'meeting_summaries': return { kind: 'main', page: 'meetings' };
     default: {
       const exhaustive: never = id;
       return exhaustive;
@@ -191,7 +187,6 @@ export function initializeGrandfatheredDiscovery(evidence: DiscoveryEvidence): D
   const existing = loadDiscoveryState();
   if (existing) return existing;
   const completed: ChecklistItemId[] = [];
-  if (evidence.transforms > 0) completed.push('transform');
   if (evidence.meetings > 0) completed.push('meeting');
   if (evidence.correctionsTaught > 0) completed.push('correction');
   if (evidence.queriesRun > 0 || evidence.voiceQueryConfigured) completed.push('voice_query');
@@ -210,7 +205,6 @@ export function syncDiscoveryEvidence(evidence: DiscoveryEvidence): DiscoverySta
     queriesRun: Math.min(state.baseline.queriesRun, evidence.queriesRun),
   };
   const completed = new Set(state.completed);
-  if (evidence.transforms > baseline.transforms) completed.add('transform');
   if (evidence.meetings > baseline.meetings) completed.add('meeting');
   if (evidence.correctionsTaught > baseline.correctionsTaught) completed.add('correction');
   if (evidence.queriesRun > baseline.queriesRun) completed.add('voice_query');

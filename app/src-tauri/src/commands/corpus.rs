@@ -555,11 +555,7 @@ pub async fn start_corpus_recording(
         if state.query.status().blocks_pipeline() {
             return Err("Finish the current voice query first".to_string());
         }
-        if state.app_state.transform_status().blocks_recording()
-            || state.transform_runtime.is_transform_busy()
-        {
-            return Err("Finish the current transform first".to_string());
-        }
+
         state.corpus.claim(request)?
     };
     emit_status(&app_handle, "starting", None);

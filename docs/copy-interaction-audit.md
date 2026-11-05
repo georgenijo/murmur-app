@@ -188,7 +188,7 @@ Use the integrated build with isolated test data, in light and dark:
    two-step removal. Delivery → Advanced: verify app-override and project-root
    removals require two activations, while normal switches still work with Space.
 7. AI → Speech-to-text: unused-model Remove… needs a second activation; selected
-   and active models remain protected. AI → Selected-text rewrite, Recording →
+   and active models remain protected. Recording →
    Smart Auto-Stop, and Meetings → remote speaker model: verify remove/confirm
    copy, blur disarming, Return protection, busy states, and removal/re-download
    only against disposable test models. No transcription or native lifecycle

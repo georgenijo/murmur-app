@@ -75,7 +75,6 @@ describe('OverlayPill transient cues', () => {
   });
 
   it.each<OverlayIndicator>([
-    { kind: 'cancelled' }, { kind: 'secureField' }, { kind: 'hotkeyMiss' },
     { kind: 'microphoneFailure', failure: 'chooseMicrophone' }, { kind: 'clipboardOnly' },
   ])('the priority cue $kind hides the waveform', async (indicator) => {
     await act(async () => root.render(<OverlayPill geometry={geometryFixture.processingNotched} barRefs={barRefs}

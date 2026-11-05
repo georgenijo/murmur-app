@@ -344,7 +344,7 @@ describe('meeting playback lifetime', () => {
     expect(controls().status).toBe('playing');
   });
 
-  it.each(['microphone-startup-benchmark-progress', 'transform-capture-starting'])('pauses immediately on %s before capture can receive playback', async eventName => {
+  it.each(['microphone-startup-benchmark-progress'])('pauses immediately on %s before capture can receive playback', async eventName => {
     root = createRoot(document.createElement('div'));
     await act(async () => { root?.render(<Harness />); await settle(); });
     await act(async () => { controls().playAll(); await settle(); });
@@ -357,7 +357,7 @@ describe('meeting playback lifetime', () => {
     expect(context.sources.every(source => source.stop.mock.calls.length === 1)).toBe(true);
   });
 
-  it.each(['transform-review-hidden', 'transform-capture-failed'])('recovers after %s and delayed capture-owner release on explicit Play', async terminalEvent => {
+  it.each(['query-state-changed'])('recovers after %s and delayed capture-owner release on explicit Play', async terminalEvent => {
     const original = mocks.invoke.getMockImplementation();
     let busy = false;
     mocks.invoke.mockImplementation(async (...args) => args[0] === 'get_meeting_audio_capture_busy' ? busy : original?.(...args));
@@ -366,7 +366,7 @@ describe('meeting playback lifetime', () => {
     await act(async () => { controls().playAll(); await settle(); });
     busy = true;
     await act(async () => {
-      mocks.listeners.get('transform-state-changed')?.({ payload: { state: 'capturing' } });
+      mocks.listeners.get('query-state-changed')?.({ payload: { state: 'capturing' } });
       await settle();
     });
     expect(controls().status).toBe('paused');

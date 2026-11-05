@@ -32,10 +32,8 @@ vi.mock('../meetings', async (importOriginal) => {
     startMeeting: meetingMocks.startMeeting,
     saveMeetingMetadata: meetingMocks.saveMeetingMetadata,
     getMeetingStatus: vi.fn(async () => original.IDLE_MEETING_STATUS),
-    getMeetingSummaryStatus: vi.fn(async () => original.IDLE_MEETING_SUMMARY_STATUS),
     getSystemAudioPermissionStatus: vi.fn(async () => 'granted'),
     listMeetings: meetingMocks.listMeetings,
-    cancelMeetingSummary: vi.fn(async () => false),
     copyMeeting: vi.fn(async () => {}),
     deleteAllMeetings: vi.fn(async () => {}),
     deleteMeeting: vi.fn(async () => {}),
@@ -46,7 +44,6 @@ vi.mock('../meetings', async (importOriginal) => {
     restoreMeetingReviewFromGenerated: meetingMocks.restoreMeetingReviewFromGenerated,
     saveMeetingExport: vi.fn(),
     saveMeetingReview: meetingMocks.saveMeetingReview,
-    startMeetingSummary: vi.fn(),
     stopMeeting: vi.fn(async () => {}),
   };
 });
@@ -146,16 +143,6 @@ describe('useMeetings remote speaker refresh', () => {
     expect(controller().loading).toBe(false);
   });
 
-  it('refreshes an active search after saving or restoring a review', async () => {
-    meetingMocks.saveMeetingReview.mockResolvedValue(detail('first', 'Team'));
-    meetingMocks.restoreMeetingReviewFromGenerated.mockResolvedValue(detail('first', 'Team'));
-    await act(async () => controller().refresh('reviewword'));
-    meetingMocks.listMeetings.mockClear();
-    await act(async () => controller().saveReview({ sessionId: 'first', expectedReviewRevision: null, base: { kind: 'labels_only' }, labels: { me: 'Me', them: 'Team' }, document: null }));
-    await act(async () => controller().restoreReview('first', 1, null));
-    expect(meetingMocks.listMeetings.mock.calls).toEqual([['reviewword'], ['reviewword']]);
-  });
-
   it('loads older meetings for the applied search, deduplicates overlap, and blocks double requests', async () => {
     const first = detail('first', 'Team').session;
     const second = detail('second', 'Team').session;
@@ -227,7 +214,7 @@ describe('useMeetings remote speaker refresh', () => {
     return sessions;
   }
 
-  it.each(['refresh', 'summary', 'capture-idle', 'metadata', 'delete'])('preserves three loaded pages and selection after %s, respecting the 100-row maximum', async (source) => {
+  it.each(['refresh', 'capture-idle', 'metadata', 'delete'])('preserves three loaded pages and selection after %s, respecting the 100-row maximum', async (source) => {
     const sessions = mockPagedMeetings();
     meetingMocks.getMeeting.mockResolvedValue(detail('meeting-120', 'Team'));
     meetingMocks.saveMeetingMetadata.mockResolvedValue(detail('meeting-120', 'Team'));
@@ -239,8 +226,7 @@ describe('useMeetings remote speaker refresh', () => {
     meetingMocks.listMeetings.mockClear();
     if (source === 'delete') sessions.splice(20, 1);
     await act(async () => {
-      if (source === 'summary') eventMocks.listeners.get('meeting-summary-status-changed')?.({ payload: { phase: 'complete', sessionId: 'other' } });
-      else if (source === 'capture-idle') eventMocks.listeners.get('meeting-status-changed')?.({ payload: { generation: 1, phase: 'idle', sessionId: null } });
+      if (source === 'capture-idle') eventMocks.listeners.get('meeting-status-changed')?.({ payload: { generation: 1, phase: 'idle', sessionId: null } });
       else if (source === 'metadata') await controller().saveMetadata({ sessionId: 'meeting-120', title: 'Synthetic title', attendees: [] });
       else if (source === 'delete') await controller().remove('meeting-20');
       else await controller().refresh();

@@ -9,7 +9,7 @@
 //! Accessibility not granted, oversized selection, AX query failure) produces
 //! an error and nothing beyond the minimum needed to classify it is read.
 //!
-//! Privacy: `TransformSnapshot.text` must NEVER be logged, sent over telemetry,
+//! Privacy: `SelectionSnapshot.text` must NEVER be logged, sent over telemetry,
 //! or serialized wholesale to the frontend. Only `length_bucket(...)` and the
 //! `SelectionError`/outcome enums are safe to log — see `log_capture_outcome_for_pass`.
 //!
@@ -44,7 +44,7 @@ pub struct Rect {
 /// NEVER serialize this wholesale to the frontend and NEVER log `text` — only
 /// length buckets and outcome enums (see `length_bucket`, `log_capture_outcome_for_pass`).
 #[derive(Clone)]
-pub struct TransformSnapshot {
+pub struct SelectionSnapshot {
     pub bundle_id: Option<String>,
     pub pid: i32,
     pub text: String,
@@ -53,13 +53,13 @@ pub struct TransformSnapshot {
     pub captured_at: Instant,
 }
 
-impl std::fmt::Debug for TransformSnapshot {
+impl std::fmt::Debug for SelectionSnapshot {
     /// Manual impl instead of `#[derive(Debug)]`: the never-log rule on
     /// `text` (see the module doc comment) needs to be structural, not just a
     /// convention every future call site has to remember. Prints the length
     /// bucket instead of the raw text.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TransformSnapshot")
+        f.debug_struct("SelectionSnapshot")
             .field("bundle_id", &self.bundle_id)
             .field("pid", &self.pid)
             .field("text_length_bucket", &length_bucket(self.text.len()))
@@ -97,18 +97,7 @@ pub enum SelectionError {
     SecureCheckFailed,
 }
 
-impl SelectionError {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::AccessibilityDenied => "accessibility_denied",
-            Self::SecureField => "secure_field",
-            Self::NoSelection => "no_selection",
-            Self::TooLarge => "too_large",
-            Self::AxUnavailable => "ax_unavailable",
-            Self::SecureCheckFailed => "secure_check_failed",
-        }
-    }
-}
+impl SelectionError {}
 
 /// Whether an AX-path failure may be retried by the warm-up retry loop in
 /// `capture_selection`. Retrying is always safe — a retry re-runs the full
@@ -120,11 +109,6 @@ impl SelectionError {
 /// and answer a moment later.
 const AX_ATTEMPTS: u32 = 3;
 const AX_RETRY_GAP: std::time::Duration = std::time::Duration::from_millis(250);
-/// Per-attempt ceiling for the correction identity probe. `capture_selection`
-/// awaits its main-thread reply unbounded; the correction path runs while the
-/// user is already speaking, so each probe is capped.
-const IDENTITY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
-
 fn retry_eligible(error: SelectionError) -> bool {
     matches!(
         error,
@@ -171,36 +155,6 @@ pub fn length_bucket(bytes: usize) -> &'static str {
         1025..=4096 => "1025-4096",
         4097..=16384 => "4097-16384",
         _ => ">16384",
-    }
-}
-
-/// Log the outcome of a capture attempt, correlated to a transform pass.
-/// Only length buckets and outcome enums ever reach the log line — the
-/// selection text itself never does.
-pub fn log_capture_outcome_for_pass(
-    result: &Result<TransformSnapshot, SelectionError>,
-    transform_pass_id: u64,
-) {
-    match result {
-        Ok(snapshot) => {
-            tracing::info!(
-                target: "transform",
-                transform_pass_id,
-                outcome = "ok",
-                length_bucket = length_bucket(snapshot.text.len()),
-                has_range = snapshot.range.is_some(),
-                has_bounds = snapshot.bounds.is_some(),
-                "selection captured"
-            );
-        }
-        Err(error) => {
-            tracing::info!(
-                target: "transform",
-                transform_pass_id,
-                outcome = error.as_str(),
-                "selection capture failed"
-            );
-        }
     }
 }
 
@@ -270,235 +224,6 @@ fn query_clipboard_identity_is_safe(
     }
 }
 
-/// Selection capture is shared by Transform and opt-in Voice Query context.
-/// Query capture deliberately runs without Transform tracing: even
-/// content-free selection metadata belongs to the query privacy boundary and
-/// must not be mislabeled or persisted in the transform diagnostics stream.
-#[derive(Clone, Copy)]
-enum CaptureTrace {
-    Transform(u64),
-    Silent,
-}
-
-impl CaptureTrace {
-    fn attempt(self, attempt: u32, outcome: &'static str, duration_ms: u64) {
-        if let Self::Transform(transform_pass_id) = self {
-            crate::transform_trace::capture_attempt(
-                transform_pass_id,
-                attempt,
-                outcome,
-                duration_ms,
-            );
-        }
-    }
-
-    fn path(
-        self,
-        via: &'static str,
-        outcome: &'static str,
-        duration_ms: u64,
-        length_bucket: Option<&'static str>,
-    ) {
-        if let Self::Transform(transform_pass_id) = self {
-            crate::transform_trace::capture_path(
-                transform_pass_id,
-                via,
-                outcome,
-                duration_ms,
-                length_bucket,
-            );
-        }
-    }
-
-    fn retry(self, attempt: u32) {
-        if let Self::Transform(transform_pass_id) = self {
-            tracing::info!(
-                target: "transform",
-                transform_pass_id,
-                attempt,
-                "AX capture incomplete — retrying after warm-up gap"
-            );
-        }
-    }
-
-    fn fallback(self, ax_outcome: &'static str) {
-        if let Self::Transform(transform_pass_id) = self {
-            tracing::info!(
-                target: "transform",
-                transform_pass_id,
-                ax_outcome,
-                "AX capture incomplete — attempting clipboard fallback"
-            );
-        }
-    }
-
-    fn restore_refused(self, items: usize) {
-        if let Self::Transform(transform_pass_id) = self {
-            tracing::warn!(
-                target: "transform",
-                transform_pass_id,
-                items,
-                "pasteboard restore write was refused"
-            );
-        }
-    }
-}
-
-/// Outcome of one identity probe attempt (see
-/// `capture_matching_dictation_selection`).
-enum IdentityProbe {
-    /// The app confirmed the exact previous dictation is selected right now.
-    Matched(Box<TransformSnapshot>),
-    /// The app answered and the answer is "no": the application instance no
-    /// longer matches, nothing is selected, or something else is. Final — a
-    /// retry would only re-ask a question already answered truthfully.
-    Refused,
-    /// The AX query itself failed (`AxUnavailable`, or the secure-field check
-    /// errored). A lazily built AX tree can answer a moment later, so this is
-    /// the only outcome the warm-up ladder retries.
-    AxFailed,
-}
-
-/// Reads an explicit matching selection in the original app without a clipboard fallback.
-///
-/// Bounded AX warm-up ladder, same shape and constants as `capture_selection`:
-/// up to `AX_ATTEMPTS` probes separated by `AX_RETRY_GAP`, each capped at
-/// `IDENTITY_PROBE_TIMEOUT`. Two deliberate narrowings keep the correction
-/// popover responsive:
-///
-/// * only `IdentityProbe::AxFailed` retries. Unlike `capture_selection`, whose
-///   caller has explicitly selected text, the overwhelmingly common answer here
-///   is a truthful "nothing (matching) is selected" — retrying that would stall
-///   every ordinary correction start behind dead gaps while the user is already
-///   speaking.
-/// * known Chromium browsers get a single attempt, exactly as in
-///   `capture_selection` (#340). There they resolve through the clipboard
-///   fallback, which correction never uses — Murmur will not synthesize a Copy
-///   gesture to acquire a correction target — so extra gaps would only delay the
-///   copy-only outcome those apps are going to reach anyway.
-///
-/// Fails closed throughout: a probe error, a timeout, an unverified application
-/// identity, and an exhausted ladder all return `None`, which downgrades the
-/// correction to copy-only rather than guessing a write target.
-pub(crate) async fn capture_matching_dictation_selection(
-    app_handle: &tauri::AppHandle,
-    text: &str,
-    target: &crate::frontmost::DeliveryTargetSnapshot,
-) -> Option<TransformSnapshot> {
-    // Preflight, mirroring `capture_selection_with_trace`. Without
-    // Accessibility permission every AX query fails with `kAXErrorAPIDisabled`,
-    // which is indistinguishable from a cold AX tree at this layer — the ladder
-    // would burn its full budget before the popover reaches Listening, on every
-    // single correction, for a permission state that cannot change mid-probe.
-    if !crate::injector::is_accessibility_enabled() {
-        return None;
-    }
-    let attempts = if target_is_known_chromium(target) {
-        1
-    } else {
-        AX_ATTEMPTS
-    };
-    for attempt in 0..attempts {
-        if attempt > 0 {
-            tokio::time::sleep(AX_RETRY_GAP).await;
-        }
-        match probe_matching_dictation_selection(app_handle, text, target).await {
-            IdentityProbe::Matched(snapshot) => return Some(*snapshot),
-            IdentityProbe::Refused => return None,
-            IdentityProbe::AxFailed => {}
-        }
-    }
-    None
-}
-
-fn target_is_known_chromium(target: &crate::frontmost::DeliveryTargetSnapshot) -> bool {
-    match target {
-        crate::frontmost::DeliveryTargetSnapshot::Complete(identity) => {
-            is_known_chromium_browser(&identity.bundle_id)
-        }
-        _ => false,
-    }
-}
-
-/// Pure classification of one identity-probe attempt. Factored out of the AX
-/// I/O so it is testable without Accessibility permission or a running AX
-/// server, the same way `classify_selection` is.
-///
-/// Only a genuinely broken AX query retries. `NoSelection` — which
-/// `capture_selection_native` now also returns when the application has no
-/// focused element at all — is the app answering truthfully and is final.
-fn classify_identity_probe(
-    result: Result<TransformSnapshot, SelectionError>,
-    expected: &str,
-) -> IdentityProbe {
-    match result {
-        Ok(snapshot) if snapshot.text == expected => IdentityProbe::Matched(Box::new(snapshot)),
-        Ok(_) => IdentityProbe::Refused,
-        Err(SelectionError::AxUnavailable) | Err(SelectionError::SecureCheckFailed) => {
-            IdentityProbe::AxFailed
-        }
-        Err(_) => IdentityProbe::Refused,
-    }
-}
-
-async fn probe_matching_dictation_selection(
-    app_handle: &tauri::AppHandle,
-    text: &str,
-    target: &crate::frontmost::DeliveryTargetSnapshot,
-) -> IdentityProbe {
-    let expected = text.to_string();
-    let target = target.clone();
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let dispatched = app_handle.run_on_main_thread(move || {
-        #[cfg(target_os = "macos")]
-        let outcome = if crate::frontmost::verify_delivery_target(&target, true).verified() {
-            classify_identity_probe(native::capture_selection_native(), &expected)
-        } else {
-            IdentityProbe::Refused
-        };
-        #[cfg(not(target_os = "macos"))]
-        let outcome = {
-            let _ = (expected, &target);
-            IdentityProbe::Refused
-        };
-        let _ = tx.send(outcome);
-    });
-    if dispatched.is_err() {
-        return IdentityProbe::Refused;
-    }
-    match tokio::time::timeout(IDENTITY_PROBE_TIMEOUT, rx).await {
-        Ok(Ok(outcome)) => outcome,
-        // A dropped sender or an exhausted deadline proves nothing about the
-        // selection: fail closed rather than spend the rest of the ladder on it.
-        _ => IdentityProbe::Refused,
-    }
-}
-
-/// Capture the current AX text selection.
-///
-/// AX calls must run on the main thread (same constraint as
-/// `injector::inject_text`'s focus query), so this dispatches the native work
-/// via `run_on_main_thread` and awaits the result on a oneshot channel —
-/// mirroring the dispatch pattern already used for `inject_text` in
-/// `commands/recording.rs`.
-///
-/// Checks Accessibility up front (fail fast with a distinct error) before
-/// dispatching to the main thread at all.
-///
-/// Clipboard fallback (issue #329): Chromium/Electron webviews (Brave, Chrome,
-/// Slack, …) often expose no `AXSelectedText` — or fail/time out the AX
-/// queries entirely — even with a live visible selection. `NoSelection` and
-/// `AxUnavailable` fall back to a simulated Cmd+C against a sentinel-primed
-/// clipboard (see `clipboard_fallback` and the safety rationale at the match
-/// arm below). `SecureField` and `AccessibilityDenied` stay fail-closed with
-/// no fallback.
-pub async fn capture_selection(
-    app_handle: &tauri::AppHandle,
-    transform_pass_id: u64,
-) -> Result<TransformSnapshot, SelectionError> {
-    capture_selection_with_trace(app_handle, CaptureTrace::Transform(transform_pass_id), None).await
-}
-
 /// Capture selected text for an opt-in Voice Query context snapshot while
 /// preserving the exact Transform capture safety policy (secure-field checks,
 /// bounded retries, and guarded clipboard fallback). Query content and its
@@ -506,36 +231,23 @@ pub async fn capture_selection(
 pub async fn capture_query_selection(
     app_handle: &tauri::AppHandle,
     expected_identity: &crate::frontmost::FrontmostAppIdentity,
-) -> Result<TransformSnapshot, SelectionError> {
-    capture_selection_with_trace(
-        app_handle,
-        CaptureTrace::Silent,
-        Some(expected_identity.clone()),
-    )
-    .await
+) -> Result<SelectionSnapshot, SelectionError> {
+    capture_selection_for_query(app_handle, Some(expected_identity.clone())).await
 }
 
-async fn capture_selection_with_trace(
+async fn capture_selection_for_query(
     app_handle: &tauri::AppHandle,
-    trace: CaptureTrace,
     query_identity: Option<crate::frontmost::FrontmostAppIdentity>,
-) -> Result<TransformSnapshot, SelectionError> {
+) -> Result<SelectionSnapshot, SelectionError> {
     if !crate::injector::is_accessibility_enabled() {
-        trace.attempt(0, SelectionError::AccessibilityDenied.as_str(), 0);
-        trace.path(
-            "preflight",
-            SelectionError::AccessibilityDenied.as_str(),
-            0,
-            None,
-        );
         return Err(SelectionError::AccessibilityDenied);
     }
 
     #[cfg(target_os = "macos")]
     {
-        let capture_started = Instant::now();
+        let _capture_started = Instant::now();
         type AxReply = (
-            Result<TransformSnapshot, SelectionError>,
+            Result<SelectionSnapshot, SelectionError>,
             Option<(i32, Option<String>)>,
         );
         // Keep the AX warm-up ladder for native and unknown apps, where a
@@ -553,7 +265,6 @@ async fn capture_selection_with_trace(
             if attempt > 0 {
                 tokio::time::sleep(AX_RETRY_GAP).await;
             }
-            let attempt_started = Instant::now();
             let (tx, rx) = tokio::sync::oneshot::channel::<AxReply>();
             app_handle
                 .run_on_main_thread(move || {
@@ -568,15 +279,7 @@ async fn capture_selection_with_trace(
                 .unwrap_or((Err(SelectionError::AxUnavailable), None));
             ax_result = result;
             frontmost = fm;
-            let attempt_outcome = match &ax_result {
-                Ok(_) => "ok",
-                Err(error) => error.as_str(),
-            };
-            trace.attempt(
-                attempt + 1,
-                attempt_outcome,
-                attempt_started.elapsed().as_millis() as u64,
-            );
+
             if matches!(ax_result, Err(SelectionError::SecureCheckFailed)) {
                 secure_check_errored = true;
             }
@@ -591,7 +294,6 @@ async fn capture_selection_with_trace(
                         .and_then(|(_, bundle_id)| bundle_id.as_deref())
                         .is_some_and(is_known_chromium_browser);
                     if attempt + 1 < AX_ATTEMPTS && !known_chromium {
-                        trace.retry(attempt + 1);
                     } else {
                         break;
                     }
@@ -626,7 +328,6 @@ async fn capture_selection_with_trace(
             // an errored secure check on ANY attempt bars the fallback even if
             // a later attempt fails shallower (`AxUnavailable`).
             (Err(err), Some((pid, bundle_id))) if fallback_allowed(err, secure_check_errored) => {
-                trace.fallback(err.as_str());
                 let captured_identity = crate::frontmost::FrontmostAppIdentity {
                     bundle_id: bundle_id.clone(),
                     process_id: Some(pid),
@@ -649,9 +350,7 @@ async fn capture_selection_with_trace(
                     .as_ref()
                     .and_then(|identity| identity.process_id);
                 let result = tokio::task::spawn_blocking(move || {
-                    clipboard_fallback::capture_via_clipboard(
-                        pid, bundle_id, err, trace, target_pid,
-                    )
+                    clipboard_fallback::capture_via_clipboard(pid, bundle_id, err, target_pid)
                 })
                 .await
                 .unwrap_or(Err(err));
@@ -671,23 +370,7 @@ async fn capture_selection_with_trace(
                 }
                 result
             }
-            (result, _) => {
-                let outcome = match &result {
-                    Ok(_) => "ok",
-                    Err(error) => error.as_str(),
-                };
-                let length_bucket = result
-                    .as_ref()
-                    .ok()
-                    .map(|snapshot| length_bucket(snapshot.text.len()));
-                trace.path(
-                    "ax_attempt",
-                    outcome,
-                    capture_started.elapsed().as_millis() as u64,
-                    length_bucket,
-                );
-                result
-            }
+            (result, _) => result,
         }
     }
 
@@ -739,9 +422,9 @@ fn is_known_chromium_browser(bundle_id: &str) -> bool {
 /// centers; apply uses the paste fallback).
 #[cfg(target_os = "macos")]
 mod clipboard_fallback {
-    use super::{SelectionError, TransformSnapshot};
+    use super::{SelectionError, SelectionSnapshot};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     const POLL_INTERVAL: Duration = Duration::from_millis(20);
     const POLL_DEADLINE: Duration = Duration::from_millis(300);
@@ -788,10 +471,7 @@ mod clipboard_fallback {
                 .collect()
         }
 
-        pub(in super::super) fn restore(
-            snapshot: &PasteboardSnapshot,
-            trace: super::super::CaptureTrace,
-        ) {
+        pub(in super::super) fn restore(snapshot: &PasteboardSnapshot) {
             let pb = NSPasteboard::generalPasteboard();
             pb.clearContents();
             if snapshot.is_empty() {
@@ -812,21 +492,8 @@ mod clipboard_fallback {
             let array = NSArray::from_retained_slice(&items);
             if !pb.writeObjects(&array) {
                 // Content-free by design: item/type counts only.
-                trace.restore_refused(snapshot.len());
             }
         }
-    }
-
-    /// Test-only shims: the `pasteboard` submodule is private; these expose
-    /// snapshot/restore to the unit tests without widening the API.
-    #[cfg(test)]
-    pub(super) fn pasteboard_snapshot_for_tests() -> PasteboardSnapshot {
-        pasteboard::snapshot()
-    }
-
-    #[cfg(test)]
-    pub(super) fn pasteboard_restore_for_tests(snapshot: &PasteboardSnapshot) {
-        pasteboard::restore(snapshot, super::CaptureTrace::Silent)
     }
 
     /// Unique-per-attempt sentinel. Never derived from clipboard or selection
@@ -896,7 +563,7 @@ mod clipboard_fallback {
     where
         F: FnMut() -> (isize, Result<String, String>),
     {
-        let started = Instant::now();
+        let started = std::time::Instant::now();
         loop {
             let (count, text) = read();
             if count > baseline + 1 {
@@ -945,23 +612,16 @@ mod clipboard_fallback {
         pid: i32,
         bundle_id: Option<String>,
         ax_outcome: SelectionError,
-        trace: super::CaptureTrace,
         target_pid: Option<i32>,
-    ) -> Result<TransformSnapshot, SelectionError> {
-        let started = Instant::now();
+    ) -> Result<SelectionSnapshot, SelectionError> {
         let original = pasteboard::snapshot();
         let sentinel = sentinel();
         if crate::injector::write_clipboard_text(&sentinel).is_err() {
             // arboard clears the pasteboard BEFORE writing, so a failed
             // sentinel write can still have destroyed the contents — restore
             // the snapshot (harmless if the pasteboard was never touched).
-            pasteboard::restore(&original, trace);
-            trace.path(
-                "clipboard_fallback",
-                "sentinel_write_failed",
-                started.elapsed().as_millis() as u64,
-                None,
-            );
+            pasteboard::restore(&original);
+
             return Err(fallback_failure_error(ax_outcome));
         }
         let baseline = pasteboard::change_count();
@@ -990,36 +650,17 @@ mod clipboard_fallback {
         // type — whether or not the capture succeeded. An empty snapshot
         // restores to an empty (cleared) pasteboard, which also removes our
         // sentinel on the failure path.
-        pasteboard::restore(&original, trace);
+        pasteboard::restore(&original);
 
         let text = match copied {
             Some(text) => text,
             None => {
-                trace.path(
-                    "clipboard_fallback",
-                    ax_outcome.as_str(),
-                    started.elapsed().as_millis() as u64,
-                    None,
-                );
                 return Err(fallback_failure_error(ax_outcome));
             }
         };
-        if let Err(error) = super::classify_selection(&text) {
-            trace.path(
-                "clipboard_fallback",
-                error.as_str(),
-                started.elapsed().as_millis() as u64,
-                None,
-            );
-            return Err(error);
-        }
-        trace.path(
-            "clipboard_fallback",
-            "ok",
-            started.elapsed().as_millis() as u64,
-            Some(super::length_bucket(text.len())),
-        );
-        Ok(TransformSnapshot {
+        super::classify_selection(&text)?;
+
+        Ok(SelectionSnapshot {
             bundle_id,
             pid,
             text,
@@ -1027,17 +668,16 @@ mod clipboard_fallback {
             // centers (anchor None) and apply uses the paste fallback.
             range: None,
             bounds: None,
-            captured_at: Instant::now(),
+            captured_at: std::time::Instant::now(),
         })
     }
 }
 
 #[cfg(target_os = "macos")]
 mod native {
-    use super::{is_secure_role, is_secure_subrole, Rect, SelectionError, TransformSnapshot};
+    use super::{is_secure_role, is_secure_subrole, Rect, SelectionError, SelectionSnapshot};
     use objc2_app_kit::NSWorkspace;
     use std::ffi::{c_char, c_void, CStr, CString};
-    use std::time::Instant;
 
     type AXUIElementRef = *const c_void;
     type CFTypeRef = *const c_void;
@@ -1289,7 +929,7 @@ mod native {
         ))
     }
 
-    pub(super) fn capture_selection_native() -> Result<TransformSnapshot, SelectionError> {
+    pub(super) fn capture_selection_native() -> Result<SelectionSnapshot, SelectionError> {
         let frontmost = NSWorkspace::sharedWorkspace()
             .frontmostApplication()
             .ok_or(SelectionError::AxUnavailable)?;
@@ -1362,13 +1002,13 @@ mod native {
             .as_ref()
             .and_then(|guard| query_bounds_for_range(focused.0, guard.0));
 
-        Ok(TransformSnapshot {
+        Ok(SelectionSnapshot {
             bundle_id,
             pid,
             text,
             range,
             bounds,
-            captured_at: Instant::now(),
+            captured_at: std::time::Instant::now(),
         })
     }
 }
@@ -1459,21 +1099,6 @@ mod tests {
     }
 
     #[test]
-    fn selection_error_outcome_strings_are_stable_and_content_free() {
-        let cases = [
-            (SelectionError::AccessibilityDenied, "accessibility_denied"),
-            (SelectionError::SecureField, "secure_field"),
-            (SelectionError::NoSelection, "no_selection"),
-            (SelectionError::TooLarge, "too_large"),
-            (SelectionError::AxUnavailable, "ax_unavailable"),
-            (SelectionError::SecureCheckFailed, "secure_check_failed"),
-        ];
-        for (error, expected) in cases {
-            assert_eq!(error.as_str(), expected);
-        }
-    }
-
-    #[test]
     fn benign_role_query_errors_allow_continuing() {
         assert!(is_benign_role_query_error(AX_ERROR_NO_VALUE));
         assert!(is_benign_role_query_error(AX_ERROR_ATTRIBUTE_UNSUPPORTED));
@@ -1489,83 +1114,15 @@ mod tests {
         assert!(!is_benign_role_query_error(i32::MAX));
     }
 
-    fn probe_snapshot(text: &str) -> TransformSnapshot {
-        TransformSnapshot {
-            bundle_id: Some("com.example.app".to_string()),
-            pid: 42,
-            text: text.to_string(),
-            range: Some((0, text.encode_utf16().count())),
-            bounds: None,
-            captured_at: std::time::Instant::now(),
-        }
-    }
-
-    #[test]
-    fn identity_probe_matches_only_the_exact_previous_dictation() {
-        assert!(matches!(
-            classify_identity_probe(Ok(probe_snapshot("Ship it on Friday")), "Ship it on Friday"),
-            IdentityProbe::Matched(_)
-        ));
-        assert!(matches!(
-            classify_identity_probe(Ok(probe_snapshot("Ship it on Friday")), "Ship it on Monday"),
-            IdentityProbe::Refused
-        ));
-        // A partial selection is not the complete previous dictation.
-        assert!(matches!(
-            classify_identity_probe(Ok(probe_snapshot("Ship it")), "Ship it on Friday"),
-            IdentityProbe::Refused
-        ));
-    }
-
-    #[test]
-    fn identity_probe_retries_only_a_broken_ax_query() {
-        for error in [
-            SelectionError::AxUnavailable,
-            SelectionError::SecureCheckFailed,
-        ] {
-            assert!(
-                matches!(
-                    classify_identity_probe(Err(error), "anything"),
-                    IdentityProbe::AxFailed
-                ),
-                "{}",
-                error.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn identity_probe_treats_a_truthful_answer_as_final() {
-        // `NoSelection` now also covers "the application has no focused element
-        // at all" (benign status on AXFocusedUIElement). Retrying any of these
-        // would stall the correction popover for the ladder's full budget on
-        // the common path, while the user is already speaking.
-        for error in [
-            SelectionError::NoSelection,
-            SelectionError::TooLarge,
-            SelectionError::SecureField,
-            SelectionError::AccessibilityDenied,
-        ] {
-            assert!(
-                matches!(
-                    classify_identity_probe(Err(error), "anything"),
-                    IdentityProbe::Refused
-                ),
-                "{}",
-                error.as_str()
-            );
-        }
-    }
-
     #[test]
     fn transform_snapshot_debug_redacts_text_but_keeps_length_bucket() {
-        let snapshot = TransformSnapshot {
+        let snapshot = SelectionSnapshot {
             bundle_id: Some("com.example.app".to_string()),
             pid: 123,
             text: "super secret selection text".to_string(),
             range: Some((0, 5)),
             bounds: None,
-            captured_at: Instant::now(),
+            captured_at: std::time::Instant::now(),
         };
         let debug = format!("{:?}", snapshot);
         assert!(!debug.contains("super secret selection text"));
@@ -1724,51 +1281,6 @@ mod tests {
             Duration::from_millis(1),
         );
         assert_eq!(result, None);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn pasteboard_snapshot_restores_non_text_content_in_full() {
-        // Issue #335 defect A: a non-text clipboard (image/file) must survive
-        // the fallback's sentinel dance. Round-trip real NSPasteboard items
-        // carrying a custom binary type alongside text, through a destructive
-        // overwrite, and verify both types come back byte-identical. The
-        // user's real pasteboard is snapshotted first and restored at the end.
-        let user_pasteboard = super::clipboard_fallback::pasteboard_snapshot_for_tests();
-
-        let fixture: super::clipboard_fallback::PasteboardSnapshot = vec![vec![
-            (
-                "public.utf8-plain-text".to_string(),
-                b"fixture text".to_vec(),
-            ),
-            (
-                "com.murmur.test.binary".to_string(),
-                vec![0u8, 159, 146, 150, 255],
-            ),
-        ]];
-        super::clipboard_fallback::pasteboard_restore_for_tests(&fixture);
-
-        // Destroy it the way the fallback does: a plain text write.
-        crate::injector::write_clipboard_text("sentinel-destroys-clipboard").unwrap();
-
-        // Restore the fixture snapshot and read back both types.
-        super::clipboard_fallback::pasteboard_restore_for_tests(&fixture);
-        let round_tripped = super::clipboard_fallback::pasteboard_snapshot_for_tests();
-
-        // Put the user's pasteboard back before asserting.
-        super::clipboard_fallback::pasteboard_restore_for_tests(&user_pasteboard);
-
-        assert_eq!(round_tripped.len(), 1);
-        let types: Vec<&str> = round_tripped[0].iter().map(|(ty, _)| ty.as_str()).collect();
-        assert!(types.contains(&"public.utf8-plain-text"));
-        assert!(types.contains(&"com.murmur.test.binary"));
-        for (ty, data) in &fixture[0] {
-            let restored = round_tripped[0]
-                .iter()
-                .find(|(t, _)| t == ty)
-                .map(|(_, d)| d);
-            assert_eq!(restored, Some(data), "type {ty} did not round-trip");
-        }
     }
 
     #[cfg(target_os = "macos")]

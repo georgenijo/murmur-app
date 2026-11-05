@@ -246,7 +246,7 @@ impl QueryStatus {
     ///
     /// Stricter than [`Self::blocks_capture`]: the CLI child competes for CPU
     /// and may itself be a heavy inference runtime. Latency-sensitive work
-    /// (benchmarks, corpus capture) and the local-LLM transform runtime stay
+    /// (benchmarks and corpus capture) stays
     /// mutually exclusive with it, so they keep using this predicate.
     pub(crate) fn blocks_pipeline(self) -> bool {
         self.blocks_capture() || matches!(self, Self::Running)
@@ -1862,6 +1862,14 @@ fn admit_assistant(
     ))
 }
 
+fn assistant_admission_blocked(
+    benchmark_running: bool,
+    meeting_blocks_asr: bool,
+    app_disabled: bool,
+) -> bool {
+    benchmark_running || meeting_blocks_asr || app_disabled
+}
+
 #[tauri::command]
 pub(crate) async fn send_assistant_message(
     app_handle: tauri::AppHandle,
@@ -1878,14 +1886,14 @@ pub(crate) async fn send_assistant_message(
         return Err("empty_query".into());
     }
     let _transition = state.app_state.recording_transition.lock().await;
-    if state.benchmark.is_running()
-        || state.app_state.meeting_blocks_asr()
-        || state.app_state.transform_status().blocks_recording()
-        || state.transform_runtime.is_transform_busy()
-        || crate::keyboard::is_app_disabled()
-    {
+    if assistant_admission_blocked(
+        state.benchmark.is_running(),
+        state.app_state.meeting_blocks_asr(),
+        crate::keyboard::is_app_disabled(),
+    ) {
         return Err("busy".into());
     }
+
     #[cfg(feature = "internal-benchmark")]
     if state.corpus.is_active() {
         return Err("busy".into());
@@ -2701,7 +2709,7 @@ fn reconcile_query_audio_start(
 }
 
 fn selection_matches_identity(
-    snapshot: &crate::selection::TransformSnapshot,
+    snapshot: &crate::selection::SelectionSnapshot,
     identity: &crate::frontmost::FrontmostAppIdentity,
 ) -> bool {
     crate::frontmost::query_identity_matches(
@@ -2870,8 +2878,6 @@ async fn start_query_capture_internal(
             && (!assistant_admitted || !state.app_state.meeting_blocks_asr())
             && !state.app_state.file_transcribing.load(Ordering::SeqCst)
             && !state.benchmark.is_running()
-            && !state.app_state.transform_status().blocks_recording()
-            && !state.transform_runtime.is_transform_busy()
             && corpus_idle
             && !crate::keyboard::is_app_disabled()
     };
@@ -4456,6 +4462,14 @@ pub(crate) fn get_query_review_content(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_assistant_admission_blocks_each_competing_owner() {
+        assert!(!super::assistant_admission_blocked(false, false, false));
+        assert!(super::assistant_admission_blocked(true, false, false));
+        assert!(super::assistant_admission_blocked(false, true, false));
+        assert!(super::assistant_admission_blocked(false, false, true));
+    }
+
     use super::*;
 
     #[test]
@@ -6318,7 +6332,7 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
             bundle_id: Some("com.example.Editor".to_string()),
             process_id: Some(42),
         };
-        let snapshot = crate::selection::TransformSnapshot {
+        let snapshot = crate::selection::SelectionSnapshot {
             bundle_id: Some("com.example.Editor".to_string()),
             pid: 42,
             text: "selected".to_string(),
@@ -6328,7 +6342,7 @@ print('The previous answer was indigo.' if 'Previous answer:\nindigo' in sys.arg
         };
         assert!(selection_matches_identity(&snapshot, &identity));
         assert!(!selection_matches_identity(
-            &crate::selection::TransformSnapshot {
+            &crate::selection::SelectionSnapshot {
                 bundle_id: Some("com.example.Other".to_string()),
                 ..snapshot.clone()
             },

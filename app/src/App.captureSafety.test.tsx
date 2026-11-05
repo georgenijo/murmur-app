@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { DEFAULT_SETTINGS, ONBOARDING_KEY, STORAGE_KEY } from './lib/settings';
-import { IDLE_MEETING_STATUS, IDLE_MEETING_SUMMARY_STATUS } from './lib/meetings';
+import { IDLE_MEETING_STATUS } from './lib/meetings';
 import type { ModelRuntimeSnapshot } from './lib/modelRuntime';
 import type { DictationResponse } from './lib/dictation';
 
@@ -63,7 +63,6 @@ function response(command: string): unknown {
     case 'get_model_runtime_catalog': return [modelSnapshot()];
     case 'get_meeting_audio_capture_busy': return native.captureBusy;
     case 'get_meeting_status': return IDLE_MEETING_STATUS;
-    case 'get_meeting_summary_status': return IDLE_MEETING_SUMMARY_STATUS;
     case 'get_system_audio_permission_status': return 'granted';
     case 'get_calendar_permission_status': return 'granted';
     case 'list_meetings': return { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
@@ -82,8 +81,7 @@ async function mount({ setup = false, modelInstalled = true, recordingMode = 'do
   native.modelInstalled = modelInstalled;
   if (!setup) localStorage.setItem(ONBOARDING_KEY, 'true');
   localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    ...DEFAULT_SETTINGS, model: 'base.en', recordingMode, microphoneIdMigrationComplete: true,
-    transformHoldKey: 'alt_r', queryHotkey: 'ctrl_l', queryExecutable: '/usr/bin/query',
+    ...DEFAULT_SETTINGS, model: 'base.en', recordingMode, microphoneIdMigrationComplete: true, queryHotkey: 'ctrl_l', queryExecutable: '/usr/bin/true',
   }));
   // A missing model prevents grandfathering for the initial setup fixture.
   if (setup) native.modelInstalled = false;
@@ -202,23 +200,16 @@ describe('App setup capture safety', () => {
       expect(native.invoke).toHaveBeenCalledWith('stop_meeting');
     });
 
-    it.each(['transform', 'query'] as const)(`refuses setup without cancelling %s capture through ${entry}`, async (kind) => {
+    it.each(['query'] as const)(`refuses setup without cancelling %s capture through ${entry}`, async (kind) => {
       await mount();
-      if (kind === 'transform') {
-        await emit('transform-key-pressed', { transformPassId: 7 });
-        expect(native.invoke).toHaveBeenCalledWith('start_transform_capture', expect.objectContaining({ transformPassId: 7 }));
-      } else {
-        await emit('query-toggle', { queryPassId: 7, action: 'start' });
-        expect(native.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({ queryPassId: 7 }));
-      }
+      await emit('query-toggle', { queryPassId: 7, action: 'start' });
+      expect(native.invoke).toHaveBeenCalledWith('start_query_capture', expect.objectContaining({ queryPassId: 7 }));
       native.captureBusy = true;
       await rerun(entry);
       expectMain();
       expect(container.textContent).toContain('Stop recording first');
       expect(native.invoke.mock.calls.filter(([command]) => command === `cancel_${kind}`)).toEqual([]);
-      await emit('escape-cancel', kind === 'transform'
-        ? { transformPassId: 7, queryPassId: null }
-        : { transformPassId: null, queryPassId: 7 });
+      await emit('escape-cancel', { queryPassId: 7 });
       expect(native.invoke).toHaveBeenCalledWith(`cancel_${kind}`, { [`${kind}PassId`]: 7 });
     });
   }

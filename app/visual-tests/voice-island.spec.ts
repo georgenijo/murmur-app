@@ -42,7 +42,7 @@ for (const placement of ['notch', 'pill'] as const) {
         await expect(fixture.locator('[data-variant="recording"] .overlay-island')).toHaveCSS('opacity', '1');
         await expect(fixture.locator('[data-variant="recording"] .overlay-waveform-bar'))
           .toHaveCount(pill ? 18 : 7);
-        for (const priority of ['cancelled', 'secure', 'miss', 'microphone']) {
+        for (const priority of ['cancelled', 'miss', 'microphone']) {
           // The pill swaps the waveform for a word; the notch fades it out.
           if (pill) await expect(fixture.locator(`[data-variant="${priority}"] .overlay-waveform`)).toHaveCount(0);
           else await expect(fixture.locator(`[data-variant="${priority}"] .overlay-waveform`)).toHaveCSS('opacity', '0');

@@ -396,8 +396,6 @@ pub async fn remove_model(
         || state.app_state.file_transcribing.load(Ordering::SeqCst)
         || state.app_state.meeting_blocks_asr()
         || state.query.status().blocks_capture()
-        || state.app_state.transform_status().blocks_recording()
-        || state.transform_runtime.is_transform_busy()
         || crate::audio_lifecycle::is_audio_active()
     {
         return Err(

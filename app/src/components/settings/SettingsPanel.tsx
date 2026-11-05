@@ -47,9 +47,7 @@ import {
 } from '../../lib/modelDownload';
 import { useVoiceQuerySettings } from '../../lib/hooks/useVoiceQuerySettings';
 import type { QuerySetupStatus } from '../../lib/hooks/useQueryFlow';
-import { useTransformModelSettings } from '../../lib/hooks/useTransformModelSettings';
 import { VoiceQuerySettings } from './VoiceQuerySettings';
-import { TransformModelSettings } from './TransformModelSettings';
 import { TranscriptionModelStorage } from './TranscriptionModelStorage';
 import type { DictationStatus } from '../../lib/types';
 import { UpdateIndicator } from '../UpdateIndicator';
@@ -260,7 +258,7 @@ export const SETTINGS_TOOLS = [
   { id: 'diagnostics', label: 'Diagnostics', icon: 'diagnostics' },
 ] as const;
 
-const AI_DETAIL_PAGES = ['ai-query', 'ai-transform', 'ai-transcription'] as const;
+const AI_DETAIL_PAGES = ['ai-query', 'ai-transcription'] as const;
 const GENERAL_DETAIL_PAGES = ['shortcuts'] as const;
 
 interface SettingTargetRequest {
@@ -281,7 +279,6 @@ function customizationDestinationForRequest(
   if (request.page === 'text' && !request.editorTab) return 'text';
   if (request.page === 'delivery' && request.target === 'app-overrides') return 'styles';
   if (request.page === 'modes') return 'modes';
-  if (resolvePage(request.page) === 'ai-transform') return 'transforms';
   return null;
 }
 
@@ -295,7 +292,6 @@ function customizationRoute(destination: CustomizationDestination): {
     case 'commands': return { page: 'text', editorTab: 'commands' };
     case 'styles': return { page: 'delivery', target: 'app-overrides' };
     case 'modes': return { page: 'modes' };
-    case 'transforms': return { page: 'ai-transform' };
   }
 }
 
@@ -310,7 +306,6 @@ export function resolvePage(page: string | undefined): string {
   if (page === 'model' || page === 'transcription') return 'ai-transcription';
   if (page === 'benchmark') return 'performance';
   if (page === 'text-vocabulary') return 'text';
-  if (page === 'transform') return 'ai-transform';
   if (page === 'voice-query' || page === 'query') return 'ai-query';
   if (page === 'app') return 'general';
   return DEFAULT_SETTINGS_PAGE;
@@ -343,8 +338,6 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'ai-transcription', target: 'model-idle-timeout', title: 'Release model after inactivity', detail: 'Free idle model memory', keywords: 'timeout power adapter' },
   { page: 'ai-query', target: 'query-key', title: 'Query shortcut', detail: 'Choose the dedicated Voice Query key', keywords: 'hotkey' },
   { page: 'ai-query', target: 'query-timeout', title: 'Query timeout', detail: 'Bound provider execution time', keywords: 'seconds minutes' },
-  { page: 'ai-transform', target: 'transform-key', title: 'Transform hold key', detail: 'Choose the selected-text rewrite shortcut', keywords: 'keyboard hold' },
-  { page: 'ai-transform', target: 'transform-practice', title: 'Transform practice', detail: 'Try the transform shortcut locally', keywords: 'rewrite test' },
   { page: 'meetings', target: 'meeting-calendar', title: 'Calendar suggestion access', detail: 'Manage permission for meeting suggestions', keywords: 'calendar settings permission' },
   { page: 'meetings', target: 'meeting-echo-cancellation', title: 'Reduce speaker echo', detail: 'Experimental meeting echo removal', keywords: 'audio processing' },
   { page: 'general', target: 'overlay-placement', title: 'Recording overlay', detail: 'Notch island or floating pill', keywords: 'placement external display pretend notch waveform bottom' },
@@ -369,7 +362,6 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'ai-transcription', target: 'language', title: 'Transcription language', detail: 'Choose a fixed language or automatic detection', keywords: 'multilingual auto detect' },
   { page: 'ai-query', target: 'voice-query-provider', title: 'Voice Query provider', detail: 'Configure the CLI agent used for spoken questions', keywords: 'agent command executable codex claude cloud answer hotkey provider' },
   { page: 'ai-query', target: 'voice-query-copy', title: 'Voice Query clipboard', detail: 'Automatically copy successful answers to the clipboard', keywords: 'clipboard copy automatic answers response' },
-  { page: 'ai-transform', target: 'rewrite-model', title: 'Selected-text rewrite', detail: 'Configure on-device rewriting', keywords: 'transform llm qwen rewrite shortcut model' },
   { page: 'text', target: 'punctuation', title: 'Smart punctuation', detail: 'Add punctuation and sentence capitalization', keywords: 'automatic punctuation' },
   { page: 'text', target: 'cleanup', title: 'Transcript cleanup', detail: 'Remove filler words and tidy transcript spacing', keywords: 'filler capitalization' },
   { page: 'text', target: 'text-editors', title: 'Vocabulary & aliases', detail: 'Manage preferred words and spoken variants', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
@@ -792,14 +784,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     };
   }, [activeRef]);
 
-  // ---- Transform model & Voice Query settings (extracted; see
-  // lib/hooks/useTransformModelSettings.ts and lib/hooks/useVoiceQuerySettings.ts) ----
-  const transformVm = useTransformModelSettings({
-    settings,
-    onUpdateSettings,
-    activePage: activeCat === 'ai' || activeCat === 'ai-transform' ? activeCat : null,
-  });
-
   const [pasteLastShortcutError, setPasteLastShortcutError] = useState<string | null>(null);
   const [pasteLastShortcutBusy, setPasteLastShortcutBusy] = useState(false);
 
@@ -925,7 +909,6 @@ export const SettingsPanel = memo(function SettingsPanel({
 
   const enabledFeaturePages = [
     { enabled: settings.queryHotkey !== null, page: 'ai-query', label: 'Voice Query', icon: 'ai' },
-    { enabled: settings.transformHoldKey !== null || settings.correctionShortcutEnabled, page: 'ai-transform', label: 'Selected-text rewrite', icon: 'ai' },
   ].filter(item => item.enabled);
   const navPageIsActive = (page: string) => (
     page === 'ai'
@@ -940,7 +923,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       ?? page;
   };
   const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text', 'ai-query': 'Voice Query',
-      'ai-transform': 'Selected-text rewrite', shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
+      shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
     <SettingsDisclosureContext.Provider value={{ open: advancedOpen, setOpen: setAdvancedOpen }}>
@@ -1306,18 +1289,6 @@ export const SettingsPanel = memo(function SettingsPanel({
               </span>
               <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
             </button>
-            <button
-              type="button"
-              onClick={() => openPage('ai-transform')}
-              className="flex w-full items-center gap-4 px-1 py-1 text-left hover:text-primary"
-            >
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="text" /></span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">Selected-text rewrite</span>
-                <span className="mt-0.5 block truncate text-xs text-on-surface-variant">Qwen2.5 1.5B · {transformVm.transformModel?.state === 'ready' ? 'Ready on-device' : 'Model setup required'}</span>
-              </span>
-              <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
-            </button>
           </SettingsSection>
 
           <VoiceQuerySettings
@@ -1330,15 +1301,6 @@ export const SettingsPanel = memo(function SettingsPanel({
             setupStatus={querySetupStatus}
           />
 
-          <TransformModelSettings
-            settings={settings}
-            onUpdateSettings={onUpdateSettings}
-            activePage={activeCat}
-            accessibilityGranted={accessibilityGranted}
-            onRequestAccessibility={requestAccessibility}
-            onOpenEditor={openEditor}
-            vm={transformVm}
-          />
 
           <SettingsSection hideHeading pageId="ai-transcription" activePage={activeCat} title="Speech-to-text">
             <SettingsRow title={<>Transcription model</>} targetId="transcription-model" disabled={isRecording} onReset={settings.model !== DEFAULT_SETTINGS.model ? () => onUpdateSettings({ model: DEFAULT_SETTINGS.model }) : undefined} control={<Select
@@ -1399,7 +1361,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               {([
                 ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans'],
                 ['aliases', 'Aliases', 'Map spoken variants to canonical spellings'],
-                ['knowledge', 'Knowledge', 'Manage corrections, terms, snippets, and transforms'],
+                ['knowledge', 'Knowledge', 'Manage corrections, terms, and snippets'],
                 ['commands', 'Voice commands', 'Create exact spoken replacements and snippets'],
               ] as const).map(([tab, title, detail]) => (
                 <button key={tab} type="button" onClick={(event) => openEditor(tab, event.currentTarget)} className="settings-card flex items-center gap-3 px-3 py-3 text-left transition-shadow hover:shadow-[var(--settings-shadow-2)]">

@@ -56,9 +56,6 @@ function textValue(text: string | null, loading: boolean, unavailable = 'Unavail
 }
 
 function pipelineLabel(health: PerformanceHealth): string | null {
-  if (health.transformStatus && health.transformStatus !== 'idle') {
-    return `Transform · ${health.transformStatus.replace('_', ' ')}`;
-  }
   if (health.dictationStatus) {
     return `Dictation · ${health.dictationStatus}`;
   }
@@ -142,12 +139,6 @@ const CPU_SERIES: ResourceChartSeries[] = [
     color: '#d97706',
     measurement: sample => sample.mainProcess.cpuPercent,
   },
-  {
-    key: 'sidecar-cpu',
-    label: 'Sidecar CPU',
-    color: '#7c3aed',
-    measurement: sample => sample.sidecarProcess.cpuPercent,
-  },
 ];
 
 const MEMORY_SERIES: ResourceChartSeries[] = [
@@ -168,12 +159,6 @@ const MEMORY_SERIES: ResourceChartSeries[] = [
     label: 'FFI / native heap',
     color: '#2563eb',
     measurement: sample => sample.mainProcess.ffiNativeHeapBytes,
-  },
-  {
-    key: 'sidecar-rss',
-    label: 'Sidecar RSS',
-    color: '#7c3aed',
-    measurement: sample => sample.sidecarProcess.rssBytes,
   },
 ];
 
@@ -362,22 +347,10 @@ export function PerformanceView({
                 value={currentMeasurement(selected, sample => sample.mainProcess.ffiNativeHeapBytes, formatBytes)}
                 accent="#2563eb"
               />
-              <MetricCard
-                label="Sidecar CPU"
-                scope="Local LLM helper process"
-                value={currentMeasurement(selected, sample => sample.sidecarProcess.cpuPercent, formatPercent)}
-                accent="#7c3aed"
-              />
-              <MetricCard
-                label="Sidecar RSS"
-                scope="Local LLM helper resident memory"
-                value={currentMeasurement(selected, sample => sample.sidecarProcess.rssBytes, formatBytes)}
-                accent="#7c3aed"
-              />
             </div>
             <PerformanceChart
               title="CPU timeline"
-              scope="Host, Murmur main process, and local sidecar remain separate scopes"
+              scope="Host and Murmur main process remain separate scopes"
               unit="percent"
               samples={samples}
               series={CPU_SERIES}

@@ -38,10 +38,6 @@ export function OverlayWidget() {
   const [disabled, setDisabled] = useState(false);
   const [showHotkeyMiss, setShowHotkeyMiss] = useState(false);
   const { status, statusRef } = useOverlayRecordingStatus();
-  // True while the local-LLM transform is thinking (issue #312 PR-C2). Driven
-  // by the broadcast `transform-state-changed` event; the overlay is a
-  // separate webview so it listens directly.
-  const [transforming, setTransforming] = useState(false);
   const [meetingPhase, setMeetingPhase] = useState<MeetingRuntimePhase>('idle');
   const [stillConnecting, setStillConnecting] = useState(false);
   const hotkeyMissFeedbackRef = useRef(false);
@@ -50,7 +46,6 @@ export function OverlayWidget() {
   const showMeetingSuggestion = meetingSuggestion.suggestion !== null
     && status === 'idle'
     && !meetingBusy
-    && !transforming
     && !disabled
     && !calibrating;
   const overlayContent: OverlayContent = showMeetingSuggestion
@@ -104,9 +99,9 @@ export function OverlayWidget() {
   // dwell/collapse/shrink timers, the serialized set_overlay_expanded writer, and
   // the single cursor poller. It is the only writer to the native resize path.
   const showDone = useOverlayDone(status);
-  const cueActive = calibrating || transforming || meetingBusy || runtime.deliveryCue !== null
-    || runtime.showCancelled || runtime.showHotkeyMiss || runtime.showSecureField
-    || runtime.showTransformBusy || runtime.showMicrophoneFailure !== null;
+  const cueActive = calibrating || meetingBusy || runtime.deliveryCue !== null
+    || runtime.showCancelled || runtime.showHotkeyMiss
+    || runtime.showMicrophoneFailure !== null;
   const activity = status === 'recording' ? 'recording'
     : status !== 'idle' || showDone || cueActive ? 'processing' : 'idle';
   // The idle floating pill is invisible and click-through, so hover must not
@@ -133,9 +128,6 @@ export function OverlayWidget() {
     runtime.showCancelled,
     runtime.showHotkeyMiss,
     runtime.disabled,
-    transforming,
-    runtime.showSecureField,
-    runtime.showTransformBusy,
     runtime.showMicrophoneFailure,
     stillConnecting,
     calibrating,
@@ -181,9 +173,9 @@ export function OverlayWidget() {
   }, [status]);
 
   useEffect(() => {
-    if (status === 'idle' && !meetingBusy && !transforming && !disabled && !calibrating) return;
+    if (status === 'idle' && !meetingBusy && !disabled && !calibrating) return;
     meetingSuggestion.clear();
-  }, [status, meetingBusy, transforming, disabled, calibrating, meetingSuggestion.clear]);
+  }, [status, meetingBusy, disabled, calibrating, meetingSuggestion.clear]);
 
   useEffect(() => {
     let cancelled = false;
@@ -192,20 +184,6 @@ export function OverlayWidget() {
       setStillConnecting(true);
     }).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, []);
-
-  // Track the transform flow's thinking phase for the overlay indicator.
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<unknown>('transform-state-changed', (event) => {
-      const payload = event.payload as { state?: unknown } | null;
-      const state = payload && typeof payload === 'object' ? payload.state : undefined;
-      setTransforming(state === 'thinking');
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
   }, []);

@@ -405,7 +405,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               Welcome to Murmur
             </h1>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">
-              Dictation and selected-text rewrites run on your Mac. Saved history
+              Dictation runs on your Mac. Saved history
               and retained meeting audio are stored locally.
             </p>
             <p className="mx-auto mb-3 max-w-md text-sm leading-relaxed text-on-surface-variant">

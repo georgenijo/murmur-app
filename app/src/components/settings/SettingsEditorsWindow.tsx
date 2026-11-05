@@ -9,7 +9,6 @@ import type { Settings } from '../../lib/settings';
 import { vocabularyPrompt } from '../../lib/settings';
 import { AppOverridesEditor } from './AppOverridesEditor';
 import { KnowledgeManager } from './KnowledgeManager';
-import { TransformsManager } from './TransformsManager';
 import { VocabScanStrip } from './VocabScanStrip';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
@@ -19,7 +18,6 @@ export type SettingsEditorTab =
   | 'vocabulary'
   | 'aliases'
   | 'knowledge'
-  | 'transforms'
   | 'commands'
   | 'scan';
 
@@ -28,7 +26,6 @@ export const SETTINGS_EDITOR_LABELS: Record<SettingsEditorTab, string> = {
   vocabulary: 'Vocabulary',
   aliases: 'Aliases',
   knowledge: 'Knowledge',
-  transforms: 'Saved transforms',
   commands: 'Voice commands',
   scan: 'Project scan',
 };
@@ -184,7 +181,6 @@ export function SettingsEditorsWindow({
           />
         )}
         {initialTab === 'knowledge' && <KnowledgeManager active profiles={settings.appProfiles} />}
-        {initialTab === 'transforms' && <TransformsManager active />}
         {initialTab === 'commands' && (
           <VoiceCommandsManager
             active

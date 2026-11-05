@@ -10,7 +10,6 @@ const HEALTH: PerformanceHealth = {
   error: null,
   modelName: 'base.en',
   dictationStatus: 'idle',
-  transformStatus: 'idle',
   runtime: {
     generation: 1,
     modelName: 'base.en',
@@ -83,7 +82,7 @@ describe('PerformanceView', () => {
 
     expect(container.textContent).toContain('Whole-host utilization');
     expect(container.textContent).toContain('Main process · 100% equals one logical core');
-    expect(container.textContent).toContain('Local LLM helper process');
+    expect(container.textContent).not.toMatch(/Sidecar|Local LLM/);
     expect(container.textContent).toContain('Accelerator utilization');
     expect(container.textContent).toContain('No production GPU or ANE percentage');
     expect(container.textContent?.match(/No production GPU or ANE percentage/g)).toHaveLength(1);

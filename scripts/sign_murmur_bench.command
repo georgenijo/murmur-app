@@ -23,7 +23,6 @@ python3 scripts/finalize_macos_bundle.py \
   --app "$APP" \
   --identity "$IDENTITY" \
   --main-entitlements app/src-tauri/entitlements.plist \
-  --llm-helper-entitlements app/src-tauri/local-llm-sidecar.entitlements.plist \
   --capture-agent-entitlements app/src-tauri/capture-agent.entitlements.plist \
   --capture-agent-info-plist app/src-tauri/capture-agent-info.plist \
   --capture-helper-info-plist app/src-tauri/sidecars/capture/Info.plist \

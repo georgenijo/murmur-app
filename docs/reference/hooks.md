@@ -134,24 +134,8 @@ detaches both halves to a seed-based Custom theme. Main is the only writer and e
 Its System-mode `matchMedia` listener applies OS changes locally without
 emitting. Setup and cleanup are idempotent under React Strict Mode.
 
-The overlay and transform-review roots intentionally install no appearance
+The overlay root intentionally install no appearance
 controller.
-
----
-
-## Selected-text transform
-
-### `useTransformFlow` (main window)
-Drives the transform hold key. Listens for `transform-key-pressed` / `transform-key-released` and calls `start_transform_capture` / `finish_transform_instruction`, carrying the `transformPassId` from the event rather than re-deriving it. Pure press/release reduction lives in `lib/transformFlow.ts`.
-
-### `useEscapeCancel` (main window)
-Listens for `escape-cancel` and issues a **scoped** `cancel_transform` with the pass ID snapshotted at key-press time, so a delayed Escape cannot cancel the pass that replaced it. Ready/failed reviews keep their own popover-local Escape handling.
-
-### `useTransformReviewDriver` (popover window)
-The review popover's state machine. Subscribes to `transform-state-changed`, re-fetching `get_transform_review_content` on each transition (content is never carried in the event payload), and exposes approve / retry / cancel / undo. Also handles `transform-apply-failed` and `transform-review-hidden`.
-
-### `useMockReviewDriver` (dev only)
-Demo driver reachable via `?mock=1` (or `?mock=<state>`) on the popover URL, so the whole review UI can be exercised without a backend. Gated on `import.meta.env.DEV` by its caller; never in a production code path.
 
 ---
 
@@ -183,7 +167,7 @@ Owns geometry sourced from Rust — the single source of truth. Fetches `get_ove
 The hover-expand lifecycle, owned end to end: 150ms dwell intent gate, cursor polling, and the **only** writer to the native resize path (`set_overlay_expanded`). Awaits the applied frame before revealing the dropdown, so CSS never animates into a window that hasn't grown yet. Treats `overlay-geometry-changed` as an authoritative reset — cancels timers, forces collapsed, issues one corrective resize.
 
 ### `useOverlayRuntime`
-Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, the `transform-busy` and `transform-secure-field` flashes, a `dictation-generation-started` ownership floor plus generation-ordered `dictation-delivery-outcome` clipboard-only cue, the inline non-focusing retry action and its authoritative returned-result presentation, and the `app-disabled-changed` state mirror. Pointer-down pauses the expiring cue before click, cancelled interactions restart it, and superseded retry promises are ignored.
+Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, a `dictation-generation-started` ownership floor plus generation-ordered `dictation-delivery-outcome` clipboard-only cue, the inline non-focusing retry action and its authoritative returned-result presentation, and the `app-disabled-changed` state mirror. Pointer-down pauses the expiring cue before click, cancelled interactions restart it, and superseded retry promises are ignored.
 
 ### `useOverlaySettingsMirror`
 The overlay's snapshot of persisted settings (read straight from localStorage — there is no shared React context across windows), including the confirmed vertical calibration offset, plus the quick-control actions: auto-paste toggle, global disable, and `open-settings`.
@@ -219,9 +203,6 @@ error; it never changes dictation state.
 ---
 
 ## Settings surfaces
-
-### `useTransformModelSettings`
-Owns the selected-text model status, download progress, install, removal, reset, and shortcut updates used by the AI settings pages. Shortcut conflicts and model failures remain separate errors.
 
 ### `useVoiceQuerySettings`
 Owns provider discovery, protected environment names, validation, preflight, sign-in repair, and Voice Query settings actions. Generation checks prevent stale provider switches, tests, and sign-in polls from changing a newer configuration.

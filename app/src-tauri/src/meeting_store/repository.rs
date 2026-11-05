@@ -6,8 +6,8 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use super::migrations;
 use super::types::*;
 use crate::meeting_review::{
-    self, ActiveReviewOrigin, GeneratedMeetingReview, MeetingSpeakerLabels, MeetingWorkspace,
-    ReviewEditBase, SaveMeetingReviewRequest, SavedMeetingReview,
+    self, MeetingSpeakerLabels, MeetingWorkspace, ReviewEditBase, SaveMeetingReviewRequest,
+    SavedMeetingReview,
 };
 
 const DATABASE_NAME: &str = "meetings.sqlite3";
@@ -850,60 +850,16 @@ impl MeetingRepository {
             .map_err(db_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_error)?;
-        let mut artifact = connection
-            .query_row(
-                "SELECT artifact_json FROM meeting_artifacts WHERE session_id=?",
-                [id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(db_error)?
-            .and_then(|json| serde_json::from_str(&json).ok());
-        if let Some(value) = artifact.as_mut() {
-            let allowed = segments.iter().map(|segment| segment.id).collect();
-            if !crate::meeting_artifact::validate_artifact(value, &allowed) {
-                artifact = None;
-            }
-        }
         Ok(MeetingDetail {
             session,
             segments,
-            artifact,
+            artifact: None,
         })
     }
 
     pub fn workspace(&self, id: &str) -> Result<MeetingWorkspace, String> {
         let detail = self.detail(id)?;
-        let allowed = detail
-            .segments
-            .iter()
-            .filter(|segment| {
-                segment.status == MeetingSegmentStatus::Final && !segment.text.trim().is_empty()
-            })
-            .map(|segment| segment.id)
-            .collect::<std::collections::HashSet<_>>();
         let connection = self.open_checked()?;
-        let generated = connection
-            .query_row(
-                "SELECT artifact_json, revision FROM meeting_artifacts WHERE session_id=?",
-                [id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(db_error)?
-            .map(|(json, revision)| {
-                let mut artifact: crate::meeting_artifact::MeetingArtifactV1 =
-                    serde_json::from_str(&json)
-                        .map_err(|_| "The stored meeting draft is invalid.".to_string())?;
-                if !crate::meeting_artifact::validate_artifact(&mut artifact, &allowed) {
-                    return Err("The stored meeting draft is invalid.".to_string());
-                }
-                Ok(GeneratedMeetingReview {
-                    revision: to_u64(revision).map_err(db_error)?,
-                    document: meeting_review::document_from_artifact(&artifact),
-                })
-            })
-            .transpose()?;
         let stored_review = connection
             .query_row(
                 "SELECT revision, based_on_artifact_revision, me_label, them_label, review_json
@@ -922,45 +878,20 @@ impl MeetingRepository {
             .optional()
             .map_err(db_error)?;
         let (labels, review) = match stored_review {
-            Some((revision, based_on, me, them, json)) => {
+            Some((revision, based_on, me, them, _legacy_json)) => {
                 let labels = meeting_review::validate_labels(MeetingSpeakerLabels { me, them })?;
-                let mut document = json
-                    .map(|json| {
-                        serde_json::from_str(&json)
-                            .map_err(|_| "The stored meeting review is invalid.".to_string())
-                    })
-                    .transpose()?;
-                if document
-                    .as_mut()
-                    .is_some_and(|document| !meeting_review::validate_document(document, &allowed))
-                {
-                    return Err("The stored meeting review is invalid.".into());
-                }
                 let review = SavedMeetingReview {
                     revision: to_u64(revision).map_err(db_error)?,
                     based_on_generated_revision: based_on
                         .map(to_u64)
                         .transpose()
                         .map_err(db_error)?,
-                    document,
+                    document: None,
                 };
                 (labels, Some(review))
             }
             None => (MeetingSpeakerLabels::default(), None),
         };
-        let (active_document, active_origin) = review
-            .as_ref()
-            .and_then(|review| review.document.clone())
-            .map(|document| (Some(document), Some(ActiveReviewOrigin::Reviewed)))
-            .or_else(|| {
-                generated.as_ref().map(|generated| {
-                    (
-                        Some(generated.document.clone()),
-                        Some(ActiveReviewOrigin::Generated),
-                    )
-                })
-            })
-            .unwrap_or((None, None));
         let mut statement = connection
             .prepare(
                 "SELECT speaker_id, label FROM meeting_remote_speakers
@@ -982,10 +913,10 @@ impl MeetingRepository {
             segments: detail.segments,
             labels,
             remote_speakers,
-            generated,
+            generated: None,
             review,
-            active_document,
-            active_origin,
+            active_document: None,
+            active_origin: None,
         })
     }
 
@@ -1096,6 +1027,7 @@ impl MeetingRepository {
         self.workspace(session_id)
     }
 
+    #[cfg(test)]
     pub fn save_artifact(
         &self,
         session_id: &str,
@@ -1123,65 +1055,29 @@ impl MeetingRepository {
         transaction.commit().map_err(db_error)
     }
 
+    /// Save speaker labels without reading, rewriting, or indexing legacy derived content.
     pub fn save_review(
         &self,
         request: SaveMeetingReviewRequest,
     ) -> Result<MeetingWorkspace, String> {
-        let session_id = request.session_id.trim().to_string();
-        if !valid_session_id(&session_id) {
-            return Err("The meeting review request is invalid.".into());
+        let session_id = request.session_id.trim();
+        if !valid_session_id(session_id)
+            || !matches!(request.base, ReviewEditBase::LabelsOnly)
+            || request.document.is_some()
+            || !request.new_claims.is_empty()
+        {
+            return Err("Only meeting speaker labels can be edited.".into());
         }
         let labels = meeting_review::validate_labels(request.labels)?;
-        let workspace = self.workspace(&session_id)?;
-        let allowed = workspace
-            .segments
-            .iter()
-            .filter(|segment| {
-                segment.status == MeetingSegmentStatus::Final && !segment.text.trim().is_empty()
-            })
-            .map(|segment| segment.id)
-            .collect::<std::collections::HashSet<_>>();
-        let base = match request.base {
-            ReviewEditBase::LabelsOnly => None,
-            ReviewEditBase::Generated { generated_revision } => {
-                let generated = workspace
-                    .generated
-                    .as_ref()
-                    .filter(|item| item.revision == generated_revision)
-                    .ok_or_else(|| {
-                        "The generated draft changed. Reload it and try again.".to_string()
-                    })?;
-                Some(&generated.document)
-            }
-            ReviewEditBase::Review { review_revision } => {
-                let review = workspace
-                    .review
-                    .as_ref()
-                    .filter(|item| item.revision == review_revision)
-                    .and_then(|item| item.document.as_ref())
-                    .ok_or_else(|| "The review changed. Reload it and try again.".to_string())?;
-                Some(review)
-            }
-        };
-        if !request.new_claims.is_empty() && base.is_none() {
-            return Err("New claims require an editable meeting review.".into());
-        }
-        let mut document = match (base, request.document) {
-            (Some(base), Some(edit)) => Some(meeting_review::apply_edit(base, edit, &allowed)?),
-            (None, None) => workspace
-                .review
-                .as_ref()
-                .and_then(|review| review.document.clone()),
-            _ => return Err("The meeting review request is incomplete.".into()),
-        };
+        self.workspace(session_id)?;
         let mut connection = self.open_checked()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
-        let current_revision = transaction
+        let revision = transaction
             .query_row(
                 "SELECT revision FROM meeting_reviews WHERE session_id=?",
-                [&session_id],
+                [session_id],
                 |row| row.get::<_, i64>(0),
             )
             .optional()
@@ -1189,126 +1085,18 @@ impl MeetingRepository {
             .map(to_u64)
             .transpose()
             .map_err(db_error)?;
-        if current_revision != request.expected_review_revision {
-            return Err("The review changed. Reload it and try again.".into());
+        if revision != request.expected_review_revision {
+            return Err("The speaker labels changed. Reload and try again.".into());
         }
-        if let ReviewEditBase::Generated { generated_revision } = &request.base {
-            let current_generated = transaction
-                .query_row(
-                    "SELECT revision FROM meeting_artifacts WHERE session_id=?",
-                    [&session_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(db_error)?
-                .map(to_u64)
-                .transpose()
-                .map_err(db_error)?;
-            if current_generated != Some(*generated_revision) {
-                return Err("The generated draft changed. Reload it and try again.".into());
-            }
-        }
-        let next_revision = current_revision.unwrap_or(0).saturating_add(1);
-        if !request.new_claims.is_empty() {
-            meeting_review::append_new_claims(
-                document
-                    .as_mut()
-                    .ok_or("New claims require an editable meeting review.")?,
-                request.new_claims,
-                &session_id,
-                next_revision,
-                &allowed,
-            )?;
-        }
-        let based_on = match &request.base {
-            ReviewEditBase::Generated { generated_revision } => Some(*generated_revision),
-            ReviewEditBase::Review { .. } => workspace
-                .review
-                .as_ref()
-                .and_then(|review| review.based_on_generated_revision),
-            ReviewEditBase::LabelsOnly => workspace
-                .review
-                .as_ref()
-                .and_then(|review| review.based_on_generated_revision),
-        };
-        let json = document
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|_| storage_error())?;
-        transaction
-            .execute(
-                "INSERT INTO meeting_reviews(session_id, revision, based_on_artifact_revision, me_label, them_label, review_json, updated_at_ms)
-                 VALUES(?,?,?,?,?,?,?)
-                 ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision, based_on_artifact_revision=excluded.based_on_artifact_revision, me_label=excluded.me_label, them_label=excluded.them_label, review_json=excluded.review_json, updated_at_ms=excluded.updated_at_ms",
-                params![session_id, to_i64(next_revision)?, based_on.map(to_i64).transpose()?, labels.me, labels.them, json, to_i64(now_ms())?],
-            )
-            .map_err(db_error)?;
-        super::search::refresh_document_index(&transaction, &session_id).map_err(db_error)?;
+        let next_revision = revision.unwrap_or(0).saturating_add(1);
+        transaction.execute(
+            "INSERT INTO meeting_reviews(session_id, revision, me_label, them_label, updated_at_ms)
+             VALUES(?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision,
+             me_label=excluded.me_label, them_label=excluded.them_label, updated_at_ms=excluded.updated_at_ms",
+            params![session_id, to_i64(next_revision)?, labels.me, labels.them, to_i64(now_ms())?],
+        ).map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
-        self.workspace(&session_id)
-    }
-
-    pub fn restore_review_from_generated(
-        &self,
-        request: crate::meeting_review::RestoreMeetingReviewRequest,
-    ) -> Result<MeetingWorkspace, String> {
-        let workspace = self.workspace(request.session_id.trim())?;
-        let generated = workspace
-            .generated
-            .as_ref()
-            .filter(|item| item.revision == request.generated_revision)
-            .ok_or_else(|| "The generated draft changed. Reload it and try again.".to_string())?;
-        if workspace.review.as_ref().map(|review| review.revision)
-            != request.expected_review_revision
-        {
-            return Err("The review changed. Reload it and try again.".into());
-        }
-        let edit = crate::meeting_review::EditableReviewDocument {
-            summary: crate::meeting_review::EditableReviewText {
-                key: generated.document.summary.key.clone(),
-                text: generated.document.summary.text.clone(),
-            },
-            decisions: generated
-                .document
-                .decisions
-                .iter()
-                .map(|item| crate::meeting_review::EditableReviewText {
-                    key: item.key.clone(),
-                    text: item.text.clone(),
-                })
-                .collect(),
-            action_items: generated
-                .document
-                .action_items
-                .iter()
-                .map(|item| crate::meeting_review::EditableReviewAction {
-                    key: item.key.clone(),
-                    text: item.text.clone(),
-                    owner: item.owner.clone(),
-                    due_date: item.due_date.clone(),
-                })
-                .collect(),
-            open_questions: generated
-                .document
-                .open_questions
-                .iter()
-                .map(|item| crate::meeting_review::EditableReviewText {
-                    key: item.key.clone(),
-                    text: item.text.clone(),
-                })
-                .collect(),
-        };
-        self.save_review(SaveMeetingReviewRequest {
-            new_claims: Vec::new(),
-            session_id: request.session_id,
-            expected_review_revision: request.expected_review_revision,
-            base: ReviewEditBase::Generated {
-                generated_revision: request.generated_revision,
-            },
-            labels: workspace.labels,
-            document: Some(edit),
-        })
+        self.workspace(session_id)
     }
 
     pub fn delete_session(&self, id: &str) -> Result<(), String> {
@@ -1786,22 +1574,12 @@ mod tests {
                 new_claims: Vec::new(),
                 session_id: "recovered-meeting".into(),
                 expected_review_revision: None,
-                base: ReviewEditBase::Generated {
-                    generated_revision: 1,
-                },
+                base: ReviewEditBase::LabelsOnly,
                 labels: MeetingSpeakerLabels {
                     me: "Owner".into(),
                     them: "Guests".into(),
                 },
-                document: Some(crate::meeting_review::EditableReviewDocument {
-                    summary: crate::meeting_review::EditableReviewText {
-                        key: "summary".into(),
-                        text: "Reviewed summary that must survive recovery".into(),
-                    },
-                    decisions: Vec::new(),
-                    action_items: Vec::new(),
-                    open_questions: Vec::new(),
-                }),
+                document: None,
             })
             .unwrap();
         source
@@ -1888,138 +1666,6 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".meeting-recovery-")));
-    }
-
-    #[test]
-    fn v5_upgrade_backs_up_and_indexes_active_documents() {
-        let (root, repository) = repository();
-        repository
-            .create_session("upgrade", "base.en", "en", true, false)
-            .unwrap();
-        let source = final_segment(
-            &repository,
-            "upgrade",
-            MeetingSpeaker::Me,
-            0,
-            "raw evidence",
-        );
-        repository
-            .finish_session("upgrade", MeetingSessionStatus::Complete, None)
-            .unwrap();
-        let artifact = crate::meeting_artifact::MeetingArtifactV1 {
-            schema: crate::meeting_artifact::MEETING_ARTIFACT_SCHEMA.into(),
-            summary: crate::meeting_artifact::SourcedMeetingText {
-                text: "draftonly".into(),
-                source_segment_ids: vec![source],
-            },
-            decisions: vec![],
-            action_items: vec![],
-            open_questions: vec![],
-        };
-        repository
-            .save_artifact("upgrade", &artifact, 0, 0)
-            .unwrap();
-        let workspace = repository.workspace("upgrade").unwrap();
-        repository
-            .save_review(SaveMeetingReviewRequest {
-                new_claims: Vec::new(),
-                session_id: "upgrade".into(),
-                expected_review_revision: None,
-                base: ReviewEditBase::Generated {
-                    generated_revision: 1,
-                },
-                labels: workspace.labels,
-                document: Some(crate::meeting_review::EditableReviewDocument {
-                    summary: crate::meeting_review::EditableReviewText {
-                        key: workspace.active_document.unwrap().summary.key,
-                        text: "reviewonly".into(),
-                    },
-                    decisions: vec![],
-                    action_items: vec![],
-                    open_questions: vec![],
-                }),
-            })
-            .unwrap();
-        repository
-            .create_session("rawonly", "base.en", "en", true, false)
-            .unwrap();
-        final_segment(
-            &repository,
-            "rawonly",
-            MeetingSpeaker::Me,
-            0,
-            "transcriptonly",
-        );
-        repository
-            .create_session("generatedonly", "base.en", "en", true, false)
-            .unwrap();
-        let source = final_segment(
-            &repository,
-            "generatedonly",
-            MeetingSpeaker::Me,
-            0,
-            "evidence",
-        );
-        let mut artifact = artifact;
-        artifact.summary.source_segment_ids = vec![source];
-        repository
-            .save_artifact("generatedonly", &artifact, 0, 0)
-            .unwrap();
-        let connection = repository.open_checked().unwrap();
-        connection
-            .execute_batch("DROP TABLE meeting_review_fts; PRAGMA user_version=5;")
-            .unwrap();
-        drop(connection);
-        let (upgraded, _) = MeetingRepository::initialize(root.path().to_path_buf()).unwrap();
-        assert_eq!(upgraded.status().unwrap().schema_version, 6);
-        assert_eq!(
-            upgraded
-                .list_sessions(Some("reviewonly"), 0, 10)
-                .unwrap()
-                .total,
-            1
-        );
-        assert_eq!(
-            upgraded
-                .list_sessions(Some("draftonly"), 0, 10)
-                .unwrap()
-                .sessions[0]
-                .id,
-            "generatedonly"
-        );
-        assert_eq!(
-            upgraded
-                .list_sessions(Some("transcriptonly"), 0, 10)
-                .unwrap()
-                .total,
-            1
-        );
-        let backup = fs::read_dir(root.path().join("backups"))
-            .unwrap()
-            .filter_map(Result::ok)
-            .find(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("meetings-v5-")
-            })
-            .unwrap();
-        let before = Connection::open(backup.path()).unwrap();
-        assert_eq!(migrations::schema_version(&before).unwrap(), 5);
-        migrations::quick_check(&before).unwrap();
-        assert_eq!(
-            before
-                .query_row("SELECT COUNT(*) FROM meeting_reviews", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        let check = upgraded.open_checked().unwrap();
-        migrations::quick_check(&check).unwrap();
-        check
-            .execute_batch("DROP TABLE meeting_review_fts;")
-            .unwrap();
-        assert!(migrations::validate_schema(&check).is_err());
     }
 
     #[test]
@@ -2125,7 +1771,7 @@ mod tests {
             expected.active_origin = expected
                 .generated
                 .as_ref()
-                .map(|_| ActiveReviewOrigin::Generated);
+                .map(|_| crate::meeting_review::ActiveReviewOrigin::Generated);
             let original = fs::read(&backup).unwrap();
             fs::write(root.path().join(DATABASE_NAME), b"corrupt live database").unwrap();
             let (recovered, outcome) =
@@ -2812,112 +2458,6 @@ mod tests {
                 "audio/session-a/../../outside.wav",
             )
             .is_err());
-    }
-
-    #[test]
-    fn regeneration_preserves_review_and_restore_is_explicit() {
-        let (_temp, repository) = repository();
-        repository
-            .create_session("review-session", "base.en", "en", true, false)
-            .unwrap();
-        let audio = repository.root().join("audio/review-session/me-0.wav");
-        fs::create_dir_all(audio.parent().unwrap()).unwrap();
-        fs::write(&audio, b"wav").unwrap();
-        let segment = repository
-            .insert_pending_segment(
-                "review-session",
-                MeetingSpeaker::Me,
-                0,
-                0,
-                1_000,
-                "audio/review-session/me-0.wav",
-            )
-            .unwrap();
-        repository
-            .finalize_segment(segment, "Evidence", false)
-            .unwrap();
-        fs::remove_file(audio).unwrap();
-        let artifact = crate::meeting_artifact::MeetingArtifactV1 {
-            schema: crate::meeting_artifact::MEETING_ARTIFACT_SCHEMA.into(),
-            summary: crate::meeting_artifact::SourcedMeetingText {
-                text: "Generated one".into(),
-                source_segment_ids: vec![segment],
-            },
-            decisions: Vec::new(),
-            action_items: Vec::new(),
-            open_questions: Vec::new(),
-        };
-        repository
-            .save_artifact("review-session", &artifact, 1, 2)
-            .unwrap();
-        let workspace = repository.workspace("review-session").unwrap();
-        let generated_revision = workspace.generated.as_ref().unwrap().revision;
-        let saved_review = repository
-            .save_review(SaveMeetingReviewRequest {
-                new_claims: Vec::new(),
-                session_id: "review-session".into(),
-                expected_review_revision: None,
-                base: ReviewEditBase::Generated { generated_revision },
-                labels: MeetingSpeakerLabels {
-                    me: "George".into(),
-                    them: "Team".into(),
-                },
-                document: Some(crate::meeting_review::EditableReviewDocument {
-                    summary: crate::meeting_review::EditableReviewText {
-                        key: "summary".into(),
-                        text: "Reviewed wording".into(),
-                    },
-                    decisions: Vec::new(),
-                    action_items: Vec::new(),
-                    open_questions: Vec::new(),
-                }),
-            })
-            .unwrap();
-        let saved_revision = saved_review.review.as_ref().unwrap().revision;
-        let labels_only = repository
-            .save_review(SaveMeetingReviewRequest {
-                new_claims: Vec::new(),
-                session_id: "review-session".into(),
-                expected_review_revision: Some(saved_revision),
-                base: ReviewEditBase::LabelsOnly,
-                labels: MeetingSpeakerLabels {
-                    me: "George N.".into(),
-                    them: "Team".into(),
-                },
-                document: None,
-            })
-            .unwrap();
-        assert_eq!(
-            labels_only.active_document.as_ref().unwrap().summary.text,
-            "Reviewed wording"
-        );
-        assert_eq!(labels_only.labels.me, "George N.");
-
-        let mut replacement = artifact.clone();
-        replacement.summary.text = "Generated two".into();
-        repository
-            .save_artifact("review-session", &replacement, 3, 4)
-            .unwrap();
-        let after_regeneration = repository.workspace("review-session").unwrap();
-        assert_eq!(
-            after_regeneration.active_document.unwrap().summary.text,
-            "Reviewed wording"
-        );
-        assert_eq!(after_regeneration.labels.me, "George N.");
-
-        let generated_revision = after_regeneration.generated.as_ref().unwrap().revision;
-        let review_revision = after_regeneration.review.as_ref().unwrap().revision;
-        let restored = repository
-            .restore_review_from_generated(crate::meeting_review::RestoreMeetingReviewRequest {
-                session_id: "review-session".into(),
-                generated_revision,
-                expected_review_revision: Some(review_revision),
-            })
-            .unwrap();
-        assert_eq!(
-            restored.active_document.unwrap().summary.text,
-            "Generated two"
-        );
     }
 
     #[test]

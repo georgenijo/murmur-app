@@ -45,6 +45,9 @@ pub fn upsert_knowledge(
     draft: KnowledgeDraft,
     state: tauri::State<'_, State>,
 ) -> Result<KnowledgeEntry, String> {
+    if matches!(draft.payload, KnowledgePayload::Transform { .. }) {
+        return Err("Saved rewrite instructions are no longer supported.".into());
+    }
     if draft.voice_command.is_some() {
         let mut commands = state
             .knowledge

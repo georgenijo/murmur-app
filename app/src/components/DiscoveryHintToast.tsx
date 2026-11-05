@@ -16,11 +16,6 @@ const HINTS: Record<DiscoveryHintId, { title: string; detail: string; action: st
     detail: 'Murmur can apply a mode to an exact browser site without storing the page or its text.',
     action: 'Set up site modes',
   },
-  meeting_summaries: {
-    title: 'Your meeting can become a summary',
-    detail: 'Open the finished meeting to generate a local summary, decisions, and action items.',
-    action: 'View meeting',
-  },
 };
 
 interface DiscoveryHintToastProps {

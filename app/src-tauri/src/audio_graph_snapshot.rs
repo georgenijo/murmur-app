@@ -652,15 +652,11 @@ pub(crate) fn internal_owners_report() -> String {
         None => report.push_str("meeting capture: <busy>\n"),
     }
     report.push_str(&format!(
-        "meeting flags: active={} inference_active={} summary_active={}\n",
+        "meeting flags: active={} inference_active={}\n",
         state.app_state.meeting_active.load(Ordering::SeqCst),
         state
             .app_state
             .meeting_inference_active
-            .load(Ordering::SeqCst),
-        state
-            .app_state
-            .meeting_summary_active
             .load(Ordering::SeqCst),
     ));
 
@@ -689,19 +685,6 @@ pub(crate) fn internal_owners_report() -> String {
             .dictation_status_if_uncontended()
             .map(|status| format!("{status:?}"))
             .unwrap_or_else(|| "<busy>".to_string()),
-    ));
-    report.push_str(&format!(
-        "transform: status={} active_pass={}\n",
-        state
-            .app_state
-            .transform_status_if_uncontended()
-            .map(|status| status.as_str().to_string())
-            .unwrap_or_else(|| "<busy>".to_string()),
-        state
-            .app_state
-            .active_transform_pass_id()
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "none".to_string()),
     ));
     report.push_str(&format!(
         "file transcription active: {}\n",
