@@ -1,0 +1,73 @@
+# Phase 0e (#980) feasibility: build the pinned GPUI probe on hosted macOS
+# runners and capture two offscreen goldens. Scratch branch only; not for merge.
+name: GPUI Phase 0
+
+on:
+  pull_request:
+    paths:
+      - prototypes/gpui-phase0/**
+      - .github/workflows/gpui-phase0.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpui-phase0-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gpui-0e:
+    name: gpui-0e (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, xcode-27]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: prototypes/gpui-phase0/0e-build-quit
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/gpui-phase0
+      EVIDENCE: ${{ github.workspace }}/evidence/${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Record image and verify Xcode + Metal
+        run: |
+          mkdir -p "$EVIDENCE"
+          {
+            echo "ImageOS=${ImageOS:-unknown} ImageVersion=${ImageVersion:-unknown}"
+            sw_vers
+            uname -m
+            rustc -Vv
+            xcode-select -p
+            xcodebuild -version
+            xcrun --sdk macosx --show-sdk-version
+            system_profiler SPDisplaysDataType | sed -n '1,30p'
+          } | tee "$EVIDENCE/toolchain.txt"
+          if ! xcrun metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun metal --version | tee "$EVIDENCE/metal.txt"
+          xcrun --find metallib
+
+      - name: Build frozen dependency graph
+        run: |
+          cargo fetch --locked
+          /usr/bin/time -lp cargo build --release --frozen 2>&1 | tee "$EVIDENCE/build.log"
+          stat -f '%z bytes' "$CARGO_TARGET_DIR/release/gpui-0e-build-quit" "$CARGO_TARGET_DIR/release/minimal" \
+            | tee "$EVIDENCE/size.txt"
+
+      - name: Capture two identical offscreen Metal goldens
+        run: scripts/capture-golden.sh "$CARGO_TARGET_DIR/release/gpui-0e-build-quit" "$EVIDENCE"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpui-0e-${{ matrix.runner }}
+          path: evidence/${{ matrix.runner }}

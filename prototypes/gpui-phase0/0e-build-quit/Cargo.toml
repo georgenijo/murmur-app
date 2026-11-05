@@ -1,0 +1,15 @@
+[package]
+name = "gpui-0e-build-quit"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", features = ["test-support"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", features = ["test-support", "font-kit"] }
+gpui_macos = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", features = ["test-support", "font-kit"] }
+[profile.release]
+strip = "debuginfo"
+[profile.clean-proof]
+inherits = "release"
+[profile.clean-final]
+inherits = "release"
