@@ -165,7 +165,6 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
   const rate = rateForRun(run);
   const input = inputSummary(run);
   const mainPeak = formatMeasurement(run.resources.mainProcess.rssBytes.peak, formatBytes);
-  const sidecarPeak = formatMeasurement(run.resources.sidecarProcess.rssBytes.peak, formatBytes);
   const hostPeak = formatMeasurement(run.resources.host.cpuPercent.peak, formatPercent);
   const mainDelta = resourceDelta(
     run.resources.mainProcess.rssBytes.start,
@@ -215,7 +214,6 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
           <SummaryCard label="Main RSS peak" value={mainPeak.text} detail={mainPeak.detail} />
           <SummaryCard label="Main RSS delta" value={mainDelta.text} detail={mainDelta.detail} />
           <SummaryCard label="Host CPU peak" value={hostPeak.text} detail="Whole-host utilization" />
-          <SummaryCard label="Sidecar RSS peak" value={sidecarPeak.text} detail={sidecarPeak.detail ?? 'Local LLM helper'} />
           <SummaryCard label="Accelerator utilization" value="Unavailable" detail="No production GPU or ANE percentage" />
           {run.kind === 'voiceQuery' && (
             <>
@@ -315,8 +313,6 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
               <ResourceRangeRow label="RSS" scope="Murmur main process" range={run.resources.mainProcess.rssBytes} format={formatBytes} />
               <ResourceRangeRow label="Rust heap" scope="Murmur main process" range={run.resources.mainProcess.rustHeapBytes} format={formatBytes} />
               <ResourceRangeRow label="FFI / native heap" scope="Murmur main process" range={run.resources.mainProcess.ffiNativeHeapBytes} format={formatBytes} />
-              <ResourceRangeRow label="CPU" scope="Local LLM sidecar" range={run.resources.sidecarProcess.cpuPercent} format={formatPercent} />
-              <ResourceRangeRow label="RSS" scope="Local LLM sidecar" range={run.resources.sidecarProcess.rssBytes} format={formatBytes} />
             </tbody>
           </table>
         </div>

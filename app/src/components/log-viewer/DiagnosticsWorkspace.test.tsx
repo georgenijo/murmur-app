@@ -49,7 +49,6 @@ vi.mock('../../lib/hooks/usePerformanceHealth', () => ({
     error: null,
     modelName: 'base.en',
     dictationStatus: 'idle',
-    transformStatus: 'idle',
     runtime: null,
     capture: {
       status: 'insufficientData',

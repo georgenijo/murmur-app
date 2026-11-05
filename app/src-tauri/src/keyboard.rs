@@ -979,8 +979,8 @@ pub fn is_dictation_key_id(hotkey: &str) -> bool {
     DICTATION_KEY_IDS.contains(&hotkey)
 }
 
-/// The opposite-side modifiers available to Selected-text Transform and Voice
-/// Query. Function keys belong exclusively to dictation.
+/// The opposite-side modifiers available to Voice Query. Function keys belong
+/// exclusively to dictation.
 pub fn is_query_key_id(hotkey: &str) -> bool {
     matches!(hotkey, "shift_r" | "alt_r" | "ctrl_l")
 }
@@ -988,10 +988,9 @@ pub fn is_query_key_id(hotkey: &str) -> bool {
 /// Map hotkey string from settings to rdev Key.
 ///
 /// The three modifiers and F1–F20 back the dictation hotkey (`DictationKey` in
-/// settings.ts). `alt_r` / `ctrl_l` / `shift_r` back the independent transform
-/// hotkey (`TransformKey`, issue #312) — same function since both listeners
-/// share this mapping. The two id sets are kept disjoint by convention plus
-/// an explicit `is_dictation_key_id` check at the transform command boundary
+/// settings.ts). `alt_r` / `ctrl_l` / `shift_r` back the independent Voice Query
+/// hotkey. Both listeners share this mapping. The two id sets are kept disjoint
+/// by explicit validation at the Voice Query command boundary
 /// (see `commands/keyboard.rs`) — nothing here would reject the overlap on
 /// its own.
 fn hotkey_to_rdev_key(hotkey: &str) -> Option<Key> {

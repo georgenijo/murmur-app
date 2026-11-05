@@ -214,7 +214,7 @@ describe('useMeetings remote speaker refresh', () => {
     return sessions;
   }
 
-  it.each(['refresh', 'summary', 'capture-idle', 'metadata', 'delete'])('preserves three loaded pages and selection after %s, respecting the 100-row maximum', async (source) => {
+  it.each(['refresh', 'capture-idle', 'metadata', 'delete'])('preserves three loaded pages and selection after %s, respecting the 100-row maximum', async (source) => {
     const sessions = mockPagedMeetings();
     meetingMocks.getMeeting.mockResolvedValue(detail('meeting-120', 'Team'));
     meetingMocks.saveMeetingMetadata.mockResolvedValue(detail('meeting-120', 'Team'));
@@ -226,8 +226,7 @@ describe('useMeetings remote speaker refresh', () => {
     meetingMocks.listMeetings.mockClear();
     if (source === 'delete') sessions.splice(20, 1);
     await act(async () => {
-      if (source === 'summary') eventMocks.listeners.get('meeting-summary-status-changed')?.({ payload: { phase: 'complete', sessionId: 'other' } });
-      else if (source === 'capture-idle') eventMocks.listeners.get('meeting-status-changed')?.({ payload: { generation: 1, phase: 'idle', sessionId: null } });
+      if (source === 'capture-idle') eventMocks.listeners.get('meeting-status-changed')?.({ payload: { generation: 1, phase: 'idle', sessionId: null } });
       else if (source === 'metadata') await controller().saveMetadata({ sessionId: 'meeting-120', title: 'Synthetic title', attendees: [] });
       else if (source === 'delete') await controller().remove('meeting-20');
       else await controller().refresh();

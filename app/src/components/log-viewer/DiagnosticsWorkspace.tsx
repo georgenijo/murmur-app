@@ -68,7 +68,7 @@ export function DiagnosticsWorkspace({
     () => new Set(['pipeline', 'audio', 'transform', 'query', 'system'])
   );
   const [correlation, setCorrelation] = useState<CorrelationFilter>({
-    field: 'transform_pass_id',
+    field: 'recording_id',
     value: '',
   });
   const [activeLevels, setActiveLevels] = useState<Set<LevelName>>(

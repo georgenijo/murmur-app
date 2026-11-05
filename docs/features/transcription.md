@@ -70,7 +70,7 @@ afresh at recording start.
 ### Smart Auto microphone selection
 
 Smart Auto is an opt-in capture policy. Dictation, Meeting Capture, Voice
-Query, selected-text Transform (including Retry), and the Settings microphone
+Query, and the Settings microphone
 preview each resolve it only as their capture owner is accepted from idle and
 read the existing authoritative inventory. Auto never requests enumeration.
 Background signal checks require separate consent and are off by default,

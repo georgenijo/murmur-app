@@ -229,7 +229,7 @@ Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mi
 ### Settings — [reference/settings.md](reference/settings.md)
 Settings opens on **General**. The **Customize** page is a compact hub of
 independent destinations: **Text & vocabulary**, **Voice commands**, **App
-overrides**, **Modes**, and **Selected-text rewrite**. Every hub destination has
+overrides**, and **Modes**. Every hub destination has
 a visible route back. Returning restores keyboard focus to the destination that
 opened it. The persistent Settings navigation also exposes
 Modes, General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,

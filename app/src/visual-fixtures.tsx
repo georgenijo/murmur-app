@@ -259,12 +259,10 @@ mockIPC((command, payload) => {
   if (requestedState === 'copy-diagnostics') {
     const replacement = document.documentElement.hasAttribute('data-copy-replace-captures');
     const capture = { captureId: replacement ? 'capture-two' : 'capture-one', recordingId: replacement ? 42 : 41,
-      transformPassId: replacement ? 52 : 51, capturedAtMs: 1_788_552_000_000, expiresAtMs: 1_789_156_800_000, outcome: 'success', hasContent: true };
+      capturedAtMs: 1_788_552_000_000, expiresAtMs: 1_789_156_800_000, outcome: 'success', hasContent: true };
     if (command === 'get_dictation_diagnostic_capture_status') return { state: 'unarmed' };
-    if (command === 'get_transform_diagnostic_capture_status') return { armed: false, expiresAtMs: null };
-    if (command === 'list_transform_attempts') return { schemaVersion: 1, attempts: [] };
-    if (command === 'list_transform_diagnostic_captures' || command === 'list_dictation_diagnostic_captures') {
-      if (command === 'list_transform_diagnostic_captures' && document.documentElement.hasAttribute('data-copy-delay-refresh')) {
+    if (command === 'list_dictation_diagnostic_captures') {
+      if (document.documentElement.hasAttribute('data-copy-delay-refresh')) {
         document.documentElement.setAttribute('data-copy-refresh-waiting', 'true');
         return new Promise(resolve => window.addEventListener('copy-release-refresh', () => {
           document.documentElement.removeAttribute('data-copy-refresh-waiting');
@@ -275,9 +273,8 @@ mockIPC((command, payload) => {
       document.documentElement.setAttribute('data-copy-listed-capture', capture.captureId);
       return [capture];
     }
-    if (command === 'get_transform_diagnostic_capture') return { ...capture, schemaVersion: 1, selection: 'Synthetic selection', instruction: 'Shorten', output: 'Synthetic output', phases: [] };
     if (command === 'get_dictation_diagnostic_capture') return { ...capture, schemaVersion: 1, result: { kind: 'noContent', outcome: 'cancelled', errorCode: 'cancelled' } };
-    if (command === 'delete_transform_diagnostic_capture' || command === 'delete_dictation_diagnostic_capture') {
+    if (command === 'delete_dictation_diagnostic_capture') {
       document.documentElement.setAttribute('data-copy-deleted-capture', String((payload as { captureId: string }).captureId));
       return;
     }

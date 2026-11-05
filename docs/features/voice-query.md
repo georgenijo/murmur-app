@@ -20,7 +20,7 @@ Context is off by default. Each pass freezes one level at query start; focus or 
 
 - **None:** preserves the original question argument byte-for-byte.
 - **App & window:** adds the native frontmost application name and Accessibility focused-window title.
-- **App, window & selection:** also adds selected text through the same secure-field-aware AX capture policy as Selected-text Transform. The included selection is truncated on a valid UTF-8 boundary at 8 KiB.
+- **App, window & selection:** also adds selected text through the secure-field-aware AX capture policy. The included selection is truncated on a valid UTF-8 boundary at 8 KiB.
 
 The app identity is sampled first and later metadata/selection reads are accepted only for that exact PID and bundle ID, so a focus change cannot combine two applications. Secure fields, ambiguous secure-field checks, unavailable Accessibility data, and selection failures fail closed: no selection is included, while the query can continue with whatever lower-level app metadata was safely captured. There is no screenshot, OCR, Screen Recording permission, or other phase-2 visual capture path.
 
@@ -91,11 +91,11 @@ Capability, context and usage summaries live in collapsed **Details**; a compact
 context-included indicator remains visible when context was attached. Copy stays
 explicitly available without an automatic-copy preference line.
 
-The shared `rdev` listener owns a third detector for the query shortcut (`alt_r`, `ctrl_l`, or `shift_r`). It uses the same double-tap timing as toggle dictation but has no spoken-keyword path. A query and selected-text transform cannot use the same physical key.
+The shared `rdev` listener owns a separate detector for the query shortcut (`alt_r`, `ctrl_l`, or `shift_r`). It uses the same double-tap timing as toggle dictation but has no spoken-keyword path.
 
 Each accepted press allocates a monotonic `query_pass_id`. Capture, ASR, process ownership, streamed chunks, listening partials, completion, Copy, Escape, and cancellation carry that exact ID. Stale continuations no-op.
 
-Exclusivity is scoped to what a query actually holds, and the two predicates in `query_flow.rs` are deliberately different. While the query owns the microphone or the shared ASR backend (`connecting`, `listening`, `transcribing`), `blocks_capture` refuses dictation, file transcription, and the Settings microphone test. Once the query reaches `running` it holds only its CLI child — capture stopped and joined before `transcribing`, ASR finished before `running` — so dictation is free to start again during answer generation, which is the longest phase. The stricter `blocks_pipeline` additionally covers `running` and continues to exclude Performance Lab, corpus capture, and selected-text transform, because the child competes for CPU and may itself be a heavy inference runtime. Dictation refused during capture reports `busy_querying` rather than failing silently.
+Exclusivity is scoped to what a query actually holds, and the two predicates in `query_flow.rs` are deliberately different. While the query owns the microphone or the shared ASR backend (`connecting`, `listening`, `transcribing`), `blocks_capture` refuses dictation, file transcription, and the Settings microphone test. Once the query reaches `running` it holds only its CLI child — capture stopped and joined before `transcribing`, ASR finished before `running` — so dictation is free to start again during answer generation, which is the longest phase. The stricter `blocks_pipeline` additionally covers `running` and continues to exclude Performance Lab, and corpus capture, because the child competes for CPU and may itself be a heavy inference runtime. Dictation refused during capture reports `busy_querying` rather than failing silently.
 
 **Automatically copy answers** is on by default to preserve the shipped behavior for existing settings. Each query snapshots that preference when the pass starts, alongside its other immutable pass configuration; changing Settings while a query is running applies only to the next pass. When the snapshot is off, completion does not read or write the clipboard. The answer remains in the requester-gated review popover, where its exact-pass **Copy** action is still available.
 

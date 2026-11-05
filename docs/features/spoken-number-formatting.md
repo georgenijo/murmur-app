@@ -93,7 +93,7 @@ Text written by an explicit vocabulary alias or learned rule in Smart Correction
 
 Correct and Teach learns from final history text, where numbers are already digits. When Smart Correction is on, explicit aliases and learned rules whose spoken form contains a digit (for example `GPT 5` → `GPT-5`) are therefore matched again at the end of this stage. A re-match must overlap digits this stage just rendered and must not touch text an explicit alias or learned rule wrote, so no correction applies twice and explicit-alias precedence holds. Those spans are known only while the text is exactly what Smart Correction produced. If Smart Formatting or Spoken Structure rewrote it, the re-match is skipped and numbers render normally. See [Correct and Teach](correct-and-teach.md#scope-and-precedence).
 
-The pass is English-only. It runs for normal live dictation, including default and code-oriented profiles. The explicit Verbatim profile disables it. Imported-file transcription and selected-text transform instructions also leave number words unchanged.
+The pass is English-only. It runs for normal live dictation, including default and code-oriented profiles. The explicit Verbatim profile disables it. Imported-file transcription also leaves number words unchanged.
 
 Only final transformed text reaches file output, clipboard/paste, history, and stats. Stage diagnostics contain timing, outcome, and a changed flag but never transcript content or the register.
 

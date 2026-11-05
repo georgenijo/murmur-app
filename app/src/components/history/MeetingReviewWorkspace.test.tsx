@@ -28,13 +28,10 @@ function controller(overrides: Partial<ReturnType<typeof useMeetings>> = {}): Re
     detail,
     saveMetadata: vi.fn().mockResolvedValue(true),
     saveReview: vi.fn().mockResolvedValue(true),
-    restoreReview: vi.fn().mockResolvedValue(true),
     copy: vi.fn().mockResolvedValue(true),
     exportReview: vi.fn().mockResolvedValue('/tmp/review.md'),
     previewBundle: vi.fn().mockResolvedValue({ audioSegments: 3, audioBytes: 3 * 1024 * 1024, unavailableSegments: 0, maxAudioBytes: 2 * 1024 * 1024 * 1024 }),
     exportBundle: vi.fn().mockResolvedValue({ path: '/tmp/meeting.zip', receipt: { bytes: 10, includedSegments: 3, omittedSegments: 0 } }),
-    summarize: vi.fn().mockResolvedValue(undefined),
-    cancelSummary: vi.fn().mockResolvedValue(undefined),
     renameRemoteSpeaker: vi.fn().mockResolvedValue(true),
     ...overrides,
   } as unknown as ReturnType<typeof useMeetings>;

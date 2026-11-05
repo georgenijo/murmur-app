@@ -178,7 +178,6 @@ insufficient until five successful captures exist.
 - Main-process RSS is physical resident memory.
 - Rust heap and FFI/native heap are allocator-zone measurements, not additive
   RSS components or GPU memory.
-- Sidecar CPU and RSS refer only to the local LLM helper process.
 
 CPU and memory charts use one keyboard-operable timeline cursor. Missing or
 failed measurements create chart gaps. A measured zero remains zero;
@@ -187,7 +186,7 @@ failed measurements create chart gaps. A measured zero remains zero;
 ### Runs Tab
 
 Runs reads at most the newest 200 `PerformanceRunV1` records. Dictation, file
-transcription, and selected-text transform are first-class kinds. Kind and
+transcription, and Voice Query are current kinds. Legacy records remain readable. Kind and
 outcome filters cover success, no-speech, cancelled, timed-out, failed, and
 interrupted terminal outcomes.
 
@@ -199,8 +198,7 @@ meaningful, and measured resource peaks. Selecting the row uses
 **Phase waterfall** displays the canonical stage order and duration contribution.
 The V1 schema does not record absolute stage offsets, so the UI does not invent
 them. Measured zero is a zero-width marker; unavailable and not-applicable rows
-use explicit text. Transform apply/undo records are shown separately as
-correlated follow-ups.
+use explicit text. Legacy apply/undo records remain readable as correlated follow-ups.
 
 **Resource summary** reports start, average, peak, and end for every typed host,
 main-process, and sidecar range with its scope named.

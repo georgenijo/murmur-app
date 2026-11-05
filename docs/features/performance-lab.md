@@ -34,7 +34,7 @@ currently selected input, including a saved pinned input that is presently
 missing. It exercises the signed production capture worker and its real
 AUHAL/CPAL setup budgets. Each cycle stops only after the exact worker has exited,
 joined, and returned the single-owner lifecycle to Idle; a later cycle can never
-overlap a recovering predecessor. The action refuses while dictation, Transform,
+overlap a recovering predecessor. The action refuses while dictation,
 Voice Query, meeting capture, file transcription, corpus recording, model
 preparation, or another benchmark owns the relevant runtime.
 
@@ -89,8 +89,8 @@ disfluencies, long passages, pauses, faster delivery, and quieter delivery.
 This is a capture-only path. It uses the same signed microphone worker and mono
 16 kHz resampling as production dictation, but it does not load a transcription
 model, write transcript history, touch the clipboard, auto-paste, or run a text
-transform. Recording is mutually exclusive with dictation, file transcription,
-selected-text transforms, and Performance Lab runs.
+transform. Recording is mutually exclusive with dictation, file transcription, Voice Query,
+meeting capture, and Performance Lab runs.
 
 Recordings are stored outside the repository at:
 

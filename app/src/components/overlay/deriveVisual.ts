@@ -42,17 +42,8 @@ export interface OverlayVisual {
  * Pure derivation of the overlay's top-bar visual state from status, transient
  * flashes, and global-disable. No React or timers live here.
  *
- * Priority: cancelled > secure-field flash > microphone failure >
- * transform-busy flash > hotkey-miss > starting > recording > recovering >
- * processing > transforming > clipboard-only > idle.
- *
- * `transforming` and `showSecureField` (issue #312 PR-C2) are the transform
- * flow's overlay affordances: the "transforming…" indicator shown while
- * the local LLM is thinking, and a brief flash when a password/secure field is
- * refused. `showTransformBusy` (issue #329) flashes when a transform keypress
- * was refused because dictation/benchmark/file-transcription/a mid-flight
- * transform owns the pipeline. All default off so the dictation call sites
- * are unchanged.
+ * Priority: calibration > cancelled > microphone failure > hotkey miss >
+ * meeting > starting > recording > recovering > processing > clipboard-only > idle.
  */
 export function deriveVisual(
   status: DictationStatus,
