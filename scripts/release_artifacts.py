@@ -681,7 +681,6 @@ def main() -> None:
     args = _parser().parse_args()
     try:
         if args.command == "record":
-            helper = _helper_from_args(args)
             capture_agent = _capture_agent_from_args(args)
             capture_worker = _capture_worker_from_args(args)
             capture_helper = _capture_helper_from_args(args)
@@ -691,7 +690,6 @@ def main() -> None:
                 args.artifacts,
                 args.commit_sha,
                 args.run_id,
-                helper=helper,
                 capture_agent=capture_agent,
                 capture_worker=capture_worker,
                 capture_helper=capture_helper,
