@@ -1,3 +1,4 @@
+import { fireEvent } from '@testing-library/react';
 import { act, useState, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,13 +16,14 @@ const mocks = vi.hoisted(() => ({
   openCalendarPreferences: vi.fn(),
   requestSystemAudioPermission: vi.fn(),
   requestMicrophoneAccess: vi.fn().mockResolvedValue(undefined),
+  requestAccessibilityPermission: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../../lib/dictation', () => ({
   checkAccessibilityPermission: () => mocks.checkAccessibilityPermission(),
   checkMicrophonePermissionStatus: () => mocks.checkMicrophonePermissionStatus(),
   openMicrophoneSettings: vi.fn().mockResolvedValue(undefined),
-  requestAccessibilityPermission: vi.fn().mockResolvedValue(undefined),
+  requestAccessibilityPermission: () => mocks.requestAccessibilityPermission(),
   requestMicrophoneAccess: () => mocks.requestMicrophoneAccess(),
   resetAccessibilityPermission: vi.fn().mockResolvedValue(undefined),
   resetMicrophonePermission: vi.fn().mockResolvedValue(undefined),
@@ -61,6 +63,7 @@ vi.mock('../ModelDownloader', () => ({
       label: string;
       disabled: boolean;
       onActivate: () => void;
+      isNavigation: boolean;
     }) => ReactNode;
   }) => {
     const [phase, setPhase] = useState<'idle' | 'downloading' | 'error'>('idle');
@@ -90,6 +93,7 @@ vi.mock('../ModelDownloader', () => ({
       <>
         {renderPrimaryAction({
           label,
+          isNavigation: installed,
           disabled: phase === 'downloading',
           onActivate: installed ? () => onComplete('base.en') : startDownload,
         })}
@@ -335,6 +339,47 @@ describe('OnboardingFlow', () => {
     await settle();
     await clickButton('Continue');
     expect(container.querySelector('h1')?.textContent).toBe('Accessibility access');
+  });
+
+  it('does not request permissions on Enter from a permission heading', async () => {
+    mocks.checkMicrophonePermissionStatus.mockResolvedValue('notDetermined');
+    mocks.checkAccessibilityPermission.mockResolvedValue(false);
+    await renderFlow();
+    await clickButton('Get started');
+    for (const skip of ['Skip for now', 'Skip for now', 'Skip meetings for now', 'Skip Calendar for now']) {
+      const heading = container.querySelector('h1')!;
+      expect(document.activeElement).toBe(heading);
+      expect(container.querySelector('button[data-default-button]')).toBeNull();
+      await act(async () => { fireEvent.keyDown(heading, { key: 'Enter', code: 'Enter' }); });
+      await clickButton(skip);
+    }
+    expect(mocks.requestMicrophoneAccess).not.toHaveBeenCalled();
+    expect(mocks.requestAccessibilityPermission).not.toHaveBeenCalled();
+    expect(mocks.requestSystemAudioPermission).not.toHaveBeenCalled();
+    expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
+  });
+
+  it('advances on Enter from a heading when Continue is navigation', async () => {
+    await renderFlow();
+    await clickButton('Get started');
+    const heading = container.querySelector('h1')!;
+    expect(document.activeElement).toBe(heading);
+    await act(async () => { fireEvent.keyDown(heading, { key: 'Enter', code: 'Enter' }); });
+    expect(container.querySelector('h1')?.textContent).toBe('Accessibility access');
+  });
+
+  it('requests microphone access only once while the request is pending', async () => {
+    const request = deferred<void>();
+    mocks.checkMicrophonePermissionStatus.mockResolvedValue('notDetermined');
+    mocks.requestMicrophoneAccess.mockReturnValueOnce(request.promise);
+    await renderFlow();
+    await clickButton('Get started');
+    const primary = getButton('Continue');
+    await act(async () => { fireEvent.click(primary); fireEvent.click(primary); });
+    expect(primary.disabled).toBe(true);
+    expect(mocks.requestMicrophoneAccess).toHaveBeenCalledTimes(1);
+    await act(async () => request.resolve(undefined));
+    expect(primary.disabled).toBe(false);
   });
 
   it('offers System Settings as the primary action when microphone access is denied', async () => {

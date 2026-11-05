@@ -1613,11 +1613,10 @@ body.overlay-window {
 .onboarding-shortcut { padding: 16px; }
 .onboarding-label { font-size: var(--ui-font-body); font-weight: 600; color: var(--murmur-on-surface); margin: 12px 0 8px; }
 .onboarding-shortcut .onboarding-label:first-child { margin-top: 0; }
-.onboarding-segmented { display: flex; background: var(--ui-segment-track); }
+.onboarding-segmented { display: flex; background: var(--ui-tint-sunken); }
 .onboarding-segmented button { flex: 1; color: var(--murmur-on-surface-variant); }
 .onboarding-segmented button[data-selected='true'] { color: var(--murmur-on-surface); }
 .onboarding-summary { overflow: hidden; }
 .onboarding-summary-row { display: grid; grid-template-columns: 16px 100px 1fr; gap: 8px; padding: 8px 12px; font-size: var(--ui-font-caption); color: var(--murmur-on-surface-variant); }
 .onboarding-summary-row + .onboarding-summary-row { border-top: 1px solid var(--ui-hairline); }
 .onboarding-summary-row strong { color: var(--murmur-on-surface); font-weight: 600; }
-.onboarding-segmented { background: var(--ui-tint-sunken); }

@@ -97,15 +97,21 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
   const [micStatus, setMicStatus] = useState<MicPermissionStatus>('unknown');
   const [micRequested, setMicRequested] = useState(false);
+  const [micBusy, setMicBusy] = useState(false);
+  const micPending = useRef(false);
+  const [axBusy, setAxBusy] = useState(false);
+  const axPending = useRef(false);
   const [micError, setMicError] = useState<string | null>(null);
   const [axGranted, setAxGranted] = useState<boolean | null>(null);
   const [axRequested, setAxRequested] = useState(false);
   const [axError, setAxError] = useState<string | null>(null);
   const [systemAudioStatus, setSystemAudioStatus] = useState<SystemAudioPermissionState>('unknown');
   const [systemAudioBusy, setSystemAudioBusy] = useState(false);
+  const systemAudioPending = useRef(false);
   const [systemAudioError, setSystemAudioError] = useState<string | null>(null);
   const [calendarStatus, setCalendarStatus] = useState<CalendarPermissionState>('notDetermined');
   const [calendarBusy, setCalendarBusy] = useState(false);
+  const calendarRequestPending = useRef(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const { installedModels, error: modelCatalogError, retry: retryModelCatalog } = useInstalledModels(step === 'model');
   // Whether the model step finished with a model on disk (Continue or download);
@@ -228,6 +234,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const micDenied = micStatus === 'denied';
 
   const handleAllowMic = async () => {
+    if (micPending.current) return;
+    micPending.current = true;
+    setMicBusy(true);
     setMicError(null);
     setMicRequested(true);
     try {
@@ -236,6 +245,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       await requestMicrophoneAccess();
     } catch (error) {
       setMicError(typeof error === 'string' ? error : 'Could not request microphone access.');
+    } finally {
+      micPending.current = false;
+      setMicBusy(false);
     }
   };
 
@@ -267,6 +279,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   const handleGrantAx = async () => {
+    if (axPending.current) return;
+    axPending.current = true;
+    setAxBusy(true);
     setAxError(null);
     setAxRequested(true);
     try {
@@ -275,6 +290,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       await requestAccessibilityPermission();
     } catch (error) {
       setAxError(typeof error === 'string' ? error : 'Could not open System Settings.');
+    } finally {
+      axPending.current = false;
+      setAxBusy(false);
     }
   };
 
@@ -295,6 +313,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   };
 
   const handleRequestSystemAudio = async () => {
+    if (systemAudioPending.current) return;
+    systemAudioPending.current = true;
     ++systemAudioProbeSeq.current;
     setSystemAudioError(null);
     setSystemAudioBusy(true);
@@ -309,11 +329,14 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     } catch (error) {
       setSystemAudioError(typeof error === 'string' ? error : 'Could not check System Audio access.');
     } finally {
+      systemAudioPending.current = false;
       setSystemAudioBusy(false);
     }
   };
 
   const handleRequestCalendar = async () => {
+    if (calendarRequestPending.current) return;
+    calendarRequestPending.current = true;
     const mutationSeq = ++calendarMutationSeq.current;
     ++calendarProbeSeq.current;
     setCalendarError(null);
@@ -329,6 +352,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
         setCalendarError('Could not request Calendar access. You can skip this step and name meetings manually.');
       }
     } finally {
+      calendarRequestPending.current = false;
       if (mutationSeq === calendarMutationSeq.current) setCalendarBusy(false);
     }
   };
@@ -389,21 +413,21 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             {step === 'welcome' && <>
               <StepHeading icon={Sparkles} title="Welcome to Murmur" subtitle="Dictation runs on your Mac. Saved history and retained meeting audio stay local." />
               <p className="onboarding-copy">Setup covers permissions, an offline transcription model, and your recording shortcut.</p>
-              <WizardNavigationRow onBack={goBack} hideBack onNext={goNext} nextEnabled nextLabel="Get started" />
+              <WizardNavigationRow onBack={goBack} hideBack onNext={goNext} nextEnabled defaultAction nextLabel="Get started" />
             </>}
             {step === 'microphone' && <>
               <StepHeading icon={Mic} title="Microphone access" subtitle="Murmur records your speech for local transcription. Audio is discarded after transcription." />
               <StatusRow tone={micGranted ? 'success' : micDenied ? 'error' : 'neutral'} text={micGranted ? 'Microphone access granted' : micDenied ? 'Microphone access denied' : micRequested ? 'Waiting for your answer in the macOS dialog…' : 'Microphone access not yet granted'} />
               {micDenied && <><p className="onboarding-copy">Enable {permissionOwner} under Privacy &amp; Security → Microphone, then come back. This screen updates automatically.</p>{isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetMic}>Reset permission…</button>}</>}
               {micError && <ErrorMessage message={micError} />}
-              <WizardNavigationRow onBack={goBack} onNext={micGranted ? goNext : micDenied ? handleOpenMicSettings : handleAllowMic} onSkip={goNext} nextEnabled nextLabel={micDenied ? 'Open System Settings…' : 'Continue'} skippable={!micGranted} skipLabel="Skip for now" />
+              <WizardNavigationRow onBack={goBack} onNext={micGranted ? goNext : micDenied ? handleOpenMicSettings : handleAllowMic} onSkip={goNext} nextEnabled={!micBusy} defaultAction={micGranted} nextLabel={micDenied ? 'Open System Settings…' : 'Continue'} skippable={!micGranted} skipLabel="Skip for now" />
             </>}
             {step === 'accessibility' && <>
               <StepHeading icon={Accessibility} title="Accessibility access" subtitle="Use the global recording key and auto-paste while Murmur is in the background." />
               <StatusRow tone={axGranted ? 'success' : 'neutral'} text={axGranted ? 'Accessibility access granted' : 'Accessibility access not granted'} />
               {!axGranted && <><p className="onboarding-copy">Turn on {permissionOwner} in System Settings, then come back. This screen updates automatically.</p>{axRequested && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetAx}>Murmur is listed but still not detected? Reset permission…</button>)}</>}
               {axError && <ErrorMessage message={axError} />}
-              <WizardNavigationRow onBack={goBack} onNext={axGranted ? goNext : handleGrantAx} onSkip={goNext} nextEnabled nextLabel={axGranted ? 'Continue' : 'Open System Settings…'} skippable={!axGranted} skipLabel="Skip for now" />
+              <WizardNavigationRow onBack={goBack} onNext={axGranted ? goNext : handleGrantAx} onSkip={goNext} nextEnabled={!axBusy} defaultAction={axGranted === true} nextLabel={axGranted ? 'Continue' : 'Open System Settings…'} skippable={!axGranted} skipLabel="Skip for now" />
             </>}
             {step === 'systemAudio' && <>
               <StepHeading icon={AudioLines} title="System audio access" subtitle="Optional for meetings. Capture audio from your Mac alongside your microphone." />
@@ -411,7 +435,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <p className="onboarding-copy">{systemAudioStatus === 'unsupported' ? 'Meeting capture requires macOS 14.2 or newer. Dictation is still available.' : 'macOS may list Murmur under Privacy & Security → Screen & System Audio Recording.'}</p>
               {(systemAudioStatus === 'denied' || systemAudioStatus === 'granted') && <button className="onboarding-link" disabled={systemAudioBusy} onClick={() => void handleRequestSystemAudio()}>{systemAudioStatus === 'denied' ? 'Check again' : 'Re-check system audio access'}</button>}
               {systemAudioError && <ErrorMessage message={systemAudioError} />}
-              <WizardNavigationRow onBack={goBack} onNext={systemAudioStatus === 'denied' ? () => void openSystemAudioPreferences() : systemAudioStatus === 'unknown' ? handleRequestSystemAudio : goNext} onSkip={goNext} nextEnabled={!systemAudioBusy} nextLabel={systemAudioStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={systemAudioStatus !== 'granted'} skipLabel="Skip meetings for now" />
+              <WizardNavigationRow onBack={goBack} onNext={systemAudioStatus === 'denied' ? () => void openSystemAudioPreferences() : systemAudioStatus === 'unknown' ? handleRequestSystemAudio : goNext} onSkip={goNext} nextEnabled={!systemAudioBusy} defaultAction={systemAudioStatus !== 'denied' && systemAudioStatus !== 'unknown'} nextLabel={systemAudioStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={systemAudioStatus !== 'granted'} skipLabel="Skip meetings for now" />
             </>}
             {step === 'calendar' && <>
               <StepHeading icon={CalendarDays} title="Calendar access" subtitle="Optional for meetings. Offer event names and attendees for you to confirm, without changing your calendar." />
@@ -419,11 +443,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <p className="onboarding-copy">{calendarStatus === 'denied' ? `Enable ${permissionOwner} under Privacy & Security → Calendars, or name meetings manually.` : calendarStatus === 'restricted' || calendarStatus === 'unsupported' ? 'You can still name meetings manually.' : 'Calendar details stay on this Mac.'}</p>
               {calendarStatus === 'denied' && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" disabled={calendarBusy} onClick={handleResetCalendar}>Reset Calendar permission…</button>)}
               {calendarError && <ErrorMessage message={calendarError} />}
-              <WizardNavigationRow onBack={goBack} onNext={calendarStatus === 'denied' ? handleOpenCalendarSettings : calendarStatus === 'notDetermined' ? handleRequestCalendar : goNext} onSkip={goNext} nextEnabled={!calendarBusy} nextLabel={calendarStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={calendarStatus !== 'granted'} skipLabel="Skip Calendar for now" />
+              <WizardNavigationRow onBack={goBack} onNext={calendarStatus === 'denied' ? handleOpenCalendarSettings : calendarStatus === 'notDetermined' ? handleRequestCalendar : goNext} onSkip={goNext} nextEnabled={!calendarBusy} defaultAction={calendarStatus !== 'denied' && calendarStatus !== 'notDetermined'} nextLabel={calendarStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={calendarStatus !== 'granted'} skipLabel="Skip Calendar for now" />
             </>}
             {step === 'model' && <>
               <StepHeading icon={Cpu} title="Transcription model" subtitle="Download a local model once, then transcribe offline." />
-              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installedModels === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installedModels={installedModels} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate }) => <WizardNavigationRow onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
+              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installedModels === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installedModels={installedModels} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate, isNavigation }) => <WizardNavigationRow onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} defaultAction={isNavigation} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
             </>}
             {step === 'hotkey' && <>
               <StepHeading icon={Keyboard} title="Recording shortcut" subtitle="Choose how Murmur listens. You can change both options later in Recording settings." />
@@ -436,7 +460,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 <Select aria-labelledby="onboarding-trigger-key-label" value={selectedTriggerKey} onChange={setSelectedTriggerKey} items={DICTATION_KEY_OPTION_GROUPS} />
                 {isFunctionDictationKey(selectedTriggerKey) && <p className="onboarding-copy">On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur does not suppress the key's normal system or app action.</p>}
               </div>
-              <WizardNavigationRow onBack={goBack} onNext={goNext} nextEnabled nextLabel="Continue" />
+              <WizardNavigationRow onBack={goBack} onNext={goNext} nextEnabled defaultAction nextLabel="Continue" />
             </>}
             {step === 'done' && <>
               <StepHeading icon={Check} title="You're all set" subtitle="Here's how everything looks." />
@@ -449,7 +473,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               </div>
               <p className="onboarding-label">Try it out</p><p className="onboarding-copy">{selectedRecordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}<kbd className="dialog-kbd">{dictationKeyLabel(selectedTriggerKey)}</kbd>{selectedRecordingMode === 'double_tap' ? ' to start recording and tap once to stop' : selectedRecordingMode === 'both' ? ' and speak, then release (or double-tap to toggle)' : ' and speak, then release'}. Your words are transcribed and copied to the clipboard.</p>
               {completionError && <ErrorMessage message="Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model." />}
-              <WizardNavigationRow onBack={goBack} backDisabled={completing} onNext={() => void finishSetup()} nextEnabled={!completing} nextLabel={completing ? 'Configuring model…' : completionError ? 'Retry' : 'Start using Murmur'} />
+              <WizardNavigationRow onBack={goBack} backDisabled={completing} onNext={() => void finishSetup()} nextEnabled={!completing} defaultAction nextLabel={completing ? 'Configuring model…' : completionError ? 'Retry' : 'Start using Murmur'} />
             </>}
           </div>
           </ActionTarget.Provider>
@@ -482,14 +506,14 @@ function SummaryRow({ ok, label, okText, missingText }: { ok: boolean; label: st
   return <div className="onboarding-summary-row"><span aria-hidden="true" className={ok ? 'text-success' : 'text-on-surface-variant'}>{ok ? '✓' : '–'}</span><strong>{label}</strong><span>{ok ? okText : missingText}</span></div>;
 }
 
-function WizardNavigationRow({ onBack, backDisabled = false, hideBack = false, onNext, onSkip, nextEnabled, nextLabel, skippable = false, skipLabel = 'Skip' }: { onBack: () => void; backDisabled?: boolean; hideBack?: boolean; onNext: () => void; onSkip?: () => void; nextEnabled: boolean; nextLabel: string; skippable?: boolean; skipLabel?: string }) {
+function WizardNavigationRow({ onBack, backDisabled = false, hideBack = false, onNext, onSkip, nextEnabled, nextLabel, defaultAction = false, skippable = false, skipLabel = 'Skip' }: { onBack: () => void; backDisabled?: boolean; hideBack?: boolean; onNext: () => void; onSkip?: () => void; nextEnabled: boolean; nextLabel: string; defaultAction?: boolean; skippable?: boolean; skipLabel?: string }) {
   const target = useContext(ActionTarget);
   if (!target) return null;
   return createPortal(<nav aria-label="Setup step actions" className="onboarding-nav">
     {!hideBack && <Button variant="ghost" onClick={onBack} disabled={backDisabled} aria-label="Go back to the previous setup step" title={backDisabled ? 'Please wait for the model download to finish' : undefined}>Back</Button>}
     <div role="group" aria-label="Step actions" className="onboarding-nav-end">
       {skippable && <Button variant="ghost" onClick={onSkip ?? onNext}>{skipLabel}</Button>}
-      <Button variant="primary" onClick={onNext} data-default-button disabled={!nextEnabled}>{nextLabel}</Button>
+      <Button variant="primary" onClick={onNext} data-default-button={defaultAction || undefined} disabled={!nextEnabled}>{nextLabel}</Button>
     </div>
   </nav>, target);
 }
