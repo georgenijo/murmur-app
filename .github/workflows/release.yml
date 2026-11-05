@@ -523,3 +523,16 @@ jobs:
           done
           echo "ERROR: latest release did not settle on the highest published version"
           exit 1
+
+  ota-canary:
+    needs: [resolve, promote]
+    # An already-published recovery run must still rerun the OTA gate.
+    if: >-
+      always() && needs.resolve.result == 'success' &&
+      needs.resolve.outputs.eligible == 'true' &&
+      needs.resolve.outputs.publish == 'true' &&
+      (needs.promote.result == 'success' || needs.resolve.outputs.already-published == 'true')
+    uses: ./.github/workflows/ota-canary.yml
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      source_sha: ${{ needs.resolve.outputs.source-sha }}

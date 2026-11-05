@@ -5,6 +5,50 @@ promotes those exact artifacts after the version-bump build succeeds. Promotion
 creates the matching version tag; neither automatic nor recovery tag runs compile
 the application or save Cargo caches.
 
+## Release without an agent
+
+Open [Actions → Release Murmur](https://github.com/georgenijo/murmur-app/actions/workflows/release-start.yml),
+choose **Run workflow**, keep the branch on **main**, select **patch** for fixes
+or **minor** for features, and run it. This click authorizes publication.
+
+The workflow requires current, clean `main` with a successful `ci-pass` check,
+and the current version must already be the latest public release. It preserves
+curated `[Unreleased]` notes, or uses GitHub's generated notes from merged PRs
+when that section is empty. It synchronizes all version surfaces and pushes
+only the six release metadata files with the existing version-bump prefix.
+The updater policy is preserved; the button never makes an update mandatory.
+
+The **Release Murmur** summary links to **Release Build** and **Release**.
+Preparation succeeding means the release started. The release is complete when
+**Release**, including its **OTA canary** job, is green. That job installs the
+previous public signed build into a disposable profile on a GitHub-hosted Mac,
+performs the real update, and verifies all six stages plus the installed bundle
+version. The disposable profile contains setup-complete settings and a real,
+checksum-pinned Whisper Tiny model so older clients pass their setup gate;
+dictation stays disabled and no OS permissions are granted. Its summary links to the public release; its result JSON is retained
+as an Actions artifact. No agent or connection to a personal Mac is needed.
+
+If main moves before the push, the workflow fails without overwriting it.
+Start a new run after the new main passes CI. Do not rerun a successful
+preparation job: use the build/promotion recovery instructions below instead.
+If the OTA job fails, the release is already public but has not passed the
+completion gate; inspect its result and fix the updater with a patch as needed.
+
+### One-time credential setup
+
+Set the repository Actions secret **`RELEASE_TOKEN`** to a fine-grained GitHub
+token limited to this repository, with **Contents: read and write**. Its owner
+must already be authorized to push version-bump commits directly to `main`.
+This workflow does not change branch protections or grant a bypass. If the
+token's actor cannot make that push, the run fails at the existing protection.
+Use a dedicated credential, monitor its expiration, and rotate it as needed.
+
+This separate credential is necessary because a push made with GitHub's
+built-in `GITHUB_TOKEN` does not start the downstream release workflows.
+The workflow's built-in token reads CI and generates notes; `RELEASE_TOKEN` is
+used by checkout for Git access. No Apple signing credentials are exposed to the
+preparation job. Missing or expired credentials fail without publishing.
+
 ## Trust and cache policy
 
 - `Release Build` runs automatically only for a `main` push whose commit starts
@@ -59,18 +103,22 @@ release is emitted as `min_version` on the modern channel. Invalid or future
 minimum versions fail promotion.
 
 After publication, the release is not done until the previous public build
-passes the real OTA canary on the trusted Mac mini. There is one bootstrap
+passes the automatic **OTA canary** job on a disposable GitHub-hosted Mac.
+The reusable [OTA Canary workflow](https://github.com/georgenijo/murmur-app/actions/workflows/ota-canary.yml)
+can also be run manually against a published version. An empty tag selects the
+latest public release. Relevant pull requests run the same real public-build
+update as a regression check, with read-only access and no signing credentials.
+There is one historical bootstrap
 exception: the first public build containing canary support must be physically
 installed once in the dedicated canary location because its previous public
 client cannot write a canary result. Mandatory gating starts with the next
-release. For all later releases, run the documented manual
-gate (the mini is tailnet-only, so it is not run on a GitHub-hosted runner):
+release. For a manual recovery on the trusted Mac mini, run:
 
 ```bash
 python3 scripts/murmur_canary_fleet.py --tag vX.Y.Z
 ```
 
-The command must exit zero and report a complete result-file pass before the
+The job or recovery command must exit zero and report a complete result-file pass before the
 release is announced. A failed or timed-out canary blocks release follow-up;
 the runner terminates the canary process group before collecting bounded
 stderr, and both the remote runner and Fleet wrapper must return nonzero. Fix

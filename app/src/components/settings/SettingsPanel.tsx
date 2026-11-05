@@ -18,7 +18,7 @@ import {
   AUTO_STOP_SILENCE_OPTIONS,
   AVAILABLE_MODEL_OPTIONS,
   DEFAULT_SETTINGS,
-  DICTATION_KEY_OPTION_GROUPS,
+  DICTATION_KEY_OPTIONS,
   IDLE_TIMEOUT_OPTIONS,
   LANGUAGE_OPTIONS,
   PASTE_LAST_SHORTCUT_OPTIONS,
@@ -1139,7 +1139,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 value={settings.doubleTapKey}
                 onChange={(doubleTapKey) => onUpdateSettings({ doubleTapKey })}
                 disabled={isRecording}
-                items={DICTATION_KEY_OPTION_GROUPS}
+                items={DICTATION_KEY_OPTIONS}
                 aria-label="Dictation trigger key"
               />}><p className="text-xs text-on-surface-variant">{keyHelp}</p>
 {isFunctionDictationKey(settings.doubleTapKey) && (

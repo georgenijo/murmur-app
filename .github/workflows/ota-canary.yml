@@ -1,0 +1,88 @@
+name: OTA Canary
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published version to verify (empty uses latest)
+        type: string
+        default: ''
+  # Exercise the real updater against public builds before changing this gate.
+  # PR code runs only on a disposable hosted Mac, with no signing credentials.
+  pull_request:
+    paths:
+      - '.github/workflows/ota-canary.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/murmur_canary_fleet.py'
+      - 'tests/test_murmur_canary.py'
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: OTA canary
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve public release
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: canary requires a stable public release tag"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Verify real OTA update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          python3 scripts/murmur_canary_fleet.py --remote --isolated \
+            --repository "$GITHUB_REPOSITORY" --tag "$TAG" \
+            --root "$RUNNER_TEMP/murmur-ota-canary" --timeout 900
+
+      - name: Preserve OTA result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ota-canary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/murmur-ota-canary/result.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Report release result
+        if: always()
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+          STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### OTA verification: $STATUS"
+            echo "[Release $TAG](https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG)"
+            echo "A pass requires discovery, policy, download, signature verification, install, relaunch, and the installed bundle version."
+            if [ "$STATUS" != "success" ]; then
+              echo "The public release may already exist. Do not announce it as verified; inspect this job and its result artifact."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

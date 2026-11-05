@@ -108,6 +108,7 @@ jobs:
             tests/test_markdown_links.py \
             tests/test_release_artifacts.py \
             tests/test_release_version.py \
+            tests/test_release_start.py \
             tests/test_workflow_policy.py \
             tests/test_ci_rust_library.py \
             tests/test_capture_agent_matrix.py \

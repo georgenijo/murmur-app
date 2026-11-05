@@ -1,6 +1,9 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import json
+import plistlib
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -151,3 +154,92 @@ def test_fleet_wrapper_preserves_success(monkeypatch) -> None:
     )
 
     assert canary.run_fleet_canary(["fleet", "exec"]) == 0
+
+
+@pytest.mark.parametrize("installed_version", ["0.31.4", "0.31.3"])
+@pytest.mark.parametrize("transient_busy", [False, True])
+def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatch, tmp_path, installed_version, transient_busy):
+    app = tmp_path / "Murmur Canary.app"
+    (app / "Contents").mkdir(parents=True)
+    with (app / "Contents/Info.plist").open("wb") as stream:
+        plistlib.dump({"CFBundleShortVersionString": installed_version}, stream)
+    monkeypatch.setattr(canary, "previous_release", lambda repo, tag: "v0.31.3")
+    monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (app, str(app / "Contents/MacOS/ui")))
+    monkeypatch.setenv("MURMUR_UPDATER_CANARY_DRY_RUN", "1")
+    monkeypatch.setattr(canary, "prepare_isolated_profile", lambda root: (root / "home", root / "models"))
+    environments = []
+
+    def launch(*args, **kwargs):
+        environments.append(kwargs["env"])
+        result = passing_result()
+        if transient_busy:
+            result.update(status="failed", error="Updater check already in progress.")
+        (tmp_path / "result.json").write_text(json.dumps(result))
+        return SimpleNamespace(pid=123, poll=lambda: None)
+
+    monkeypatch.setattr(canary.subprocess, "Popen", launch)
+    monkeypatch.setattr(canary.time, "sleep", lambda seconds: (tmp_path / "result.json").write_text(json.dumps(passing_result())))
+    stopped = []
+    monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid))
+    args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
+                           dry_run=False, isolated=True, timeout=1)
+    if installed_version == "0.31.4":
+        assert canary.run_remote(args) == 0
+    else:
+        with pytest.raises(canary.CanaryError, match="installed bundle version"):
+            canary.run_remote(args)
+    assert stopped == [123]
+    assert environments[0]["HOME"] == str(tmp_path / "home")
+    assert environments[0]["CFFIXED_USER_HOME"] == str(tmp_path / "home")
+    assert "MURMUR_UPDATER_CANARY_DRY_RUN" not in environments[0]
+    assert environments[0]["WHISPER_MODEL_DIR"] == str(tmp_path / "models")
+
+
+def test_isolated_profile_bootstraps_public_client_and_pins_model(monkeypatch, tmp_path):
+    fixture = b"real model bytes stand-in for this unit test"
+    monkeypatch.setattr(canary, "CANARY_MODEL_SHA256", hashlib.sha256(fixture).hexdigest())
+    downloads = []
+
+    def download(command, check):
+        downloads.append(command)
+        Path(command[-1]).write_bytes(fixture)
+
+    monkeypatch.setattr(canary.subprocess, "run", download)
+    home, models = canary.prepare_isolated_profile(tmp_path)
+    settings = json.loads((home / "Library/Application Support/com.localdictation/settings.json").read_text())
+    assert settings["launchOnboardingComplete"] is True
+    assert settings["model"] == "tiny.en"
+    assert settings["disabled"] is True
+    assert (models / "ggml-tiny.en.bin").read_bytes() == fixture
+    canary.prepare_isolated_profile(tmp_path)
+    assert len(downloads) == 1
+
+
+def test_isolated_profile_rejects_corrupt_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(canary.subprocess, "run", lambda command, check: Path(command[-1]).write_bytes(b"corrupt"))
+    with pytest.raises(canary.CanaryError, match="checksum"):
+        canary.prepare_isolated_profile(tmp_path)
+    assert not (tmp_path / "models/ggml-tiny.en.bin").exists()
+
+
+def test_busy_result_cannot_pass_or_extend_canary_deadline(monkeypatch, tmp_path):
+    monkeypatch.setattr(canary, "previous_release", lambda repo, tag: "v0.31.3")
+    monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (tmp_path / "App", "unused"))
+
+    def launch(*args, **kwargs):
+        result = passing_result()
+        result.update(status="failed", error="Updater check already in progress.")
+        (tmp_path / "result.json").write_text(json.dumps(result))
+        return SimpleNamespace(pid=123, poll=lambda: None)
+
+    monkeypatch.setattr(canary.subprocess, "Popen", launch)
+    stopped = []
+    monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid) or "")
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(canary.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(canary.time, "sleep", lambda seconds: None)
+    args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
+                           dry_run=False, isolated=False, timeout=1)
+    with pytest.raises(canary.CanaryError, match="timed out"):
+        canary.run_remote(args)
+    assert stopped == [123]
