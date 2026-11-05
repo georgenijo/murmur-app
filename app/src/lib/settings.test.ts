@@ -21,7 +21,6 @@ import {
   AVAILABLE_MODEL_OPTIONS,
   BUILTIN_MODES,
   DEFAULT_SETTINGS,
-  DICTATION_KEY_OPTION_GROUPS,
   DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
   IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER,
@@ -66,11 +65,7 @@ describe('WRITING_STYLE_VALUES', () => {
 });
 
 describe('dictation keys', () => {
-  it('keeps the three existing modifiers and F1 through F20 in one labeled catalog', () => {
-    expect(DICTATION_KEY_OPTION_GROUPS.map((group) => group.label)).toEqual([
-      'Modifier keys',
-      'Function keys',
-    ]);
+  it('keeps the three existing modifiers and F1 through F20 in one catalog', () => {
     expect(DICTATION_KEY_OPTIONS.map((option) => option.value)).toEqual([
       'shift_l', 'alt_l', 'ctrl_r',
       ...Array.from({ length: 20 }, (_, index) => `f${index + 1}`),

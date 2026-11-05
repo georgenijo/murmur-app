@@ -434,19 +434,8 @@ export interface DictationKeyOption {
   label: string;
 }
 
-const MODIFIER_DICTATION_KEY_OPTIONS: DictationKeyOption[] =
-  MODIFIER_DICTATION_KEY_IDS.map((value) => ({ value, label: dictationKeyLabel(value) }));
-
-const FUNCTION_DICTATION_KEY_OPTIONS: DictationKeyOption[] =
-  FUNCTION_DICTATION_KEY_IDS.map((value) => ({ value, label: dictationKeyLabel(value) }));
-
-export const DICTATION_KEY_OPTION_GROUPS: { label: string; options: DictationKeyOption[] }[] = [
-  { label: 'Modifier keys', options: MODIFIER_DICTATION_KEY_OPTIONS },
-  { label: 'Function keys', options: FUNCTION_DICTATION_KEY_OPTIONS },
-];
-
 export const DICTATION_KEY_OPTIONS: DictationKeyOption[] =
-  DICTATION_KEY_OPTION_GROUPS.flatMap((group) => group.options);
+  DICTATION_KEY_IDS.map((value) => ({ value, label: dictationKeyLabel(value) }));
 
 const DICTATION_KEY_ID_SET: ReadonlySet<string> = new Set(DICTATION_KEY_IDS);
 

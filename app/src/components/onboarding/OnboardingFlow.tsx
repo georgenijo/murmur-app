@@ -20,7 +20,7 @@ import { preferredInstalledModel, useInstalledModels } from '../../lib/hooks/use
 import { ModelDownloadPanel } from '../ModelDownloader';
 import { WindowHeader } from '../ui/WindowHeader';
 import {
-  DICTATION_KEY_OPTION_GROUPS,
+  DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
   isFunctionDictationKey,
   type DictationKey,
@@ -573,7 +573,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                   {([['hold_down', 'Hold down'], ['double_tap', 'Double-tap'], ['both', 'Both']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={selectedRecordingMode === value} data-selected={selectedRecordingMode === value} onClick={() => setSelectedRecordingMode(value)} className="settings-segmented-btn">{label}</button>)}
                 </div>
                 <p id="onboarding-trigger-key-label" className="onboarding-label">Trigger key</p>
-                <Select aria-labelledby="onboarding-trigger-key-label" value={selectedTriggerKey} onChange={setSelectedTriggerKey} items={DICTATION_KEY_OPTION_GROUPS} />
+                <Select aria-labelledby="onboarding-trigger-key-label" value={selectedTriggerKey} onChange={setSelectedTriggerKey} items={DICTATION_KEY_OPTIONS} />
                 {isFunctionDictationKey(selectedTriggerKey) && <p className="onboarding-copy">On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur does not suppress the key's normal system or app action.</p>}
               </div>
               <WizardNavigationRow onBack={goBack} onNext={goNext} nextEnabled defaultAction nextLabel="Continue" />
