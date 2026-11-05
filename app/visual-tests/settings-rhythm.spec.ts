@@ -40,9 +40,12 @@ for (const { path, state } of pages) {
             const style = getComputedStyle(row);
             const bounds = row.getBoundingClientRect();
             const branch = row.classList.contains('settings-dependent-branch');
-            const expandedRows = row.matches('.settings-advanced:has(> .settings-advanced-toggle[aria-expanded="true"] ~ .settings-advanced-rows)');
+            const advancedRows = row.matches('.settings-advanced:has(> .settings-advanced-rows)');
             const label = row.textContent?.trim().slice(0, 40);
-            if (style.paddingTop !== (branch ? '0px' : '12px') || style.paddingBottom !== (branch || expandedRows ? '0px' : '12px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
+            if (style.paddingTop !== (branch ? '0px' : '12px') || style.paddingBottom !== (branch || advancedRows ? '0px' : '12px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
+            // Advanced keeps its trailing 12px on the toggle in both states,
+            // so row width and spacing do not change at animation boundaries.
+            if (advancedRows && getComputedStyle(row.querySelector('.settings-advanced-toggle')!).marginBottom !== '12px') failures.push(`${label}: Advanced toggle spacing`);
             if (style.paddingLeft !== (branch ? '0px' : '16px') || style.paddingRight !== (branch ? '0px' : '16px')) failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
             if (style.borderRadius !== '0px') failures.push(`${label}: rounded row ${style.borderRadius}`);
             if (Math.abs(bounds.width - (card.width - 2)) > .1) failures.push(`${label}: inset divider (${bounds.width}/${card.width})`);
