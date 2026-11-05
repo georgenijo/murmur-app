@@ -11,7 +11,8 @@ This wave starts at merged main `95904d4130cb706f6851f2c954b1fc5afb13f97d`.
 Dependent controls remain mounted in `SettingsBranch`, preserving controlled
 saved values and local drafts. Their separator is inside the clipped content,
 so it collapses with them. Entry takes 300 ms with a critically damped easing;
-exit takes 450 ms. The fading content approaches 0.4 opacity as the clip closes.
+exit takes 450 ms with an ease-in/out curve to avoid front-loading the collapse.
+The fading content approaches 0.4 opacity as the clip closes.
 Reduce Motion makes both layout and visibility changes immediate. Once entry
 settles, the clip releases overflow so existing select menus remain usable.
 Closing immediately applies `inert` and `aria-hidden`, disables pointer input,

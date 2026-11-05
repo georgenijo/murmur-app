@@ -228,7 +228,7 @@
   opacity: .4;
   pointer-events: none;
   visibility: hidden;
-  transition: grid-template-rows 450ms cubic-bezier(.2, .8, .2, 1),
+  transition: grid-template-rows 450ms cubic-bezier(.4, 0, .2, 1),
     opacity 450ms ease-out, visibility 0s linear 450ms;
 }
 .settings-dependent-branch-open {
