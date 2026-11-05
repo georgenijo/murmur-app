@@ -220,3 +220,26 @@ def test_isolated_profile_rejects_corrupt_model(monkeypatch, tmp_path):
     with pytest.raises(canary.CanaryError, match="checksum"):
         canary.prepare_isolated_profile(tmp_path)
     assert not (tmp_path / "models/ggml-tiny.en.bin").exists()
+
+
+def test_busy_result_cannot_pass_or_extend_canary_deadline(monkeypatch, tmp_path):
+    monkeypatch.setattr(canary, "previous_release", lambda repo, tag: "v0.31.3")
+    monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (tmp_path / "App", "unused"))
+
+    def launch(*args, **kwargs):
+        result = passing_result()
+        result.update(status="failed", error="Updater check already in progress.")
+        (tmp_path / "result.json").write_text(json.dumps(result))
+        return SimpleNamespace(pid=123, poll=lambda: None)
+
+    monkeypatch.setattr(canary.subprocess, "Popen", launch)
+    stopped = []
+    monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid) or "")
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(canary.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(canary.time, "sleep", lambda seconds: None)
+    args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
+                           dry_run=False, isolated=False, timeout=1)
+    with pytest.raises(canary.CanaryError, match="timed out"):
+        canary.run_remote(args)
+    assert stopped == [123]
