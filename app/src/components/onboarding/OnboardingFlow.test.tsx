@@ -1,4 +1,3 @@
-import { fireEvent } from '@testing-library/react';
 import { act, useState, type ComponentProps, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -350,7 +349,7 @@ describe('OnboardingFlow', () => {
       const heading = container.querySelector('h1')!;
       expect(document.activeElement).toBe(heading);
       expect(container.querySelector('button[data-default-button]')).toBeNull();
-      await act(async () => { fireEvent.keyDown(heading, { key: 'Enter', code: 'Enter' }); });
+      await act(async () => { heading.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true })); });
       await clickButton(skip);
     }
     expect(mocks.requestMicrophoneAccess).not.toHaveBeenCalled();
@@ -364,7 +363,7 @@ describe('OnboardingFlow', () => {
     await clickButton('Get started');
     const heading = container.querySelector('h1')!;
     expect(document.activeElement).toBe(heading);
-    await act(async () => { fireEvent.keyDown(heading, { key: 'Enter', code: 'Enter' }); });
+    await act(async () => { heading.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true })); });
     expect(container.querySelector('h1')?.textContent).toBe('Accessibility access');
   });
 
@@ -375,7 +374,7 @@ describe('OnboardingFlow', () => {
     await renderFlow();
     await clickButton('Get started');
     const primary = getButton('Continue');
-    await act(async () => { fireEvent.click(primary); fireEvent.click(primary); });
+    await act(async () => { primary.click(); primary.click(); });
     expect(primary.disabled).toBe(true);
     expect(mocks.requestMicrophoneAccess).toHaveBeenCalledTimes(1);
     await act(async () => request.resolve(undefined));
