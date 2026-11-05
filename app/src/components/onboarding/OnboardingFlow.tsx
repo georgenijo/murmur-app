@@ -103,6 +103,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [freshGrant, setFreshGrant] = useState<Step | null>(null);
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const permissionGrants = useRef<Partial<Record<Step, boolean>>>({});
+  // Bumped on every navigation so probes started before a visit can't mark a
+  // grant as fresh on the step being entered.
+  const visitSeq = useRef(0);
   const micSettingsOpened = useRef(false);
   const micAutoRequested = useRef(false);
   const micPromptPending = useRef(false);
@@ -181,6 +184,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const calendarMutationSeq = useRef(0);
   const refreshPermissions = useCallback(async () => {
     const seq = ++pollSeq.current;
+    const visit = visitSeq.current;
     let mic: MicPermissionStatus = 'unknown';
     let ax: boolean | null = null;
     try {
@@ -194,13 +198,14 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       // keep previous value; a probe glitch must not flip the UI
     }
     if (seq !== pollSeq.current) return; // superseded by a newer probe
-    observePermission('microphone', mic === 'granted');
+    const current = visit === visitSeq.current;
+    if (current) observePermission('microphone', mic === 'granted');
     setMicStatus(mic);
     // request_microphone_access is fire-and-forget. Only a resolved TCC status
     // ends the dialog wait; resolving the IPC promise does not mean an answer.
     if (micPromptPending.current && mic !== 'notDetermined') endMicWait();
     if (ax !== null) {
-      observePermission('accessibility', ax);
+      if (current) observePermission('accessibility', ax);
       setAxGranted(ax);
     }
   }, [observePermission, endMicWait]);
@@ -284,11 +289,19 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const navigate = useCallback((next: Step, backwards = false) => {
     if (advanceTimer.current !== null) clearTimeout(advanceTimer.current);
     advanceTimer.current = null;
+    // Leaving Microphone consumes its one automatic request, even when the
+    // settle timer had not fired yet.
+    if (activeStep.current === 'microphone') micAutoRequested.current = true;
     activeStep.current = next;
+    ++visitSeq.current;
+    // The first probe of each visit is the baseline; only later changes are fresh.
+    delete permissionGrants.current[next];
     setFreshGrant(null);
     setDirection(backwards ? 'back' : 'forward');
     setStep(next);
-  }, []);
+    // Probe at entry so the visit's baseline lands before the user can act.
+    if (next === 'microphone' || next === 'accessibility') void refreshPermissions();
+  }, [refreshPermissions]);
   const goNext = () => navigate(STEP_ORDER[Math.min(stepIndex + 1, STEP_ORDER.length - 1)]);
   const goBack = () => navigate(STEP_ORDER[Math.max(stepIndex - 1, 0)], true);
 
@@ -310,6 +323,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     if (micPending.current) return;
     micPending.current = true;
     micAutoRequested.current = true;
+    permissionGrants.current.microphone ??= false;
     micPromptPending.current = micStatus === 'notDetermined';
     setMicWaiting(micPromptPending.current);
     setMicBusy(true);
@@ -372,6 +386,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const handleGrantAx = async () => {
     if (axPending.current) return;
     axPending.current = true;
+    permissionGrants.current.accessibility ??= false;
     setAxBusy(true);
     setAxError(null);
     setAxRequested(true);

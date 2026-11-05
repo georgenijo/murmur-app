@@ -232,6 +232,34 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     expectStep(step === 'microphone' ? 'Accessibility access' : 'System audio access');
   });
 
+  it('does not auto-request the mic on a revisit after leaving before the settle delay', async () => {
+    vi.useFakeTimers();
+    micStatus = 'notDetermined';
+    await toStep('microphone');
+    await advance(300);
+    await click('Back');
+    await click('Get started');
+    await advance(2000);
+    expect(requestCount()).toBe(0);
+    expect(button('Continue').disabled).toBe(false);
+    await click('Continue');
+    expect(requestCount()).toBe(1);
+  });
+
+  it('does not auto-advance Accessibility granted between the last poll and arrival', async () => {
+    vi.useFakeTimers();
+    axGranted = false;
+    await toStep('microphone');
+    await refresh(); // Accessibility observed as not granted on an earlier step.
+    axGranted = true;
+    await click('Continue');
+    await refresh();
+    await advance(2000);
+    expectStep('Accessibility access');
+    expect(container.querySelector('[data-fresh="true"]')).toBeNull();
+    expect(button('Continue').hasAttribute('data-default-button')).toBe(true);
+  });
+
   it.each(['microphone', 'accessibility'] as const)('does not auto-advance an already granted %s on arrival', async step => {
     vi.useFakeTimers();
     await toStep(step);
