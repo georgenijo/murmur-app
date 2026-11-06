@@ -269,7 +269,7 @@ Initialization precedes CLI worker dispatch as well as Tauri setup.
 | FluidAudio/shared model caches | Inspection, download destinations and repair markers are namespaced. The pinned FluidAudio SDK has no cache-path API: its ASR initializer is refused for internal bundles, and speaker diarization is unavailable there, preventing implicit SDK access to the shared production cache. Use isolated Whisper/Parakeet for QA. |
 | Corpus stores | Namespaced legacy roots; internal identities ignore global corpus directory overrides. Synthetic fixtures must be provisioned inside the isolated root. |
 | WebKit | Wry uses the configured bundle identity; lifecycle checks only the exact identity subdirectory. QA uses `com.localdictation.shutdown-test`, never the production store or a directory enumeration of the global WebKit root. |
-| Shared clipboard and pasteboard | Only an explicitly initialized `com.localdictation` process uses the general pasteboard. Every other identity, including absent/empty/future IDs, routes text reads, writes and change-count checks to its own injectively named `NSPasteboard`. Clipboard snippets and transform apply/undo use the same primitives. QA refuses all external key posts and Smart insertion before activation or mutation; no QA-only target exemption exists. Routing tests use strings only and never access any OS pasteboard. |
+| Shared clipboard and pasteboard | Only an explicitly initialized `com.localdictation` process uses the general pasteboard. Every other identity, including absent/empty/future IDs, routes text reads, writes and change-count checks to its own injectively named `NSPasteboard`. Clipboard snippets and transform apply/undo use the same primitives. A QA-only plugin installs a text clipboard bridge before application scripts in every WebKit frame, so History/diagnostic/meeting Copy actions also use the private board; missing IPC and unsupported item types fail closed. The plugin is absent in production and its commands independently reject production/unproven identities. QA refuses all external key posts and Smart insertion before activation or mutation; no QA-only target exemption exists. Routing tests use strings only and never access any OS pasteboard. |
 | OS-managed crash reports | macOS may create identity/process-attributed crash reports outside the application-owned roots. Murmur has no application-owned reader for those reports and does not enumerate, import, upload or delete them. These OS-managed files are not claimed to be application-namespaced stores. |
 | UserDefaults/preferences | App defaults use NSBundle identity. Explicit appearance/Dock reads access system appearance/layout preferences only; no app data is read or written in another app domain. |
 | Keychain | No application keychain store/API is used. Updater signature verification uses the bundled public key. |
@@ -295,10 +295,12 @@ Telemetry installs its subscriber using memory/channel setup. Its worker reads
 history, opens/rotates files and writes both log formats. Restoration captures
 Clear's generation **before scheduling**; Clear invalidates the live ring before
 waiting for disk. Early records remain queued behind a stalled startup reader.
-The shutdown Writers phase concurrently seals telemetry producers and queues a
-file-flush barrier, waiting only until its existing absolute +10 s deadline.
+The shutdown Writers phase starts an independent telemetry waiter. It accepts
+final owner events until content writers finish or the absolute +10 s deadline,
+then seals producers and queues a file-flush barrier using only the remaining
+budget. A blocked content writer cannot postpone that drain.
 The +5/+7/+10 s coordinator driver never joins a disk worker. A content-free
-terminal stderr receipt reports pending, failed and post-seal rejected records,
+worker stderr receipt reports pending, failed and post-seal rejected records,
 including records that cannot reach disk by the deadline.
 
 | Setup call | Worker ownership and main-thread behavior |

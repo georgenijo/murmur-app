@@ -19,6 +19,10 @@ fn main() {
     } else {
         tauri_build::Attributes::new()
     };
+    let attributes = attributes.plugin(
+        "qa-clipboard",
+        tauri_build::InlinedPlugin::new().commands(&["read_text", "write_text"]),
+    );
     tauri_build::try_build(attributes).expect("failed to build Tauri context");
 }
 

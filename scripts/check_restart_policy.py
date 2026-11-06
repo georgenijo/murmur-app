@@ -15,22 +15,23 @@ ADAPTER = Path('app/src-tauri/src/shutdown.rs')
 PLUGIN = Path('app/src-tauri/src/process_plugin.rs')
 # Exact function scopes only. No crate/module/impl/block-level lint exceptions.
 METHOD_ALLOWLIST = {
+    ('app/src-tauri/src/lib.rs', 'generated_context'),
     ('app/src-tauri/src/main.rs', 'main'),
     ('app/src-tauri/examples/murmur-eval.rs', 'main'),
     ('app/src-tauri/tests/shutdown_appkit.rs', 'main'),
     ('app/src-tauri/src/shutdown.rs', 'terminal'),
-    ('app/src-tauri/src/shutdown.rs', 'shutdown_test_action'),
+    ('app/src-tauri/src/shutdown.rs', 'test_support::shutdown_test_action'),
     ('app/src-tauri/src/coreml_installer.rs', 'start_parent_watchdog'),
     ('app/src-tauri/src/meeting_diarization.rs', 'run_cli_if_requested'),
     ('app/src-tauri/sidecars/capture/src/main.rs', 'main'),
-    ('app/src-tauri/sidecars/capture/src/main.rs', 'run'),
+    ('app/src-tauri/sidecars/capture/src/main.rs', 'supported::run'),
     ('app/src-tauri/sidecars/capture/src/production.rs', 'spawn_automatic_probe_watchdog'),
     ('app/src-tauri/sidecars/capture/src/production.rs', 'spawn_parent_watchdog'),
     ('app/src-tauri/sidecars/capture/src/production.rs', 'run'),
 }
 REQUIRED_METHODS = {
     'std::process::exit', 'std::process::abort', 'libc::exit', 'libc::_exit',
-    'libc::_Exit', 'libc::abort', 'std::os::unix::process::CommandExt::exec',
+    'libc::abort', 'std::os::unix::process::CommandExt::exec',
     'tauri::AppHandle::exit', 'tauri::AppHandle::restart', 'tauri::AppHandle::request_restart',
     'tauri::process::restart', 'tauri_plugin_process::init',
     'tauri_plugin_process::commands::exit', 'tauri_plugin_process::commands::restart',
@@ -48,7 +49,16 @@ def method_allow_scopes(source, relative):
             continue
         function = re.match(r'\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)\b[^;{]*\{', code[attribute.end():])
         valid = re.fullmatch(r'#\s*\[\s*allow\s*\(\s*clippy\s*::\s*disallowed_methods\s*\)\s*\]', value)
-        if not valid or not function or (str(relative), function[1]) not in METHOD_ALLOWLIST:
+        enclosing = []
+        for brace in re.finditer(r'[{}]', code[:attribute.start()]):
+            if brace.group() == '}':
+                if enclosing:
+                    enclosing.pop()
+            else:
+                module = re.search(r'\bmod\s+(\w+)\s*$', code[:brace.start()])
+                enclosing.append(module[1] if module else None)
+        qualified = '::'.join([*enclosing, function[1]]) if function and None not in enclosing else None
+        if not valid or not function or (str(relative), qualified) not in METHOD_ALLOWLIST:
             failures.append(attribute.start())
             continue
         opening = attribute.end() + function.end() - 1

@@ -3003,6 +3003,7 @@ async fn run_transcription_pipeline(
                         injector::ClipboardOnlyReason::FocusNotEditable
                         | injector::ClipboardOnlyReason::PasteFailed => Some(paste_hint),
                         injector::ClipboardOnlyReason::AutoPasteDisabled
+                        | injector::ClipboardOnlyReason::IsolatedIdentity
                         | injector::ClipboardOnlyReason::AccessibilityDenied => None,
                     };
                     if let Some(message) = failure_message {

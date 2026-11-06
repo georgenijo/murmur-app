@@ -68,6 +68,7 @@ mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
 mod process_plugin;
+mod qa_clipboard;
 mod shutdown;
 mod startup;
 use murmur_core::{model_artifact, model_digest};
@@ -214,6 +215,9 @@ pub(crate) struct State {
     pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
 }
 
+// Tauri's pre-runtime generated-context panic path contains exit(101).
+// This helper is called only before the application/coordinator is built.
+#[allow(clippy::disallowed_methods)]
 fn generated_context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
 }
@@ -250,6 +254,12 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(process_plugin::init())
         .plugin(tauri_plugin_dialog::init());
+
+    let builder = if crate::identity::internal() {
+        builder.plugin(qa_clipboard::init())
+    } else {
+        builder
+    };
 
     #[cfg(not(feature = "internal-benchmark"))]
     let builder = if crate::identity::internal() {

@@ -654,13 +654,21 @@ recognize `clippy::chunks_exact_to_as_chunks`; only that unsupported exemption
 was omitted for the passing run. Rustfmt checks and `git diff --check` pass.
 All test data is synthetic and temporary test roots use `~/.cache/`. No app
 caller changes, Mac checkout, GUI action or app launch were needed.
+
 ## Round-three isolation, telemetry and guard corrections
 
 - **P1, clipboard/input isolation:** shared clipboard reads, writes and change
   counts now require initialized production identity. All other identities use a
   private, identity-named NSPasteboard; the naming includes an absent-identity
   discriminator and injective UTF-8 encoding. Snippets and transform apply/undo
-  share those primitives. QA cannot auto-paste, activate a Smart destination or
+  share those primitives. A QA-only WebKit plugin routes application Copy/read
+  APIs through the same native primitives before frontend startup, in every
+  frame (`plugin:qa-clipboard|read_text` / `write_text`), and never falls back
+  to the general clipboard. Its native dispatch
+  also refuses production/unproven identities; unsupported clipboard item types
+  and missing IPC fail closed. Synthetic Vitest tests prove Copy/read routing
+  and refusal without an OS clipboard. QA cannot auto-paste, activate a Smart
+  destination or
   post keys to another app. There is no unproven target exemption. Production
   retains its existing arboard/general-pasteboard route and delivery policy.
   Pure routing tests cover production, absent/empty, shutdown-test, bench,
@@ -670,17 +678,21 @@ caller changes, Mac checkout, GUI action or app launch were needed.
   process-plugin exit/restart methods. The existing Python guard still enforces
   numeric runtime exit codes, the sole request_restart adapter and plugin/Cargo
   aliases. It now enforces function-scoped Clippy allowances at an explicit
-  CLI/helper/watchdog/adapter allowlist, rejects broader lint suppressions and
+  CLI/helper/watchdog/adapter and pre-runtime generated-context allowlist,
+  rejects broader lint suppressions and
   nested config overrides, and permits unrelated bare functions named exit.
   Compile-only fixtures exercise grouped std/libc aliases, macro-forwarded exit,
   direct zero exit outside CLI, abort, Tauri methods and the unrelated-function
   positive control. They never execute termination code.
 - **P2, telemetry drain:** the worker handle and sender are retained. Writers
-  queues a sealed flush barrier concurrently with source/completion draining,
-  bounded by the existing +10 s absolute deadline. The +5/+7/+10 s driver never
-  waits on the disk worker. A terminal content-free stderr receipt accounts for
+  starts an independent waiter alongside source/completion draining. It retains
+  final owner events until those writers finish or the existing +10 s absolute
+  deadline, then seals and flushes with only the remaining budget. A blocked
+  content owner cannot postpone telemetry accounting. The +5/+7/+10 s driver never
+  waits on the disk worker. A worker content-free stderr receipt accounts for
   pending, failed and rejected records even when startup history remains stalled.
-  Tests cover timeout accounting and successful early-event drain after release.
+  Tests cover timeout accounting, final owner events, and successful early-event
+  drain after release.
 - **P2, Clear precedence:** history restoration receives the generation captured
   at schedule time. A Clear before the worker starts, or during its read, wins.
   Clear IPC invalidates the in-memory generation before waiting for disk and
@@ -702,6 +714,34 @@ No base-branch change, GUI launch, permission grant, production clipboard access
 or merge is part of this worker's scope. Independent Sol rechecks remain with
 the parent implementation task.
 
-Verification results will be appended after the requested Linux and disposable
-Mac mini checks. Native build/test scratch uses only `~/Builds/gpui-stack-22`,
-`~/Builds/gpui-stack-22-target` and task cache paths.
+Verification (combined with the other workers through `b2155379`):
+
+- Linux: all **201 core tests** pass (166 unit and 35 integration). TypeScript
+  and all **184 Vitest files / 1,894 tests** pass, including the two private
+  WebKit clipboard regressions. All 14 restart policy fixture groups pass.
+  Core dependency, targeted Rust-event, capture-boundary, reference/link and
+  workspace formatting checks pass; the reference count remains 186 because
+  the QA-only bridge is a separate plugin and does not change the app handler.
+- Mac mini, Rust 1.98.1: full `cargo test -- --test-threads=1` passes both without
+  and with `shutdown-test-support`: each has **1,547 passing library tests**, 14
+  existing ignored library tests, passing integration suites and the windowless
+  main-dispatch/AppKit shutdown executables. Existing hardware integration
+  ignores remain unchanged. Both `cargo clippy --workspace --all-targets` runs
+  pass with `-D warnings` and only the requested command-line allowances
+  `-A clippy::chunks_exact_to_as_chunks -A clippy::byte_char_slices`.
+- All **11 compile-only Clippy fixtures** pass on the Mac: the ten terminating
+  cases are actually rejected by `clippy::disallowed_methods`; the unrelated
+  function named `exit` compiles. This includes grouped std/libc aliases,
+  macro-forwarded exit, direct zero exit outside CLI, abort, AppHandle methods
+  and the original process-plugin init alias. No fixture is executed.
+- SHA-256 comparison confirms **349 native build input files** match this
+  worktree. Regenerated schema outputs also confirm the QA bridge exposes only
+  its two text commands to local app windows. The routing tests use mocks and
+  pure identity selectors; no OS pasteboard is read or written by those tests.
+
+Native checks used only the new `~/Builds/gpui-stack-22` checkout, external
+`~/Builds/gpui-stack-22-target`, and task cache paths. The helper preparation
+script's default-output assumption was accommodated inside that disposable
+checkout; application checks retained the requested external Cargo target.
+No GUI, app launch, OS permission grant, production data access or merge was
+performed. Independent Sol review and CI integration remain with the parent.

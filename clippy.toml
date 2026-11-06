@@ -5,7 +5,6 @@ disallowed-methods = [
   { path = "std::process::abort", reason = "Bypasses the shutdown coordinator." },
   { path = "libc::exit", reason = "Bypasses the shutdown coordinator." },
   { path = "libc::_exit", reason = "Bypasses the shutdown coordinator." },
-  { path = "libc::_Exit", reason = "Bypasses the shutdown coordinator." },
   { path = "libc::abort", reason = "Bypasses the shutdown coordinator." },
   { path = "std::os::unix::process::CommandExt::exec", reason = "Replaces the host without draining its owners." },
   { path = "tauri::AppHandle::exit", reason = "Only the drained shutdown adapter may exit." },

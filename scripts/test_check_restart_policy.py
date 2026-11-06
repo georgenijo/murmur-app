@@ -76,6 +76,8 @@ class RestartPolicy(unittest.TestCase):
             '#[cfg_attr(test, allow(clippy::disallowed_methods))] fn terminal() {}',
             '#[allow(warnings)] fn terminal() {}',
             '#[allow(clippy::restriction)] fn terminal() {}',
+            'mod bypass { #[allow(clippy::disallowed_methods)] fn terminal() {} }',
+            'fn unrelated() { #[allow(clippy::disallowed_methods)] fn terminal() {} }',
         ]:
             with self.subTest(source=source):
                 self.assertTrue(method_allow_scopes(source, Path('app/src-tauri/src/shutdown.rs'))[1])

@@ -2391,6 +2391,11 @@ impl QueuedLogSender {
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             .unwrap_or(false)
     }
+    fn flush_after(&self, writers_done: mpsc::Receiver<()>, deadline: std::time::Instant) -> bool {
+        let _ = writers_done
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
+        self.flush_until(deadline)
+    }
 }
 // Retain the worker for the process lifetime. Never join a possibly stalled I/O
 // thread on main or on the independent shutdown deadline driver.
@@ -2414,10 +2419,21 @@ pub(crate) fn shutdown_receipt() -> ShutdownLogReceipt {
             rejected_records: worker.sender.state.rejected.load(Ordering::SeqCst),
         })
 }
-pub(crate) fn shutdown_flush(deadline: std::time::Instant) -> bool {
-    LOG_WORKER
+pub(crate) fn shutdown_flush(
+    writers_done: mpsc::Receiver<()>,
+    deadline: std::time::Instant,
+) -> bool {
+    let flushed = LOG_WORKER
         .get()
-        .is_none_or(|worker| worker.sender.flush_until(deadline))
+        .is_none_or(|worker| worker.sender.flush_after(writers_done, deadline));
+    let logs = shutdown_receipt();
+    // This runs only on the shutdown blocking worker. Even a stalled stderr
+    // consumer cannot hold main or the independent terminal deadline driver.
+    eprintln!(
+        "shutdown telemetry: flushed={flushed} pending_records={} failed_records={} rejected_records={}",
+        logs.pending_records, logs.failed_records, logs.rejected_records
+    );
+    flushed
 }
 
 #[derive(Clone)]
@@ -5184,6 +5200,40 @@ mod startup_io_tests {
     use super::*;
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]
+    fn shutdown_accepts_final_owner_events_until_content_writers_finish() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let output = fixture.path().join("events.jsonl");
+        let worker_output = output.clone();
+        let pretty = fixture.path().join("app.log");
+        let (sender, worker) = start_log_worker(move || {
+            (
+                SizeRotatingFile::open(worker_output, 4096, 1).unwrap(),
+                SizeRotatingFile::open(pretty, 4096, 1).unwrap(),
+            )
+        });
+        let (done, drained) = mpsc::channel();
+        let drain = sender.clone();
+        let barrier = std::thread::spawn(move || {
+            drain.flush_after(
+                drained,
+                std::time::Instant::now() + std::time::Duration::from_secs(2),
+            )
+        });
+        sender
+            .send(LogWrite::Event(b"synthetic final owner event\n".to_vec()))
+            .unwrap();
+        assert_eq!(sender.state.rejected.load(Ordering::SeqCst), 0);
+        done.send(()).unwrap();
+        assert!(barrier.join().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            "synthetic final owner event\n"
+        );
+        drop(sender);
+        worker.join().unwrap();
+    }
+    #[test]
     fn clear_before_restoration_starts_wins() {
         let _test = TEST_LOCK.lock().unwrap();
         let buffer = Arc::new(Mutex::new(VecDeque::new()));
@@ -5228,7 +5278,11 @@ mod startup_io_tests {
             .send(LogWrite::Event(b"synthetic early event\n".to_vec()))
             .unwrap();
         let started = std::time::Instant::now();
-        assert!(!sender.flush_until(started + std::time::Duration::from_millis(30)));
+        let (_stalled_content_owner, content_drained) = mpsc::channel();
+        assert!(!sender.flush_after(
+            content_drained,
+            started + std::time::Duration::from_millis(30)
+        ));
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
         assert_eq!(sender.state.pending.load(Ordering::SeqCst), 1);
         sender.send(LogWrite::Event(b"late\n".to_vec())).unwrap();
