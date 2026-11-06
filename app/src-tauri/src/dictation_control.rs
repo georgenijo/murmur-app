@@ -19,8 +19,17 @@ struct Queued {
     generation: u64,
     at: Instant,
 }
+#[derive(Default)]
+struct ConfigurationFence(Mutex<()>);
+impl ConfigurationFence {
+    fn run<T>(&self, action: impl FnOnce() -> T) -> T {
+        let _guard = self.0.lock_or_recover();
+        action()
+    }
+}
 pub(crate) struct Control {
     controller: Mutex<Controller>,
+    configuration: ConfigurationFence,
     send: tokio::sync::mpsc::UnboundedSender<Queued>,
     epoch: Instant,
     setup_suspended: AtomicBool,
@@ -31,6 +40,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
     let (sender, mut receive) = tokio::sync::mpsc::unbounded_channel();
     app.manage(Control {
         controller: Mutex::new(Controller::default()),
+        configuration: ConfigurationFence::default(),
         send: sender,
         epoch: Instant::now(),
         setup_suspended: AtomicBool::new(false),
@@ -293,6 +303,11 @@ pub(crate) async fn configure(
     app: &tauri::AppHandle,
     settings: serde_json::Value,
 ) -> Result<(), String> {
+    app.state::<Control>()
+        .configuration
+        .run(|| configure_locked(app, settings))
+}
+fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Result<(), String> {
     if settings["settingsVersion"] != 7 || !settings.is_object() {
         return Err("Unsupported control settings".into());
     }
@@ -340,7 +355,7 @@ pub(crate) async fn configure(
         crate::smart_auto_probe::configure_host_policy(policy)?;
     }
     *control.settings.lock_or_recover() = settings.clone();
-    crate::commands::keyboard::set_app_disabled(app.clone(), gate.disabled)?;
+    crate::commands::keyboard::apply_app_disabled(app.clone(), gate.disabled)?;
     if gate.armed() {
         crate::commands::keyboard::start_keyboard_listener(app.clone(), key.into(), mode.into())?;
     } else {
@@ -370,14 +385,20 @@ pub(crate) fn toggle_dictation_lock(app: tauri::AppHandle) {
 }
 
 pub(crate) async fn refresh(app: &tauri::AppHandle) {
-    let settings = app.state::<Control>().settings.lock_or_recover().clone();
-    if !settings.is_null() {
-        let _ = configure(app, settings).await;
-    }
+    let control = app.state::<Control>();
+    control.configuration.run(|| {
+        let settings = control.settings.lock_or_recover().clone();
+        if !settings.is_null() {
+            let _ = configure_locked(app, settings);
+        }
+    });
 }
 
-pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) {
-    if let Some(control) = app.try_state::<Control>() {
+pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) -> Result<(), String> {
+    let Some(control) = app.try_state::<Control>() else {
+        return crate::commands::keyboard::apply_app_disabled(app.clone(), disabled);
+    };
+    control.configuration.run(|| {
         control.controller.lock_or_recover().gate.disabled = disabled;
         let (previous, policy) = {
             let mut settings = control.settings.lock_or_recover();
@@ -390,7 +411,8 @@ pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) {
         if policy != previous {
             let _ = crate::smart_auto_probe::configure_host_policy(policy);
         }
-    }
+        crate::commands::keyboard::apply_app_disabled(app.clone(), disabled)
+    })
 }
 pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
     app.try_state::<Control>()
@@ -464,6 +486,37 @@ pub(crate) fn get_dictation_lock(app: tauri::AppHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn in_flight_refresh_cannot_overwrite_a_later_native_disable() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc,
+        };
+        let fence = Arc::new(ConfigurationFence::default());
+        let disabled = Arc::new(AtomicBool::new(false));
+        let (copied, copied_rx) = mpsc::channel();
+        let (apply, apply_rx) = mpsc::channel();
+        let refresh_fence = fence.clone();
+        let refresh_disabled = disabled.clone();
+        let refresh = std::thread::spawn(move || {
+            refresh_fence.run(|| {
+                let old = refresh_disabled.load(Ordering::SeqCst);
+                copied.send(()).unwrap();
+                apply_rx.recv().unwrap();
+                refresh_disabled.store(old, Ordering::SeqCst);
+            })
+        });
+        copied_rx.recv().unwrap();
+        let disable_fence = fence.clone();
+        let disable_state = disabled.clone();
+        let disable = std::thread::spawn(move || {
+            disable_fence.run(|| disable_state.store(true, Ordering::SeqCst))
+        });
+        apply.send(()).unwrap();
+        refresh.join().unwrap();
+        disable.join().unwrap();
+        assert!(disabled.load(Ordering::SeqCst));
+    }
     #[test]
     fn native_probe_policy_preserves_consent_and_input_gates() {
         let settings = serde_json::json!({"disabled":false,"microphone":"system_default",

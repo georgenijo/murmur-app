@@ -96,12 +96,18 @@ pub fn set_keyboard_recording(recording: bool) {
 
 #[tauri::command]
 pub fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
+    crate::dictation_control::set_disabled(&app_handle, disabled)
+}
+
+pub(crate) fn apply_app_disabled(
+    app_handle: tauri::AppHandle,
+    disabled: bool,
+) -> Result<(), String> {
     if disabled {
         crate::smart_auto_probe::preempt();
         crate::audio_lifecycle::retire_standby();
     }
     keyboard::set_app_disabled(disabled);
-    crate::dictation_control::set_disabled(&app_handle, disabled);
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
     sync_tray_disabled_item(disabled);
     app_handle
