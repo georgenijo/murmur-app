@@ -435,6 +435,7 @@ pub struct AppState {
     /// this lock is never held while waiting for Core Audio or a channel.
     pub recording_transition: tokio::sync::Mutex<()>,
     pub model_runtime: ModelRuntimeManager,
+    pub(crate) idle_model_warmup: Arc<crate::launch::WarmupQueue>,
     pub last_transcription_at: Mutex<Option<Instant>>,
     pub model_idle_policy: Mutex<ModelIdlePolicy>,
     /// Monotonically increasing ID assigned to each recording session.
@@ -588,6 +589,7 @@ impl Default for AppState {
             dictation: Mutex::new(DictationState::default()),
             recording_transition: tokio::sync::Mutex::new(()),
             model_runtime: ModelRuntimeManager::default(),
+            idle_model_warmup: Arc::new(crate::launch::WarmupQueue::default()),
             last_transcription_at: Mutex::new(None),
             model_idle_policy: Mutex::new(ModelIdlePolicy::default()),
             recording_id: AtomicU64::new(0),

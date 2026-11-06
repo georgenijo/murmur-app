@@ -45,40 +45,8 @@ describe('useSoundCues', () => {
     container.remove();
   });
 
-  it('maps accepted start, stop, delivery, and failure events', () => {
-    mocks.listeners.get('dictation-generation-started')?.({ payload: { recordingId: 1 } });
-    mocks.listeners.get('recording-status-changed')?.({ payload: 'processing' });
-    mocks.listeners.get('dictation-delivery-outcome')?.({ payload: { outcome: 'autoPastePosted' } });
-    mocks.listeners.get('dictation-delivery-outcome')?.({ payload: { outcome: 'unconfirmed' } });
-    expect(mocks.play.mock.calls.map(([cue]) => cue)).toEqual(['start', 'stop', 'success', 'failure']);
-  });
-
-  it('maps every camelCase delivery outcome and ignores unknown payloads', () => {
-    const emit = (payload: unknown) => mocks.listeners.get('dictation-delivery-outcome')?.({ payload });
-    for (const outcome of ['autoPastePosted', 'clipboardOnly', 'clipboardWriteFailed', 'unconfirmed', 'bogus', 'auto_pasted']) {
-      emit({ outcome });
-    }
-    emit(null);
-    expect(mocks.play.mock.calls.map(([cue]) => cue)).toEqual(['success', 'success', 'failure', 'failure']);
-  });
-
-  it('suppresses dictation cues during active meetings but allows them after failure', async () => {
-    phase = 'recording';
-    await act(async () => root.render(<Harness />));
-    mocks.listeners.get('dictation-generation-started')?.({ payload: {} });
+  it('leaves dictation cues to the native host', () => {
+    expect(mocks.listeners.size).toBe(0);
     expect(mocks.play).not.toHaveBeenCalled();
-    phase = 'failed';
-    await act(async () => root.render(<Harness />));
-    mocks.listeners.get('dictation-generation-started')?.({ payload: {} });
-    expect(mocks.play).toHaveBeenCalledWith('start', 45);
-  });
-
-  it('cleans up successful listeners and tolerates rejected registration', async () => {
-    await act(async () => root.unmount());
-    expect(mocks.listeners.size).toBe(0);
-    root = createRoot(container);
-    mocks.listen.mockRejectedValue(new Error('unavailable'));
-    await act(async () => root.render(<Harness />));
-    expect(mocks.listeners.size).toBe(0);
   });
 });

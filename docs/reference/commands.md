@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 172 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 177 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -159,6 +159,16 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 |---------|-----------|---------|-------------|
 | `is_notchpill_installed` | — | `bool` | Uses macOS Launch Services to find NotchPill by bundle identifier; always `false` on other platforms. |
 
+## Native dictation control (`dictation_control.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `configure_dictation_control` | `settings: JSON` | `Result<(), String>` | Main-window validated control settings; native startup uses the internal host adapter without a webview. |
+| `suspend_dictation_for_setup` | — | `Result<bool, String>` | Main-only; closes admission under the recording transition fence if no capture owner won the race. |
+| `resume_dictation_after_setup` | `settings: JSON` | `Result<(), String>` | Main-only explicit rearm after successful setup; stale settings updates cannot clear suspension. |
+| `toggle_dictation_lock` | — | `()` | Routes an overlay lock intent to the core controller. |
+| `get_dictation_lock` | — | `bool` | Native lock snapshot for clients after attaching their change listener. |
+
 ## Keyboard (`commands/keyboard.rs`)
 
 | Command | Parameters | Returns | Description |
@@ -299,7 +309,7 @@ without logging their content.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
-| `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Concurrent writers (main and overlay windows) are serialized; a failed write removes the temp file and preserves the previous settings. |
+| `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Full writes require the main window; overlay quick controls use the field-limited patch command. Concurrent writers are serialized; a failed write removes the temp file and preserves the previous settings. |
 | `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool` | `Result<String, String>` | Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
 | `load_history_blob` | — | `Result<Option<String>, String>` | Reads `history.json`. `None` means absent or quarantined; the 8 MiB JSON-array bound is checked before returning content. |
 | `save_history_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a history JSON array up to 8 MiB. |

@@ -234,6 +234,9 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       }
       return true;
     };
+    listen<string>('dictation-control-error', ({ payload }) => {
+      if (!cancelled) presentError(payload);
+    }).then((fn) => { if (cancelled) fn(); else unlistens.push(fn); });
     listen<unknown>('dictation-generation-started', (event) => {
       if (cancelled) return;
       const payload = event.payload as Record<string, unknown> | null;
@@ -277,8 +280,22 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
           cancelledDestinationGenerationRef.current,
           recordingId,
         );
+        // A failure may have been dispatched just before native cancellation
+        // won ownership. Retract only this generation's error in that order.
+        const currentError = currentErrorRef.current;
+        if (currentError?.recordingId === recordingId) clearError(currentError.id);
       }
       setSmartDestinationSelection(null);
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
+    listen<unknown>('dictation-stop-failed', (event) => {
+      if (cancelled) return;
+      const recordingId = recordingIdFromPayload(event.payload);
+      if (recordingId === null
+        || recordingId <= cancelledDestinationGenerationRef.current
+        || !acceptPresentationGeneration(recordingId)) return;
+      presentError('Transcription failed. Please try again.', { recordingId });
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });

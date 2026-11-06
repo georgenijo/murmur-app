@@ -578,6 +578,10 @@ impl ModelRuntimeManager {
         self.install_states
             .lock_or_recover()
             .insert(model_name.to_string(), state);
+        if let Some(app) = app {
+            // Admission is ready before a consumer reacts to Installed.
+            crate::dictation_control::model_installation_changed(app);
+        }
         self.publish(app, model_name, "installStateChanged")
     }
 

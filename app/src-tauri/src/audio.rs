@@ -2943,7 +2943,11 @@ fn run_backend(
                                 },
                             );
                         } else {
-                            let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                            let level = compute_rms(&pcm.samples);
+                            if let Some(generation) = owner.dictation_id() {
+                                crate::dictation_control::level(handle, generation, level);
+                            }
+                            let _ = handle.emit("audio-level", level);
                         }
                     }
                     last_level_emit = Instant::now();

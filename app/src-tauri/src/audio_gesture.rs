@@ -2,32 +2,14 @@
 //! opaque token. No key label, device identifier, or user content is stored.
 use crate::MutexExt;
 use std::collections::VecDeque;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Mutex,
-};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const MAX_PENDING: usize = 8;
 const MAX_AGE: Duration = Duration::from_secs(2);
-static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 static PENDING: Mutex<VecDeque<Pending>> = Mutex::new(VecDeque::new());
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Candidate {
-    pub token: u64,
-    pub pressed: Instant,
-    pub released: Option<Instant>,
-}
-impl Candidate {
-    pub fn new() -> Self {
-        Self {
-            token: NEXT_TOKEN.fetch_add(1, Ordering::Relaxed),
-            pressed: Instant::now(),
-            released: None,
-        }
-    }
-}
+pub(crate) use murmur_core::keyboard::Candidate;
 #[derive(Clone, Copy)]
 struct Pending {
     candidate: Candidate,

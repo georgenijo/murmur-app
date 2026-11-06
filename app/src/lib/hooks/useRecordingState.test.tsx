@@ -77,6 +77,48 @@ describe('useRecordingState transition ordering', () => {
     container.remove();
   });
 
+  it('presents native stop failure after Idle and rejects cancelled or older generations', async () => {
+    const emit = (name: string, payload: unknown) => mocks.listeners.get(name)?.({ payload });
+    await act(async () => {
+      emit('dictation-generation-started', { recordingId: 12 });
+      emit('recording-status-changed', 'processing');
+      emit('recording-status-changed', 'idle');
+      emit('dictation-stop-failed', { recordingId: 12, error: 'private content' });
+    });
+    expect(current.error).toBe('Transcription failed. Please try again.');
+    expect(current.status).toBe('idle');
+    await act(async () => {
+      emit('dictation-generation-started', { recordingId: 13 });
+      emit('dictation-stop-failed', { recordingId: 12 });
+    });
+    expect(current.error).toBe('');
+    await act(async () => {
+      emit('recording-cancelled', { recordingId: 13 });
+      emit('dictation-stop-failed', { recordingId: 13 });
+      emit('dictation-stop-failed', { recordingId: 'invalid' });
+    });
+    expect(current.error).toBe('');
+  });
+
+  it('retracts a stop failure dispatched before cancellation and preserves newer errors', async () => {
+    const emit = (name: string, payload: unknown) => mocks.listeners.get(name)?.({ payload });
+    await act(async () => {
+      emit('dictation-generation-started', { recordingId: 12 });
+      emit('dictation-stop-failed', { recordingId: 12 });
+    });
+    expect(current.error).toBe('Transcription failed. Please try again.');
+    await act(async () => emit('recording-cancelled', { recordingId: 12 }));
+    expect(current.error).toBe('');
+    await act(async () => emit('dictation-stop-failed', { recordingId: 12 }));
+    expect(current.error).toBe('');
+    await act(async () => {
+      emit('dictation-generation-started', { recordingId: 13 });
+      emit('dictation-stop-failed', { recordingId: 13 });
+      emit('recording-cancelled', { recordingId: 12 });
+    });
+    expect(current.error).toBe('Transcription failed. Please try again.');
+  });
+
   it('cancels promptly while microphone initialization is still starting', async () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'recording_starting',

@@ -1,6 +1,6 @@
 # React Hooks Reference
 
-The 45 custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
+Custom React hooks under `app/src/lib/hooks/`, grouped by the window that uses them. Hooks are where nearly all frontend behavior lives — `App.tsx` and `OverlayWidget.tsx` are thin composition shells.
 
 For the commands these hooks call see [commands.md](commands.md). For the events they subscribe to see [events.md](events.md). For settings managed by `useSettings` see [settings.md](settings.md).
 
@@ -9,22 +9,11 @@ For the commands these hooks call see [commands.md](commands.md). For the events
 ## Recording and dictation (main window)
 
 ### `useRecordingState`
-The dictation state machine. Owns `status` (`idle` / `starting` / `recording` / `recovering` / `processing`), audio level, locked mode, and the error/hint banners. Subscribes to `recording-status-changed`, the audio initialization/recovery signals, `transcription-complete`, `recording-cancelled`, `audio-level`, `auto-paste-failed`, and `file-output-failed`; invokes `start_native_recording` / `stop_native_recording` / `cancel_native_recording`.
+The dictation presentation client. Reflects `status` (`idle` / `starting` / `recording` / `recovering` / `processing`), audio level, locked mode, and the error/hint banners. Subscribes to `recording-status-changed`, the audio initialization/recovery signals, `transcription-complete`, `recording-cancelled`, `audio-level`, `auto-paste-failed`, and `file-output-failed`; invokes `start_native_recording` / `stop_native_recording` / `cancel_native_recording`.
 
 **`transcription-complete` is the single source of truth** for history and stats — entries are never added in `handleStop()`, because the overlay can start a recording independently and that would double-count.
 
-`statusRef` mirrors `status` so hotkey callbacks always read current state instead of a stale closure capture; callbacks themselves are stored in refs so listener setup doesn't re-run on identity changes.
-
-### `useHoldDownToggle`
-Hold-down mode. Listens for `hold-down-start` / `hold-down-stop`, plus `keyboard-listener-error` for error recovery and auto-restart after 2s. Gated by `enabled`.
-
-### `useDoubleTapToggle`
-Double-tap mode. Listens for `double-tap-toggle` and syncs `recording` back into the detector via `set_keyboard_recording`. Gated by `enabled`.
-
-### `useCombinedToggle`
-Both modes at once. `holdActiveRef` prevents the double-tap path from firing on hold release; calls `cancel_native_recording` to discard speculative recordings from short taps. Gated by `enabled`.
-
-All three are always called (Rules of Hooks) and switched by the `enabled` prop rather than conditional invocation.
+`statusRef` mirrors native status for button admission and presentation callbacks. Global gestures, auto-stop and launch admission live in `murmur-core`; History/statistics completion remains here until 1.3.
 
 ### `useFileTranscription`
 Imported-file transcription: file selection, `transcribe_file`, and the `file-transcription-status-changed` busy state. Adds the result to history through the same `addEntry` path as live dictation.
@@ -42,12 +31,6 @@ for content-free status and finalized-segment events, keeps at most 200 live
 segments, and invokes start/stop/search/detail/copy/export/delete operations.
 Meeting history comes from SQLite and never enters transcript localStorage.
 
-### `useSilenceAutoStop`
-Ends a hands-free recording after a run of trailing silence — any recording **not started by holding the trigger key**. Folds the existing `audio-level` samples through the pure `reduceSilenceSample` detector, resets per recording, ignores samples while the origin is `'hold'`, and calls `onAutoStop` at most once. Inert unless `enabled` and `silenceMs > 0`. See [features/silence-auto-stop.md](../features/silence-auto-stop.md).
-
-### `useRecordingOrigin`
-Tracks how the in-flight recording started. Returns `{ getOrigin, resetOrigin }` over `'hold' | 'toggle'`: `hold-down-start` marks it `'hold'`; `hold-down-stop` and `double-tap-toggle` reset to `'toggle'`, the default — button, overlay, and locked-mode starts emit no keyboard event at all (`hold-down-cancel` is handled defensively but never emitted by the current backend). `useSilenceAutoStop` calls `resetOrigin` when status leaves `'recording'`, so a `'hold'` whose stop event was lost (Escape cancel, dead rdev thread) cannot outlive its recording.
-
 ### `useDictationPartial` (dictation preview window)
 Validates generation-tagged `dictation-partial` events and renders only the newest recording's provisional text. It asks Rust to show the preview after the text has painted and clears the card as soon as capture leaves `recording`.
 
@@ -55,7 +38,7 @@ Validates generation-tagged `dictation-partial` events and renders only the newe
 Surfaces `delivery-retry-feedback` and `correction-start-failed` through the main banner. Its sibling `useDeliveryRecoveryNotice` owns the current notice, identity, and single auto-hide timer, so presenting a retry-in-progress, correction, or configuration message invalidates every older timer. Completed retry messages clear after five seconds.
 
 ### `useSoundCues` (main window)
-Maps dictation start, stop, delivery, initialization failure, and interruption events to local sound cues. It also maps meeting phase changes when meeting cues are enabled, while preventing dictation cues during an active meeting.
+Maps meeting phase changes when meeting cues are enabled. Dictation cues run in the native host so they also work without main.
 
 ---
 
@@ -160,7 +143,7 @@ Overlay runtime flashes and mirrors: cancelled and hotkey-miss timers, a `dictat
 The overlay's snapshot of persisted settings (read straight from localStorage — there is no shared React context across windows), including the confirmed vertical calibration offset, plus the quick-control actions: auto-paste toggle, global disable, and `open-settings`.
 
 ### `useRecordingControls`
-Click disambiguation on the island: single click (250ms debounce) stops recording or exits locked mode; double-click toggles locked mode.
+Click disambiguation on the island: single click (250ms debounce) stops recording or exits locked mode; double-click sends a native lock intent. Lock state is hydrated from the core after attaching its change listener.
 
 ### `useWaveform`
 Owns the `audio-level` listener and the rAF bar-height animation. Writes bar heights through direct DOM refs, bypassing React reconciliation to hold 60fps. Center bars are taller (envelope shaping) with jitter for organic movement.

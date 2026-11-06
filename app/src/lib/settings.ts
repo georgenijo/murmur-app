@@ -627,7 +627,7 @@ export const ONBOARDING_KEY = 'murmur_onboarding_complete';
 export const LEGACY_OVERLAY_OFFSET_KEY = 'murmur-overlay-vertical-offset';
 export const OVERLAY_VERTICAL_OFFSET_MIN = -12;
 export const OVERLAY_VERTICAL_OFFSET_MAX = 12;
-const SETTINGS_VERSION = 7;
+export const SETTINGS_VERSION = 7;
 const ZERO_DELAY_MIGRATION_VERSION = 1;
 const OVERLAY_CALIBRATION_MIGRATION_VERSION = 2;
 const LIVE_WORDS_DEFAULT_ON_MIGRATION_VERSION = 7;
@@ -785,7 +785,7 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
     // No durable copy: either a first run, or an existing install whose
     // settings only ever lived in localStorage. Repair it once.
     const cached = localStorage.getItem(STORAGE_KEY);
-    if (cached !== null) {
+    if (cached !== null && ownsSettingsMigrations) {
       await invoke('save_settings_blob', { blob: cached });
     } else if (ownsSettingsMigrations) {
       // A fresh install. Commit the defaults so companions that fail closed

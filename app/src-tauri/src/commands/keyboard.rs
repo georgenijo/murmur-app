@@ -1,6 +1,6 @@
 use crate::{injector, keyboard, MutexExt};
 use std::sync::Mutex;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[derive(Default)]
 struct ListenerRegistration(Option<(String, String)>);
@@ -80,6 +80,7 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Resu
         *key = hotkey.clone();
     }
     if should_stop {
+        crate::dictation_control::send(&app_handle, murmur_core::dictation::Input::HoldStop);
         let _ = app_handle.emit("hold-down-stop", ());
         tracing::info!(target: "keyboard", "Keyboard key changed while held — emitted stop; updated to: {}", hotkey);
     } else {
@@ -95,16 +96,38 @@ pub fn set_keyboard_recording(recording: bool) {
 
 #[tauri::command]
 pub fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
+    crate::dictation_control::set_disabled(&app_handle, disabled)
+}
+
+pub(crate) fn apply_app_disabled(
+    app_handle: tauri::AppHandle,
+    disabled: bool,
+) -> Result<(), String> {
     if disabled {
         crate::smart_auto_probe::preempt();
         crate::audio_lifecycle::retire_standby();
     }
-    keyboard::set_app_disabled(disabled);
+    let state = app_handle.state::<crate::State>();
+    let reenabled = update_app_disabled(&state.app_state, disabled);
+    if reenabled {
+        crate::commands::recording::request_idle_model_preparation(&app_handle);
+    }
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
-    sync_tray_disabled_item(disabled);
+    sync_tray_disabled_item(&app_handle);
     app_handle
         .emit("app-disabled-changed", disabled)
         .map_err(|e| e.to_string())
+}
+
+// Shared with the worker regression; keep the epoch change synchronous with
+// the authoritative disabled flag, before a re-enable can queue a replacement.
+pub(crate) fn update_app_disabled(state: &crate::state::AppState, disabled: bool) -> bool {
+    let was_disabled = keyboard::is_app_disabled();
+    keyboard::set_app_disabled(disabled);
+    if !was_disabled && disabled {
+        state.idle_model_warmup.invalidate();
+    }
+    was_disabled && !disabled
 }
 
 static DISABLED_MENU_ITEM: std::sync::OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> =
@@ -116,9 +139,18 @@ pub(crate) fn register_tray_disabled_item(item: tauri::menu::CheckMenuItem<tauri
     let _ = DISABLED_MENU_ITEM.set(item);
 }
 
-fn sync_tray_disabled_item(disabled: bool) {
-    if let Some(check) = DISABLED_MENU_ITEM.get() {
-        let _ = check.set_checked(disabled);
+fn sync_tray_disabled_item(app: &tauri::AppHandle) {
+    if DISABLED_MENU_ITEM.get().is_none() {
+        return;
+    }
+    if let Some(context) = app.try_state::<murmur_core::context::AppContext>() {
+        // Never synchronously wait for AppKit while holding configuration
+        // ownership: a main-thread tray callback may need that same fence.
+        let _ = context.main_thread.dispatch(Box::new(|| {
+            if let Some(check) = DISABLED_MENU_ITEM.get() {
+                let _ = check.set_checked(keyboard::is_app_disabled());
+            }
+        }));
     }
 }
 

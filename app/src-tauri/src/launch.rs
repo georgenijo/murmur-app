@@ -1,12 +1,11 @@
 //! Content-free launch timing and conservative native preparation.
 //!
-//! Capture still waits for the frontend's fully validated configuration and
-//! event subscriptions. Native setup only prepares the shared rdev thread and
-//! installed ASR runtime; it never opens a microphone or applies partial settings.
+//! Native startup applies a committed v7 configuration before arming control.
+//! Unknown/legacy snapshots still use the existing frontend migration path.
 use crate::MutexExt;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    OnceLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex, OnceLock,
 };
 use std::time::Instant;
 use tauri::Manager;
@@ -15,6 +14,58 @@ static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 static FRONTEND_CONFIGURING: AtomicBool = AtomicBool::new(false);
 static MODEL_READY: AtomicBool = AtomicBool::new(false);
 static FRONTEND_HYDRATED: AtomicBool = AtomicBool::new(false);
+
+/// Model preparation has a narrower lifetime than capture configuration:
+/// confirmations and unrelated settings must preserve an eligible worker.
+#[derive(Default)]
+pub(crate) struct WarmupQueue {
+    generation: AtomicU64,
+    pending: Mutex<Option<u64>>,
+}
+
+impl WarmupQueue {
+    // Call only for a changed model or a transition to disabled. The mutex
+    // orders invalidation against claims and completion; the atomic is safe
+    // to revalidate under the runtime load lock without taking other locks.
+    pub(crate) fn invalidate(&self) {
+        let _pending = self.pending.lock_or_recover();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn claim(self: &Arc<Self>) -> Option<WarmupTicket> {
+        let mut pending = self.pending.lock_or_recover();
+        let generation = self.generation.load(Ordering::SeqCst);
+        if *pending == Some(generation) {
+            return None;
+        }
+        *pending = Some(generation);
+        Some(WarmupTicket {
+            queue: self.clone(),
+            generation,
+        })
+    }
+}
+
+pub(crate) struct WarmupTicket {
+    queue: Arc<WarmupQueue>,
+    generation: u64,
+}
+
+impl WarmupTicket {
+    pub(crate) fn is_current(&self) -> bool {
+        self.queue.generation.load(Ordering::SeqCst) == self.generation
+    }
+}
+
+impl Drop for WarmupTicket {
+    fn drop(&mut self) {
+        let mut pending = self.queue.pending.lock_or_recover();
+        // An obsolete worker cannot release its replacement's claim.
+        if *pending == Some(self.generation) {
+            *pending = None;
+        }
+    }
+}
 
 pub fn process_start() {
     PROCESS_START.get_or_init(Instant::now);
@@ -57,11 +108,10 @@ struct Preparation {
 /// Do not duplicate the frontend's migrations or guess at unknown settings.
 /// Older installations acquire the durable onboarding mirror on their next
 /// frontend boot and use the existing frontend-driven path for this launch.
-fn preparation(blob: &str, accessibility: bool) -> Option<Preparation> {
+fn preparation(blob: &str, _accessibility: bool) -> Option<Preparation> {
     let value: serde_json::Value = serde_json::from_str(blob).ok()?;
     if value.get("settingsVersion")?.as_u64()? != 7
         || !value.get("launchOnboardingComplete")?.as_bool()?
-        || !accessibility
     {
         return None;
     }
@@ -93,44 +143,50 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
         return;
     };
     crate::keyboard::set_app_disabled(plan.disabled);
-    plan.start_resources(
-        || crate::keyboard::ensure_listener_thread_spawned(app.clone()),
-        |model| spawn_model_preparation(app.clone(), model.to_string()),
-    );
+    let revision = crate::dictation_control::accept_configuration(app);
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&blob) else {
+            return;
+        };
+        // The persisted v7 snapshot was confirmed by the current loader. Apply
+        // the existing backend configuration path before arming native control.
+        if crate::commands::recording::configure_dictation(
+            settings.clone(),
+            handle.clone(),
+            handle.state::<crate::State>(),
+        )
+        .await
+        .is_ok()
+        {
+            if crate::dictation_control::configure_accepted(&handle, settings, revision) != Ok(true)
+            {
+                return;
+            }
+            plan.schedule_warmup(|_| {
+                crate::commands::recording::request_idle_model_preparation(&handle);
+            });
+        }
+    });
 }
 
-impl Preparation {
-    fn start_resources(&self, listener: impl FnOnce(), warm: impl FnOnce(&str)) {
-        if self.disabled {
-            return;
-        }
-        // Detectors stay disarmed until the frontend applies authoritative
-        // capture settings and subscribes. No early gesture uses defaults.
-        listener();
-        if crate::model_runtime::model_definition(&self.model)
+pub(crate) fn warmup_allowed(disabled: bool, model: &str) -> bool {
+    !disabled
+        && crate::model_runtime::model_definition(model)
             .is_ok_and(|definition| definition.warm_on_startup)
-        {
-            warm(&self.model);
-        }
+}
+
+pub(crate) fn schedule_warmup(disabled: bool, model: &str, warm: impl FnOnce(&str)) {
+    if warmup_allowed(disabled, model) {
+        warm(model);
     }
 }
 
-fn spawn_model_preparation(app: tauri::AppHandle, model: String) {
-    *app.state::<crate::State>()
-        .app_state
-        .last_transcription_at
-        .lock_or_recover() = Some(Instant::now());
-    drop(tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<crate::State>();
-        let _ = state
-            .app_state
-            .model_runtime
-            .prepare_startup_if(Some(&app), &model, || {
-                !FRONTEND_CONFIGURING.load(Ordering::SeqCst)
-            });
-        // Preparation failure is optional; recording/configuration retains the
-        // normal installed-model checks and error handling. Never log raw errors.
-    }));
+impl Preparation {
+    // Startup and backend configuration share the same guarded decision.
+    fn schedule_warmup(&self, warm: impl FnOnce(&str)) {
+        schedule_warmup(self.disabled, &self.model, warm);
+    }
 }
 
 #[cfg(test)]
@@ -144,7 +200,7 @@ mod tests {
     fn rust_start_requires_the_same_gates_and_valid_persisted_settings() {
         let settings = settings();
         assert!(preparation(&settings.to_string(), true).is_some());
-        assert!(preparation(&settings.to_string(), false).is_none());
+        assert!(preparation(&settings.to_string(), false).is_some());
         assert!(preparation("invalid", true).is_none());
         for (key, value) in [
             ("launchOnboardingComplete", serde_json::json!(false)),
@@ -164,33 +220,23 @@ mod tests {
     #[test]
     fn rust_start_obeys_disabled_and_catalog_warm_policy() {
         use std::cell::Cell;
-        let listeners = Cell::new(0);
         let models = Cell::new(0);
         let mut settings = settings();
         settings["model"] = serde_json::json!("parakeet-tdt-0.6b-v3-coreml");
         settings["disabled"] = serde_json::json!(true);
         let disabled = preparation(&settings.to_string(), true).unwrap();
         assert!(disabled.disabled);
-        disabled.start_resources(
-            || listeners.set(listeners.get() + 1),
-            |_| models.set(models.get() + 1),
-        );
-        assert_eq!((listeners.get(), models.get()), (0, 0));
+        disabled.schedule_warmup(|_| models.set(models.get() + 1));
+        assert_eq!(models.get(), 0);
         settings["disabled"] = serde_json::json!(false);
         preparation(&settings.to_string(), true)
             .unwrap()
-            .start_resources(
-                || listeners.set(listeners.get() + 1),
-                |_| models.set(models.get() + 1),
-            );
-        assert_eq!((listeners.get(), models.get()), (1, 1));
+            .schedule_warmup(|_| models.set(models.get() + 1));
+        assert_eq!(models.get(), 1);
         settings["model"] = serde_json::json!("base.en");
         preparation(&settings.to_string(), true)
             .unwrap()
-            .start_resources(
-                || listeners.set(listeners.get() + 1),
-                |_| models.set(models.get() + 1),
-            );
-        assert_eq!((listeners.get(), models.get()), (2, 1));
+            .schedule_warmup(|_| models.set(models.get() + 1));
+        assert_eq!(models.get(), 1);
     }
 }

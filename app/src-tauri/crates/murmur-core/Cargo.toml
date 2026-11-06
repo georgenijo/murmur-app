@@ -8,6 +8,7 @@ publish = false
 futures-channel = "0.3"
 memory-stats = "1"
 sha2 = "0.10"
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

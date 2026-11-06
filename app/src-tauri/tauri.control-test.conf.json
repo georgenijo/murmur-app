@@ -1,0 +1,53 @@
+{
+  "identifier": "com.localdictation.refactor-test",
+  "productName": "Murmur Refactor Test",
+  "app": {
+    "windows": [
+      {
+        "label": "diagnostics",
+        "title": "Murmur Diagnostics",
+        "url": "diagnostics.html",
+        "width": 1100,
+        "height": 780,
+        "minWidth": 840,
+        "minHeight": 620,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "center": true,
+        "visible": false,
+        "backgroundColor": "#f7fafc"
+      },
+      {
+        "label": "overlay",
+        "title": "",
+        "url": "overlay.html",
+        "width": 260,
+        "height": 100,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": false,
+        "focusable": false,
+        "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "dictation-preview",
+        "title": "",
+        "url": "dictation-preview.html",
+        "width": 560,
+        "height": 44,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "shadow": false,
+        "visibleOnAllWorkspaces": true
+      }
+    ]
+  }
+}

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from '../log';
-import { DEFAULT_SETTINGS, loadSettings, smartAutoMicrophoneRequest } from '../settings';
 import type { DictationStatus } from '../types';
-import type { DictationResponse } from '../dictation';
+import { listen } from '@tauri-apps/api/event';
 
 export interface UseRecordingControlsArgs {
   /** Current dictation status (reactive value, drives the locked-mode reset). */
@@ -37,8 +36,19 @@ export function useRecordingControls({
 
   useEffect(() => { lockedRef.current = lockedMode; }, [lockedMode]);
 
-  // Cancellation briefly reports Recovering before immediately returning to
-  // Idle, so release locked mode at the first cancellation boundary.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    let receivedEvent=false;
+    void listen<boolean>('dictation-lock-changed', ({ payload }) => { receivedEvent=true; setLockedMode(payload); })
+      .then(async (stop) => {
+        if (disposed) { stop(); return; }
+        unlisten=stop;
+        const locked=await invoke<boolean>('get_dictation_lock');
+        if (!disposed && !receivedEvent) setLockedMode(locked);
+      }).catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   useEffect(() => {
     if (status === 'idle' || status === 'recovering') setLockedMode(false);
   }, [status]);
@@ -66,63 +76,10 @@ export function useRecordingControls({
       flog.info('overlay', 'double-click ignored while expanded', { status: currentStatus });
       return;
     }
-    const currentLocked = lockedRef.current;
-    if (currentStatus === 'starting') {
-      setLockedMode(false);
-      try {
-        await invoke('cancel_native_recording');
-      } catch (err) {
-        flog.error('overlay', 'cancel_native_recording error', { error: String(err) });
-      }
-      return;
-    }
-    if (!currentLocked) {
-      // Enter locked mode — start recording
-      setLockedMode(true);
-      if (currentStatus !== 'recording') {
-        try {
-          // Read the microphone setting via the validated settings API (the
-          // overlay has no React settings context, so it loads localStorage
-          // directly, but through loadSettings() rather than a raw parse).
-          let deviceName: string | null = null;
-          let smartAuto = null;
-          try {
-            const settings = loadSettings();
-            if (settings.microphone && settings.microphone !== DEFAULT_SETTINGS.microphone) {
-              deviceName = settings.microphone;
-            }
-            smartAuto = smartAutoMicrophoneRequest(settings);
-            if (smartAuto) deviceName = null;
-          } catch { /* ignore parse errors */ }
-          flog.info('overlay', 'invoking start_native_recording', { deviceName });
-          const res = await invoke<DictationResponse>('start_native_recording', {
-            deviceName,
-            smartAuto,
-            origin: 'toggle',
-          });
-          flog.info('overlay', 'start_native_recording result', { type: res.type, state: res.state });
-          if (res.type !== 'recording_starting') {
-            flog.warn('overlay', 'recording start declined', { type: res.type });
-            setLockedMode(false);
-          }
-        } catch (err) {
-          flog.error('overlay', 'start_native_recording error', { error: String(err) });
-          setLockedMode(false);
-        }
-      }
-    } else {
-      // Exit locked mode — stop recording
-      setLockedMode(false);
-      if (currentStatus === 'recording') {
-        try {
-          flog.info('overlay', 'invoking stop_native_recording');
-          const res = await invoke('stop_native_recording', { stopTrigger: 'overlay' });
-          flog.info('overlay', 'stop_native_recording result', { res: res as Record<string, unknown> });
-        } catch (err) {
-          flog.error('overlay', 'stop_native_recording error', { error: String(err) });
-        }
-      }
-    }
+    try {
+      await invoke('toggle_dictation_lock');
+    } catch { /* authoritative state arrives through native events */ }
+
   }, [statusRef, disabledRef, expandedRef]);
 
   // Single-click: debounced so it doesn't fire when the user double-clicks.

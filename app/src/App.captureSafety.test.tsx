@@ -7,7 +7,7 @@ import { IDLE_MEETING_STATUS } from './lib/meetings';
 import type { ModelRuntimeSnapshot } from './lib/modelRuntime';
 import type { DictationResponse } from './lib/dictation';
 
-// Keep App, its UI, and all capture hooks real. Only native IPC is replaced.
+// Keep App and its presentation clients real. Native control is covered by Rust.
 const native = vi.hoisted(() => ({
   invoke: vi.fn(),
   listeners: new Map<string, Set<(event: { payload: unknown }) => void>>(),
@@ -57,6 +57,7 @@ function modelSnapshot(): ModelRuntimeSnapshot {
 
 function response(command: string): unknown {
   switch (command) {
+    case 'suspend_dictation_for_setup': return true;
     case 'check_specific_model_exists': return native.modelInstalled;
     case 'check_accessibility_permission': return true;
     case 'check_microphone_permission_status': return 'granted';
@@ -167,10 +168,17 @@ describe('App setup capture safety', () => {
     expectMain();
     expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
     expect(container.textContent).toContain('Stop recording first');
-    expect(native.listeners.get('double-tap-toggle')?.size).toBeGreaterThan(0);
-    expect(native.listeners.get('escape-cancel')?.size).toBeGreaterThan(0);
-    await emit('double-tap-toggle', null);
-    expect(native.invoke).toHaveBeenCalledWith('stop_native_recording', { stopTrigger: 'toggle' });
+    expect(native.listeners.get('double-tap-toggle')?.size ?? 0).toBe(0);
+    expect(native.listeners.get('escape-cancel')?.size ?? 0).toBe(0);
+    await emit('recording-status-changed', 'processing');
+    expect(container.textContent).toContain('Writing it out');
+  });
+
+  it('sends live control-only edits without restoring an older confirmed backend snapshot', async () => {
+    await mount();
+    await emit('app-disabled-changed', true);
+    const requests = native.invoke.mock.calls.filter(([command]) => command === 'configure_dictation_control');
+    expect(requests[requests.length - 1]?.[1]).toMatchObject({ settings: { disabled: true, settingsVersion: 7 } });
   });
 
   it.each(['hold_down', 'double_tap', 'both'])('does not arm %s capture behind the missing-model screen', async (recordingMode) => {
@@ -225,8 +233,8 @@ describe('App setup capture safety', () => {
     expectMain();
     expect(container.textContent).toContain('Stop recording first');
     expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
-    await emit('escape-cancel', {});
-    expect(native.invoke).toHaveBeenCalledWith('cancel_native_recording');
+    await emit('recording-status-changed', 'idle');
+    expectMain();
   });
 
   it.each(['hold_down', 'double_tap', 'both'])('treats an unconfirmed %s start as busy after an idle ownership snapshot', async (recordingMode) => {
@@ -239,7 +247,7 @@ describe('App setup capture safety', () => {
       return response(command);
     });
     await rerun('settings');
-    await emit(recordingMode === 'hold_down' ? 'hold-down-start' : 'double-tap-toggle', null);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid=home-record-button]')!.click());
     expect(native.invoke).toHaveBeenCalledWith('start_native_recording', expect.any(Object));
 
     // Neither native confirmation nor a lifecycle event has reached JS yet.
@@ -251,8 +259,8 @@ describe('App setup capture safety', () => {
     await emit('recording-status-changed', 'starting');
     await act(async () => start.resolve({ type: 'recording_starting', state: 'starting', recordingId: 1 }));
     await emit('recording-status-changed', 'recording');
-    await emit('escape-cancel', {});
-    expect(native.invoke).toHaveBeenCalledWith('cancel_native_recording');
+    await emit('recording-status-changed', 'idle');
+    expectMain();
   });
 
   it.each(['rejected', 'refused', 'confirmed'] as const)('settles pending admission when a start is %s', async (outcome) => {
@@ -260,7 +268,7 @@ describe('App setup capture safety', () => {
     const start = deferred<DictationResponse>();
     native.invoke.mockImplementation(async (command: string) => command === 'start_native_recording'
       ? start.promise : response(command));
-    await emit('double-tap-toggle', null);
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid=home-record-button]')!.click());
     await act(async () => {
       if (outcome === 'rejected') start.reject(new Error('start failed'));
       else start.resolve(outcome === 'refused'
@@ -276,30 +284,18 @@ describe('App setup capture safety', () => {
     }
   });
 
-  it.each(['hold_down', 'double_tap', 'both'])('ignores a queued %s start once setup is admitted, then rearms after completion', async (recordingMode) => {
+  it.each(['hold_down', 'double_tap', 'both'])('disarms %s through the native gate during setup and rearms after completion', async (recordingMode) => {
     await mount({ recordingMode });
-    const ownership = deferred<boolean>();
-    native.invoke.mockImplementation(async (command: string) => command === 'get_meeting_audio_capture_busy'
-      ? ownership.promise : response(command));
-    const event = recordingMode === 'hold_down' ? 'hold-down-start' : 'double-tap-toggle';
-    const queuedCallbacks = [...native.listeners.get(event)!];
-    expect(queuedCallbacks.length).toBeGreaterThan(0);
     await rerun('settings');
-    await act(async () => {
-      ownership.resolve(false);
-      // Let admission settle while React still batches the setup render. The
-      // queued callback retains the main surface's currently armed handler.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(localStorage.getItem(ONBOARDING_KEY)).toBeNull();
-      expect(container.querySelector('.main-app-shell')).not.toBeNull();
-      for (const callback of queuedCallbacks) callback({ payload: null });
-    });
     expect(container.querySelector('.main-first-run-onboarding')).not.toBeNull();
-    for (const callback of queuedCallbacks) callback({ payload: null });
-    expect(native.invoke.mock.calls.filter(([command]) => command === 'start_native_recording')).toEqual([]);
+    expect(native.invoke).toHaveBeenCalledWith('suspend_dictation_for_setup');
+    expect(native.invoke).toHaveBeenCalledWith('configure_dictation_control', {
+      settings: expect.objectContaining({ launchOnboardingComplete: false }),
+    });
     await finishSetup();
-    await emit(event, null);
-    expect(native.invoke).toHaveBeenCalledWith('start_native_recording', expect.any(Object));
+    expect(native.invoke).toHaveBeenCalledWith('configure_dictation_control', {
+      settings: expect.objectContaining({ launchOnboardingComplete: true }),
+    });
   });
 
   it.each([',', 'k', 'open-settings'])('ignores %s during setup and finishes on Home', async (action) => {
@@ -326,6 +322,6 @@ describe('App setup capture safety', () => {
     expectMain();
     expect(container.querySelector('[role="listbox"][aria-label="Commands"]')).toBeNull();
     expect(container.querySelector('main')?.getAttribute('aria-hidden')).toBe('false');
-    expect(native.invoke).toHaveBeenCalledWith('start_keyboard_listener', { hotkey: DEFAULT_SETTINGS.doubleTapKey, mode: 'double_tap' });
+    expect(native.invoke).toHaveBeenCalledWith('configure_dictation_control', { settings: expect.objectContaining({ launchOnboardingComplete: true }) });
   });
 });
