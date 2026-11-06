@@ -407,7 +407,10 @@ its inline behavior is established by the pinned source inspection above.
 All producer fixtures used for exact-row mutation now include native
 `schemaVersion: 2`, `source` and `pinned`. Delete/clear assert an empty History,
 eviction asserts 200 entries without the target, and edit asserts the changed
-text **before** retry. The other completion fixture helper already carries
+text **before** retry. The cap fixture seeds 199 additional native-shaped rows
+in one storage write, asserts the full store still contains the target, then
+uses one real dictation submission to trigger and verify eviction. The other
+completion fixture helper already carries
 `schemaVersion: 2`; intentionally legacy fixtures retain their legacy shape.
 
 Baseline checks on archived `91dc0f25`, with only new test functions added,

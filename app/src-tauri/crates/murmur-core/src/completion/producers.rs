@@ -533,9 +533,29 @@ mod tests {
                             .unwrap();
                     }
                     2 => {
-                        for n in 0..200 {
-                            p.dictation(n, json!({"schemaVersion":2,"pinned":false,"source":"file","id":format!("synthetic-{n}"),"text":"synthetic","timestamp":n+2,"duration":1}), true, None, "2026-11-05".into()).unwrap();
-                        }
+                        // Seed a native-shaped full store in one fixture write;
+                        // the next real producer must perform the actual eviction.
+                        storage(&p.service, move |s| {
+                            let file = if webkit {
+                                super::super::HOLD
+                            } else {
+                                "history.json"
+                            };
+                            let mut raw = s.read::<Value>(file, |_| true).unwrap().unwrap();
+                            let entries = if webkit {
+                                &mut raw["history"]["entries"]
+                            } else {
+                                &mut raw["data"]
+                            };
+                            entries.as_array_mut().unwrap().extend((0..199).map(|n|
+                                json!({"schemaVersion":2,"pinned":false,"source":"file","id":format!("synthetic-{n}"),"text":"synthetic","timestamp":n+2,"duration":1})
+                            ));
+                            s.write(file, &raw).unwrap();
+                        });
+                        let full = p.service.execute(Command::Snapshot).unwrap();
+                        assert_eq!(full.history.len(), 200);
+                        assert!(full.history.iter().any(|v| v["id"] == "synthetic"));
+                        p.dictation(200, json!({"schemaVersion":2,"pinned":false,"source":"recording","id":"evicting-dictation","text":"synthetic","timestamp":201,"duration":1}), true, None, "2026-11-05".into()).unwrap();
                     }
                     3 => {
                         p.service
