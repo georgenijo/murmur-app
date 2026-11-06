@@ -498,8 +498,8 @@ impl Retirement {
     /// # Safety
     /// No webview or React process may use `store` or `directory` for the entire
     /// operation. `directory` must belong exclusively to this bundle's store.
-    /// Never pass production paths in a test. The v3 receipt is mandatory; 1.5
-    /// cannot retire a store because #990 has not shipped that receipt yet.
+    /// Never pass production paths in a test. The v3 updater receipt and the
+    /// host's no-webview barrier are both mandatory before retirement.
     pub unsafe fn new(
         identity: StoreIdentity,
         directory: std::path::PathBuf,

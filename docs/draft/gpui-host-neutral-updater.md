@@ -146,3 +146,17 @@ Two real signed OTA canaries in the Tauri app are still required before Phase
 This draft stack creates no tags, releases or public feeds and requests no
 production signing private key. Headless unit checks and the local fixture do
 not satisfy that real-OTA acceptance gate.
+
+## Automated implementation evidence
+
+Executable behavior at 5d952a58: TypeScript and 1,827 frontend tests pass;
+core default/QA-feature suites pass 237/238 unit and integration tests. Mac
+mini Rust 1.98.1 app checks pass 1,581/1,587 tests with default/QA configs
+(16 opt-in tests ignored in each), plus the shutdown and main-dispatch
+harnesses. Both all-target clippy configurations pass with the two requested
+allowances, as do 18 foreign-source and 11 resolved restart guard fixtures.
+All 21 native updater cases pass, including a deliberate symlinked cache-root
+run; native core clippy passes. The Mac checkout, target and synthetic temp
+data were removed after preserving evidence. CI results are recorded on the
+draft PR; native GUI QA, independent Sol review and real OTA acceptance remain
+with the lead. This evidence includes no app launch or production-profile use.

@@ -256,7 +256,7 @@ stay local and never reach logs or telemetry. See
 | `commands/integrations.rs` | Local Launch Services availability probe for the optional NotchPill companion app |
 | `commands/microphone_preview.rs` | Main-window microphone test lifecycle, input validation, VAD sensitivity, and exact-owner stop |
 | `commands/mode_runtime.rs` | Foreground app and browser-site mode resolution, mode cycling, temporary overrides, and watcher events |
-| `commands/updater.rs` | App-translocation status and opt-in updater canary file transport |
+| `commands/updater.rs` | Main-only Rust updater intents/snapshots, native notifications, scheduling adapter, coordinated relaunch and QA-only fixture transport |
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
@@ -626,7 +626,7 @@ The main React startup sends bounded raw strings to the core before hydrating
 presentation caches. Transcript removal runs independently after durable v1
 receipts, including when v2 fails. Failed source writes retain their newest
 per-key intent for retry and display a content-free notice. No completion data
-is cached in WebKit. Updater keys keep their existing owner until v3 in #990.
+is cached in WebKit. Migration v3 imports updater-last-check and pending-update-release-notes into the same Rust-owned source document; the updater alone writes them thereafter. React removes the legacy keys after v3 and never hydrates them back into WebKit.
 
 The separate `murmur-webkit` crate ships a permanent standalone objc2 importer
 with no Tauri/wry dependency. A native host supplies its data store, retains the
@@ -636,7 +636,7 @@ all durable I/O stays off the main thread. Its retirement coordinator requires
 a no-webview barrier plus v1/v2/v3 and removal receipts. It purges via
 WKWebsiteDataStore, verifies no records, releases the store, removes the bundle
 store directory and syncs its parent before writing the retirement receipt.
-This release cannot retire: it never writes v3. See the
+The React host keeps the store while its pages remain alive; v3 now commits, but retirement still requires the native host's no-webview barrier. See the
 [design and failure matrix](draft/gpui-webkit-lifecycle.md).
 
 The renderer retains defensive theme-library decoding for presentation and import
