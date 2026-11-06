@@ -688,6 +688,7 @@ impl Engine {
     fn execute(&mut self, command: Command) -> Result<Snapshot> {
         let content = matches!(&command, Command::Complete { entry: Some(_), .. });
         let result = self.execute_inner(command);
+        self.storage.capture_failures = false;
         if content
             && result.is_err()
             && !self.storage.has_intents()
@@ -720,6 +721,14 @@ impl Engine {
             // rejected publication evidence after its recovery has resolved.
             self.storage.remove_evidence(PENDING)?;
         }
+        // Capture exact mutation snapshots only after recovery admits this job.
+        self.storage.capture_failures = matches!(
+            &command,
+            Command::Clear { .. }
+                | Command::History(_)
+                | Command::Import(_)
+                | Command::KeysRemoved(_)
+        );
         match command {
             Command::Snapshot | Command::RecoverPending => {}
             Command::AcceptFile {

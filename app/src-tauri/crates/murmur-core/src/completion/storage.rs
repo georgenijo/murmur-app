@@ -16,6 +16,7 @@ pub enum Boundary {
 #[derive(Default)]
 pub struct Storage {
     pub root: PathBuf,
+    pub(super) capture_failures: bool,
     pub(super) intents: std::collections::BTreeMap<String, serde_json::Value>,
     // Certainty of the most recent write, including failures before rename.
     pub renamed: bool,
@@ -111,6 +112,7 @@ impl Storage {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            capture_failures: false,
             intents: Default::default(),
             renamed: false,
             #[cfg(test)]
@@ -340,7 +342,13 @@ impl Storage {
     }
     pub fn write<T: Serialize>(&mut self, name: &str, value: &T) -> Result<()> {
         let bytes = serde_json::to_vec(value).map_err(|_| Error::Invalid)?;
-        self.write_bytes(name, &bytes)
+        let result = self.write_bytes(name, &bytes);
+        if self.capture_failures && result.is_err() && name != super::STATE {
+            self.intents
+                .entry(name.to_owned())
+                .or_insert(serde_json::from_slice(&bytes).map_err(|_| Error::Invalid)?);
+        }
+        result
     }
     pub fn write_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         self.renamed = false;

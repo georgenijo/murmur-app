@@ -1460,3 +1460,41 @@ fn report_failure_before_pending_admission_retains_exact_held_report() {
     assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
     assert_eq!(e.snapshot().unwrap().reports.len(), 1);
 }
+
+#[test]
+fn direct_mutation_failures_cannot_receive_committed_until_exact_snapshot_is_retried() {
+    for clear in [false, true] {
+        for boundary in [
+            Boundary::BeforeRename,
+            Boundary::AfterRename,
+            Boundary::DirectorySync,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let mut e = engine(dir.path(), false);
+            let target = complete(&mut e, "original", true).history[0].clone();
+            e.storage.fail = Some(("history.json".into(), boundary));
+            let command = if clear {
+                Command::Clear {
+                    destination: Destination::History,
+                    at: 5,
+                }
+            } else {
+                Command::History(HistoryMutation::Pin { target })
+            };
+            assert!(e.execute(command).is_err());
+            e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+            assert_eq!(
+                e.write_receipt(),
+                crate::shutdown::WriteOutcome::UnpreservedFailure
+            );
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            let history = reopen(&e).snapshot().unwrap().history;
+            if clear {
+                assert!(history.is_empty());
+            } else {
+                assert_eq!(history.len(), 1);
+                assert_eq!(history[0]["pinned"], true);
+            }
+        }
+    }
+}
