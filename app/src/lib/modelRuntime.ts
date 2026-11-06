@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from './targetedEvents';
 import { useEffect, useMemo, useState } from 'react';
 
 export interface ModelCapabilities {

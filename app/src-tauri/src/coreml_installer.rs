@@ -200,7 +200,7 @@ pub(crate) fn clear_quarantined_installer() -> bool {
     }
 }
 
-fn emit_worker_message(message: &WorkerMessage) -> Result<(), ()> {
+fn publish_worker_message(message: &WorkerMessage) -> Result<(), ()> {
     let encoded = serde_json::to_string(message).map_err(|_| ())?;
     if PROTOCOL_PREFIX.len() + encoded.len() + 1 > MAX_PROTOCOL_LINE_BYTES {
         return Err(());
@@ -262,12 +262,12 @@ fn start_parent_watchdog() {
 #[cfg(debug_assertions)]
 fn run_debug_scenario(scenario: &str) -> Option<i32> {
     let phase = |phase, repeated_repair| {
-        emit_worker_message(&WorkerMessage::Phase {
+        publish_worker_message(&WorkerMessage::Phase {
             phase,
             repeated_repair,
         })
     };
-    let terminal = |outcome| emit_worker_message(&WorkerMessage::Terminal { outcome });
+    let terminal = |outcome| publish_worker_message(&WorkerMessage::Terminal { outcome });
     let success = || {
         let _ = phase(InstallPhase::Initializing, false);
         let _ = phase(InstallPhase::Validating, false);
@@ -345,7 +345,7 @@ pub fn run_cli_if_requested() -> Option<i32> {
     }
 
     start_parent_watchdog();
-    if emit_worker_message(&WorkerMessage::Phase {
+    if publish_worker_message(&WorkerMessage::Phase {
         phase: InstallPhase::Preparing,
         repeated_repair: false,
     })
@@ -367,7 +367,7 @@ pub fn run_cli_if_requested() -> Option<i32> {
             ModelPreparationPhase::Initializing => (InstallPhase::Initializing, false),
             ModelPreparationPhase::Validating => (InstallPhase::Validating, false),
         };
-        let _ = emit_worker_message(&WorkerMessage::Phase {
+        let _ = publish_worker_message(&WorkerMessage::Phase {
             phase,
             repeated_repair,
         });
@@ -376,7 +376,7 @@ pub fn run_cli_if_requested() -> Option<i32> {
         Ok(()) => WorkerOutcome::Success,
         Err(error) => WorkerOutcome::from_preparation_error(error),
     };
-    if emit_worker_message(&WorkerMessage::Terminal { outcome }).is_err() {
+    if publish_worker_message(&WorkerMessage::Terminal { outcome }).is_err() {
         return Some(70);
     }
     Some(if outcome == WorkerOutcome::Success {

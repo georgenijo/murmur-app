@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS, type VocabularyEntry } from '../settings';
 const mocks = vi.hoisted(() => ({
   initDictation: vi.fn(),
   configure: vi.fn(),
-  emit: vi.fn<(event: string) => Promise<void>>(async () => {}),
+  emitTo: vi.fn<(label: string, event: string, payload?: unknown) => Promise<void>>(async () => {}),
   listen: vi.fn<(...args: unknown[]) => Promise<() => void>>(async () => () => {}),
   invoke: vi.fn<(command?: string, args?: unknown) => Promise<unknown>>(async () => undefined),
   isEnabled: vi.fn(async () => false),
@@ -29,7 +29,7 @@ vi.mock('../dictation', () => ({
   },
   buildConfigureOptions: vi.fn((settings) => settings),
 }));
-vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));
+vi.mock('@tauri-apps/api/event', () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: mocks.isTauri }));
 vi.mock('@tauri-apps/plugin-autostart', () => ({
   isEnabled: mocks.isEnabled,
@@ -510,12 +510,12 @@ describe('useSettings configure rollback privacy', () => {
 
   it('notifies the overlay when the recording gesture or function key changes', async () => {
     await mountHarness();
-    mocks.emit.mockClear();
+    mocks.emitTo.mockClear();
 
     await act(async () => current.updateSettings({ doubleTapKey: 'f7' }));
     await act(async () => current.updateSettings({ recordingMode: 'both' }));
 
-    expect(mocks.emit.mock.calls.filter(([event]) => event === 'settings-changed')).toHaveLength(2);
+    expect(mocks.emitTo.mock.calls.filter(([, event]) => event === 'settings-changed')).toHaveLength(2);
   });
 
   it('serializes probe policy writes and reads the latest desired policy after a pending enable', async () => {
@@ -575,7 +575,7 @@ describe('useSettings configure rollback privacy', () => {
       },
     });
     expect(writes[1]?.[1]).toEqual({ policy: { enabled: false } });
-    expect(mocks.emit).toHaveBeenCalledWith('settings-changed');
+    expect(mocks.emitTo).toHaveBeenCalledWith('overlay', 'settings-changed', undefined);
   });
 
   it('keeps saved disabled consent inert at boot and synchronizes a native re-enable', async () => {

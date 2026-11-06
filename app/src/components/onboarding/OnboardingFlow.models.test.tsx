@@ -10,7 +10,7 @@ import { buildConfigureOptions, configure } from '../../lib/dictation';
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(async () => () => {}), emit: vi.fn(async () => {}) }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke, isTauri: () => false }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: native.listen, emit: native.emit }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: native.listen, emitTo: native.emit }));
 vi.mock('@tauri-apps/plugin-autostart', () => ({
   isEnabled: vi.fn(async () => false), enable: vi.fn(), disable: vi.fn(),
 }));

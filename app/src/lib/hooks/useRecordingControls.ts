@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from '../log';
 import type { DictationStatus } from '../types';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 
 export interface UseRecordingControlsArgs {
   /** Current dictation status (reactive value, drives the locked-mode reset). */
@@ -119,7 +119,7 @@ export function useRecordingControls({
     flog.info('overlay', 'MOUSEDOWN', {
       button: e.button, x: Math.round(e.clientX), y: Math.round(e.clientY),
       target: (e.target as HTMLElement).tagName,
-      className: (e.target as HTMLElement).className?.slice(0, 50),
+      className: e.target instanceof Element ? e.target.getAttribute('class')?.slice(0, 50) : undefined,
       locked: lockedRef.current, status: statusRef.current,
     });
   }, [statusRef]);

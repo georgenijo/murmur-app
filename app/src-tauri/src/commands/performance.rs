@@ -1,8 +1,10 @@
+use crate::events::EventsExt;
 use crate::performance_metrics::{
     PerformanceRunListV1, PerformanceRunV1, PerformanceStoreHealthV1, ResourceSampleV1,
 };
 use crate::State;
-use tauri::{Emitter, Manager};
+use murmur_core::events::{EventKind, EventSink};
+use tauri::Manager;
 
 const DIAGNOSTICS_TABS: [&str; 6] = [
     "events",
@@ -41,7 +43,9 @@ pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(),
     let _ = window.unminimize();
     let _ = window.set_focus();
     window
-        .emit("diagnostics-tab-requested", tab)
+        .app_handle()
+        .events()
+        .publish(EventKind::DiagnosticsTabRequested, tab)
         .map_err(|error| {
             tracing::warn!(target: "system", %error, "could not select Diagnostics tab");
             "The Diagnostics tab could not be selected.".to_string()

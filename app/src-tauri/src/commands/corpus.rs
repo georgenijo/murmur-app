@@ -6,18 +6,20 @@
 //! fixed local Application Support directory and are never logged.
 
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
+use crate::events::EventsExt;
 use crate::microphone_preview::{
     CLIPPING_SAMPLE_THRESHOLD, QUIET_PEAK_THRESHOLD, QUIET_RMS_THRESHOLD,
 };
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use chrono::Utc;
+use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const CORPUS_SCHEMA_VERSION: u32 = 1;
 const CORPUS_ID: &str = "personal-v1";
@@ -460,10 +462,10 @@ fn persist_recording(
     })
 }
 
-fn emit_status(app_handle: &tauri::AppHandle, state: &str, error: Option<&str>) {
+fn publish_status(app_handle: &tauri::AppHandle, state: &str, error: Option<&str>) {
     crate::smart_auto_probe::wake();
-    let _ = app_handle.emit(
-        "corpus-recording-status",
+    let _ = app_handle.events().publish(
+        EventKind::CorpusRecordingStatus,
         serde_json::json!({ "state": state, "error": error }),
     );
 }
@@ -487,22 +489,22 @@ pub(crate) fn handle_audio_lifecycle(
             state
                 .corpus
                 .set_phase_if(capture_id, CapturePhase::Recording);
-            emit_status(&app_handle, "recording", None);
+            publish_status(&app_handle, "recording", None);
         }
-        AudioLifecycleEvent::StillConnecting => emit_status(&app_handle, "starting", None),
-        AudioLifecycleEvent::Recovering { .. } => emit_status(&app_handle, "recovering", None),
+        AudioLifecycleEvent::StillConnecting => publish_status(&app_handle, "starting", None),
+        AudioLifecycleEvent::Recovering { .. } => publish_status(&app_handle, "recovering", None),
         AudioLifecycleEvent::InitializationFailed { error, .. } => {
-            emit_status(&app_handle, "error", Some(&error));
+            publish_status(&app_handle, "error", Some(&error));
         }
         AudioLifecycleEvent::CleanupFinished => {}
-        AudioLifecycleEvent::RecoveryStalled => emit_status(
+        AudioLifecycleEvent::RecoveryStalled => publish_status(
             &app_handle,
             "error",
             Some("Microphone recovery is taking longer than expected"),
         ),
         AudioLifecycleEvent::Interrupted { .. } => {
             state.corpus.clear_if(capture_id);
-            emit_status(&app_handle, "idle", None);
+            publish_status(&app_handle, "idle", None);
         }
         AudioLifecycleEvent::Idle => {
             // A normal Stop reaches audio-idle before the WAV and manifest are
@@ -510,7 +512,7 @@ pub(crate) fn handle_audio_lifecycle(
             // racing next take cannot update the same manifest concurrently.
             if current.phase != CapturePhase::Saving {
                 state.corpus.clear_if(capture_id);
-                emit_status(&app_handle, "idle", None);
+                publish_status(&app_handle, "idle", None);
             }
         }
     }
@@ -552,7 +554,7 @@ pub async fn start_corpus_recording(
 
         state.corpus.claim(request)?
     };
-    emit_status(&app_handle, "starting", None);
+    publish_status(&app_handle, "starting", None);
     let start_handle = app_handle.clone();
     let result = match tokio::task::spawn_blocking(move || {
         audio_lifecycle::start_corpus_recording(start_handle, device_id, capture_id)
@@ -564,7 +566,7 @@ pub async fn start_corpus_recording(
     };
     if let Err(error) = result {
         state.corpus.clear_if(capture_id);
-        emit_status(&app_handle, "error", Some(&error));
+        publish_status(&app_handle, "error", Some(&error));
         return Err(error);
     }
     Ok(CorpusStartResponse {
@@ -585,7 +587,7 @@ pub async fn stop_corpus_recording(
     state
         .corpus
         .set_phase_if(active.capture_id, CapturePhase::Saving);
-    emit_status(&app_handle, "saving", None);
+    publish_status(&app_handle, "saving", None);
     let capture_id = active.capture_id;
     let result = match tokio::task::spawn_blocking(move || {
         audio_lifecycle::stop_corpus_recording(capture_id)
@@ -604,11 +606,11 @@ pub async fn stop_corpus_recording(
     state.corpus.clear_if(capture_id);
     match result {
         Ok(response) => {
-            emit_status(&app_handle, "idle", None);
+            publish_status(&app_handle, "idle", None);
             Ok(response)
         }
         Err(error) => {
-            emit_status(&app_handle, "error", Some(&error));
+            publish_status(&app_handle, "error", Some(&error));
             Err(error)
         }
     }
@@ -625,7 +627,7 @@ pub async fn cancel_corpus_recording(
     state
         .corpus
         .set_phase_if(active.capture_id, CapturePhase::Cancelling);
-    emit_status(&app_handle, "recovering", None);
+    publish_status(&app_handle, "recovering", None);
     let capture_id = active.capture_id;
     let result = tokio::task::spawn_blocking(move || {
         audio_lifecycle::cancel_corpus_capture(capture_id, AudioCancelReason::User)
@@ -636,12 +638,12 @@ pub async fn cancel_corpus_recording(
         Ok(Ok(true)) => Ok(true),
         Ok(Ok(false)) => {
             state.corpus.clear_if(capture_id);
-            emit_status(&app_handle, "idle", None);
+            publish_status(&app_handle, "idle", None);
             Ok(false)
         }
         Ok(Err(error)) | Err(error) => {
             state.corpus.clear_if(capture_id);
-            emit_status(&app_handle, "error", Some(&error));
+            publish_status(&app_handle, "error", Some(&error));
             Err(error)
         }
     }

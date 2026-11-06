@@ -362,7 +362,7 @@ mod tests {
     }
 
     /// Events a current or future call site could write.
-    fn emit_leaky_events() {
+    fn publish_leaky_events() {
         tracing::info!(
             target: "keyboard",
             reason = "combo_cancelled",
@@ -413,7 +413,7 @@ mod tests {
             .event_format(PrettyFormat)
             .with_writer(move || writer.clone())
             .with_ansi(false);
-        tracing::subscriber::with_default(Registry::default().with(layer), emit_leaky_events);
+        tracing::subscriber::with_default(Registry::default().with(layer), publish_leaky_events);
 
         let output = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
         assert_eq!(output.lines().count(), 7, "{output}");
@@ -468,7 +468,10 @@ mod tests {
         for debug_build in [true, false] {
             let layer = Capture(Arc::default(), debug_build);
             let captured = Arc::clone(&layer.0);
-            tracing::subscriber::with_default(Registry::default().with(layer), emit_leaky_events);
+            tracing::subscriber::with_default(
+                Registry::default().with(layer),
+                publish_leaky_events,
+            );
             let events = captured.lock().unwrap().clone();
             assert_eq!(events.len(), 7);
             for event in &events[..5] {

@@ -1,3 +1,5 @@
+use crate::events::EventsExt;
+use murmur_core::events::{EventKind, EventSink};
 pub(crate) mod production;
 mod repository;
 mod types;
@@ -8,7 +10,6 @@ pub(crate) use repository::PerformanceStoreError;
 use repository::{InitializationOutcome, PerformanceRepository};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::Emitter;
 
 #[derive(Clone)]
 pub(crate) struct PerformanceMetrics {
@@ -471,7 +472,9 @@ impl PerformanceMetrics {
                 .app_handle
                 .clone();
             if let Some(app_handle) = app_handle {
-                let _ = app_handle.emit("performance-run-completed", run);
+                let _ = app_handle
+                    .events()
+                    .publish(EventKind::PerformanceRunCompleted, run);
             }
         }
         Ok(run)
@@ -509,7 +512,9 @@ impl PerformanceMetrics {
             .app_handle
             .clone();
         if let Some(app_handle) = app_handle {
-            let _ = app_handle.emit("performance-resource-sample", sample);
+            let _ = app_handle
+                .events()
+                .publish(EventKind::PerformanceResourceSample, sample);
         }
         Ok(())
     }
@@ -575,7 +580,9 @@ impl PerformanceMetrics {
             .app_handle
             .clone();
         if let Some(app_handle) = app_handle {
-            let _ = app_handle.emit("performance-diagnostics-cleared", ());
+            let _ = app_handle
+                .events()
+                .publish(EventKind::PerformanceDiagnosticsCleared, ());
         }
         Ok(())
     }

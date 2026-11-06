@@ -507,7 +507,7 @@ pub(crate) fn observe_capture_timeout(capture_id: u64) {
             if detail == Detail::Full {
                 publish_live_snapshot(capture_id, observation.report);
             }
-            emit_counts(capture_id, observation.counts);
+            publish_counts(capture_id, observation.counts);
         });
     if spawned.is_err() && detail == Detail::Full {
         // Never leave a bundle waiting on a probe that will never run.
@@ -562,7 +562,7 @@ pub(crate) fn take_live_hang_report(capture_id: u64) -> Option<String> {
     }
 }
 
-fn emit_counts(capture_id: u64, counts: AudioGraphCounts) {
+fn publish_counts(capture_id: u64, counts: AudioGraphCounts) {
     tracing::warn!(
         target: "audio",
         event_code = "audio.system_audio_graph_observed",

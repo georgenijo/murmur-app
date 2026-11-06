@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { type UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from './targetedEvents';
 import {
   isFiniteNumber,
   isNonNegativeInteger as isNonNegativeSafeInteger,

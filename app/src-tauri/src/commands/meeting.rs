@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::meeting_capture::{
     MeetingCaptureConfig, MeetingRuntimeStatus, SystemAudioAccess, SystemAudioPermissionState,
 };
@@ -10,9 +11,9 @@ use crate::meeting_store::{
 use crate::microphone_auto::SmartAutoRequest;
 use crate::state::{AppState, DictationStatus};
 use crate::{MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
-use tauri::Emitter;
 use uuid::Uuid;
 
 fn require_main_window(label: &str) -> Result<(), String> {
@@ -346,7 +347,9 @@ pub async fn request_system_audio_permission(
     crate::smart_auto_probe::wake();
     let result = joined?;
     if let Ok(access) = result.as_ref() {
-        let _ = app.emit("system-audio-permission-changed", access);
+        let _ = app
+            .events()
+            .publish(EventKind::SystemAudioPermissionChanged, access);
     }
     result
 }

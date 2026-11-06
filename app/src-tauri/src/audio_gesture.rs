@@ -57,7 +57,7 @@ impl GestureClaim {
 }
 /// Decimal text avoids loss of u64 precision across the webview. The token
 /// carries identity only; all timing stays native and is never reconstructed.
-pub(crate) fn emit(candidate: Candidate, hold: bool) -> String {
+pub(crate) fn publish(candidate: Candidate, hold: bool) -> String {
     let now = Instant::now();
     let mut pending = PENDING.lock_or_recover();
     pending.retain(|p| now.saturating_duration_since(p.emitted) <= MAX_AGE);
@@ -105,7 +105,7 @@ mod tests {
             pressed: now - Duration::from_millis(200),
             released: Some(now - Duration::from_millis(160)),
         };
-        let token = emit(candidate, false);
+        let token = publish(candidate, false);
         let g = claim(Some(&token)).accepted(false).timing.unwrap();
         assert_eq!(g.candidate.pressed, candidate.pressed);
         assert!(millis(g.accepted.duration_since(g.candidate.pressed)) >= 200);
@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn rejected_busy_transcribing_file_request_clears_its_stamp() {
         clear_pending();
-        let token = emit(Candidate::new(), false);
+        let token = publish(Candidate::new(), false);
         // Same entry operation, before the busy guard; the command then returns
         // busy_transcribing_file without accepting.
         let _ = claim(Some(&token));
@@ -129,7 +129,7 @@ mod tests {
     fn toolbar_racing_a_queued_keyboard_start_cannot_steal_its_stamp() {
         clear_pending();
         let candidate = Candidate::new();
-        let token = emit(candidate, false); // keyboard event is queued in webview
+        let token = publish(candidate, false); // keyboard event is queued in webview
         let toolbar = claim(None).accepted(false); // toolbar wins native admission
         assert!(!toolbar.expected);
         assert!(toolbar.timing.is_none());
@@ -142,8 +142,8 @@ mod tests {
         clear_pending();
         let first = Candidate::new();
         let second = Candidate::new();
-        let a = emit(first, false);
-        let b = emit(second, true);
+        let a = publish(first, false);
+        let b = publish(second, true);
         assert_eq!(
             claim(Some(&b))
                 .accepted(true)
@@ -166,15 +166,15 @@ mod tests {
     #[test]
     fn wrong_origin_expired_and_evicted_tokens_are_unavailable() {
         clear_pending();
-        let token = emit(Candidate::new(), true);
+        let token = publish(Candidate::new(), true);
         let wrong_origin = claim(Some(&token)).accepted(false);
         assert!(wrong_origin.expected && wrong_origin.timing.is_none());
-        let token = emit(Candidate::new(), false);
+        let token = publish(Candidate::new(), false);
         PENDING.lock_or_recover().back_mut().unwrap().emitted -= MAX_AGE + Duration::from_millis(1);
         assert!(claim(Some(&token)).accepted(false).timing.is_none());
-        let token = emit(Candidate::new(), false);
+        let token = publish(Candidate::new(), false);
         for _ in 0..MAX_PENDING {
-            emit(Candidate::new(), false);
+            publish(Candidate::new(), false);
         }
         assert_eq!(PENDING.lock_or_recover().len(), MAX_PENDING);
         assert!(claim(Some(&token)).accepted(false).timing.is_none());
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn hold_has_no_double_tap_gap() {
         clear_pending();
-        let token = emit(Candidate::new(), true);
+        let token = publish(Candidate::new(), true);
         assert_eq!(
             claim(Some(&token)).accepted(true).timing.unwrap().gap_ms,
             None

@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::meeting_store::MeetingRepository;
 use crate::{MutexExt, State};
 use rusqlite::Connection;
@@ -6,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 pub(crate) const MAX_MANIFEST_CHUNKS: u32 = 256;
 pub(crate) const MAX_AUDIO_FILE_BYTES: u64 = 512 * 1024;
@@ -209,8 +210,8 @@ pub(crate) fn invalidate_playback(app: &tauri::AppHandle, session_id: Option<&st
         session_id: Option<&'a str>,
     }
     revoke_audio_reads();
-    let _ = app.emit_to(
-        "main",
+    let _ = app.events().send_to(
+        murmur_core::events::Consumer::Main,
         "meeting-audio-invalidated",
         Invalidated { session_id },
     );

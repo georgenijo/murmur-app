@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { emitTo, listen } from '@tauri-apps/api/event';
+import { emitTo } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import type { OverlayGeometry } from '../overlayGeometry';
 import { LIVE_WORDS_LIFT_EVENT, LIVE_WORDS_LIFT_REQUEST_EVENT } from '../overlayMotion';
 

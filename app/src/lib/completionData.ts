@@ -1,5 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from './targetedEvents';
 import type { HistoryEntry } from './history';
 import type { DictationStats } from './stats';
 import type { BenchmarkReport } from './benchmark';

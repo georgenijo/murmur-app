@@ -5,7 +5,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Channel } from '@tauri-apps/api/core';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
-import { mockIPC } from '@tauri-apps/api/mocks';
+import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
 import { ModelDownloader } from './components/ModelDownloader';
 import { DictationDiagnosticsView } from './components/log-viewer/DictationDiagnosticsView';
@@ -225,6 +225,7 @@ const manyMeetingDetail = (id: string) => {
   };
 };
 
+mockWindows('main');
 mockIPC((command, payload) => {
   // #850 regression states use synthetic captures and record only invoked IDs.
   if (requestedState === 'copy-diagnostics') {

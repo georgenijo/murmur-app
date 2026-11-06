@@ -1,14 +1,16 @@
 //! Event-driven, explicitly consented checks through the existing Preview owner.
 //! The controller owns no audio thread or PCM. A revoked permit cannot be reused.
 
+use crate::events::EventsExt;
 use crate::microphone_auto::{SmartAutoRequest, SmartAutoStatus};
 use crate::microphone_signal::SignalVerificationResult;
 use crate::{MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Listener, Manager};
+use tauri::Manager;
 use tokio::sync::Notify;
 
 pub(crate) const PROBE_LIMIT: Duration = Duration::from_secs(8);
@@ -224,9 +226,11 @@ pub(crate) async fn notified_for_test() {
     controller().changed.notified().await;
 }
 
-fn emit() {
+fn publish() {
     if let Some(app) = controller().app.get() {
-        let _ = app.emit("smart-auto-microphone-changed", ());
+        let _ = app
+            .events()
+            .publish(EventKind::SmartAutoMicrophoneChanged, ());
     }
 }
 
@@ -278,7 +282,7 @@ pub(crate) fn configure_host_policy(policy: serde_json::Value) -> Result<u64, St
     let result = apply_policy(&mut inner, policy);
     drop(inner);
     wake();
-    emit();
+    publish();
     result.map_err(str::to_string)
 }
 
@@ -340,7 +344,7 @@ pub(crate) fn retry_smart_auto_probe(window: tauri::WebviewWindow) -> Result<u64
     let generation = inner.generation;
     drop(inner);
     wake();
-    emit();
+    publish();
     Ok(generation)
 }
 
@@ -399,23 +403,37 @@ fn corpus_idle(_state: &State) -> bool {
     }
 }
 
+pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    callback: impl Fn() + Send + Sync + 'static,
+) {
+    let callback = std::sync::Arc::new(callback);
+    for event in [
+        EventKind::RecordingStatusChanged,
+        EventKind::FileTranscriptionStatusChanged,
+        EventKind::TransformStateChanged,
+        EventKind::QueryStateChanged,
+        EventKind::MeetingStatusChanged,
+        EventKind::AppDisabledChanged,
+        EventKind::MicrophonePreviewStatus,
+    ] {
+        let callback = callback.clone();
+        crate::events::subscribe(
+            app,
+            murmur_core::events::Consumer::SmartAuto,
+            event,
+            move |_| callback(),
+        );
+    }
+}
+
 pub(crate) fn initialize(app: tauri::AppHandle) {
     if controller().app.set(app.clone()).is_err() {
         return;
     }
     // Notifications only wake a pending finite budget. Their payloads never
     // authorize work; admission re-reads all backend owner state under lock.
-    for event in [
-        "recording-status-changed",
-        "file-transcription-status-changed",
-        "transform-state-changed",
-        "query-state-changed",
-        "meeting-status-changed",
-        "app-disabled-changed",
-        "microphone-preview-status",
-    ] {
-        app.listen(event, |_| wake());
-    }
+    initialize_event_subscriptions(&app, wake);
     tauri::async_runtime::spawn(run(app));
 }
 
@@ -503,7 +521,7 @@ async fn run(app: tauri::AppHandle) {
         };
         let Next::Probe(device_id) = next else {
             drop(transition);
-            emit();
+            publish();
             wait(next).await;
             continue;
         };
@@ -548,7 +566,7 @@ async fn run(app: tauri::AppHandle) {
         if current_epoch != epoch || !current_candidates.contains(&device_id) {
             permit.revoke();
         }
-        emit();
+        publish();
         let start_app = app.clone();
         let start_permit = permit.clone();
         let start = tokio::task::spawn_blocking(move || {
@@ -632,7 +650,7 @@ async fn run(app: tauri::AppHandle) {
                 }
             }
         }
-        emit();
+        publish();
         // Failed teardown leaves the Preview and supervisor claims untouched.
         // The next loop parks on authoritative busy state until actual Idle.
     }
@@ -648,7 +666,7 @@ fn set_phase(preview_id: u64, phase: &'static str) {
     {
         active.phase = phase;
     }
-    emit();
+    publish();
 }
 
 #[cfg(test)]

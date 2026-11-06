@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import type { Settings } from '../settings';
 
 /** Host-committed quick controls own one field, never a full cached snapshot. */

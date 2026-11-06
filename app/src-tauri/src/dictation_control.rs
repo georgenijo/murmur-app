@@ -1,6 +1,8 @@
 //! Tauri adapter for the window-independent core controller. No frontend listener
 //! is on the control path. Only this host module knows commands/managed state.
+use crate::events::EventsExt;
 use crate::{MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use murmur_core::{
     context::AppContext,
     dictation::{Controller, Effect, Input, Origin, QueueGuard, Status},
@@ -12,7 +14,7 @@ use std::{
     },
     time::Instant,
 };
-use tauri::{Emitter, Listener, Manager};
+use tauri::Manager;
 
 struct Queued {
     input: Input,
@@ -101,6 +103,18 @@ pub(crate) fn model_installation_changed(app: &tauri::AppHandle) {
     );
 }
 
+pub(crate) fn initialize_event_subscription<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    callback: impl Fn(&str) + Send + Sync + 'static,
+) {
+    crate::events::subscribe(
+        app,
+        murmur_core::events::Consumer::DictationControl,
+        EventKind::RecordingStatusChanged,
+        callback,
+    );
+}
+
 pub(crate) fn initialize(app: &tauri::AppHandle) {
     let (sender, mut receive) = tokio::sync::mpsc::unbounded_channel();
     app.manage(Control {
@@ -112,9 +126,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
         settings: Mutex::new(serde_json::Value::Null),
     });
     let sync_handle = app.clone();
-    app.listen("recording-status-changed", move |_| {
-        send(&sync_handle, Input::Sync)
-    });
+    initialize_event_subscription(app, move |_| send(&sync_handle, Input::Sync));
     let handle = app.clone();
     let context = app.state::<AppContext>().inner().clone();
     let _ = context.background.spawn(Box::pin(async move {
@@ -141,7 +153,9 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
                 (generation, effect, controller.locked)
             };
             if locked != last_locked {
-                let _ = handle.emit("dictation-lock-changed", locked);
+                let _ = handle
+                    .events()
+                    .publish(EventKind::DictationLockChanged, locked);
                 last_locked = locked;
             }
             if let Some(effect) = effect {
@@ -155,7 +169,9 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
                         .reject_start(generation)
                     && last_locked
                 {
-                    let _ = handle.emit("dictation-lock-changed", false);
+                    let _ = handle
+                        .events()
+                        .publish(EventKind::DictationLockChanged, false);
                     last_locked = false;
                 }
             }
@@ -248,8 +264,8 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                 match request {
                     Ok(request) => Some(request),
                     Err(_) => {
-                        let _ = app.emit(
-                            "dictation-control-error",
+                        let _ = app.events().publish(
+                            EventKind::DictationControlError,
                             "Check Smart Auto microphone settings.",
                         );
                         return None;
@@ -292,10 +308,15 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                         Some("audio_recovering") => "Microphone cleanup is still in progress. Try again when Murmur is ready.",
                         _ => return None,
                     };
-                    let _ = app.emit("dictation-control-error", message);
+                    let _ = app
+                        .events()
+                        .publish(EventKind::DictationControlError, message);
                 }
                 Err(_) => {
-                    let _ = app.emit("dictation-control-error", "Could not start dictation.");
+                    let _ = app.events().publish(
+                        EventKind::DictationControlError,
+                        "Could not start dictation.",
+                    );
                 }
             }
         }
@@ -336,7 +357,9 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                     generation,
                     &result,
                     |failure| {
-                        let _ = handle.emit("dictation-stop-failed", failure);
+                        let _ = handle
+                            .events()
+                            .publish(EventKind::DictationStopFailed, failure);
                     },
                 );
             }));

@@ -1,11 +1,13 @@
+use crate::events::EventsExt;
 use crate::frontmost::DeliveryTargetSnapshot;
 use crate::injector::authority::{AttemptStop, CancelOnDrop, PasteAttempt, RetrySlot};
 use crate::injector::{self, ClipboardOnlyReason, InjectionOutcome};
 use crate::{MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 #[derive(Clone)]
 pub(crate) struct LastDelivery {
@@ -155,7 +157,9 @@ fn publish(app: &tauri::AppHandle, response: &RetryResult) {
             producer.paste_last(&uuid::Uuid::new_v4().to_string())
         });
     }
-    let _ = app.emit("delivery-retry-feedback", response);
+    let _ = app
+        .events()
+        .publish(EventKind::DeliveryRetryFeedback, response);
 }
 
 #[tauri::command]

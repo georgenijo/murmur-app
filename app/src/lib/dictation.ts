@@ -50,10 +50,10 @@ export async function startRecording(
 
 export type DictationStopTrigger = 'hold_release' | 'toggle' | 'overlay' | 'auto_stop' | 'other';
 
-export async function stopRecording(stopTrigger: DictationStopTrigger = 'other'): Promise<DictationResponse> {
+export async function stopRecording(stopTrigger: DictationStopTrigger = 'other', expectedRecordingId?: number): Promise<DictationResponse> {
   try {
     // Native recording handles transcription and returns the result directly
-    return await invoke('stop_native_recording', { stopTrigger });
+    return await invoke('stop_native_recording', { stopTrigger, ...(expectedRecordingId === undefined ? {} : { expectedRecordingId }) });
   } catch (err) {
     return {
       type: 'error',

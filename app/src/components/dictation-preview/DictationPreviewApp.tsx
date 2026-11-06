@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { emitTo, listen } from '@tauri-apps/api/event';
+import { emitTo } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import { invoke } from '@tauri-apps/api/core';
 import { useDictationPartial } from '../../lib/hooks/useDictationPartial';
 import { usePopoverAppearance } from '../../lib/hooks/usePopoverAppearance';

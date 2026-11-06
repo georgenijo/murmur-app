@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../lib/targetedEvents';
 import { cn } from '../lib/sona-utils';
 import { cancelModelDownload, downloadModel } from '../lib/dictation';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';

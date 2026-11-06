@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import { invoke } from '@tauri-apps/api/core';
 import { isMeetingSuggestionToken } from '../meetingSuggestions';
 

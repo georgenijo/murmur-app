@@ -246,6 +246,9 @@ pub struct DictationState {
     #[serde(default = "default_retain_history")]
     pub retain_history: bool,
     pub status: DictationStatus,
+    /// Live capture timestamp; never persisted across process launches.
+    #[serde(skip)]
+    pub recording_started_at_ms: Option<i64>,
     pub model_name: String,
     pub language: String,
     pub auto_paste: bool,
@@ -336,6 +339,7 @@ impl Default for DictationState {
         Self {
             retain_history: true,
             status: DictationStatus::Idle,
+            recording_started_at_ms: None,
             model_name: "base.en".to_string(),
             // "auto" => whisper auto-detect (None lang param). Non-Whisper
             // backends ignore this. The frontend persists/overrides it via

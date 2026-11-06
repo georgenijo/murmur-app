@@ -57,7 +57,7 @@ describe('useAudioInputInventory', () => {
     await act(async () => resolveCommand(snapshot(1, 'Old')));
     expect(current.inventory?.revision).toBe(2);
     expect(current.inventory?.devices[0].name).toBe('New');
-    expect(mocks.listen).toHaveBeenCalledWith('audio-input-inventory-changed', expect.any(Function));
+    expect(mocks.listen).toHaveBeenCalledWith('audio-input-inventory-changed', expect.any(Function), { target: { kind: 'WebviewWindow', label: 'main' } });
   });
 
   it('does not let a late command rejection overwrite a newer event', async () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import { flog } from '../log';
 import { applyMeetingCalendarEvent } from '../calendar';
 import { smartAutoMicrophoneRequest, type Settings } from '../settings';

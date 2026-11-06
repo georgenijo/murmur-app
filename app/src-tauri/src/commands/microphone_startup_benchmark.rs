@@ -2,18 +2,20 @@ use crate::audio::{
     AudioBackendOrderSource, AudioFailureKind, AudioInitPhase, AudioStartupDiagnostic,
 };
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
+use crate::events::EventsExt;
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use murmur_capture_helper_protocol::{
     CaptureBackend, CaptureSetupStep, SetupTransition as ProtocolSetupTransition,
 };
+use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const REPORT_SCHEMA_VERSION: u8 = 1;
 const MAX_CYCLES: u8 = 10;
@@ -706,7 +708,7 @@ fn report_is_cancelled(
 // Keep the event's correlation, bounded counters, phase, and exact accumulator
 // explicit at call sites; bundling them would hide stale-run mistakes.
 #[allow(clippy::too_many_arguments)]
-fn emit_progress(
+fn publish_progress(
     app: &tauri::AppHandle,
     run_id: &str,
     benchmark_run_id: u64,
@@ -717,9 +719,8 @@ fn emit_progress(
     accumulator: &CycleAccumulator,
 ) {
     let last = accumulator.attempts.last();
-    let _ = app.emit_to(
-        "main",
-        "microphone-startup-benchmark-progress",
+    let _ = app.events().publish(
+        EventKind::MicrophoneStartupBenchmarkProgress,
         MicrophoneStartupBenchmarkProgress {
             schema_version: REPORT_SCHEMA_VERSION,
             run_id,
@@ -806,7 +807,7 @@ fn run_cycles(
             break;
         };
         let mut accumulator = CycleAccumulator::with_plan(cycle_number, backend_plan);
-        emit_progress(
+        publish_progress(
             &app,
             &run_id,
             benchmark_run_id,
@@ -845,7 +846,7 @@ fn run_cycles(
                             AudioCancelReason::RuntimeFailure,
                         );
                     }
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -858,7 +859,7 @@ fn run_cycles(
                 }
                 Ok(CycleEvent::Ready) => {
                     ready = true;
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -878,7 +879,7 @@ fn run_cycles(
                             AudioCancelReason::User,
                         );
                     } else {
-                        emit_progress(
+                        publish_progress(
                             &app,
                             &run_id,
                             benchmark_run_id,
@@ -893,7 +894,7 @@ fn run_cycles(
                 }
                 Ok(CycleEvent::Failed { kind }) => {
                     accumulator.failure_kind = Some(kind);
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -905,7 +906,7 @@ fn run_cycles(
                     );
                 }
                 Ok(CycleEvent::Recovering) => {
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -934,7 +935,7 @@ fn run_cycles(
                     if !cancelled {
                         accumulator.failure_kind = Some(StartupFailureKind::InitializationTimeout);
                     }
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -998,7 +999,7 @@ fn run_cycles(
         cycles.last().map(|cycle| cycle.outcome),
     );
     let empty = CycleAccumulator::new(cycles.len().max(1) as u8);
-    emit_progress(
+    publish_progress(
         &app,
         &run_id,
         benchmark_run_id,

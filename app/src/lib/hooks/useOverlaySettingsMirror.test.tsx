@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS, type Settings } from '../settings';
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
-  emit: vi.fn(async () => {}),
+  emitTo: vi.fn(async () => {}),
   listen: vi.fn(async (_name: string, _handler: (event: { payload: unknown }) => void) => () => {}),
   loadSettings: vi.fn<() => Settings>(),
   saveSettings: vi.fn<(settings: Settings) => void>(),
@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   setShowHotkeyMiss: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: () => false }));
-vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));
+vi.mock('@tauri-apps/api/event', () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 vi.mock('../log', () => ({ flog: { error: vi.fn(), warn: vi.fn() } }));
 vi.mock('../settings', async (importOriginal) => ({
   ...await importOriginal<typeof import('../settings')>(),
@@ -41,6 +41,7 @@ describe('overlay settings write ownership', () => {
       <button onClick={mirror.handleToggleAutoPaste}>Paste</button>
       <button onClick={mirror.handleToggleDisabled}>Disable</button>
       <button onClick={mirror.refresh}>Refresh</button>
+      <button onClick={mirror.handleOpenSettings}>Settings</button>
     </>;
   }
 
@@ -84,6 +85,11 @@ describe('overlay settings write ownership', () => {
     expect(stored.smartAutoPreferredDeviceIds).toEqual(['new']);
   }
 
+  it('addresses the gear action only to main', async () => {
+    await act(async () => container.querySelectorAll('button')[3].click());
+    expect(mocks.emitTo).toHaveBeenCalledWith('main', 'open-settings', undefined);
+  });
+
   it('does not persist when auto-paste configuration fails after main revokes consent', async () => {
     mocks.invoke.mockImplementation(async (command: string) => {
       if (command === 'configure_dictation') { revokeInMain(); throw new Error('refused'); }
@@ -94,7 +100,7 @@ describe('overlay settings write ownership', () => {
     expectRevocationPreserved();
     expect(mocks.saveSettings).not.toHaveBeenCalled();
     expect(mocks.invoke.mock.calls.some(([command]) => command === 'patch_overlay_setting')).toBe(false);
-    expect(mocks.emit).not.toHaveBeenCalledWith('settings-changed');
+    expect(mocks.emitTo).not.toHaveBeenCalledWith('overlay', 'settings-changed', undefined);
   });
 
   for (const [index, field] of [[0, 'autoPaste'], [1, 'disabled']] as const) {
@@ -121,7 +127,7 @@ describe('overlay settings write ownership', () => {
       expectRevocationPreserved();
       expect(mocks.invoke).toHaveBeenCalledWith('patch_overlay_setting', { field, value: true });
       expect(mocks.saveSettings).not.toHaveBeenCalled();
-      expect(mocks.emit).not.toHaveBeenCalledWith('settings-changed');
+      expect(mocks.emitTo).not.toHaveBeenCalledWith('overlay', 'settings-changed', undefined);
     });
   }
 

@@ -1,10 +1,12 @@
 use crate::browser_site::{self, BrowserSiteIdentity};
 use crate::dictation_context::{builtin_mode, SessionOverrides};
+use crate::events::EventsExt;
 use crate::frontmost;
 use crate::state::{DictationState, MurmurMode};
 use crate::{MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use serde::Serialize;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const BUILTIN_MODE_IDS: [&str; 7] = [
     "builtin.everyday",
@@ -204,7 +206,7 @@ fn observe_context(
 
 fn publish(app: &tauri::AppHandle, status: &ModeRuntimeStatus) {
     super::tray::set_mode_menu_status(status);
-    let _ = app.emit("mode-runtime-changed", status);
+    let _ = app.events().publish(EventKind::ModeRuntimeChanged, status);
 }
 
 pub(crate) fn select_next_recording_mode(
@@ -301,8 +303,8 @@ pub fn cycle_mode(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Mode
     let status = resolved_status(&dictation, bundle_id.as_deref(), site.as_ref());
     drop(dictation);
     if manual_changed {
-        let _ = app.emit(
-            "mode-manual-changed",
+        let _ = app.events().publish(
+            EventKind::ModeManualChanged,
             serde_json::json!({ "modeId": status.id }),
         );
     }

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 179 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 180 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -13,10 +13,10 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `init_dictation` | — | `Result<JSON, String>` | Static `{"type":"initialized","state":"idle"}` marker. |
-| `get_status` | — | `Result<JSON, String>` | Current status, model name, and language. |
+| `get_status` | — | `Result<JSON, String>` | Atomic status and recording generation (`recordingId`), `recordingStartedAtMs` (epoch milliseconds while recording, otherwise null), native `locked` mode, model name, and language. |
 | `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Pushes settings into `DictationState`: model, language, auto-paste and delay (clamped 10–500), VAD sensitivity (0–100), punctuation, file output, vocabulary entries, voice commands, app profiles, cleanup/formatting/correction toggles, code-vocab folder, idle timeout. A model change reselects the runtime backend, deferring across an active recording generation. Rejects conflicting vocabulary/command configurations without mutating prior state. |
 | `start_native_recording` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>`, `origin: Option<String>`, `gesture_token: Option<String>` | `Result<JSON, String>` | Consumes the originating keyboard gesture token at entry (omitted for toolbar/overlay), then resolves the immutable context, claims the single audio owner, starts model preparation, emits `starting`, and returns `{"type":"recording_starting","state":"starting","recordingId":N}` without waiting for Core Audio. Readiness later emits `recording`. |
-| `stop_native_recording` | `stopTrigger?: "hold_release" \| "toggle" \| "overlay" \| "auto_stop" \| "other"` | `Result<JSON, String>` | Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
+| `stop_native_recording` | `expectedRecordingId?: number`, `stopTrigger?: "hold_release" \| "toggle" \| "overlay" \| "auto_stop" \| "other"` | `Result<JSON, String>` | With an expected ID, no-ops if that generation no longer owns capture. Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
 | `cancel_native_recording` | `expected_recording_id: Option<u64>` | `Result<(), String>` | With an expected ID, acts only when that generation still owns dictation. Cancels initialization or capture through a brief `recovering` transition to `idle`, or discards a processing run without delivery. Detached audio cleanup continues asynchronously. |
 | `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
@@ -410,3 +410,9 @@ All successful mutations return the latest `Snapshot` and publish read-only
 | `mutate_history` | `mutation: HistoryMutation` | `Result<Snapshot, String>` | Main-only exact-row edit, pin or delete; held data and deletion records use the same serialized owner. |
 | `clear_completion_destination` | `destination: history \| statistics \| reports` | `Result<Snapshot, String>` | Main-only atomic explicit empty/reset destination, watermark and generation discard. |
 | `store_benchmark_report` | `report: JSON` | `Result<Snapshot, String>` | Main-only schema-validated saved report; newest ten retained. |
+
+## Targeted event subscriptions (`events.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `set_waveform_subscription` | `consumer: WaveformConsumer`, `active: bool` | `Result<(), String>` | Registers main-recording, corpus, or overlay waveform interest. The caller window must own the named consumer; native visibility and minimization also gate delivery. |

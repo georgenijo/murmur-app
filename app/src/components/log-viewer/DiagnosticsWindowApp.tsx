@@ -1,6 +1,6 @@
 import { AppSurface } from '../ui/AppSurface';
 import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import { WindowHeader } from '../ui/WindowHeader';
 import {
   DiagnosticsWorkspace,

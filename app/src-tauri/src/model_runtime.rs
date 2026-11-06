@@ -1,12 +1,13 @@
+use crate::events::EventsExt;
 use crate::transcriber::{
     ParakeetBackend, TranscriptionBackend, WhisperBackend, COREML_MODEL_NAME,
 };
 use crate::MutexExt;
+use murmur_core::events::{EventKind, EventSink};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tauri::Emitter;
 
 pub const PARAKEET_CPU_MODEL: &str = "parakeet-tdt-0.6b-v2-fp16";
 
@@ -606,7 +607,9 @@ impl ModelRuntimeManager {
             "model_runtime_transition"
         );
         if let Some(app) = app {
-            let _ = app.emit("model-runtime-status-changed", &snapshot);
+            let _ = app
+                .events()
+                .publish(EventKind::ModelRuntimeStatusChanged, &snapshot);
         }
         Ok(())
     }

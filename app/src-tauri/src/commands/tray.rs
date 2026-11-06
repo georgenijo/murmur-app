@@ -1,4 +1,6 @@
+use crate::events::EventsExt;
 use crate::MutexExt;
+use murmur_core::events::{EventKind, EventSink};
 use std::sync::{Mutex, OnceLock};
 use tauri::menu::{CheckMenuItemBuilder, MenuItem, MenuItemBuilder, Submenu};
 
@@ -115,11 +117,12 @@ pub fn set_tray_update_available(version: Option<String>) -> Result<(), String> 
 pub(crate) fn register_update_wake_observer(app_handle: tauri::AppHandle) {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
     use objc2_foundation::{NSNotification, NSOperationQueue};
-    use tauri::Emitter;
 
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
     let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
-        let _ = app_handle.emit("updater-background-check-requested", ());
+        let _ = app_handle
+            .events()
+            .publish(EventKind::UpdaterBackgroundCheckRequested, ());
     });
     unsafe {
         let observer = center.addObserverForName_object_queue_usingBlock(

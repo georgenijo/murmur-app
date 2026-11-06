@@ -41,15 +41,15 @@ fn vad_disagreement_uses_only_matching_nonempty_preview_evidence() {
     let subscriber = tracing_subscriber::Registry::default().with(Events(events.clone()));
     let state = AppState::default();
     tracing::subscriber::with_default(subscriber, || {
-        emit_preview_vad_disagreement(&state, 0, 100);
-        emit_preview_vad_disagreement(&state, 41, 100);
+        publish_preview_vad_disagreement(&state, 0, 100);
+        publish_preview_vad_disagreement(&state, 41, 100);
         assert!(events.lock().unwrap().is_empty());
         state
             .dictation_nonempty_preview_id
             .store(41, Ordering::SeqCst);
-        emit_preview_vad_disagreement(&state, 42, 100);
+        publish_preview_vad_disagreement(&state, 42, 100);
         assert!(events.lock().unwrap().is_empty());
-        emit_preview_vad_disagreement(&state, 41, 100);
+        publish_preview_vad_disagreement(&state, 41, 100);
     });
     let captured = events.lock().unwrap();
     assert_eq!(captured.len(), 1);

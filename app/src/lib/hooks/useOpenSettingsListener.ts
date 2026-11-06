@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 
 /**
  * Listens for the `open-settings` event emitted by the overlay's gear button and

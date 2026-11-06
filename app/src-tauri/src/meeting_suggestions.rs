@@ -1,11 +1,13 @@
 use crate::calendar::{self, CalendarWindow, SuggestionEvent};
+use crate::events::EventsExt;
 use crate::{MutexExt, State};
+use murmur_core::events::{Consumer, EventKind};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{Emitter, Listener, Manager};
+use tauri::Manager;
 use tokio::sync::Notify;
 
 const HORIZON_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -328,8 +330,10 @@ fn corpus_active(state: &State) -> bool {
 
 pub(crate) fn publish(app: &tauri::AppHandle) {
     let prompt = app.state::<State>().meeting_suggestions.prompt();
-    for window in ["main", "overlay"] {
-        let _ = app.emit_to(window, "meeting-suggestion-changed", &prompt);
+    for window in [Consumer::Main, Consumer::Overlay] {
+        let _ = app
+            .events()
+            .send_to(window, "meeting-suggestion-changed", &prompt);
     }
 }
 
@@ -426,21 +430,35 @@ pub fn dismiss_meeting_suggestion(
     Ok(())
 }
 
+pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    callback: impl Fn() + Send + Sync + 'static,
+) {
+    let callback = std::sync::Arc::new(callback);
+    for event in [
+        EventKind::RecordingStatusChanged,
+        EventKind::FileTranscriptionStatusChanged,
+        EventKind::MeetingStatusChanged,
+        EventKind::AppDisabledChanged,
+        EventKind::MicrophonePreviewStatus,
+        EventKind::BenchmarkProgress,
+        EventKind::MicrophoneStartupBenchmarkProgress,
+        EventKind::ModelRuntimeStatusChanged,
+    ] {
+        let callback = callback.clone();
+        crate::events::subscribe(
+            app,
+            murmur_core::events::Consumer::MeetingSuggestions,
+            event,
+            move |_| callback(),
+        );
+    }
+}
+
 pub(crate) fn initialize(app: tauri::AppHandle) {
     let coordinator = app.state::<State>().meeting_suggestions.clone();
-    for event in [
-        "recording-status-changed",
-        "file-transcription-status-changed",
-        "meeting-status-changed",
-        "app-disabled-changed",
-        "microphone-preview-status",
-        "benchmark-progress",
-        "microphone-startup-benchmark-progress",
-        "model-runtime-status-changed",
-    ] {
-        let app_for_event = app.clone();
-        app.listen_any(event, move |_| busy_changed(&app_for_event));
-    }
+    let app_for_event = app.clone();
+    initialize_event_subscriptions(&app, move || busy_changed(&app_for_event));
     register_native_observers(&app, &coordinator);
     tauri::async_runtime::spawn(run(app, coordinator));
 }

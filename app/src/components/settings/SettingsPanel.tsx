@@ -12,7 +12,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   selectedDeviceExists,
 } from '../../lib/audioDevices';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   AUTO_STOP_SILENCE_OPTIONS,
@@ -1524,7 +1524,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 
           <SettingsSection hideHeading card={false} pageId="performance" activePage={activeCat} title="Performance Lab">
             <div data-setting-target="performance">
-              <PerformanceLab status={status} settings={settings} onUpdateSettings={onUpdateSettings} audioInventory={audioInventory} />
+              <PerformanceLab active={settingsSurfaceActive && activeCat === 'performance'} status={status} settings={settings} onUpdateSettings={onUpdateSettings} audioInventory={audioInventory} />
             </div>
           </SettingsSection>
 

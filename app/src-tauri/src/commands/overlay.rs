@@ -1,5 +1,6 @@
+use crate::events::EventsExt;
 use crate::{MutexExt, State};
-use tauri::Emitter;
+use murmur_core::events::{EventKind, EventSink};
 use tauri::Manager;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
@@ -806,7 +807,9 @@ fn remember_overlay_position(
         applied_offset: applied.applied_offset,
     };
     *state.overlay_frame.lock_or_recover() = Some(frame);
-    let _ = app.emit("overlay-position-applied", applied);
+    let _ = app
+        .events()
+        .publish(EventKind::OverlayPositionApplied, applied);
 }
 
 #[cfg(target_os = "macos")]
@@ -1064,8 +1067,8 @@ fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     // collapses and re-reads geometry. Native placement retained the effective
     // calibration above, including an active unsaved draft.
     let layout = *state.overlay_layout.lock_or_recover();
-    let _ = handle.emit(
-        "overlay-geometry-changed",
+    let _ = handle.events().publish(
+        EventKind::OverlayGeometryChanged,
         geometry_for_layout(notch, OverlayContent::Controls, layout),
     );
 }
@@ -1391,7 +1394,7 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
                 let layout = *app.state::<State>().overlay_layout.lock_or_recover();
                 let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
                 // Tell the overlay it is visible so it can gate cursor polling.
-                let _ = app.emit("overlay-visible-changed", true);
+                let _ = app.events().publish(EventKind::OverlayVisibleChanged, true);
                 Ok(())
             }
             None => {
@@ -1429,7 +1432,7 @@ pub async fn set_overlay_expanded(
             layout.placement = placement;
         }
         let g = geometry_for_layout(None, content, *layout);
-        let _ = app.emit("overlay-surface-changed", &g);
+        let _ = app.events().publish(EventKind::OverlaySurfaceChanged, &g);
         return Ok(animation_surface(
             applied_surface_for(&g, expanded),
             *_state.overlay_frame.lock_or_recover(),
@@ -1569,7 +1572,9 @@ pub async fn set_overlay_expanded(
                 follow_dictation_preview(&dispatch_app);
                 // Emitted only after native setters succeed; the webview can
                 // never reveal a larger surface before its native grow ack.
-                let _ = dispatch_app.emit("overlay-surface-changed", geometry);
+                let _ = dispatch_app
+                    .events()
+                    .publish(EventKind::OverlaySurfaceChanged, geometry);
                 Ok(applied)
             })();
             let _ = tx.send(result);
@@ -1754,7 +1759,9 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
         Some(overlay) => {
             overlay.hide().map_err(|e| e.to_string())?;
             // Tell the overlay it is hidden so it can stop cursor polling.
-            let _ = app.emit("overlay-visible-changed", false);
+            let _ = app
+                .events()
+                .publish(EventKind::OverlayVisibleChanged, false);
             Ok(())
         }
         None => {

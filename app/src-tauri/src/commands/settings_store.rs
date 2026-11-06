@@ -7,10 +7,11 @@
 //! durable files survive WKWebView storage eviction and a manual reinstall;
 //! localStorage remains a synchronous frontend cache.
 
+use crate::events::EventsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::MutexExt;
 
@@ -257,8 +258,16 @@ fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
         .ok()
         .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
         .unwrap_or(true);
-    let _ = app.emit_to("dictation-preview", "live-words-consent-persisted", enabled);
-    let _ = app.emit_to("overlay", "overlay-settings-persisted", ());
+    let _ = app.events().send_to(
+        murmur_core::events::Consumer::DictationPreview,
+        "live-words-consent-persisted",
+        enabled,
+    );
+    let _ = app.events().send_to(
+        murmur_core::events::Consumer::Overlay,
+        "overlay-settings-persisted",
+        (),
+    );
 }
 
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -316,8 +325,8 @@ pub fn patch_overlay_setting(
     require_overlay_owner(window.label())?;
     let committed = patch_owned_setting(&data_dir(&app)?, field, value)?;
     notify_settings_committed(&app, &committed);
-    let _ = app.emit_to(
-        "main",
+    let _ = app.events().send_to(
+        murmur_core::events::Consumer::Main,
         "overlay-owned-setting-committed",
         serde_json::json!({ "field": field.key(), "value": value }),
     );

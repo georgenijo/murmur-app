@@ -1,3 +1,4 @@
+import { mockWindows } from '@tauri-apps/api/mocks';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,6 +33,7 @@ describe('overlay recording status after reload', () => {
   }
   beforeEach(() => {
     vi.resetAllMocks();
+    mockWindows('overlay');
     mocks.invoke.mockResolvedValue({ state: 'idle' });
     mocks.listen.mockImplementation(async (_event, handler) => {
       listener = handler;
@@ -52,7 +54,7 @@ describe('overlay recording status after reload', () => {
     expect(container.textContent).toBe(state);
     expect(current.statusRef.current).toBe(state);
     expect(mocks.invoke).toHaveBeenCalledWith('get_status');
-    expect(mocks.listen).toHaveBeenCalledWith('recording-status-changed', expect.any(Function));
+    expect(mocks.listen).toHaveBeenCalledWith('recording-status-changed', expect.any(Function), { target: { kind: 'WebviewWindow', label: 'overlay' } });
   });
 
   it('waits for the subscription before reading native state', async () => {

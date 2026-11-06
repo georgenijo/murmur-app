@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::microphone_signal::{
     SignalVerification, SignalVerificationResult, VERIFICATION_COOLDOWN,
 };
@@ -7,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::sync::Notify;
 
 pub(crate) const NO_SIGNAL_RMS_THRESHOLD: f32 = 0.001;
@@ -605,14 +606,14 @@ fn samples_for_duration(sample_rate: u32, duration: Duration) -> usize {
     (u64::from(sample_rate) * duration.as_millis() as u64 / 1_000) as usize
 }
 
-fn emit_vad_decision(
+fn publish_vad_decision(
     app_handle: &tauri::AppHandle,
     preview_id: u64,
     sensitivity: u32,
     decision: PreviewVadDecision,
 ) {
-    let _ = app_handle.emit_to(
-        "main",
+    let _ = app_handle.events().send_to(
+        murmur_core::events::Consumer::Main,
         "microphone-preview-vad",
         MicrophonePreviewVad {
             preview_id,
@@ -677,7 +678,7 @@ pub(crate) fn schedule_vad_analysis(
                 decision = ?decision,
                 "microphone preview VAD decision changed"
             );
-            emit_vad_decision(&app_handle, preview_id, sensitivity, decision);
+            publish_vad_decision(&app_handle, preview_id, sensitivity, decision);
         }
     }));
 }

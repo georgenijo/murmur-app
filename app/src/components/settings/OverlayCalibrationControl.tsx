@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emit, listen } from '@tauri-apps/api/event';
+import { listen, sendTo } from '../../lib/targetedEvents';
 import {
   clampOverlayVerticalOffset,
   OVERLAY_VERTICAL_OFFSET_MAX,
@@ -92,7 +92,7 @@ export function OverlayCalibrationControl({
   }, [offset]);
 
   const announceCalibration = useCallback((nextActive: boolean) => {
-    void emit('overlay-calibration-changed', { active: nextActive }).catch(() => {});
+    void sendTo('overlay', 'overlay-calibration-changed', { active: nextActive }).catch(() => {});
   }, []);
 
   const preview = useCallback(async (nextOffset: number): Promise<boolean> => {
