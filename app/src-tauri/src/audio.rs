@@ -1898,8 +1898,8 @@ fn read_capture_memo_file(path: &Path) -> Option<CaptureMemoEntries> {
 }
 
 /// Loads the durable memo into `CAPTURE_MEMO` and arms saving. Called once
-/// during app setup, before any capture can start. Never returns an error:
-/// every failure mode leaves the in-memory defaults in place.
+/// on the startup writer. Current-session observations outrank restored entries.
+/// Never returns an error: failures leave the in-memory memo in place.
 pub(crate) fn initialize_capture_memo_persistence(data_dir: PathBuf) {
     let path = data_dir.join(CAPTURE_MEMO_FILE_NAME);
     let _ = murmur_core::completion::recover_snapshot(&path);

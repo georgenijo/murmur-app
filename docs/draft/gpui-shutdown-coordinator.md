@@ -4,7 +4,8 @@ Implements #992, part of #1009. Draft stack layer 07, based on
 `gpui/06-webkit-lifecycle` at `88854edc9fa909b820a7330b88f6e95732749d6b`.
 The approved design is the GPUI 1.8 design produced at that revision.
 During implementation the base moved to `269dfa39`; this layer was rebased onto
-its source-recovery generation and presentation-cache fixes.
+its source-recovery generation and presentation-cache fixes, then rebased again
+onto `400a4648` to retain unresolved recovery-evidence pruning fixes.
 Independent implementation review and the native Tauri matrix belong to the parent.
 
 ## Policy and ownership
@@ -91,6 +92,10 @@ execute disk work off main and carry writer permits. UI and window snapshots
 use synced `.pending` documents with replay before load. The window worker
 clones state under its mutex, then releases it before I/O; its flush is FIFO.
 Capture memo saves use one tracked serial writer and a flush acknowledgement.
+Window startup reads/recovery and memo recovery also run on workers. Window
+restoration is dispatched to main; early renderer-ready/chrome intents are retained
+until that restoration settles. Request timestamps are captured before enqueue,
+so delayed delivery to the deadline driver cannot extend the shutdown budget.
 
 The standalone WebKit importer exposes `preserve_for_shutdown`: it freezes
 new importer work and retains partial progress for retry. It fabricates neither

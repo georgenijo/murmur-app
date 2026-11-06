@@ -30,13 +30,16 @@ pub(crate) mod adapter;
 mod macos;
 use adapter::Message;
 pub(crate) struct Shutdown {
+    clock: Instant,
     core: Arc<Mutex<Coordinator>>,
     send: mpsc::Sender<Message>,
 }
 pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
+    let clock = Instant::now();
     let core = Arc::new(Mutex::new(Coordinator::default()));
     let (send, receive) = mpsc::channel();
     app.manage(Shutdown {
+        clock,
         core: core.clone(),
         send: send.clone(),
     });
@@ -46,37 +49,34 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     let context = app.state::<AppContext>().inner().clone();
     std::thread::Builder::new()
         .name("shutdown-deadlines".into())
-        .spawn(move || {
-            let clock = Instant::now();
-            loop {
-                let now = || clock.elapsed().as_millis() as u64;
-                let message = receive.recv_timeout(Duration::from_millis(10));
-                let Some(effects) = adapter::reduce(&core, message, now()) else {
-                    break;
-                };
-                for effect in effects {
-                    if effect.step == Step::Terminate {
-                        #[cfg(feature = "shutdown-test-support")]
-                        test_support::hold(&handle, &context, &receive, &core, &clock);
-                        let action = core.lock_or_recover().issue();
-                        if let Some(action) = action {
-                            let app = handle.clone();
-                            let _ = context
-                                .main_thread
-                                .dispatch(Box::new(move || terminal(&app, action)));
-                        }
-                        return;
+        .spawn(move || loop {
+            let now = || clock.elapsed().as_millis() as u64;
+            let message = receive.recv_timeout(Duration::from_millis(10));
+            let Some(effects) = adapter::reduce(&core, message, now()) else {
+                break;
+            };
+            for effect in effects {
+                if effect.step == Step::Terminate {
+                    #[cfg(feature = "shutdown-test-support")]
+                    test_support::hold(&handle, &context, &receive, &core);
+                    let action = core.lock_or_recover().issue();
+                    if let Some(action) = action {
+                        let app = handle.clone();
+                        let _ = context
+                            .main_thread
+                            .dispatch(Box::new(move || terminal(&app, action)));
                     }
-                    let app = handle.clone();
-                    let send = send.clone();
-                    let deadline = clock + Duration::from_millis(effect.deadline_ms);
-                    let _ = context.background.spawn(Box::pin(async move {
-                        #[cfg(feature = "shutdown-test-support")]
-                        test_support::delay(&app, effect.step).await;
-                        let outcome = run_owner(&app, effect, deadline).await;
-                        let _ = send.send(Message::Finished(Event { effect, outcome }));
-                    }));
+                    return;
                 }
+                let app = handle.clone();
+                let send = send.clone();
+                let deadline = clock + Duration::from_millis(effect.deadline_ms);
+                let _ = context.background.spawn(Box::pin(async move {
+                    #[cfg(feature = "shutdown-test-support")]
+                    test_support::delay(&app, effect.step).await;
+                    let outcome = run_owner(&app, effect, deadline).await;
+                    let _ = send.send(Message::Finished(Event { effect, outcome }));
+                }));
             }
         })
         .map_err(|_| "Shutdown deadline driver unavailable")?;
@@ -86,7 +86,10 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
 pub(crate) fn request(app: &tauri::AppHandle, request: Request) {
     close_admission(); // synchronous even if the reducer/owner thread is delayed
     if let Some(shutdown) = app.try_state::<Shutdown>() {
-        let _ = shutdown.send.send(Message::Request(request));
+        let _ = shutdown.send.send(Message::Request(
+            request,
+            shutdown.clock.elapsed().as_millis() as u64,
+        ));
     }
 }
 pub(crate) fn permitted(app: &tauri::AppHandle) -> bool {
@@ -374,7 +377,6 @@ pub(crate) mod test_support {
         context: &AppContext,
         receive: &mpsc::Receiver<Message>,
         core: &Mutex<Coordinator>,
-        clock: &Instant,
     ) {
         if !isolated(app) {
             return;
@@ -382,9 +384,8 @@ pub(crate) mod test_support {
         let counts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         for _ in 0..65 {
             for message in receive.try_iter() {
-                if let Message::Request(request) = message {
-                    core.lock_or_recover()
-                        .request(request, clock.elapsed().as_millis() as u64);
+                if let Message::Request(request, requested_at) = message {
+                    core.lock_or_recover().request(request, requested_at);
                 }
             }
             let count = counts.clone();
