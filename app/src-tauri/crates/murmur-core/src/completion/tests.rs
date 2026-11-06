@@ -3,6 +3,7 @@ use storage::Boundary;
 use tempfile::TempDir;
 pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
     let mut e = Engine {
+        unpreserved_content: false,
         storage: Storage {
             root: root.into(),
             ..Default::default()
@@ -288,6 +289,7 @@ fn deletion_cap_and_retain_false_never_change_statistics() {
 fn state_first_creation_failure_blocks_all_writes_and_arming() {
     let dir = TempDir::new().unwrap();
     let mut e = Engine {
+        unpreserved_content: false,
         storage: Storage {
             root: dir.path().into(),
             fail: Some((STATE.into(), Boundary::BeforeRename)),
@@ -1173,4 +1175,21 @@ fn explicit_barriers_seal_and_snapshot_replay() {
         serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["visible"],
         false
     );
+}
+
+#[test]
+fn shutdown_receipt_never_hides_unpreserved_content() {
+    use crate::shutdown::WriteOutcome;
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
+    complete(&mut e, "unpreserved", true);
+    assert_eq!(e.write_receipt(), WriteOutcome::UnpreservedFailure);
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    complete(&mut e, "preserved", true);
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    assert_eq!(e.write_receipt(), WriteOutcome::PreservedForReplay);
+    assert_eq!(e.write_receipt(), WriteOutcome::Committed);
 }

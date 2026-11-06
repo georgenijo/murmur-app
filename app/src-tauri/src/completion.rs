@@ -488,11 +488,11 @@ mod source_ordering_tests {
 
 /// Worker-only final barrier. The service stays retained in managed state even
 /// if the coordinator stops waiting, so no joining destructor reaches main.
-pub(crate) fn shutdown_flush(app: &tauri::AppHandle) -> bool {
+pub(crate) fn shutdown_flush(app: &tauri::AppHandle) -> murmur_core::shutdown::WriteOutcome {
     let Some(state) = app.try_state::<Completion>() else {
-        return false;
+        return murmur_core::shutdown::WriteOutcome::UnpreservedFailure;
     };
-    tauri::async_runtime::block_on(state.service.seal_and_flush()).is_ok()
+    tauri::async_runtime::block_on(state.service.shutdown_receipt())
 }
 
 #[tauri::command]

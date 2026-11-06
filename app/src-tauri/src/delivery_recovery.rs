@@ -167,6 +167,7 @@ pub(crate) async fn retry_last_delivery(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<RetryResult, String> {
+    let _producer = crate::shutdown::WriterPermit::acquire()?;
     let Some(mut latest) = state.delivery_recovery.latest() else {
         let response = result(RetryResultKind::Empty, "Nothing to paste yet.");
         publish(&app_handle, &response);

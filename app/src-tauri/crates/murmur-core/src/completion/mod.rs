@@ -246,6 +246,7 @@ impl CompletionService {
             .spawn(move || {
                 let _lock = lock;
                 let mut engine = Engine {
+                    unpreserved_content: false,
                     storage: Storage::new(root),
                     webkit_exists,
                     seen: HashSet::new(),
@@ -295,6 +296,31 @@ impl CompletionService {
         }
         receive.await.map_err(|_| Error::Stopped)?
     }
+    /// Final sequence barrier with conservative, content-free durability proof.
+    /// Pending evidence is never called committed, and an earlier lost content
+    /// publication remains visible even when later disk operations succeed.
+    pub async fn shutdown_receipt(&self) -> crate::shutdown::WriteOutcome {
+        use crate::shutdown::WriteOutcome;
+        let (send, receive) = futures_channel::oneshot::channel();
+        {
+            let Ok(mut admission) = self.owner.admission.lock() else {
+                return WriteOutcome::UnpreservedFailure;
+            };
+            *admission = false;
+            let Some(owner) = &self.owner.send else {
+                return WriteOutcome::UnpreservedFailure;
+            };
+            if owner
+                .send(Box::new(move |engine| {
+                    let _ = send.send(engine.write_receipt());
+                }))
+                .is_err()
+            {
+                return WriteOutcome::UnpreservedFailure;
+            }
+        }
+        receive.await.unwrap_or(WriteOutcome::UnpreservedFailure)
+    }
     pub fn lifecycle(&self, command: lifecycle::Operation) -> Result<lifecycle::Receipt> {
         let (send, receive) = mpsc::sync_channel(1);
         let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
@@ -340,6 +366,7 @@ fn diagnostic(code: &'static str) {
     tracing::warn!(target:"completion",code,"completion service diagnostic");
 }
 struct Engine {
+    unpreserved_content: bool,
     initialized: bool,
     revision: u64,
     storage: Storage,
@@ -347,6 +374,34 @@ struct Engine {
     seen: HashSet<String>,
 }
 impl Engine {
+    fn write_receipt(&mut self) -> crate::shutdown::WriteOutcome {
+        use crate::shutdown::WriteOutcome;
+        let reconciled = self.execute(Command::Snapshot).is_ok();
+        if self.unpreserved_content {
+            return WriteOutcome::UnpreservedFailure;
+        }
+        if reconciled {
+            return WriteOutcome::Committed;
+        }
+        // The pending snapshot is the sole outstanding content publication;
+        // all earlier accepted jobs passed the same serialized owner.
+        if self.storage.sync_directory().is_ok()
+            && self
+                .storage
+                .read::<Value>(PENDING, |v| {
+                    v["schema"] == 1
+                        && matches!(
+                            v["file"].as_str(),
+                            Some(HOLD | "history.json" | "benchmark-reports.json")
+                        )
+                })
+                .is_ok_and(|v| v.is_some())
+        {
+            WriteOutcome::PreservedForReplay
+        } else {
+            WriteOutcome::UnpreservedFailure
+        }
+    }
     fn document(&self, d: Destination) -> Result<Option<Document>> {
         let raw = self
             .storage
@@ -738,6 +793,11 @@ impl Engine {
                         entry["completionUuid"] = json!(id);
                         if self.add_content(Destination::History, entry).is_err() {
                             diagnostic("history_write_failed");
+                            // A journal contains counts only; it cannot stand in
+                            // for a transcript whose pending publication failed.
+                            if !self.storage.root.join(PENDING).exists() {
+                                self.unpreserved_content = true;
+                            }
                         }
                     }
                     self.apply_statistics()?;

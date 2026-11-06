@@ -157,6 +157,9 @@ impl Coordinator {
         if self.termination_permitted() || self.current != Some(event.effect) {
             return vec![];
         }
+        if now_ms > event.effect.deadline_ms {
+            return self.tick(now_ms);
+        }
         let valid = match (event.effect.step, event.outcome) {
             (Step::Admission, Outcome::Admission(v)) => {
                 self.receipt.producers_fenced = v;

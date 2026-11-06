@@ -207,15 +207,16 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
                 let sources = crate::commands::settings_store::flush(&app);
                 let windows = crate::window_state::flush(&app);
                 let memo = crate::audio::flush_capture_memo();
-                sources && windows && memo && crate::completion::shutdown_flush(&app)
+                let completion = crate::completion::shutdown_flush(&app);
+                if sources && windows && memo {
+                    completion
+                } else {
+                    WriteOutcome::UnpreservedFailure
+                }
             })
             .await
-            .unwrap_or(false);
-            Outcome::Writers(if committed {
-                WriteOutcome::Committed
-            } else {
-                WriteOutcome::UnpreservedFailure
-            })
+            .unwrap_or(WriteOutcome::UnpreservedFailure);
+            Outcome::Writers(committed)
         }
         Step::Terminate => unreachable!(),
     }
@@ -414,6 +415,11 @@ pub(crate) mod test_support {
             std::thread::sleep(Duration::from_millis(100));
         }
         tracing::info!(target:"shutdown", callbacks=counts.load(Ordering::Acquire), expected=195, "synthetic shutdown dispatcher receipt");
+    }
+    pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+        tauri::plugin::Builder::new("shutdown-test")
+            .invoke_handler(tauri::generate_handler![shutdown_test_action])
+            .build()
     }
     #[tauri::command]
     pub(crate) fn shutdown_test_action(

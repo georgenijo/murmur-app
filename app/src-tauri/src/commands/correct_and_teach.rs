@@ -10,6 +10,11 @@ pub fn propose_learned_correction(
     request: CorrectionProposalRequest,
     state: tauri::State<'_, State>,
 ) -> CorrectionProposalOutcome {
+    let Ok(_producer) = crate::shutdown::WriterPermit::acquire() else {
+        return CorrectionProposalOutcome::Unsafe {
+            reason: "Murmur is shutting down".into(),
+        };
+    };
     let original_chars = request.original_text.chars().count() as u64;
     let corrected_chars = request.corrected_text.chars().count() as u64;
     let bundle_id = request
@@ -61,6 +66,11 @@ pub fn propose_specific_learned_correction(
     request: SpecificCorrectionProposalRequest,
     state: tauri::State<'_, State>,
 ) -> CorrectionProposalOutcome {
+    let Ok(_producer) = crate::shutdown::WriterPermit::acquire() else {
+        return CorrectionProposalOutcome::Unsafe {
+            reason: "Murmur is shutting down".into(),
+        };
+    };
     let original_chars = request.original_text.chars().count() as u64;
     let source_chars = request.source.chars().count() as u64;
     let replacement_chars = request.replacement.chars().count() as u64;
@@ -116,6 +126,7 @@ pub fn confirm_learned_correction(
     scope: KnowledgeScope,
     state: tauri::State<'_, State>,
 ) -> Result<KnowledgeEntry, String> {
+    let _producer = crate::shutdown::WriterPermit::acquire()?;
     let pending = state.correct_and_teach.confirmed(proposal_id, &scope)?;
     let entry =
         state
