@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTER = Path('app/src-tauri/src/events.rs')
@@ -185,14 +186,59 @@ def source_references(source: str, path: Path, scanned: set[Path]) -> list[int]:
     return sorted({code.count('\n', 0, offset) + 1 for offset in failures})
 
 
+def cargo_roots(manifest: Path, root: Path, scanned: set[Path]) -> list[str]:
+    """Cargo's explicit roots must not turn excluded output into source code.
+
+    Resolve paths from each manifest (including .. and symlinks), not the repo
+    root. Do not load dependencies or evaluate build scripts/Cargo metadata.
+    """
+    prefix = f'{manifest.relative_to(root)}:1: Cargo'
+    resolved = manifest.resolve()
+    if not resolved.is_relative_to(root) or excluded(resolved, root):
+        return [f'{prefix} manifest outside scanned roots']
+    try:
+        data = tomllib.loads(manifest.read_text())
+    except (OSError, ValueError) as error:
+        return [f'{prefix} manifest cannot be parsed: {error}']
+    failures = []
+
+    def check(value, kind):
+        if not isinstance(value, str) or (manifest.parent / value).resolve() not in scanned:
+            failures.append(f'{prefix} {kind} root outside scanned Rust sources: {value!r}')
+
+    for kind in ['lib', 'bin', 'test', 'example', 'bench']:
+        tables = [data[kind]] if kind == 'lib' and kind in data else data.get(kind, [])
+        if not isinstance(tables, list) or any(not isinstance(table, dict) for table in tables):
+            failures.append(f'{prefix} invalid {kind} target declaration')
+            continue
+        for table in tables:
+            if 'path' in table:
+                check(table['path'], kind)
+    package = data.get('package', {})
+    if not isinstance(package, dict):
+        return failures + [f'{prefix} invalid package declaration']
+    build = package.get('build', True)
+    if isinstance(build, str):
+        check(build, 'build')
+    elif build is True:
+        default = manifest.parent / 'build.rs'
+        if default.exists() or default.is_symlink():
+            check('build.rs', 'build')
+    elif build is not False:
+        failures.append(f'{prefix} invalid build script declaration')
+    return failures
+
+
 def check_repository(root: Path) -> list[str]:
     root = root.resolve()
     paths = rust_sources(root)
     scanned = {path.resolve() for path in paths if path.resolve().is_relative_to(root)
                and not excluded(path.resolve(), root)}
     failures = []
-    for directory, dirs, _ in os.walk(root, followlinks=False):
+    for directory, dirs, files in os.walk(root, followlinks=False):
         dirs[:] = [name for name in dirs if not excluded(Path(directory) / name, root)]
+        if 'Cargo.toml' in files:
+            failures.extend(cargo_roots(Path(directory) / 'Cargo.toml', root, scanned))
         for name in dirs:
             path = Path(directory) / name
             if path.is_symlink() and (not path.resolve().is_relative_to(root)
@@ -216,7 +262,7 @@ def main() -> int:
     if failures:
         print('\n'.join(failures), file=sys.stderr)
         return 1
-    print('repository Rust: emit/emit_* tokens and Emitter confined to the constrained sink adapter; source inclusions checked')
+    print('repository Rust: emit/emit_* tokens and Emitter confined to the constrained sink adapter; source inclusions and Cargo roots checked')
     return 0
 
 

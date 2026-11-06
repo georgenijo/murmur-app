@@ -42,7 +42,13 @@ Exclusions are exact repository-relative paths: `.git/` (Git metadata),
 `target/` and `app/src-tauri/target/` (Cargo output), and `node_modules/` and
 `app/node_modules/` (installed npm dependencies). No third-party Rust source
 path is currently exempted; nested maintained directories with those names
-are scanned. Outside the one sanctioned adapter
+are scanned. Every `Cargo.toml` outside these output/dependency/metadata
+exclusions is parsed with Python 3.11+ `tomllib`. Explicit `[lib]`, `[[bin]]`,
+`[[test]]`, `[[example]]` and `[[bench]]` paths, plus explicit and enabled
+implicit `build.rs` scripts, must resolve to scanned Rust files. Paths are
+relative to their manifest and normalized through `..` and symlinks; excluded,
+external, missing and non-Rust roots fail closed. Malformed manifests fail too.
+Ordinary build-output trees remain excluded. Outside the one sanctioned adapter
 `app/src-tauri/src/events.rs`, **any identifier token named `emit` or `emit_*`**
 (including raw identifiers and macro arguments) is forbidden after masking
 comments, string/byte/raw/C literals and character literals. Local non-Tauri
@@ -202,13 +208,28 @@ and `@tauri-apps/api/event` imports, followed by listener/constant searches.
 The TypeScript AST guard reserves `emit` identifiers and statically computed
 `emit` names in shipped `app/src` JS/TS, including Window/WebviewWindow methods,
 aliases, destructuring, optional calls, Unicode escapes and template expressions.
-Direct `emitTo` calls must name one of the four consumer labels; the helper
-alone can forward its typed `label` parameter. `Any`/dynamic targets fail closed.
-It rejects Tauri namespace/default/dynamic imports and re-export facades;
+Direct `emitTo` and helper `sendTo` calls (including named import aliases and
+statically computed members) must name one of the four consumer labels; the
+helper alone can forward its typed `label` parameter. Outside the helper, these
+transport names and their named import aliases may only appear as import
+specifiers or direct callees. Assignment, argument passing, object storage,
+destructuring, `.bind`/`.call`/`.apply` and re-export facades fail closed rather
+than following escaped bindings. `Any`/dynamic targets are rejected on these
+direct calls. Tauri namespace/default/dynamic imports are rejected too;
 broadcast imports/re-exports are forbidden even in test files. Tests may use
-local synthetic `emit`/mock helpers, never an imported Tauri broadcast. This
-source policy does not prove arbitrary runtime reflection, `eval`, computed
-module loading, or generated code safe.
+local synthetic transport/mock helpers; imported transports retain the checks.
+
+Outside the helper, literal IPC strings beginning `plugin:event|emit` are
+forbidden regardless of the invocation function's name, covering both pinned
+Tauri IPC broadcasts (`emit` and `emit_to`) and future names with that prefix.
+Constant template expressions, string concatenation, escaped strings and
+TypeScript assertions are folded; a statically known matching prefix with a
+dynamic suffix is rejected too. This remains a source policy: it does not
+resolve arbitrary variable bindings (for example, joining separately bound
+`plugin:event|` and `emit_to` fragments), dynamically synthesized property or
+command names, runtime reflection/`eval`, computed module loading or generated
+code. These limitations and Rust proc-macro/build-script synthesis require
+review; the guard is not a proof that arbitrary programs cannot broadcast.
 
 ## Waveform lifecycle
 
@@ -383,3 +404,21 @@ Mac checks rerun successfully, with source hashes matching this branch.
 Final CI state and independent review status are recorded in the draft PR body.
 Native GUI verification belongs to the separate worker; this implementation
 worker sends no GUI input and makes no native UI pass claim.
+
+## P3 guard enforcement follow-up
+
+Guard-only changes after `c3acc45a` close direct event IPC, first-class
+transport escapes and Cargo roots placed in excluded output directories.
+Adversarial fixtures additionally cover `.bind`/`.call`, computed `emitTo`,
+`.js` import aliases, helper `sendTo` escapes, partially dynamic IPC templates,
+TypeScript assertions, nested manifests, normalized paths and symlink roots.
+Every new negative frontend assertion and Cargo-root subtest fails against the
+original guards; all pass with the fixes. Existing positive fixture groups
+continue to pass, including ordinary Cargo output exclusion. Both guards pass
+on the real repository. No product code or frontend configuration changed.
+The earlier Sol re-check passed with no P0–P2 findings; review of this guard-only
+delta remains with the parent. Updated totals are **15 Rust fixture groups**
+and **7 frontend groups / 42 tests including subtests**. The original guards
+fail all **95** new negative Cargo assertions and **36** new negative frontend
+assertions (the Node runner reports **38** failures including two parent groups).
+Exact final-head CI is recorded in the draft PR body.

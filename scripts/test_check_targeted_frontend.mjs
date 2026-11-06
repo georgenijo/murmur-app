@@ -50,3 +50,62 @@ test('the sanctioned helper can forward a label, but cannot broadcast', () => {
   assert.deepEqual(violations(`import { emitTo as send } from '@tauri-apps/api/event'; send(label, 'e');`, helper), []);
   assert.notDeepEqual(violations(`import { emitTo as send } from '@tauri-apps/api/event'; send({kind: 'Any'}, 'e');`, helper), []);
 });
+
+test('rejects direct event IPC, including constant folding and known dynamic prefixes', async (t) => {
+  for (const source of [
+    `invoke('plugin:event|emit', { event, payload });`,
+    `invoke('plugin:event|emit_to', { target: { kind: 'Any' }, event, payload });`,
+    'invoke(`plugin:event|emit`, { event, payload });',
+    'invoke(`plugin:event|${"emit_to"}`, { event, payload });',
+    `invoke('plugin:e' + 'vent|emit', { event, payload });`,
+    String.raw`invoke('plugin:event|\x65mit_to', args);`,
+    'invoke(`plugin:event|emit${suffix}`, args);',
+    `const command = ('plugin:event|' + 'emit_') + suffix; ipc(command, args);`,
+    `const command = 'plugin:event|emit_future_api'; transport(command, args);`,
+    `invoke(('plugin:event|e' as const) + 'mit', args);`,
+    'invoke(`plugin:event|${("em" as const) + "it_to"}`, args);',
+  ]) await t.test(source, () => assert.notDeepEqual(violations(source), [], source));
+});
+
+test('transport values cannot escape target validation', async (t) => {
+  for (const source of [
+    `const send = emitTo; send({kind: 'Any'}, 'e');`,
+    `import { emitTo as send } from '@tauri-apps/api/event'; const relay = send; relay(target, 'e');`,
+    `import { emitTo as send } from '@tauri-apps/api/event.js'; send({kind: 'Any'}, 'e');`,
+    `export { emitTo as send } from '@tauri-apps/api/event';`,
+    `export { emitTo as send } from './local';`,
+    `import { emitTo as send } from '@tauri-apps/api/event'; export { send };`,
+    `consume(emitTo);`,
+    `const transport = { send: emitTo };`,
+    `const { emitTo: send } = window; send(target, 'e');`,
+    `const send = window.emitTo; send(target, 'e');`,
+    `const send = window['emitTo']; send(target, 'e');`,
+    `Reflect.get(window, 'emitTo')(target, 'e');`,
+    `emitTo.bind(null)({kind: 'Any'}, 'e');`,
+    `emitTo.call(null, {kind: 'Any'}, 'e');`,
+    `window['emitTo']({kind: 'Any'}, 'e');`,
+    'window[`emit${"To"}`](target, "e");',
+    `(0, emitTo)({kind: 'Any'}, 'e');`,
+    `(emitTo as Function)(target, 'e');`,
+    `import { sendTo as send } from './targetedEvents'; const relay = send; relay(target, 'e');`,
+    `import { sendTo as send } from './targetedEvents'; export { send };`,
+    `import { sendTo as send } from './targetedEvents'; send(target, 'e');`,
+    `export * from './targetedEvents';`,
+    `import * as helpers from './targetedEvents'; consume(helpers);`,
+    `const helpers = await import('./targetedEvents'); consume(helpers);`,
+  ]) await t.test(source, () => assert.notDeepEqual(violations(source), [], source));
+});
+
+test('direct imports and validated targets remain available', () => {
+  assert.deepEqual(violations(`
+    import { emitTo as send } from '@tauri-apps/api/event.js';
+    send('main', 'e');
+    window['emitTo']('overlay', 'e');
+    import { sendTo as notify } from './targetedEvents';
+    notify('diagnostics', 'e');
+    invoke('plugin:event|listen', args);
+    // invoke('plugin:event|emit', args);
+  `), []);
+  assert.deepEqual(violations(`invoke('plugin:event|emit_to', args);`, 'app/src/lib/targetedEvents.ts'), []);
+  assert.notDeepEqual(violations(`import { emitTo as send } from '@tauri-apps/api/event'; consume(send);`, 'example.test.ts'), []);
+});

@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 import unittest
@@ -195,3 +196,57 @@ class TargetedEventsGuardTests(unittest.TestCase):
                        '#[cfg(any())] use tauri::*;']:
             with self.subTest(source=source):
                 self.assertTrue(violations(source))
+
+    def test_explicit_cargo_roots_cannot_enter_excluded_directories(self):
+        for manifest in ['Cargo.toml', 'app/src-tauri/Cargo.toml', 'nested/Cargo.toml']:
+            for target in ['lib', 'bin', 'test', 'example', 'bench', 'build']:
+                for destination in ['target/lib.rs', 'app/src-tauri/target/lib.rs',
+                                    'node_modules/lib.rs', 'app/node_modules/lib.rs', '.git/lib.rs']:
+                    with self.subTest(manifest=manifest, target=target, destination=destination), tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        source = root / destination
+                        source.parent.mkdir(parents=True)
+                        source.write_text('fn main() { app.emit("e", ()); }')
+                        cargo = root / manifest
+                        cargo.parent.mkdir(parents=True, exist_ok=True)
+                        # Cargo paths are relative to the manifest, not the repo.
+                        path = Path(os.path.relpath(source, cargo.parent)).as_posix()
+                        header = '[package]\nname="fixture"\nversion="0.1.0"\n'
+                        declaration = (f'build = "{path}"\n' if target == 'build' else
+                                       f'[{target}]\npath = "{path}"\n' if target == 'lib' else
+                                       f'[[{target}]]\nname="fixture"\npath="{path}"\n')
+                        cargo.write_text(header + declaration)
+                        self.assertTrue(any('Cargo' in failure for failure in check_repository(root)))
+
+    def test_cargo_roots_cannot_hide_behind_normalization_or_symlinks(self):
+        for destination in ['src/../target/lib.rs', 'hidden/lib.rs', '../outside.rs', 'src/root.txt']:
+            with self.subTest(destination=destination), tempfile.TemporaryDirectory() as directory:
+                outer = Path(directory)
+                root = outer / 'repo'
+                (root / 'src').mkdir(parents=True)
+                (root / 'target').mkdir()
+                (root / 'target/lib.rs').write_text('fn main() {}')
+                (outer / 'outside.rs').write_text('fn main() {}')
+                (root / 'src/root.txt').write_text('fn main() {}')
+                (root / 'hidden').symlink_to(root / 'target', target_is_directory=True)
+                (root / 'Cargo.toml').write_text(f'[lib]\npath="{destination}"\n')
+                self.assertTrue(any('Cargo' in failure for failure in check_repository(root)))
+
+    def test_cargo_manifests_fail_closed_when_unparseable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'Cargo.toml').write_text('[lib\npath="target/lib.rs"')
+            self.assertTrue(check_repository(root))
+
+    def test_scanned_cargo_roots_and_ordinary_build_output_are_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'src').mkdir()
+            (root / 'src/lib.rs').write_text('fn publish() {}')
+            (root / 'build.rs').write_text('fn main() {}')
+            (root / 'target').mkdir()
+            (root / 'target/generated.rs').write_text('app.emit("e", ());')
+            for build in ['', 'build = true', 'build = false', 'build = "build.rs"']:
+                with self.subTest(build=build):
+                    (root / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.1.0"\n' + build + '\n[lib]\npath="src/lib.rs"\n')
+                    self.assertEqual(check_repository(root), [])
