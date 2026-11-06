@@ -50,7 +50,11 @@ pub trait BackgroundWork: Send + Sync {
 }
 
 pub trait MainThread: Send + Sync {
-    /// Enqueue without blocking the caller. NSWindow mutations belong here.
+    /// Always queue work for the main thread, never execute it inline, even
+    /// when called on the main thread. Dispatch returns before its task runs
+    /// on that thread; callers need not release state locks before dispatch.
+    /// Tasks run in FIFO enqueue order across all callers (simultaneous calls
+    /// are ordered by the host queue). NSWindow mutations belong here.
     fn dispatch(&self, task: Task) -> Result<(), ContextError>;
 }
 

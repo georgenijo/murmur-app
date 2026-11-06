@@ -19,6 +19,11 @@ resolver = "2"
 name = "ui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[[test]]
+name = "main_thread_queue"
+# libtest runs tests on worker threads. This executable owns a real main loop.
+harness = false
+
 [features]
 # Test-only capture helper executable injection.
 capture-test-support = []

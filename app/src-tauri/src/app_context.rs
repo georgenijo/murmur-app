@@ -6,11 +6,19 @@ use murmur_core::context::{
 use std::{path::PathBuf, sync::Arc};
 use tauri::Manager;
 
-struct TauriHost(tauri::AppHandle);
+#[cfg(target_os = "macos")]
+#[path = "main_thread_queue.rs"]
+mod main_thread_queue;
+
+struct TauriHost {
+    app: tauri::AppHandle,
+    #[cfg(target_os = "macos")]
+    main_thread: main_thread_queue::MainThreadQueue,
+}
 
 impl Paths for TauriHost {
     fn app_data_dir(&self) -> Result<PathBuf, ContextError> {
-        self.0
+        self.app
             .path()
             .app_data_dir()
             .map_err(|_| ContextError::PathUnavailable)
@@ -47,14 +55,26 @@ impl BackgroundWork for TauriHost {
 
 impl MainThread for TauriHost {
     fn dispatch(&self, task: Task) -> Result<(), ContextError> {
-        self.0
-            .run_on_main_thread(task)
-            .map_err(|_| ContextError::SchedulingFailed)
+        #[cfg(target_os = "macos")]
+        {
+            self.main_thread.dispatch(task)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            // No always-queued native adapter exists for other hosts yet.
+            // Tauri's run_on_main_thread may execute inline and is unsuitable.
+            drop(task);
+            Err(ContextError::SchedulingFailed)
+        }
     }
 }
 
 pub fn new(app: tauri::AppHandle) -> AppContext {
-    let host = Arc::new(TauriHost(app));
+    let host = Arc::new(TauriHost {
+        app,
+        #[cfg(target_os = "macos")]
+        main_thread: Default::default(),
+    });
     AppContext {
         paths: host.clone(),
         permissions: host.clone(),
