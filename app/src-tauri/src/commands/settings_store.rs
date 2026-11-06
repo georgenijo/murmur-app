@@ -583,8 +583,10 @@ mod tests {
             entries(&dir),
             vec![
                 "settings.json",
+                "settings.json.identity",
                 "settings.json.required",
                 "theme-library.json",
+                "theme-library.json.identity",
                 "theme-library.json.required"
             ]
         );
@@ -636,6 +638,7 @@ mod tests {
             entries(&dir),
             vec![
                 SETTINGS.file_name.to_string(),
+                "settings.json.identity".into(),
                 "settings.json.required".into()
             ]
         );
@@ -671,7 +674,7 @@ mod tests {
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
         assert!(
-            names[0].starts_with("theme-library.json.corrupt-"),
+            names[0].starts_with("theme-library.json.quarantine-"),
             "{names:?}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
@@ -684,7 +687,10 @@ mod tests {
         assert!(read_blob(&dir, SETTINGS).is_err());
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
+        assert!(
+            names[0].starts_with("settings.json.quarantine-"),
+            "{names:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -742,6 +748,7 @@ mod tests {
             entries(&dir),
             vec![
                 THEME_LIBRARY.file_name.to_string(),
+                "theme-library.json.identity".into(),
                 "theme-library.json.required".into()
             ]
         );
@@ -893,7 +900,7 @@ mod explicit_owned_edit_tests {
                         .unwrap()
                         .file_name()
                         .to_string_lossy()
-                        .contains("corrupt-")));
+                        .starts_with(&format!("{}.quarantine-", spec.file_name))));
                 }
             }
         }

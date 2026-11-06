@@ -1539,8 +1539,13 @@ pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
     let destination = source_destination(&storage, key)?;
     let existed = root.join(&pending).exists();
     let receipt: Option<Value> = storage.read(&pending, |v: &Value| {
+        let Some(receipt_key) = v["key"]
+            .as_str()
+            .filter(|k| crate::state::file(k).is_some())
+        else {
+            return false;
+        };
         v["schema"] == 2
-            && v["key"] == key
             && v["storeId"]
                 .as_str()
                 .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
@@ -1555,16 +1560,16 @@ pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
                 || v["baseMarkerDigest"]
                     .as_str()
                     .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())))
-            && complete_source_document(key, &v["value"])
+            && complete_source_document(receipt_key, &v["value"])
             && v["targetDigest"] == source_digest(&v["value"])
-            && v["targetRevision"] == source_revision(key, &v["value"])
+            && v["targetRevision"] == source_revision(receipt_key, &v["value"])
     })?;
     if let Some(receipt) = receipt {
         let identity: Option<String> = storage
             .read(&format!("{file}.identity"), |v: &String| {
                 uuid::Uuid::parse_str(v).is_ok()
             })?;
-        let belongs = identity.as_deref() == receipt["storeId"].as_str();
+        let belongs = receipt["key"] == key && identity.as_deref() == receipt["storeId"].as_str();
         let matches_base = destination.as_ref().is_none_or(|v| {
             let digest = source_digest(v);
             receipt["baseDigest"] == digest || receipt["targetDigest"] == digest

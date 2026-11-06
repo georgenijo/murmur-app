@@ -141,6 +141,15 @@ fn selected_backup_resolves_failed_generation_at_every_publish_boundary() {
                         );
                     }
                     assert!(storage.quarantined(&format!("{file}.pending")).unwrap());
+                    let service = CompletionService::start(dir.path().into(), true).unwrap();
+                    assert_eq!(
+                        service
+                            .lifecycle(lifecycle::Operation::Status)
+                            .unwrap()
+                            .values[key],
+                        backup
+                    );
+                    drop(service);
                     // Explicit restore cannot replace a readable newer destination.
                     assert!(restore_source(dir.path(), key, &document(key, 1)).is_err());
                 }
@@ -176,6 +185,27 @@ fn foreign_receipts_and_receipt_permissions() {
                 std::fs::remove_file(local.path().join(file)).unwrap();
             }
             std::fs::copy(pending, local.path().join(format!("{file}.pending"))).unwrap();
+            assert!(recover_source(local.path(), key).is_err());
+            // A structurally valid receipt for the other source is foreign too,
+            // rather than ordinary malformed input silently ignored at startup.
+            let mut receipt: Value = serde_json::from_slice(
+                &std::fs::read(foreign.path().join(format!("{file}.pending"))).unwrap(),
+            )
+            .unwrap();
+            let other = if key == "dictation-settings" {
+                "murmur-theme-library"
+            } else {
+                "dictation-settings"
+            };
+            receipt["key"] = json!(other);
+            receipt["value"] = document(other, 1);
+            receipt["targetDigest"] = json!(source_digest(&receipt["value"]));
+            receipt["targetRevision"] = json!(source_revision(other, &receipt["value"]));
+            std::fs::write(
+                local.path().join(format!("{file}.pending")),
+                receipt.to_string(),
+            )
+            .unwrap();
             assert!(recover_source(local.path(), key).is_err());
             if destination_exists {
                 assert_eq!(

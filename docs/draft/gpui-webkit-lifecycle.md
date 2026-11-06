@@ -283,3 +283,11 @@ the parent and dedicated verifier.
 | R3 | Snapshot hydration treated a DOM-cache write failure as an authoritative-source failure. All source presentation readers now use a cache adapter retaining failed writes/removals in memory. Cache errors produce at most one content-free warning per window and never enter backup recovery. Raw legacy getItem still bypasses the adapter and fails closed. | All three real entry modules failed to mount before the fix under throwing setItem. `entryCacheFailure.test.tsx` verifies main/overlay/diagnostics render and settings/appearance/library remain readable from memory; unreadable legacy input still rejects. |
 
 Fault fixtures establish publication-state recovery, not OS process-kill or physical-power-loss proof. Only synthetic data and the isolated `gpui-stack-15` build are used; no GUI input or app launch is part of this worker's verification. The parent owns independent Sol re-checks.
+
+Round-three Linux verification: **180 files / 1,833 Vitest tests** (+36 from
+1,797, none removed); TypeScript; **149 core tests** (121 unit + 28 integration);
+strict core Clippy; Tauri-free dependency guard; both targeted-event guards and
+CI suites (15 Python / 42 Node); reference documentation and Markdown links.
+Mac and final-head CI receipts are recorded in the PR body. The restore matrix
+also restarts the public CompletionService, and foreign-receipt coverage includes
+both another store and the other source key.
