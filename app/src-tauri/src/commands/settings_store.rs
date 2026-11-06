@@ -115,6 +115,30 @@ pub(crate) fn reconcile_settings_after<T>(dir: &Path, operation: impl FnOnce() -
     result
 }
 
+/// Completion's retained lifecycle saves can also replay while an unrelated
+/// history/statistics command drains the core FIFO. Reconcile after those calls
+/// too, under the host lock, without adding disk work when nothing is retained.
+pub(crate) fn reconcile_completion_publication<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Ok(dir) = source_dir(app) else {
+        return;
+    };
+    if reconcile_completion_publication_in(&dir) {
+        drop(SettingsWarningNotification(app));
+    }
+}
+
+fn reconcile_completion_publication_in(dir: &Path) -> bool {
+    if !pending_owned().lock_or_recover().contains_key(dir) {
+        return false;
+    }
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let retained = pending_owned().lock_or_recover().contains_key(dir);
+    if retained {
+        let _ = read_blob(dir, SETTINGS);
+    }
+    retained
+}
+
 /// The retained disabled patch is the warning's source of truth. Successful
 /// publication removes it; a newer choice replaces it in the same writer FIFO.
 /// Caller holds WRITE_LOCK so an in-flight publication is never reported failed.
@@ -127,8 +151,10 @@ fn dictation_settings_unsaved(dir: &Path) -> bool {
 
 /// Notify on success and early error alike, after local writer guards release.
 /// Payload-free invalidation makes the query authoritative even across mounts.
-pub(crate) struct SettingsWarningNotification<'a>(pub(crate) &'a tauri::AppHandle);
-impl Drop for SettingsWarningNotification<'_> {
+pub(crate) struct SettingsWarningNotification<'a, R: tauri::Runtime = tauri::Wry>(
+    pub(crate) &'a tauri::AppHandle<R>,
+);
+impl<R: tauri::Runtime> Drop for SettingsWarningNotification<'_, R> {
     fn drop(&mut self) {
         let _ = self.0.events().send_to(
             murmur_core::events::Consumer::Main,
@@ -292,7 +318,7 @@ fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
 /// The per-bundle app data directory that owns every durable host-written
 /// file. Shared so non-command hosts (the capture backend memo) publish beside
 /// `settings.json` instead of resolving their own directory.
-fn source_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn source_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|e| format!("Durable data directory unavailable: {e}"))
@@ -471,7 +497,6 @@ fn commit_settings_intent_with_publisher<T>(
         }
     }
     publish(&committed)?;
-    reconcile_owned_publication(dir, &committed);
     Ok((committed, revision))
 }
 
@@ -2468,6 +2493,35 @@ mod warning_reconciliation_tests {
             assert!(!dictation_settings_unsaved(dir.path()));
             assert!(!pending_owned().lock_or_recover().contains_key(dir.path()));
         }
+    }
+
+    #[test]
+    fn unrelated_completion_command_reconciles_a_retained_lifecycle_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        failed_tray_publication(dir.path(), false);
+        let service =
+            murmur_core::completion::CompletionService::start(dir.path().into(), true).unwrap();
+        // This future UI source rejects before settings recovery, retaining the
+        // onboarding save in the core FIFO without changing the tray receipt.
+        let ui = dir.path().join("ui-state.json");
+        std::fs::write(&ui, r#"{"schema":999}"#).unwrap();
+        assert!(service
+            .lifecycle(murmur_core::completion::lifecycle::Operation::Save {
+                key: "murmur_onboarding_complete".into(),
+                value: serde_json::json!(true),
+            })
+            .is_err());
+        assert!(dir.path().join("settings.json.pending").exists());
+        std::fs::remove_file(ui).unwrap();
+        // An unrelated completion command retries the retained lifecycle save.
+        service
+            .execute(murmur_core::completion::Command::Snapshot)
+            .unwrap();
+        assert!(!dir.path().join("settings.json.pending").exists());
+        assert!(reconcile_completion_publication_in(dir.path()));
+        let _guard = WRITE_LOCK.lock_or_recover();
+        assert!(!dictation_settings_unsaved(dir.path()));
+        assert!(!pending_owned().lock_or_recover().contains_key(dir.path()));
     }
 
     #[test]

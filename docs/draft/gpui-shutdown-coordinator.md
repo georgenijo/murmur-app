@@ -973,6 +973,7 @@ while the latest disabled choice is undurable.
 Hydration, runtime rebasing, later saves, explicit backup recovery, WebKit
 status/import/onboarding writes and shutdown recovery reconcile publication and
 invalidate the warning after releasing the lock, including partial recovery
-before another source fails. Shutdown avoids a redundant owned revision when
+before another source fails. Unrelated completion commands and native producers
+also reconcile lifecycle saves retried by the core FIFO. Shutdown avoids a redundant owned revision when
 receipt replay already committed the retained patch. Synthetic Rust fixtures use
 the real core publisher and exact receipt replay; no GUI or app launches are used.

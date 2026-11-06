@@ -9,6 +9,15 @@ use murmur_core::events::{EventKind, EventSink};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
+/// Every core command can retry a retained lifecycle save while draining its
+/// FIFO, including native completion producers and file acceptance.
+struct SourcePublicationObserver<'a, R: tauri::Runtime>(&'a tauri::AppHandle<R>);
+impl<R: tauri::Runtime> Drop for SourcePublicationObserver<'_, R> {
+    fn drop(&mut self) {
+        crate::commands::settings_store::reconcile_completion_publication(self.0);
+    }
+}
+
 pub(crate) struct Completion {
     service: CompletionService,
     pub(crate) producers: Producers,
@@ -89,6 +98,7 @@ pub(crate) fn start_gate(app: tauri::AppHandle) {
             }
             let worker_app = app.clone();
             let snapshot = tauri::async_runtime::spawn_blocking(move || {
+                let _settings_observer = SourcePublicationObserver(&worker_app);
                 ready(&worker_app)?
                     .service
                     .execute(Command::Snapshot)
@@ -136,6 +146,7 @@ pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
         .is_some_and(|s| s.admitted.load(Ordering::SeqCst))
 }
 fn execute(app: &tauri::AppHandle, command: Command) -> Result<Snapshot, String> {
+    let _settings_observer = SourcePublicationObserver(app);
     let result = ready(app)?
         .service
         .execute(command)
@@ -150,6 +161,7 @@ pub(crate) fn produce<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     f: impl FnOnce(&Producers) -> murmur_core::completion::Result<Snapshot>,
 ) {
+    let _settings_observer = SourcePublicationObserver(app);
     let Ok(state) = ready(app) else {
         storage_error(app);
         return;
@@ -225,6 +237,7 @@ pub(crate) async fn accept_file_transcription<R: tauri::Runtime>(
     let worker_app = app.clone();
     if tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
+        let _settings_observer = SourcePublicationObserver(&worker_app);
         ready(&worker_app)?
             .producers
             .accept_file(&operation_id)
@@ -290,6 +303,7 @@ pub(crate) async fn completion_snapshot(
     }
     wait_ready(&app).await?;
     tauri::async_runtime::spawn_blocking(move || {
+        let _settings_observer = SourcePublicationObserver(&app);
         ready(&app)?
             .service
             .execute(Command::Snapshot)
@@ -348,6 +362,7 @@ pub(crate) fn acknowledge_completion_keys(
     destinations: Vec<Destination>,
 ) -> Result<(), String> {
     main_only(&window)?;
+    let _settings_observer = SourcePublicationObserver(&app);
     ready(&app)?
         .service
         .execute(Command::KeysRemoved(destinations))
