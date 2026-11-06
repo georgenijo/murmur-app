@@ -19,3 +19,16 @@ it.each([false, true])('requires a selected backup and shows restore outcome on 
   expect(host.querySelector('[role="status"]')!.textContent).toContain(failure ? 'Backup could not be restored' : 'Backup restored');
   await act(async () => root.unmount());
 });
+
+it.each([false, true])('completion recovery requires explicit action and shows outcome on failure=%s', async failure => {
+  mock.invoke.mockReset();
+  if (failure) mock.invoke.mockRejectedValue(new Error('synthetic failure'));
+  else mock.invoke.mockResolvedValue(undefined);
+  const host = document.createElement('div'); const root = createRoot(host);
+  await act(async () => root.render(<SourceRecovery />));
+  expect(mock.invoke).not.toHaveBeenCalled();
+  await act(async () => { host.querySelector('button')!.click(); });
+  expect(mock.invoke).toHaveBeenCalledWith('recover_completion_pending');
+  expect(host.querySelector('[role="status"]')!.textContent).toContain(failure ? 'could not finish' : 'finished');
+  await act(async () => root.unmount());
+});

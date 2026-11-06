@@ -136,17 +136,30 @@ fn preparation(blob: &str, _accessibility: bool) -> Option<Preparation> {
 }
 
 pub(crate) fn prepare(app: &tauri::AppHandle) {
-    let Ok(Some(blob)) = crate::commands::settings_store::load_settings_blob_worker(app.clone())
-    else {
-        return;
-    };
-    let Some(plan) = preparation(&blob, crate::injector::is_accessibility_enabled()) else {
-        return;
-    };
-    crate::keyboard::set_app_disabled(plan.disabled);
+    // Reserve revision and producer ownership before queueing any startup I/O.
     let revision = crate::dictation_control::accept_configuration(app);
+    let Ok(permit) = crate::shutdown::WriterPermit::acquire() else {
+        return;
+    };
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
+        let _permit = permit;
+        let source = handle.clone();
+        let Ok(Ok(Some(blob))) = crate::shutdown::source_call(move || {
+            crate::commands::settings_store::load_settings_blob_worker(source)
+        })
+        .await
+        else {
+            return;
+        };
+        if crate::shutdown::closing()
+            || !crate::dictation_control::configuration_current(&handle, revision)
+        {
+            return;
+        }
+        let Some(plan) = preparation(&blob, crate::injector::is_accessibility_enabled()) else {
+            return;
+        };
         let Ok(settings) = serde_json::from_str::<serde_json::Value>(&blob) else {
             return;
         };
@@ -162,6 +175,9 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
         {
             if crate::dictation_control::configure_accepted(&handle, settings, revision) != Ok(true)
             {
+                return;
+            }
+            if crate::shutdown::closing() {
                 return;
             }
             plan.schedule_warmup(|_| {

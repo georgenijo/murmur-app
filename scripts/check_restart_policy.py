@@ -20,6 +20,8 @@ def violations(source, *, adapter=False, plugin=False):
         if name == 'request_restart':
             if not adapter or not re.search(r'\bapp\s*\.\s*$', code[:token.start()]) or not re.match(r'\s*\(\s*\)', code[token.end():]):
                 failures.append(token.start())
+        if name == 'tauri_plugin_process' or (name == 'RESTART_EXIT_CODE' and not adapter):
+            failures.append(token.start())
         if name == 'restart':
             definition = re.search(r'\bfn\s*$', code[:token.start()])
             handler = re.search(r'tauri\s*::\s*generate_handler\s*!\s*\[\s*exit\s*,\s*$', code[:token.start()])

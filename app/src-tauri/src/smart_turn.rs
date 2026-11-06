@@ -47,7 +47,7 @@ const ORT_API_VERSION: u32 = 24;
 
 /// Root of the hash-versioned Smart Turn store, beneath the app models dir.
 pub fn models_root() -> Option<PathBuf> {
-    dirs::data_dir().map(|dir| {
+    crate::identity::data_dir().map(|dir| {
         dir.join("local-dictation")
             .join("models")
             .join("smart-turn")

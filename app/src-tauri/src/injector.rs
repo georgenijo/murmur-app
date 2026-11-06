@@ -333,14 +333,14 @@ impl Drop for PreparedCaption {
 }
 
 pub(crate) fn prepare_mirrored_caption(text: &str) -> Option<PreparedCaption> {
-    let dir = dirs::data_dir()?.join("local-dictation");
+    let dir = crate::identity::data_dir()?.join("local-dictation");
     prepare_caption_to(&dir, text)
 }
 
 /// Remove only the published caption. Orphan-temp cleanup is deliberately not
 /// performed under a recording-generation fence.
 pub(crate) fn remove_published_mirrored_caption() {
-    let Some(dir) = dirs::data_dir().map(|d| d.join("local-dictation")) else {
+    let Some(dir) = crate::identity::data_dir().map(|d| d.join("local-dictation")) else {
         return;
     };
     let _ = std::fs::remove_file(dir.join("latest-caption.json"));
@@ -349,7 +349,7 @@ pub(crate) fn remove_published_mirrored_caption() {
 /// Delete the mirrored caption. Called when the setting is switched off, so
 /// the last thing the user said does not outlive their consent to share it.
 pub fn remove_mirrored_caption() {
-    let Some(dir) = dirs::data_dir().map(|d| d.join("local-dictation")) else {
+    let Some(dir) = crate::identity::data_dir().map(|d| d.join("local-dictation")) else {
         return;
     };
     remove_caption_in(&dir);

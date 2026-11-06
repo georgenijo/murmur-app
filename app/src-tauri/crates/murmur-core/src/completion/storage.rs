@@ -16,6 +16,7 @@ pub enum Boundary {
 #[derive(Default)]
 pub struct Storage {
     pub root: PathBuf,
+    pub(super) intents: std::collections::BTreeMap<String, serde_json::Value>,
     // Certainty of the most recent write, including failures before rename.
     pub renamed: bool,
     #[cfg(test)]
@@ -40,20 +41,54 @@ pub struct Storage {
     pub trace: std::cell::RefCell<Vec<String>>,
 }
 impl Storage {
+    pub fn remember_intent(&mut self, file: &str, value: &serde_json::Value) -> Result<()> {
+        if self.intents.contains_key(file) {
+            return Err(Error::TooManyFiles);
+        }
+        self.intents.insert(file.into(), value.clone());
+        Ok(())
+    }
+    pub fn resolve_intent(&mut self, file: &str) {
+        self.intents.remove(file);
+    }
+    pub fn has_intents(&self) -> bool {
+        !self.intents.is_empty()
+    }
+    pub fn retry_intents(&mut self) -> Result<()> {
+        for (file, value) in self.intents.clone() {
+            self.write(&file, &value)?;
+            self.resolve_intent(&file);
+        }
+        Ok(())
+    }
+    pub fn remove_temps(&self, name: &str) -> Result<()> {
+        for path in self.artifact_paths(name, true)? {
+            fs::remove_file(path).map_err(|_| Error::Io)?;
+        }
+        self.sync_directory()
+    }
+    pub fn remove_evidence(&self, name: &str) -> Result<()> {
+        for path in self.artifact_paths(name, false)? {
+            fs::remove_file(path).map_err(|_| Error::Io)?;
+        }
+        self.sync_directory()
+    }
+
     pub fn publish_snapshot<T: Serialize>(&mut self, file: &str, value: &T) -> Result<()> {
-        self.write(
-            &format!("{file}.pending"),
-            &serde_json::json!({"schema":1,"value":value}),
-        )?;
+        let pending = format!("{file}.pending");
+        let payload = serde_json::json!({"schema":1,"value":value});
+        self.remember_intent(&pending, &payload)?;
+        self.write(&pending, &payload)?;
+        self.resolve_intent(&pending);
         self.recover_snapshot(file)
     }
     pub fn recover_snapshot(&mut self, file: &str) -> Result<()> {
         let pending = format!("{file}.pending");
         self.sync_directory()?;
         let existed = self.root.join(&pending).exists();
-        if let Some(receipt) = self
-            .read::<serde_json::Value>(&pending, |v| v["schema"] == 1 && v.get("value").is_some())?
-        {
+        if let Some(receipt) = self.read::<serde_json::Value>(&pending, |v| {
+            v["schema"] == 1 && super::valid_snapshot(file, &v["value"])
+        })? {
             self.write(file, &receipt["value"])?;
             fs::remove_file(self.root.join(&pending)).map_err(|_| Error::Io)?;
             self.sync_directory()?;
@@ -65,6 +100,7 @@ impl Storage {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            intents: Default::default(),
             renamed: false,
             #[cfg(test)]
             fail: None,
@@ -179,9 +215,11 @@ impl Storage {
         if self.fail_prune_after_guard.replace(false) {
             return Err(Error::Io);
         }
-        let unresolved = source_file(name).is_some_and(|file| {
-            !self.root.join(file).exists() || self.root.join(format!("{file}.pending")).exists()
-        });
+        let unresolved = (name == super::PENDING
+            && !self.root.join("completion-recovery.json").exists())
+            || source_file(name).is_some_and(|file| {
+                !self.root.join(file).exists() || self.root.join(format!("{file}.pending")).exists()
+            });
         for temps in [false, true] {
             // All evidence for an unresolved source is pinned, including legacy
             // files whose generation cannot be proven. Temps carry no receipt.

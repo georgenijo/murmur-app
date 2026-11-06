@@ -491,7 +491,7 @@ pub async fn download_model(
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
         let storage = if definition.install_kind == InstallKind::Coreml {
-            dirs::data_dir().ok_or("Could not locate Core ML storage")?.join("FluidAudio/Models")
+            crate::identity::data_dir().ok_or("Could not locate Core ML storage")?.join("FluidAudio/Models")
         } else { models_dir.clone() };
         let retained = match definition.install_kind {
             InstallKind::Whisper => std::fs::metadata(models_dir.join(format!("ggml-{model_name}.bin.tmp"))).map(|m| m.len()).unwrap_or(0),

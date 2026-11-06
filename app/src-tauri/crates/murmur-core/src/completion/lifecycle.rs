@@ -86,19 +86,24 @@ fn decode(raw: &BTreeMap<String, Option<String>>, key: &str) -> Result<Option<Va
         _ => Err(Error::Invalid),
     }
 }
+fn valid_ui(v: &UiState) -> bool {
+    v.schema == 1
+        && v.destinations
+            .iter()
+            .enumerate()
+            .all(|(i, k)| crate::state::file(k).is_some() && !v.destinations[..i].contains(k))
+        && v.values
+            .iter()
+            .all(|(k, v)| crate::state::normalize(k, v.clone()).is_ok())
+}
+pub(super) fn valid_snapshot(value: &Value) -> bool {
+    serde_json::from_value::<UiState>(value.clone()).is_ok_and(|v| valid_ui(&v))
+}
 impl Engine {
     fn ui_state(&self) -> Result<UiState> {
         self.storage.reject_future(UI_STATE, "schema", 1)?;
         let existed = self.storage.root.join(UI_STATE).exists();
-        let state = self.storage.read(UI_STATE, |v: &UiState| {
-            v.schema == 1
-                && v.destinations.iter().enumerate().all(|(i, k)| {
-                    crate::state::file(k).is_some() && !v.destinations[..i].contains(k)
-                })
-                && v.values
-                    .iter()
-                    .all(|(k, v)| crate::state::normalize(k, v.clone()).is_ok())
-        })?;
+        let state = self.storage.read(UI_STATE, valid_ui)?;
         if state.is_none()
             && (existed || self.migration()?.lifecycle.v2 || self.storage.quarantined(UI_STATE)?)
         {
@@ -143,6 +148,20 @@ impl Engine {
             .transpose()
     }
     pub(super) fn lifecycle(&mut self, op: Operation) -> Result<Receipt> {
+        if let Some(previous) = self.failed_source.take() {
+            if let Err(error) = self.lifecycle_inner(previous.clone()) {
+                self.failed_source = Some(previous);
+                return Err(error);
+            }
+        }
+        let result = self.lifecycle_inner(op.clone());
+        if result.is_err() && matches!(op, Operation::Save { .. }) {
+            self.failed_source = Some(op);
+        }
+        result
+    }
+    fn lifecycle_inner(&mut self, op: Operation) -> Result<Receipt> {
+        self.storage.retry_intents()?;
         self.storage.recover_snapshot(UI_STATE)?;
         self.storage.sync_directory()?;
         let mut m = self.migration()?;

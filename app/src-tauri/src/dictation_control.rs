@@ -438,6 +438,13 @@ pub(crate) async fn configure(
     configure_accepted(app, settings, accept_configuration(app)).map(|_| ())
 }
 
+pub(crate) fn configuration_current(app: &tauri::AppHandle, revision: u64) -> bool {
+    app.state::<Control>()
+        .configuration
+        .apply(revision, || ())
+        .is_some()
+}
+
 pub(crate) fn accept_configuration(app: &tauri::AppHandle) -> u64 {
     app.state::<Control>().configuration.accept()
 }

@@ -82,3 +82,44 @@ fn request_delivery_delay_does_not_extend_the_absolute_budget() {
     assert!(core.lock().unwrap().receipt.timed_out);
     assert_eq!(core.lock().unwrap().issue(), Some(Action::Quit));
 }
+
+#[test]
+fn accepted_requests_arbitrate_even_behind_the_final_writer_receipt() {
+    for request in [Request::Quit, Request::System, Request::Restart] {
+        let core = Mutex::new(Coordinator::default());
+        let (send, receive) = std::sync::mpsc::channel();
+        adapter::accept(&core, &send, Request::Restart, 0);
+        let mut effect = reduce(
+            &core,
+            receive.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            0,
+        )
+        .unwrap()[0];
+        for outcome in [
+            Outcome::Admission(true),
+            Outcome::Capture(true),
+            Outcome::Helpers(true),
+        ] {
+            effect = reduce(&core, Ok(Message::Finished(Event { effect, outcome })), 1).unwrap()[0];
+        }
+        assert_eq!(effect.step, Step::Writers);
+        send.send(Message::Finished(Event {
+            effect,
+            outcome: Outcome::Writers(WriteOutcome::Committed),
+        }))
+        .unwrap();
+        adapter::accept(&core, &send, request, 2);
+        let effects = reduce(&core, Ok(receive.recv().unwrap()), 3).unwrap();
+        assert_eq!(effects[0].step, Step::Terminate);
+        assert_eq!(
+            core.lock().unwrap().issue(),
+            Some(if request == Request::Restart {
+                Action::Restart
+            } else {
+                Action::Quit
+            })
+        );
+        reduce(&core, Ok(receive.recv().unwrap()), 4);
+        assert_eq!(core.lock().unwrap().issue(), None);
+    }
+}

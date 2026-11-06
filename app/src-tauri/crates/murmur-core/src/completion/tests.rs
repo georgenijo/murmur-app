@@ -4,6 +4,7 @@ use tempfile::TempDir;
 pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
     let mut e = Engine {
         unpreserved_content: false,
+        failed_source: None,
         storage: Storage {
             root: root.into(),
             ..Default::default()
@@ -290,6 +291,7 @@ fn state_first_creation_failure_blocks_all_writes_and_arming() {
     let dir = TempDir::new().unwrap();
     let mut e = Engine {
         unpreserved_content: false,
+        failed_source: None,
         storage: Storage {
             root: dir.path().into(),
             fail: Some((STATE.into(), Boundary::BeforeRename)),
@@ -1184,6 +1186,7 @@ fn shutdown_receipt_never_hides_unpreserved_content() {
     let mut e = engine(dir.path(), false);
     e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
     complete(&mut e, "unpreserved", true);
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
     assert_eq!(e.write_receipt(), WriteOutcome::UnpreservedFailure);
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), false);
@@ -1223,4 +1226,163 @@ fn malformed_pending_content_blocks_admission_and_never_claims_a_drain() {
         crate::shutdown::WriteOutcome::UnpreservedFailure
     );
     assert!(e.snapshot().unwrap().history.is_empty());
+}
+
+#[test]
+fn pending_holding_validates_entries_before_replacing_readable_content() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    complete(&mut e, "valid", true);
+    let before = std::fs::read(dir.path().join(HOLD)).unwrap();
+    let mut holding: Value = serde_json::from_slice(&before).unwrap();
+    holding["history"]["entries"] = json!([null]);
+    std::fs::write(
+        dir.path().join(PENDING),
+        serde_json::to_vec(&json!({"schema":1,"file":HOLD,"value":holding})).unwrap(),
+    )
+    .unwrap();
+    assert!(e.execute(Command::Snapshot).is_err());
+    assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before);
+    assert!(e.storage.quarantined(PENDING).unwrap());
+}
+
+#[test]
+fn snapshot_payload_validation_preserves_destination_and_evidence() {
+    for value in [
+        Value::Null,
+        json!({"schema":1,"values":{"usage-dashboard-collapsed":"invalid"},"destinations":[],"v2_imported":true}),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        e.lifecycle(lifecycle::Operation::Status).unwrap();
+        let before = std::fs::read(dir.path().join("ui-state.json")).unwrap();
+        std::fs::write(
+            dir.path().join("ui-state.json.pending"),
+            serde_json::to_vec(&json!({"schema":1,"value":value})).unwrap(),
+        )
+        .unwrap();
+        assert!(e.lifecycle(lifecycle::Operation::Status).is_err());
+        assert_eq!(
+            std::fs::read(dir.path().join("ui-state.json")).unwrap(),
+            before
+        );
+        assert!(e.storage.quarantined("ui-state.json.pending").unwrap());
+    }
+}
+
+#[test]
+fn startup_replays_held_completion_before_no_webkit_automatic_import() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    let mut h = e.holding().unwrap();
+    h.history
+        .entries
+        .push(entry("pending", "synthetic pending"));
+    e.storage
+        .write(PENDING, &json!({"schema":1,"file":HOLD,"value":h}))
+        .unwrap();
+    let reopened = engine(dir.path(), false);
+    assert_eq!(reopened.snapshot().unwrap().history.len(), 1);
+    assert_eq!(
+        engine(dir.path(), false).snapshot().unwrap().history.len(),
+        1
+    );
+}
+
+#[test]
+fn abandoned_pending_temps_and_resolved_evidence_obey_clear_delete_and_caps() {
+    for mutation in [0, 1, 2] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        let snapshot = complete(&mut e, "valid", true);
+        let temp = dir.path().join(format!("{PENDING}.tmp-synthetic"));
+        let evidence = dir.path().join(format!(
+            "{PENDING}.quarantine-seq-00000000000000000001-synthetic"
+        ));
+        std::fs::write(&temp, b"synthetic transcript").unwrap();
+        std::fs::write(&evidence, b"synthetic transcript").unwrap();
+        e.execute(Command::RecoverPending).unwrap();
+        assert!(evidence.exists());
+        assert!(!temp.exists());
+        match mutation {
+            0 => {
+                e.execute(Command::Clear {
+                    destination: Destination::History,
+                    at: 2,
+                })
+                .unwrap();
+            }
+            1 => {
+                e.execute(Command::History(HistoryMutation::Delete {
+                    targets: snapshot.history,
+                }))
+                .unwrap();
+            }
+            _ => {
+                complete(&mut e, "new cap", true);
+            }
+        }
+        assert!(!evidence.exists());
+        assert!(!temp.exists());
+    }
+}
+
+#[test]
+fn failed_report_and_ui_intents_are_retained_until_exact_publication_recovers() {
+    for ui in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        e.lifecycle(lifecycle::Operation::Status).unwrap();
+        let pending = if ui { "ui-state.json.pending" } else { PENDING };
+        e.storage.fail = Some((pending.into(), Boundary::BeforeRename));
+        let result = if ui {
+            e.lifecycle(lifecycle::Operation::Save {
+                key: "usage-dashboard-collapsed".into(),
+                value: json!(true),
+            })
+            .map(|_| ())
+        } else {
+            e.execute(Command::Report(report(1))).map(|_| ())
+        };
+        assert!(result.is_err());
+        e.storage.fail = Some((pending.into(), Boundary::BeforeRename));
+        assert_eq!(
+            e.write_receipt(),
+            crate::shutdown::WriteOutcome::UnpreservedFailure
+        );
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        if ui {
+            assert_eq!(
+                e.lifecycle(lifecycle::Operation::Status).unwrap().values
+                    ["usage-dashboard-collapsed"],
+                true
+            );
+        } else {
+            assert_eq!(e.snapshot().unwrap().reports.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn explicit_pending_recovery_survives_restart_without_replaying_rejected_evidence() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    complete(&mut e, "valid", true);
+    std::fs::write(dir.path().join(PENDING), b"{damaged synthetic").unwrap();
+    assert!(e.execute(Command::Snapshot).is_err());
+    e.execute(Command::RecoverPending).unwrap();
+    assert!(e.storage.quarantined(PENDING).unwrap());
+    let mut next = engine(dir.path(), false);
+    assert_eq!(next.execute(Command::Snapshot).unwrap().history.len(), 1);
+    assert_eq!(
+        next.write_receipt(),
+        crate::shutdown::WriteOutcome::Committed
+    );
+    next.execute(Command::Clear {
+        destination: Destination::History,
+        at: 3,
+    })
+    .unwrap();
+    assert!(!next.storage.quarantined(PENDING).unwrap());
+    assert!(reopen(&next).snapshot().unwrap().history.is_empty());
 }

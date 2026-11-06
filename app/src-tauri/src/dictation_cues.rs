@@ -79,7 +79,8 @@ fn play(cue: &str, volume: f64) {
         .map(|(_, offset, duration)| offset + duration)
         .max()
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("murmur-cue-{}.wav", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(crate::identity::temp_dir());
+    let path = crate::identity::temp_dir().join(format!("murmur-cue-{}.wav", uuid::Uuid::new_v4()));
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate,

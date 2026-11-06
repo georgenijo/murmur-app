@@ -10,6 +10,17 @@ export function SourceRecovery() {
   return <main>
     <h1>Saved data needs recovery</h1>
     <p role="alert">Your saved data could not be loaded. Restart to retry an interrupted save. If a destination is missing or quarantined, restore its complete current-version JSON backup below. Existing quarantines are preserved. No defaults will be published.</p>
+    <section aria-label="Completion recovery">
+      <h2>History and reports</h2>
+      <p>If an interrupted History or report save is damaged, preserve its rejected evidence and continue from the readable saved stores. The rejected save will not be replayed. Clear History and retention actions remove this evidence.</p>
+      <button disabled={busy} onClick={() => {
+        setBusy(true);
+        void invoke('recover_completion_pending')
+          .then(() => setMessage('Completion recovery finished. Restart Murmur to load your data.'))
+          .catch(() => setMessage('Completion recovery could not finish. Preserve the data directory for manual recovery.'))
+          .finally(() => setBusy(false));
+      }}>Preserve rejected save and recover</button>
+    </section>
     <label>Destination <select value={key} disabled={busy} onChange={event => setKey(event.target.value)}>
       <option value="dictation-settings">Settings (settings.json)</option>
       <option value="murmur-theme-library">Theme library (theme-library.json)</option>

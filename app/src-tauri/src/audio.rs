@@ -1902,7 +1902,9 @@ fn read_capture_memo_file(path: &Path) -> Option<CaptureMemoEntries> {
 /// Never returns an error: failures leave the in-memory memo in place.
 pub(crate) fn initialize_capture_memo_persistence(data_dir: PathBuf) {
     let path = data_dir.join(CAPTURE_MEMO_FILE_NAME);
-    let _ = murmur_core::completion::recover_snapshot(&path);
+    let _ = murmur_core::completion::recover_snapshot_validated(&path, |v| {
+        decode_capture_memo(&v.to_string()).is_some()
+    });
     let restored = read_capture_memo_file(&path);
     let mut memo = CAPTURE_MEMO.lock_or_recover();
     if CAPTURE_MEMO_PATH.set(path).is_err() {

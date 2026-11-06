@@ -196,6 +196,8 @@ pub enum HistoryMutation {
 #[derive(Clone)]
 pub enum Command {
     Snapshot,
+    /// Explicitly preserve rejected pending evidence and resume from readable stores.
+    RecoverPending,
     Import(LegacyImport),
     KeysRemoved(Vec<Destination>),
     Clear {
@@ -247,6 +249,7 @@ impl CompletionService {
                 let _lock = lock;
                 let mut engine = Engine {
                     unpreserved_content: false,
+                    failed_source: None,
                     storage: Storage::new(root),
                     webkit_exists,
                     seen: HashSet::new(),
@@ -370,6 +373,7 @@ fn diagnostic(code: &'static str) {
 }
 struct Engine {
     unpreserved_content: bool,
+    failed_source: Option<lifecycle::Operation>,
     initialized: bool,
     revision: u64,
     storage: Storage,
@@ -379,9 +383,17 @@ struct Engine {
 impl Engine {
     fn write_receipt(&mut self) -> crate::shutdown::WriteOutcome {
         use crate::shutdown::WriteOutcome;
+        if self.storage.retry_intents().is_err() {
+            return WriteOutcome::UnpreservedFailure;
+        }
         let reconciled = self.execute(Command::Snapshot).is_ok();
         let sources = self.lifecycle(lifecycle::Operation::Status).is_ok();
-        if self.unpreserved_content || !sources || self.state().is_err() || self.holding().is_err()
+        if self.unpreserved_content
+            || self.failed_source.is_some()
+            || self.storage.has_intents()
+            || !sources
+            || self.state().is_err()
+            || self.holding().is_err()
         {
             return WriteOutcome::UnpreservedFailure;
         }
@@ -459,12 +471,7 @@ impl Engine {
     }
     fn holding(&self) -> Result<Holding> {
         self.storage
-            .read(HOLD, |v: &Holding| {
-                v.schema == 1
-                    && valid_receipts(&v.file_receipts)
-                    && v.history.entries.iter().all(valid_history)
-                    && v.reports.entries.iter().all(valid_report)
-            })?
+            .read(HOLD, |v: &Holding| valid_holding(v))?
             .ok_or(Error::Missing)
     }
     fn migration(&self) -> Result<Migration> {
@@ -494,6 +501,10 @@ impl Engine {
         // Published generations may be unknown rename outcomes from a prior run.
         // Establish durability before trusting them or draining any held data.
         self.storage.sync_directory()?;
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.replay_content()?;
         let mut holding = match self.holding() {
             Ok(v) => v,
             Err(Error::Missing) => {
@@ -577,6 +588,10 @@ impl Engine {
         // Re-establish directory durability before using any published watermark
         // to compact a journal or drain a consumed holding generation.
         self.storage.sync_directory()?;
+        self.storage.retry_intents()?;
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
         self.replay_content()?;
         let mut h = self.holding()?;
         self.observe_file_receipts(&h)?;
@@ -673,12 +688,19 @@ impl Engine {
     fn execute(&mut self, command: Command) -> Result<Snapshot> {
         let content = matches!(&command, Command::Complete { entry: Some(_), .. });
         let result = self.execute_inner(command);
-        if content && result.is_err() && !self.storage.root.join(PENDING).exists() {
+        if content
+            && result.is_err()
+            && !self.storage.has_intents()
+            && !self.storage.root.join(PENDING).exists()
+        {
             self.unpreserved_content = true;
         }
         result
     }
     fn execute_inner(&mut self, command: Command) -> Result<Snapshot> {
+        if matches!(command, Command::RecoverPending) {
+            self.resolve_pending()?;
+        }
         self.revision += 1;
         // Initialization retry must not inflate launch counts on every command.
         if !self.initialized
@@ -693,7 +715,7 @@ impl Engine {
         self.holding()?;
         self.recover()?;
         match command {
-            Command::Snapshot => {}
+            Command::Snapshot | Command::RecoverPending => {}
             Command::AcceptFile {
                 entry,
                 intent,
@@ -808,7 +830,9 @@ impl Engine {
                             diagnostic("history_write_failed");
                             // A journal contains counts only; it cannot stand in
                             // for a transcript whose pending publication failed.
-                            if !self.storage.root.join(PENDING).exists() {
+                            if !self.storage.has_intents()
+                                && !self.storage.root.join(PENDING).exists()
+                            {
                                 self.unpreserved_content = true;
                             }
                         }
@@ -932,14 +956,44 @@ impl Engine {
         }
         result
     }
+    fn resolve_pending(&mut self) -> Result<()> {
+        // A readable current destination is mandatory. Never manufacture defaults
+        // or replay rejected evidence as part of this explicit recovery action.
+        self.holding()?;
+        for d in [
+            Destination::History,
+            Destination::Statistics,
+            Destination::Reports,
+        ] {
+            self.document(d)?;
+        }
+        if self.storage.root.join(PENDING).exists() {
+            self.storage.quarantine(PENDING)?;
+        }
+        self.storage.write(
+            "completion-recovery.json",
+            &json!({"schema":1,"resolved":true}),
+        )?;
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.unpreserved_content = false;
+        Ok(())
+    }
     // At most one pending publication. Recovery runs before the next command;
     // a blocked destination rejects admission rather than evicting accepted work.
     fn replay_content(&mut self) -> Result<()> {
         let existed = self.storage.root.join(PENDING).exists();
+        if existed && self.storage.root.join("completion-recovery.json").exists() {
+            std::fs::remove_file(self.storage.root.join("completion-recovery.json"))
+                .map_err(|_| Error::Io)?;
+            self.storage.sync_directory()?;
+        }
         let pending: Option<Value> = self.storage.read(PENDING, |v: &Value| {
             v["schema"] == 1
                 && v["file"].as_str().is_some_and(|f| match f {
-                    HOLD => serde_json::from_value::<Holding>(v["value"].clone()).is_ok(),
+                    HOLD => serde_json::from_value::<Holding>(v["value"].clone())
+                        .is_ok_and(|h| valid_holding(&h)),
                     "history.json" => valid_document(Destination::History, &v["value"]),
                     "benchmark-reports.json" => valid_document(Destination::Reports, &v["value"]),
                     _ => false,
@@ -952,7 +1006,10 @@ impl Engine {
             )?;
             std::fs::remove_file(self.storage.root.join(PENDING)).map_err(|_| Error::Io)?;
             self.storage.sync_directory()?;
-        } else if existed || self.storage.quarantined(PENDING)? {
+        } else if existed
+            || (self.storage.quarantined(PENDING)?
+                && !self.storage.root.join("completion-recovery.json").exists())
+        {
             return Err(Error::Invalid);
         }
         Ok(())
@@ -961,11 +1018,14 @@ impl Engine {
         if self.storage.root.join(PENDING).exists() {
             return Err(Error::TooManyFiles);
         }
-        self.storage
-            .write(PENDING, &json!({"schema":1,"file":file,"value":value}))?;
+        let payload = json!({"schema":1,"file":file,"value":value});
+        self.storage.remember_intent(PENDING, &payload)?;
+        self.storage.write(PENDING, &payload)?;
+        self.storage.resolve_intent(PENDING);
         self.replay_content()
     }
     fn add_content(&mut self, d: Destination, mut value: Value) -> Result<()> {
+        self.storage.remove_evidence(PENDING)?;
         if d == Destination::Reports && value.get("completionUuid").is_none() {
             value["completionUuid"] = json!(uuid());
         }
@@ -1038,6 +1098,10 @@ impl Engine {
         Ok(())
     }
     fn clear(&mut self, d: Destination, at: u64) -> Result<()> {
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.storage.remove_evidence(PENDING)?;
         let mut doc = Document::new(d);
         if d == Destination::History {
             doc.file_receipts = self.document(d)?.map_or_else(Vec::new, |d| d.file_receipts);
@@ -1062,6 +1126,10 @@ impl Engine {
         self.apply_statistics()
     }
     fn mutate_history(&mut self, mutation: HistoryMutation) -> Result<()> {
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.storage.remove_evidence(PENDING)?;
         let mut h = self.holding()?;
         let mut doc = self
             .document(Destination::History)?
@@ -1808,4 +1876,43 @@ pub fn recover_snapshot(path: &std::path::Path) -> Result<()> {
         .and_then(|v| v.to_str())
         .ok_or(Error::Invalid)?;
     Storage::new(root.into()).recover_snapshot(file)
+}
+
+fn valid_holding(v: &Holding) -> bool {
+    v.schema == 1
+        && valid_receipts(&v.file_receipts)
+        && !v.history.generation.is_empty()
+        && !v.reports.generation.is_empty()
+        && v.history.entries.iter().all(valid_history)
+        && v.reports.entries.iter().all(valid_report)
+}
+
+fn valid_snapshot(file: &str, value: &Value) -> bool {
+    match file {
+        "ui-state.json" => lifecycle::valid_snapshot(value),
+        // Host-owned snapshots must additionally pass the supplied schema validator.
+        _ => value.is_object(),
+    }
+}
+/// Recovery of host-owned snapshots validates the complete host schema before rename.
+pub fn recover_snapshot_validated(
+    path: &std::path::Path,
+    validate: impl FnOnce(&Value) -> bool,
+) -> Result<()> {
+    let root = path.parent().ok_or(Error::Invalid)?;
+    let file = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or(Error::Invalid)?;
+    let storage = Storage::new(root.into());
+    let pending = format!("{file}.pending");
+    let existed = root.join(&pending).exists();
+    if storage
+        .read::<Value>(&pending, |v| v["schema"] == 1 && validate(&v["value"]))?
+        .is_none()
+        && (existed || storage.quarantined(&pending)?)
+    {
+        return Err(Error::Invalid);
+    }
+    recover_snapshot(path)
 }

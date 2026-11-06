@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    ui_lib::initialize_identity();
     ui_lib::launch::process_start();
     if let Some(exit_code) = ui_lib::meeting_diarization::run_cli_if_requested() {
         std::process::exit(exit_code);

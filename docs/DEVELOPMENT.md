@@ -251,3 +251,45 @@ to loginwindow or performs real system logout/restart/shutdown. Never reuse a
 PID without revalidation. The full three-fixture matrix is in the shutdown doc.
 The implementation worker runs windowless tests only; GUI interaction belongs
 to the separately assigned native worker.
+
+
+### Shutdown QA identity isolation audit
+
+Only `com.localdictation` selects the production legacy paths. `identity.rs`
+encodes every other bundle ID as UTF-8 hex under `murmur-isolated/<hex-id>`;
+there is no list of recognized test IDs that can fall through to production.
+Initialization precedes CLI worker dispatch as well as Tauri setup.
+
+| Persistent/global surface | Ownership / isolation for every non-production identity |
+|---|---|
+| Application Support | Tauri app data uses the configured bundle identifier: settings, completion, UI, window state, knowledge, meetings and performance data all descend from it. Legacy global stores instead descend from `murmur-isolated/<hex-id>`. |
+| Telemetry and shipper state | `identity::namespace` selects isolated `local-dictation/logs`; buffer seeding and rotating writers use that path. All non-production identities are internal bundles and never start the shipper. |
+| Whisper, VAD, Parakeet, Smart Turn models | Legacy model paths descend from isolated Application Support; Whisper disables production/global search and environment overrides for internal identities. Parakeet explicitly uses CPU, with no provider disk cache. |
+| FluidAudio/shared model caches | Inspection, download destinations and repair markers are namespaced. The pinned FluidAudio SDK has no cache-path API: its ASR initializer is refused for internal bundles, and speaker diarization is unavailable there, preventing implicit SDK access to the shared production cache. Use isolated Whisper/Parakeet for QA. |
+| Corpus stores | Namespaced legacy roots; internal identities ignore global corpus directory overrides. Synthetic fixtures must be provisioned inside the isolated root. |
+| WebKit | Wry uses the configured bundle identity; lifecycle checks only the exact identity subdirectory. QA uses `com.localdictation.shutdown-test`, never the production store or a directory enumeration of the global WebKit root. |
+| UserDefaults/preferences | App defaults use NSBundle identity. Explicit appearance/Dock reads access system appearance/layout preferences only; no app data is read or written in another app domain. |
+| Keychain | No application keychain store/API is used. Updater signature verification uses the bundled public key. |
+| Temp directories | Generated cue files use a namespaced temp root and UUID; explicit test fixtures use unique synthetic roots. Owned publication temps are exclusive 0600 siblings of their isolated destinations. |
+| Helper sockets/IPC | Capture and inference helpers use inherited anonymous pipes/stdio and generation-bound IDs, not global named sockets. Fixed helper bundle IDs identify signed executables, not persistent storage or IPC endpoints. |
+| Capture spools | Meeting WAV/SQLite and optional capture fixtures descend from Tauri app data. No persistent dictation audio is introduced. |
+| Pending files | Completion, UI/source, window and memo pending documents are siblings of isolated destinations. Startup removes abandoned completion/destination temps. Transcript pending evidence is pinned until explicit recovery, then bounded; Clear/Delete/caps remove superseded pending evidence. |
+| Update caches | Updater plugin is not registered for any non-production identity; no update cache/installation is started by the QA bundle. |
+| Launch agents | Autostart plugin is not registered for any non-production identity. The opt-in capture-agent CLI probe is outside normal app startup; never invoke its service-registration actions in QA. |
+| User-selected imports/exports | Explicit paths are user-controlled; QA supplies synthetic fixtures only. No implicit scan of user documents is added. |
+
+Tests cover bench, refactor-test, shutdown-test, future/empty/path-like IDs,
+ensuring namespace separation and injectivity, plus the actual telemetry resolver.
+No production data is accessed by the tests.
+
+### Completion pending recovery
+
+A damaged `completion-pending.json` is quarantined and blocks admission. In the
+Saved data needs recovery screen, choose **Preserve rejected save and recover**.
+This main-window-only typed command requires readable current completion stores,
+keeps the rejected bytes, and durably acknowledges using those readable stores
+instead of replaying the damaged intent. Restart afterward. Recovery never
+manufactures defaults or imports the damaged content. If a destination is also
+unreadable, preserve the directory for manual recovery first. Clear History,
+Delete and subsequent content caps discard superseded pending evidence; unresolved
+evidence remains pinned until explicit recovery. No evidence is exported or logged.

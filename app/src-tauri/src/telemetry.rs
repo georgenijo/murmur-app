@@ -14,8 +14,6 @@ pub(crate) use key_identity::sanitize_persisted_line;
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
 const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
 const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
-const REFACTOR_TEST_LOG_DIRECTORY: &str = "local-dictation-refactor-test";
-const BENCH_LOG_DIRECTORY: &str = "local-dictation-bench";
 
 /// A structured event emitted to the frontend and stored in the ring buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -41,26 +39,21 @@ fn get_event_buffer() -> Arc<Mutex<VecDeque<AppEvent>>> {
 }
 
 fn log_directory_for(data_root: &Path, identifier: &str) -> PathBuf {
-    let directory = match identifier {
-        REFACTOR_TEST_IDENTIFIER => REFACTOR_TEST_LOG_DIRECTORY,
-        BENCH_IDENTIFIER => BENCH_LOG_DIRECTORY,
-        _ => PRODUCTION_LOG_DIRECTORY,
-    };
-    data_root.join(directory).join("logs")
+    if identifier == crate::identity::PRODUCTION {
+        data_root.join(PRODUCTION_LOG_DIRECTORY).join("logs")
+    } else {
+        crate::identity::namespace(data_root, identifier).join("local-dictation/logs")
+    }
 }
 
 fn logs_dir() -> Option<PathBuf> {
-    LOG_DIRECTORY
-        .get()
-        .cloned()
-        .or_else(|| dirs::data_dir().map(|root| log_directory_for(&root, "com.localdictation")))
+    LOG_DIRECTORY.get().cloned().or_else(|| {
+        dirs::data_dir().map(|root| log_directory_for(&root, crate::identity::identifier()))
+    })
 }
 
 pub(crate) fn is_internal_bundle(app_handle: &tauri::AppHandle) -> bool {
-    matches!(
-        app_handle.config().identifier.as_str(),
-        REFACTOR_TEST_IDENTIFIER | BENCH_IDENTIFIER
-    )
+    app_handle.config().identifier != crate::identity::PRODUCTION
 }
 
 // ---------------------------------------------------------------------------
@@ -2398,7 +2391,8 @@ pub fn init(app_handle: tauri::AppHandle) {
         log_namespace = match identifier.as_str() {
             REFACTOR_TEST_IDENTIFIER => "refactor-test",
             BENCH_IDENTIFIER => "bench",
-            _ => "production",
+            crate::identity::PRODUCTION => "production",
+            _ => "isolated",
         },
         "telemetry initialized"
     );
@@ -2510,6 +2504,20 @@ pub fn clear_event_history() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn shutdown_and_future_bundles_never_resolve_production_logs() {
+        let root = Path::new("/synthetic-telemetry");
+        let production = log_directory_for(root, crate::identity::PRODUCTION);
+        for identifier in [
+            "com.localdictation.shutdown-test",
+            "com.localdictation.refactor-test",
+            "com.localdictation.bench",
+            "future.synthetic",
+            "../com.localdictation",
+        ] {
+            assert_ne!(log_directory_for(root, identifier), production);
+        }
+    }
     #[test]
     fn updater_events_keep_only_bounded_operational_fields() {
         for debug_build in [false, true] {
@@ -2895,11 +2903,11 @@ mod tests {
         );
         assert_eq!(
             log_directory_for(root, REFACTOR_TEST_IDENTIFIER),
-            root.join("local-dictation-refactor-test/logs")
+            crate::identity::namespace(root, REFACTOR_TEST_IDENTIFIER).join("local-dictation/logs")
         );
         assert_eq!(
             log_directory_for(root, BENCH_IDENTIFIER),
-            root.join("local-dictation-bench/logs")
+            crate::identity::namespace(root, BENCH_IDENTIFIER).join("local-dictation/logs")
         );
     }
 

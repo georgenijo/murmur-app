@@ -217,6 +217,17 @@ fn main_only<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), 
     }
 }
 #[tauri::command]
+pub(crate) async fn recover_completion_pending(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Snapshot, String> {
+    main_only(&window)?;
+    let _permit = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::source_call(move || execute(&app, Command::RecoverPending))
+        .await
+        .map_err(|_| "Completion recovery worker unavailable".to_string())?
+}
+#[tauri::command]
 pub(crate) fn completion_snapshot(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,

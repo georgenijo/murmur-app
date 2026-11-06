@@ -4,6 +4,9 @@ class RestartPolicy(unittest.TestCase):
     def test_bypasses(self):
         for source in ['app.restart()', 'app.r#restart()', 'app.request_restart()', 'AppHandle::restart(&app)', 'Alias::<Wry>::restart(&app)', 'use tauri::AppHandle::restart as relaunch;', 'let f = AppHandle::request_restart;', 'macro_rules! bypass { () => { $app.restart() } }', 'app./* nested /* comment */ */restart()']:
             with self.subTest(source=source): self.assertTrue(violations(source))
+    def test_plugin_and_special_exit_code(self):
+        for source in ['app.plugin(tauri_plugin_process::init())', 'use tauri_plugin_process::init as original; app.plugin(original())', 'use tauri_plugin_process as proc; proc::init()', 'app.exit(tauri::RESTART_EXIT_CODE)', 'use tauri::RESTART_EXIT_CODE as code; app.exit(code)', 'macro_rules! bypass { () => { tauri_plugin_process::init() } }']:
+            with self.subTest(source=source): self.assertTrue(violations(source))
     def test_opaque_rust(self):
         for source in ['// app.restart()\nlet x=1;', 'let s = r###"app.request_restart()"###;', '/* outer /* app.restart() */ end */', 'let c = \'r\';']:
             self.assertFalse(violations(source))

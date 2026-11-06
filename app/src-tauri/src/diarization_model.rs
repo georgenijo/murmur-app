@@ -86,11 +86,12 @@ fn sweep_staging(parent: &Path) {
 }
 
 pub fn supported() -> bool {
-    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    !crate::identity::internal() && cfg!(all(target_os = "macos", target_arch = "aarch64"))
 }
 
 pub(crate) fn directory() -> Option<PathBuf> {
-    dirs::data_dir().map(|root| root.join("FluidAudio/Models/speaker-diarization-coreml"))
+    crate::identity::data_dir()
+        .map(|root| root.join("FluidAudio/Models/speaker-diarization-coreml"))
 }
 
 fn regular_file(root: &Path, relative: &str) -> bool {

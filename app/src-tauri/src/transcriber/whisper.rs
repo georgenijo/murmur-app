@@ -40,6 +40,11 @@ fn debug_models_dir_override() -> Option<PathBuf> {
 
 /// Get all potential model directories to search.
 pub(crate) fn get_model_search_paths() -> Vec<PathBuf> {
+    if crate::identity::internal() {
+        return crate::identity::data_dir()
+            .map(|d| vec![app_models_dir(&d)])
+            .unwrap_or_default();
+    }
     #[cfg(debug_assertions)]
     if let Some(path) = debug_models_dir_override() {
         return vec![path];
@@ -50,7 +55,7 @@ pub(crate) fn get_model_search_paths() -> Vec<PathBuf> {
         paths.push(PathBuf::from(custom_path));
     }
 
-    if let Some(data_dir) = dirs::data_dir() {
+    if let Some(data_dir) = crate::identity::data_dir() {
         paths.push(app_models_dir(&data_dir));
         paths.push(data_dir.join("pywhispercpp").join("models"));
     }
@@ -363,7 +368,7 @@ impl TranscriptionBackend for WhisperBackend {
         if let Some(path) = debug_models_dir_override() {
             return Ok(path);
         }
-        let data_dir = dirs::data_dir()
+        let data_dir = crate::identity::data_dir()
             .ok_or_else(|| "Could not find application data directory".to_string())?;
         Ok(app_models_dir(&data_dir))
     }

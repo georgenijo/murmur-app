@@ -3,7 +3,9 @@
 use murmur_core::shutdown::{Coordinator, Effect, Event, Request};
 use std::sync::{mpsc::RecvTimeoutError, Mutex};
 pub(crate) enum Message {
+    #[cfg(test)]
     Request(Request, u64),
+    Accepted(Vec<Effect>),
     Finished(Event),
 }
 pub(crate) fn reduce(
@@ -13,6 +15,8 @@ pub(crate) fn reduce(
 ) -> Option<Vec<Effect>> {
     let mut core = core.lock().unwrap_or_else(|p| p.into_inner());
     match message {
+        Ok(Message::Accepted(effects)) => Some(effects),
+        #[cfg(test)]
         Ok(Message::Request(request, requested_at)) => {
             let mut effects = core.request(request, requested_at);
             effects.extend(core.tick(now));
@@ -28,4 +32,15 @@ pub(crate) fn intercept_exit(permitted: bool, prevent: impl FnOnce(), request: i
         prevent();
         request();
     }
+}
+
+pub(crate) fn accept(
+    core: &Mutex<Coordinator>,
+    send: &std::sync::mpsc::Sender<Message>,
+    request: Request,
+    now: u64,
+) {
+    let mut core = core.lock().unwrap_or_else(|p| p.into_inner());
+    let effects = core.request(request, now);
+    let _ = send.send(Message::Accepted(effects));
 }

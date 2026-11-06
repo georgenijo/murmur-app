@@ -1,3 +1,4 @@
+mod identity;
 use crate::events::EventsExt;
 use murmur_core::events::{EventKind, EventSink};
 #[cfg(feature = "internal-benchmark")]
@@ -212,8 +213,15 @@ pub(crate) struct State {
     pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
 }
 
+pub fn initialize_identity() {
+    let context = tauri::generate_context!();
+    crate::identity::initialize(&context.config().identifier);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    crate::identity::initialize(&context.config().identifier);
     launch::process_start();
     let builder = tauri::Builder::default()
         .menu(|app| {
@@ -241,12 +249,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init());
 
     #[cfg(not(feature = "internal-benchmark"))]
-    let builder = builder
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
-        .plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = if crate::identity::internal() {
+        builder
+    } else {
+        builder
+            .plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ))
+            .plugin(tauri_plugin_updater::Builder::new().build())
+    };
 
     #[cfg(feature = "internal-benchmark")]
     let builder = builder.plugin(commands::corpus::plugin());
@@ -391,6 +403,7 @@ pub fn run() {
             commands::export::save_text_export,
             commands::mode_exchange::read_modes_file,
             completion::completion_snapshot,
+            completion::recover_completion_pending,
             completion::webkit_state_snapshot,
             completion::import_webkit_state,
             completion::save_webkit_source,
@@ -779,7 +792,7 @@ pub fn run() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|_app_handle, _event| {
@@ -804,7 +817,7 @@ pub fn run() {
 
         if let RunEvent::ExitRequested { api, code, .. } = &_event {
             let permitted = shutdown::permitted(_app_handle);
-            if !permitted && *code == Some(tauri::RESTART_EXIT_CODE) {
+            if shutdown::forbidden_restart_exit(*code, permitted) {
                 tracing::error!(target:"shutdown", "forbidden restart bypass reached runtime without a drained permit");
             }
             shutdown::adapter::intercept_exit(permitted, || api.prevent_exit(), || {

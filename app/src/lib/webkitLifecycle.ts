@@ -102,8 +102,7 @@ function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending
   } catch { request = Promise.reject(new Error('Source storage unavailable')); }
   const promise = Promise.resolve(request).then(async () => {
     const current = pending.get(key);
-    if (current?.generation === intent.generation) pending.delete(key);
-    else if (current && wireEdits) {
+    if (current) {
       const ownedEdits = { ...current.ownedEdits };
       const fieldGenerations = { ...current.fieldGenerations };
       for (const field of ['autoPaste', 'disabled'] as const) {
@@ -111,7 +110,8 @@ function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending
           delete ownedEdits[field]; delete fieldGenerations[field];
         }
       }
-      pending.set(key, { ...current, ownedEdits, fieldGenerations });
+      if (current.generation === intent.generation && !Object.keys(ownedEdits).length) pending.delete(key);
+      else pending.set(key, { ...current, ownedEdits, fieldGenerations });
     }
     if (synchronization) await notifySourceCommitted(key);
     if (!pending.size) window.dispatchEvent(new Event(SOURCE_STORAGE_SAVED));
@@ -134,7 +134,8 @@ export async function flushSourceState(): Promise<void> {
       attempted.add(intent.generation);
       return submitIntent(key, intent);
     }));
-  }}
+  }
+}
 /** Rebase a retained intent after a newer native quick-control commit. */
 export function rebasePendingOwnedSettings(settings: OwnedCommit): OwnedCommit {
   const intent = pending.get('dictation-settings');

@@ -86,11 +86,18 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
 pub(crate) fn request(app: &tauri::AppHandle, request: Request) {
     close_admission(); // synchronous even if the reducer/owner thread is delayed
     if let Some(shutdown) = app.try_state::<Shutdown>() {
-        let _ = shutdown.send.send(Message::Request(
+        // Acceptance and issue share the reducer mutex. A queued notification
+        // cannot hide an accepted Quit/System request from terminal commitment.
+        adapter::accept(
+            &shutdown.core,
+            &shutdown.send,
             request,
             shutdown.clock.elapsed().as_millis() as u64,
-        ));
+        );
     }
+}
+pub(crate) fn forbidden_restart_exit(code: Option<i32>, permitted: bool) -> bool {
+    !permitted && code == Some(tauri::RESTART_EXIT_CODE)
 }
 pub(crate) fn permitted(app: &tauri::AppHandle) -> bool {
     app.try_state::<Shutdown>()
@@ -230,6 +237,9 @@ fn terminal(app: &tauri::AppHandle, action: Action) {
     }
 }
 
+#[cfg(unix)]
+mod signal;
+
 /// The raw handler does nothing except a nonblocking async-signal-safe write.
 /// Locks, allocation and host calls live on the reader thread.
 #[cfg(unix)]
@@ -237,13 +247,7 @@ fn signals(app: tauri::AppHandle) -> Result<(), String> {
     use std::sync::atomic::AtomicI32;
     static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
     extern "C" fn notify(signal: libc::c_int) {
-        let fd = SIGNAL_FD.load(Ordering::Relaxed);
-        let byte = signal as u8;
-        if fd >= 0 {
-            unsafe {
-                libc::write(fd, (&byte as *const u8).cast(), 1);
-            }
-        }
+        self::signal::notify(SIGNAL_FD.load(Ordering::Relaxed), signal);
     }
     let mut fds = [-1; 2];
     unsafe {
@@ -389,9 +393,7 @@ pub(crate) mod test_support {
         let counts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         for _ in 0..65 {
             for message in receive.try_iter() {
-                if let Message::Request(request, requested_at) = message {
-                    core.lock_or_recover().request(request, requested_at);
-                }
+                let _ = adapter::reduce(core, Ok(message), 0);
             }
             let count = counts.clone();
             let _ = context.main_thread.dispatch(Box::new(move || {
@@ -498,6 +500,32 @@ mod tests {
         drop(service);
         let next = CompletionService::start(root.path().into(), false).unwrap();
         assert_eq!(next.execute(Command::Snapshot).unwrap().history.len(), 1);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quit_reaches_terminal_while_startup_settings_io_is_blocked() {
+        let (entered, blocked) = tokio::sync::oneshot::channel();
+        let (release, resume) = mpsc::channel();
+        let permit = WriterPermit::acquire().unwrap();
+        let startup = tokio::spawn(async move {
+            let _permit = permit;
+            source_call(move || {
+                assert!(objc2::MainThreadMarker::new().is_none());
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        blocked.await.unwrap();
+        let core = Mutex::new(Coordinator::default());
+        let (send, receive) = mpsc::channel();
+        adapter::accept(&core, &send, Request::Quit, 0);
+        adapter::reduce(&core, Ok(receive.recv().unwrap()), 0);
+        adapter::reduce(&core, Err(mpsc::RecvTimeoutError::Timeout), 10_000);
+        assert_eq!(core.lock().unwrap().issue(), Some(Action::Quit));
+        assert!(!startup.is_finished());
+        release.send(()).unwrap();
+        startup.await.unwrap();
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn native_source_fifo_keeps_queued_intent_while_first_writer_is_blocked() {

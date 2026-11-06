@@ -169,3 +169,19 @@ it('a new source edit cannot carry an older owned-field patch past a native over
   expect(latest.ownedEdits).toEqual({ disabled: true });
   release(); await flushSourceState();
 });
+
+it.each(['autoPaste', 'disabled'] as const)('a successful unrelated save retains the failed %s patch', async field => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  mock.invoke.mockRejectedValueOnce(new Error('synthetic failure'));
+  persistSourceState('dictation-settings', JSON.stringify({ [field]: true, language: 'en' }), { [field]: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  mock.invoke.mockResolvedValue(undefined);
+  persistSourceState('dictation-settings', JSON.stringify({ [field]: true, language: 'es' }), {});
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const beforeRetry = mock.invoke.mock.calls.length;
+  await flushSourceState();
+  expect(mock.invoke.mock.calls.length).toBeGreaterThan(beforeRetry);
+  const args = mock.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob').slice(-1)[0]?.[1];
+  expect(args.ownedEdits).toEqual({ [field]: true });
+  expect(JSON.parse(args.blob).language).toBe('es');
+});

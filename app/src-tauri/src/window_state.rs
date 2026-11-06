@@ -195,7 +195,11 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
         .spawn(move || {
             // Recovery and reads stay on this owner, including startup. Window
             // events cannot race defaults over a snapshot still being loaded.
-            if murmur_core::completion::recover_snapshot(&path).is_err() {
+            if murmur_core::completion::recover_snapshot_validated(&path, |v| {
+                serde_json::from_value::<SavedState>(v.clone()).is_ok()
+            })
+            .is_err()
+            {
                 tracing::warn!(target:"system", "window snapshot recovery failed");
             }
             let mut saved: SavedState = std::fs::read(&path)

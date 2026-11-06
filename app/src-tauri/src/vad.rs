@@ -16,7 +16,7 @@ const SPEECH_PAD_MS: i32 = 120;
 
 /// Expected path for the VAD model under the app's models directory.
 pub fn vad_model_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| {
+    crate::identity::data_dir().map(|d| {
         d.join("local-dictation")
             .join("models")
             .join(VAD_MODEL_FILENAME)

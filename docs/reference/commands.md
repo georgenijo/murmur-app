@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 184 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 185 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -408,6 +408,7 @@ All successful mutations return the latest `Snapshot` and publish read-only
 |---------|-----------|---------|-------------|
 | `accept_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window accepts a visible, uncancelled file result into History using the operation's start-time retention. No statistics. |
 | `cancel_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window cancels file History admission, including before native start or after transcription. |
+| `recover_completion_pending` | — | `Result<Snapshot, String>` (async) | Main-only explicit recovery: preserve rejected pending evidence, resume from readable current completion stores, and restore admission across restart. |
 | `completion_snapshot` | — | `Result<Snapshot, String>` | Main/diagnostics read of History, statistics, saved reports, migration notice and per-destination key-removal receipts. |
 | `acknowledge_completion_keys` | `destinations: Destination[]` | `Result<(), String>` | Main-only durable acknowledgement after targeted WebKit key removal. Safe to repeat on later launches. |
 | `import_completion_v1` | `source: LegacyImport` | `Result<Snapshot, String>` | Main-only fill/recovery import of History, statistics and reports. Disk wins when valid; durable markers prevent reimport. |
@@ -430,7 +431,7 @@ or Paste Last work is refused during shutdown. The temporary app-owned process
 plugin preserves plugin:process|exit and plugin:process|restart for authorized
 Main callers, routing both through shutdown. process:allow-restart remains until
 #990. Exit code arguments are accepted; coordinated quit uses the common exit
-code zero. No public restart command is added to the 184-command app surface.
+code zero. No public restart command is added to the 185-command app surface.
 
 The explicitly enabled shutdown-test-support feature exposes only the isolated
 QA plugin described in [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).
