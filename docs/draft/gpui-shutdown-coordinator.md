@@ -270,10 +270,18 @@ a storage failure. Native quick controls retain the existing locked revision mer
 The three targeted Vitest regressions fail on `ad1e1976` and pass after these fixes.
 Additional tests cover superseded settings/themes/other source keys, fresh retry
 generations, and old-session acknowledgement isolation. Core Rust tests reject
-stale/duplicate generations (both fail with the fence disabled), retain fences after failures, and scope keys/sessions/
-owning windows independently. Native adapter tests deterministically construct A
+stale/duplicate generations (both fail with the fence disabled), retain fences after
+failures, and scope keys, sessions and owning windows independently. Native adapter tests deterministically construct A
 before B but poll B before A and prove the older publication never runs; a settings
 integration test combines this ordering with a native quick-control commit and
 preserves the deliberate fields and latest language. Existing authoritative reload,
 tombstone, coalescing, and content-free warning tests remain unchanged. The parent
 owns independent Sol rechecks and GUI verification; this worker launches no app.
+
+Round-two verification at `ca9069a8`: TypeScript and all 182 Vitest files / 1,888
+tests pass; all 185 Linux core unit/integration tests and restart policy pass. Mac mini Rust 1.98.1 passes the full native
+`cargo test -- --test-threads=1` suite (1,528 library tests, 14 ignored, plus
+integration suites) and `cargo clippy --all-targets -- -D warnings
+-A clippy::chunks_exact_to_as_chunks -A clippy::byte_char_slices`. The native
+reordered-task and quick-control tests both pass. No GUI verification or new
+independent review is claimed.

@@ -197,7 +197,8 @@ React queues Rust intents before attempting cache writes. This includes settings
 theme-library and small UI writers. Deliberate main-window Disable and Auto Paste
 edits accompany full settings writes as field patches; incidental snapshots still
 respect the durable owned-field revision. `save_settings_blob` returns the merged
-committed document. The renderer retains defensive library parsing for presentation
+committed document inside an applied receipt; layer 07 also fences stale renderer
+session generations with a distinct superseded receipt. The renderer retains defensive library parsing for presentation
 and import previews, but does not publish library repairs on load. Rust publishes
 reserved-ID migrations. Appearance cache regeneration and JSON key order do not
 advance revisions or emit repair events.
