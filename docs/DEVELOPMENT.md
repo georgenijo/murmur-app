@@ -94,7 +94,7 @@ murmur-app/
 │       └── tests/               # integration tests
 ├── bench/                       # benchmark audio fixtures
 ├── docs/                        # architecture, features, references, decisions
-├── prompts/                     # agent prompt files (work / chat / release / bug / swarm)
+├── prompts/                     # agent prompt files (chat / release)
 ├── scripts/                     # capture helper build, notarization, release artifacts
 ├── tests/                       # release-artifact and workflow-policy tests (Python)
 └── tools/murmur-diag/           # local MCP log-diagnostics tool
