@@ -6,7 +6,8 @@ The approved design is the GPUI 1.8 design produced at that revision.
 During implementation the base moved to `269dfa39`; this layer was rebased onto
 its source-recovery generation and presentation-cache fixes, then rebased again
 onto `400a4648` to retain unresolved recovery-evidence pruning fixes. The current
-base is `1b9ec477`, including URL round-trip and presentation-session follow-ups.
+base is `dae05b20`, including guarded presentation sessions, owned-key tombstones,
+reload coalescing and content-free reload-failure diagnostics.
 Independent implementation review and the native Tauri matrix belong to the parent.
 
 ## Policy and ownership
@@ -211,3 +212,38 @@ retention effective; main dispatch running throughout hold; one terminal action;
 one replacement for restart; replacement's own quit drains once. Separately
 exercise helper death, WebContent death and forced process death as recovery
 scenarios. No full native matrix pass or independent review is claimed here.
+
+
+## Round-one review corrections
+
+The implementation was rebased before editing and again after layer 06's reload
+follow-up. Only layer 07 is pushed. The parent owns independent Sol re-checks and
+the native GUI matrix; the implementation worker performs no GUI input/app launch.
+
+| Finding | Root cause and fix | Regression / before-after evidence |
+|---|---|---|
+| I1 | Telemetry recognized two internal IDs and defaulted every other ID to production. All non-production IDs now use an injective hex-encoded namespace. Internal-service/shipper exclusions cover all such IDs. Legacy models/corpus/caption stores and anonymous worker CLI startup use the same identity; implicit shared model fallbacks are disabled. Autostart/updater registration is production-only. | The actual old telemetry resolver fails the shutdown-ID disjointness assertion. Native `shutdown_and_future_bundles_never_resolve_production_logs` and `every_nonproduction_identity_is_disjoint_from_production_and_each_other` cover the shutdown/bench/refactor/future/path-like IDs. Full table: [QA identity audit](../DEVELOPMENT.md#shutdown-qa-identity-isolation-audit). |
+| N1 | Mailbox delivery hid an already accepted Quit behind the final writer receipt. Request acceptance now mutates arbitration under the same reducer mutex as `issue`; the channel only carries accepted effects. | `accepted_requests_arbitrate_even_behind_the_final_writer_receipt`: Quit/System/second Restart behind Finished(Writers), one terminal action. Old mailbox acceptance fails; current acceptance passes. Existing deadline/mixed/late-owner cases use the production acceptance seam too. |
+| N2 | `prepare` loaded/recovered/published settings synchronously during setup. It now reserves a configuration revision and producer permit before queuing native-source work; shutdown and revision checks precede application, and native geometry remains on common-mode main dispatch. | Native `quit_reaches_terminal_while_startup_settings_io_is_blocked` holds the actual source FIFO, proves off-main execution and a terminal Quit while startup remains blocked. Existing FIFO/producer-barrier tests remain. The original blocking setup path was established by the round-one native review; no GUI launch is performed by this worker. |
+| N3 | Reserved restart identifiers did not include the original plugin crate or Tauri's special exit code. The token guard now rejects the original process-plugin crate (including aliased initializer imports) everywhere and reserves RESTART_EXIT_CODE to the adapter's detection seam. | Six plugin/code alias/macro fixtures fail against the old guard and pass now, within five fixture groups. The adapter alone still owns request_restart. |
+| N4 | The full self-pipe write leaked EAGAIN into interrupted code. The raw handler saves/restores thread errno, retries EINTR and treats EAGAIN as an existing notification. | `full_pipe_signal_preserves_interrupted_errno` delivers a real thread-targeted SIGUSR1 against a saturated pipe. The old handler fails (EAGAIN replaces EDOM); the new handler passes. No product process is signalled. |
+| D1 | Holding replay checked deserialization only; generic snapshots checked only that value existed. Replay now shares complete Holding/document validation with receipt classification. UI, native window and capture-memo recovery require destination validators before any rename; no unvalidated public generic recovery remains. Rejected evidence uses sequenced quarantine/pinning/pruning. | `pending_holding_validates_entries_before_replacing_readable_content` and `snapshot_payload_validation_preserves_destination_and_evidence` fail on the old code and pass now, preserving byte-identical readable destinations. Existing malformed/future source matrices remain. |
+| D2 | A crash before pending rename left synced transcript temps outside Clear. Startup/reconciliation removes exact pending/destination temp families. Resolved pending evidence is removed by Clear, Delete, caps and non-retaining producers; unresolved evidence stays pinned until explicit recovery. | `clear_removes_pending_publication_temp` in the baseline fails. `abandoned_pending_temps_and_resolved_evidence_obey_clear_delete_and_caps` covers Clear/Delete/new capped content/retain=false, plus recovery preserving evidence until resolution. Existing retain=false/admission/cap/replay tests remain. |
+| D3 | Only Complete failures affected receipts; report/UI/direct mutations could lose their intended value and later receive Committed. Exact failed pending payloads and pre-pending report content now remain with the owner for reconciliation. Source operations retain their exact failed Save. Direct mutation failures retain exact attempted snapshots; a failed retry remains UnpreservedFailure. | `failed_report_and_ui_intents_are_retained_until_exact_publication_recovers` fails before and passes now. `report_failure_before_pending_admission_retains_exact_held_report` covers cap-write failure; `direct_mutation_failures_cannot_receive_committed_until_exact_snapshot_is_retried` covers Clear/Pin before rename, after rename and directory sync. Successful exact retry earns Committed only after publication. |
+| D4 | Initialization imported/consumed Holding before pending replay. Pending replay and abandoned-temp cleanup now precede initialization mutations and automatic no-WebKit import. | `startup_replays_held_completion_before_no_webkit_automatic_import` fails before and passes now, retaining exactly one row across another launch. |
+| D5 | Quarantined pending evidence blocked every later launch without an exit. Main-only typed `recover_completion_pending` preserves rejected evidence, requires readable current stores and durably records explicit resolution. A valid pending intent always replays. The existing startup recovery screen exposes the operation and success/failure states. | `explicit_pending_recovery_through_public_service_across_two_launches`, `explicit_pending_recovery_survives_restart_without_replaying_rejected_evidence`, and `explicit_recovery_replays_usable_pending_instead_of_discarding_it`; two UI success/failure cases. Procedure: [completion recovery](../DEVELOPMENT.md#completion-pending-recovery). |
+| F1 | Successful newest-generation raw publication deleted older failed field patches. Acknowledgement now removes only fields actually submitted at the same field generation. Typed notifications identify acknowledged fields; an unrelated owned-field acknowledgement retains the other patch. A native edit of that field supersedes it. | Both `a successful unrelated save retains the failed %s patch` cases fail against the pre-fix module. The neighboring different-field acknowledgement/native-supersession test passes; the real hook forwards validated acknowledgement metadata. Existing rollback/supersession/generation and layer 06 propagation suites remain. |
+
+No transcript/audio/clipboard/selection payload enters logs or receipts. Retained
+in-memory failed intents are not claimed durable until their exact publication
+commits or a validated pending copy is synced. They can still be lost on forced
+process death during a continuing disk failure; receipts remain degraded then.
+
+The pinned FluidAudio SDK exposes no path override. Its ASR initializer and
+speaker diarization are therefore unavailable to non-production bundles to avoid
+implicit production-cache access. Synthetic native QA uses isolated Whisper or
+Parakeet models. This limitation is deliberate and does not change production.
+
+Final Linux/Mac counts and final-head CI are recorded in the PR body. Baseline
+comparisons used a synthetic source archive under the Linux cache, not another
+active checkout. No independent review is claimed by this worker.
