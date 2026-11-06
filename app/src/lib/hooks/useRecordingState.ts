@@ -285,6 +285,16 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
     });
+    listen<unknown>('dictation-stop-failed', (event) => {
+      if (cancelled) return;
+      const recordingId = recordingIdFromPayload(event.payload);
+      if (recordingId === null
+        || recordingId <= cancelledDestinationGenerationRef.current
+        || !acceptPresentationGeneration(recordingId)) return;
+      presentError('Transcription failed. Please try again.', { recordingId });
+    }).then((fn) => {
+      if (cancelled) fn(); else unlistens.push(fn);
+    });
     listen<unknown>('recording-initialization-failed', (event) => {
       if (cancelled) return;
       const presentation = initializationPresentationFromPayload(event.payload);
