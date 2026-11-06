@@ -1,4 +1,5 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
+use crate::events::EventsExt;
 use crate::microphone_auto::SmartAutoRequest;
 use crate::microphone_preview::{MicrophonePreviewStatus, PreviewPhase};
 use crate::state::DictationStatus;
@@ -23,7 +24,9 @@ fn emit_status(app_handle: &tauri::AppHandle) {
         .app_state
         .microphone_preview
         .status();
-    let _ = app_handle.publish(EventKind::MicrophonePreviewStatus, status);
+    let _ = app_handle
+        .events()
+        .publish(EventKind::MicrophonePreviewStatus, status);
 }
 
 fn normalized_device_id(device_id: String) -> Result<Option<String>, String> {

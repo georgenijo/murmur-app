@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::transcriber::{
     ParakeetBackend, TranscriptionBackend, WhisperBackend, COREML_MODEL_NAME,
 };
@@ -582,7 +583,8 @@ impl ModelRuntimeManager {
             // Admission is ready before a consumer reacts to Installed.
             crate::dictation_control::model_installation_changed(app);
         }
-        self.publish(app, model_name, "installStateChanged")
+        self.events()
+            .publish(app, model_name, "installStateChanged")
     }
 
     fn publish(
@@ -606,7 +608,9 @@ impl ModelRuntimeManager {
             "model_runtime_transition"
         );
         if let Some(app) = app {
-            let _ = app.publish(EventKind::ModelRuntimeStatusChanged, &snapshot);
+            let _ = app
+                .events()
+                .publish(EventKind::ModelRuntimeStatusChanged, &snapshot);
         }
         Ok(())
     }
@@ -626,7 +630,7 @@ impl ModelRuntimeManager {
                 failure_present,
             },
         );
-        self.publish(app, model_name, reason)
+        self.events().publish(app, model_name, reason)
     }
 
     fn ensure_backend<'a>(

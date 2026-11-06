@@ -86,7 +86,7 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `hold-over-recording-start` | `keyboard.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
 | `hotkey-tap-rejected` | `keyboard.rs` | useDiscovery; useOverlayRuntime | Main Overlay |
 | `keyboard-listener-error` | `keyboard.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
-| `meeting-segment-failed` | `meeting_capture.rs` | None (retired/unused notification) | Main |
+| `meeting-segment-failed` | `meeting_capture.rs` | useMeetings (segment failure listener) | Main |
 | `meeting-segment-finalized` | `meeting_capture.rs` | useMeetings | Main |
 | `meeting-speakers-updated` | `meeting_diarization.rs` | useMeetings | Main |
 | `meeting-status-changed` | `meeting_capture.rs` | OverlayWidget; useMeetingAudio (dynamic events); useMeetings; smart_auto_probe (native) | Main Overlay SmartAuto |
@@ -110,7 +110,7 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `smart-destination-selected` | `commands/recording.rs` | useOverlayRuntime; useRecordingState | Main Overlay |
 | `statistics-changed` | `completion.rs` | completionData | Main Diagnostics |
 | `system-audio-permission-changed` | `commands/meeting.rs` | PermissionsBanner; useMeetings | Main |
-| `transcription-complete` | `commands/recording.rs` | useDiscovery | Main |
+| `transcription-complete` | `commands/recording.rs` | useDiscovery; useRecordingState | Main |
 | `updater-background-check-requested` | `commands/tray.rs` | useAutoUpdater | Main |
 | `vocab-scan-progress` | `commands/recording.rs` | useVocabScan (EVENT) | Main |
 

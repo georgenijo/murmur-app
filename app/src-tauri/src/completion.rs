@@ -1,4 +1,5 @@
 //! Thin host adapter: native producers submit once, windows only observe.
+use crate::events::EventsExt;
 use murmur_core::completion::producers::Producers;
 use murmur_core::completion::{
     Command, CompletionService, Destination, GateAction, HistoryMutation, LegacyImport,
@@ -77,8 +78,8 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Snapshot, String>
         .execute(command)
         .map_err(|e| e.to_string());
     if result.is_ok() {
-        let _ = app.publish(EventKind::HistoryChanged, ());
-        let _ = app.publish(EventKind::StatisticsChanged, ());
+        let _ = app.events().publish(EventKind::HistoryChanged, ());
+        let _ = app.events().publish(EventKind::StatisticsChanged, ());
     }
     result
 }
@@ -89,8 +90,8 @@ pub(crate) fn produce(
     let state = app.state::<Completion>();
     match f(&state.producers) {
         Ok(_) => {
-            let _ = app.publish(EventKind::HistoryChanged, ());
-            let _ = app.publish(EventKind::StatisticsChanged, ());
+            let _ = app.events().publish(EventKind::HistoryChanged, ());
+            let _ = app.events().publish(EventKind::StatisticsChanged, ());
         }
         Err(_) => {
             storage_error(app);
@@ -167,7 +168,7 @@ pub(crate) async fn accept_file_transcription<R: tauri::Runtime>(
     })?
     .is_some()
     {
-        let _ = app.publish(EventKind::HistoryChanged, ());
+        let _ = app.events().publish(EventKind::HistoryChanged, ());
     }
     Ok(())
 }

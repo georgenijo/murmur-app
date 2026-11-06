@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::performance_metrics::{
     PerformanceRunListV1, PerformanceRunV1, PerformanceStoreHealthV1, ResourceSampleV1,
 };
@@ -43,6 +44,7 @@ pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(),
     let _ = window.set_focus();
     window
         .app_handle()
+        .events()
         .publish(EventKind::DiagnosticsTabRequested, tab)
         .map_err(|error| {
             tracing::warn!(target: "system", %error, "could not select Diagnostics tab");

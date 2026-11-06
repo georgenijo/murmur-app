@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use murmur_core::events::{EventKind, EventSink};
 pub(crate) mod production;
 mod repository;
@@ -471,7 +472,9 @@ impl PerformanceMetrics {
                 .app_handle
                 .clone();
             if let Some(app_handle) = app_handle {
-                let _ = app_handle.publish(EventKind::PerformanceRunCompleted, run);
+                let _ = app_handle
+                    .events()
+                    .publish(EventKind::PerformanceRunCompleted, run);
             }
         }
         Ok(run)
@@ -509,7 +512,9 @@ impl PerformanceMetrics {
             .app_handle
             .clone();
         if let Some(app_handle) = app_handle {
-            let _ = app_handle.publish(EventKind::PerformanceResourceSample, sample);
+            let _ = app_handle
+                .events()
+                .publish(EventKind::PerformanceResourceSample, sample);
         }
         Ok(())
     }
@@ -575,7 +580,9 @@ impl PerformanceMetrics {
             .app_handle
             .clone();
         if let Some(app_handle) = app_handle {
-            let _ = app_handle.publish(EventKind::PerformanceDiagnosticsCleared, ());
+            let _ = app_handle
+                .events()
+                .publish(EventKind::PerformanceDiagnosticsCleared, ());
         }
         Ok(())
     }

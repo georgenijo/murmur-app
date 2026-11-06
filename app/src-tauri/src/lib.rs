@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use murmur_core::events::{EventKind, EventSink};
 #[cfg(feature = "internal-benchmark")]
 mod accuracy_corpus;
@@ -700,7 +701,7 @@ pub fn run() {
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }
-                            let _ = app_handle.publish(EventKind::CheckForUpdatesRequested, ());
+                            let _ = app_handle.events().publish(EventKind::CheckForUpdatesRequested, ());
                         }
                         "quit" => {
                             app_handle.exit(0);

@@ -2,6 +2,7 @@ use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, Audio
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
 use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
+use crate::events::EventsExt;
 use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::{self, PreparationReason};
 use crate::performance_metrics::{
@@ -1016,7 +1017,9 @@ impl Drop for FileTranscribeGuard<'_> {
             .file_transcribing
             .store(false, Ordering::SeqCst);
         if let Some(app_handle) = &self.app_handle {
-            let _ = app_handle.publish(EventKind::FileTranscriptionStatusChanged, false);
+            let _ = app_handle
+                .events()
+                .publish(EventKind::FileTranscriptionStatusChanged, false);
         }
     }
 }
@@ -1442,7 +1445,7 @@ fn emit_smart_destination(
     } else {
         destination_application_name(&context.app.delivery_target)
     };
-    let _ = app.publish(
+    let _ = app.events().publish(
         EventKind::SmartDestinationSelected,
         serde_json::json!({
             "recordingId": rid, "status": status, "appName": app_name,
@@ -1523,7 +1526,9 @@ fn emit_auto_paste_failure_if_current(
     message: &'static str,
 ) {
     let _ = with_current_delivery_owner(app_state, recording_id, || {
-        app_handle.publish(EventKind::AutoPasteFailed, message)
+        app_handle
+            .events()
+            .publish(EventKind::AutoPasteFailed, message)
     });
 }
 
@@ -2797,7 +2802,7 @@ async fn run_transcription_pipeline(
             &delivery.output_dir,
         ) {
             tracing::warn!(target: "pipeline", "file output failed: {}", e);
-            let _ = app_handle.publish(
+            let _ = app_handle.events().publish(
                 EventKind::FileOutputFailed,
                 "Couldn't save dictation to file. Text is still in your clipboard.",
             );
@@ -3085,7 +3090,7 @@ async fn run_transcription_pipeline(
                 app_state.is_cancelled(recording_id),
                 dictation.status,
             ) {
-                let _ = app_handle.publish(
+                let _ = app_handle.events().publish(
                     EventKind::DictationDeliveryOutcome,
                     serde_json::json!({
                         "recordingId": owner_recording_id,
@@ -3111,7 +3116,7 @@ async fn run_transcription_pipeline(
                     with_current_recording_generation(&state.app_state, recording_id, move || {
                         if installed {
                             if let Some(prepared) = prepared {
-                                let _ = prepared.publish();
+                                let _ = prepared.events().publish();
                             }
                         } else {
                             // The preference may survive an uninstall so it can
@@ -3205,11 +3210,13 @@ pub async fn process_audio(
     };
     drop(transition);
     keyboard::set_processing(true);
-    let _ = app_handle.publish(
+    let _ = app_handle.events().publish(
         EventKind::DictationGenerationStarted,
         serde_json::json!({ "recordingId": rid }),
     );
-    let _ = app_handle.publish(EventKind::RecordingStatusChanged, "processing");
+    let _ = app_handle
+        .events()
+        .publish(EventKind::RecordingStatusChanged, "processing");
     // Legacy process_audio has a single API acceptance boundary: audio has
     // already been recorded by its caller. Freeze its destination here, when
     // processing is accepted; the native recording path freezes at start.
@@ -3272,13 +3279,17 @@ pub async fn process_audio(
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
         .map_err(|e| {
             guard.finish(|_| {
-                let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+                let _ = app_handle
+                    .events()
+                    .publish(EventKind::RecordingStatusChanged, "idle");
             });
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
         guard.finish(|_| {
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "idle");
         });
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
@@ -3311,7 +3322,9 @@ pub async fn process_audio(
         let _dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             keyboard::set_processing(false);
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "idle");
         }
     }
     let pipeline = pipeline_result?;
@@ -4291,7 +4304,7 @@ fn emit_scan_progress(
         || files_read.is_multiple_of(VOCAB_PROGRESS_EVERY_FILES)
     {
         *last_emit = std::time::Instant::now();
-        let _ = handle.publish(
+        let _ = handle.events().publish(
             EventKind::VocabScanProgress,
             VocabScanProgress {
                 scan_id: scan_id.to_string(),
@@ -4454,7 +4467,7 @@ pub async fn scan_code_vocab(
 
     // Final progress tick so the UI lands on the accurate adopted/superseded
     // state before the command result resolves.
-    let _ = app_handle.publish(
+    let _ = app_handle.events().publish(
         EventKind::VocabScanProgress,
         VocabScanProgress {
             scan_id: scan_id.clone(),
@@ -4756,7 +4769,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             transition_dictation_status(recording_id, &mut dictation, DictationStatus::Recording);
             *state.app_state.last_transcription_at.lock_or_recover() =
                 Some(std::time::Instant::now());
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "recording");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "recording");
             tracing::info!(
                 target: "pipeline",
                 event_code = "audio.recording_status_timing",
@@ -4769,7 +4784,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
         AudioLifecycleEvent::StillConnecting => {
             let dictation = state.app_state.dictation.lock_or_recover();
             if is_current() && dictation.status == DictationStatus::Starting {
-                let _ = app_handle.publish(
+                let _ = app_handle.events().publish(
                     EventKind::AudioInitializationStalled,
                     serde_json::json!({ "recordingId": recording_id }),
                 );
@@ -4803,12 +4818,13 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 state.app_state.clear_active_context(recording_id);
             }
             if app_handle
+                .events()
                 .publish(EventKind::RecordingStatusChanged, "recovering")
                 .is_ok()
             {
                 emit_dictation_presentation(recording_id, DictationPresentation::CleanupInProgress);
             }
-            let _ = app_handle.publish(
+            let _ = app_handle.events().publish(
                 EventKind::AudioRecoveryStarted,
                 serde_json::json!({
                     "recordingId": recording_id,
@@ -4843,7 +4859,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     _ => unreachable!("recovery only begins from starting or recording"),
                 };
                 emit_dictation_terminal(&state, recording_id, outcome, error_code);
-                let _ = app_handle.publish(
+                let _ = app_handle.events().publish(
                     EventKind::RecordingCancelled,
                     serde_json::json!({ "recordingId": recording_id }),
                 );
@@ -4902,6 +4918,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 None,
             );
             if app_handle
+                .events()
                 .publish(EventKind::RecordingInitializationFailed, {
                     let presentation = DictationPresentation::InitializationFailed(kind);
                     let (status_code, action_code) = presentation.codes();
@@ -4923,18 +4940,21 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
         }
         AudioLifecycleEvent::CleanupFinished => {
             complete_dictation_capture_cleanup(&state.app_state, recording_id, |restore_idle| {
-                let _ = app_handle.publish(
+                let _ = app_handle.events().publish(
                     EventKind::RecordingCleanupFinished,
                     serde_json::json!({ "recordingId": recording_id }),
                 );
                 if restore_idle {
-                    let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+                    let _ = app_handle
+                        .events()
+                        .publish(EventKind::RecordingStatusChanged, "idle");
                 }
             });
         }
         AudioLifecycleEvent::RecoveryStalled => {
             if is_current()
                 && app_handle
+                    .events()
                     .publish(EventKind::RecordingRecoveryStalled, {
                         let (status_code, action_code) =
                             DictationPresentation::CleanupStalled.codes();
@@ -4977,6 +4997,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             }
             let auto_transcribe = delivered_samples >= 8_000;
             if app_handle
+                .events()
                 .publish(EventKind::RecordingInterrupted, {
                     let presentation = DictationPresentation::Interrupted {
                         partial_transcription: auto_transcribe,
@@ -5027,7 +5048,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
                 drop(dictation);
                 keyboard::set_processing(false);
-                let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+                let _ = app_handle
+                    .events()
+                    .publish(EventKind::RecordingStatusChanged, "idle");
             }
         }
         AudioLifecycleEvent::Idle => {
@@ -5069,7 +5092,9 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
             state.app_state.clear_active_context(recording_id);
             keyboard::set_processing(false);
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "idle");
         }
     }
 }
@@ -5116,7 +5141,9 @@ fn publish_recording_ready_if_audio_ready(
 
     transition_dictation_status(recording_id, &mut dictation, DictationStatus::Recording);
     *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
-    let _ = app_handle.publish(EventKind::RecordingStatusChanged, "recording");
+    let _ = app_handle
+        .events()
+        .publish(EventKind::RecordingStatusChanged, "recording");
     tracing::info!(
         target: "pipeline",
         event_code = "audio.recording_status_timing",
@@ -5258,7 +5285,9 @@ pub async fn start_native_recording(
                         &mut dictation,
                         DictationStatus::Recovering,
                     );
-                    let _ = app_handle.publish(EventKind::RecordingStatusChanged, "recovering");
+                    let _ = app_handle
+                        .events()
+                        .publish(EventKind::RecordingStatusChanged, "recovering");
                     return Ok(
                         serde_json::json!({ "type": "audio_recovering", "state": "recovering" }),
                     );
@@ -5341,11 +5370,13 @@ pub async fn start_native_recording(
     // Publish Starting before the worker can report Ready. Otherwise a very
     // fast device open could emit Recording first and this command would then
     // overwrite the frontend with a stale Starting event.
-    let _ = app_handle.publish(
+    let _ = app_handle.events().publish(
         EventKind::DictationGenerationStarted,
         serde_json::json!({ "recordingId": rid }),
     );
-    let _ = app_handle.publish(EventKind::RecordingStatusChanged, "starting");
+    let _ = app_handle
+        .events()
+        .publish(EventKind::RecordingStatusChanged, "starting");
     // Reserve the generation before the worker is allowed to emit lifecycle
     // events. Terminal persistence can now wait for the asynchronous begin
     // without holding capture ownership or the recording transition.
@@ -5375,7 +5406,9 @@ pub async fn start_native_recording(
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
         }
-        let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+        let _ = app_handle
+            .events()
+            .publish(EventKind::RecordingStatusChanged, "idle");
         emit_dictation_terminal(
             &state,
             rid,
@@ -5709,7 +5742,9 @@ pub(crate) async fn stop_native_recording_for(
                 transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
             }
             keyboard::set_processing(false);
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "idle");
             drop(transition);
             complete_dictation_performance(
                 &state.performance,
@@ -5727,7 +5762,9 @@ pub(crate) async fn stop_native_recording_for(
     };
     keyboard::set_processing(true);
     tracing::info!(target: "pipeline", "stop_native_recording: stopping");
-    let _ = app_handle.publish(EventKind::RecordingStatusChanged, "processing");
+    let _ = app_handle
+        .events()
+        .publish(EventKind::RecordingStatusChanged, "processing");
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -5748,10 +5785,11 @@ pub(crate) async fn stop_native_recording_for(
             "durationMs": capture.duration_ms,
         })
     });
-    let samples = if let Some(capture) = interrupted_capture {
-        capture.samples
-    } else {
-        audio_lifecycle::stop_dictation_recording(rid, stop_trigger).map_err(|e| {
+    let samples =
+        if let Some(capture) = interrupted_capture {
+            capture.samples
+        } else {
+            audio_lifecycle::stop_dictation_recording(rid, stop_trigger).map_err(|e| {
             emit_dictation_terminal(
                 &state,
                 rid,
@@ -5760,7 +5798,7 @@ pub(crate) async fn stop_native_recording_for(
             );
             tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
             guard.finish(|_| {
-                let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+                let _ = app_handle.events().publish(EventKind::RecordingStatusChanged, "idle");
             });
             complete_dictation_performance(
                 &state.performance,
@@ -5775,7 +5813,7 @@ pub(crate) async fn stop_native_recording_for(
             );
             e
         })?
-    };
+        };
     state
         .performance
         .production_sample_count(rid, samples.len());
@@ -5812,7 +5850,9 @@ pub(crate) async fn stop_native_recording_for(
         );
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
         guard.finish(|_| {
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "idle");
         });
         performance_guard.finish(
             RunOutcomeV1::NoSpeech,
@@ -5846,7 +5886,9 @@ pub(crate) async fn stop_native_recording_for(
         tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
         guard.finish(|_| {
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "idle");
         });
         performance_guard.finish(
             RunOutcomeV1::NoSpeech,
@@ -5885,7 +5927,9 @@ pub(crate) async fn stop_native_recording_for(
         let _dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             keyboard::set_processing(false);
-            let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
+            let _ = app_handle
+                .events()
+                .publish(EventKind::RecordingStatusChanged, "idle");
         }
     }
     let pipeline = match pipeline_result {
@@ -6021,7 +6065,7 @@ pub(crate) async fn stop_native_recording_for(
                 crate::completion::day(),
             )
         });
-        let _ = app_handle.publish(EventKind::TranscriptionComplete,
+        let _ = app_handle.events().publish(EventKind::TranscriptionComplete,
             serde_json::json!({
                 "recordingId": rid,
                 "text": text,
@@ -6143,8 +6187,10 @@ pub async fn cancel_native_recording(
 
     // Always emit feedback so the UI resets, even if stop_recording failed
     keyboard::set_processing(false);
-    let _ = app_handle.publish(EventKind::RecordingStatusChanged, "idle");
-    let _ = app_handle.publish(
+    let _ = app_handle
+        .events()
+        .publish(EventKind::RecordingStatusChanged, "idle");
+    let _ = app_handle.events().publish(
         EventKind::RecordingCancelled,
         serde_json::json!({ "recordingId": rid }),
     );
@@ -6247,7 +6293,9 @@ pub async fn transcribe_file(
         app_state: &state.app_state,
         app_handle: Some(app_handle.clone()),
     };
-    let _ = app_handle.publish(EventKind::FileTranscriptionStatusChanged, true);
+    let _ = app_handle
+        .events()
+        .publish(EventKind::FileTranscriptionStatusChanged, true);
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         if state.benchmark.is_running() {

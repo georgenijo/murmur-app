@@ -6,6 +6,7 @@
 //! fixed local Application Support directory and are never logged.
 
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
+use crate::events::EventsExt;
 use crate::microphone_preview::{
     CLIPPING_SAMPLE_THRESHOLD, QUIET_PEAK_THRESHOLD, QUIET_RMS_THRESHOLD,
 };
@@ -463,7 +464,7 @@ fn persist_recording(
 
 fn emit_status(app_handle: &tauri::AppHandle, state: &str, error: Option<&str>) {
     crate::smart_auto_probe::wake();
-    let _ = app_handle.publish(
+    let _ = app_handle.events().publish(
         EventKind::CorpusRecordingStatus,
         serde_json::json!({ "state": state, "error": error }),
     );

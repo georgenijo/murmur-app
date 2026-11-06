@@ -1,6 +1,7 @@
 //! Event-driven, explicitly consented checks through the existing Preview owner.
 //! The controller owns no audio thread or PCM. A revoked permit cannot be reused.
 
+use crate::events::EventsExt;
 use crate::microphone_auto::{SmartAutoRequest, SmartAutoStatus};
 use crate::microphone_signal::SignalVerificationResult;
 use crate::{MutexExt, State};
@@ -227,7 +228,9 @@ pub(crate) async fn notified_for_test() {
 
 fn emit() {
     if let Some(app) = controller().app.get() {
-        let _ = app.publish(EventKind::SmartAutoMicrophoneChanged, ());
+        let _ = app
+            .events()
+            .publish(EventKind::SmartAutoMicrophoneChanged, ());
     }
 }
 

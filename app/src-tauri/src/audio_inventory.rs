@@ -10,6 +10,7 @@
 //! try to spawn the macOS helper or its reaper service.
 
 use crate::audio::{AudioDeviceDescriptor, EnumeratedAudioInputInventory};
+use crate::events::EventsExt;
 use crate::microphone_auto::{
     self, SmartAutoBlock, SmartAutoHealth, SmartAutoRequest, SmartAutoSelection, SmartAutoStatus,
 };
@@ -362,14 +363,18 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     if let Some(app_handle) = app_handle {
         let _ = app_handle.emit_to("main", INVENTORY_EVENT, snapshot.clone());
         let _ = app_handle.emit_to("overlay", INVENTORY_EVENT, snapshot.clone());
-        let _ = app_handle.publish(EventKind::SmartAutoMicrophoneChanged, ());
+        let _ = app_handle
+            .events()
+            .publish(EventKind::SmartAutoMicrophoneChanged, ());
     }
 }
 
 pub(crate) fn emit_routing_changed() {
     crate::smart_auto_probe::wake();
     if let Some(app_handle) = app_handle_slot().lock_or_recover().clone() {
-        let _ = app_handle.publish(EventKind::SmartAutoMicrophoneChanged, ());
+        let _ = app_handle
+            .events()
+            .publish(EventKind::SmartAutoMicrophoneChanged, ());
     }
 }
 

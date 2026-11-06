@@ -1,5 +1,6 @@
 //! Structured telemetry: tracing subscriber with file + event-emitter layers.
 
+use crate::events::EventsExt;
 use murmur_core::events::{EventKind, EventSink};
 use std::collections::VecDeque;
 use std::io::Write;
@@ -197,7 +198,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         }
 
         // Emit to all windows
-        let _ = self.app_handle.publish(EventKind::AppEvent, &app_event);
+        let _ = self
+            .app_handle
+            .events()
+            .publish(EventKind::AppEvent, &app_event);
     }
 }
 

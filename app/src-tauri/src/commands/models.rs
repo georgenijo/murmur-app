@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::model_download::{self, Cancellation};
 use crate::model_runtime::{self, InstallKind, InstallState};
 use crate::transcriber::{self, TranscriptionBackend};
@@ -206,7 +207,7 @@ fn emit_download_progress(
     if context.cancel.is_cancelled() {
         return;
     }
-    let _ = app_handle.publish(
+    let _ = app_handle.events().publish(
         EventKind::DownloadProgress,
         serde_json::json!({
             "modelName": context.model_name,

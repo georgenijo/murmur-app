@@ -34,15 +34,27 @@ pub(crate) fn clear_window(app: &tauri::AppHandle, label: &str) {
     }
 }
 
-impl<R: tauri::Runtime> EventSink for tauri::AppHandle<R> {
+pub(crate) struct TauriEventSink<'a, R: tauri::Runtime>(&'a tauri::AppHandle<R>);
+
+pub(crate) trait EventsExt<R: tauri::Runtime> {
+    fn events(&self) -> TauriEventSink<'_, R>;
+}
+impl<R: tauri::Runtime> EventsExt<R> for tauri::AppHandle<R> {
+    fn events(&self) -> TauriEventSink<'_, R> {
+        TauriEventSink(self)
+    }
+}
+
+impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
     fn publish<P: Serialize + Clone>(&self, event: EventKind, payload: P) -> Result<(), String> {
-        let events = self.state::<Events>();
+        let app = self.0;
+        let events = app.state::<Events>();
         let recipients = events
             .router
             .lock_or_recover()
             .recipients(event, |consumer, waveform| {
                 consumer.window_label().is_none_or(|label| {
-                    self.get_webview_window(label).is_some_and(|window| {
+                    app.get_webview_window(label).is_some_and(|window| {
                         !waveform
                             || (window.is_visible().unwrap_or(false)
                                 && !window.is_minimized().unwrap_or(true))
@@ -70,8 +82,8 @@ impl<R: tauri::Runtime> EventSink for tauri::AppHandle<R> {
             if let Some(label) = consumer.window_label() {
                 // The window can disappear after the availability check. An
                 // absent/recreated companion is a normal, silent no-op.
-                if self.get_webview_window(label).is_some() {
-                    if let Err(error) = self.emit_to(
+                if app.get_webview_window(label).is_some() {
+                    if let Err(error) = app.emit_to(
                         tauri::EventTarget::webview_window(label),
                         event.name(),
                         payload.clone(),
@@ -126,9 +138,15 @@ mod tests {
             count.fetch_add(1, Ordering::SeqCst);
         });
         unrelated.listen("app-event", |_| panic!("event escaped its named route"));
-        app.handle().publish(EventKind::AppEvent, ()).unwrap();
+        app.handle()
+            .events()
+            .publish(EventKind::AppEvent, ())
+            .unwrap();
         assert_eq!(received.load(Ordering::SeqCst), 1);
-        app.handle().publish(EventKind::HistoryChanged, ()).unwrap();
+        app.handle()
+            .events()
+            .publish(EventKind::HistoryChanged, ())
+            .unwrap();
         let native = Arc::new(AtomicUsize::new(0));
         let count = native.clone();
         subscribe(
@@ -141,6 +159,7 @@ mod tests {
             },
         );
         app.handle()
+            .events()
             .publish(EventKind::RecordingStatusChanged, "recording")
             .unwrap();
         assert_eq!(native.load(Ordering::SeqCst), 1);

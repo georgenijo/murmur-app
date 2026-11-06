@@ -1,4 +1,5 @@
 use crate::correction::CorrectionMatcher;
+use crate::events::EventsExt;
 use crate::model_runtime;
 use crate::resource_monitor::get_process_rss_mb;
 use crate::transcriber::{TranscriptionBackend, COREML_MODEL_NAME, WHISPER_SAMPLE_RATE};
@@ -750,7 +751,7 @@ fn emit_progress<R: tauri::Runtime>(
     fixture: Option<&str>,
     phase: &'static str,
 ) {
-    let _ = app.publish(
+    let _ = app.events().publish(
         EventKind::BenchmarkProgress,
         BenchmarkProgress {
             completed,

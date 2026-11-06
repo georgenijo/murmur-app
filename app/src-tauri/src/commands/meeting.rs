@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::meeting_capture::{
     MeetingCaptureConfig, MeetingRuntimeStatus, SystemAudioAccess, SystemAudioPermissionState,
 };
@@ -346,7 +347,9 @@ pub async fn request_system_audio_permission(
     crate::smart_auto_probe::wake();
     let result = joined?;
     if let Ok(access) = result.as_ref() {
-        let _ = app.publish(EventKind::SystemAudioPermissionChanged, access);
+        let _ = app
+            .events()
+            .publish(EventKind::SystemAudioPermissionChanged, access);
     }
     result
 }

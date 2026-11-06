@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::MutexExt;
 use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
@@ -217,7 +218,7 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
             }
             bytes.extend_from_slice(&chunk);
             received += chunk.len() as u64;
-            let _ = app.publish(EventKind::DownloadProgress, serde_json::json!({"modelName": MODEL_ID, "attemptId":attempt_id, "received":received, "total":MODEL_BYTES, "phase":"downloading", "repeatedRepair":false}));
+            let _ = app.events().publish(EventKind::DownloadProgress, serde_json::json!({"modelName": MODEL_ID, "attemptId":attempt_id, "received":received, "total":MODEL_BYTES, "phase":"downloading", "repeatedRepair":false}));
         }
         if bytes.len() as u64 != entry.bytes
             || format!("{:x}", Sha256::digest(&bytes)) != entry.sha256
@@ -238,7 +239,7 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
             .map_err(|_| "The incomplete speaker models could not be replaced.")?;
     }
     fs::rename(&staging.0, &root).map_err(|_| "The speaker models could not be installed.")?;
-    let _ = app.publish(EventKind::DownloadProgress, serde_json::json!({"modelName":MODEL_ID,"attemptId":attempt_id,"received":MODEL_BYTES,"total":MODEL_BYTES,"phase":"validating","repeatedRepair":false}));
+    let _ = app.events().publish(EventKind::DownloadProgress, serde_json::json!({"modelName":MODEL_ID,"attemptId":attempt_id,"received":MODEL_BYTES,"total":MODEL_BYTES,"phase":"validating","repeatedRepair":false}));
     Ok(())
 }
 

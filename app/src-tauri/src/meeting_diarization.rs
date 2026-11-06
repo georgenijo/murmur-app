@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use murmur_core::events::{EventKind, EventSink};
 #[cfg(all(debug_assertions, target_os = "macos", target_arch = "aarch64"))]
 #[path = "meeting_diarization_probe.rs"]
@@ -279,7 +280,7 @@ pub fn schedule(
                         .apply_remote_speakers(&session_id, &assignments)
                         .is_ok()
                 {
-                    let _ = app.publish(
+                    let _ = app.events().publish(
                         EventKind::MeetingSpeakersUpdated,
                         serde_json::json!({"sessionId":session_id}),
                     );

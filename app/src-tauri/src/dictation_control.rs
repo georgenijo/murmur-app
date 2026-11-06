@@ -1,5 +1,6 @@
 //! Tauri adapter for the window-independent core controller. No frontend listener
 //! is on the control path. Only this host module knows commands/managed state.
+use crate::events::EventsExt;
 use crate::{MutexExt, State};
 use murmur_core::events::{EventKind, EventSink};
 use murmur_core::{
@@ -145,7 +146,9 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
                 (generation, effect, controller.locked)
             };
             if locked != last_locked {
-                let _ = handle.publish(EventKind::DictationLockChanged, locked);
+                let _ = handle
+                    .events()
+                    .publish(EventKind::DictationLockChanged, locked);
                 last_locked = locked;
             }
             if let Some(effect) = effect {
@@ -159,7 +162,9 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
                         .reject_start(generation)
                     && last_locked
                 {
-                    let _ = handle.publish(EventKind::DictationLockChanged, false);
+                    let _ = handle
+                        .events()
+                        .publish(EventKind::DictationLockChanged, false);
                     last_locked = false;
                 }
             }
@@ -252,7 +257,7 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                 match request {
                     Ok(request) => Some(request),
                     Err(_) => {
-                        let _ = app.publish(
+                        let _ = app.events().publish(
                             EventKind::DictationControlError,
                             "Check Smart Auto microphone settings.",
                         );
@@ -296,10 +301,12 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                         Some("audio_recovering") => "Microphone cleanup is still in progress. Try again when Murmur is ready.",
                         _ => return None,
                     };
-                    let _ = app.publish(EventKind::DictationControlError, message);
+                    let _ = app
+                        .events()
+                        .publish(EventKind::DictationControlError, message);
                 }
                 Err(_) => {
-                    let _ = app.publish(
+                    let _ = app.events().publish(
                         EventKind::DictationControlError,
                         "Could not start dictation.",
                     );
@@ -343,7 +350,9 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                     generation,
                     &result,
                     |failure| {
-                        let _ = handle.publish(EventKind::DictationStopFailed, failure);
+                        let _ = handle
+                            .events()
+                            .publish(EventKind::DictationStopFailed, failure);
                     },
                 );
             }));

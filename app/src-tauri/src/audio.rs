@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::managed_child::{bundled_sibling, ManagedChild};
 use crate::microphone_preview::{
     can_schedule_vad_analysis, classify_level, schedule_vad_analysis, MicrophonePreviewLevel,
@@ -2948,7 +2949,7 @@ fn run_backend(
                             if let Some(generation) = owner.dictation_id() {
                                 crate::dictation_control::level(handle, generation, level);
                             }
-                            let _ = handle.publish(EventKind::AudioLevel, level);
+                            let _ = handle.events().publish(EventKind::AudioLevel, level);
                         }
                     }
                     last_level_emit = Instant::now();

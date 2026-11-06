@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::managed_child::{bundled_sibling, ManagedChild};
 use crate::meeting_store::{
     MeetingRepository, MeetingSegment, MeetingSegmentStatus, MeetingSessionStatus, MeetingSpeaker,
@@ -659,7 +660,9 @@ impl MeetingCoordinator {
 }
 
 fn publish_status(app: &tauri::AppHandle, status: &MeetingRuntimeStatus) {
-    let _ = app.publish(EventKind::MeetingStatusChanged, status);
+    let _ = app
+        .events()
+        .publish(EventKind::MeetingStatusChanged, status);
 }
 
 fn helper_path() -> Result<std::path::PathBuf, MeetingError> {
@@ -2155,6 +2158,7 @@ fn process_pending_segment(
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main
                         .app_handle()
+                        .events()
                         .publish(EventKind::MeetingSegmentFinalized, segment);
                 }
             }
@@ -2162,7 +2166,7 @@ fn process_pending_segment(
         Err(()) => {
             let _ = repository.fail_segment(pending.id, "transcription_failed");
             if let Some(main) = app.get_webview_window("main") {
-                let _ = main.app_handle().publish(
+                let _ = main.app_handle().events().publish(
                     EventKind::MeetingSegmentFailed,
                     serde_json::json!({
                         "sessionId": pending.session_id,
