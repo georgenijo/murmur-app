@@ -70,14 +70,15 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
         const operationId = crypto.randomUUID();
         operationsRef.current.set(item.id, operationId);
         const res = await transcribeFile(item.path, operationId);
-        operationsRef.current.delete(item.id);
 
         if (cancelledIdsRef.current.delete(item.id)) {
+          operationsRef.current.delete(item.id);
           flog.info('file-transcribe', 'cancelled', { name: item.name });
           continue;
         }
 
         if (res.type === 'error') {
+          operationsRef.current.delete(item.id);
           const message = res.error || 'Transcription failed';
           publishQueue(updateItem(queueRef.current, item.id, { status: 'error', error: message }));
           flog.warn('file-transcribe', 'error', { error: message });
@@ -85,10 +86,24 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
         }
 
         const text = res.text || '';
+        // Publish and start acceptance in the same turn as the cancellation
+        // check, with no cancellable UI gap while native admission runs.
         publishQueue(updateItem(queueRef.current, item.id, { status: 'done', text }));
-        // Accept in the same JS turn as the visible result, after cancellation
-        // was checked. There is no cancellable UI gap while persistence runs.
-        void acceptFileTranscription(operationId).catch(() => {});
+        try {
+          await acceptFileTranscription(operationId);
+        } catch {
+          if (!cancelledIdsRef.current.delete(item.id)) {
+            const message = 'Could not save the transcription to History.';
+            publishQueue(updateItem(queueRef.current, item.id, { status: 'error', error: message }));
+            // The native adapter also emits the shared storage-error notice.
+            // Never include the rejected payload or transcript in diagnostics.
+            flog.warn('file-transcribe', 'completion storage failed');
+          }
+          continue;
+        }
+        operationsRef.current.delete(item.id);
+        if (cancelledIdsRef.current.delete(item.id)) continue;
+        publishQueue(updateItem(queueRef.current, item.id, { status: 'done', text }));
         flog.info('file-transcribe', 'complete', { textLen: text.length });
       }
     } finally {
@@ -126,22 +141,32 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
 
   const reset = useCallback(() => {
     if (runningRef.current) return;
+    for (const operationId of operationsRef.current.values()) {
+      void cancelFileTranscription(operationId).catch(() => {});
+    }
+    operationsRef.current.clear();
     publishQueue([]);
     setError('');
   }, [publishQueue]);
 
   const cancel = useCallback((id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
-    if (!item || (item.status !== 'queued' && item.status !== 'transcribing')) return;
-    if (item.status === 'transcribing') {
-      cancelledIdsRef.current.add(id);
+    if (!item || item.status === 'done' || (item.status !== 'queued' && !operationsRef.current.has(id))) return;
+    if (operationsRef.current.has(id)) {
+      if (item.status === 'transcribing') cancelledIdsRef.current.add(id);
       const operationId = operationsRef.current.get(id);
       if (operationId) void cancelFileTranscription(operationId).catch(() => {});
+      if (item.status === 'error') operationsRef.current.delete(id);
     }
     publishQueue(updateItem(queueRef.current, id, { status: 'error', error: 'Canceled' }));
   }, [publishQueue]);
 
   const dismiss = useCallback((id: string) => {
+    const item = queueRef.current.find((candidate) => candidate.id === id);
+    if (item?.status !== 'done' && item?.status !== 'error') return;
+    const operationId = operationsRef.current.get(id);
+    if (operationId) void cancelFileTranscription(operationId).catch(() => {});
+    operationsRef.current.delete(id);
     publishQueue(queueRef.current.filter(
       (item) => item.id !== id || (item.status !== 'done' && item.status !== 'error'),
     ));
@@ -179,6 +204,11 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
 
     return () => {
       cancelled = true;
+      for (const [id, operationId] of operationsRef.current) {
+        cancelledIdsRef.current.add(id);
+        void cancelFileTranscription(operationId).catch(() => {});
+      }
+      operationsRef.current.clear();
       unlisten?.();
     };
   }, [enqueue]);

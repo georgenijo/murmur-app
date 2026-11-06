@@ -14,7 +14,13 @@ source identities within the app session; a view never submits a completion.
 Live recording retains its immutable start-time History policy. File imports
 write History only, after the main window accepts the result for its unique
 operation UUID; native cancellation suppresses admission before start, during
-transcription, and between the result and acceptance. Activity events never change dictation counters.
+transcription, and between the result and acceptance. Failed admission keeps the
+staged result for retry with the same operation UUID; cancellation after failure
+removes its content and prevents later admission. Pending running/ready file
+operations are capped at 200. The client cancels abandoned operations on dismissal,
+reset and unmount. Acceptance failures reuse the dictation storage diagnostic and
+notice, and the existing file queue reports a content-free error. No transcript or
+rejected error payload enters diagnostics. Activity events never change dictation counters.
 
 `completion-state.json` contains the next sequence and typed content-free
 statistics records with UUIDs. `stats.json` carries `applied_through` and all
@@ -142,3 +148,24 @@ reference/markdown policy validators. macOS full-crate and native observations
 are recorded separately in the stack PR; headless effects do not establish OS
 paste or native GUI behavior. Row 37 exercises the migration gate only; killing
 a real WebContent process and observing its one reload remains a native check.
+
+## File acceptance re-check
+
+`file_acceptance_storage_failure_retains_result_for_retry_or_cancellation` replaces
+each of the synthetic holding/state files with an unreadable directory. Failed
+acceptance retains the result; restoring storage and accepting twice writes one
+History entry and no statistics. Cancelling after failure admits nothing, including
+on repeated acceptance, and cannot restart the cancelled identity. The regression
+fails on `cfd20dd4`, which removes the staged result before submission.
+`file_staging_is_bounded_and_cancellation_releases_capacity` verifies admission
+backpressure and capacity release without evicting a retryable result.
+
+The client regression also fails on `cfd20dd4`: rejection leaves the item marked
+Done. It now reports the existing queue error, ignores the rejected payload, and
+covers cancellation after failure plus dismissal/reset/unmount cleanup. Acceptance
+still starts in the same turn as result publication and the cancellation check,
+without opening a cancellable UI gap during native admission.
+
+Dictation, meeting, correction and Paste Last adapters and native callers were
+inspected: none removes a staged completion before submission. Their existing
+journal/source-claim handling and failed-History-write policy remain unchanged.

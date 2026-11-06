@@ -92,10 +92,13 @@ pub(crate) fn produce(
             let _ = app.emit("statistics-changed", ());
         }
         Err(_) => {
-            tracing::warn!(target:"completion",code="completion_write_failed","completion service write failed");
-            let _ = app.emit_to("main", "completion-storage-error", ());
+            storage_error(app);
         }
     }
+}
+fn storage_error(app: &tauri::AppHandle) {
+    tracing::warn!(target:"completion",code="completion_write_failed","completion service write failed");
+    let _ = app.emit_to("main", "completion-storage-error", ());
 }
 /// A failed/cancelled native operation drops its pending content on every exit.
 pub(crate) struct FileOperation<'a> {
@@ -149,7 +152,10 @@ pub(crate) fn accept_file_transcription(
         .state::<Completion>()
         .producers
         .accept_file(&operation_id)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| {
+            storage_error(&app);
+            e.to_string()
+        })?
         .is_some()
     {
         let _ = app.emit("history-changed", ());

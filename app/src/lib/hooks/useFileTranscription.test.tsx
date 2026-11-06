@@ -48,7 +48,7 @@ describe('useFileTranscription', () => {
       duration: 1.5,
     });
     mocks.addEntry.mockReset();
-    mocks.acceptFileTranscription.mockClear();
+    mocks.acceptFileTranscription.mockReset().mockResolvedValue(undefined);
     mocks.cancelFileTranscription.mockClear();
     mocks.unlisten.mockReset();
     container = document.createElement('div');
@@ -103,6 +103,47 @@ describe('useFileTranscription', () => {
     await act(async () => current.cancel(id));
     expect(current.queue[0].status).toBe('done');
     expect(mocks.cancelFileTranscription).not.toHaveBeenCalled();
+  });
+
+  it('reports acceptance failure without exposing the rejected payload or marking success', async () => {
+    mocks.acceptFileTranscription.mockRejectedValue(new Error('synthetic private transcript'));
+    await act(async () => root.render(<Harness />));
+    await act(async () => current.enqueue(['/tmp/storage-failure.wav']));
+    expect(current.queue[0]).toMatchObject({
+      status: 'error', error: 'Could not save the transcription to History.',
+    });
+    expect(current.summary.done).toBe(0);
+    expect(current.queue[0].error).not.toContain('synthetic private transcript');
+    await act(async () => current.cancel(current.queue[0].id));
+    expect(mocks.cancelFileTranscription).toHaveBeenCalledWith(mocks.transcribeFile.mock.calls[0][1]);
+  });
+
+  it.each(['dismiss', 'reset', 'unmount'] as const)('cancels a failed staged result on %s', async (action) => {
+    mocks.acceptFileTranscription.mockRejectedValue(new Error('storage unavailable'));
+    await act(async () => root.render(<Harness />));
+    await act(async () => current.enqueue(['/tmp/failed.wav']));
+    const operationId = mocks.transcribeFile.mock.calls[0][1];
+    await act(async () => {
+      if (action === 'dismiss') current.dismiss(current.queue[0].id);
+      else if (action === 'reset') current.reset();
+      else root.render(null);
+    });
+    expect(mocks.cancelFileTranscription).toHaveBeenCalledWith(operationId);
+  });
+
+  it('keeps acceptance free of a cancellable UI gap and permits cancellation after failure', async () => {
+    let reject!: (error: Error) => void;
+    mocks.acceptFileTranscription.mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+    await act(async () => root.render(<Harness />));
+    await act(async () => current.enqueue(['/tmp/pending.wav']));
+    expect(current.queue[0].status).toBe('done');
+    await act(async () => current.cancel(current.queue[0].id));
+    expect(mocks.cancelFileTranscription).not.toHaveBeenCalled();
+    await act(async () => reject(new Error('synthetic private transcript')));
+    expect(current.queue[0]).toMatchObject({ status: 'error', error: 'Could not save the transcription to History.' });
+    expect(current.summary.done).toBe(0);
+    await act(async () => current.cancel(current.queue[0].id));
+    expect(current.queue[0].error).toBe('Canceled');
   });
 
   it('gives repeated imports of the same path distinct native operation identities', async () => {
