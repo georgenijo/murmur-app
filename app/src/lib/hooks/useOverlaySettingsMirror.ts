@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, sendTo } from '../targetedEvents';
 import { flog } from '../log';
-import { presentationStorage } from '../presentationStorage';
+import { PRESENTATION_CHANGED, presentationStorage } from '../presentationStorage';
 import {
   loadSettings,
   STORAGE_KEY,
@@ -79,7 +79,14 @@ export function useOverlaySettingsMirror({
   // Read initial settings once on mount (geometry is owned by useOverlayGeometry).
   useEffect(() => {
     refresh();
-  }, [refresh]);
+    const applyPresentation = () => {
+      const settings = loadSettings();
+      durableSnapshot.current = settings;
+      applySettingsSnapshot(settings);
+    };
+    window.addEventListener(PRESENTATION_CHANGED, applyPresentation);
+    return () => window.removeEventListener(PRESENTATION_CHANGED, applyPresentation);
+  }, [refresh, applySettingsSnapshot]);
 
   // Subscribe to settings-changed (emitted by the main window) so the quick
   // controls reflect changes made there, even while already expanded.
@@ -103,12 +110,13 @@ export function useOverlaySettingsMirror({
     let unlisten: (() => void) | undefined;
     const refreshDurable = async () => {
       const request = ++revision;
+      const generation = presentationStorage.beginRead(STORAGE_KEY);
       try {
         const blob = await invoke<string | null>('load_settings_blob');
         if (cancelled || request !== revision || typeof blob !== 'string') return null;
         const settings = parseSettingsBlob(blob);
+        if (!presentationStorage.rememberIfCurrent(STORAGE_KEY, blob, generation)) return null;
         durableSnapshot.current = settings;
-        presentationStorage.rememberItem(STORAGE_KEY, blob);
         applySettingsSnapshot(settings);
         return settings;
       } catch { return null; }

@@ -315,3 +315,32 @@ strict core Clippy, TypeScript and **180 files / 1,833 Vitest tests**; the
 Tauri-free dependency guard, both event guards and their **15 Python / 42 Node**
 checks, reference documentation and Markdown links pass. Mac full-suite and
 Clippy results and final-head CI are reported separately after execution.
+
+## Delayed presentation events re-check
+
+DOM storage payloads have no commit revision and are now hints only after native
+hydration. Each owned-key hint reloads the Rust snapshot. Per-key read generations
+are shared with the overlay's native reader; a newer read, session write or native
+notification invalidates older continuations. Pending source intents remain owned
+through failures and retries. Successful queue commits send a typed, key-only
+`presentation-source-committed` notification to explicit window labels, so cache
+quota failures cannot suppress settings, appearance or library propagation.
+Companion appearance and overlay hooks apply the guarded session refresh without
+writing it back through the shared cache. Session values, generations and deletion
+tombstones are limited to the eight presentation source keys and two retired keys;
+unowned storage events do no work.
+
+`presentationSession.test.tsx` reproduces the real overlay/cache disagreement and
+10,000 unowned deletion events. `presentationPropagation.test.tsx` uses separate
+main/overlay/diagnostics module sessions, the real settings/appearance/overlay
+hooks and persistence queues, quota failures, delayed stale writes/deletions/clear,
+reordered native completions and pending-write retries. Against `1b9ec477`, eight
+of the fourteen focused cases fail; all fourteen pass with this fix. No
+intermediate-draft URL migration was added. Only synthetic state is used; no
+native app is launched and this worker claims no independent review.
+
+Linux verification: TypeScript and **182 files / 1,868 Vitest tests** pass
+(**+1 file / +9 tests** against 181 / 1,859; none removed). Both event guards,
+their **15 Python / 42 Node** tests, reference documentation and Markdown link
+validators pass. Rust is unchanged; no Mac commands or GUI interaction are part
+of this fix. Final-head CI is reported separately after the push.
