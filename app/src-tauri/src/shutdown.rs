@@ -193,9 +193,7 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
         Step::Writers => {
             let app = app.clone();
             let committed = tauri::async_runtime::spawn_blocking(move || {
-                while WRITERS.load(Ordering::Acquire) != 0 {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                wait_accepted_producers();
                 let sources = crate::commands::settings_store::flush(&app);
                 let windows = crate::window_state::flush(&app);
                 let memo = crate::audio::flush_capture_memo();
@@ -290,6 +288,12 @@ static WRITERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 /// asynchronous publication continuations, including accepted jobs at shutdown.
 pub(crate) struct WriterPermit;
 impl WriterPermit {
+    /// Only native owners of previously admitted work may use this seam.
+    /// Closing external admission must not discard their final publications.
+    pub(crate) fn accepted_producer() -> Self {
+        WRITERS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
     pub(crate) fn acquire() -> Result<Self, String> {
         WRITERS.fetch_add(1, Ordering::AcqRel);
         if closing() {
@@ -302,6 +306,12 @@ impl WriterPermit {
 impl Drop for WriterPermit {
     fn drop(&mut self) {
         WRITERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn wait_accepted_producers() {
+    while WRITERS.load(Ordering::Acquire) != 0 {
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -442,6 +452,47 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn idle_presentation_cannot_overtake_final_native_completion() {
+        use murmur_core::completion::{Command, CompletionService};
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        service.execute(Command::Snapshot).unwrap();
+        let producer = WriterPermit::accepted_producer();
+        let completion = service.clone();
+        let (idle, observed_idle) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let _producer = producer;
+            idle.send(()).unwrap(); // The real owners publish Idle before this seam.
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+            completion.execute(Command::Complete { source: "synthetic-terminal".into(), entry: Some(serde_json::json!({"schemaVersion":2,"id":"synthetic","text":"synthetic","timestamp":1,"duration":1,"source":"recording"})), event: None }).unwrap();
+        });
+        observed_idle.recv().unwrap();
+        let (started, barrier_started) = mpsc::channel();
+        let (done, barrier_done) = mpsc::channel();
+        let barrier = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            wait_accepted_producers();
+            done.send(()).unwrap();
+        });
+        barrier_started.recv().unwrap();
+        assert!(matches!(
+            barrier_done.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        release.send(()).unwrap();
+        owner.join().unwrap();
+        barrier_done.recv_timeout(Duration::from_secs(5)).unwrap();
+        barrier.join().unwrap();
+        assert_eq!(
+            tauri::async_runtime::block_on(service.shutdown_receipt()),
+            WriteOutcome::Committed
+        );
+        drop(service);
+        let next = CompletionService::start(root.path().into(), false).unwrap();
+        assert_eq!(next.execute(Command::Snapshot).unwrap().history.len(), 1);
+    }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn native_source_fifo_keeps_queued_intent_while_first_writer_is_blocked() {
         let (started, entered) = tokio::sync::oneshot::channel();

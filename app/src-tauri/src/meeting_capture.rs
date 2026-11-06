@@ -320,9 +320,13 @@ impl MeetingCoordinator {
         let app_for_thread = app.clone();
         let config_for_thread = config.clone();
         let repository_for_thread = repository.clone();
+        // Ownership spans finish(), which clears presentation state before
+        // submitting completion. A shutdown writer fence must join both.
+        let completion_owner = crate::shutdown::WriterPermit::accepted_producer();
         let spawned = thread::Builder::new()
             .name(format!("murmur-meeting-{}", config.generation))
             .spawn(move || {
+                let _completion_owner = completion_owner;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_capture_session(
                         &app_for_thread,

@@ -5642,6 +5642,9 @@ pub(crate) async fn stop_native_recording_for(
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
+    // Register before the first await and retain through the final completion
+    // submission. Presentation may become Idle before this future returns.
+    let _completion_owner = crate::shutdown::WriterPermit::accepted_producer();
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
