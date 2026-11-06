@@ -1,4 +1,24 @@
 {
   "identifier": "com.localdictation.shutdown-test",
-  "productName": "Murmur Shutdown Test"
+  "productName": "Murmur Shutdown Test",
+  "app": {
+    "security": {
+      "capabilities": [
+        "default",
+        "diagnostics",
+        "dictation-preview",
+        "overlay",
+        {
+          "identifier": "shutdown-test-actions",
+          "description": "Isolated shutdown fixture actions for Main only",
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "shutdown-test:allow-shutdown-test-action"
+          ]
+        }
+      ]
+    }
+  }
 }

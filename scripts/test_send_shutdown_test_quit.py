@@ -16,3 +16,16 @@ class SenderIdentity(unittest.TestCase):
                 with self.assertRaises(ValueError): validate_identity(bundle, pid, path)
             info.write_bytes(plistlib.dumps({'CFBundleIdentifier': 'other', 'CFBundleExecutable': 'synthetic'}))
             with self.assertRaises(ValueError): validate_identity(bundle, 12345, binary)
+
+    def test_fixture_permission_is_main_only_and_absent_from_production(self):
+        import json
+        root = Path(__file__).resolve().parents[1] / 'app/src-tauri'
+        fixture = json.loads((root / 'tauri.shutdown-test.conf.json').read_text())
+        self.assertEqual(fixture['identifier'], IDENTIFIER)
+        capabilities = fixture['app']['security']['capabilities']
+        permission = [cap for cap in capabilities if isinstance(cap, dict)]
+        self.assertEqual(len(permission), 1)
+        self.assertEqual(permission[0]['windows'], ['main'])
+        self.assertEqual(permission[0]['permissions'], ['shutdown-test:allow-shutdown-test-action'])
+        for path in (root / 'capabilities').glob('*.json'):
+            self.assertNotIn('shutdown-test:', path.read_text())

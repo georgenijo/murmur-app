@@ -235,7 +235,8 @@ common-mode heartbeat. It accepts mixed requests before terminal commit.
 
 From the isolated Main context, invoke
 `plugin:shutdown-test|shutdown_test_action` with action quit, relaunch, exit, or
-destroy-last. The plugin rejects other bundle identities and windows. Quit-path
+destroy-last. The feature generates its inline-plugin permission manifest; only
+the isolated configuration grants that command, and only to Main. The plugin rejects other bundle identities and windows. Quit-path
 fixtures must verify the executable revision, synthetic profile and exact PID.
 For simulated system reasons use:
 
