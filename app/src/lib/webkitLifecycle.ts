@@ -84,24 +84,39 @@ export function persistSourceState(key: string, raw: string, ownedEdits?: OwnedE
   }
   const intent = { raw, generation: nextGeneration, ownedEdits: { ...previous?.ownedEdits, ...ownedEdits }, fieldGenerations };
   pending.set(key, intent);
-  void submitIntent(key, intent).catch(() => {});
+  // Only this edit's deliberate fields go on the immediate request. Older
+  // unacknowledged fields stay retryable, but must not be patched again behind
+  // a newer native quick-control commit.
+  void submitIntent(key, intent, ownedEdits ?? {}).catch(() => {});
 }
-function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending.get>>): Promise<void> {
+function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending.get>>, freshEdits?: OwnedEdits): Promise<void> {
   const existing = inFlight.get(intent.generation);
   if (existing) return existing;
   // invoke occurs now, before awaiting any previous source publication.
   let request: Promise<unknown>;
+  const wireEdits = { ...(freshEdits ?? intent.ownedEdits) };
   try {
     request = key === 'dictation-settings' || key === 'murmur-theme-library'
-      ? invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(intent.ownedEdits ? { ownedEdits: intent.ownedEdits } : {}), ...(key === 'dictation-settings' ? { intentGeneration: intent.generation } : {}) })
+      ? invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(wireEdits ? { ownedEdits: wireEdits } : {}), ...(key === 'dictation-settings' ? { intentGeneration: intent.generation } : {}) })
       : invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown });
   } catch { request = Promise.reject(new Error('Source storage unavailable')); }
   const promise = Promise.resolve(request).then(async () => {
-    if (pending.get(key)?.generation === intent.generation) pending.delete(key);
+    const current = pending.get(key);
+    if (current?.generation === intent.generation) pending.delete(key);
+    else if (current && wireEdits) {
+      const ownedEdits = { ...current.ownedEdits };
+      const fieldGenerations = { ...current.fieldGenerations };
+      for (const field of ['autoPaste', 'disabled'] as const) {
+        if (typeof wireEdits[field] === 'boolean' && fieldGenerations[field] === intent.fieldGenerations?.[field]) {
+          delete ownedEdits[field]; delete fieldGenerations[field];
+        }
+      }
+      pending.set(key, { ...current, ownedEdits, fieldGenerations });
+    }
     if (synchronization) await notifySourceCommitted(key);
-    window.dispatchEvent(new Event(SOURCE_STORAGE_SAVED));
+    if (!pending.size) window.dispatchEvent(new Event(SOURCE_STORAGE_SAVED));
   }, () => {
-    window.dispatchEvent(new Event(SOURCE_STORAGE_FAILED));
+    if (pending.has(key)) window.dispatchEvent(new Event(SOURCE_STORAGE_FAILED));
     throw new Error('Source storage unavailable');
   }).finally(() => { inFlight.delete(intent.generation); });
   inFlight.set(intent.generation, promise);

@@ -155,3 +155,17 @@ it('submits a new native intent while an earlier publication is still blocked', 
   expect(mock.invoke).toHaveBeenLastCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: false });
   release(); await flushSourceState();
 });
+
+it('a new source edit cannot carry an older owned-field patch past a native override', async () => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  let release!: () => void;
+  mock.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; })).mockResolvedValue(undefined);
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, disabled: false, ownedFieldsRevision: 0 }), { autoPaste: true });
+  // Native Auto Paste can now commit false while this ack is delayed. A newer
+  // deliberate Disable must send only Disable, letting native revision merge
+  // preserve that intervening Auto Paste commit.
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, disabled: true, ownedFieldsRevision: 0 }), { disabled: true });
+  const latest = mock.invoke.mock.calls.filter(([command]) => command === 'save_settings_blob').slice(-1)[0]![1];
+  expect(latest.ownedEdits).toEqual({ disabled: true });
+  release(); await flushSourceState();
+});

@@ -87,7 +87,9 @@ they are not classified as preserved without a complete owner receipt.
 Settings and theme writes keep WRITE_LOCK, normalized source schemas and
 owned-field revision merging. Source IPC queues immediately to one native FIFO;
 React no longer waits for a prior IPC acknowledgement before submitting the
-new edit. Retry presentation state remains generation-aware. Source commands
+new edit. Retry presentation state remains generation-aware. Immediate requests contain
+only their newly deliberate owned-field patches; older acknowledged patches
+are removed from retained retries so they cannot overwrite a native quick control. Source commands
 execute disk work off main and carry writer permits. UI and window snapshots
 use synced `.pending` documents with replay before load. The window worker
 clones state under its mutex, then releases it before I/O; its flush is FIFO.
@@ -147,8 +149,8 @@ it does not claim installation has moved to the native updater.
 
 ## Verification and native matrix
 
-Linux: TypeScript passes; Vitest is 180 files / 1,834 tests (updated base 1,833; one
-immediate-submission regression added, none removed). Core unit/integration,
+Linux: TypeScript passes; Vitest is 180 files / 1,835 tests (updated base 1,833; two
+source-submission/owned-field regressions added, none removed). Core unit/integration,
 strict Clippy, policy fixtures and final CI results are recorded in the PR.
 Core tests cover phase order, deadlines, arbitration, duplicate/late receipts,
 restart prerequisites, pending-content publication failures at before rename,
