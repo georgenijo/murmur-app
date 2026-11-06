@@ -1,8 +1,8 @@
 use super::*;
 use storage::Boundary;
 use tempfile::TempDir;
-pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
-    let mut e = Engine {
+fn uninitialized_engine(root: &std::path::Path, webkit: bool) -> Engine {
+    Engine {
         unpreserved_content: false,
         accepted: VecDeque::new(),
         failed_content: None,
@@ -14,7 +14,10 @@ pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
         seen: HashSet::new(),
         revision: 0,
         initialized: false,
-    };
+    }
+}
+pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
+    let mut e = uninitialized_engine(root, webkit);
     e.initialize().unwrap();
     e
 }
@@ -1808,10 +1811,12 @@ fn round_three_batch_admission_precedes_targets_and_retirement_is_idempotent() {
             before_history
         );
         assert!(e.storage.intents.contains_key(BATCH));
-        // First DirectorySync publishes the batch; second follows its unlink.
+        // If admission never renamed, recovery first writes the batch. An
+        // existing durable batch is verified instead of being overwritten.
+        let admission_syncs = usize::from(!dir.path().join(BATCH).exists());
         e.storage
             .faults
-            .push_back((BATCH.into(), Boundary::DirectorySync, 1));
+            .push_back((BATCH.into(), Boundary::DirectorySync, admission_syncs));
         assert_eq!(
             e.write_receipt(),
             crate::shutdown::WriteOutcome::UnpreservedFailure
@@ -1871,10 +1876,11 @@ fn round_three_batch_replay_checks_all_future_targets_before_writing_any() {
     complete(&mut e, "synthetic-original", true);
     let h = json!(e.holding().unwrap());
     let mut history = json!(e.document(Destination::History).unwrap().unwrap());
+    let snapshots = json!([[HOLD, h], ["history.json", history]]);
     e.storage
         .write(
             BATCH,
-            &json!({"schema":1,"snapshots":[[HOLD,h],["history.json",history]]}),
+            &json!({"schema":1,"digest":source_digest(&snapshots),"snapshots":snapshots}),
         )
         .unwrap();
     history["schema"] = json!(2);
@@ -1943,4 +1949,74 @@ fn round_three_fifo_limits_cover_lifecycle_and_refuse_oversized_without_ownershi
         false
     );
     assert!(next.snapshot().unwrap().reports.is_empty());
+}
+
+#[test]
+fn round_three_live_batch_retry_never_overwrites_damaged_durable_evidence() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+    let history = std::fs::read(dir.path().join("history.json")).unwrap();
+    e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+    assert!(e
+        .execute(Command::History(HistoryMutation::Pin { target }))
+        .is_err());
+    assert!(e.storage.intents.contains_key(BATCH));
+    let damaged = b"{damaged-synthetic-batch";
+    std::fs::write(dir.path().join(BATCH), damaged).unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            e.write_receipt(),
+            crate::shutdown::WriteOutcome::UnpreservedFailure
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("history.json")).unwrap(),
+            history
+        );
+        assert!(!dir.path().join(BATCH).exists());
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+        let path = item.unwrap().path();
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("completion-batch.json.quarantine-seq-")
+            && std::fs::read(path).unwrap() == damaged
+    }));
+}
+
+#[test]
+fn round_three_batch_digest_detects_valid_json_damage_after_process_exit() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+    let history = std::fs::read(dir.path().join("history.json")).unwrap();
+    e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+    assert!(e
+        .execute(Command::History(HistoryMutation::Pin { target }))
+        .is_err());
+    drop(e);
+    let mut batch: Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join(BATCH)).unwrap()).unwrap();
+    batch["snapshots"][1][1]["data"][0]["pinned"] = json!(false);
+    let damaged = serde_json::to_vec(&batch).unwrap();
+    std::fs::write(dir.path().join(BATCH), &damaged).unwrap();
+    let mut next = uninitialized_engine(dir.path(), false);
+    assert!(next.initialize().is_err());
+    assert_eq!(
+        next.write_receipt(),
+        crate::shutdown::WriteOutcome::UnpreservedFailure
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("history.json")).unwrap(),
+        history
+    );
+    assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+        let path = item.unwrap().path();
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("completion-batch.json.quarantine-seq-")
+            && std::fs::read(path).unwrap() == damaged
+    }));
 }

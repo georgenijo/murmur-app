@@ -66,22 +66,37 @@ impl Storage {
     }
     pub fn retry_intents(&mut self) -> Result<()> {
         for (file, value) in self.intents.clone() {
-            // A batch is one write-ahead intent, never independent targets.
-            self.write(&file, &value)?;
+            // Never overwrite damaged/conflicting durable evidence with an
+            // in-memory copy, even when the original admission was uncertain.
             if file == super::BATCH {
+                let existed = self.root.join(super::BATCH).exists();
+                let durable = self.read::<serde_json::Value>(super::BATCH, valid_batch)?;
+                if let Some(durable) = durable {
+                    if durable != value {
+                        return Err(Error::Invalid);
+                    }
+                    self.sync_directory()?;
+                } else if existed || self.quarantined(super::BATCH)? {
+                    return Err(Error::Invalid);
+                } else {
+                    self.write(&file, &value)?;
+                }
                 self.recover_batch()?;
+            } else {
+                self.write(&file, &value)?;
             }
             self.resolve_intent(&file);
         }
         self.recover_batch()
     }
     /// The complete batch must be fully synced before either target can change.
-    /// Keep one in-memory copy only if admitting the durable intent itself fails.
+    /// Retain one complete copy through uncertain admission and retirement.
     pub fn publish_batch(&mut self, snapshots: Vec<(String, serde_json::Value)>) -> Result<()> {
         if self.has_intents() || self.root.join(super::BATCH).exists() {
             return Err(Error::TooManyFiles);
         }
-        let payload = serde_json::json!({"schema":1,"snapshots":snapshots});
+        let snapshots = serde_json::json!(snapshots);
+        let payload = serde_json::json!({"schema":1,"digest":super::source_digest(&snapshots),"snapshots":snapshots});
         if !valid_batch(&payload) {
             return Err(Error::Invalid);
         }
@@ -489,8 +504,9 @@ fn size_limit(name: &str) -> usize {
 // Only the ordered History mutation targets are admissible. Validate the
 // entire envelope before touching any target, including pre-import documents.
 fn valid_batch(v: &serde_json::Value) -> bool {
-    v.as_object().is_some_and(|o| o.len() == 2)
+    v.as_object().is_some_and(|o| o.len() == 3)
         && v["schema"] == 1
+        && v["digest"] == super::source_digest(&v["snapshots"])
         && v["snapshots"].as_array().is_some_and(|snapshots| {
             (1..=2).contains(&snapshots.len())
                 && snapshots.iter().enumerate().all(|(i, snapshot)| {

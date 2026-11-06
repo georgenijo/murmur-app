@@ -510,9 +510,12 @@ with the parent task; this implementation worker does not claim that review.
   only after every target is durable. A failed intent admission retains the whole
   batch for retry and returns an error. Target failures cannot create independent
   partial-batch retries. Unknown retirement outcomes can safely replay the batch.
-  Every target and future-schema guard is checked before publication; malformed
-  evidence is quarantined, pinned, and continues blocking recovery without
-  replacing readable documents.
+  A SHA-256 digest binds the complete ordered target set, detecting valid-JSON
+  damage after restart. Every target and future-schema guard is checked before
+  publication; malformed evidence is quarantined, pinned, and continues blocking
+  recovery without replacing readable documents. Live retries validate existing
+  evidence against their retained intent and never overwrite damaged or conflicting
+  evidence with an in-memory copy.
 - **Report identity conflicts:** a matching `completionUuid` deduplicates only
   identical content. Different content with that identity returns the visible
   `IdentityConflict` error, retains the original, and acquires no retry ownership.
@@ -535,7 +538,8 @@ conflicts returned success, and 256 failed submissions exceeded the FIFO bound.
 The corrected 36-case matrix covers Holding/History × BeforeRename/AfterRename/
 DirectorySync × initial/retry × Pin/Edit/Delete, discards all owner memory at
 injected exits, and checks disk recovery plus the terminal receipt. Additional
-cases cover batch admission and retirement faults, damaged evidence preservation,
+cases cover batch admission and retirement faults, damaged evidence preservation
+(including live retries and valid-JSON damage after process exit),
 future targets, exact report replays and conflicts before/after migration, both
 FIFO limits, mixed lifecycle/completion pressure, rejected oversized requests,
 failed shutdown while requests remain in memory, and ordered recovery afterward.
