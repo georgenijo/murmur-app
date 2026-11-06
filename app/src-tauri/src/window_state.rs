@@ -355,6 +355,12 @@ pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     let Some(state) = window.try_state::<WindowState>() else {
         return;
     };
+    // An explicit hide during startup wins over a delayed automatic reveal.
+    if window.label() == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+        state
+            .painted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     if !state.initialized.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }

@@ -5,7 +5,8 @@ Implements #992, part of #1009. Draft stack layer 07, based on
 The approved design is the GPUI 1.8 design produced at that revision.
 During implementation the base moved to `269dfa39`; this layer was rebased onto
 its source-recovery generation and presentation-cache fixes, then rebased again
-onto `400a4648` to retain unresolved recovery-evidence pruning fixes.
+onto `400a4648` to retain unresolved recovery-evidence pruning fixes. The current
+base is `1b9ec477`, including URL round-trip and presentation-session follow-ups.
 Independent implementation review and the native Tauri matrix belong to the parent.
 
 ## Policy and ownership
@@ -149,7 +150,7 @@ it does not claim installation has moved to the native updater.
 
 ## Verification and native matrix
 
-Linux: TypeScript passes; Vitest is 180 files / 1,835 tests (updated base 1,833; two
+Linux: TypeScript passes; Vitest is 181 files / 1,861 tests (updated base 1,859; two
 source-submission/owned-field regressions added, none removed). Core unit/integration,
 strict Clippy, policy fixtures and final CI results are recorded in the PR.
 Core tests cover phase order, deadlines, arbitration, duplicate/late receipts,
@@ -181,7 +182,9 @@ reasons; it verifies the isolated bundle ID and actual process executable twice,
 never addresses loginwindow, and sends no-reply events with a 10 s sender timeout.
 See [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).
 
-Every row is pending parent native verification. Run each row with active
+Every row is pending parent native verification. Also verify early renderer-ready/
+chrome intents, explicit hide during delayed startup restoration, and quit during
+a delayed startup snapshot read. Run each row with active
 synthetic dictation, an active synthetic meeting, and pending synthetic writes.
 
 | Quit path | Native drive |
