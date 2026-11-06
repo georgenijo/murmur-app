@@ -53,10 +53,66 @@ fn require_main_window(label: &str) -> Result<(), String> {
 pub(crate) static WRITE_LOCK: Mutex<()> = Mutex::new(());
 // Native owns accepted patches even when reading/merging the current snapshot
 // fails before the durable publisher can retain an exact merged document.
-fn pending_owned() -> &'static Mutex<HashMap<PathBuf, OwnedEdits>> {
-    static PENDING: std::sync::OnceLock<Mutex<HashMap<PathBuf, OwnedEdits>>> =
+fn pending_owned() -> &'static Mutex<HashMap<PathBuf, RetainedOwned>> {
+    static PENDING: std::sync::OnceLock<Mutex<HashMap<PathBuf, RetainedOwned>>> =
         std::sync::OnceLock::new();
     PENDING.get_or_init(Default::default)
+}
+
+/// A field's publication revision belongs to its current accepted intent. A
+/// newer edit invalidates that proof even when it repeats the same boolean.
+#[derive(Default)]
+struct RetainedOwned {
+    auto_paste: Option<bool>,
+    disabled: Option<bool>,
+    auto_paste_revision: Option<u64>,
+    disabled_revision: Option<u64>,
+}
+
+/// Caller holds WRITE_LOCK and has successfully recovered/read or published
+/// this document. Matching values alone cannot acknowledge a newer intent.
+fn reconcile_owned_publication(dir: &Path, blob: &str) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(blob) else {
+        return;
+    };
+    let revision = value["ownedFieldsRevision"].as_u64();
+    let mut pending = pending_owned().lock_or_recover();
+    let Some(retained) = pending.get_mut(dir) else {
+        return;
+    };
+    for (key, field, proof) in [
+        (
+            "autoPaste",
+            &mut retained.auto_paste,
+            &mut retained.auto_paste_revision,
+        ),
+        (
+            "disabled",
+            &mut retained.disabled,
+            &mut retained.disabled_revision,
+        ),
+    ] {
+        if proof.is_some()
+            && *proof == revision
+            && field.is_some()
+            && *field == value[key].as_bool()
+        {
+            *field = None;
+            *proof = None;
+        }
+    }
+    if retained.auto_paste.is_none() && retained.disabled.is_none() {
+        pending.remove(dir);
+    }
+}
+
+/// Lifecycle operations can recover settings before failing on another source.
+/// Reconcile that publication even when the overall operation returns an error.
+/// Caller holds WRITE_LOCK and sends warning invalidation after releasing it.
+pub(crate) fn reconcile_settings_after<T>(dir: &Path, operation: impl FnOnce() -> T) -> T {
+    let result = operation();
+    let _ = read_blob(dir, SETTINGS);
+    result
 }
 
 /// The retained disabled patch is the warning's source of truth. Successful
@@ -71,7 +127,7 @@ fn dictation_settings_unsaved(dir: &Path) -> bool {
 
 /// Notify on success and early error alike, after local writer guards release.
 /// Payload-free invalidation makes the query authoritative even across mounts.
-struct SettingsWarningNotification<'a>(&'a tauri::AppHandle);
+pub(crate) struct SettingsWarningNotification<'a>(pub(crate) &'a tauri::AppHandle);
 impl Drop for SettingsWarningNotification<'_> {
     fn drop(&mut self) {
         let _ = self.0.events().send_to(
@@ -196,6 +252,9 @@ fn read_blob(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
         quarantine(&path, spec, &reason);
         return Err("Source destination quarantined".into());
     }
+    if spec.file_name == SETTINGS.file_name {
+        reconcile_owned_publication(dir, &contents);
+    }
     Ok(Some(contents))
 }
 
@@ -212,9 +271,12 @@ fn write_blob_locked(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), Strin
     } else {
         "murmur-theme-library"
     };
-    murmur_core::completion::save_source(dir, key, blob)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let published =
+        murmur_core::completion::save_source(dir, key, blob).map_err(|e| e.to_string())?;
+    if spec.file_name == SETTINGS.file_name {
+        reconcile_owned_publication(dir, &published);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -246,14 +308,21 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn load_settings_blob_worker(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let _warning_notification = SettingsWarningNotification(&app);
     let dir = data_dir(&app)?;
     let _guard = WRITE_LOCK.lock_or_recover();
-    let blob = read_blob(&dir, SETTINGS)?;
-    blob.map(|blob| {
-        murmur_core::completion::save_source(&dir, "dictation-settings", &blob)
-            .map_err(|e| e.to_string())
-    })
-    .transpose()
+    load_settings_blob_locked(&dir)
+}
+
+fn load_settings_blob_locked(dir: &Path) -> Result<Option<String>, String> {
+    read_blob(dir, SETTINGS)?
+        .map(|blob| {
+            let published = murmur_core::completion::save_source(dir, "dictation-settings", &blob)
+                .map_err(|e| e.to_string())?;
+            reconcile_owned_publication(dir, &published);
+            Ok(published)
+        })
+        .transpose()
 }
 
 fn require_settings_owner(label: &str) -> Result<(), String> {
@@ -349,18 +418,36 @@ fn commit_settings_intent<T>(
     snapshot: bool,
     on_acceptance: impl FnOnce() -> T,
 ) -> Result<(String, T), String> {
+    commit_settings_intent_with_publisher(dir, blob, edits, snapshot, on_acceptance, |blob| {
+        write_blob_locked(dir, SETTINGS, blob)
+    })
+}
+
+fn commit_settings_intent_with_publisher<T>(
+    dir: &Path,
+    blob: &str,
+    edits: Option<&OwnedEdits>,
+    snapshot: bool,
+    on_acceptance: impl FnOnce() -> T,
+    publish: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(String, T), String> {
     let edits = {
         let mut pending = pending_owned().lock_or_recover();
         let retained = pending.entry(dir.into()).or_default();
         if let Some(edits) = edits {
             if edits.auto_paste.is_some() {
                 retained.auto_paste = edits.auto_paste;
+                retained.auto_paste_revision = None;
             }
             if edits.disabled.is_some() {
                 retained.disabled = edits.disabled;
+                retained.disabled_revision = None;
             }
         }
-        *retained
+        OwnedEdits {
+            auto_paste: retained.auto_paste,
+            disabled: retained.disabled,
+        }
     };
     // Retain ownership and fence/apply runtime before any fallible source I/O.
     // Missing/quarantined sources still reject publication without repair.
@@ -371,8 +458,20 @@ fn commit_settings_intent<T>(
         read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?
     };
     let committed = merge_owned_fields_with_edits(dir, &base, Some(&edits))?;
-    write_blob_locked(dir, SETTINGS, &committed)?;
-    pending_owned().lock_or_recover().remove(dir);
+    let value: serde_json::Value =
+        serde_json::from_str(&committed).map_err(|_| "Invalid settings")?;
+    if let Some(retained) = pending_owned().lock_or_recover().get_mut(dir) {
+        // Record only fields included in this publication, after any recovery
+        // in the merge. No newer intent can interleave under WRITE_LOCK.
+        if retained.auto_paste.is_some() {
+            retained.auto_paste_revision = value["ownedFieldsRevision"].as_u64();
+        }
+        if retained.disabled.is_some() {
+            retained.disabled_revision = value["ownedFieldsRevision"].as_u64();
+        }
+    }
+    publish(&committed)?;
+    reconcile_owned_publication(dir, &committed);
     Ok((committed, revision))
 }
 
@@ -609,6 +708,7 @@ pub(crate) fn sync_app_disabled_worker(
     app: tauri::AppHandle,
     disabled: bool,
 ) -> Result<(), String> {
+    let _warning_notification = SettingsWarningNotification(&app);
     let _guard = WRITE_LOCK.lock_or_recover();
     let settings = rebase_runtime_owned_fields(
         &source_dir(&app)?,
@@ -621,6 +721,7 @@ pub(crate) fn configure_renderer_control_worker(
     app: tauri::AppHandle,
     settings: serde_json::Value,
 ) -> Result<(), String> {
+    let _warning_notification = SettingsWarningNotification(&app);
     let _guard = WRITE_LOCK.lock_or_recover();
     let settings = rebase_runtime_owned_fields(&source_dir(&app)?, settings)?;
     crate::dictation_control::configure_accepted(
@@ -695,6 +796,7 @@ pub(crate) fn restore_source_backup_worker(
     blob: String,
 ) -> Result<(), String> {
     require_settings_owner(window.label())?;
+    let _warning_notification = SettingsWarningNotification(&app);
     restore_source_backup_in(&data_dir(&app)?, &key, &blob)
 }
 
@@ -717,7 +819,9 @@ fn restore_source_backup_in(dir: &Path, key: &str, blob: &str) -> Result<(), Str
     if blob_path(dir, spec).exists() {
         return Err("Destination must be missing or quarantined before recovery".into());
     }
-    murmur_core::completion::restore_source(dir, key, &value).map_err(|e| e.to_string())
+    reconcile_settings_after(dir, || {
+        murmur_core::completion::restore_source(dir, key, &value).map_err(|e| e.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -1259,9 +1363,11 @@ pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
     if !flush_owned(&root) {
         return false;
     }
-    ["dictation-settings", "murmur-theme-library"]
-        .iter()
-        .all(|key| murmur_core::completion::recover_source(&root, key).is_ok())
+    reconcile_settings_after(&root, || {
+        ["dictation-settings", "murmur-theme-library"]
+            .iter()
+            .all(|key| murmur_core::completion::recover_source(&root, key).is_ok())
+    })
 }
 
 /// Caller holds WRITE_LOCK, after the accepted producer drain.
@@ -1270,7 +1376,19 @@ fn flush_owned(root: &Path) -> bool {
         .lock_or_recover()
         .get(root)
         .is_some_and(|e| e.auto_paste.is_some() || e.disabled.is_some());
-    !has_pending || commit_settings_intent(root, "{}", None, false, || ()).is_ok()
+    if !has_pending {
+        return true;
+    }
+    // Replay can itself satisfy the retained intent. Do not create another
+    // owned revision for a choice already committed by its exact receipt.
+    if read_blob(root, SETTINGS).is_err() {
+        return false;
+    }
+    let still_pending = pending_owned()
+        .lock_or_recover()
+        .get(root)
+        .is_some_and(|e| e.auto_paste.is_some() || e.disabled.is_some());
+    !still_pending || commit_settings_intent(root, "{}", None, false, || ()).is_ok()
 }
 
 #[tauri::command]
@@ -2204,5 +2322,166 @@ mod round_three_ordering_tests {
         let disk = recovered(root.path());
         assert_eq!(disk["autoPaste"], false);
         assert_eq!(disk["disabled"], false);
+    }
+}
+
+#[cfg(test)]
+mod warning_reconciliation_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn digest(value: &serde_json::Value) -> String {
+        format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
+    }
+
+    // Produce the exact normalized target and marker with the real publisher,
+    // then restore the pre-destination boundary and exact pending receipt. This
+    // models an I/O failure after receipt/marker publication without a GUI,
+    // permissions tricks, races or a second implementation of normalization.
+    fn interrupted_publication(dir: &Path, blob: &str) -> Result<(), String> {
+        let destination = dir.join("settings.json");
+        let before = std::fs::read(&destination).unwrap();
+        let base: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        let base_marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("settings.json.required")).unwrap())
+                .unwrap();
+        let published =
+            murmur_core::completion::save_source(dir, "dictation-settings", blob).unwrap();
+        let target: serde_json::Value = serde_json::from_str(&published).unwrap();
+        let marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("settings.json.required")).unwrap())
+                .unwrap();
+        let receipt = serde_json::json!({
+            "schema":2, "key":"dictation-settings", "storeId":marker["storeId"],
+            "generation":marker["generation"], "baseDigest":digest(&base),
+            "baseMarkerDigest":digest(&base_marker), "targetDigest":marker["targetDigest"],
+            "targetRevision":marker["targetRevision"], "value":target
+        });
+        std::fs::write(&destination, before).unwrap();
+        std::fs::write(dir.join("settings.json.pending"), receipt.to_string()).unwrap();
+        Err("synthetic publication failure after exact pending receipt".into())
+    }
+
+    fn failed_tray_publication(dir: &Path, auto_paste: bool) {
+        write_blob(
+            dir,
+            SETTINGS,
+            r#"{"disabled":false,"autoPaste":false,"language":"en"}"#,
+        )
+        .unwrap();
+        let _guard = WRITE_LOCK.lock_or_recover();
+        // Same retained patch, merge, revision and publisher boundary as the
+        // tray's commit_settings_intent, with only the I/O outcome injected.
+        let edits = OwnedEdits {
+            disabled: Some(true),
+            auto_paste: auto_paste.then_some(true),
+        };
+        assert!(commit_settings_intent_with_publisher(
+            dir,
+            "{}",
+            Some(&edits),
+            false,
+            || (),
+            |blob| interrupted_publication(dir, blob)
+        )
+        .is_err());
+        assert!(dictation_settings_unsaved(dir));
+        assert!(dir.join("settings.json.pending").exists());
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(disk["disabled"], false);
+    }
+
+    #[test]
+    fn hydration_receipt_replay_retires_the_exact_owned_patch_and_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        failed_tray_publication(dir.path(), false);
+        let _guard = WRITE_LOCK.lock_or_recover();
+        let hydrated: serde_json::Value =
+            serde_json::from_str(&load_settings_blob_locked(dir.path()).unwrap().unwrap()).unwrap();
+        assert_eq!(hydrated["disabled"], true);
+        assert_eq!(hydrated["ownedFieldsRevision"], 1);
+        assert!(!dir.path().join("settings.json.pending").exists());
+        assert!(
+            !dictation_settings_unsaved(dir.path()),
+            "durable replay must retire the warning"
+        );
+        assert!(!pending_owned().lock_or_recover().contains_key(dir.path()));
+    }
+
+    #[test]
+    fn newer_owned_intent_before_replay_preserves_only_undurable_fields() {
+        // Include the same-value ABA case: boolean equality is not ownership.
+        for disabled in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            failed_tray_publication(dir.path(), true);
+            let _guard = WRITE_LOCK.lock_or_recover();
+            let newer = OwnedEdits {
+                disabled: Some(disabled),
+                auto_paste: None,
+            };
+            assert!(commit_settings_intent_with_publisher(
+                dir.path(),
+                "{}",
+                Some(&newer),
+                false,
+                || (),
+                |_| Err("newer edit cannot publish".into())
+            )
+            .is_err());
+            // The older receipt replayed during the newer edit's merge. Only
+            // autoPaste was proven durable; the newer disabled choice remains.
+            let disk: serde_json::Value =
+                serde_json::from_str(&load_settings_blob_locked(dir.path()).unwrap().unwrap())
+                    .unwrap();
+            assert_eq!(disk["disabled"], true);
+            assert_eq!(disk["autoPaste"], true);
+            assert_eq!(disk["ownedFieldsRevision"], 1);
+            let pending = pending_owned().lock_or_recover();
+            assert_eq!(pending[dir.path()].disabled, Some(disabled));
+            assert_eq!(pending[dir.path()].auto_paste, None);
+            drop(pending);
+            assert!(dictation_settings_unsaved(dir.path()));
+            assert!(flush_owned(dir.path()));
+            assert!(!dictation_settings_unsaved(dir.path()));
+        }
+    }
+
+    #[test]
+    fn lifecycle_replay_reconciles_even_if_another_source_fails() {
+        for fails in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            failed_tray_publication(dir.path(), false);
+            let _guard = WRITE_LOCK.lock_or_recover();
+            let service =
+                murmur_core::completion::CompletionService::start(dir.path().into(), true).unwrap();
+            // A future theme source fails after the settings receipt replays.
+            if fails {
+                std::fs::write(dir.path().join("theme-library.json"), r#"{"version":999}"#)
+                    .unwrap();
+            }
+            let result = reconcile_settings_after(dir.path(), || {
+                service.lifecycle(murmur_core::completion::lifecycle::Operation::Status)
+            });
+            assert_eq!(result.is_err(), fails);
+            assert!(!dir.path().join("settings.json.pending").exists());
+            assert!(!dictation_settings_unsaved(dir.path()));
+            assert!(!pending_owned().lock_or_recover().contains_key(dir.path()));
+        }
+    }
+
+    #[test]
+    fn shutdown_replay_does_not_republish_an_already_durable_owned_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        failed_tray_publication(dir.path(), false);
+        let _guard = WRITE_LOCK.lock_or_recover();
+        assert!(flush_owned(dir.path()));
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(disk["disabled"], true);
+        assert_eq!(disk["ownedFieldsRevision"], 1);
+        assert!(!dictation_settings_unsaved(dir.path()));
+        assert!(!dir.path().join("settings.json.pending").exists());
     }
 }

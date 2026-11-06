@@ -959,3 +959,20 @@ input files matched this checkout. Reference/command-count, targeted-event,
 core-dependency, capture-boundary, restart-policy and formatting checks pass.
 Regenerated schemas were restored; `gpui-stack-27`, its external target and
 synthetic temp data were removed. Independent Sol recheck remains with the parent.
+
+
+### Round-six warning reconciliation
+
+Retained native owned fields now remember the publication revision of their
+current intent. A recovered or successfully published settings document retires
+only fields matching both that revision and value under the source writer lock.
+Accepting a newer edit invalidates its previous proof, including a repeated
+boolean value; unrelated fields can reconcile independently. The warning remains
+while the latest disabled choice is undurable.
+
+Hydration, runtime rebasing, later saves, explicit backup recovery, WebKit
+status/import/onboarding writes and shutdown recovery reconcile publication and
+invalidate the warning after releasing the lock, including partial recovery
+before another source fails. Shutdown avoids a redundant owned revision when
+receipt replay already committed the retained patch. Synthetic Rust fixtures use
+the real core publisher and exact receipt replay; no GUI or app launches are used.

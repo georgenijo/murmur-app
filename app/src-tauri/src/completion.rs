@@ -470,16 +470,23 @@ mod dispatch_tests {
 fn webkit_state_snapshot_worker(
     app: tauri::AppHandle,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
-    source_status(&ready(&app)?.service)
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
+    source_status(
+        &ready(&app)?.service,
+        &crate::commands::settings_store::data_dir(&app)?,
+    )
 }
 fn source_status(
     service: &CompletionService,
+    root: &std::path::Path,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
     use crate::MutexExt;
     let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    service
-        .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
-        .map_err(|e| e.to_string())
+    crate::commands::settings_store::reconcile_settings_after(root, || {
+        service
+            .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
+            .map_err(|e| e.to_string())
+    })
 }
 fn import_webkit_state_worker(
     window: tauri::WebviewWindow,
@@ -488,13 +495,17 @@ fn import_webkit_state_worker(
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
     main_only(&window)?;
     use crate::MutexExt;
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
+    let root = crate::commands::settings_store::data_dir(&app)?;
     let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    ready(&app)?
-        .service
-        .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
-            source,
-        ))
-        .map_err(|e| e.to_string())
+    crate::commands::settings_store::reconcile_settings_after(&root, || {
+        ready(&app)?
+            .service
+            .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
+                source,
+            ))
+            .map_err(|e| e.to_string())
+    })
 }
 fn save_webkit_source_worker(
     window: tauri::WebviewWindow,
@@ -507,12 +518,16 @@ fn save_webkit_source_worker(
         return Err("Use the source owner's command".into());
     }
     use crate::MutexExt;
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
+    let root = crate::commands::settings_store::data_dir(&app)?;
     let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    ready(&app)?
-        .service
-        .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    crate::commands::settings_store::reconcile_settings_after(&root, || {
+        ready(&app)?
+            .service
+            .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -532,9 +547,10 @@ mod source_ordering_tests {
         .unwrap();
         let worker = service.clone();
         let (started, waiting) = std::sync::mpsc::channel();
+        let worker_root = root.path().to_path_buf();
         let status = std::thread::spawn(move || {
             started.send(()).unwrap();
-            source_status(&worker)
+            source_status(&worker, &worker_root)
         });
         waiting.recv().unwrap();
         murmur_core::completion::save_source(
@@ -561,7 +577,14 @@ pub(crate) fn shutdown_flush(app: &tauri::AppHandle) -> murmur_core::shutdown::W
     let Some(state) = app.try_state::<Completion>() else {
         return murmur_core::shutdown::WriteOutcome::UnpreservedFailure;
     };
-    tauri::async_runtime::block_on(state.service.shutdown_receipt())
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(app);
+    use crate::MutexExt;
+    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+    let result = tauri::async_runtime::block_on(state.service.shutdown_receipt());
+    if let Ok(root) = crate::commands::settings_store::data_dir(app) {
+        crate::commands::settings_store::reconcile_settings_after(&root, || ());
+    }
+    result
 }
 
 #[tauri::command]
