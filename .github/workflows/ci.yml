@@ -101,6 +101,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_check_targeted_events.py'
           python3 scripts/check_restart_policy.py
           python3 -m unittest discover -s scripts -p 'test_check_restart_policy.py'
+          python3 -m unittest discover -s scripts -p 'test_send_shutdown_test_quit.py'
 
       - uses: actions/setup-node@v4
         with:
@@ -361,6 +362,12 @@ jobs:
           --lib --bin murmur-capture-helper --test topology_watch
           --message-format json --list-type binaries-only > target/ci-test-binaries.json &&
           cargo metadata --format-version 1 > target/ci-cargo-metadata.json
+
+      - name: Test windowless shutdown and main dispatch
+        if: needs.changes.outputs.verified != 'true'
+        run: >-
+          cd app/src-tauri &&
+          cargo test --locked --test main_thread_queue --test shutdown_appkit
 
       - name: Run tests
         if: needs.changes.outputs.verified != 'true'
