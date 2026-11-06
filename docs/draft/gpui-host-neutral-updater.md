@@ -27,6 +27,12 @@ static-platform selection and macOS installation; published
 and its [dependencies](https://docs.rs/crate/cargo-packager-updater/0.2.3/source/Cargo.toml);
 [minisign verifier](https://github.com/jedisct1/rust-minisign-verify).
 
+A read-only compatibility check also verified the exact published v0.62.1
+Murmur.app.tar.gz (25,760,760 bytes) against that release's latest-v2.json and
+sidecar signature with the embedded key. Archive SHA-256:
+`4d3e8dbfee212bf7c16afaf8e17b9210c0340fcad86ce33428bf0d6408846816`.
+This verifies existing release bytes, not OTA installation or relaunch.
+
 ## Ownership and flow
 
 `murmur-core::updater::Updater` serializes actions independently of revisioned

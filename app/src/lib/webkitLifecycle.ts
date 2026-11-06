@@ -192,7 +192,7 @@ export async function initializeWebkitState(importLegacy = false): Promise<void>
   }
 
   for (const [key, value] of Object.entries(state.values)) {
-    presentationStorage.setItem(key, JSON.stringify(value));
+    if (!V3_KEYS.includes(key)) presentationStorage.setItem(key, JSON.stringify(value));
   }
   if (state.v2) {
     presentationStorage.removeItem('murmur-overlay-vertical-offset');

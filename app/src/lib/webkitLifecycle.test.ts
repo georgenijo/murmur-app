@@ -329,3 +329,35 @@ it('a superseded document acknowledges only the exact patches owned by native', 
   expect(saves[saves.length - 1][1].ownedEdits).toEqual({});
   expect(JSON.parse(saves[saves.length - 1][1].blob).language).toBe('es');
 });
+
+it('imports updater v3 raw keys once, removes after receipt and never hydrates them back to WebKit', async () => {
+  localStorage.setItem('updater-last-check', '1234');
+  localStorage.setItem('pending-update-release-notes', '{"version":"1.2.0","notes":"Synthetic"}');
+  const values = { 'updater-last-check': 1234, 'pending-update-release-notes': { version: '1.2.0', notes: 'Synthetic' } };
+  mock.invoke.mockImplementation(async (command: string, args?: { source: Record<string, unknown> }) => {
+    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, v3: false, values: {} };
+    if (command === 'import_webkit_state') {
+      expect(args?.source['updater-last-check']).toBe('1234');
+      expect(args?.source['pending-update-release-notes']).toBe('{"version":"1.2.0","notes":"Synthetic"}');
+      return { v1: true, v2: true, v3: true, values };
+    }
+  });
+  await initializeWebkitState(true);
+  expect(localStorage.getItem('updater-last-check')).toBeNull();
+  expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values });
+  await initializeWebkitState(false);
+  expect(localStorage.getItem('updater-last-check')).toBeNull();
+  expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
+});
+it('v3 interruption during key removal retries without importing again', async () => {
+  localStorage.setItem('updater-last-check', '1234');
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values: {} });
+  const removal = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('Synthetic removal interruption'); });
+  await initializeWebkitState(true);
+  expect(localStorage.getItem('updater-last-check')).toBe('1234');
+  removal.mockRestore();
+  await initializeWebkitState(true);
+  expect(localStorage.getItem('updater-last-check')).toBeNull();
+  expect(mock.invoke.mock.calls.some(([command]) => command === 'import_webkit_state')).toBe(false);
+});

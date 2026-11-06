@@ -635,3 +635,75 @@ fn canary_dry_run_preserves_pending_stages_and_actual_flow_marks_only_new_versio
         }
     }
 }
+
+#[test]
+fn canary_reports_signature_failure_after_download_and_never_installs() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let (mut updater, _, target) = network_owner(temp.path(), &server, false);
+    updater.canary = Some(temp.path().join("result.json"));
+    server.set("/archive", b"tampered synthetic bytes".to_vec());
+    assert!(updater.act(Action::Configure { automatic: true }).is_err());
+    let result = updater.read_canary().unwrap();
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["stages"]["download"], "passed");
+    assert_eq!(result["stages"]["signatureVerify"], "failed");
+    assert_eq!(result["stages"]["install"], "pending");
+    assert_eq!(
+        fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+        "synthetic 1.0.0"
+    );
+}
+#[test]
+fn signed_archive_escaping_symlinks_and_foreign_identity_cannot_modify_outside_stage() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("Murmur.app");
+    make_bundle(&target, "1.0.0");
+    let root = temp.path().join("data");
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut tar = tar::Builder::new(encoder);
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Symlink);
+    header.set_size(0);
+    header.set_mode(0o777);
+    header.set_link_name("../../outside").unwrap();
+    header.set_cksum();
+    tar.append_data(&mut header, "Murmur.app/escape", std::io::empty())
+        .unwrap();
+    let bytes = tar.into_inner().unwrap().finish().unwrap();
+    let (key, sig) = signed(&bytes);
+    assert!(install::install(&root, &target, &offer(sig), &bytes, &key, ID, || true).is_err());
+    assert!(!temp.path().join("outside").exists());
+    assert_eq!(
+        fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+        "synthetic 1.0.0"
+    );
+}
+#[cfg(feature = "updater-test-support")]
+#[test]
+fn compiled_qa_seam_rejects_production_identity_and_nonloopback_endpoints() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = CompletionService::start(temp.path().into(), false).unwrap();
+    let owner = |id: &str| {
+        Updater::production(
+            temp.path().into(),
+            PathBuf::from("/synthetic/ui"),
+            id.into(),
+            "1.0.0".into(),
+            store.clone(),
+            |_| {},
+            |_| {},
+        )
+    };
+    assert!(owner("com.localdictation")
+        .isolated_fixture("http://127.0.0.1/feed".into(), "test".into())
+        .is_err());
+    assert!(owner(ID)
+        .isolated_fixture("https://example.test/feed".into(), "test".into())
+        .is_err());
+    assert!(owner(ID)
+        .isolated_fixture("http://127.0.0.1/feed".into(), "test".into())
+        .is_ok());
+    assert_eq!(owner("com.localdictation").feed, FEED);
+    assert_eq!(owner("com.localdictation").key, PUBLIC_KEY);
+}
