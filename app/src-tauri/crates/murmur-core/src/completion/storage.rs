@@ -69,6 +69,24 @@ impl Storage {
         }
         Ok(())
     }
+    /// Register the complete ordered mutation before any target publication.
+    /// Keep the entire batch on failure, including already written targets, so
+    /// reconciliation re-applies identical snapshots before later submissions.
+    pub fn publish_batch(&mut self, snapshots: Vec<(String, serde_json::Value)>) -> Result<()> {
+        if self.has_intents() {
+            return Err(Error::TooManyFiles);
+        }
+        for (file, value) in &snapshots {
+            self.remember_intent(file, value)?;
+        }
+        for (file, value) in &snapshots {
+            self.write(file, value)?;
+        }
+        for (file, _) in snapshots {
+            self.resolve_intent(&file);
+        }
+        Ok(())
+    }
     pub fn remove_temps(&self, name: &str) -> Result<()> {
         for path in self.artifact_paths(name, true)? {
             fs::remove_file(path).map_err(|_| Error::Io)?;
@@ -382,7 +400,7 @@ impl Storage {
         let _ = fs::remove_file(temp);
         result
     }
-    fn boundary(&mut self, _name: &str, _at: Boundary) -> Result<()> {
+    pub(super) fn boundary(&mut self, _name: &str, _at: Boundary) -> Result<()> {
         #[cfg(test)]
         self.trace.borrow_mut().push(format!("{_name}:{_at:?}"));
         #[cfg(test)]

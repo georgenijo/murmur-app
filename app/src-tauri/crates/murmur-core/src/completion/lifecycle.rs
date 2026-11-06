@@ -148,19 +148,18 @@ impl Engine {
             .transpose()
     }
     pub(super) fn lifecycle(&mut self, op: Operation) -> Result<Receipt> {
-        if let Some(previous) = self.failed_source.take() {
-            if let Err(error) = self.lifecycle_inner(previous.clone()) {
-                self.failed_source = Some(previous);
-                return Err(error);
+        let queued = matches!(&op, Operation::Save { .. });
+        if queued {
+            // Reject malformed input before accepting it into the ordered FIFO.
+            if let Operation::Save { key, value } = &op {
+                crate::state::normalize(key, value.clone())?;
             }
+            self.accepted.push_back(AcceptedIntent::Source(op.clone()));
         }
-        let result = self.lifecycle_inner(op.clone());
-        if result.is_err() && matches!(op, Operation::Save { .. }) {
-            self.failed_source = Some(op);
-        }
-        result
+        self.drain_accepted()?;
+        self.lifecycle_inner(if queued { Operation::Status } else { op })
     }
-    fn lifecycle_inner(&mut self, op: Operation) -> Result<Receipt> {
+    pub(super) fn lifecycle_inner(&mut self, op: Operation) -> Result<Receipt> {
         self.storage.retry_intents()?;
         self.storage.recover_snapshot(UI_STATE, valid_snapshot)?;
         self.storage.sync_directory()?;
@@ -174,7 +173,7 @@ impl Engine {
                         .chain(V2_KEYS)
                         .map(|k| ((*k).into(), None))
                         .collect();
-                    self.lifecycle(Operation::Import(source))?;
+                    self.lifecycle_inner(Operation::Import(source))?;
                     m = self.migration()?;
                     m.keys_removed = vec![
                         Destination::History,
