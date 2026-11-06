@@ -23,6 +23,8 @@ pub enum Error {
     InUse,
     Stopped,
     TooManyFiles,
+    RetentionFull,
+    IdentityConflict,
     Uncertain,
 }
 impl std::fmt::Display for Error {
@@ -34,6 +36,10 @@ impl std::fmt::Display for Error {
             Self::InUse => "Completion storage already in use",
             Self::Stopped => "Completion service stopped",
             Self::Uncertain => "File admission outcome uncertain; completion storage unavailable",
+            Self::IdentityConflict => {
+                "Completion identity conflicts with stored content; submission rejected"
+            }
+            Self::RetentionFull => "Completion retry queue full; submission not accepted",
             Self::TooManyFiles => "Too many pending file transcriptions",
         })
     }
@@ -42,6 +48,9 @@ impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 const STATE: &str = "completion-state.json";
 const PENDING: &str = "completion-pending.json";
+const BATCH: &str = "completion-batch.json";
+const MAX_RETAINED_INTENTS: usize = 64;
+const MAX_RETAINED_BYTES: usize = 4 * 1024 * 1024;
 const HOLD: &str = "completion-holding.json";
 const MIGRATION: &str = "migrations.json";
 
@@ -193,7 +202,7 @@ pub enum HistoryMutation {
     Pin { target: Value },
     Delete { targets: Vec<Value> },
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub enum Command {
     Snapshot,
     /// Explicitly preserve rejected pending evidence and resume from readable stores.
@@ -217,6 +226,7 @@ pub enum Command {
     /// Success acknowledges durable History/holding publication, without statistics.
     AcceptFile {
         entry: Value,
+        #[serde(skip)]
         intent: Arc<producers::FileIntent>,
         active: Vec<String>,
     },
@@ -370,16 +380,20 @@ fn uuid() -> String {
 fn diagnostic(code: &'static str) {
     tracing::warn!(target:"completion",code,"completion service diagnostic");
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 enum AcceptedIntent {
     Command(Command),
     Source(lifecycle::Operation),
+}
+struct RetainedIntent {
+    intent: AcceptedIntent,
+    bytes: usize,
 }
 struct Engine {
     unpreserved_content: bool,
     // Retain each accepted submission before recovery can fail. The shared FIFO
     // orders completion commands and lifecycle saves under the same owner.
-    accepted: VecDeque<AcceptedIntent>,
+    accepted: VecDeque<RetainedIntent>,
     failed_content: Option<(Destination, Value)>,
     initialized: bool,
     revision: u64,
@@ -514,6 +528,7 @@ impl Engine {
         for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
             self.storage.remove_temps(file)?;
         }
+        self.storage.retry_intents()?;
         self.replay_content()?;
         let mut holding = match self.holding() {
             Ok(v) => v,
@@ -702,26 +717,42 @@ impl Engine {
         match command {
             Command::RecoverPending => self.resolve_pending()?,
             Command::Snapshot => {}
-            command => self.accepted.push_back(AcceptedIntent::Command(command)),
+            command => self.retain_intent(AcceptedIntent::Command(command))?,
         }
         self.drain_accepted()?;
         self.snapshot()
+    }
+    fn retain_intent(&mut self, intent: AcceptedIntent) -> Result<()> {
+        // Bound the shared completion/lifecycle FIFO even when reads or recovery
+        // fail persistently. Rejection transfers no ownership to this service.
+        let bytes = serde_json::to_vec(&intent)
+            .map_err(|_| Error::Invalid)?
+            .len();
+        let retained_bytes: usize = self.accepted.iter().map(|v| v.bytes).sum();
+        if self.accepted.len() >= MAX_RETAINED_INTENTS
+            || bytes > MAX_RETAINED_BYTES.saturating_sub(retained_bytes)
+        {
+            return Err(Error::RetentionFull);
+        }
+        self.accepted.push_back(RetainedIntent { intent, bytes });
+        Ok(())
     }
     fn drain_accepted(&mut self) -> Result<()> {
         loop {
             // Do not take the next intent until every older publication has
             // reconciled. Even initialization/read failures leave it in the FIFO.
             self.prepare()?;
-            let Some(intent) = self.accepted.pop_front() else {
+            let Some(retained) = self.accepted.pop_front() else {
                 return Ok(());
             };
-            let result = match &intent {
+            let intent = &retained.intent;
+            let result = match intent {
                 AcceptedIntent::Command(command) => self.apply_command(command.clone()),
                 AcceptedIntent::Source(op) => self.lifecycle_inner(op.clone()).map(|_| ()),
             };
             self.storage.capture_failures = false;
             if matches!(
-                &intent,
+                intent,
                 AcceptedIntent::Command(Command::Complete { entry: Some(_), .. })
             ) && result.is_err()
                 && !self.storage.has_intents()
@@ -734,19 +765,19 @@ impl Engine {
                 // Source saves are idempotent. Direct commands with captured
                 // snapshots/content resume from those exact values, not by
                 // repeating a toggle or another relative mutation.
-                let retry = match &intent {
+                let retry = match intent {
                     AcceptedIntent::Source(_) => true,
                     AcceptedIntent::Command(
                         Command::Complete { .. } | Command::AcceptFile { .. },
                     ) => false,
                     AcceptedIntent::Command(_) => {
-                        error != Error::Invalid
+                        !matches!(error, Error::Invalid | Error::IdentityConflict)
                             && !self.storage.has_intents()
                             && self.failed_content.is_none()
                     }
                 };
                 if retry {
-                    self.accepted.push_front(intent);
+                    self.accepted.push_front(retained);
                 }
                 return Err(error);
             }
@@ -1106,6 +1137,7 @@ impl Engine {
         // Failures before pending admission (including cap/eviction writes)
         // retain the exact accepted content for the next owner reconciliation.
         if result.is_err()
+            && result != Err(Error::IdentityConflict)
             && !self.storage.has_intents()
             && self.failed_content.is_none()
             && !self.storage.root.join(PENDING).exists()
@@ -1123,16 +1155,20 @@ impl Engine {
             _ => &h.reports.entries,
         };
         if let Some(id) = value["completionUuid"].as_str() {
-            if doc
+            let matches: Vec<_> = doc
                 .data
                 .as_array()
                 .ok_or(Error::Invalid)?
                 .iter()
                 .chain(held)
-                .any(|entry| entry["completionUuid"].as_str() == Some(id))
-            {
-                // Publication may have completed before pending-unlink sync
-                // failed. Re-establish durability without appending it again.
+                .filter(|entry| entry["completionUuid"].as_str() == Some(id))
+                .collect();
+            if matches.iter().any(|entry| **entry != value) {
+                // Identity is proof only for an exact replay. Never acknowledge
+                // different content or retain a rejected conflict for retry.
+                return Err(Error::IdentityConflict);
+            }
+            if !matches.is_empty() {
                 return self.storage.sync_directory();
             }
         }

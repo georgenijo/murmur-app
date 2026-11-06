@@ -22,6 +22,8 @@ pub struct Storage {
     pub renamed: bool,
     #[cfg(test)]
     pub fail: Option<(String, Boundary)>,
+    #[cfg(test)]
+    pub abort: Option<(String, Boundary)>,
     // Ordered faults; skip matching boundaries to target later writes to STATE.
     #[cfg(test)]
     pub faults: std::collections::VecDeque<(String, Boundary, usize)>,
@@ -64,26 +66,58 @@ impl Storage {
     }
     pub fn retry_intents(&mut self) -> Result<()> {
         for (file, value) in self.intents.clone() {
+            // A batch is one write-ahead intent, never independent targets.
             self.write(&file, &value)?;
+            if file == super::BATCH {
+                self.recover_batch()?;
+            }
             self.resolve_intent(&file);
         }
-        Ok(())
+        self.recover_batch()
     }
-    /// Register the complete ordered mutation before any target publication.
-    /// Keep the entire batch on failure, including already written targets, so
-    /// reconciliation re-applies identical snapshots before later submissions.
+    /// The complete batch must be fully synced before either target can change.
+    /// Keep one in-memory copy only if admitting the durable intent itself fails.
     pub fn publish_batch(&mut self, snapshots: Vec<(String, serde_json::Value)>) -> Result<()> {
-        if self.has_intents() {
+        if self.has_intents() || self.root.join(super::BATCH).exists() {
             return Err(Error::TooManyFiles);
         }
-        for (file, value) in &snapshots {
-            self.remember_intent(file, value)?;
+        let payload = serde_json::json!({"schema":1,"snapshots":snapshots});
+        if !valid_batch(&payload) {
+            return Err(Error::Invalid);
         }
-        for (file, value) in &snapshots {
-            self.write(file, value)?;
+        let bytes = serde_json::to_vec(&payload).map_err(|_| Error::Invalid)?;
+        if bytes.len() > size_limit(super::BATCH) {
+            return Err(Error::Invalid);
         }
-        for (file, _) in snapshots {
-            self.resolve_intent(&file);
+        self.remember_intent(super::BATCH, &payload)?;
+        // Do not capture failed target writes as independently retryable intents.
+        // They must always be preceded by the durable complete batch.
+        self.write_bytes(super::BATCH, &bytes)?;
+        self.recover_batch()?;
+        self.resolve_intent(super::BATCH);
+        Ok(())
+    }
+    pub fn recover_batch(&mut self) -> Result<()> {
+        let existed = self.root.join(super::BATCH).exists();
+        let batch = self.read::<serde_json::Value>(super::BATCH, valid_batch)?;
+        if let Some(batch) = batch {
+            // Also resolves an unknown intent-rename outcome before publishing.
+            self.sync_directory()?;
+            let snapshots = batch["snapshots"].as_array().ok_or(Error::Invalid)?;
+            for snapshot in snapshots {
+                self.reject_future(snapshot[0].as_str().ok_or(Error::Invalid)?, "schema", 1)?;
+            }
+            for snapshot in snapshots {
+                let bytes = serde_json::to_vec(&snapshot[1]).map_err(|_| Error::Invalid)?;
+                self.write_bytes(snapshot[0].as_str().ok_or(Error::Invalid)?, &bytes)?;
+            }
+            // Every target is durable. Replaying after an uncertain unlink is
+            // harmless: these are exact snapshots, never relative mutations.
+            fs::remove_file(self.root.join(super::BATCH)).map_err(|_| Error::Io)?;
+            self.boundary(super::BATCH, Boundary::DirectorySync)?;
+            self.sync_directory()?;
+        } else if existed || self.quarantined(super::BATCH)? {
+            return Err(Error::Invalid);
         }
         Ok(())
     }
@@ -136,6 +170,8 @@ impl Storage {
             #[cfg(test)]
             fail: None,
             #[cfg(test)]
+            abort: None,
+            #[cfg(test)]
             faults: Default::default(),
             #[cfg(test)]
             pause: None,
@@ -185,14 +221,11 @@ impl Storage {
             Err(_) => return Err(Error::Io),
         };
         let mut bytes = Vec::new();
-        file.take(if name == super::STATE {
-            u64::MAX
-        } else {
-            32 * 1024 * 1024 + 1
-        })
-        .read_to_end(&mut bytes)
-        .map_err(|_| Error::Io)?;
-        if name == super::STATE || bytes.len() <= 32 * 1024 * 1024 {
+        let limit = size_limit(name);
+        file.take(limit.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::Io)?;
+        if bytes.len() <= limit {
             if let Ok(value) = serde_json::from_slice::<T>(&bytes) {
                 if validate(&value) {
                     return Ok(Some(value));
@@ -246,8 +279,8 @@ impl Storage {
         if self.fail_prune_after_guard.replace(false) {
             return Err(Error::Io);
         }
-        let unresolved = (name == super::PENDING
-            && !self.root.join("completion-recovery.json").exists())
+        let unresolved = name == super::BATCH
+            || (name == super::PENDING && !self.root.join("completion-recovery.json").exists())
             || source_file(name).is_some_and(|file| {
                 !self.root.join(file).exists() || self.root.join(format!("{file}.pending")).exists()
             });
@@ -370,7 +403,7 @@ impl Storage {
     }
     pub fn write_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         self.renamed = false;
-        if name != super::STATE && bytes.len() > 32 * 1024 * 1024 {
+        if bytes.len() > size_limit(name) {
             return Err(Error::Invalid);
         }
         fs::create_dir_all(&self.root).map_err(|_| Error::Io)?;
@@ -405,6 +438,15 @@ impl Storage {
         self.trace.borrow_mut().push(format!("{_name}:{_at:?}"));
         #[cfg(test)]
         if self
+            .abort
+            .as_ref()
+            .is_some_and(|(name, at)| name == _name && *at == _at)
+        {
+            self.abort = None;
+            panic!("simulated process exit at {_name}:{_at:?}");
+        }
+        #[cfg(test)]
+        if self
             .pause
             .as_ref()
             .is_some_and(|(name, at, _, _)| name == _name && *at == _at)
@@ -435,6 +477,39 @@ impl Storage {
         Ok(())
     }
 }
+fn size_limit(name: &str) -> usize {
+    match name {
+        super::STATE => usize::MAX,
+        // Two documents that each fit the existing destination limit plus envelope.
+        super::BATCH => 64 * 1024 * 1024 + 4096,
+        _ => 32 * 1024 * 1024,
+    }
+}
+
+// Only the ordered History mutation targets are admissible. Validate the
+// entire envelope before touching any target, including pre-import documents.
+fn valid_batch(v: &serde_json::Value) -> bool {
+    v.as_object().is_some_and(|o| o.len() == 2)
+        && v["schema"] == 1
+        && v["snapshots"].as_array().is_some_and(|snapshots| {
+            (1..=2).contains(&snapshots.len())
+                && snapshots.iter().enumerate().all(|(i, snapshot)| {
+                    snapshot.as_array().is_some_and(|s| s.len() == 2)
+                        && serde_json::to_vec(&snapshot[1])
+                            .is_ok_and(|bytes| bytes.len() <= 32 * 1024 * 1024)
+                        && if i == 0 {
+                            snapshot[0] == super::HOLD
+                                && serde_json::from_value::<super::Holding>(snapshot[1].clone())
+                                    .is_ok_and(|h| super::valid_holding(&h))
+                        } else {
+                            snapshot[0] == "history.json"
+                                && snapshot[1]["schema"] == 1
+                                && super::valid_document(super::Destination::History, &snapshot[1])
+                        }
+                })
+        })
+}
+
 // Only the two separately stored source destinations have sticky history guards.
 fn source_file(name: &str) -> Option<&'static str> {
     ["settings.json", "theme-library.json"]

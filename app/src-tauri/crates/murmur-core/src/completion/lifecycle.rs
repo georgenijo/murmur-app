@@ -50,7 +50,7 @@ impl Default for UiState {
         }
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub enum Operation {
     Status,
     /// Complete observed key set, not a partial snapshot. Missing values must
@@ -154,7 +154,7 @@ impl Engine {
             if let Operation::Save { key, value } = &op {
                 crate::state::normalize(key, value.clone())?;
             }
-            self.accepted.push_back(AcceptedIntent::Source(op.clone()));
+            self.retain_intent(AcceptedIntent::Source(op.clone()))?;
         }
         self.drain_accepted()?;
         self.lifecycle_inner(if queued { Operation::Status } else { op })

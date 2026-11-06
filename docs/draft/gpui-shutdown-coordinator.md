@@ -496,3 +496,50 @@ undoes the newer overlay Auto Paste value. It passes again with the field fence
 restored, including different-field preservation and overlay reload retirement.
 The complete CI `policy` shell blocks were rerun locally after the final docs and
 regression adjustment; no policy step was omitted.
+
+## Round-three completion durability corrections
+
+Completion changes remain inside `murmur-core/src/completion/`. The base is
+unchanged and this draft stack must not be merged. Independent Sol review remains
+with the parent task; this implementation worker does not claim that review.
+
+- **Complete mutation durability:** `completion-batch.json` contains the ordered
+  Holding and History snapshots in one versioned write-ahead intent. The publisher
+  fully syncs the intent file and its directory before changing either target.
+  Startup and live recovery replay exact snapshots in order and retire the intent
+  only after every target is durable. A failed intent admission retains the whole
+  batch for retry and returns an error. Target failures cannot create independent
+  partial-batch retries. Unknown retirement outcomes can safely replay the batch.
+  Every target and future-schema guard is checked before publication; malformed
+  evidence is quarantined, pinned, and continues blocking recovery without
+  replacing readable documents.
+- **Report identity conflicts:** a matching `completionUuid` deduplicates only
+  identical content. Different content with that identity returns the visible
+  `IdentityConflict` error, retains the original, and acquires no retry ownership.
+  Reports without an identity still receive fresh internal UUIDs, so identical
+  independent submissions remain distinct.
+- **Bounded retry retention:** completion commands and lifecycle saves share a
+  maximum of 64 retained requests and 4 MiB of serialized request payload. Size
+  accounting is cached per retained request. Overflow returns `RetentionFull`
+  ("submission not accepted") before taking ownership. Storage errors remain
+  visible to callers; requests awaiting recovery may remain in this bounded
+  in-memory FIFO. Such memory is not durable acceptance, and the existing shutdown
+  guard returns `UnpreservedFailure` until all retained requests and snapshots
+  drain. Overflow is never replayed. Durable batch/content/snapshot intents are
+  used once publication reaches their respective admission point; the memory
+  fallback does not promise survival across process exit.
+
+The new synthetic regressions failed before these fixes: the complete process-exit
+matrix reproduced **24 lost mutations out of 36 despite Committed**, UUID/content
+conflicts returned success, and 256 failed submissions exceeded the FIFO bound.
+The corrected 36-case matrix covers Holding/History × BeforeRename/AfterRename/
+DirectorySync × initial/retry × Pin/Edit/Delete, discards all owner memory at
+injected exits, and checks disk recovery plus the terminal receipt. Additional
+cases cover batch admission and retirement faults, damaged evidence preservation,
+future targets, exact report replays and conflicts before/after migration, both
+FIFO limits, mixed lifecycle/completion pressure, rejected oversized requests,
+failed shutdown while requests remain in memory, and ordered recovery afterward.
+
+Final Linux checks are recorded after rebasing onto the concurrent worker's head.
+No app host caller or frontend changes, Mac checkout, GUI action, user data, or
+user logs are involved in this completion-only delta.
