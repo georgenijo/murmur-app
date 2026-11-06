@@ -118,6 +118,7 @@ pub struct DeliverySettings {
 
 #[derive(Clone)]
 pub struct DictationContextSnapshot {
+    pub retain_history: bool,
     /// Ephemeral, one-recording session owner; never serialized or reused.
     pub(crate) homophone_engine: Option<Arc<dyn crate::homophone_context::HomophoneEngine>>,
     pub app: ActiveAppIdentity,
@@ -566,6 +567,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     );
 
     DictationContextSnapshot {
+        retain_history: inputs.global.retain_history,
         homophone_engine: None,
         app: ActiveAppIdentity {
             bundle_id: inputs.bundle_id.map(str::to_string),

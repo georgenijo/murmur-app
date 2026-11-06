@@ -1,17 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   addHistoryEntry,
-  clearHistory,
   entrySource,
   filterHistory,
   formatDuration,
   formatExportTimestamp,
   formatHistoryExport,
   historyExportFileName,
-  loadHistory,
   matchSegments,
   removeHistoryEntries,
-  saveHistory,
   searchTokens,
   sortForDisplay,
   trimHistory,
@@ -78,44 +75,6 @@ describe('trimHistory', () => {
     expect(trimmed).toHaveLength(200);
     expect(trimmed.filter((item) => item.pinned)).toHaveLength(MAX_PINNED_ENTRIES);
     expect(Math.min(...trimmed.filter((item) => item.pinned).map((item) => item.timestamp))).toBe(162);
-  });
-});
-
-describe('persistence', () => {
-  beforeEach(() => {
-    clearHistory();
-  });
-
-  it('round-trips through localStorage and trims on save', () => {
-    const entries = Array.from({ length: 205 }, (_, i) => entry({ id: `e${i}` }));
-    saveHistory(entries);
-    expect(loadHistory()).toHaveLength(200);
-  });
-
-  it('reapplies the rolling cap when loading a migrated or tampered cache', () => {
-    const entries = Array.from({ length: 205 }, (_, i) => entry({ id: `e${i}` }));
-    localStorage.setItem('dictation-history', JSON.stringify(entries));
-    expect(loadHistory()).toHaveLength(200);
-    expect(loadHistory()[0].id).toBe('e5');
-  });
-
-  it('returns an empty list when the stored blob is not an array', () => {
-    localStorage.setItem('dictation-history', JSON.stringify({ nope: true }));
-    expect(loadHistory()).toEqual([]);
-  });
-
-  it('returns an empty list when the stored blob is corrupt', () => {
-    localStorage.setItem('dictation-history', '{not json');
-    expect(loadHistory()).toEqual([]);
-  });
-
-  it('migrates legacy entries without inventing raw recognition', () => {
-    localStorage.setItem('dictation-history', JSON.stringify([{ id: 'old', text: 'delivered', timestamp: 1, duration: 2 }]));
-    const [migrated] = loadHistory();
-    expect(migrated.schemaVersion).toBe(2);
-    expect(migrated.text).toBe('delivered');
-    expect(migrated).not.toHaveProperty('rawText');
-    expect(migrated).not.toHaveProperty('recording');
   });
 });
 

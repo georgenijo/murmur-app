@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 177 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 179 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -20,7 +20,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `cancel_native_recording` | `expected_recording_id: Option<u64>` | `Result<(), String>` | With an expected ID, acts only when that generation still owns dictation. Cancels initialization or capture through a brief `recovering` transition to `idle`, or discards a processing run without delivery. Detached audio cleanup continues asynchronously. |
 | `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
-| `transcribe_file` | `file_path: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
+| `transcribe_file` | `file_path: String`, `operation_id: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
 | `preview_vocabulary_aliases` | `entries`, `voice_commands`, `text`, `cli_formatting` | `Result<String, String>` | Runs alias + command resolution over sample text in memory. No persistence, no delivery. |
 | `scan_code_vocab` | `folder: String`, `scan_id: String` | `Result<VocabScanSummary, String>` | Breadth-first identifier scan of a project folder with throttled progress events. Returns ranked terms, counts, cap state, and whether the result was adopted. |
 | `cancel_code_vocab_scan` | `scan_id: String` | `bool` | Cancels only the matching scan. |
@@ -311,12 +311,6 @@ without logging their content.
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
 | `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Full writes require the main window; overlay quick controls use the field-limited patch command. Concurrent writers are serialized; a failed write removes the temp file and preserves the previous settings. |
 | `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool` | `Result<String, String>` | Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
-| `load_history_blob` | — | `Result<Option<String>, String>` | Reads `history.json`. `None` means absent or quarantined; the 8 MiB JSON-array bound is checked before returning content. |
-| `save_history_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a history JSON array up to 8 MiB. |
-| `clear_history_blob` | — | `Result<(), String>` | Idempotently removes `history.json` without touching settings or stats. |
-| `load_stats_blob` | — | `Result<Option<String>, String>` | Reads `stats.json`. `None` means absent or quarantined; the 1 MiB JSON-object bound is checked before returning content. |
-| `save_stats_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a statistics JSON object up to 1 MiB. |
-| `clear_stats_blob` | — | `Result<(), String>` | Idempotently removes `stats.json` without touching settings or history. |
 | `load_theme_library_blob` | — | `Result<Option<String>, String>` | Main-window-only read of `theme-library.json`. `None` means absent or quarantined; the 1 MiB JSON-object boundary is enforced before content reaches the renderer. |
 | `save_theme_library_blob` | `blob: String` | `Result<(), String>` | Main-window-only atomic publish of a theme-library JSON object up to 1 MiB. Rust treats the schema as opaque; TypeScript validates every entry and revision. |
 | `clear_theme_library_blob` | — | `Result<(), String>` | Main-window-only, idempotent removal of `theme-library.json`, independent of settings, history, stats, and the active appearance cache. |
@@ -398,3 +392,21 @@ without logging their content.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `sync_window_chrome` | `background: String`, `header_height: f64`, `zoom: f64`, `ready: bool` | `Result<(), String>` | Main/Diagnostics only. Applies an opaque resolved hex background, CSS-measured header height and page zoom (0.5–2), positions native traffic lights on the main thread, and reveals main once after first paint. Diagnostics readiness never opens it. |
+
+## Completion service (`completion.rs`)
+
+History, statistics, reports, clear/reset and v1 import are serialized by the
+host-independent core. Companion windows cannot mutate these destinations.
+All successful mutations return the latest `Snapshot` and publish read-only
+`history-changed` and `statistics-changed` notifications.
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `accept_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window accepts a visible, uncancelled file result into History using the operation's start-time retention. No statistics. |
+| `cancel_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window cancels file History admission, including before native start or after transcription. |
+| `completion_snapshot` | — | `Result<Snapshot, String>` | Main/diagnostics read of History, statistics, saved reports, migration notice and per-destination key-removal receipts. |
+| `acknowledge_completion_keys` | `destinations: Destination[]` | `Result<(), String>` | Main-only durable acknowledgement after targeted WebKit key removal. Safe to repeat on later launches. |
+| `import_completion_v1` | `source: LegacyImport` | `Result<Snapshot, String>` | Main-only fill/recovery import of History, statistics and reports. Disk wins when valid; durable markers prevent reimport. |
+| `mutate_history` | `mutation: HistoryMutation` | `Result<Snapshot, String>` | Main-only exact-row edit, pin or delete; held data and deletion records use the same serialized owner. |
+| `clear_completion_destination` | `destination: history \| statistics \| reports` | `Result<Snapshot, String>` | Main-only atomic explicit empty/reset destination, watermark and generation discard. |
+| `store_benchmark_report` | `report: JSON` | `Result<Snapshot, String>` | Main-only schema-validated saved report; newest ten retained. |

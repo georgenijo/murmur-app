@@ -1,6 +1,6 @@
 /** Where a history entry's text came from. */
 import type { TeachingContext } from './correctAndTeach';
-import { clearDurableBlob, HISTORY_STORE, saveDurableBlob } from './durableUserData';
+import { completionSnapshot, completionMutation } from './completionData';
 
 export type HistorySource = 'recording' | 'file';
 
@@ -91,35 +91,7 @@ function normalizePinned(entries: HistoryEntry[]): HistoryEntry[] {
   });
 }
 
-export function loadHistory(): HistoryEntry[] {
-  try {
-    const stored = localStorage.getItem(HISTORY_STORE.storageKey);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) return trimHistory(parsed.map(migrateHistoryEntry));
-    }
-  } catch (e) {
-    console.error('Failed to load history:', e);
-  }
-  return [];
-}
-
-function migrateHistoryEntry(value: Record<string, unknown>): HistoryEntry {
-  const pinned = value.pinned === true;
-  if (value.schemaVersion === 2) return { ...value, pinned } as unknown as HistoryEntry;
-  // Deliberately do not copy legacy delivered `text` into `rawText`: that
-  // relationship cannot be reconstructed after the fact.
-  return { ...value, schemaVersion: 2, pinned } as unknown as HistoryEntry;
-}
-
-export function saveHistory(entries: HistoryEntry[]): void {
-  try {
-    const blob = JSON.stringify(trimHistory(entries));
-    saveDurableBlob(HISTORY_STORE, blob);
-  } catch (e) {
-    console.error('Failed to save history:', e);
-  }
-}
+export function loadHistory(): HistoryEntry[] { return completionSnapshot()?.history ?? []; }
 
 export function addHistoryEntry(
   entries: HistoryEntry[],
@@ -189,8 +161,8 @@ export function toggleHistoryEntryPinned(entries: HistoryEntry[], target: Histor
   return { entries: trimHistory(next), changed: true, limitReached: false };
 }
 
-export function clearHistory(): void {
-  clearDurableBlob(HISTORY_STORE);
+export async function clearHistory(): Promise<void> {
+  await completionMutation('clear_completion_destination', { destination: 'history' });
 }
 
 // ---------------------------------------------------------------------------

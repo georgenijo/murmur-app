@@ -4,7 +4,6 @@ import { cancelRecording, startRecording, stopRecording, type DictationStopTrigg
 import type { SmartAutoMicrophoneRequest } from '../settings';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
-import { updateStats } from '../stats';
 import { flog } from '../log';
 import type { TeachingContext } from '../correctAndTeach';
 import type { HistoryInterruption, HistoryRecordingContext } from '../history';
@@ -20,7 +19,7 @@ import {
 } from '../smartDestination';
 
 interface UseRecordingStateProps {
-  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
+  addEntry?: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
   microphone: string;
   smartAuto?: SmartAutoMicrophoneRequest | null;
   /** Synchronous admission check, including for already queued hotkey callbacks. */
@@ -42,7 +41,7 @@ interface PresentErrorOptions {
   producerEpoch?: number;
 }
 
-export function useRecordingState({ addEntry, microphone, smartAuto = null, canStart }: UseRecordingStateProps) {
+export function useRecordingState({ microphone, smartAuto = null, canStart }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
   const [errorPresentation, setErrorPresentation] = useState<RecordingErrorPresentation | null>(null);
@@ -50,7 +49,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [audioLevel, setAudioLevel] = useState(0);
   const [lockedMode, setLockedMode] = useState(false);
-  const [statsVersion, setStatsVersion] = useState(0);
+  const [statsVersion] = useState(0);
   const [smartDestinationSelection, setSmartDestinationSelection] =
     useState<SmartDestinationSelection | null>(null);
 
@@ -64,7 +63,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   // start response for it arriving later is stale and must not restore it.
   const endedRecordingGenerationRef = useRef(0);
   const cancelledDestinationGenerationRef = useRef(0);
-  const completedRecordingIds = useRef(new Set<number>());
   const currentErrorRef = useRef<RecordingErrorPresentation | null>(null);
   const nextErrorIdRef = useRef(0);
   const errorProducerEpochRef = useRef(0);
@@ -445,29 +443,13 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       });
       // Single source of truth for history entries — always handle here,
       // never in handleStop, to avoid race-condition duplicates.
-      const { text, rawText, duration, teachingContext, interrupted, recording } = event.payload;
-      if (text) {
-        if (recording) {
-          if (completedRecordingIds.current.has(recording.recordingId)) return;
-          completedRecordingIds.current.add(recording.recordingId);
-        }
-        setTranscription(text);
-        const details = typeof rawText === 'string' && recording
-          ? { rawText, recording }
-          : undefined;
-        if (details) {
-          addEntry(text, duration, 'recording', undefined, teachingContext, interrupted, details);
-        } else {
-          addEntry(text, duration, 'recording', undefined, teachingContext, interrupted);
-        }
-        updateStats(text, duration, recording?.modeId);
-        setStatsVersion(v => v + 1);
-      }
+      const { text } = event.payload;
+      if (text) setTranscription(text);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, [addEntry]);
+  }, []);
 
   const beginRecording = useCallback(async (origin: 'toggle' | 'hold', gestureToken?: string) => {
     if (canStart && !canStart()) return;
@@ -606,7 +588,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       const res = await stopRecording(stopTrigger);
       if (res.text) {
         setTranscription(res.text);
-        // addEntry/updateStats handled by transcription-complete event listener
+        // Rust has already committed History/statistics; this result is presentation only.
         // to avoid race-condition duplicates.
       }
       if (res.type === 'error') presentError(res.error || 'Unknown error', { producerEpoch });

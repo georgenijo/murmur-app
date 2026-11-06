@@ -16,7 +16,11 @@ import { DEFAULT_SETTINGS } from '../settings';
 import { initializeDiscoveryAfterSetup, loadDiscoveryState, type DiscoveryEvidence } from '../discovery';
 import { addHistoryEntry, type HistoryEntry } from '../history';
 import { useDiscovery } from './useDiscovery';
-import { updateActivityStats } from '../stats';
+import { loadStats } from '../stats';
+vi.mock('../stats', async (original) => {
+  const actual = await original<typeof import('../stats')>();
+  return { ...actual, loadStats: vi.fn(actual.loadStats) };
+});
 
 const emptyEvidence: DiscoveryEvidence = {
   transforms: 0,
@@ -84,7 +88,8 @@ describe('discovery event receipts', () => {
   it('updates a mounted checklist when a real activity counter changes', async () => {
     expect(container.textContent).toBe('');
     await act(async () => {
-      updateActivityStats({ kind: 'meeting', durationMs: 1000 });
+      const stats = loadStats(); stats.activity.meetings.count = 1;
+      vi.mocked(loadStats).mockReturnValue(stats);
       statsVersion += 1;
       root.render(<Harness />);
     });

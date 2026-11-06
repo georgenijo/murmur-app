@@ -1,3 +1,4 @@
+import { COMPLETION_CHANGED } from '../lib/completionData';
 import { useState, useEffect, useMemo } from 'react';
 import {
   loadStats,
@@ -32,11 +33,9 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
   const expanded = displayMode !== 'inline' || !isCollapsed;
 
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === 'dictation-stats') setVersion(v => v + 1);
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    const changed = () => setVersion(v => v + 1);
+    window.addEventListener(COMPLETION_CHANGED, changed);
+    return () => window.removeEventListener(COMPLETION_CHANGED, changed);
   }, []);
 
   const stats = useMemo(

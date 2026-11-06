@@ -216,9 +216,9 @@ export async function cancelModelDownload(modelName: string, requestId: string):
  * Transcribe an existing audio or video file (WAV/MP3/M4A/MP4/MOV) via the Rust `transcribe_file`
  * command. Unlike live recording this returns the text directly (no auto-paste).
  */
-export async function transcribeFile(filePath: string): Promise<DictationResponse> {
+export async function transcribeFile(filePath: string, operationId: string): Promise<DictationResponse> {
   try {
-    return await invoke('transcribe_file', { filePath });
+    return await invoke('transcribe_file', { filePath, operationId });
   } catch (err) {
     return {
       type: 'error',
@@ -287,4 +287,11 @@ export async function checkMicrophonePermissionStatus(): Promise<MicPermissionSt
  */
 export async function resetMicrophonePermission(): Promise<void> {
   return await invoke('reset_microphone_permission');
+}
+
+export async function cancelFileTranscription(operationId: string): Promise<void> {
+  await invoke('cancel_file_transcription', { operationId });
+}
+export async function acceptFileTranscription(operationId: string): Promise<void> {
+  await invoke('accept_file_transcription', { operationId });
 }

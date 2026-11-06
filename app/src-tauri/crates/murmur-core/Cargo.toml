@@ -5,6 +5,11 @@ edition = "2021"
 publish = false
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+libc = "0.2"
 futures-channel = "0.3"
 memory-stats = "1"
 sha2 = "0.10"

@@ -222,7 +222,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 177 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 179 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -265,6 +265,7 @@ stay local and never reach logs or telemetry. See
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
 | `keyboard.rs` | Single rdev input adapter to core gesture detectors and dictation control |
+| `completion.rs` | Native completion adapter and main-window-gated commands; core actor owns History, statistics, reports and v1 import |
 | `dictation_control.rs` | AppContext host adapter for core launch, generation, lock, cancellation and auto-stop policy |
 | `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
@@ -450,10 +451,10 @@ first frontend boot, so upgrades use the frontend fallback once. Native startup
 does not reproduce the permission/model checks used to grandfather old installs.
 
 This change retains the main window's pre-render history/stats/theme hydration.
-History mutations use React snapshots; stats use synchronous read/modify/write;
-theme startup can repair and persist a library and reconcile active selections.
-Deferring only the reads could overwrite durable data with empty or stale
-snapshots. A later change needs mutation replay and a theme readiness boundary.
+The completion actor owns History/statistics/report mutations and v1 migration;
+React sends commands and keeps only presentation snapshots. Theme startup can
+still repair and persist a library and reconcile active selections, so deferring
+its reads needs a separate theme readiness boundary.
 Native stores also remain synchronous: knowledge feeds the frozen recording
 context, while diagnostics and meeting recovery currently
 assume initialization before their commands run. No webview declarations change.
@@ -475,16 +476,16 @@ See [reference/hooks.md](reference/hooks.md) for the full hook inventory.
 
 Two rules keep the multi-window state coherent:
 
-- **`transcription-complete` is the single source of truth** for history and stats. Entries are added only from the Rust event, never in `handleStop()` — otherwise an overlay-initiated recording double-counts.
+- **The core completion actor is the single writer** for History, statistics, reports and migration v1. Native sources submit once; React reads `history-changed`/`statistics-changed` notifications and never writes completions from `transcription-complete`. See [completion ownership](draft/gpui-completion-service.md).
 - **The overlay has no shared React settings context.** `useOverlaySettingsMirror` seeds from its cache and refreshes guarded, read-only durable snapshots after host commit notifications; quick controls retain the latest snapshot.
 - **Appearance has a separate ownership domain.** Main is the only writer and runtime for the small `murmur-appearance` active cache and the revisioned `murmur-theme-library`. Open VSX access is explicit and renderer-side; installed variants compile locally into the active cache. Transparent utility windows remain outside theme synchronization.
-- **Meeting history is Rust-owned.** `useMeetings` reads SQLite through bounded commands and events; transcript localStorage remains dictation-only.
+- **Meeting history is Rust-owned.** `useMeetings` reads SQLite through bounded commands and events; neither meeting nor dictation transcripts are cached in localStorage.
 
 ---
 
 ## Tauri Commands
 
-177 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+179 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

@@ -16,7 +16,7 @@ interface HomeDashboardProps {
   historyEntries: HistoryEntry[];
   onClearHistory: () => void;
   onDeleteHistoryEntries: (entries: readonly HistoryEntry[]) => void;
-  onUpdateHistoryEntry: (id: string, text: string) => void;
+  onUpdateHistoryEntry: (target: HistoryEntry, text: string) => void;
   onToggleHistoryPinned: (entry: HistoryEntry) => void;
   focusSearchToken?: number;
   teachLatestToken?: number;

@@ -1,6 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
-import { updateActivityStats } from '../../lib/stats';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadStats } from '../../lib/stats';
+vi.mock('../../lib/stats', async (original) => {
+  const actual = await original<typeof import('../../lib/stats')>();
+  return { ...actual, loadStats: vi.fn(actual.loadStats) };
+});
 import { InsightsView } from './InsightsView';
 
 function tile(label: string) {
@@ -16,8 +20,8 @@ beforeEach(() => localStorage.clear());
 describe('InsightsView transform tile', () => {
 
   it('displays the successful Paste last count', () => {
-    updateActivityStats({ kind: 'paste_last' });
-    updateActivityStats({ kind: 'paste_last' });
+    const stats = loadStats(); stats.activity.pasteLastUses = 2;
+    vi.mocked(loadStats).mockReturnValue(stats);
     expect(tile('Paste last')).toContain('2');
     expect(tile('Paste last')).toContain('successful uses');
   });

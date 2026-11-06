@@ -243,6 +243,8 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictationState {
+    #[serde(default = "default_retain_history")]
+    pub retain_history: bool,
     pub status: DictationStatus,
     pub model_name: String,
     pub language: String,
@@ -325,9 +327,14 @@ impl DictationState {
     }
 }
 
+fn default_retain_history() -> bool {
+    true
+}
+
 impl Default for DictationState {
     fn default() -> Self {
         Self {
+            retain_history: true,
             status: DictationStatus::Idle,
             model_name: "base.en".to_string(),
             // "auto" => whisper auto-detect (None lang param). Non-Whisper

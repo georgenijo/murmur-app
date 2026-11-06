@@ -6,6 +6,7 @@ use crate::{MutexExt, State};
 
 #[tauri::command]
 pub fn propose_learned_correction(
+    app: tauri::AppHandle,
     request: CorrectionProposalRequest,
     state: tauri::State<'_, State>,
 ) -> CorrectionProposalOutcome {
@@ -47,11 +48,16 @@ pub fn propose_learned_correction(
         proposal_safe = matches!(outcome, CorrectionProposalOutcome::Proposal { .. }),
         "correct_and_teach_proposal"
     );
+    drop(dictation);
+    if let CorrectionProposalOutcome::Proposal { proposal_id, .. } = &outcome {
+        crate::completion::produce(&app, |producer| producer.correction_proposed(*proposal_id));
+    }
     outcome
 }
 
 #[tauri::command]
 pub fn propose_specific_learned_correction(
+    app: tauri::AppHandle,
     request: SpecificCorrectionProposalRequest,
     state: tauri::State<'_, State>,
 ) -> CorrectionProposalOutcome {
@@ -96,11 +102,16 @@ pub fn propose_specific_learned_correction(
         proposal_safe = matches!(outcome, CorrectionProposalOutcome::Proposal { .. }),
         "correct_and_teach_specific_proposal"
     );
+    drop(dictation);
+    if let CorrectionProposalOutcome::Proposal { proposal_id, .. } = &outcome {
+        crate::completion::produce(&app, |producer| producer.correction_proposed(*proposal_id));
+    }
     outcome
 }
 
 #[tauri::command]
 pub fn confirm_learned_correction(
+    app: tauri::AppHandle,
     proposal_id: u64,
     scope: KnowledgeScope,
     state: tauri::State<'_, State>,
@@ -120,6 +131,14 @@ pub fn confirm_learned_correction(
         provenance = ?entry.provenance,
         "correct_and_teach_confirmed"
     );
+    let scope = match entry.scope.kind() {
+        "app" => murmur_core::completion::Scope::App,
+        "project" => murmur_core::completion::Scope::Project,
+        _ => murmur_core::completion::Scope::Global,
+    };
+    crate::completion::produce(&app, |producer| {
+        producer.correction_taught(proposal_id, scope)
+    });
     Ok(entry)
 }
 

@@ -305,26 +305,146 @@ fn detector_threshold_cumulative_speech_resumption_gaps_backwards_and_nonfinite(
 }
 #[test]
 fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
-    // This executable has no window dependency. Effects are the capture/delivery
-    // seam; the Tauri adapter uses the same controller through AppContext.
+    use murmur_core::completion::{producers::Producers, Command, CompletionService, Scope};
+    struct FakeHost {
+        producer: Producers,
+        generation: u64,
+        retained: std::collections::HashMap<u64, bool>,
+        settings: serde_json::Value,
+    }
+    impl FakeHost {
+        fn apply(&mut self, controller: &mut Controller, effect: Effect) {
+            match effect {
+                Effect::Start { origin, .. } => {
+                    self.generation += 1;
+                    // Same immutable start-time configuration as RecordingContext.
+                    self.retained.insert(
+                        self.generation,
+                        self.settings["retainHistory"].as_bool().unwrap_or(true),
+                    );
+                    recording(controller, self.generation, origin);
+                }
+                Effect::Stop { generation, .. } => {
+                    let entry = serde_json::json!({"id":generation.to_string(),"text":"synthetic","duration":1,"timestamp":0});
+                    for _attachment in 0..2 {
+                        self.producer
+                            .dictation(
+                                generation,
+                                entry.clone(),
+                                self.retained[&generation],
+                                None,
+                                "2026-11-05".into(),
+                            )
+                            .unwrap();
+                    }
+                    controller.observe(generation, Status::Idle, Origin::Toggle);
+                }
+                Effect::Cancel { generation } => {
+                    controller.observe(generation, Status::Idle, Origin::Toggle);
+                }
+                Effect::Score { .. } => {
+                    panic!("fake silence flow must not request Smart Turn scoring")
+                }
+                Effect::PasteLast => {
+                    self.producer.paste_last("delivery:1").unwrap();
+                }
+            }
+        }
+        fn input(&mut self, controller: &mut Controller, input: Input) {
+            if let Some(effect) = controller.input(input) {
+                self.apply(controller, effect);
+            }
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let service = CompletionService::start(root.path().into(), false).unwrap();
+    let mut host = FakeHost {
+        producer: Producers::new(service.clone(), "fake-native-session".into()),
+        generation: 0,
+        retained: Default::default(),
+        settings: serde_json::json!({"retainHistory":true}),
+    };
     let mut c = control();
-    let mut host = Vec::new();
-    host.push(c.input(Input::HoldStart(None)).unwrap());
-    recording(&mut c, 1, Origin::Hold);
-    host.push(c.input(Input::HoldStop).unwrap());
-    c.observe(1, Status::Idle, Origin::Toggle);
-    host.push(c.input(Input::Toggle(None)).unwrap());
-    recording(&mut c, 2, Origin::Toggle);
-    host.push(c.input(Input::Escape).unwrap());
-    c.observe(2, Status::Idle, Origin::Toggle);
-    host.push(c.input(Input::Toggle(None)).unwrap());
-    recording(&mut c, 3, Origin::Toggle);
-    speech(&mut c, 3, 0);
-    host.extend(quiet(&mut c, 3, 600, 2000));
-    host.push(c.input(Input::PasteLast).unwrap());
-    assert_eq!(host.len(), 7);
-    assert_eq!(host.last(), Some(&Effect::PasteLast));
-    // Durable History/statistics and delivery de-duplication are explicitly 1.3.
+    c.gate.configured = service.execute(Command::Snapshot).unwrap().v1_committed;
+    host.input(&mut c, Input::HoldStart(None));
+    host.input(&mut c, Input::HoldStop);
+    host.input(&mut c, Input::Toggle(None));
+    host.input(&mut c, Input::Escape);
+    host.input(&mut c, Input::Toggle(None));
+    speech(&mut c, host.generation, 0);
+    for effect in quiet(&mut c, host.generation, 600, 2000) {
+        host.apply(&mut c, effect);
+    }
+    host.settings["retainHistory"] = serde_json::json!(false);
+    host.input(&mut c, Input::Toggle(None));
+    host.settings["retainHistory"] = serde_json::json!(true); // cannot change start policy
+    host.input(&mut c, Input::Toggle(None));
+    host.input(&mut c, Input::PasteLast);
+    host.producer.begin_file("file:1").unwrap();
+    host.producer.finish_file("file:1", Some(serde_json::json!({"id":"file","text":"synthetic file","duration":2,"timestamp":0,"source":"file"})), true);
+    host.producer.accept_file("file:1").unwrap();
+    for _ in 0..2 {
+        host.producer.meeting(1, 60.0, "2026-11".into()).unwrap();
+        host.producer.correction_proposed(1).unwrap();
+        host.producer.correction_taught(1, Scope::Global).unwrap();
+    }
+    let before = service.execute(Command::Snapshot).unwrap();
+    assert_eq!(before.history.len(), 3);
+    assert_eq!(before.statistics.total_recordings, 3);
+    assert_eq!(before.statistics.activity.meetings.count, 1);
+    assert_eq!(before.statistics.activity.corrections.proposed, 1);
+    assert_eq!(before.statistics.activity.corrections.taught, 1);
+    assert_eq!(before.statistics.activity.paste_last_uses, 1);
+    for _ in 0..3 {
+        assert_eq!(
+            service.execute(Command::Snapshot).unwrap().statistics,
+            before.statistics
+        );
+    }
+    drop(host);
+    drop(service);
+    let relaunched = CompletionService::start(root.path().into(), false).unwrap();
+    let after = relaunched.execute(Command::Snapshot).unwrap();
+    assert_eq!(before.history, after.history);
+    assert_eq!(before.statistics, after.statistics);
+}
+
+#[test]
+fn native_completion_sources_use_the_shared_production_adapters() {
+    // This is a wiring contract in addition to executing the adapters above:
+    // removing a native source call must not silently preserve the exit check.
+    for (source, calls) in [
+        (
+            include_str!("../../../src/commands/recording.rs"),
+            &[
+                "producer.dictation(",
+                "FileOperation::begin(",
+                "operation.finish(",
+            ][..],
+        ),
+        (
+            include_str!("../../../src/meeting_capture.rs"),
+            &["producer.meeting("][..],
+        ),
+        (
+            include_str!("../../../src/commands/correct_and_teach.rs"),
+            &[
+                "producer.correction_proposed(",
+                "producer.correction_taught(",
+            ][..],
+        ),
+        (
+            include_str!("../../../src/delivery_recovery.rs"),
+            &["producer.paste_last("][..],
+        ),
+    ] {
+        for call in calls {
+            assert!(
+                source.contains(call),
+                "missing native completion source {call}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -423,4 +543,35 @@ fn disabled_lock_cancels_starting_and_stops_locked_recording() {
         assert_eq!(c.input(Input::Lock), None);
         assert!(!c.locked);
     }
+}
+
+#[test]
+fn completion_outcome_table_names_executable_tests_in_plan_order() {
+    let note = include_str!("../../../../../docs/draft/gpui-completion-service.md");
+    let code = include_str!("../src/completion/tests.rs");
+    let table = note
+        .split("## Defined outcome coverage")
+        .nth(1)
+        .unwrap()
+        .split("## Test port")
+        .next()
+        .unwrap();
+    let names: Vec<_> = table
+        .lines()
+        .filter_map(|line| {
+            if !line.starts_with("| ") {
+                return None;
+            }
+            let cell = line.split('|').nth(2)?.trim();
+            cell.strip_prefix('`')?.strip_suffix('`')
+        })
+        .collect();
+    let executable: Vec<_> = code
+        .split("#[test]\nfn ")
+        .skip(1)
+        .take(37)
+        .map(|s| s.split('(').next().unwrap())
+        .collect();
+    assert_eq!(names.len(), 37);
+    assert_eq!(names, executable);
 }

@@ -2839,12 +2839,17 @@ dependencies = [
 name = "murmur-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "futures-channel",
  "futures-executor",
+ "libc",
  "memory-stats",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

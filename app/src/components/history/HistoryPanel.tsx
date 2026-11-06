@@ -39,7 +39,7 @@ interface HistoryPanelProps {
   onClear: () => void;
   /** Delete a narrowed set of history entries. */
   onDeleteEntries: (entries: readonly HistoryEntry[]) => void;
-  onUpdateEntry: (id: string, text: string) => void;
+  onUpdateEntry: (target: HistoryEntry, text: string) => void;
   onTogglePinned?: (entry: HistoryEntry) => void;
   pinnedCount?: number;
   /** Bumped by the command palette to move focus into the search box. */
@@ -589,7 +589,7 @@ function HistoryPanelComponent({
         <CorrectAndTeachDialog
           entry={teachingEntry}
           onClose={() => setTeachingEntry(null)}
-          onSaveCorrection={(text) => onUpdateEntry(teachingEntry.id, text)}
+          onSaveCorrection={(text) => onUpdateEntry(teachingEntry, text)}
         />
       )}
     </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { transcribeFile } from '../dictation';
+import { transcribeFile, cancelFileTranscription, acceptFileTranscription } from '../dictation';
 import { flog } from '../log';
 import {
   QueueItem,
@@ -16,7 +16,7 @@ export type { QueueItem, QueueItemStatus } from '../fileQueue';
 
 interface UseFileTranscriptionProps {
   /** Persist completed transcriptions to shared history (no WPM stats). */
-  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
+  addEntry?: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
 }
 
 /**
@@ -30,7 +30,7 @@ interface UseFileTranscriptionProps {
  * paths (the plain HTML5 drop event does not, for security reasons); the
  * multi-select file picker in the panel supplies paths the same way.
  */
-export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
+export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [error, setError] = useState('');
   const [isDragging, setIsDragging] = useState(false);
@@ -42,8 +42,7 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
   runningRef.current = isRunning;
   const queueRef = useRef(queue);
   queueRef.current = queue;
-  const addEntryRef = useRef(addEntry);
-  addEntryRef.current = addEntry;
+  const operationsRef = useRef(new Map<string, string>());
   const cancelledIdsRef = useRef(new Set<string>());
 
   const publishQueue = useCallback((next: QueueItem[]) => {
@@ -68,14 +67,18 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
         publishQueue(updateItem(queueRef.current, item.id, { status: 'transcribing' }));
         flog.info('file-transcribe', 'start', { name: item.name });
 
-        const res = await transcribeFile(item.path);
+        const operationId = crypto.randomUUID();
+        operationsRef.current.set(item.id, operationId);
+        const res = await transcribeFile(item.path, operationId);
 
         if (cancelledIdsRef.current.delete(item.id)) {
+          operationsRef.current.delete(item.id);
           flog.info('file-transcribe', 'cancelled', { name: item.name });
           continue;
         }
 
         if (res.type === 'error') {
+          operationsRef.current.delete(item.id);
           const message = res.error || 'Transcription failed';
           publishQueue(updateItem(queueRef.current, item.id, { status: 'error', error: message }));
           flog.warn('file-transcribe', 'error', { error: message });
@@ -83,10 +86,24 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
         }
 
         const text = res.text || '';
+        // Publish and start acceptance in the same turn as the cancellation
+        // check, with no cancellable UI gap while native admission runs.
         publishQueue(updateItem(queueRef.current, item.id, { status: 'done', text }));
-        if (text.trim()) {
-          addEntryRef.current(text, res.duration ?? 0, 'file', item.name);
+        try {
+          await acceptFileTranscription(operationId);
+        } catch {
+          if (!cancelledIdsRef.current.delete(item.id)) {
+            const message = 'Could not save the transcription to History.';
+            publishQueue(updateItem(queueRef.current, item.id, { status: 'error', error: message }));
+            // The native adapter also emits the shared storage-error notice.
+            // Never include the rejected payload or transcript in diagnostics.
+            flog.warn('file-transcribe', 'completion storage failed');
+          }
+          continue;
         }
+        operationsRef.current.delete(item.id);
+        if (cancelledIdsRef.current.delete(item.id)) continue;
+        publishQueue(updateItem(queueRef.current, item.id, { status: 'done', text }));
         flog.info('file-transcribe', 'complete', { textLen: text.length });
       }
     } finally {
@@ -124,18 +141,32 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
 
   const reset = useCallback(() => {
     if (runningRef.current) return;
+    for (const operationId of operationsRef.current.values()) {
+      void cancelFileTranscription(operationId).catch(() => {});
+    }
+    operationsRef.current.clear();
     publishQueue([]);
     setError('');
   }, [publishQueue]);
 
   const cancel = useCallback((id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
-    if (!item || (item.status !== 'queued' && item.status !== 'transcribing')) return;
-    if (item.status === 'transcribing') cancelledIdsRef.current.add(id);
+    if (!item || item.status === 'done' || (item.status !== 'queued' && !operationsRef.current.has(id))) return;
+    if (operationsRef.current.has(id)) {
+      if (item.status === 'transcribing') cancelledIdsRef.current.add(id);
+      const operationId = operationsRef.current.get(id);
+      if (operationId) void cancelFileTranscription(operationId).catch(() => {});
+      if (item.status === 'error') operationsRef.current.delete(id);
+    }
     publishQueue(updateItem(queueRef.current, id, { status: 'error', error: 'Canceled' }));
   }, [publishQueue]);
 
   const dismiss = useCallback((id: string) => {
+    const item = queueRef.current.find((candidate) => candidate.id === id);
+    if (item?.status !== 'done' && item?.status !== 'error') return;
+    const operationId = operationsRef.current.get(id);
+    if (operationId) void cancelFileTranscription(operationId).catch(() => {});
+    operationsRef.current.delete(id);
     publishQueue(queueRef.current.filter(
       (item) => item.id !== id || (item.status !== 'done' && item.status !== 'error'),
     ));
@@ -173,6 +204,13 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
 
     return () => {
       cancelled = true;
+      for (const [id, operationId] of operationsRef.current) {
+        cancelledIdsRef.current.add(id);
+        void cancelFileTranscription(operationId).catch(() => {});
+      }
+      operationsRef.current.clear();
+      // Stop the drain from starting another queued file after this owner leaves.
+      queueRef.current = [];
       unlisten?.();
     };
   }, [enqueue]);

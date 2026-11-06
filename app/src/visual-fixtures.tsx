@@ -1,3 +1,4 @@
+import { acceptCompletionSnapshot } from './lib/completionData';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
 import React from 'react';
@@ -517,7 +518,7 @@ const fixtureBuckets = Object.fromEntries(Array.from({ length: 7 }, (_, index) =
 }));
 
 const fixtureStats = loadStats();
-localStorage.setItem('dictation-stats', JSON.stringify({
+acceptCompletionSnapshot({ history: [], reports: [], v1Committed: true, removeKeys: [], retryNotice: false, statistics: {
   ...fixtureStats,
   totalWords: 5168,
   totalRecordings: 220,
@@ -530,7 +531,7 @@ localStorage.setItem('dictation-stats', JSON.stringify({
     transforms: { runs: 4, approved: 3, undone: 0, byPresetName: {} },
     corrections: { proposed: 3, taught: 2, byScope: { global: 1, app: 1, project: 0 } },
   },
-}));
+} });
 
 function VisualFixture() {
   React.useLayoutEffect(() => {

@@ -147,6 +147,14 @@ fn result(kind: RetryResultKind, message: &'static str) -> RetryResult {
 }
 
 fn publish(app: &tauri::AppHandle, response: &RetryResult) {
+    if matches!(
+        response.kind,
+        RetryResultKind::AutoPasted | RetryResultKind::ClipboardOnly
+    ) {
+        crate::completion::produce(app, |producer| {
+            producer.paste_last(&uuid::Uuid::new_v4().to_string())
+        });
+    }
     let _ = app.emit("delivery-retry-feedback", response);
 }
 

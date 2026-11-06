@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { completionSnapshot, completionMutation } from './completionData';
 import { getModelRuntimeCatalog } from './modelRuntime';
 import { isFiniteNumber as isNumber, isRecord } from './typeGuards';
 
@@ -133,8 +134,6 @@ export interface BenchmarkReport {
 }
 
 export const MAX_SAVED_BENCHMARK_REPORTS = 10;
-const REPORT_KEY = 'murmur-benchmark-report';
-const REPORTS_KEY = 'murmur-benchmark-reports';
 
 function isNullableNumber(value: unknown): value is number | null {
   return value === null || isNumber(value);
@@ -261,36 +260,17 @@ export function addBenchmarkReport(
     .slice(0, MAX_SAVED_BENCHMARK_REPORTS);
 }
 
-export function saveBenchmarkReports(reports: BenchmarkReport[]): BenchmarkReport[] {
-  const normalized = reports
-    .filter(isBenchmarkReport)
-    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))
-    .slice(0, MAX_SAVED_BENCHMARK_REPORTS);
-  localStorage.setItem(REPORTS_KEY, JSON.stringify(normalized));
-  localStorage.removeItem(REPORT_KEY);
-  return normalized;
+export async function persistBenchmarkReport(report: BenchmarkReport): Promise<BenchmarkReport[]> {
+  if (!isBenchmarkReport(report)) throw new Error('Invalid report');
+  return (await completionMutation('store_benchmark_report', { report })).reports;
 }
 
 export function loadBenchmarkReports(): BenchmarkReport[] {
-  try {
-    const saved = localStorage.getItem(REPORTS_KEY);
-    if (saved) {
-      const parsed: unknown = JSON.parse(saved);
-      return Array.isArray(parsed) ? saveBenchmarkReports(parsed.filter(isBenchmarkReport)) : [];
-    }
-
-    const legacy = localStorage.getItem(REPORT_KEY);
-    if (!legacy) return [];
-    const parsed: unknown = JSON.parse(legacy);
-    return isBenchmarkReport(parsed) ? saveBenchmarkReports([parsed]) : [];
-  } catch {
-    return [];
-  }
+  return [...(completionSnapshot()?.reports ?? [])].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
-export function clearBenchmarkReports(): void {
-  localStorage.removeItem(REPORTS_KEY);
-  localStorage.removeItem(REPORT_KEY);
+export async function clearBenchmarkReports(): Promise<void> {
+  await completionMutation('clear_completion_destination', { destination: 'reports' });
 }
 
 export async function getBenchmarkModels(): Promise<BenchmarkModel[]> {

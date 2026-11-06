@@ -252,7 +252,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, togglePinned, deleteEntries, clearHistory } = useHistoryManagement(settings.retainHistory);
+  const { historyEntries, updateEntry, togglePinned, deleteEntries, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, isCaptureBusy, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
@@ -260,7 +260,6 @@ function App() {
     handleStart, handleStop, audioLevel,
     smartDestinationStatus, smartDestinationAppName,
   } = useRecordingState({
-    addEntry,
     microphone: settings.microphone,
     smartAuto: smartAutoMicrophoneRequest(settings),
     canStart: canStartRecording,
@@ -408,7 +407,7 @@ function App() {
     setHistorySearchToken((token) => (token ?? 0) + 1);
   }, [closeSettings]);
 
-  const fileTranscription = useFileTranscription({ addEntry });
+  const fileTranscription = useFileTranscription();
   const pickMediaFiles = useCallback(async () => {
     try {
       const selected = await open({
