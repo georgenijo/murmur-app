@@ -1974,15 +1974,19 @@ fn memo_writer() -> &'static std::sync::mpsc::Sender<MemoWrite> {
             .spawn(move || {
                 let mut committed = true;
                 while let Ok(job) = rx.recv() {
-                    match job {
-                        MemoWrite::Save(entries) => {
-                            if let Some(path) = CAPTURE_MEMO_PATH.get() {
-                                committed = write_capture_memo_file(path, &entries).is_ok();
-                            }
+                    let mut newest = None;
+                    let mut replies = Vec::new();
+                    for job in std::iter::once(job).chain(rx.try_iter()) {
+                        match job {
+                            MemoWrite::Save(entries) => newest = Some(entries),
+                            MemoWrite::Flush(reply) => replies.push(reply),
                         }
-                        MemoWrite::Flush(reply) => {
-                            let _ = reply.send(committed);
-                        }
+                    }
+                    if let (Some(entries), Some(path)) = (newest, CAPTURE_MEMO_PATH.get()) {
+                        committed = write_capture_memo_file(path, &entries).is_ok();
+                    }
+                    for reply in replies {
+                        let _ = reply.send(committed);
                     }
                 }
             })

@@ -246,9 +246,21 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
         .name("window-state".into())
         .spawn(move || {
             while let Ok(message) = receiver.recv() {
+                // Coalesce a burst into the newest immutable snapshot. Every
+                // queued flush still acknowledges all preceding changes.
+                let replies: Vec<_> = std::iter::once(message)
+                    .chain(receiver.try_iter())
+                    .filter_map(|message| {
+                        if let WindowWrite::Flush(reply) = message {
+                            Some(reply)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 let snapshot = worker_store.lock_or_recover().clone();
                 let committed = snapshot.write().is_ok();
-                if let WindowWrite::Flush(reply) = message {
+                for reply in replies {
                     let _ = reply.send(committed);
                 }
                 if !committed {
