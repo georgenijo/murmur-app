@@ -1,3 +1,4 @@
+import { flushSourceState } from '../webkitLifecycle';
 import {
   createContext,
   createElement,
@@ -36,7 +37,6 @@ import {
   sanitizeTheme,
   writeAppearanceDocument,
   writeAppearanceExport,
-  writeThemeLibrary,
   type AppearanceChangeReason,
   type AppearanceChangedEvent,
   type AppearanceController,
@@ -143,7 +143,6 @@ function useMainAppearanceController(): AppearanceController {
     initialLibraryRef.current.status === 'unavailable' ? initialLibraryRef.current.error : null,
   );
   const initializedRef = useRef(false);
-  const libraryInitializedRef = useRef(false);
   const selectionReconciledRef = useRef(false);
   const operationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const libraryOperationQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -185,24 +184,6 @@ function useMainAppearanceController(): AppearanceController {
       .catch((cause) => setError(`Failed to apply native appearance: ${String(cause)}`));
   }, [reflect]);
 
-  useEffect(() => {
-    if (libraryInitializedRef.current) return;
-    libraryInitializedRef.current = true;
-    const initial = initialLibraryRef.current!;
-    if (initial.status !== 'ready' || !initial.needsRepair) return;
-    const repaired: ThemeLibraryDocumentV1 = {
-      ...initial.document,
-      revision: nextAppearanceRevision(initial.document.revision),
-    };
-    try {
-      writeThemeLibrary(repaired);
-      libraryDocumentRef.current = repaired;
-      setLibraryDocument(repaired);
-    } catch (cause) {
-      setLibraryError(`Failed to repair the theme library: ${String(cause)}`);
-    }
-  }, []);
-
   useSystemAppearance(document, (appearance, nextAdjustments) => {
     setResolvedAppearance(appearance);
     setAdjustments(nextAdjustments);
@@ -232,6 +213,7 @@ function useMainAppearanceController(): AppearanceController {
           configuration.selection,
         );
         writeAppearanceDocument(next);
+        await flushSourceState();
         reflect(next);
         await Promise.all([
           applyNativeTheme(next.mode),
@@ -391,7 +373,7 @@ function useMainAppearanceController(): AppearanceController {
 
   const installLibraryEntries = useCallback((entries: readonly ThemeLibraryEntryV1[]) =>
     runLibraryMutation((current) => ({
-      document: installThemeLibraryEntries(current.revision, entries),
+      document: installThemeLibraryEntries(current, entries),
       value: undefined,
     })),
   [runLibraryMutation]);
@@ -405,7 +387,7 @@ function useMainAppearanceController(): AppearanceController {
         documentRef.current.theme,
       );
       return {
-        document: installThemeLibraryEntries(current.revision, [entry]),
+        document: installThemeLibraryEntries(current, [entry]),
         value: entry,
       };
     }),
@@ -421,7 +403,7 @@ function useMainAppearanceController(): AppearanceController {
         preview.modes ?? ['light', 'dark'],
       );
       return {
-        document: installThemeLibraryEntries(current.revision, [entry]),
+        document: installThemeLibraryEntries(current, [entry]),
         value: entry,
       };
     }),
@@ -433,7 +415,7 @@ function useMainAppearanceController(): AppearanceController {
     expectedCollection: readonly ThemeLibraryEntryV1[],
   ) => runLibraryMutation((current) => ({
     document: replaceThemeLibraryCollection(
-      current.revision,
+      current,
       collectionId,
       entries,
       expectedCollection,
@@ -469,7 +451,7 @@ function useMainAppearanceController(): AppearanceController {
       dark: removed.has(selection.dark) ? 'sonic' : selection.dark,
     };
     await runLibraryMutation((library) => ({
-      document: removeThemeLibraryEntries(library.revision, themeIds),
+      document: removeThemeLibraryEntries(library, themeIds),
       value: undefined,
     }));
     if (nextSelection.light !== selection.light || nextSelection.dark !== selection.dark) {

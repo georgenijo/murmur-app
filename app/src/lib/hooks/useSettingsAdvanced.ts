@@ -1,3 +1,5 @@
+import { presentationStorage } from '../presentationStorage';
+import { sourceStorage } from '../webkitLifecycle';
 import { useCallback, useRef, useState } from 'react';
 
 /** UI-only state. Never put settings, paths, permissions or editor drafts here. */
@@ -12,7 +14,7 @@ type AdvancedState = Partial<Record<SettingsPaneKey, boolean>>;
 
 export function readSettingsAdvanced(): AdvancedState {
   try {
-    const raw = localStorage.getItem(SETTINGS_ADVANCED_KEY);
+    const raw = presentationStorage.getItem(SETTINGS_ADVANCED_KEY);
     if (!raw || raw.length > 2048) return {};
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1
@@ -31,7 +33,7 @@ export function useSettingsAdvanced(pane: string) {
     // Merge with disk so another pane/window cannot overwrite newer UI state.
     const panes = { ...stateRef.current, ...readSettingsAdvanced(), [pane]: next };
     stateRef.current = panes;
-    try { localStorage.setItem(SETTINGS_ADVANCED_KEY, JSON.stringify({ version: 1, panes })); } catch { /* Session state still works if storage is unavailable. */ }
+    try { sourceStorage.setItem(SETTINGS_ADVANCED_KEY, JSON.stringify({ version: 1, panes })); } catch { /* Session state still works if storage is unavailable. */ }
     setState(panes);
   }, [pane]);
   return [open, setOpen] as const;

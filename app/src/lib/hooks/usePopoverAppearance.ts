@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { PRESENTATION_CHANGED } from '../presentationStorage';
 import { applyResolvedTheme, loadAppearanceDocument, resolveTheme } from '../appearance';
 
 /** Follow the shared appearance without writing settings or changing native focus. */
@@ -12,9 +13,11 @@ export function usePopoverAppearance() {
     };
     apply();
     window.addEventListener('storage', apply);
+    window.addEventListener(PRESENTATION_CHANGED, apply);
     media.addEventListener('change', apply);
     return () => {
       window.removeEventListener('storage', apply);
+      window.removeEventListener(PRESENTATION_CHANGED, apply);
       media.removeEventListener('change', apply);
     };
   }, []);

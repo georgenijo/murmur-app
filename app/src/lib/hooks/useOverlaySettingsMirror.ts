@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, sendTo } from '../targetedEvents';
 import { flog } from '../log';
+import { PRESENTATION_CHANGED, presentationStorage } from '../presentationStorage';
 import {
   loadSettings,
+  STORAGE_KEY,
   parseSettingsBlob,
   smartAutoMicrophoneRequest,
 } from '../settings';
@@ -22,7 +24,7 @@ export interface OverlaySettingsMirror {
   overlayVerticalOffset: number;
   overlayPlacement: Settings['overlayPlacement'];
   smartAuto: SmartAutoMicrophoneRequest | null;
-  /** Re-reads localStorage and applies the snapshot. Stable identity. */
+  /** Applies the latest session snapshot. Stable identity. */
   refresh: () => void;
   handleToggleAutoPaste: (e: React.MouseEvent) => Promise<void>;
   handleToggleDisabled: (e: React.MouseEvent) => Promise<void>;
@@ -77,7 +79,14 @@ export function useOverlaySettingsMirror({
   // Read initial settings once on mount (geometry is owned by useOverlayGeometry).
   useEffect(() => {
     refresh();
-  }, [refresh]);
+    const applyPresentation = () => {
+      const settings = loadSettings();
+      durableSnapshot.current = settings;
+      applySettingsSnapshot(settings);
+    };
+    window.addEventListener(PRESENTATION_CHANGED, applyPresentation);
+    return () => window.removeEventListener(PRESENTATION_CHANGED, applyPresentation);
+  }, [refresh, applySettingsSnapshot]);
 
   // Subscribe to settings-changed (emitted by the main window) so the quick
   // controls reflect changes made there, even while already expanded.
@@ -86,6 +95,7 @@ export function useOverlaySettingsMirror({
     let unlisten: (() => void) | null = null;
     listen('settings-changed', () => {
       refresh();
+      void refreshDurableRef.current();
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
@@ -100,10 +110,12 @@ export function useOverlaySettingsMirror({
     let unlisten: (() => void) | undefined;
     const refreshDurable = async () => {
       const request = ++revision;
+      const generation = presentationStorage.beginRead(STORAGE_KEY);
       try {
         const blob = await invoke<string | null>('load_settings_blob');
         if (cancelled || request !== revision || typeof blob !== 'string') return null;
         const settings = parseSettingsBlob(blob);
+        if (!presentationStorage.rememberIfCurrent(STORAGE_KEY, blob, generation)) return null;
         durableSnapshot.current = settings;
         applySettingsSnapshot(settings);
         return settings;
@@ -118,9 +130,11 @@ export function useOverlaySettingsMirror({
 
   // Persist only the owned field; the host merges into the latest durable
   // document under its writer lock. Never write a retained settings snapshot.
-  const commitOwnedField = useCallback(async (field: 'autoPaste' | 'disabled', value: boolean) => {
+  const commitOwnedField = useCallback(async (field: 'autoPaste' | 'disabled', value: boolean, isCurrent: () => boolean) => {
     const blob = await invoke<string>('patch_overlay_setting', { field, value });
+    if (!isCurrent()) return;
     durableSnapshot.current = parseSettingsBlob(blob);
+    presentationStorage.rememberItem(STORAGE_KEY, blob);
     applySettingsSnapshot(durableSnapshot.current);
     // Invalidate reads started before this acknowledgement and catch commits
     // made since the patch, including a concurrent main-window opt-out.
@@ -136,7 +150,7 @@ export function useOverlaySettingsMirror({
       await invoke('configure_dictation', { options: { autoPaste: next } });
       backendChanged = true;
       if (operation !== autoPasteOperation.current) return;
-      await commitOwnedField('autoPaste', next);
+      await commitOwnedField('autoPaste', next, () => operation === autoPasteOperation.current);
     } catch (err) {
       flog.error('overlay', 'toggle autoPaste failed', { error: String(err) });
       const confirmed = await refreshDurableRef.current();
@@ -160,7 +174,7 @@ export function useOverlaySettingsMirror({
       await invoke('set_app_disabled', { disabled: next });
       backendChanged = true;
       if (operation !== disabledOperation.current) return;
-      await commitOwnedField('disabled', next);
+      await commitOwnedField('disabled', next, () => operation === disabledOperation.current);
     } catch (err) {
       flog.error('overlay', 'toggle disabled failed', { error: String(err) });
       const confirmed = await refreshDurableRef.current();

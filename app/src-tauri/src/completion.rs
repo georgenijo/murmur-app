@@ -392,3 +392,94 @@ mod dispatch_tests {
             .is_empty());
     }
 }
+
+#[tauri::command]
+pub(crate) fn webkit_state_snapshot(
+    app: tauri::AppHandle,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    source_status(&app.state::<Completion>().service)
+}
+fn source_status(
+    service: &CompletionService,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    use crate::MutexExt;
+    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+    service
+        .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub(crate) fn import_webkit_state(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    source: std::collections::BTreeMap<String, Option<String>>,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    main_only(&window)?;
+    use crate::MutexExt;
+    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+    app.state::<Completion>()
+        .service
+        .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
+            source,
+        ))
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub(crate) fn save_webkit_source(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    main_only(&window)?;
+    if matches!(key.as_str(), "dictation-settings" | "murmur-theme-library") {
+        return Err("Use the source owner's command".into());
+    }
+    use crate::MutexExt;
+    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+    app.state::<Completion>()
+        .service
+        .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod source_ordering_tests {
+    use super::*;
+    use crate::MutexExt;
+    #[test]
+    fn absent_webkit_status_serializes_with_source_writer() {
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        let guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+        murmur_core::completion::save_source(
+            root.path(),
+            "dictation-settings",
+            r#"{"language":"es"}"#,
+        )
+        .unwrap();
+        let worker = service.clone();
+        let (started, waiting) = std::sync::mpsc::channel();
+        let status = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            source_status(&worker)
+        });
+        waiting.recv().unwrap();
+        murmur_core::completion::save_source(
+            root.path(),
+            "dictation-settings",
+            r#"{"language":"fr"}"#,
+        )
+        .unwrap();
+        drop(guard);
+        assert_eq!(
+            status.join().unwrap().unwrap().values["dictation-settings"]["language"],
+            "fr"
+        );
+        let disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.path().join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(disk["language"], "fr");
+    }
+}

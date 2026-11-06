@@ -1,5 +1,6 @@
 //! Serialized durable completions. No window, runtime, clock or host dependency.
 //! Only the owner task touches these files; IPC clients never replace snapshots.
+pub mod lifecycle;
 pub mod producers;
 mod stats;
 mod storage;
@@ -158,11 +159,13 @@ impl Default for Holding {
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Migration {
+pub(super) struct Migration {
     schema: u32,
     v1: bool,
     #[serde(default)]
     keys_removed: Vec<Destination>,
+    #[serde(default)]
+    lifecycle: lifecycle::Progress,
 }
 #[derive(Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -262,6 +265,21 @@ impl CompletionService {
             }),
         })
     }
+    pub fn lifecycle(&self, command: lifecycle::Operation) -> Result<lifecycle::Receipt> {
+        let (send, receive) = mpsc::sync_channel(1);
+        self.owner
+            .send
+            .as_ref()
+            .ok_or(Error::Stopped)?
+            .send(Box::new(move |engine| {
+                let result = engine
+                    .execute(Command::Snapshot)
+                    .and_then(|_| engine.lifecycle(command));
+                let _ = send.send(result);
+            }))
+            .map_err(|_| Error::Stopped)?;
+        receive.recv().map_err(|_| Error::Stopped)?
+    }
     pub fn execute(&self, command: Command) -> Result<Snapshot> {
         let (send, receive) = mpsc::sync_channel(1);
         self.owner
@@ -293,6 +311,12 @@ impl Engine {
         let raw = self
             .storage
             .read::<Value>(d.file(), |v| valid_document(d, v))?;
+        if raw.is_none() && self.migration()?.v1 {
+            return Err(Error::Missing);
+        }
+        if self.migration()?.v1 && raw.as_ref().is_some_and(|v| v["v1_imported"] != true) {
+            return Err(Error::Invalid);
+        }
         raw.map(|value| {
             if value.get("schema").is_some() {
                 serde_json::from_value(value).map_err(|_| Error::Invalid)
@@ -346,7 +370,20 @@ impl Engine {
     fn migration(&self) -> Result<Migration> {
         Ok(self
             .storage
-            .read(MIGRATION, |v: &Migration| v.schema == 1)?
+            .read(MIGRATION, |v: &Migration| {
+                let unique = v
+                    .keys_removed
+                    .iter()
+                    .enumerate()
+                    .all(|(i, d)| !v.keys_removed[..i].contains(d));
+                v.schema == 1
+                    && unique
+                    && (!v.lifecycle.v2 || v.v1)
+                    && (!v.lifecycle.v3 || v.lifecycle.v2)
+                    && (!v.lifecycle.retired || v.lifecycle.retirement_started)
+                    && (!v.lifecycle.retirement_started
+                        || (v.lifecycle.v3 && v.keys_removed.len() == 3))
+            })?
             .unwrap_or_default())
     }
     fn ready(&self, _d: Destination, doc: &Document) -> Result<bool> {
@@ -403,12 +440,14 @@ impl Engine {
         }
         self.storage.write(HOLD, &holding)?;
         if !self.webkit_exists && !self.migration()?.v1 {
+            self.import(LegacyImport::default())?;
             self.storage.write(
                 MIGRATION,
                 &Migration {
                     schema: 1,
                     v1: true,
                     keys_removed: vec![],
+                    lifecycle: Default::default(),
                 },
             )?;
         }
@@ -516,7 +555,7 @@ impl Engine {
                 &["murmur-benchmark-report", "murmur-benchmark-reports"][..],
             ),
         ] {
-            if v1_committed || doc.v1_imported {
+            if doc.v1_imported {
                 remove_keys.extend(keys.iter().map(|s| s.to_string()));
             }
         }
@@ -1026,6 +1065,7 @@ impl Engine {
                 schema: 1,
                 v1: true,
                 keys_removed: self.migration()?.keys_removed,
+                lifecycle: self.migration()?.lifecycle,
             },
         )
     }
@@ -1331,3 +1371,275 @@ pub fn save_settings(root: &std::path::Path, blob: &str) -> Result<()> {
     }
     Storage::new(root.into()).write_bytes("settings.json", blob.as_bytes())
 }
+
+/// Settings/theme commands share the host's writer lock with lifecycle imports.
+/// Publication uses the same full-sync discipline as completion destinations.
+pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<String> {
+    if blob.len() > crate::state::source_size_limit(key) {
+        return Err(Error::Invalid);
+    }
+    Storage::new(root.into()).reject_future(
+        crate::state::file(key).ok_or(Error::Invalid)?,
+        if key == "dictation-settings" {
+            "settingsVersion"
+        } else {
+            "version"
+        },
+        if key == "dictation-settings" { 7 } else { 1 },
+    )?;
+    let value =
+        crate::state::normalize(key, serde_json::from_str(blob).map_err(|_| Error::Invalid)?)?;
+    let blob = serde_json::to_string(&value).map_err(|_| Error::Invalid)?;
+    let mut storage = Storage::new(root.into());
+    recover_source(root, key)?;
+    publish_source(&mut storage, key, &value)?;
+    Ok(blob)
+}
+
+fn source_digest(value: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).expect("JSON value"))
+    )
+}
+fn source_revision(key: &str, value: &Value) -> u64 {
+    value[if key == "dictation-settings" {
+        "ownedFieldsRevision"
+    } else {
+        "revision"
+    }]
+    .as_u64()
+    .unwrap_or(0)
+}
+fn source_destination(storage: &Storage, key: &str) -> Result<Option<Value>> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    storage.reject_future(
+        file,
+        if key == "dictation-settings" {
+            "settingsVersion"
+        } else {
+            "version"
+        },
+        if key == "dictation-settings" { 7 } else { 1 },
+    )?;
+    storage.read(file, |v: &Value| {
+        crate::state::normalize(key, v.clone()).is_ok()
+    })
+}
+
+fn source_marker(storage: &Storage, file: &str) -> Result<Option<Value>> {
+    match std::fs::read(storage.root.join(format!("{file}.required"))) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| Error::Invalid),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(Error::Io),
+    }
+}
+fn source_target_marker(receipt: &Value) -> Value {
+    json!({"schema":2,"key":receipt["key"],"storeId":receipt["storeId"],"generation":receipt["generation"],"targetDigest":receipt["targetDigest"],"targetRevision":receipt["targetRevision"]})
+}
+
+/// A receipt proves a transition for this store and source, against the exact
+/// prior destination. The identity is durable before any receipt can be written.
+/// Hosts hold WRITE_LOCK across recovery, read/merge, restore and publication.
+fn publish_source(storage: &mut Storage, key: &str, value: &Value) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    let identity_file = format!("{file}.identity");
+    let identity: String = match storage.read(&identity_file, |v: &String| {
+        uuid::Uuid::parse_str(v).is_ok()
+    })? {
+        Some(v) => v,
+        None => {
+            let v = uuid::Uuid::new_v4().to_string();
+            storage.write(&identity_file, &v)?;
+            v
+        }
+    };
+    let base = source_destination(storage, key)?;
+    let marker = source_marker(storage, file)?;
+    let receipt = json!({
+        "schema":2, "key":key, "storeId":identity,
+        "generation":uuid::Uuid::new_v4().to_string(),
+        "baseDigest":base.as_ref().map(source_digest),
+        "baseMarkerDigest":marker.as_ref().map(source_digest),
+        "targetDigest":source_digest(value), "targetRevision":source_revision(key, value), "value":value
+    });
+    storage.write(&format!("{file}.pending"), &receipt)?;
+    storage.write(&format!("{file}.required"), &source_target_marker(&receipt))?;
+    storage.write(file, value)?;
+    std::fs::remove_file(storage.root.join(format!("{file}.pending"))).map_err(|_| Error::Io)?;
+    storage.sync_directory()
+}
+
+/// Explicit user-selected recovery, serialized by the host's WRITE_LOCK. Never
+/// overwrite a readable destination, even if pending recovery itself fails.
+/// Replacing the pending receipt is the restore commit point: before it, recovery
+/// stays blocked; after it, the exact backup replays. Old evidence is retained.
+pub fn restore_source(root: &std::path::Path, key: &str, value: &Value) -> Result<()> {
+    restore_source_with_storage(&mut Storage::new(root.into()), key, value)
+}
+fn restore_source_with_storage(storage: &mut Storage, key: &str, value: &Value) -> Result<()> {
+    if !complete_source_document(key, value) {
+        return Err(Error::Invalid);
+    }
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    std::fs::create_dir_all(&storage.root).map_err(|_| Error::Io)?;
+    storage.sync_directory()?;
+    if source_destination(storage, key)?.is_some() {
+        return Err(Error::Invalid);
+    }
+    if storage.root.join(format!("{file}.pending")).exists() {
+        storage.quarantine(&format!("{file}.pending"))?;
+    }
+    // Required is durable before replacing a failed first generation, so a
+    // crash before the new pending receipt cannot become successful absence.
+    storage.write(&format!("{file}.required"), &true)?;
+    publish_source(storage, key, value)
+}
+
+/// Full normalized source documents only. The legacy microphone migration may
+/// advance its flag on the next normalization; that boolean is source metadata.
+pub fn complete_source_document(key: &str, value: &Value) -> bool {
+    crate::state::normalize(key, value.clone()).is_ok_and(|mut normalized| {
+        if key == "dictation-settings" && value["microphoneIdMigrationComplete"].is_boolean() {
+            normalized["microphoneIdMigrationComplete"] =
+                value["microphoneIdMigrationComplete"].clone();
+        }
+        normalized == *value
+    })
+}
+
+/// Quarantine a rejected source under the host's existing WRITE_LOCK, using the
+/// same durable history guard and monotonic evidence sequence as core recovery.
+pub fn quarantine_source(root: &std::path::Path, key: &str) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    Storage::new(root.into()).quarantine(file)
+}
+
+/// Bound per-source evidence and abandoned publication siblings. Host readers
+/// also call this after quarantining a destination under WRITE_LOCK.
+pub fn prune_source_artifacts(root: &std::path::Path, key: &str) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    let storage = Storage::new(root.into());
+    for name in [
+        file.to_string(),
+        format!("{file}.pending"),
+        format!("{file}.required"),
+        format!("{file}.identity"),
+    ] {
+        storage.prune_artifacts(&name)?;
+        storage.prune_artifacts(&format!("{name}.quarantine_sequence"))?;
+    }
+    storage.prune_artifacts(&format!("{file}.required-history"))?;
+    Ok(())
+}
+
+/// Resume only a proven interrupted transition. Corrupt receipts never veto a
+/// readable destination; conflicting receipts surface once and preserve data.
+pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    let pending = format!("{file}.pending");
+    std::fs::create_dir_all(root).map_err(|_| Error::Io)?;
+    let mut storage = Storage::new(root.into());
+    storage.sync_directory()?;
+    // Establish whether the destination is usable before treating any evidence
+    // as resolved. A corrupt destination is quarantined and pins its evidence.
+    let destination = source_destination(&storage, key)?;
+    prune_source_artifacts(root, key)?;
+    let existed = root.join(&pending).exists();
+    let receipt: Option<Value> = storage.read(&pending, |v: &Value| {
+        let Some(receipt_key) = v["key"]
+            .as_str()
+            .filter(|k| crate::state::file(k).is_some())
+        else {
+            return false;
+        };
+        v["schema"] == 2
+            && v["storeId"]
+                .as_str()
+                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+            && v["generation"]
+                .as_str()
+                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+            && (v.get("baseDigest") == Some(&Value::Null)
+                || v["baseDigest"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())))
+            && (v.get("baseMarkerDigest") == Some(&Value::Null)
+                || v["baseMarkerDigest"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())))
+            && complete_source_document(receipt_key, &v["value"])
+            && v["targetDigest"] == source_digest(&v["value"])
+            && v["targetRevision"] == source_revision(receipt_key, &v["value"])
+    })?;
+    if let Some(receipt) = receipt {
+        let identity: Option<String> = storage
+            .read(&format!("{file}.identity"), |v: &String| {
+                uuid::Uuid::parse_str(v).is_ok()
+            })?;
+        let belongs = receipt["key"] == key && identity.as_deref() == receipt["storeId"].as_str();
+        let matches_base = destination.as_ref().is_none_or(|v| {
+            let digest = source_digest(v);
+            receipt["baseDigest"] == digest || receipt["targetDigest"] == digest
+        });
+        let marker = source_marker(&storage, file)?;
+        let marker_digest = marker.as_ref().map(source_digest);
+        let matches_generation = receipt["baseMarkerDigest"] == json!(marker_digest)
+            || marker.as_ref() == Some(&source_target_marker(&receipt));
+        if !belongs || !matches_base || !matches_generation {
+            storage.quarantine(&pending)?;
+            return Err(Error::Invalid);
+        }
+        storage.write(&format!("{file}.required"), &source_target_marker(&receipt))?;
+        if destination
+            .as_ref()
+            .is_none_or(|v| source_digest(v) != receipt["targetDigest"])
+        {
+            storage.write(file, &receipt["value"])?;
+        }
+        std::fs::remove_file(root.join(&pending)).map_err(|_| Error::Io)?;
+        storage.sync_directory()?;
+    } else if destination.is_none() && (existed || storage.quarantined(&pending)?) {
+        return Err(Error::Invalid);
+    }
+    Ok(())
+}
+
+/// A previously published or quarantined source cannot become successful absence.
+pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    recover_source(root, key)?;
+    let storage = Storage::new(root.into());
+    if root.join(format!("{file}.required")).exists()
+        || root.join(format!("{file}.required-history")).exists()
+        || storage.quarantined(file)?
+    {
+        return Ok(true);
+    }
+    storage.reject_future("ui-state.json", "schema", 1)?;
+    let existed = root.join("ui-state.json").exists();
+    let ui: Option<serde_json::Value> = storage.read("ui-state.json", |v: &Value| {
+        v["schema"] == 1
+            && v["v2_imported"].is_boolean()
+            && v["destinations"].as_array().is_some_and(|a| {
+                a.iter()
+                    .all(|k| k.as_str().is_some_and(|k| crate::state::file(k).is_some()))
+            })
+    })?;
+    let migration: Option<Migration> = storage.read(MIGRATION, |v: &Migration| v.schema == 1)?;
+    let expected_ui = migration.is_some_and(|m| m.lifecycle.v2);
+    if ui.is_none() && (existed || expected_ui || storage.quarantined("ui-state.json")?) {
+        return Err(Error::Invalid);
+    }
+    Ok(ui.is_some_and(|v| {
+        v["destinations"]
+            .as_array()
+            .is_some_and(|a| a.contains(&json!(key)))
+    }))
+}
+
+#[cfg(test)]
+mod source_recovery_tests;

@@ -1,3 +1,4 @@
+import { initializeWebkitState } from './lib/webkitLifecycle';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { DiagnosticsWindowApp } from './components/log-viewer/DiagnosticsWindowApp';
@@ -8,7 +9,7 @@ import './styles.css';
 const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
 
 // Seed localStorage from the durable settings.json before the first render.
-hydrateSettingsFromDisk().finally(() => {
+initializeWebkitState().then(() => hydrateSettingsFromDisk()).then(() => {
   root.render(
     <React.StrictMode>
       <NativeWindowLifecycle showAfterPaint={false}>

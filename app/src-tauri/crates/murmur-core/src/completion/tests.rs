@@ -1,7 +1,7 @@
 use super::*;
 use storage::Boundary;
 use tempfile::TempDir;
-fn engine(root: &std::path::Path, webkit: bool) -> Engine {
+pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
     let mut e = Engine {
         storage: Storage {
             root: root.into(),
@@ -60,7 +60,7 @@ fn legacy() -> LegacyImport {
         reports: Some(json!([report(0)])),
     }
 }
-fn restart(e: &Engine) -> Engine {
+pub(super) fn restart(e: &Engine) -> Engine {
     engine(&e.storage.root, e.webkit_exists)
 }
 #[test]
@@ -215,6 +215,7 @@ fn statistics_unknown_outcome_rereads_and_does_not_compact_until_synced() {
 fn power_loss_after_unknown_statistics_write_replays_once() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), false);
+    let old_stats = std::fs::read(dir.path().join("stats.json")).unwrap();
     append(&mut e, dictation());
     e.storage.fail = Some(("stats.json".into(), Boundary::AfterRename));
     assert!(e.apply_statistics().is_err());
@@ -226,7 +227,7 @@ fn power_loss_after_unknown_statistics_write_replays_once() {
         if survives {
             std::fs::write(&stats_path, &published).unwrap();
         } else {
-            std::fs::remove_file(&stats_path).unwrap();
+            std::fs::write(&stats_path, &old_stats).unwrap();
         }
         let s = restart(&e).snapshot().unwrap();
         assert_eq!(s.statistics.total_recordings, 1);

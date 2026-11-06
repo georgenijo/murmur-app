@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/api/app', () => ({ setTheme: mocks.setTheme }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: () => true }));
 vi.mock('@tauri-apps/api/event', () => ({
   emitTo: mocks.emitTo,
   listen: vi.fn(async (event: string, callback: (event: { payload: unknown }) => void) => {
@@ -78,6 +78,23 @@ describe('appearance runtime hooks', () => {
     return null;
   }
 
+
+  it('successive library edits use the controller document after cache quota recovers', async () => {
+    await act(async () => { root.render(<Provider><Consumer /></Provider>); });
+    const first = makeLocalThemeEntry('first-fixture', 'First', createAppearanceDocument().theme);
+    const second = makeLocalThemeEntry('second-fixture', 'Second', createAppearanceDocument().theme);
+    const original = localStorage.setItem.bind(localStorage);
+    const quota = vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => {
+      if (key === THEME_LIBRARY_STORAGE_KEY) throw new DOMException('synthetic quota', 'QuotaExceededError');
+      original(key, value);
+    });
+    await act(async () => { await controller!.library.install([first]); });
+    quota.mockRestore();
+    await act(async () => { await controller!.library.install([second]); });
+    expect(JSON.parse(localStorage.getItem(THEME_LIBRARY_STORAGE_KEY)!).themes.map((t: {id: string}) => t.id)).toEqual(['first-fixture', 'second-fixture']);
+    await act(async () => { await controller!.library.remove(['first-fixture']); });
+    expect(JSON.parse(localStorage.getItem(THEME_LIBRARY_STORAGE_KEY)!).themes.map((t: {id: string}) => t.id)).toEqual(['second-fixture']);
+  });
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.removeAttribute('data-appearance');
@@ -217,7 +234,7 @@ describe('appearance runtime hooks', () => {
     expect(JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toBeNull();
   });
 
-  it('does not duplicate repair writes or media listeners in Strict Mode', async () => {
+  it('regenerates caches without source writes or duplicate media listeners in Strict Mode', async () => {
     const partial = createAppearanceDocument('system');
     delete (partial.cache.dark as Partial<typeof partial.cache.dark>).warning;
     localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(partial));
@@ -226,13 +243,13 @@ describe('appearance runtime hooks', () => {
     });
     expect(mocks.emitTo.mock.calls.filter((call) =>
       (call[2] as AppearanceChangedEvent)?.reason === 'repair',
-    )).toHaveLength(1);
+    )).toHaveLength(0);
     expect(media.listeners.size).toBe(1);
     expect(media.addEventListener).toHaveBeenCalledTimes(2);
     expect(media.removeEventListener).toHaveBeenCalledTimes(1);
     const stored = JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY)!);
-    expect(stored.revision).toBe(1);
-    expect(Object.keys(stored.cache.dark)).toEqual([...MURMUR_TOKEN_NAMES]);
+    expect(stored.revision).toBe(0);
+    expect(Object.keys(controller!.document.cache.dark)).toEqual([...MURMUR_TOKEN_NAMES]);
   });
 
   it('repairs the reserved maximum revision and keeps every write path monotonic', async () => {
@@ -333,7 +350,7 @@ describe('appearance runtime hooks', () => {
     expect(await navigator.clipboard.readText()).toBe('keep me');
   });
 
-  it('rejects a failed commit so callers retain import preview state', async () => {
+  it('accepts a source edit even if its presentation cache write fails', async () => {
     await act(async () => root.render(<Provider><Consumer /></Provider>));
     const preview = controller!.previewImport(exportAppearanceText(
       createAppearanceDocument('dark', {
@@ -345,11 +362,11 @@ describe('appearance runtime hooks', () => {
     const setItem = vi.spyOn(window.localStorage, 'setItem')
       .mockImplementationOnce(() => { throw new Error('disk full'); });
     await act(async () => {
-      await expect(controller!.commitImport(preview)).rejects.toThrow('disk full');
+      await expect(controller!.commitImport(preview)).resolves.toBeUndefined();
     });
-    expect(controller!.document.mode).toBe('system');
+    expect(controller!.document.mode).toBe('dark');
     expect(preview.mode).toBe('dark');
-    expect(controller!.error).toContain('disk full');
+    expect(controller!.error).toBeNull();
     setItem.mockRestore();
   });
 

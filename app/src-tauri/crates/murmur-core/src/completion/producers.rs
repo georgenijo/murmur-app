@@ -435,7 +435,20 @@ mod tests {
                             lose(dir.path(), file, how);
                         }
                         restart(&mut p, dir.path(), webkit);
-                        let before = p.service.execute(Command::Snapshot).unwrap();
+                        let snapshot = p.service.execute(Command::Snapshot);
+                        if snapshot.is_err() {
+                            assert!((file == "history.json" || file == "both-evidence-stores") && (!webkit || removed), "only a lost committed destination may fail snapshot: {webkit}/{file}/{how}/{removed}");
+                            // A committed destination was lost: persistent failure is
+                            // stronger than uncertainty, and never licenses publication.
+                            for _ in 0..3 {
+                                assert!(p.service.execute(Command::Snapshot).is_err());
+                                assert!(p.accept_file("operation").is_err());
+                            }
+                            restart(&mut p, dir.path(), webkit);
+                            assert!(p.service.execute(Command::Snapshot).is_err());
+                            continue;
+                        }
+                        let before = snapshot.unwrap();
                         let result = p.accept_file("operation");
                         if (file == "both-evidence-stores")
                             || (webkit && !removed && file == super::super::HOLD)

@@ -1,3 +1,4 @@
+import { flushSourceState } from './webkitLifecycle';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -17,17 +18,11 @@ import {
   parseSettingsBlob,
   loadSettings,
   saveSettings,
-  AUTO_STOP_SILENCE_OPTIONS,
-  AVAILABLE_MODEL_OPTIONS,
-  BUILTIN_MODES,
   DEFAULT_SETTINGS,
   DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
-  IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER,
-  IDLE_TIMEOUT_OPTIONS,
   LEGACY_OVERLAY_OFFSET_KEY,
   microphoneDeviceNameArg,
-  MODEL_OPTIONS,
   ownSettingsMigrations,
   STORAGE_KEY,
   recordingShortcutHint,
@@ -86,984 +81,21 @@ describe('dictation keys', () => {
       .toBe('Hold or double-tap F20');
   });
 
-  it('preserves legacy modifier values and rejects unsupported persisted keys', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      settingsVersion: 0,
-      doubleTapKey: 'alt_l',
-    }));
-    expect(dictationKeyLabel(loadSettings().doubleTapKey)).toBe('⌥ Left Option');
 
-    for (const bad of ['F1', 'f0', 'f21', 'space', 'shift_r', 'mouse_4', null, 8]) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        doubleTapKey: bad,
-      }));
-      expect(loadSettings().doubleTapKey).toBe(DEFAULT_SETTINGS.doubleTapKey);
-    }
-  });
 });
 
-describe('loadSettings', () => {
-
-  it('keeps the five-minute idle default and persists the power-adapter idle choice', () => {
-    expect(DEFAULT_SETTINGS.idleTimeoutMinutes).toBe(5);
-    expect(IDLE_TIMEOUT_OPTIONS.map(option => option.value)).toEqual([5, 15, IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER, 0]);
-    saveSettings({ ...DEFAULT_SETTINGS, idleTimeoutMinutes: IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER });
-    expect(loadSettings().idleTimeoutMinutes).toBe(-1);
+describe('Rust-owned settings snapshots', () => {
+  it('reads canonical state without publishing migrations', () => {
+    const blob = JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 7, language: 'es' });
+    localStorage.setItem(STORAGE_KEY, blob);
+    expect(loadSettings().language).toBe('es');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(blob);
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
-
-  it('returns defaults when localStorage is empty', () => {
-    const settings = loadSettings();
-    expect(settings).toEqual(DEFAULT_SETTINGS);
-    expect(settings.meetingSuggestionsEnabled).toBe(false);
-  });
-
-  it('persists the explicit meeting-suggestion opt-in and rejects malformed consent', () => {
-    saveSettings({ ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true });
-    expect(loadSettings().meetingSuggestionsEnabled).toBe(true);
-
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      meetingSuggestionsEnabled: 'yes',
-    }));
-    expect(loadSettings().meetingSuggestionsEnabled).toBe(false);
-  });
-
-  it('keeps Smart Auto opt-in and retains only bounded approved stable IDs', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      smartAutoMicrophoneEnabled: true,
-      smartAutoApprovedDeviceIds: ['anker', 'anker', '', 'bad\u0000id', 'studio'],
-      smartAutoPreferredDeviceIds: ['studio', 'missing', 'anker'],
-      smartAutoAllowContinuity: true,
-    }));
-
-    expect(loadSettings()).toMatchObject({
-      smartAutoMicrophoneEnabled: true,
-      smartAutoApprovedDeviceIds: ['anker', 'studio'],
-      smartAutoPreferredDeviceIds: ['studio', 'anker'],
-      smartAutoAllowContinuity: true,
-    });
-  });
-
-  it('does not grant background-probe consent to existing Smart Auto users', () => {
-    const existing = {
-      ...DEFAULT_SETTINGS,
-      smartAutoMicrophoneEnabled: true,
-      smartAutoApprovedDeviceIds: ['usb'],
-    } as Record<string, unknown>;
-    delete existing.smartAutoProbeEnabled;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
-    expect(loadSettings().smartAutoProbeEnabled).toBe(false);
-
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...existing,
-      smartAutoProbeEnabled: 'yes',
-    }));
-    expect(loadSettings().smartAutoProbeEnabled).toBe(false);
-  });
-
-  it('keeps explicit background-probe consent', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      smartAutoMicrophoneEnabled: true,
-      smartAutoProbeEnabled: true,
-    }));
-    expect(loadSettings().smartAutoProbeEnabled).toBe(true);
-  });
-
-  it('marks an old System Default selection migration-complete without inventory proof', () => {
-    const old = { ...DEFAULT_SETTINGS, settingsVersion: 2 } as Record<string, unknown>;
-    delete old.microphoneIdMigrationComplete;
-    localStorage.setItem('dictation-settings', JSON.stringify(old));
-    expect(loadSettings().microphoneIdMigrationComplete).toBe(true);
-  });
-
-  it('normalizes System Default migration proof to complete even when stored false', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      microphone: 'system_default',
-      microphoneIdMigrationComplete: false,
-      settingsVersion: 3,
-    }));
-    expect(loadSettings().microphoneIdMigrationComplete).toBe(true);
-  });
-
-  it('leaves an old opaque microphone value pending live inventory proof', () => {
-    const old = {
-      ...DEFAULT_SETTINGS,
-      settingsVersion: 3,
-      microphone: 'UID or legacy display name',
-    } as Record<string, unknown>;
-    delete old.microphoneIdMigrationComplete;
-    localStorage.setItem('dictation-settings', JSON.stringify(old));
-    expect(loadSettings().microphoneIdMigrationComplete).toBe(false);
-  });
-
-  it('returns defaults when localStorage has invalid JSON', () => {
-    localStorage.setItem('dictation-settings', 'not json{{{');
-    const settings = loadSettings();
-    expect(settings).toEqual(DEFAULT_SETTINGS);
-  });
-
-  it('preserves valid stored settings', () => {
-    const stored = { ...DEFAULT_SETTINGS, language: 'es', autoPaste: true };
-    localStorage.setItem('dictation-settings', JSON.stringify(stored));
-    const settings = loadSettings();
-    expect(settings.language).toBe('es');
-    expect(settings.autoPaste).toBe(true);
-  });
-
-  it('migrates Smart destination as an explicit opt-in and rejects corrupt values', () => {
-    const legacy = { ...DEFAULT_SETTINGS, settingsVersion: 5 } as Record<string, unknown>;
-    delete legacy.smartDestinationEnabled;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
-
-    expect(loadSettings().smartDestinationEnabled).toBe(false);
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
-      smartDestinationEnabled: false,
-      settingsVersion: 7,
-    });
-
-    for (const corrupt of [null, 'true', 1, {}]) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        settingsVersion: 7,
-        smartDestinationEnabled: corrupt,
-      }));
-      expect(loadSettings().smartDestinationEnabled).toBe(false);
-    }
-
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      settingsVersion: 7,
-      smartDestinationEnabled: true,
-    }));
-    expect(loadSettings().smartDestinationEnabled).toBe(true);
-  });
-
-  it('allows zero-delay paste and bounds malformed persisted delays', () => {
-    for (const [stored, expected] of [
-      [0, 0],
-      [23.9, 23],
-      [900, 500],
-      [-10, 0],
-      ['slow', DEFAULT_SETTINGS.autoPasteDelayMs],
-    ] as const) {
-      localStorage.setItem('dictation-settings', JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        autoPasteDelayMs: stored,
-      }));
-      expect(loadSettings().autoPasteDelayMs).toBe(expected);
-    }
-  });
-
-  it('migrates the legacy enabled Paste Last shortcut to Command-Shift-V', () => {
-    const persisted: Record<string, unknown> = {
-      ...DEFAULT_SETTINGS,
-      settingsVersion: 3,
-      pasteLastShortcutEnabled: true,
-    };
-    delete persisted.pasteLastShortcut;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
-    expect(loadSettings().pasteLastShortcut).toBe('command_shift_v');
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).not.toHaveProperty(
-      'pasteLastShortcutEnabled',
-    );
-  });
-
-  it('migrates legacy disabled and malformed Paste Last settings to Disabled', () => {
-    for (const pasteLastShortcutEnabled of [false, 'yes', undefined]) {
-      const persisted: Record<string, unknown> = {
-        ...DEFAULT_SETTINGS,
-        settingsVersion: 3,
-        pasteLastShortcutEnabled,
-      };
-      delete persisted.pasteLastShortcut;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
-      expect(loadSettings().pasteLastShortcut).toBeNull();
-    }
-  });
-
-  it('restores valid Paste Last chords and fails closed for unknown values', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      settingsVersion: 4,
-      pasteLastShortcut: 'command_option_v',
-    }));
-    expect(loadSettings().pasteLastShortcut).toBe('command_option_v');
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      settingsVersion: 4,
-      pasteLastShortcut: 'command_shift_p',
-    }));
-    expect(loadSettings().pasteLastShortcut).toBeNull();
-  });
-
-  it('defaults and bounds persisted sound cue settings', () => {
-    for (const [stored, expected] of [
-      [undefined, DEFAULT_SETTINGS.soundCueVolume],
-      ['loud', DEFAULT_SETTINGS.soundCueVolume],
-      [42.6, 43],
-      [-5, 0],
-      [500, 100],
-    ] as const) {
-      const persisted: Record<string, unknown> = {
-        ...DEFAULT_SETTINGS,
-        soundCueVolume: stored,
-        soundCuesEnabled: 'yes',
-        meetingSoundCuesEnabled: 1,
-      };
-      if (stored === undefined) delete persisted.soundCueVolume;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
-      const loaded = loadSettings();
-      expect(loaded.soundCueVolume).toBe(expected);
-      expect(loaded.soundCuesEnabled).toBe(DEFAULT_SETTINGS.soundCuesEnabled);
-      expect(loaded.meetingSoundCuesEnabled).toBe(DEFAULT_SETTINGS.meetingSoundCuesEnabled);
-    }
-  });
-
-  it('keeps remote speaker labeling opt-in and rejects malformed persisted values', () => {
-    expect(DEFAULT_SETTINGS.meetingDiarization).toBe(false);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      meetingDiarization: true,
-    }));
-    expect(loadSettings().meetingDiarization).toBe(true);
-
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      meetingDiarization: 'yes',
-    }));
-    expect(loadSettings().meetingDiarization).toBe(false);
-  });
-
-  it('migrates the exact legacy 50 ms paste delay to zero once', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      autoPasteDelayMs: 50,
-    }));
-
-    expect(loadSettings().autoPasteDelayMs).toBe(0);
-    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
-      autoPasteDelayMs: 0,
-      settingsVersion: 7,
-    });
-
-    saveSettings({ ...loadSettings(), autoPasteDelayMs: 50 });
-    expect(loadSettings().autoPasteDelayMs).toBe(50);
-  });
-
-  it('preserves a deliberate 50 ms paste delay after the migration version', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      autoPasteDelayMs: 50,
-      settingsVersion: 4,
-    }));
-
-    expect(loadSettings().autoPasteDelayMs).toBe(50);
-  });
-
-  it('versions legacy settings even when their paste delay does not change', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      autoPasteDelayMs: 23,
-    }));
-
-    expect(loadSettings().autoPasteDelayMs).toBe(23);
-    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}')).toMatchObject({
-      autoPasteDelayMs: 23,
-      settingsVersion: 7,
-    });
-  });
-
-  it('resets offsets from the broken calibration flow once and removes its standalone key', () => {
-    localStorage.setItem(LEGACY_OVERLAY_OFFSET_KEY, '48');
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      overlayVerticalOffset: 12,
-      settingsVersion: 1,
-    }));
-
-    expect(loadSettings().overlayVerticalOffset).toBe(0);
-    expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')).toMatchObject({
-      overlayVerticalOffset: 0,
-      settingsVersion: 7,
-    });
-  });
-
-  it('preserves and bounds confirmed overlay offsets after migration', () => {
-    for (const [stored, expected] of [
-      [7, 7],
-      [99, 12],
-      [-99, -12],
-      [4.9, 4],
-      ['down', 0],
-    ] as const) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        overlayVerticalOffset: stored,
-        settingsVersion: 2,
-      }));
-      expect(loadSettings().overlayVerticalOffset).toBe(expected);
-    }
-  });
-
-  it('removes a legacy overlay offset even when no settings document exists', () => {
-    localStorage.setItem(LEGACY_OVERLAY_OFFSET_KEY, '48');
+  it('returns defaults for missing or unreadable presentation snapshots', () => {
     expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
-    expect(localStorage.getItem(LEGACY_OVERLAY_OFFSET_KEY)).toBeNull();
-  });
-
-  it('migrates and validates per-app smart and CLI formatting overrides', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      appProfiles: [
-        {
-          bundleId: 'com.apple.Terminal',
-          label: 'Terminal',
-          autoPasteOverride: null,
-          cleanupOverride: false,
-          smartFormattingOverride: true,
-          cliFormattingOverride: true,
-          writingStyle: 'polished',
-        },
-        {
-          bundleId: 'com.apple.mail',
-          label: 'Mail',
-          autoPasteOverride: null,
-          cleanupOverride: null,
-          smartFormattingOverride: 'yes',
-          cliFormattingOverride: 'yes',
-          writingStyle: 'automatic',
-        },
-        {
-          bundleId: 'com.apple.TextEdit',
-          label: 'Legacy profile',
-          autoPasteOverride: false,
-          cleanupOverride: null,
-        },
-      ],
-    }));
-
-    const [terminal, mail, legacy] = loadSettings().appProfiles;
-    expect(terminal.smartFormattingOverride).toBe(true);
-    expect(terminal.cliFormattingOverride).toBe(true);
-    expect(terminal.writingStyle).toBe('polished');
-    expect(mail.smartFormattingOverride).toBeNull();
-    expect(mail.cliFormattingOverride).toBeNull();
-    expect(mail.writingStyle).toBeNull();
-    expect(legacy.smartFormattingOverride).toBeNull();
-    expect(legacy.cliFormattingOverride).toBeNull();
-    expect(legacy.writingStyle).toBeNull();
-    expect(legacy.modeId).toBeUndefined();
-  });
-
-  it('exposes the seven immutable built-in Mode identities', () => {
-    expect(BUILTIN_MODES.map((mode) => [mode.id, mode.name])).toEqual([
-      ['builtin.everyday', 'Everyday'], ['builtin.messages', 'Messages'],
-      ['builtin.email', 'Email'], ['builtin.notes', 'Notes'],
-      ['builtin.technical', 'Technical'], ['builtin.terminal', 'Terminal'],
-      ['builtin.verbatim', 'Verbatim'],
-    ]);
-  });
-
-  it('sanitizes custom Modes and preserves unknown bindings for fail-closed resolution', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      modes: [
-        {
-          id: 'mode.focus', name: ' Focus ', builtIn: false, writingStyle: 'notes',
-          cleanupEnabled: true, smartFormattingEnabled: null, cliFormattingEnabled: null,
-          vocabularyPolicy: 'general', contextPolicy: 'project', modelId: 'small.en',
-          language: 'en', autoPaste: false,
-        },
-        { id: 'mode.invalid', name: 'Invalid', builtIn: false, modelId: 'missing-model' },
-        { id: 'builtin.email', name: 'Spoofed', builtIn: false },
-      ],
-      appProfiles: [{ bundleId: 'com.example.App', label: 'App', modeId: 'missing.mode' }],
-    }));
-    const settings = loadSettings();
-    expect(settings.modes).toEqual([expect.objectContaining({
-      id: 'mode.focus', name: 'Focus', builtIn: false, writingStyle: 'notes',
-      cleanupEnabled: true, smartFormattingEnabled: null,
-      vocabularyPolicy: 'general', contextPolicy: 'project', modelId: 'small.en', language: 'en',
-    })]);
-    expect(settings.appProfiles[0].modeId).toBe('missing.mode');
-  });
-
-  it('sanitizes exact browser-host Mode rules and defaults lookup off', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      siteModeLookupEnabled: true,
-      browserSiteRules: [
-        { id: 'github', browserBundleId: 'com.apple.Safari', host: 'GitHub.com.', modeId: 'builtin.technical', enabled: true },
-        { id: 'duplicate-site', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'builtin.email', enabled: true },
-        { id: 'evil', browserBundleId: 'com.example.Untrusted', host: 'github.com', modeId: 'builtin.email', enabled: true },
-        { id: 'path', browserBundleId: 'com.apple.Safari', host: 'github.com/org', modeId: 'builtin.email', enabled: true },
-      ],
-    }));
-    const settings = loadSettings();
-    expect(settings.siteModeLookupEnabled).toBe(true);
-    expect(settings.browserSiteRules).toEqual([
-      { id: 'github', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'builtin.technical', enabled: true },
-    ]);
-
-    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
-    delete legacy.siteModeLookupEnabled;
-    delete legacy.browserSiteRules;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
-    expect(loadSettings()).toMatchObject({ siteModeLookupEnabled: false, browserSiteRules: [] });
-  });
-
-  it('migrates IDE context as explicit opt-in with bounded persisted roots only', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      appProfiles: [
-        {
-          bundleId: 'com.example.Editor',
-          label: 'Editor',
-          ideContextEnabled: true,
-          ideProjectRoots: [
-            ' /project/one ',
-            '/project/one',
-            `/${'x'.repeat(4096)}`,
-            '/project/two',
-            '/project/three',
-            '/project/four',
-            '/project/five',
-            42,
-          ],
-          persistedSymbols: ['must-not-survive'],
-          scanResults: { filename: 'must-not-survive.rs' },
-        },
-        {
-          bundleId: 'com.example.Legacy',
-          label: 'Legacy',
-        },
-        {
-          bundleId: 'com.example.Malformed',
-          label: 'Malformed',
-          ideContextEnabled: 'yes',
-          ideProjectRoots: '/project/not-an-array',
-        },
-      ],
-    }));
-
-    const [editor, legacy, malformed] = loadSettings().appProfiles;
-    expect(editor.ideContextEnabled).toBe(true);
-    expect(editor.ideProjectRoots).toEqual([
-      '/project/one',
-      '/project/two',
-      '/project/three',
-      '/project/four',
-    ]);
-    expect(editor).not.toHaveProperty('persistedSymbols');
-    expect(editor).not.toHaveProperty('scanResults');
-    expect(legacy.ideContextEnabled).toBe(false);
-    expect(legacy.ideProjectRoots).toEqual([]);
-    expect(malformed.ideContextEnabled).toBe(false);
-    expect(malformed.ideProjectRoots).toEqual([]);
-  });
-
-  it('keeps smart formatting opt-in across settings migrations', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      smartFormattingEnabled: true,
-    }));
-    expect(loadSettings().smartFormattingEnabled).toBe(true);
-
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      smartFormattingEnabled: 'yes',
-    }));
-    expect(loadSettings().smartFormattingEnabled).toBe(false);
-
-    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
-    delete legacy.smartFormattingEnabled;
-    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
-    expect(loadSettings().smartFormattingEnabled).toBe(false);
-  });
-
-  it('preserves legacy custom Voice Command pairs for one-time Rust migration', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      voiceCommandsEnabled: true,
-      voiceCommands: [
-        { phrase: ' insert standup ', replacement: 'Yesterday:\n- done\nToday:\n- ship' },
-        { phrase: 'remove phrase', replacement: '' },
-        { phrase: '', replacement: 'ignored' },
-      ],
-    }));
-    const settings = loadSettings();
-    expect(settings.voiceCommandsEnabled).toBe(true);
-    expect(settings.voiceCommands).toEqual([
-      { phrase: 'insert standup', replacement: 'Yesterday:\n- done\nToday:\n- ship' },
-      { phrase: 'remove phrase', replacement: '' },
-    ]);
-  });
-
-  it('fills missing fields from defaults', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en',
-      doubleTapKey: 'shift_l',
-      language: 'en',
-      recordingMode: 'double_tap',
-    }));
-    const settings = loadSettings();
-    expect(settings.autoPaste).toBe(DEFAULT_SETTINGS.autoPaste);
-    expect(settings.recordingMode).toBe('double_tap');
-    expect(settings.hotkeyMissFeedback).toBe(false);
-  });
-
-  it('validates the opt-in hotkey timing feedback setting', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      hotkeyMissFeedback: true,
-    }));
-    expect(loadSettings().hotkeyMissFeedback).toBe(true);
-
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      hotkeyMissFeedback: 'yes',
-    }));
-    expect(loadSettings().hotkeyMissFeedback).toBe(false);
-  });
-
-  it('accepts only allow-listed stop-on-silence durations', () => {
-    for (const value of AUTO_STOP_SILENCE_OPTIONS.map((option) => option.value)) {
-      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, autoStopSilenceMs: value }));
-      expect(loadSettings().autoStopSilenceMs).toBe(value);
-    }
-  });
-
-  it('coerces an unknown, tampered or absent stop-on-silence value back to Off', () => {
-    for (const value of [900, -2500, 'soon', null, Number.NaN, 2500.5]) {
-      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, autoStopSilenceMs: value }));
-      expect(loadSettings().autoStopSilenceMs).toBe(0);
-    }
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en', doubleTapKey: 'shift_l', language: 'en', recordingMode: 'double_tap',
-    }));
-    expect(loadSettings().autoStopSilenceMs).toBe(0);
-  });
-
-  it('keeps Smart Auto-Stop off unless explicitly enabled', () => {
-    expect(DEFAULT_SETTINGS.smartAutoStopEnabled).toBe(false);
-    for (const value of ['true', 1, null, undefined]) {
-      localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, smartAutoStopEnabled: value }));
-      expect(loadSettings().smartAutoStopEnabled).toBe(false);
-    }
-    localStorage.setItem('dictation-settings', JSON.stringify({ ...DEFAULT_SETTINGS, smartAutoStopEnabled: true }));
-    expect(loadSettings().smartAutoStopEnabled).toBe(true);
-  });
-
-  it('removes the retired live transcript preview setting', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      liveTranscriptPreview: true,
-    }));
-    expect(loadSettings()).not.toHaveProperty('liveTranscriptPreview');
-  });
-
-  it('migrates legacy "hotkey" recordingMode to "hold_down"', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en',
-      doubleTapKey: 'shift_l',
-      language: 'en',
-      recordingMode: 'hotkey',
-      hotkey: 'ctrl+shift+space',
-    }));
-    const settings = loadSettings();
-    expect(settings.recordingMode).toBe('hold_down');
-    expect((settings as unknown as Record<string, unknown>).hotkey).toBeUndefined();
-  });
-
-  it('migrates missing recordingMode to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'tiny.en',
-      doubleTapKey: 'alt_l',
-      language: 'en',
-    }));
-    const settings = loadSettings();
-    expect(settings.recordingMode).toBe(DEFAULT_SETTINGS.recordingMode);
-  });
-
-  it('migrates moonshine model to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      model: 'moonshine-tiny',
-    }));
-    const settings = loadSettings();
-    expect(settings.model).toBe(DEFAULT_SETTINGS.model);
-  });
-
-  it('migrates moonshine-base model to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      model: 'moonshine-base',
-    }));
-    const settings = loadSettings();
-    expect(settings.model).toBe(DEFAULT_SETTINGS.model);
-  });
-
-  it('resets unknown model to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      model: 'nonexistent-model',
-    }));
-    const settings = loadSettings();
-    expect(settings.model).toBe(DEFAULT_SETTINGS.model);
-  });
-
-  it('uses Core ML for new installs and exposes the complete macOS catalog', () => {
-    expect(DEFAULT_SETTINGS.model).toBe('parakeet-tdt-0.6b-v3-coreml');
-    expect(AVAILABLE_MODEL_OPTIONS).toBe(MODEL_OPTIONS);
-    expect(AVAILABLE_MODEL_OPTIONS.some((model) => model.backend === 'coreml')).toBe(true);
-  });
-
-  it('preserves an existing CPU Parakeet selection', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      model: 'parakeet-tdt-0.6b-v2-fp16',
-    }));
-    expect(loadSettings().model).toBe('parakeet-tdt-0.6b-v2-fp16');
-  });
-
-  it('preserves valid recordingMode values', () => {
-    for (const mode of ['hold_down', 'double_tap'] as const) {
-      localStorage.setItem('dictation-settings', JSON.stringify({
-        ...DEFAULT_SETTINGS,
-        recordingMode: mode,
-      }));
-      const settings = loadSettings();
-      expect(settings.recordingMode).toBe(mode);
-    }
-  });
-
-  it('defaults cleanupEnabled when absent from stored settings', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en',
-      doubleTapKey: 'shift_l',
-      language: 'en',
-      recordingMode: 'hold_down',
-    }));
-    const settings = loadSettings();
-    expect(settings.cleanupEnabled).toBe(DEFAULT_SETTINGS.cleanupEnabled);
-  });
-
-  it('coerces non-boolean cleanupEnabled to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      cleanupEnabled: 'yes',
-    }));
-    const settings = loadSettings();
-    expect(settings.cleanupEnabled).toBe(DEFAULT_SETTINGS.cleanupEnabled);
-  });
-
-  it('preserves an explicit cleanupEnabled value', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      cleanupEnabled: true,
-    }));
-    const settings = loadSettings();
-    expect(settings.cleanupEnabled).toBe(true);
-  });
-
-  it('defaults language to auto when absent from stored settings', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en',
-      doubleTapKey: 'shift_l',
-      recordingMode: 'hold_down',
-    }));
-    const settings = loadSettings();
-    expect(settings.language).toBe(DEFAULT_SETTINGS.language);
-    expect(settings.language).toBe('auto');
-  });
-
-  it('coerces an unknown language code to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      language: 'klingon',
-    }));
-    const settings = loadSettings();
-    expect(settings.language).toBe(DEFAULT_SETTINGS.language);
-  });
-
-  it('coerces a non-string language to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      language: 42,
-    }));
-    const settings = loadSettings();
-    expect(settings.language).toBe(DEFAULT_SETTINGS.language);
-  });
-
-  it('preserves a valid non-default language code', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      language: 'nl',
-    }));
-    const settings = loadSettings();
-    expect(settings.language).toBe('nl');
-  });
-
-  it('defaults codeVocabEnabled and codeVocabFolder when absent', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en',
-      doubleTapKey: 'shift_l',
-      language: 'en',
-      recordingMode: 'hold_down',
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabEnabled).toBe(DEFAULT_SETTINGS.codeVocabEnabled);
-    expect(settings.codeVocabFolder).toBe(DEFAULT_SETTINGS.codeVocabFolder);
-  });
-
-  it('coerces non-boolean codeVocabEnabled to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      codeVocabEnabled: 'yes',
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabEnabled).toBe(DEFAULT_SETTINGS.codeVocabEnabled);
-  });
-
-  it('coerces non-string codeVocabFolder to default', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      codeVocabFolder: 123,
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabFolder).toBe(DEFAULT_SETTINGS.codeVocabFolder);
-  });
-
-  it('preserves explicit codeVocab settings', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      codeVocabEnabled: true,
-      codeVocabFolder: '/Users/me/project',
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabEnabled).toBe(true);
-    expect(settings.codeVocabFolder).toBe('/Users/me/project');
-  });
-
-  it('opts pre-feature settings into correction (correctionEnabled defaults on)', () => {
-    // An older blob predating the correction feature should migrate to ON.
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en',
-      doubleTapKey: 'shift_l',
-      language: 'en',
-      recordingMode: 'hold_down',
-    }));
-    const settings = loadSettings();
-    expect(settings.correctionEnabled).toBe(true);
-    expect(settings.correctionFuzzy).toBe(true);
-  });
-
-  it('coerces non-boolean correction toggles to defaults', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      correctionEnabled: 'yes',
-      correctionFuzzy: 1,
-    }));
-    const settings = loadSettings();
-    expect(settings.correctionEnabled).toBe(DEFAULT_SETTINGS.correctionEnabled);
-    expect(settings.correctionFuzzy).toBe(DEFAULT_SETTINGS.correctionFuzzy);
-  });
-
-  it('preserves explicit correction settings', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      correctionEnabled: false,
-      correctionFuzzy: false,
-    }));
-    const settings = loadSettings();
-    expect(settings.correctionEnabled).toBe(false);
-    expect(settings.correctionFuzzy).toBe(false);
-  });
-
-  it('keeps on-device homophones off for old and malformed settings, preserving explicit opt-in', () => {
-    for (const value of [undefined, 'true', 1, null, false, true]) {
-      localStorage.setItem('dictation-settings', JSON.stringify({
-        ...DEFAULT_SETTINGS, homophoneContextEnabled: value,
-      }));
-      expect(loadSettings().homophoneContextEnabled).toBe(value === true);
-    }
-  });
-
-  it('migrates legacy custom vocabulary into enabled global entries', () => {
-    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
-    delete legacy.vocabularyEntries;
-    legacy.customVocabulary = 'Tauri, API Gateway\nMünchen';
-    localStorage.setItem('dictation-settings', JSON.stringify(legacy));
-
-    const settings = loadSettings();
-    expect(settings.vocabularyEntries).toEqual([
-      { id: 'legacy-0', written: 'Tauri', aliases: [], enabled: true, scope: { kind: 'global' } },
-      { id: 'legacy-1', written: 'API Gateway', aliases: [], enabled: true, scope: { kind: 'global' } },
-      { id: 'legacy-2', written: 'München', aliases: [], enabled: true, scope: { kind: 'global' } },
-    ]);
-    expect(settings.customVocabulary).toBe('Tauri, API Gateway, München');
-  });
-
-  it('reloads an explicit alias with its enabled state and scope after restart', () => {
-    const entry = {
-      id: 'term', written: 'Tauri', aliases: ['Tori', 'Tory'], enabled: true,
-      scope: { kind: 'app' as const, bundleId: 'com.example.Editor' },
-    };
-    saveSettings({
-      ...DEFAULT_SETTINGS,
-      vocabularyEntries: [entry],
-      customVocabulary: '',
-    });
-
-    const reloaded = loadSettings();
-    expect(reloaded.vocabularyEntries).toEqual([entry]);
-    expect(reloaded.customVocabulary).toBe('');
-  });
-
-  it('sanitizes structured vocabulary and derives the legacy prompt mirror', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      customVocabulary: 'stale value',
-      vocabularyEntries: [
-        {
-          id: 'tauri',
-          written: ' Tauri ',
-          aliases: [' Tori ', 'tori', ' Tory '],
-          enabled: true,
-          scope: { kind: 'global' },
-        },
-        {
-          id: 'disabled',
-          written: 'Hidden',
-          aliases: ['heard'],
-          enabled: false,
-          scope: { kind: 'global' },
-        },
-        { id: 'bad', written: '', aliases: [], enabled: true },
-      ],
-    }));
-
-    const settings = loadSettings();
-    expect(settings.vocabularyEntries).toEqual([
-      { id: 'tauri', written: 'Tauri', aliases: ['Tori', 'Tory'], enabled: true, scope: { kind: 'global' } },
-      { id: 'disabled', written: 'Hidden', aliases: ['heard'], enabled: false, scope: { kind: 'global' } },
-    ]);
-    expect(settings.customVocabulary).toBe('Tauri');
-  });
-
-  it('defaults codeVocabLastScan to null when absent', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      model: 'base.en',
-      doubleTapKey: 'shift_l',
-      language: 'en',
-      recordingMode: 'hold_down',
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabLastScan).toBeNull();
-  });
-
-  it('sanitizes a valid codeVocabLastScan with ranked terms', () => {
-    const scan = {
-      files: 87,
-      skipped: 6,
-      terms: 268,
-      bytes: 2_400_000,
-      capped: false,
-      ms: 610,
-      sampleTerms: ['useRecordingState', 'TranscriptionBackend'],
-      rankedTerms: [
-        { term: 'useRecordingState', freq: 42 },
-        { term: 'TranscriptionBackend', freq: 31 },
-      ],
-      whisperCount: 2,
-      adopted: true,
-    };
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      codeVocabLastScan: scan,
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabLastScan).toEqual(scan);
-  });
-
-  it('defaults rankedTerms/whisperCount on a pre-feature scan blob', () => {
-    // A scan summary persisted before this feature lacks rankedTerms/whisperCount.
-    const legacyScan = {
-      files: 10,
-      skipped: 1,
-      terms: 5,
-      bytes: 1000,
-      capped: false,
-      ms: 100,
-      sampleTerms: ['foo', 'bar'],
-    };
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      codeVocabLastScan: legacyScan,
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabLastScan).not.toBeNull();
-    expect(settings.codeVocabLastScan!.rankedTerms).toEqual([]);
-    expect(settings.codeVocabLastScan!.whisperCount).toBe(0);
-    expect(settings.codeVocabLastScan!.sampleTerms).toEqual(['foo', 'bar']);
-    expect(settings.codeVocabLastScan!.adopted).toBe(true);
-  });
-
-  it('drops malformed ranked-term entries and clamps the list to 500', () => {
-    const ranked = [
-      { term: 'good', freq: 9 },
-      { term: 'noFreq' }, // missing freq -> dropped
-      { freq: 3 }, // missing term -> dropped
-      { term: '', freq: 1 }, // empty term -> dropped
-      { term: 'nanFreq', freq: Number.NaN }, // non-finite -> dropped
-      ...Array.from({ length: 600 }, (_, i) => ({ term: `t${i}`, freq: 1 })),
-    ];
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      codeVocabLastScan: {
-        ...DEFAULT_SETTINGS,
-        files: 1,
-        skipped: 0,
-        terms: 601,
-        bytes: 1,
-        capped: true,
-        ms: 1,
-        sampleTerms: ['good'],
-        rankedTerms: ranked,
-        whisperCount: 96,
-      },
-    }));
-    const settings = loadSettings();
-    const kept = settings.codeVocabLastScan!.rankedTerms;
-    expect(kept.length).toBe(500);
-    expect(kept[0]).toEqual({ term: 'good', freq: 9 });
-    // whisperCount stays valid since 96 <= 500 kept entries.
-    expect(settings.codeVocabLastScan!.whisperCount).toBe(96);
-  });
-
-  it('clamps whisperCount to the number of ranked terms kept', () => {
-    localStorage.setItem('dictation-settings', JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      codeVocabLastScan: {
-        files: 1,
-        skipped: 0,
-        terms: 2,
-        bytes: 1,
-        capped: false,
-        ms: 1,
-        sampleTerms: ['a'],
-        rankedTerms: [{ term: 'a', freq: 2 }],
-        whisperCount: 96, // more than the single kept term
-      },
-    }));
-    const settings = loadSettings();
-    expect(settings.codeVocabLastScan!.whisperCount).toBe(1);
+    localStorage.setItem(STORAGE_KEY, '{bad');
+    expect(loadSettings()).toEqual(DEFAULT_SETTINGS);
   });
 });
 
@@ -1098,17 +130,19 @@ describe('durable settings store', () => {
     expect(localStorage.getItem(ONBOARDING_KEY)).toBe('true');
   });
 
-  it('mirrors completion and reset without replacing capture settings with defaults', () => {
+  it('mirrors completion and reset without replacing capture settings with defaults', async () => {
     const original = { ...DEFAULT_SETTINGS, language: 'ja', settingsVersion: 7 };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(original));
     persistOnboardingComplete(true);
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual({ ...original, launchOnboardingComplete: true });
     persistOnboardingComplete(true);
+    await flushSourceState();
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     persistOnboardingComplete(false);
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual({ ...original, launchOnboardingComplete: false });
-    expect(mocks.invoke).toHaveBeenLastCalledWith('save_settings_blob', {
-      blob: JSON.stringify({ ...original, launchOnboardingComplete: false }),
+    await flushSourceState();
+    expect(mocks.invoke).toHaveBeenLastCalledWith('save_webkit_source', {
+      key: ONBOARDING_KEY, value: false,
     });
   });
 
@@ -1150,6 +184,7 @@ describe('durable settings store', () => {
 
     await hydrateSettingsFromDisk();
 
+    await flushSourceState();
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
 
@@ -1181,13 +216,31 @@ describe('durable settings store', () => {
     expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull();
   });
 
-  it('writes localStorage synchronously and mirrors the same blob to disk', () => {
+
+  it('an unreadable onboarding cache cannot suppress a full settings save', async () => {
+    const get = vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('synthetic read failure'); });
+    saveSettings({ ...DEFAULT_SETTINGS, language: 'ja' });
+    await flushSourceState();
+    const call = mocks.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob').slice(-1)[0];
+    expect(JSON.parse((call[1] as {blob: string}).blob)).toMatchObject({ language: 'ja' });
+    expect(JSON.parse((call[1] as {blob: string}).blob)).not.toHaveProperty('launchOnboardingComplete');
+    get.mockRestore();
+  });
+  it('fresh native settings creation does not depend on a cache write', async () => {
+    ownSettingsMigrations(); mocks.invoke.mockResolvedValue(null);
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('synthetic quota'); });
+    await hydrateSettingsFromDisk();
+    expect(mocks.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob')).toHaveLength(1);
+    write.mockRestore();
+  });
+  it('writes localStorage synchronously and mirrors the same blob to disk', async () => {
     saveSettings({ ...DEFAULT_SETTINGS, language: 'ko' });
 
     const written = localStorage.getItem(STORAGE_KEY);
     expect(written).not.toBeNull();
     expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 7 });
-    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
+    await flushSourceState();
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', expect.objectContaining({ blob: written, intentGeneration: expect.any(Number) }));
   });
 
   it('still persists to localStorage when the disk mirror fails', () => {
@@ -1220,27 +273,14 @@ describe('microphoneDeviceNameArg', () => {
   });
 });
 
-describe('warm microphone standby consent', () => {
-  it('keeps upgrades and malformed consent off and bounds the visible controls', () => {
-    expect(DEFAULT_SETTINGS.captureStandbyEnabled).toBe(false);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ captureStandbyEnabled: 'true', captureStandbySeconds: 999999, capturePreRollMs: -1 }));
-    expect(loadSettings()).toMatchObject({ captureStandbyEnabled: false, captureStandbySeconds: 300, capturePreRollMs: 450 });
-  });
-
-  it('round-trips explicit consent and bounded standby choices', () => {
-    saveSettings({ ...DEFAULT_SETTINGS, captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
-    expect(loadSettings()).toMatchObject({ captureStandbyEnabled: true, captureStandbySeconds: 60, capturePreRollMs: 300 });
-  });
-});
-
 describe('read-only durable settings snapshots', () => {
-  it('validates a legacy snapshot without overwriting cache, disk or migration keys', () => {
+  it('decodes a Rust-canonical snapshot without overwriting cache or disk', () => {
     mocks.isTauri.mockReturnValue(true);
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_SETTINGS, overlayLiveWords: false }));
     localStorage.setItem(LEGACY_OVERLAY_OFFSET_KEY, '48');
     const cached = localStorage.getItem(STORAGE_KEY);
-    const parsed = parseSettingsBlob(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 1,
-      overlayVerticalOffset: 48, overlayPlacement: 'below_menu_bar', overlayProcessingStyle: 'pulse', overlayLiveWords: true }));
+    const parsed = parseSettingsBlob(JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: 7,
+      overlayVerticalOffset: 0, overlayPlacement: 'floating_pill', overlayLiveWords: true }));
     expect(parsed.overlayVerticalOffset).toBe(0);
     expect(parsed.overlayPlacement).toBe('floating_pill');
     expect('overlayProcessingStyle' in parsed).toBe(false);
@@ -1251,20 +291,35 @@ describe('read-only durable settings snapshots', () => {
   });
 });
 
-describe('removed feature upgrade compatibility', () => {
-  it('ignores obsolete rewrite fields without resetting dictation', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS, language: 'fr', autoPaste: false,
-      transformHoldKey: 'alt_r', correctionShortcutEnabled: true,
-      queryHotkey: 'alt_r', queryExecutable: '/usr/bin/true', queryArguments: { obsolete: true },
-      assistantConnection: { obsolete: true }, meetingRetainAudio: true,
-    }));
-    const settings = loadSettings();
-    expect(settings.language).toBe('fr');
-    expect(settings.autoPaste).toBe(false);
-    expect(settings.meetingRetainAudio).toBe(true);
-    expect(settings).not.toHaveProperty('queryHotkey');
-    expect(settings).not.toHaveProperty('queryArguments');
-    expect(settings).not.toHaveProperty('assistantConnection');
+
+describe('literal catalogs and companion ownership', () => {
+  it('keeps idle and adapter literals and complete option catalog', async () => {
+    const { IDLE_TIMEOUT_OPTIONS, IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER } = await import('./settings');
+    expect(DEFAULT_SETTINGS.idleTimeoutMinutes).toBe(5);
+    expect(IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER).toBe(-1);
+    saveSettings({ ...DEFAULT_SETTINGS, idleTimeoutMinutes: -1 });
+    expect(loadSettings().idleTimeoutMinutes).toBe(-1);
+    expect(IDLE_TIMEOUT_OPTIONS).toEqual([{value:5,label:'5 minutes'},{value:15,label:'15 minutes'},{value:-1,label:'Never on power adapter'},{value:0,label:'Never'}]);
   });
+  it('preserves seven immutable built-in identities and names', async () => {
+    const { BUILTIN_MODES } = await import('./settings');
+    expect(BUILTIN_MODES.map(m => [m.id,m.name,m.builtIn])).toEqual([
+      ['builtin.everyday','Everyday',true],['builtin.messages','Messages',true],['builtin.email','Email',true],['builtin.notes','Notes',true],['builtin.technical','Technical',true],['builtin.terminal','Terminal',true],['builtin.verbatim','Verbatim',true],
+    ]);
+  });
+  it('companion stale settings cannot publish migrations on a missing destination', async () => {
+    mocks.isTauri.mockReturnValue(true); ownSettingsMigrations(false);
+    const old = JSON.stringify({ settingsVersion: 0, autoPasteDelayMs: 50, language: 'es' });
+    localStorage.setItem(STORAGE_KEY, old); mocks.invoke.mockResolvedValue(null);
+    await hydrateSettingsFromDisk(); loadSettings();
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(old);
+    expect(mocks.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob')).toHaveLength(0);
+  });
+});
+
+it('frontend exposes the complete model catalog including Core ML', async () => {
+  const { MODEL_OPTIONS, AVAILABLE_MODEL_OPTIONS } = await import('./settings');
+  expect(AVAILABLE_MODEL_OPTIONS).toBe(MODEL_OPTIONS);
+  expect(AVAILABLE_MODEL_OPTIONS.some(m => m.backend === 'coreml')).toBe(true);
+  expect(DEFAULT_SETTINGS.model).toBe('parakeet-tdt-0.6b-v3-coreml');
 });

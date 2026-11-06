@@ -1,3 +1,5 @@
+import { presentationStorage } from './presentationStorage';
+import { persistSourceState } from './webkitLifecycle';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 export interface DurableBlobStore {
@@ -49,20 +51,13 @@ function reportStorageError(_store: DurableBlobStore, message: string, _error: u
  */
 export function mirrorDurableBlob(store: DurableBlobStore, blob: string): void {
   if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
-  try {
-    if (!tauriAvailable()) return;
-    void invoke(store.saveCommand, { blob }).catch((error) => {
-      reportStorageError(store, `Failed to persist ${store.label} to disk:`, error);
-    });
-  } catch (error) {
-    reportStorageError(store, `Failed to persist ${store.label} to disk:`, error);
-  }
+  persistSourceState(store.storageKey, blob);
 }
 
 export function saveDurableBlob(store: DurableBlobStore, blob: string): void {
   if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
   try {
-    localStorage.setItem(store.storageKey, blob);
+    presentationStorage.setItem(store.storageKey, blob);
   } catch (error) {
     reportStorageError(store, `Failed to cache ${store.label}:`, error);
   }
@@ -73,7 +68,7 @@ export function saveDurableBlob(store: DurableBlobStore, blob: string): void {
 export function clearDurableBlob(store: DurableBlobStore): void {
   if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
   try {
-    localStorage.removeItem(store.storageKey);
+    presentationStorage.removeItem(store.storageKey);
   } catch (error) {
     reportStorageError(store, `Failed to clear cached ${store.label}:`, error);
   }
@@ -94,13 +89,13 @@ export async function hydrateDurableStore(store: DurableBlobStore): Promise<void
     const blob = await invoke<string | null>(store.loadCommand);
     if (typeof blob === 'string') {
       // The owning loader applies its full schema validation after startup.
-      localStorage.setItem(store.storageKey, blob);
+      presentationStorage.setItem(store.storageKey, blob);
       return;
     }
 
     // One-time migration for clients whose only copy predates the durable
     // store. The Rust side re-checks the bounded JSON container.
-    const cached = localStorage.getItem(store.storageKey);
+    const cached = presentationStorage.getItem(store.storageKey);
     if (cached !== null) {
       await invoke(store.saveCommand, { blob: cached });
     }

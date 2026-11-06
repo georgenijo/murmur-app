@@ -1,3 +1,5 @@
+import { presentationStorage } from '../lib/presentationStorage';
+import { sourceStorage } from '../lib/webkitLifecycle';
 import { COMPLETION_CHANGED } from '../lib/completionData';
 import { useState, useEffect, useMemo } from 'react';
 import {
@@ -15,7 +17,7 @@ const RECENT_DAYS = 7;
 
 function loadCollapsed(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'true';
+    return presentationStorage.getItem(STORAGE_KEY) === 'true';
   } catch {
     return false;
   }
@@ -50,7 +52,7 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
   const toggle = () => {
     const next = !isCollapsed;
     setIsCollapsed(next);
-    try { localStorage.setItem(STORAGE_KEY, String(next)); } catch {}
+    try { sourceStorage.setItem(STORAGE_KEY, String(next)); } catch {}
   };
 
   return (

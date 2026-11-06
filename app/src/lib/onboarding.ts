@@ -1,3 +1,4 @@
+import { presentationStorage } from './presentationStorage';
 import { ONBOARDING_KEY, persistOnboardingComplete } from './settings';
 import { resetDiscovery } from './discovery';
 
@@ -14,7 +15,7 @@ import { resetDiscovery } from './discovery';
 
 export function isOnboardingComplete(): boolean {
   try {
-    return localStorage.getItem(ONBOARDING_KEY) === 'true';
+    return presentationStorage.getItem(ONBOARDING_KEY) === 'true';
   } catch {
     // Storage unavailable: treat as complete so the app never hard-blocks on
     // the wizard; the permissions banner still catches missing grants.
@@ -23,9 +24,9 @@ export function isOnboardingComplete(): boolean {
 }
 
 export function markOnboardingComplete(): void {
+  persistOnboardingComplete(true);
   try {
-    localStorage.setItem(ONBOARDING_KEY, 'true');
-    persistOnboardingComplete(true);
+    presentationStorage.setItem(ONBOARDING_KEY, 'true');
   } catch {
     // Non-fatal: the wizard will show again next launch.
   }
@@ -33,9 +34,9 @@ export function markOnboardingComplete(): void {
 
 /** Clear the flag so the setup assistant runs again (Settings → Setup Assistant). */
 export function resetOnboarding(): void {
+  persistOnboardingComplete(false);
   try {
-    localStorage.removeItem(ONBOARDING_KEY);
-    persistOnboardingComplete(false);
+    presentationStorage.removeItem(ONBOARDING_KEY);
   } catch {
     // Non-fatal.
   }

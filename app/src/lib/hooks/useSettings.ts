@@ -1,3 +1,4 @@
+import { rebasePendingOwnedSettings, type OwnedCommit } from '../webkitLifecycle';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, sendTo } from '../targetedEvents';
@@ -45,11 +46,11 @@ export function useSettings() {
   );
   const audioInventory = useAudioInputInventory(microphoneMigrationPending);
 
-  const persistSettings = useCallback((next: Settings) => {
+  const persistSettings = useCallback((next: Settings, ownedEdits?: Partial<Pick<Settings, 'autoPaste' | 'disabled'>>) => {
     saveSettings({
       ...next,
       meetingSuggestionsEnabled: confirmedMeetingSuggestionsEnabledRef.current,
-    });
+    }, ownedEdits);
   }, []);
 
   const scheduleProbePolicyWrite = useCallback(() => {
@@ -318,7 +319,10 @@ export function useSettings() {
       setProbeConfigureError(null);
     }
     setSettings(newSettings);
-    persistSettings(newSettings);
+    persistSettings(newSettings, {
+      ...(typeof updates.autoPaste === 'boolean' ? { autoPaste: updates.autoPaste } : {}),
+      ...(typeof updates.disabled === 'boolean' ? { disabled: updates.disabled } : {}),
+    });
 
     if (meetingSuggestionsChanged && meetingSuggestionVersion !== null) {
       enqueueMeetingSuggestionChange(newSettings.meetingSuggestionsEnabled, meetingSuggestionVersion);
@@ -408,7 +412,8 @@ export function useSettings() {
             };
             settingsRef.current = reverted;
             setSettings(reverted);
-            persistSettings(reverted);
+            // Rollback owns Auto Paste even when a later coalesced update changed another key.
+            persistSettings(reverted, { autoPaste: reverted.autoPaste });
             setConfigureError(
               'Settings could not be saved. Previous settings were restored. Check vocabulary aliases and Voice Commands for conflicts, then try again.',
             );
@@ -421,16 +426,17 @@ export function useSettings() {
   // Ingest a settings change made by another window (the overlay's quick controls).
   // Diffs against the current value so a window applying its own emitted change is a
   // no-op — this is what breaks the settings-changed echo loop.
-  const applyExternalSettings = useCallback((patch: Partial<Pick<Settings, 'autoPaste' | 'disabled'>>) => {
-    const fresh = { ...settingsRef.current, ...patch };
+  const applyExternalSettings = useCallback((patch: OwnedCommit) => {
+    if ((patch.ownedFieldsRevision ?? 0) < (settingsRef.current.ownedFieldsRevision ?? 0)) return;
+    const fresh = { ...settingsRef.current, ...rebasePendingOwnedSettings(patch) };
     const prev = settingsRef.current;
     const disabledChanged = fresh.disabled !== prev.disabled;
     const autoPasteChanged = fresh.autoPaste !== prev.autoPaste;
-    if (!disabledChanged && !autoPasteChanged) return;
+    if (!disabledChanged && !autoPasteChanged && fresh.ownedFieldsRevision === prev.ownedFieldsRevision) return;
 
     // Overlay quick controls own these two fields only. Its cached approvals
     // must never replace a newer main-window microphone policy.
-    const next = { ...prev, disabled: fresh.disabled, autoPaste: fresh.autoPaste };
+    const next = { ...prev, disabled: fresh.disabled, autoPaste: fresh.autoPaste, ownedFieldsRevision: fresh.ownedFieldsRevision };
     settingsRef.current = next;
     setSettings(next);
     cacheSettings(next);

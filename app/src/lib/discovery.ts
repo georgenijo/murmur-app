@@ -1,3 +1,5 @@
+import { presentationStorage } from './presentationStorage';
+import { sourceStorage, persistSourceState } from './webkitLifecycle';
 import type { DictationStats } from './stats';
 import type { Settings } from './settings';
 
@@ -136,7 +138,7 @@ export function discoveryEvidence(
 
 export function loadDiscoveryState(): DiscoveryStateV1 | null {
   try {
-    const stored = localStorage.getItem(DISCOVERY_STORAGE_KEY);
+    const stored = presentationStorage.getItem(DISCOVERY_STORAGE_KEY);
     return stored === null ? null : parseState(JSON.parse(stored));
   } catch {
     return null;
@@ -145,7 +147,7 @@ export function loadDiscoveryState(): DiscoveryStateV1 | null {
 
 function saveState(state: DiscoveryStateV1): DiscoveryStateV1 {
   try {
-    localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
+    sourceStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
     window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {
     // Discovery never blocks the main app when storage is unavailable.
@@ -241,7 +243,8 @@ export function dismissDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV1 | nu
 
 export function resetDiscovery(): void {
   try {
-    localStorage.removeItem(DISCOVERY_STORAGE_KEY);
+    persistSourceState(DISCOVERY_STORAGE_KEY, 'null');
+    presentationStorage.removeItem(DISCOVERY_STORAGE_KEY);
     window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {
     // Non-fatal.

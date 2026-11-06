@@ -1,6 +1,6 @@
 import { COMPLETION_CHANGED, initializeCompletionReader } from '../../lib/completionData';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { loadBenchmarkReports } from '../../lib/benchmark';
+import { savedBenchmarkReports } from '../../lib/benchmark';
 import {
   MAX_DIAGNOSTIC_REPORT_BYTES,
   normalizeLocalBenchmarkReport,
@@ -26,7 +26,7 @@ interface ReportEntry {
 }
 
 function localReportEntries(): ReportEntry[] {
-  return loadBenchmarkReports().flatMap((report, index) => {
+  return savedBenchmarkReports().flatMap((report, index) => {
     const result = normalizeLocalBenchmarkReport(report);
     return result.ok
       ? [{ id: `local-${index}-${report.createdAt}`, report: result.report }]

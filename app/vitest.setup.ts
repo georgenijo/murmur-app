@@ -14,6 +14,7 @@ class MemoryStorage implements Storage {
   }
   clear(): void {
     this.store.clear();
+    window.dispatchEvent(new StorageEvent('storage', { key: null }));
   }
   getItem(key: string): string | null {
     return this.store.get(key) ?? null;
@@ -23,9 +24,13 @@ class MemoryStorage implements Storage {
   }
   removeItem(key: string): void {
     this.store.delete(key);
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue: null }));
   }
   setItem(key: string, value: string): void {
     this.store.set(key, String(value));
+    // Direct test fixture edits represent another renderer's cache writes.
+    // Keep session presentation mirrors in sync just as WebKit would.
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue: String(value) }));
   }
 }
 

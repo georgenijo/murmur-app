@@ -367,6 +367,9 @@ pub fn run() {
             commands::export::save_text_export,
             commands::mode_exchange::read_modes_file,
             completion::completion_snapshot,
+            completion::webkit_state_snapshot,
+            completion::import_webkit_state,
+            completion::save_webkit_source,
             completion::accept_file_transcription,
             completion::cancel_file_transcription,
             completion::import_completion_v1,
@@ -376,6 +379,7 @@ pub fn run() {
             completion::store_benchmark_report,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
+            commands::settings_store::restore_source_backup,
             commands::settings_store::patch_overlay_setting,
             commands::settings_store::load_theme_library_blob,
             commands::settings_store::save_theme_library_blob,
@@ -469,6 +473,15 @@ pub fn run() {
         .setup(|app| {
             events::initialize(app.handle());
             app.manage(app_context::new(app.handle().clone()));
+            #[cfg(target_os = "macos")]
+            if let Some(main) = app.get_webview_window("main") {
+                main.with_webview(|view| {
+                    // Same capability is required by the standalone importer/retirement host.
+                    let mtm = objc2::MainThreadMarker::new().expect("webview callback owns main thread");
+                    unsafe { murmur_webkit::StoreIdentity::from_app_webview(view.inner(), mtm) }
+                        .expect("WebKit store identity could not be established; preserve legacy store");
+                })?;
+            }
             completion::initialize(app.handle())?;
             dictation_control::initialize(app.handle());
             completion::start_gate(app.handle().clone());

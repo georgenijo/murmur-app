@@ -174,7 +174,7 @@ describe('DictationPreviewApp', () => {
 
   it.each([
     ['an absent or quarantined document fails closed', null, false],
-    ['a v6 document migrates its old off default', '{"settingsVersion":6,"overlayLiveWords":false}', true],
+    ['a Rust-migrated document uses the new default', '{"settingsVersion":7,"overlayLiveWords":true}', true],
     ['an unreadable document fails closed', '{not json', false],
   ] as const)('%s', async (_name, blob, shown) => {
     mocks.invoke.mockImplementation(async (command: string) => command === 'load_settings_blob' ? blob : undefined);

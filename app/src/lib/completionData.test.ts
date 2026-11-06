@@ -22,3 +22,18 @@ it.each([
   for (const key of all) expect(localStorage.getItem(key)).toBeNull();
   expect(localStorage.getItem('unrelated-setting')).toBe('{}');
 });
+it('synthetic benchmark save and relaunch never repopulate transcript-bearing keys', async () => {
+  const keys = ['dictation-history', 'dictation-stats', 'murmur-benchmark-report', 'murmur-benchmark-reports'];
+  keys.forEach(key => localStorage.setItem(key, '[]'));
+  const snapshot = { revision: 100, history: [], statistics: {}, reports: [], v1Committed: true, removeKeys: keys, retryNotice: false };
+  const report = { createdAt: '2026-01-01T00:00:00Z', appVersion: '0.62.1', platform: 'synthetic', preset: 'quick', iterations: 1, sharedInitMs: 0, results: [], recommendations: { fastest: null, mostAccurate: null, balanced: null } };
+  // Fake native runner: exercise the same request -> report -> durable save
+  // path as Performance Lab, without running the performance harness.
+  mocks.invoke.mockImplementation(async (command: string) => command === 'run_benchmark' ? report : snapshot);
+  await importCompletionV1();
+  const { runBenchmark, persistBenchmarkReport, savedBenchmarkReports } = await import('./benchmark');
+  await persistBenchmarkReport(await runBenchmark(['synthetic'], 'quick', 'bundled'));
+  await importCompletionV1();
+  savedBenchmarkReports();
+  keys.forEach(key => expect(localStorage.getItem(key)).toBeNull());
+});

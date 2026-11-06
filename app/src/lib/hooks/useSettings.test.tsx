@@ -85,6 +85,53 @@ describe('useSettings configure rollback privacy', () => {
     vi.restoreAllMocks();
   });
 
+
+  it.each(['autoPaste', 'disabled'] as const)('overlapping configure rollback supersedes %s intent without undoing other owned edits', async field => {
+    const { flushSourceState } = await import('../webkitLifecycle');
+    mocks.isTauri.mockReturnValue(true);
+    let disk = { autoPaste: false, disabled: false };
+    const write = deferred<void>();
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === 'save_settings_blob') {
+        await write.promise;
+        const intent = args as { blob: string; ownedEdits?: object };
+        disk = { ...JSON.parse(intent.blob), ...intent.ownedEdits };
+        return JSON.stringify(disk);
+      }
+    });
+    await mountHarness();
+    const first = deferred<void>(); const second = deferred<void>();
+    mocks.configure.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    await act(async () => { current.updateSettings({ autoPaste: true, ...(field === 'disabled' ? { disabled: true } : {}) }); });
+    await act(async () => { current.updateSettings({ language: 'ja' }); });
+    await act(async () => { first.reject(new Error('synthetic')); second.reject(new Error('synthetic')); });
+    write.resolve();
+    await act(async () => { await flushSourceState(); });
+    expect(current.settings.autoPaste).toBe(false);
+    expect(disk.autoPaste).toBe(false);
+    expect(disk.disabled).toBe(field === 'disabled');
+    expect(disk.disabled).toBe(current.settings.disabled);
+  });
+  it('configuration rollback supersedes the rejected Auto Paste native patch', async () => {
+    const { flushSourceState } = await import('../webkitLifecycle');
+    mocks.isTauri.mockReturnValue(true);
+    let disk = { autoPaste: false };
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === 'save_settings_blob') {
+        const intent = args as { blob: string; ownedEdits?: { autoPaste?: boolean } };
+        disk = { ...JSON.parse(intent.blob), ...intent.ownedEdits };
+        return JSON.stringify(disk);
+      }
+    });
+    await mountHarness();
+    mocks.configure.mockRejectedValueOnce(new Error('synthetic configuration failure'));
+    await act(async () => { current.updateSettings({ autoPaste: true }); await flushSourceState(); });
+    await act(async () => { await flushSourceState(); });
+    expect(disk.autoPaste).toBe(false);
+    expect(current.settings.autoPaste).toBe(false);
+    const calls = mocks.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob');
+    expect((calls.slice(-1)[0]![1] as { ownedEdits: { autoPaste: boolean } }).ownedEdits.autoPaste).toBe(false);
+  });
   it.each([
     ['captureStandbyEnabled', true],
     ['captureStandbySeconds', 60],
@@ -454,7 +501,7 @@ describe('useSettings configure rollback privacy', () => {
     });
 
     expect(mocks.configure).toHaveBeenCalled();
-    // Indexed rather than `.at(-1)`: this repo's tsconfig target predates it.
+    // Indexed rather than `.slice(-1)[0]`: this repo's tsconfig target predates it.
     const calls = mocks.configure.mock.calls;
     const lastArg = calls[calls.length - 1]?.[0];
     expect(lastArg).toMatchObject({ mirrorToNotchPill: true });

@@ -212,3 +212,13 @@ while another adds a required field to it.
 Releases are tag-based off a trusted `main` version-bump commit, with signed and
 notarized artifacts promoted only when the commit SHA, run ID, and artifact
 hashes all match. See [release.md](release.md).
+
+
+## Synthetic WebKit lifecycle checks
+
+`cargo test -p murmur-core` covers schemas and durable migration boundaries on
+Linux. On macOS, `cargo test -p murmur-webkit` runs a main-thread test executable
+with a custom nonpersistent WKWebsiteDataStore and a temporary Rust data root.
+It never obtains the default store or opens an application window. Do not point
+fixtures at real WebKit/app-data directories. Native GUI verification remains a
+separate check against an isolated bundle and synthetic state.

@@ -1,3 +1,4 @@
+import { presentationStorage } from '../presentationStorage';
 import { mirrorDurableBlob, THEME_LIBRARY_STORE } from '../durableUserData';
 import { isRecord } from '../typeGuards';
 import { DEFAULT_THEME, OPENCODE_THEME } from './palettes';
@@ -116,7 +117,9 @@ function parseSource(value: unknown): ThemeLibrarySourceV1 | null {
     try {
       const parsed = new URL(value.sourceUrl);
       if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
-      sourceUrl = parsed.toString();
+      // Parsing validates the URL; the persisted spelling must stay within the
+      // same UTF-16 limit when the publication is read and validated again.
+      sourceUrl = value.sourceUrl;
     } catch {
       return null;
     }
@@ -156,7 +159,7 @@ export function emptyThemeLibrary(): ThemeLibraryDocumentV1 {
 }
 
 export function loadThemeLibrary(
-  storage: ThemeLibraryStorageLike = localStorage,
+  storage: ThemeLibraryStorageLike = presentationStorage,
 ): ThemeLibraryLoadResult {
   let raw: string | null;
   try {
@@ -241,7 +244,7 @@ function nextLibraryRevision(revision: number): number {
 
 export function writeThemeLibrary(
   document: ThemeLibraryDocumentV1,
-  storage: ThemeLibraryStorageLike = localStorage,
+  storage: ThemeLibraryStorageLike = presentationStorage,
 ): void {
   if (document.themes.length > MAX_THEME_LIBRARY_ENTRIES) {
     throw new Error(`A theme library may contain at most ${MAX_THEME_LIBRARY_ENTRIES} themes.`);
@@ -263,16 +266,19 @@ export function writeThemeLibrary(
   if (byteLength(serialized) > MAX_THEME_LIBRARY_BYTES) {
     throw new Error('Theme library exceeds the 1 MiB limit.');
   }
-  storage.setItem(THEME_LIBRARY_STORAGE_KEY, serialized);
-  if (typeof localStorage !== 'undefined' && storage === localStorage) {
+  if (typeof localStorage !== 'undefined' && storage === presentationStorage) {
     mirrorDurableBlob(THEME_LIBRARY_STORE, serialized);
-  }
+    try { storage.setItem(THEME_LIBRARY_STORAGE_KEY, serialized); } catch { /* Rust intent remains queued. */ }
+  } else storage.setItem(THEME_LIBRARY_STORAGE_KEY, serialized);
 }
 
 function requireCurrentLibrary(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   storage: ThemeLibraryStorageLike,
 ): ThemeLibraryDocumentV1 {
+  // The controller serializes operations against its authoritative in-memory
+  // snapshot. Its cache may lag after quota failure and cannot veto later edits.
+  if (typeof expectedRevision !== 'number') return expectedRevision;
   const loaded = loadThemeLibrary(storage);
   if (loaded.status === 'unavailable') throw new Error(loaded.error);
   if (loaded.document.revision !== expectedRevision) {
@@ -296,9 +302,9 @@ function publishMutation(
 }
 
 export function installThemeLibraryEntries(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   entries: readonly ThemeLibraryEntryV1[],
-  storage: ThemeLibraryStorageLike = localStorage,
+  storage: ThemeLibraryStorageLike = presentationStorage,
 ): ThemeLibraryDocumentV1 {
   if (entries.length === 0) throw new Error('Choose at least one theme to install.');
   const current = requireCurrentLibrary(expectedRevision, storage);
@@ -314,11 +320,11 @@ export function installThemeLibraryEntries(
 }
 
 export function replaceThemeLibraryCollection(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   collectionId: string,
   entries: readonly ThemeLibraryEntryV1[],
   expectedCollection: readonly ThemeLibraryEntryV1[],
-  storage: ThemeLibraryStorageLike = localStorage,
+  storage: ThemeLibraryStorageLike = presentationStorage,
 ): ThemeLibraryDocumentV1 {
   if (entries.length === 0 || entries.some((entry) => entry.collection?.id !== collectionId)) {
     throw new Error('The replacement theme collection is invalid.');
@@ -348,9 +354,9 @@ export function replaceThemeLibraryCollection(
 }
 
 export function removeThemeLibraryEntries(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   themeIds: readonly string[],
-  storage: ThemeLibraryStorageLike = localStorage,
+  storage: ThemeLibraryStorageLike = presentationStorage,
 ): ThemeLibraryDocumentV1 {
   const ids = new Set(themeIds);
   if (ids.size === 0) throw new Error('Choose at least one theme to remove.');

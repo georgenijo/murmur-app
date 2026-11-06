@@ -80,25 +80,14 @@ export function isUiLatencySampleV1(value: unknown): value is UiLatencySampleV1 
 
 function loadSamples(): UiLatencySampleV1[] {
   if (cachedSamples) return cachedSamples;
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]');
-    cachedSamples = Array.isArray(parsed)
-      ? parsed.filter(isUiLatencySampleV1).slice(-UI_LATENCY_SAMPLE_LIMIT)
-      : [];
-  } catch {
-    cachedSamples = [];
-  }
+  cachedSamples = [];
   return cachedSamples;
 }
 
 function persistSamples() {
   pendingPersistence = null;
   pendingPersistenceUsesIdleCallback = false;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cachedSamples));
-  } catch {
-    // Timing remains available for this session when persistence is unavailable.
-  }
+
 }
 
 function cancelPendingPersistence() {

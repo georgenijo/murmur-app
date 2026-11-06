@@ -1,3 +1,4 @@
+import { sourceStorage } from '../webkitLifecycle';
 import { DEFAULT_THEME } from './palettes';
 import { parse, type ParseError } from 'jsonc-parser';
 import { resolveTheme } from './resolve';
@@ -87,12 +88,8 @@ export function isNewerAppearanceRevision(current: number, candidate: number): b
     && candidate < APPEARANCE_REVISION_ROLLOVER_AT;
 }
 
-function sameCache(left: ResolvedThemeCacheV1 | null, right: ResolvedThemeCacheV1): boolean {
-  return left !== null && JSON.stringify(left) === JSON.stringify(right);
-}
-
 export function loadAppearanceDocument(
-  storage: StorageLike = localStorage,
+  storage: StorageLike = sourceStorage,
 ): AppearanceLoadResult {
   let raw: string | null;
   try {
@@ -140,19 +137,23 @@ export function loadAppearanceDocument(
     sanitized.revision,
     sanitized.selection,
   );
-  const canonical = JSON.stringify(document);
   return {
     document,
-    // The byte comparison is intentional: semantically equivalent documents
-    // with reordered or unknown keys get one repair write into canonical form.
-    needsRepair: !sameCache(sanitized.cache, document.cache) || canonical !== JSON.stringify(parsed),
+    // Compare source fields semantically; regenerated caches and JSON key
+    // order do not authorize a source repair write.
+    needsRepair: (() => {
+      const { cache: _cache, ...source } = document;
+      const { cache: _oldCache, ...stored } = parsed as Record<string, unknown>;
+      const stable = (v: unknown): unknown => Array.isArray(v) ? v.map(stable) : isRecord(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, stable(v[k])])) : v;
+      return JSON.stringify(stable(source)) !== JSON.stringify(stable(stored));
+    })(),
     error: null,
   };
 }
 
 export function writeAppearanceDocument(
   document: AppearanceDocumentV1,
-  storage: StorageLike = localStorage,
+  storage: StorageLike = sourceStorage,
 ): void {
   const canonical = createAppearanceDocument(
     document.mode,
