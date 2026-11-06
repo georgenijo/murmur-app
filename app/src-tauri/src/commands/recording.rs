@@ -1145,22 +1145,29 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
 // operation; production and regressions share both worker revalidation points.
 struct IdleModelPreparation {
     model_name: String,
-    configuration: u64,
+    ticket: crate::launch::WarmupTicket,
     generation: u64,
 }
 
 impl IdleModelPreparation {
-    fn new(state: &State, model_name: String) -> Self {
-        Self {
-            model_name,
-            configuration: crate::audio::prepare::configuration_generation(),
-            generation: state.app_state.recording_id.load(Ordering::SeqCst),
+    fn claim(state: &State, model_name: String) -> Option<Self> {
+        let dictation = state.app_state.dictation.lock_or_recover();
+        if dictation.status != DictationStatus::Idle
+            || dictation.model_name != model_name
+            || !crate::launch::warmup_allowed(keyboard::is_app_disabled(), &model_name)
+        {
+            return None;
         }
+        Some(Self {
+            model_name,
+            ticket: state.app_state.idle_model_warmup.claim()?,
+            generation: state.app_state.recording_id.load(Ordering::SeqCst),
+        })
     }
 
     fn is_current(&self, state: &State) -> bool {
         !keyboard::is_app_disabled()
-            && crate::audio::prepare::configuration_generation() == self.configuration
+            && self.ticket.is_current()
             && state.app_state.recording_id.load(Ordering::SeqCst) == self.generation
     }
 
@@ -1189,6 +1196,19 @@ impl IdleModelPreparation {
     }
 }
 
+/// Startup, backend configuration and re-enable share a single pending claim.
+/// The runtime load lock also serializes an invalidated worker with its successor.
+pub(crate) fn request_idle_model_preparation(app_handle: &tauri::AppHandle) {
+    let model = app_handle
+        .state::<State>()
+        .app_state
+        .dictation
+        .lock_or_recover()
+        .model_name
+        .clone();
+    spawn_idle_model_preparation(app_handle.clone(), model, None);
+}
+
 /// Warm an installed Core ML model after startup configuration. A newly linked
 /// application binary can trigger one-time ANE specialization even when the
 /// compiled model cache already exists. Starting it while the app is idle keeps
@@ -1197,10 +1217,14 @@ impl IdleModelPreparation {
 fn spawn_idle_model_preparation(
     app_handle: tauri::AppHandle,
     model_name: String,
-    change_guard: SharedBackendChangeGuard,
+    change_guard: Option<SharedBackendChangeGuard>,
 ) {
     let queued_at = std::time::Instant::now();
-    let preparation = IdleModelPreparation::new(&app_handle.state::<State>(), model_name.clone());
+    let Some(preparation) =
+        IdleModelPreparation::claim(&app_handle.state::<State>(), model_name.clone())
+    else {
+        return;
+    };
     drop(tauri::async_runtime::spawn_blocking(move || {
         let _change_guard = change_guard;
         let state = app_handle.state::<State>();
@@ -3561,7 +3585,7 @@ pub async fn configure_dictation(
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
     configure_dictation_with_effects(options, &state, Some(&app_handle), |model, guard| {
-        spawn_idle_model_preparation(app_handle.clone(), model, guard);
+        spawn_idle_model_preparation(app_handle.clone(), model, Some(guard));
     })
 }
 
@@ -3682,6 +3706,7 @@ fn configure_dictation_with_effects(
 
     let model_changed = if let Some(m) = model {
         if m != dictation.model_name {
+            state.app_state.idle_model_warmup.invalidate();
             dictation.model_name = m;
             true
         } else {
@@ -6630,7 +6655,7 @@ pub(crate) mod tests {
         });
         let mut queued = None;
         configure_dictation_with_effects(options.clone(), &state, None, |model, guard| {
-            queued = Some((IdleModelPreparation::new(&state, model), guard));
+            queued = Some((IdleModelPreparation::claim(&state, model).unwrap(), guard));
         })
         .unwrap();
         // The accepted worker remains paused while frontend confirmation and
@@ -6648,10 +6673,23 @@ pub(crate) mod tests {
             },
         )
         .unwrap();
+        assert!(
+            IdleModelPreparation::claim(&state, "parakeet-tdt-0.6b-v3-coreml".into()).is_none(),
+            "startup confirmation must not queue a concurrent duplicate"
+        );
         let prepared = Cell::new(0);
         let (worker, _guard) = queued.unwrap();
         worker
             .run(&state, |is_current| {
+                // Configuration can also settle while the worker is waiting
+                // on the backend. The load-fence check must keep it eligible.
+                configure_dictation_with_effects(
+                    serde_json::json!({"autoPaste": true}),
+                    &state,
+                    None,
+                    |_, _| panic!("unrelated settings must not duplicate preparation"),
+                )
+                .unwrap();
                 if !is_current() {
                     return Ok(None);
                 }
@@ -6664,6 +6702,63 @@ pub(crate) mod tests {
             1,
             "eligible queued preparation was discarded"
         );
+    }
+
+    #[test]
+    fn queued_coreml_warmup_revalidates_and_resumes_after_disable() {
+        let state = warmup_test_state();
+        let model = "parakeet-tdt-0.6b-v3-coreml";
+        let mut queued = None;
+        configure_dictation_with_effects(
+            serde_json::json!({"disabled":false,"model":model}),
+            &state,
+            None,
+            |name, guard| {
+                queued = Some((IdleModelPreparation::claim(&state, name).unwrap(), guard));
+            },
+        )
+        .unwrap();
+        let (worker, _guard) = queued.unwrap();
+        worker
+            .run(&state, |is_current| {
+                // This effect stands in for waiting for the backend lock. Disable
+                // wins before load, even after the initial worker check passed.
+                crate::commands::keyboard::update_app_disabled(&state.app_state, true);
+                assert!(!is_current());
+                Ok::<_, String>(None::<()>)
+            })
+            .unwrap();
+        assert!(IdleModelPreparation::claim(&state, model.into()).is_none());
+        crate::commands::keyboard::update_app_disabled(&state.app_state, false);
+        let replacement = IdleModelPreparation::claim(&state, model.into()).unwrap();
+        drop(worker); // Late completion must preserve the replacement's claim.
+        assert!(IdleModelPreparation::claim(&state, model.into()).is_none());
+        let prepared = std::cell::Cell::new(0);
+        replacement
+            .run(&state, |is_current| {
+                assert!(is_current());
+                prepared.set(prepared.get() + 1);
+                Ok(Some(()))
+            })
+            .unwrap();
+        assert_eq!(prepared.get(), 1);
+        drop(replacement);
+
+        let stale_model = IdleModelPreparation::claim(&state, model.into()).unwrap();
+        // Drop the configuration lease before switching to a different model.
+        drop(_guard);
+        configure_dictation_with_effects(
+            serde_json::json!({"model":"base.en"}),
+            &state,
+            None,
+            |_, _| panic!("base.en does not warm"),
+        )
+        .unwrap();
+        assert!(!stale_model.is_current(&state));
+        assert!(stale_model
+            .run::<()>(&state, |_| panic!("changed model must not prepare"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

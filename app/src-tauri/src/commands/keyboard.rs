@@ -107,12 +107,27 @@ pub(crate) fn apply_app_disabled(
         crate::smart_auto_probe::preempt();
         crate::audio_lifecycle::retire_standby();
     }
-    keyboard::set_app_disabled(disabled);
+    let state = app_handle.state::<crate::State>();
+    let reenabled = update_app_disabled(&state.app_state, disabled);
+    if reenabled {
+        crate::commands::recording::request_idle_model_preparation(&app_handle);
+    }
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
     sync_tray_disabled_item(&app_handle);
     app_handle
         .emit("app-disabled-changed", disabled)
         .map_err(|e| e.to_string())
+}
+
+// Shared with the worker regression; keep the epoch change synchronous with
+// the authoritative disabled flag, before a re-enable can queue a replacement.
+pub(crate) fn update_app_disabled(state: &crate::state::AppState, disabled: bool) -> bool {
+    let was_disabled = keyboard::is_app_disabled();
+    keyboard::set_app_disabled(disabled);
+    if !was_disabled && disabled {
+        state.idle_model_warmup.invalidate();
+    }
+    was_disabled && !disabled
 }
 
 static DISABLED_MENU_ITEM: std::sync::OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> =

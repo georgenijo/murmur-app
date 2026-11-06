@@ -4,8 +4,8 @@
 //! Unknown/legacy snapshots still use the existing frontend migration path.
 use crate::MutexExt;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    OnceLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc, Mutex, OnceLock,
 };
 use std::time::Instant;
 use tauri::Manager;
@@ -14,6 +14,58 @@ static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 static FRONTEND_CONFIGURING: AtomicBool = AtomicBool::new(false);
 static MODEL_READY: AtomicBool = AtomicBool::new(false);
 static FRONTEND_HYDRATED: AtomicBool = AtomicBool::new(false);
+
+/// Model preparation has a narrower lifetime than capture configuration:
+/// confirmations and unrelated settings must preserve an eligible worker.
+#[derive(Default)]
+pub(crate) struct WarmupQueue {
+    generation: AtomicU64,
+    pending: Mutex<Option<u64>>,
+}
+
+impl WarmupQueue {
+    // Call only for a changed model or a transition to disabled. The mutex
+    // orders invalidation against claims and completion; the atomic is safe
+    // to revalidate under the runtime load lock without taking other locks.
+    pub(crate) fn invalidate(&self) {
+        let _pending = self.pending.lock_or_recover();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn claim(self: &Arc<Self>) -> Option<WarmupTicket> {
+        let mut pending = self.pending.lock_or_recover();
+        let generation = self.generation.load(Ordering::SeqCst);
+        if *pending == Some(generation) {
+            return None;
+        }
+        *pending = Some(generation);
+        Some(WarmupTicket {
+            queue: self.clone(),
+            generation,
+        })
+    }
+}
+
+pub(crate) struct WarmupTicket {
+    queue: Arc<WarmupQueue>,
+    generation: u64,
+}
+
+impl WarmupTicket {
+    pub(crate) fn is_current(&self) -> bool {
+        self.queue.generation.load(Ordering::SeqCst) == self.generation
+    }
+}
+
+impl Drop for WarmupTicket {
+    fn drop(&mut self) {
+        let mut pending = self.queue.pending.lock_or_recover();
+        // An obsolete worker cannot release its replacement's claim.
+        if *pending == Some(self.generation) {
+            *pending = None;
+        }
+    }
+}
 
 pub fn process_start() {
     PROCESS_START.get_or_init(Instant::now);
@@ -111,26 +163,8 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
             {
                 return;
             }
-            plan.schedule_warmup(|model| {
-                let model = model.to_owned();
-                let configuration = crate::audio::prepare::configuration_generation();
-                let warm_handle = handle.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let state = warm_handle.state::<crate::State>();
-                    if crate::keyboard::is_app_disabled() {
-                        return;
-                    }
-                    *state.app_state.last_transcription_at.lock_or_recover() = Some(Instant::now());
-                    let _ = state.app_state.model_runtime.prepare_startup_if(
-                        Some(&warm_handle),
-                        &model,
-                        || {
-                            !crate::keyboard::is_app_disabled()
-                                && crate::audio::prepare::configuration_generation()
-                                    == configuration
-                        },
-                    );
-                });
+            plan.schedule_warmup(|_| {
+                crate::commands::recording::request_idle_model_preparation(&handle);
             });
         }
     });
