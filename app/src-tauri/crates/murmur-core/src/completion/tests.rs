@@ -5,6 +5,7 @@ pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
     let mut e = Engine {
         unpreserved_content: false,
         failed_source: None,
+        failed_content: None,
         storage: Storage {
             root: root.into(),
             ..Default::default()
@@ -292,6 +293,7 @@ fn state_first_creation_failure_blocks_all_writes_and_arming() {
     let mut e = Engine {
         unpreserved_content: false,
         failed_source: None,
+        failed_content: None,
         storage: Storage {
             root: dir.path().into(),
             fail: Some((STATE.into(), Boundary::BeforeRename)),
@@ -1421,4 +1423,40 @@ fn explicit_pending_recovery_through_public_service_across_two_launches() {
         futures_executor::block_on(service.shutdown_receipt()),
         crate::shutdown::WriteOutcome::Committed
     );
+}
+
+#[test]
+fn explicit_recovery_replays_usable_pending_instead_of_discarding_it() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    complete(&mut e, "accepted", true);
+    assert!(e.storage.root.join(PENDING).exists());
+    assert_eq!(e.execute(Command::RecoverPending).unwrap().history.len(), 1);
+    assert!(!e.storage.quarantined(PENDING).unwrap());
+    assert_eq!(reopen(&e).snapshot().unwrap().history.len(), 1);
+}
+
+#[test]
+fn report_failure_before_pending_admission_retains_exact_held_report() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    // A readable pre-migration destination makes cap_held publish evictions
+    // before its pending Holding intent is constructed.
+    e.storage
+        .write(
+            "benchmark-reports.json",
+            &Document::new(Destination::Reports),
+        )
+        .unwrap();
+    e.storage.fail = Some(("benchmark-reports.json".into(), Boundary::BeforeRename));
+    assert!(e.execute(Command::Report(report(1))).is_err());
+    assert!(e.failed_content.is_some());
+    e.storage.fail = Some(("benchmark-reports.json".into(), Boundary::BeforeRename));
+    assert_eq!(
+        e.write_receipt(),
+        crate::shutdown::WriteOutcome::UnpreservedFailure
+    );
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    assert_eq!(e.snapshot().unwrap().reports.len(), 1);
 }

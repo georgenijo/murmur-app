@@ -250,6 +250,7 @@ impl CompletionService {
                 let mut engine = Engine {
                     unpreserved_content: false,
                     failed_source: None,
+                    failed_content: None,
                     storage: Storage::new(root),
                     webkit_exists,
                     seen: HashSet::new(),
@@ -374,6 +375,7 @@ fn diagnostic(code: &'static str) {
 struct Engine {
     unpreserved_content: bool,
     failed_source: Option<lifecycle::Operation>,
+    failed_content: Option<(Destination, Value)>,
     initialized: bool,
     revision: u64,
     storage: Storage,
@@ -390,6 +392,7 @@ impl Engine {
         let sources = self.lifecycle(lifecycle::Operation::Status).is_ok();
         if self.unpreserved_content
             || self.failed_source.is_some()
+            || self.failed_content.is_some()
             || self.storage.has_intents()
             || !sources
             || self.state().is_err()
@@ -587,6 +590,9 @@ impl Engine {
             self.storage.remove_temps(file)?;
         }
         self.replay_content()?;
+        if let Some((destination, value)) = self.failed_content.take() {
+            self.add_content(destination, value)?;
+        }
         let mut h = self.holding()?;
         self.observe_file_receipts(&h)?;
         let previous = h.clone();
@@ -685,6 +691,7 @@ impl Engine {
         if content
             && result.is_err()
             && !self.storage.has_intents()
+            && self.failed_content.is_none()
             && !self.storage.root.join(PENDING).exists()
         {
             self.unpreserved_content = true;
@@ -830,6 +837,7 @@ impl Engine {
                             // A journal contains counts only; it cannot stand in
                             // for a transcript whose pending publication failed.
                             if !self.storage.has_intents()
+                                && self.failed_content.is_none()
                                 && !self.storage.root.join(PENDING).exists()
                             {
                                 self.unpreserved_content = true;
@@ -956,6 +964,17 @@ impl Engine {
         result
     }
     fn resolve_pending(&mut self) -> Result<()> {
+        // A valid accepted intent must replay, even when this action is selected.
+        // Explicit recovery acknowledges only rejected evidence, never discards
+        // a usable pending completion in favour of an older readable snapshot.
+        if self.storage.root.join(PENDING).exists()
+            && self
+                .storage
+                .read::<Value>(PENDING, valid_pending)?
+                .is_some()
+        {
+            return self.replay_content();
+        }
         // A readable current destination is mandatory. Never manufacture defaults
         // or replay rejected evidence as part of this explicit recovery action.
         self.holding()?;
@@ -965,9 +984,6 @@ impl Engine {
             Destination::Reports,
         ] {
             self.document(d)?;
-        }
-        if self.storage.root.join(PENDING).exists() {
-            self.storage.quarantine(PENDING)?;
         }
         self.storage.write(
             "completion-recovery.json",
@@ -1015,10 +1031,23 @@ impl Engine {
         self.replay_content()
     }
     fn add_content(&mut self, d: Destination, mut value: Value) -> Result<()> {
-        self.storage.remove_evidence(PENDING)?;
         if d == Destination::Reports && value.get("completionUuid").is_none() {
             value["completionUuid"] = json!(uuid());
         }
+        let result = self.add_content_inner(d, value.clone());
+        // Failures before pending admission (including cap/eviction writes)
+        // retain the exact accepted content for the next owner reconciliation.
+        if result.is_err()
+            && !self.storage.has_intents()
+            && self.failed_content.is_none()
+            && !self.storage.root.join(PENDING).exists()
+        {
+            self.failed_content = Some((d, value));
+        }
+        result
+    }
+    fn add_content_inner(&mut self, d: Destination, value: Value) -> Result<()> {
+        self.storage.remove_evidence(PENDING)?;
         let mut doc = self.document(d)?.unwrap_or_else(|| Document::new(d));
         if self.ready(d, &doc)? {
             let entries = doc.data.as_array_mut().ok_or(Error::Invalid)?;
