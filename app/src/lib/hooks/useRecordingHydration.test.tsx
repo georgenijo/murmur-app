@@ -69,6 +69,28 @@ describe('main renderer recording hydration', () => {
     expect(mocks.stop).toHaveBeenCalledWith('other', 42);
   });
 
+  it('hydrates recording even if only a lock event races the snapshot', async () => {
+    await mount();
+    await act(async () => {
+      emit('dictation-lock-changed', false);
+      snapshot.resolve(recording);
+    });
+    expect(current.status).toBe('recording');
+    expect(current.lockedMode).toBe(false);
+    expect(mocks.invoke).toHaveBeenCalledWith('set_waveform_subscription', { consumer: 'main-recording', active: true });
+  });
+
+  it('restores generation metadata when a matching status event races the snapshot', async () => {
+    await mount();
+    await act(async () => {
+      emit('recording-status-changed', 'recording');
+      snapshot.resolve(recording);
+    });
+    expect(current.status).toBe('recording');
+    await act(async () => current.handleStop());
+    expect(mocks.stop).toHaveBeenCalledWith('other', 42);
+  });
+
   it('cancels the hydrated starting generation', async () => {
     await mount();
     await act(async () => snapshot.resolve({ ...recording, state: 'starting', recordingStartedAtMs: null }));

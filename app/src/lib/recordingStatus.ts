@@ -13,7 +13,9 @@ export interface RecordingSnapshot {
 /** Shared by main and overlay: subscribe first, then fence the read by event epoch. */
 export function subscribeRecordingStatus(
   applyStatus: (status: DictationStatus) => void,
-  applySnapshot: (snapshot: RecordingSnapshot) => void = ({ state }) => applyStatus(state),
+  applySnapshot: (snapshot: RecordingSnapshot, eventSeen: boolean) => void = ({ state }, eventSeen) => {
+    if (!eventSeen) applyStatus(state);
+  },
   options: {
     generation?: (recordingId: number) => void;
     locked?: (locked: boolean) => void;
@@ -22,6 +24,7 @@ export function subscribeRecordingStatus(
   let disposed = false;
   // Any accepted event after this subscription starts outranks its initial read.
   let epoch = 0;
+  let lockEventSeen = false;
   const stops: (() => void)[] = [];
   const subscriptions: Promise<void>[] = [];
   const subscribe = <T>(name: string, apply: (payload: T) => boolean) => {
@@ -42,17 +45,20 @@ export function subscribeRecordingStatus(
   });
   if (options.locked) subscribe<unknown>('dictation-lock-changed', payload => {
     if (typeof payload !== 'boolean') return false;
+    lockEventSeen = true;
     options.locked!(payload);
-    return true;
+    return false;
   });
   void Promise.all(subscriptions).then(async () => {
     if (disposed) return;
     // Include events delivered while subscription promises were settling. A
     // late snapshot must never overwrite even a same-generation terminal event.
     const snapshot = await invoke<RecordingSnapshot>('get_status');
-    if (disposed || epoch !== 0) return;
+    if (disposed) return;
     if (!snapshot || !isDictationStatus(snapshot.state)) throw new Error('Invalid recording status snapshot');
-    applySnapshot(snapshot);
+    // A lock-only event must not suppress status hydration. Preserve its newer
+    // lock value independently of the lifecycle snapshot.
+    applySnapshot({ ...snapshot, locked: lockEventSeen ? undefined : snapshot.locked }, epoch !== 0);
   }).catch(() => {
     if (!disposed) flog.warn('recording', 'recording status synchronization failed');
   });

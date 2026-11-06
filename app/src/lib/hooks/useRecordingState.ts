@@ -211,14 +211,19 @@ export function useRecordingState({ microphone, smartAuto = null, canStart, wave
           }
         }
       }
-    }, (snapshot) => {
+    }, (snapshot, eventSeen) => {
+      // A raced event owns status. A matching snapshot can still restore its
+      // generation/start time when the renderer missed generation-started.
+      if (eventSeen && snapshot.state !== statusRef.current) return;
       const id = snapshot.recordingId;
       if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < latestRecordingGenerationRef.current) return;
       if ((snapshot.state === 'recording' || snapshot.state === 'starting')
         && id <= endedRecordingGenerationRef.current) return;
       latestRecordingGenerationRef.current = id;
-      statusRef.current = snapshot.state;
-      setStatus(snapshot.state);
+      if (!eventSeen) {
+        statusRef.current = snapshot.state;
+        setStatus(snapshot.state);
+      }
       const startedAt = snapshot.state === 'recording' ? snapshot.recordingStartedAtMs ?? null : null;
       recordingStartTimeRef.current = startedAt;
       setRecordingStartTime(startedAt);

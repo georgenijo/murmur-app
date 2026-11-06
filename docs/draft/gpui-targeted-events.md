@@ -426,9 +426,10 @@ Exact final-head CI is recorded in the draft PR body.
 ## Native verification follow-ups: D1 / D2
 
 D1: main and overlay now share `subscribeRecordingStatus`: targeted lifecycle
-listeners are installed before `get_status` is read. Any accepted lifecycle,
-generation or lock event during subscription/read invalidates the initial
-snapshot by local event epoch; unmount invalidates queued callbacks and reads.
+listeners are installed before `get_status` is read. Accepted lifecycle or
+generation events during subscription/read retain status ownership by local
+event epoch; a matching snapshot can still restore generation/start metadata.
+Lock events independently supersede only the snapshot lock value; unmount invalidates queued callbacks and reads.
 Main also rejects snapshots older than its observed/ended generation. The
 existing command reads status and `recordingId` under the dictation lock and
 returns the live recording start timestamp and native controller lock (using the
