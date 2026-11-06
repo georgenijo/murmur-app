@@ -57,6 +57,7 @@ function modelSnapshot(): ModelRuntimeSnapshot {
 
 function response(command: string): unknown {
   switch (command) {
+    case 'suspend_dictation_for_setup': return true;
     case 'check_specific_model_exists': return native.modelInstalled;
     case 'check_accessibility_permission': return true;
     case 'check_microphone_permission_status': return 'granted';
@@ -280,6 +281,7 @@ describe('App setup capture safety', () => {
     await mount({ recordingMode });
     await rerun('settings');
     expect(container.querySelector('.main-first-run-onboarding')).not.toBeNull();
+    expect(native.invoke).toHaveBeenCalledWith('suspend_dictation_for_setup');
     expect(native.invoke).toHaveBeenCalledWith('configure_dictation_control', {
       settings: expect.objectContaining({ launchOnboardingComplete: false }),
     });

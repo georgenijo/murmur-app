@@ -120,6 +120,14 @@ impl Controller {
             self.status = status;
         }
     }
+    pub fn reject_start(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.status != Status::Idle {
+            return false;
+        }
+        self.locked = false;
+        self.origin = Origin::Toggle;
+        true
+    }
     pub fn keyboard_recording(&self) -> bool {
         matches!(self.status, Status::Starting | Status::Recording) && self.origin != Origin::Hold
     }
@@ -312,5 +320,47 @@ impl Silence {
             self.stopped = self.silence_ms >= ceiling;
         }
         self.stopped
+    }
+}
+
+/// Bind delayed native input to the recording visible when it was enqueued.
+/// A release during the asynchronous start belongs to that accepted start,
+/// even if readiness overtook the start response; it must cancel, not deliver.
+#[derive(Default)]
+pub struct QueueGuard {
+    accepted_start: Option<(u64, u64, std::time::Instant)>,
+}
+impl QueueGuard {
+    pub fn accepted(&mut self, before: u64, generation: u64, completed: std::time::Instant) {
+        self.accepted_start = Some((before, generation, completed));
+    }
+    pub fn route(
+        &self,
+        before: u64,
+        current: u64,
+        queued: std::time::Instant,
+        input: Input,
+    ) -> Option<Input> {
+        if matches!(
+            input,
+            Input::Sync | Input::PasteLast | Input::Level { .. } | Input::SmartAnswer { .. }
+        ) {
+            return Some(input);
+        }
+        let behind_start = self
+            .accepted_start
+            .is_some_and(|(previous, accepted, completed)| {
+                (before == previous || before == accepted)
+                    && current == accepted
+                    && queued <= completed
+            });
+        if before != current && !behind_start {
+            return None;
+        }
+        Some(if behind_start && input == Input::HoldStop {
+            Input::HoldCancel
+        } else {
+            input
+        })
     }
 }

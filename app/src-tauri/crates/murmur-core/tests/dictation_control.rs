@@ -326,3 +326,73 @@ fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
     assert_eq!(host.last(), Some(&Effect::PasteLast));
     // Durable History/statistics and delivery de-duplication are explicitly 1.3.
 }
+
+#[test]
+fn delayed_native_inputs_belong_only_to_their_accepted_start() {
+    let mut guard = QueueGuard::default();
+    let before = std::time::Instant::now();
+    let completed = before + std::time::Duration::from_millis(50);
+    guard.accepted(0, 1, completed);
+    assert_eq!(
+        guard.route(0, 1, before, Input::HoldStop),
+        Some(Input::HoldCancel)
+    );
+    assert_eq!(
+        guard.route(
+            1,
+            1,
+            completed + std::time::Duration::from_millis(1),
+            Input::HoldStop
+        ),
+        Some(Input::HoldStop)
+    );
+    assert_eq!(
+        guard.route(
+            1,
+            1,
+            before + std::time::Duration::from_millis(25),
+            Input::HoldStop
+        ),
+        Some(Input::HoldCancel)
+    );
+    for input in [
+        Input::HoldStop,
+        Input::Escape,
+        Input::Lock,
+        Input::Toggle(None),
+    ] {
+        assert_eq!(guard.route(0, 2, before, input), None);
+    }
+}
+#[test]
+fn escape_after_stop_can_cancel_processing_and_disabled_does_not_block_autostop() {
+    let mut c = control();
+    recording(&mut c, 1, Origin::Toggle);
+    assert!(matches!(
+        c.input(Input::Toggle(None)),
+        Some(Effect::Stop { .. })
+    ));
+    c.observe(1, Status::Processing, Origin::Toggle);
+    assert_eq!(
+        c.input(Input::Escape),
+        Some(Effect::Cancel { generation: 1 })
+    );
+    c.observe(1, Status::Idle, Origin::Toggle);
+    recording(&mut c, 2, Origin::Toggle);
+    c.gate.disabled = true;
+    speech(&mut c, 2, 0);
+    assert_eq!(quiet(&mut c, 2, 600, 2000).len(), 1);
+}
+
+#[test]
+fn refused_locked_start_clears_lock_without_touching_a_newer_owner() {
+    let mut c = control();
+    c.input(Input::Lock);
+    assert!(c.locked);
+    assert!(c.reject_start(0));
+    assert!(!c.locked);
+    c.input(Input::Lock);
+    recording(&mut c, 1, Origin::Toggle);
+    assert!(!c.reject_start(0));
+    assert!(c.locked);
+}

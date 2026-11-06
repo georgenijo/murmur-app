@@ -5225,6 +5225,7 @@ pub async fn start_native_recording(
                             "start_native_recording"
                         );
                     });
+                crate::dictation_control::started(&app_handle, rid, origin);
                 // Freeze the native delivery target immediately after the
                 // accepted Idle -> Starting transition, under the same
                 // ownership lock. This startup work is therefore included in
@@ -5250,7 +5251,6 @@ pub async fn start_native_recording(
             }
         }
     };
-    crate::dictation_control::started(&app_handle, rid, origin);
     // Publish Starting before the worker can report Ready. Otherwise a very
     // fast device open could emit Recording first and this command would then
     // overwrite the frontend with a stale Starting event.

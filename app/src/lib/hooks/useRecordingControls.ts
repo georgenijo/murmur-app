@@ -39,8 +39,14 @@ export function useRecordingControls({
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<boolean>('dictation-lock-changed', ({ payload }) => setLockedMode(payload))
-      .then((stop) => { if (disposed) stop(); else unlisten = stop; });
+    let receivedEvent=false;
+    void listen<boolean>('dictation-lock-changed', ({ payload }) => { receivedEvent=true; setLockedMode(payload); })
+      .then(async (stop) => {
+        if (disposed) { stop(); return; }
+        unlisten=stop;
+        const locked=await invoke<boolean>('get_dictation_lock');
+        if (!disposed && !receivedEvent) setLockedMode(locked);
+      }).catch(() => {});
     return () => { disposed = true; unlisten?.(); };
   }, []);
   useEffect(() => {

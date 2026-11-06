@@ -3,10 +3,13 @@
 use crate::{MutexExt, State};
 use murmur_core::{
     context::AppContext,
-    dictation::{Controller, Effect, Input, Origin, Status},
+    dictation::{Controller, Effect, Input, Origin, QueueGuard, Status},
 };
 use std::{
-    sync::{atomic::Ordering, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
     time::Instant,
 };
 use tauri::{Emitter, Listener, Manager};
@@ -20,15 +23,17 @@ pub(crate) struct Control {
     controller: Mutex<Controller>,
     send: tokio::sync::mpsc::UnboundedSender<Queued>,
     epoch: Instant,
+    setup_suspended: AtomicBool,
     pub(crate) settings: Mutex<serde_json::Value>,
 }
 
 pub(crate) fn initialize(app: &tauri::AppHandle) {
-    let (send, mut receive) = tokio::sync::mpsc::unbounded_channel();
+    let (sender, mut receive) = tokio::sync::mpsc::unbounded_channel();
     app.manage(Control {
         controller: Mutex::new(Controller::default()),
-        send,
+        send: sender,
         epoch: Instant::now(),
+        setup_suspended: AtomicBool::new(false),
         settings: Mutex::new(serde_json::Value::Null),
     });
     let sync_handle = app.clone();
@@ -38,46 +43,45 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
     let handle = app.clone();
     let context = app.state::<AppContext>().inner().clone();
     let _ = context.background.spawn(Box::pin(async move {
-        let mut accepted_start: Option<(u64, u64, Instant)> = None;
+        let mut input_guard = QueueGuard::default();
+        let mut last_locked = false;
         while let Some(queued) = receive.recv().await {
-            let mut input = queued.input;
+            let input = queued.input;
             let state = handle.state::<State>();
-            let (generation, status) = {
-                let dictation = state.app_state.dictation.lock_or_recover();
-                (
-                    state.app_state.recording_id.load(Ordering::SeqCst),
-                    status(dictation.status),
-                )
-            };
-            // Events queued while a start was awaiting acceptance belong only to
-            // the generation that start actually created. A later manual start
-            // cannot inherit an old release, Escape, lock, or Smart Turn answer.
-            let behind_start = accepted_start.is_some_and(|(before, accepted, completed)| {
-                queued.generation == before && generation == accepted && queued.at <= completed
-            });
-            if !matches!(
-                input,
-                Input::Sync | Input::PasteLast | Input::Level { .. } | Input::SmartAnswer { .. }
-            ) {
-                if queued.generation != generation && !behind_start {
-                    continue;
-                }
-                if behind_start && input == Input::HoldStop {
-                    input = Input::HoldCancel;
-                }
-            }
             let control = handle.state::<Control>();
-            let (effect, recording, locked) = {
+            let (generation, effect, locked) = {
+                // Same lock order as accepted native starts: native state then
+                // controller. No stale snapshot can roll a newer owner back.
+                let dictation = state.app_state.dictation.lock_or_recover();
+                let generation = state.app_state.recording_id.load(Ordering::SeqCst);
+                let Some(input) =
+                    input_guard.route(queued.generation, generation, queued.at, input)
+                else {
+                    continue;
+                };
                 let mut controller = control.controller.lock_or_recover();
-                controller.observe(generation, status, Origin::Toggle);
+                controller.observe(generation, status(dictation.status), Origin::Toggle);
                 let effect = controller.input(input);
-                (effect, controller.keyboard_recording(), controller.locked)
+                crate::keyboard::set_recording_state(controller.keyboard_recording());
+                (generation, effect, controller.locked)
             };
-            crate::keyboard::set_recording_state(recording);
-            let _ = handle.emit("dictation-lock-changed", locked);
+            if locked != last_locked {
+                let _ = handle.emit("dictation-lock-changed", locked);
+                last_locked = locked;
+            }
             if let Some(effect) = effect {
+                let start = matches!(effect, Effect::Start { .. });
                 if let Some(accepted) = execute(&handle, effect).await {
-                    accepted_start = Some((generation, accepted, Instant::now()));
+                    input_guard.accepted(generation, accepted, Instant::now());
+                } else if start
+                    && control
+                        .controller
+                        .lock_or_recover()
+                        .reject_start(generation)
+                    && last_locked
+                {
+                    let _ = handle.emit("dictation-lock-changed", false);
+                    last_locked = false;
                 }
             }
         }
@@ -311,7 +315,7 @@ pub(crate) async fn configure(
     });
     let accessibility = crate::injector::is_accessibility_enabled();
     let control = app.state::<Control>();
-    let gate = murmur_core::dictation::LaunchGate {
+    let mut gate = murmur_core::dictation::LaunchGate {
         configured,
         onboarding_complete: settings["launchOnboardingComplete"]
             .as_bool()
@@ -322,12 +326,18 @@ pub(crate) async fn configure(
     };
     {
         let mut controller = control.controller.lock_or_recover();
+        gate.onboarding_complete &= !control.setup_suspended.load(Ordering::SeqCst);
         controller.gate = gate;
         controller.silence_ms = settings["autoStopSilenceMs"]
             .as_u64()
             .filter(|ms| [0, 1500, 2500, 4000].contains(ms))
             .unwrap_or(0);
         controller.smart_enabled = settings["smartAutoStopEnabled"].as_bool().unwrap_or(false);
+    }
+    let policy = probe_policy(&settings);
+    let previous_policy = probe_policy(&control.settings.lock_or_recover());
+    if policy != previous_policy {
+        crate::smart_auto_probe::configure_host_policy(policy)?;
     }
     *control.settings.lock_or_recover() = settings.clone();
     crate::commands::keyboard::set_app_disabled(app.clone(), gate.disabled)?;
@@ -345,9 +355,13 @@ pub(crate) async fn configure(
 
 #[tauri::command]
 pub(crate) async fn configure_dictation_control(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     settings: serde_json::Value,
 ) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Configure dictation from the main window.".into());
+    }
     configure(&app, settings).await
 }
 #[tauri::command]
@@ -365,9 +379,103 @@ pub(crate) async fn refresh(app: &tauri::AppHandle) {
 pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) {
     if let Some(control) = app.try_state::<Control>() {
         control.controller.lock_or_recover().gate.disabled = disabled;
+        let policy = {
+            let mut settings = control.settings.lock_or_recover();
+            if let Some(object) = settings.as_object_mut() {
+                object.insert("disabled".into(), serde_json::json!(disabled));
+            }
+            probe_policy(&settings)
+        };
+        let _ = crate::smart_auto_probe::configure_host_policy(policy);
     }
 }
 pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
     app.try_state::<Control>()
         .is_none_or(|control| control.controller.lock_or_recover().gate.can_start())
+}
+
+fn probe_policy(settings: &serde_json::Value) -> serde_json::Value {
+    if settings["disabled"] == false
+        && settings["microphone"] == "system_default"
+        && settings["smartAutoMicrophoneEnabled"] == true
+        && settings["smartAutoProbeEnabled"] == true
+    {
+        serde_json::json!({"enabled":true,"request":{
+            "approvedDeviceIds":settings["smartAutoApprovedDeviceIds"],
+            "preferredDeviceIds":settings["smartAutoPreferredDeviceIds"],
+            "allowContinuity":settings["smartAutoAllowContinuity"],
+            "requireRecentSignal":true,
+        }})
+    } else {
+        serde_json::json!({"enabled":false})
+    }
+}
+#[tauri::command]
+pub(crate) async fn suspend_dictation_for_setup(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("Run setup from the main window.".into());
+    }
+    let state = app.state::<State>();
+    let _transition = state.app_state.recording_transition.lock().await;
+    let dictation = state.app_state.dictation.lock_or_recover();
+    if crate::commands::recording::dictation_start_blocker(&state, dictation.status).is_some()
+        || crate::audio_lifecycle::is_audio_active()
+    {
+        return Ok(false);
+    }
+    let control = app.state::<Control>();
+    let mut controller = control.controller.lock_or_recover();
+    control.setup_suspended.store(true, Ordering::SeqCst);
+    controller.gate.onboarding_complete = false;
+    Ok(true)
+}
+#[tauri::command]
+pub(crate) async fn resume_dictation_after_setup(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    settings: serde_json::Value,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Complete setup from the main window.".into());
+    }
+    let control = app.state::<Control>();
+    control.setup_suspended.store(false, Ordering::SeqCst);
+    let result = configure(&app, settings).await;
+    if result.is_err() {
+        control.setup_suspended.store(true, Ordering::SeqCst);
+        control
+            .controller
+            .lock_or_recover()
+            .gate
+            .onboarding_complete = false;
+    }
+    result
+}
+#[tauri::command]
+pub(crate) fn get_dictation_lock(app: tauri::AppHandle) -> bool {
+    app.state::<Control>().controller.lock_or_recover().locked
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_probe_policy_preserves_consent_and_input_gates() {
+        let settings = serde_json::json!({"disabled":false,"microphone":"system_default",
+            "smartAutoMicrophoneEnabled":true,"smartAutoProbeEnabled":true,
+            "smartAutoApprovedDeviceIds":["synthetic"],"smartAutoPreferredDeviceIds":[],"smartAutoAllowContinuity":false});
+        assert_eq!(probe_policy(&settings)["enabled"], true);
+        for (key, value) in [
+            ("disabled", serde_json::json!(true)),
+            ("microphone", serde_json::json!("fixed")),
+            ("smartAutoMicrophoneEnabled", serde_json::json!(false)),
+            ("smartAutoProbeEnabled", serde_json::json!(false)),
+        ] {
+            let mut disabled = settings.clone();
+            disabled[key] = value;
+            assert_eq!(probe_policy(&disabled)["enabled"], false);
+        }
+    }
 }

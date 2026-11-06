@@ -202,6 +202,10 @@ function App() {
     doubleTapKey: typeof settings.doubleTapKey,
   ) => {
     await configureOnboarding({ model, recordingMode, doubleTapKey });
+    await invoke('resume_dictation_after_setup', { settings: {
+      ...getCurrentSettings(), model, recordingMode, doubleTapKey,
+      settingsVersion: SETTINGS_VERSION, launchOnboardingComplete: true,
+    } });
     setupAdmittedRef.current = false;
     markOnboardingComplete();
     initializeDiscoveryAfterSetup(discoveryEvidence(settings, loadStats()));
@@ -274,13 +278,13 @@ function App() {
   // React supplies validated settings after first-run migration and reflects
   // native state. Unmounting this client never disarms the native controller.
   useEffect(() => {
-    if (!initialized || accessibilityGranted === null) return;
+    if (!initialized || accessibilityGranted === null || onboardingState === 'unknown' || modelReady === null) return;
     void invoke('configure_dictation_control', { settings: {
-      ...getConfirmedSettings(),
+      ...settings,
       settingsVersion: SETTINGS_VERSION,
       launchOnboardingComplete: mainAppReady,
     } }).catch(() => {});
-  }, [initialized, accessibilityGranted, mainAppReady, settings, getConfirmedSettings]);
+  }, [initialized, accessibilityGranted, mainAppReady, settings, onboardingState, modelReady]);
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({
     automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD,
@@ -436,14 +440,18 @@ function App() {
         presentDeliveryRecoveryNotice({ message: 'Stop recording first before running setup.', retryable: false });
         return;
       }
+      if (!await invoke<boolean>('suspend_dictation_for_setup')) {
+        presentDeliveryRecoveryNotice({ message: 'Stop recording first before running setup.', retryable: false });
+        return;
+      }
     } catch {
       presentDeliveryRecoveryNotice({ message: 'Could not check recording state. Try running setup again.', retryable: false });
       return;
     } finally {
       setupRequestPendingRef.current = false;
     }
-    // Close admission synchronously, before React commits setup and removes
-    // the hotkey listeners: an already queued callback must not start capture.
+    // Native admission is closed under the same fence as recording starts.
+    // The local guard also blocks pending main-window button callbacks.
     setupAdmittedRef.current = true;
     setIsSettingsOpen(false);
     setIsPaletteOpen(false);

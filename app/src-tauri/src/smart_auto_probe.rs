@@ -268,6 +268,12 @@ pub(crate) fn configure_smart_auto_probe(
     if window.label() != "main" {
         return Err("Automatic input checks can only be configured in the main window.".into());
     }
+    configure_host_policy(policy)
+}
+
+/// Restore already-consented native settings without manufacturing a webview.
+/// IPC callers still pass through the main-window authorization above.
+pub(crate) fn configure_host_policy(policy: serde_json::Value) -> Result<u64, String> {
     let mut inner = controller().inner.lock_or_recover();
     let result = apply_policy(&mut inner, policy);
     drop(inner);
