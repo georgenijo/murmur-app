@@ -355,8 +355,69 @@ pub(crate) async fn source_call<T: Send + 'static>(
     receive.await.map_err(|_| ())
 }
 
-/// Generation checks run inside the source FIFO, before any disk access.
-/// Renderer UUIDs scope counters across reloads; window labels scope owners.
+fn source_order() -> &'static Mutex<murmur_core::source_order::SourceOrder> {
+    static ORDER: std::sync::OnceLock<Mutex<murmur_core::source_order::SourceOrder>> =
+        std::sync::OnceLock::new();
+    ORDER.get_or_init(Default::default)
+}
+
+fn valid_source_session(session: &str) -> bool {
+    !session.is_empty() && session.len() <= 128 && session.is_ascii()
+}
+
+#[tauri::command]
+pub(crate) async fn register_source_session(
+    window: tauri::WebviewWindow,
+    source_session: String,
+) -> Result<(), String> {
+    let admission = WriterPermit::acquire()?;
+    register_source_owner(window.label().into(), source_session, admission).await
+}
+
+async fn register_source_owner(
+    owner: String,
+    session: String,
+    admission: WriterPermit,
+) -> Result<(), String> {
+    if !matches!(owner.as_str(), "main" | "overlay") || !valid_source_session(&session) {
+        return Err("Invalid source session".into());
+    }
+    source_call(move || {
+        let _admission = admission;
+        if source_order().lock_or_recover().register(&owner, &session) {
+            Ok(())
+        } else {
+            Err("Source session retired".into())
+        }
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+/// Session retirement and publication share the FIFO and mutex. No request can
+/// re-activate an old renderer. Concurrent labels do not retire one another.
+pub(crate) async fn ordered_source_call<T: Send + 'static>(
+    owner: String,
+    session: String,
+    work: impl FnOnce(&mut murmur_core::source_order::SourceOrder, &str, &str) -> Result<T, String>
+        + Send
+        + 'static,
+) -> Result<murmur_core::source_order::SourceWrite<T>, String> {
+    if !matches!(owner.as_str(), "main" | "overlay") || !valid_source_session(&session) {
+        return Err("Invalid source write owner or session".into());
+    }
+    source_call(move || {
+        let mut order = source_order().lock_or_recover();
+        if !order.is_current(&owner, &session) {
+            return Ok(murmur_core::source_order::SourceWrite::Superseded);
+        }
+        work(&mut order, &owner, &session)
+            .map(|value| murmur_core::source_order::SourceWrite::Applied { value })
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
 pub(crate) async fn versioned_source_call<T: Send + 'static>(
     owner: String,
     session: String,
@@ -364,25 +425,30 @@ pub(crate) async fn versioned_source_call<T: Send + 'static>(
     generation: u64,
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<murmur_core::source_order::SourceWrite<T>, String> {
-    if owner != "main"
-        || session.is_empty()
-        || session.len() > 128
-        || !session.is_ascii()
-        || generation == 0
-        || generation > 9_007_199_254_740_991
-    {
+    if owner != "main" || generation == 0 || generation > 9_007_199_254_740_991 {
         return Err("Invalid source write owner or generation".into());
     }
-    source_call(move || {
-        static ORDER: std::sync::OnceLock<Mutex<murmur_core::source_order::SourceOrder>> =
-            std::sync::OnceLock::new();
-        ORDER
-            .get_or_init(Default::default)
-            .lock_or_recover()
-            .apply(&owner, &session, &key, generation, work)
+    // Flatten the session receipt without acknowledging any newer snapshot.
+    match ordered_source_call(owner, session, move |order, owner, session| {
+        order.apply(owner, session, &key, generation, work)
     })
-    .await
-    .map_err(|_| "Source writer unavailable".to_owned())?
+    .await?
+    {
+        murmur_core::source_order::SourceWrite::Applied { value } => Ok(value),
+        murmur_core::source_order::SourceWrite::Superseded => {
+            Ok(murmur_core::source_order::SourceWrite::Superseded)
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn register_test_source(owner: &str, session: &str) {
+    tauri::async_runtime::block_on(register_source_owner(
+        owner.into(),
+        session.into(),
+        WriterPermit::accepted_producer(),
+    ))
+    .unwrap();
 }
 
 #[cfg(feature = "shutdown-test-support")]
@@ -500,6 +566,7 @@ mod tests {
             "usage-dashboard-collapsed",
         ] {
             let session = uuid::Uuid::new_v4().to_string();
+            register_test_source("main", &session);
             let path = root.path().join(key);
             let older_path = path.clone();
             // Construct A first but poll B first, exactly the IPC scheduling race.
@@ -521,6 +588,55 @@ mod tests {
                 SourceWrite::Superseded
             );
             assert_eq!(std::fs::read(path).unwrap(), b"newer");
+        }
+    }
+
+    #[test]
+    fn retired_renderer_generation_100_cannot_overwrite_reloaded_generation_1() {
+        use murmur_core::source_order::SourceWrite;
+        let root = tempfile::tempdir().unwrap();
+        for key in [
+            "dictation-settings",
+            "murmur-theme-library",
+            "usage-dashboard-collapsed",
+        ] {
+            let old_session = uuid::Uuid::new_v4().to_string();
+            register_test_source("main", &old_session);
+            let path = root.path().join(key);
+            let old_path = path.clone();
+            let old = versioned_source_call(
+                "main".into(),
+                old_session.clone(),
+                key.into(),
+                100,
+                move || std::fs::write(old_path, b"old").map_err(|e| e.to_string()),
+            );
+            let new_session = uuid::Uuid::new_v4().to_string();
+            register_test_source("main", &new_session);
+            let new_path = path.clone();
+            assert_eq!(
+                tauri::async_runtime::block_on(versioned_source_call(
+                    "main".into(),
+                    new_session,
+                    key.into(),
+                    1,
+                    move || std::fs::write(new_path, b"new").map_err(|e| e.to_string())
+                ))
+                .unwrap(),
+                SourceWrite::Applied { value: () }
+            );
+            assert_eq!(
+                tauri::async_runtime::block_on(old).unwrap(),
+                SourceWrite::Superseded
+            );
+            assert_eq!(std::fs::read(path).unwrap(), b"new");
+            // A delayed registration retry cannot resurrect the retired session.
+            assert!(tauri::async_runtime::block_on(register_source_owner(
+                "main".into(),
+                old_session,
+                WriterPermit::accepted_producer()
+            ))
+            .is_err());
         }
     }
 

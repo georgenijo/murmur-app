@@ -125,7 +125,7 @@ describe('overlay settings write ownership', () => {
       expect(stored.overlayPlacement).toBe('floating_pill');
       expect(container.querySelector('output')?.textContent).toBe('floating_pill');
       expectRevocationPreserved();
-      expect(mocks.invoke).toHaveBeenCalledWith('patch_overlay_setting', { field, value: true });
+      expect(mocks.invoke).toHaveBeenCalledWith('patch_overlay_setting', { field, value: true, sourceSession: expect.any(String) });
       expect(mocks.saveSettings).not.toHaveBeenCalled();
       expect(mocks.emitTo).not.toHaveBeenCalledWith('overlay', 'settings-changed', undefined);
     });

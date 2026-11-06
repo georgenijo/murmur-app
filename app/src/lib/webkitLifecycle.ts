@@ -1,7 +1,7 @@
 import { PRESENTATION_KEYS, PRESENTATION_CHANGED, ownsPresentationKey, presentationStorage, setPresentationReloader, cacheFailure } from './presentationStorage';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, sendTo } from './targetedEvents';
-import { sourceSession, nextSourceWriteVersion } from './sourceWriteVersion';
+import { sourceSession, nextSourceWriteVersion, invokeSource } from './sourceWriteVersion';
 
 // This cache contains presentation source state only. Migration ownership and
 // validation belong to murmur-core; malformed raw strings reach Rust intact.
@@ -100,26 +100,29 @@ function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending
   const version = { sourceSession, intentGeneration: intent.generation };
   try {
     request = key === 'dictation-settings' || key === 'murmur-theme-library'
-      ? invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ownedEdits: wireEdits, ...version })
-      : invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown, ...version });
+      ? invokeSource(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ownedEdits: wireEdits, ownedEditGenerations: Object.fromEntries(Object.keys(wireEdits).map(field => [field, intent.fieldGenerations?.[field as OwnedField]])), ...version })
+      : invokeSource('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown, ...version });
   } catch { request = Promise.reject(new Error('Source storage unavailable')); }
   const promise = Promise.resolve(request).then(async result => {
-    // No disk publication and no field acknowledgement occurred. In particular,
-    // a newer snapshot may have omitted fields this stale request carried.
-    if (result && typeof result === 'object' && 'status' in result && result.status === 'superseded') return;
+    const superseded = !!(result && typeof result === 'object' && 'status' in result && result.status === 'superseded');
+    // Snapshot and field receipts are independent. A superseded snapshot never
+    // acknowledges newer content; native may separately own its exact patches.
+    const fieldReceipts = result && typeof result === 'object' && 'ownedPatchGenerations' in result
+      ? result.ownedPatchGenerations as Partial<Record<OwnedField, number>> : undefined;
     const current = pending.get(key);
     if (current) {
       const ownedEdits = { ...current.ownedEdits };
       const fieldGenerations = { ...current.fieldGenerations };
       for (const field of ['autoPaste', 'disabled'] as const) {
-        if (typeof wireEdits[field] === 'boolean' && fieldGenerations[field] === intent.fieldGenerations?.[field]) {
+        if (typeof wireEdits[field] === 'boolean' && fieldGenerations[field] === intent.fieldGenerations?.[field]
+          && (fieldReceipts ? fieldReceipts[field] === intent.fieldGenerations?.[field] : !superseded)) {
           delete ownedEdits[field]; delete fieldGenerations[field];
         }
       }
-      if (current.generation === intent.generation && !Object.keys(ownedEdits).length) pending.delete(key);
+      if (!superseded && current.generation === intent.generation && !Object.keys(ownedEdits).length) pending.delete(key);
       else pending.set(key, { ...current, ownedEdits, fieldGenerations });
     }
-    if (synchronization) await notifySourceCommitted(key);
+    if (!superseded && synchronization) await notifySourceCommitted(key);
     if (!pending.size) window.dispatchEvent(new Event(SOURCE_STORAGE_SAVED));
   }, () => {
     if (pending.has(key)) window.dispatchEvent(new Event(SOURCE_STORAGE_FAILED));

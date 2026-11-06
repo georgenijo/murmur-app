@@ -382,3 +382,75 @@ unknown lint, and the supported strict invocation above passes without it.
 `git diff --check` passes. No public API, frontend, or app host caller changed, so
 no frontend checks or Mac host-caller test run is required for this worker's delta.
 All fixtures and injected failures are synthetic; no user stores were opened.
+
+## Round-three source ordering corrections
+
+P1-A: UUIDs alone did not order successive renderers. Every source producer now
+joins one `register_source_session` handshake before sending writes. Native
+registration order establishes a session epoch for each window label: the new
+session retires its predecessor across **all** keys, and an old registration
+retry cannot reactivate it. Registration, retirement, fences and publication
+share the native source FIFO and order mutex. No renderer timestamp decides
+precedence. The current/retired session table is the epoch representation; it
+needs no persisted counter because renderer sessions cannot outlive the host.
+
+The actual writers are deliberately narrow: main owns settings, theme library
+and all generic source snapshots; companion full snapshots remain rejected.
+Overlay owns only `autoPaste`/`disabled` field patches. Main and overlay register
+independently, so a live overlay is never retired by a main reload (or vice
+versa). Diagnostics and dictation preview only read source data. Concurrent
+windows' genuine edits are ordered by native queue acceptance for each field,
+without comparing their unrelated renderer counters. Reloaded main starts at
+generation one; its predecessor's delayed generation 100 is superseded before
+publication, including on keys the successor has not yet written.
+
+An intent sent by a renderer that crashes **before native accepts it** has no
+native ownership guarantee. If it arrives before that label's next registration
+it can be accepted in the old epoch; once the replacement registers it is
+superseded without publication. A renderer must complete registration before
+sending intents, so an old write cannot masquerade as a new session. An
+uncompleted registration is not an accepted edit; registration order itself
+defines which session is current. No crash recovery promise depends on renderer
+memory or message delivery that native never accepted.
+
+P1-B: settings snapshot fencing no longer discards owned patches. Each deliberate
+field has its own original generation, carried unchanged on retries, and its own
+native fence. An accepted settings request owns both its snapshot and patches
+inside the native queue/WriterPermit lifetime. A superseded snapshot still
+publishes its fresh field patches against the **current native document**, leaving
+language and other fields intact. Full snapshots always take existing owned
+values/revision from native; only deliberate patches can change them. Overlay
+quick controls and these patches use the same FIFO, locked merge and full-sync
+publisher. Different fields never replace one another. Distinct edits of one
+field resolve in native acceptance order across labels; within one renderer its
+per-field generation prevents reordered/duplicate edits from reversing a newer
+edit. A retry of an already accepted field ID cannot replay it behind a later
+quick-control change.
+
+Snapshot receipts remain `applied` or `superseded`. A settings receipt separately
+returns `ownedPatchGenerations` for the exact field IDs now owned by native;
+these never acknowledge a newer document or another field. Commit events retain
+their session/generation and per-field acknowledgements. A failed publication
+continues to retain the exact merged value in the durable source owner and
+reports failure; a later retry or the shutdown source recovery drains it. Native
+shutdown waits accepted writer permits, recovers source publications and seals
+the completion owner. It requires no `flushSourceState` call from a renderer.
+Renderer flush still drains all retained fields, and an identical retry after
+failure still sends again. Retained patches keep their original field IDs even
+when the document retry gets a fresh generation.
+
+Regressions use synthetic data and the actual native FIFO: the exact old-session
+100/new-session 1 sequence for settings/themes/generic keys; the exact delayed
+main Auto Paste patch after an unrelated newer Spanish snapshot and an overlay
+disable, followed by native writer recovery and the completion shutdown receipt
+with **no renderer flush** (`autoPaste=true`, `disabled=true`, `language=es`);
+main/overlay same-field ordering, duplicate field retries, different-field
+preservation, overlay reload retirement and continued main edits. Core tests also
+cover retirement on untouched keys and independent field fences. Frontend tests
+cover the registration barrier, fresh registration on reload, handshake failure,
+and separate exact-field receipts on superseded snapshots. Existing per-field
+acknowledgement, flush, identical retry and authoritative-cache tests remain.
+
+Verification results will be appended after Linux and Mac mini checks. This
+implementation worker performs no GUI action, merge or independent review; the
+parent retains the independent Sol recheck gate.

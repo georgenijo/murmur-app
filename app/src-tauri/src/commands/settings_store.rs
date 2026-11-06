@@ -218,6 +218,7 @@ pub(crate) fn save_settings_blob_worker(
     owned_edits: Option<OwnedEdits>,
     intent_generation: Option<u64>,
     source_session: String,
+    snapshot_current: bool,
 ) -> Result<String, String> {
     require_settings_owner(window.label())?;
     let value =
@@ -232,9 +233,8 @@ pub(crate) fn save_settings_blob_worker(
         // Assign revisions in durable commit order across concurrent saves.
         // Native overrides can still supersede this intent during disk I/O.
         let _guard = WRITE_LOCK.lock_or_recover();
-        let blob = merge_owned_fields_with_edits(&dir, &blob, owned_edits.as_ref())?;
+        let blob = commit_settings_intent(&dir, &blob, owned_edits.as_ref(), snapshot_current)?;
         let revision = crate::dictation_control::accept_configuration(&app);
-        write_blob_locked(&dir, SETTINGS, &blob)?;
         (revision, blob)
     };
     notify_settings_committed(&app, &blob);
@@ -277,6 +277,24 @@ pub(crate) fn save_settings_blob_worker(
         );
     }
     Ok(blob)
+}
+
+/// Caller holds WRITE_LOCK. A superseded document contributes only its owned
+/// patch; every other field comes from the authoritative durable snapshot.
+fn commit_settings_intent(
+    dir: &Path,
+    blob: &str,
+    edits: Option<&OwnedEdits>,
+    snapshot: bool,
+) -> Result<String, String> {
+    let base = if snapshot {
+        blob.to_owned()
+    } else {
+        read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?
+    };
+    let committed = merge_owned_fields_with_edits(dir, &base, edits)?;
+    write_blob_locked(dir, SETTINGS, &committed)?;
+    Ok(committed)
 }
 
 fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
@@ -362,7 +380,7 @@ fn owned_fields_notification(
 
 /// Older full snapshots cannot undo an overlay commit accepted since their
 /// capture. The epoch is durable and advances with each owned-field patch.
-#[derive(serde::Deserialize)]
+#[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OwnedEdits {
     auto_paste: Option<bool>,
@@ -388,11 +406,12 @@ fn merge_owned_fields_with_edits(
             incoming["launchOnboardingComplete"] = current["launchOnboardingComplete"].clone();
         }
         let epoch = current["ownedFieldsRevision"].as_u64().unwrap_or(0);
-        if incoming["ownedFieldsRevision"].as_u64().unwrap_or(0) < epoch {
-            for field in ["autoPaste", "disabled", "ownedFieldsRevision"] {
-                incoming[field] = current[field].clone();
-            }
+        // Full documents never own these fields once native has a snapshot.
+        // Only deliberate, independently ordered patches may change them.
+        for field in ["autoPaste", "disabled"] {
+            incoming[field] = current[field].clone();
         }
+        incoming["ownedFieldsRevision"] = serde_json::json!(epoch);
     }
     if let Some(edits) = edits {
         if edits.auto_paste.is_some() || edits.disabled.is_some() {
@@ -821,6 +840,7 @@ mod lifecycle_ordering_tests {
         let original = serde_json::json!({"settingsVersion":7,"autoPaste":false,"disabled":false,"language":"en","ownedFieldsRevision":0}).to_string();
         write_blob(dir.path(), SETTINGS, &original).unwrap();
         let session = uuid::Uuid::new_v4().to_string();
+        crate::shutdown::register_test_source("main", &session);
         let older_dir = dir.path().to_path_buf();
         let older = crate::shutdown::versioned_source_call(
             "main".into(),
@@ -1047,34 +1067,139 @@ pub async fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>,
     .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OwnedEditGenerations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_paste: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disabled: Option<u64>,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsWrite {
+    #[serde(flatten)]
+    snapshot: murmur_core::source_order::SourceWrite<String>,
+    owned_patch_generations: OwnedEditGenerations,
+}
+
+/// Runs inside the real source queue. Snapshot and field fences are independent;
+/// accepted fields survive a superseded document. Cross-window fields resolve
+/// by queue acceptance order, while retries retain their original field IDs.
+fn select_settings_intent(
+    order: &mut murmur_core::source_order::SourceOrder,
+    owner: &str,
+    session: &str,
+    generation: u64,
+    edits: OwnedEdits,
+    fields: OwnedEditGenerations,
+) -> Result<(bool, OwnedEdits, OwnedEditGenerations), String> {
+    let valid = |g: u64| g > 0 && g <= generation && g <= 9_007_199_254_740_991;
+    if !valid(generation) {
+        return Err("Invalid settings generation".into());
+    }
+    for (value, field_generation) in [
+        (edits.auto_paste, fields.auto_paste),
+        (edits.disabled, fields.disabled),
+    ] {
+        if value.is_some() && !field_generation.is_some_and(valid) {
+            return Err("Invalid owned field generation".into());
+        }
+    }
+    let snapshot = order.take(owner, session, "dictation-settings", generation);
+    let mut accepted = OwnedEdits::default();
+    let mut acknowledgements = OwnedEditGenerations::default();
+    for (key, value, field_generation, target, ack) in [
+        (
+            "settings:autoPaste",
+            edits.auto_paste,
+            fields.auto_paste,
+            &mut accepted.auto_paste,
+            &mut acknowledgements.auto_paste,
+        ),
+        (
+            "settings:disabled",
+            edits.disabled,
+            fields.disabled,
+            &mut accepted.disabled,
+            &mut acknowledgements.disabled,
+        ),
+    ] {
+        if let (Some(value), Some(g)) = (value, field_generation) {
+            // Even a duplicate ID is owned by native already; its original
+            // publication was committed or retained by the durable owner.
+            if order.take(owner, session, key, g) {
+                *target = Some(value);
+            }
+            *ack = Some(g);
+        }
+    }
+    Ok((snapshot, accepted, acknowledgements))
+}
+
 #[tauri::command]
 pub async fn save_settings_blob(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     blob: String,
     owned_edits: Option<OwnedEdits>,
+    owned_edit_generations: Option<OwnedEditGenerations>,
     intent_generation: u64,
     source_session: String,
-) -> Result<murmur_core::source_order::SourceWrite<String>, String> {
+) -> Result<SettingsWrite, String> {
+    require_settings_owner(window.label())?;
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    crate::shutdown::versioned_source_call(
+    match crate::shutdown::ordered_source_call(
         window.label().into(),
         source_session.clone(),
-        "dictation-settings".into(),
-        intent_generation,
-        move || {
+        move |order, owner, session| {
             let _admission = admission;
-            save_settings_blob_worker(
-                app,
-                window,
-                blob,
-                owned_edits,
-                Some(intent_generation),
-                source_session,
+            // Validate before reserving any field identity.
+            murmur_core::state::settings(
+                serde_json::from_str(&blob).map_err(|_| "Invalid settings")?,
             )
+            .map_err(|_| "Invalid settings")?;
+            let (snapshot, edits, acknowledged) = select_settings_intent(
+                order,
+                owner,
+                session,
+                intent_generation,
+                owned_edits.unwrap_or_default(),
+                owned_edit_generations.unwrap_or_default(),
+            )?;
+            let published = if snapshot || edits.auto_paste.is_some() || edits.disabled.is_some() {
+                Some(save_settings_blob_worker(
+                    app,
+                    window,
+                    blob,
+                    Some(edits),
+                    Some(intent_generation),
+                    source_session,
+                    snapshot,
+                )?)
+            } else {
+                None
+            };
+            Ok(SettingsWrite {
+                snapshot: if snapshot {
+                    murmur_core::source_order::SourceWrite::Applied {
+                        value: published.unwrap(),
+                    }
+                } else {
+                    murmur_core::source_order::SourceWrite::Superseded
+                },
+                owned_patch_generations: acknowledged,
+            })
         },
     )
-    .await
+    .await?
+    {
+        murmur_core::source_order::SourceWrite::Applied { value } => Ok(value),
+        murmur_core::source_order::SourceWrite::Superseded => Ok(SettingsWrite {
+            snapshot: murmur_core::source_order::SourceWrite::Superseded,
+            owned_patch_generations: OwnedEditGenerations::default(),
+        }),
+    }
 }
 
 #[tauri::command]
@@ -1083,14 +1208,23 @@ pub async fn patch_overlay_setting(
     window: tauri::WebviewWindow,
     field: OverlaySettingField,
     value: bool,
+    source_session: String,
 ) -> Result<String, String> {
+    require_overlay_owner(window.label())?;
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    crate::shutdown::source_call(move || {
-        let _admission = admission;
-        patch_overlay_setting_worker(app, window, field, value)
-    })
-    .await
-    .map_err(|_| "Source writer unavailable".to_owned())?
+    match crate::shutdown::ordered_source_call(
+        window.label().into(),
+        source_session,
+        move |_, _, _| {
+            let _admission = admission;
+            patch_overlay_setting_worker(app, window, field, value)
+        },
+    )
+    .await?
+    {
+        murmur_core::source_order::SourceWrite::Applied { value } => Ok(value),
+        murmur_core::source_order::SourceWrite::Superseded => Err("Source session retired".into()),
+    }
 }
 
 #[tauri::command]
@@ -1157,4 +1291,210 @@ pub async fn restore_source_backup(
     })
     .await
     .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[cfg(test)]
+mod round_three_ordering_tests {
+    use super::*;
+    use murmur_core::source_order::SourceWrite;
+
+    // Same selection, merge and full-sync publisher used by the IPC worker,
+    // through the real native source FIFO, without creating an app or webview.
+    async fn save(
+        root: PathBuf,
+        session: String,
+        generation: u64,
+        language: &str,
+        edits: OwnedEdits,
+        fields: OwnedEditGenerations,
+    ) -> SourceWrite<String> {
+        let blob = serde_json::json!({"language":language,"autoPaste":false,"disabled":false,"ownedFieldsRevision":0}).to_string();
+        let admission = crate::shutdown::WriterPermit::accepted_producer();
+        match crate::shutdown::ordered_source_call(
+            "main".into(),
+            session,
+            move |order, owner, session| {
+                let _admission = admission;
+                let (snapshot, edits, _) =
+                    select_settings_intent(order, owner, session, generation, edits, fields)?;
+                let _guard = WRITE_LOCK.lock_or_recover();
+                let blob = commit_settings_intent(&root, &blob, Some(&edits), snapshot)?;
+                Ok(if snapshot {
+                    SourceWrite::Applied { value: blob }
+                } else {
+                    SourceWrite::Superseded
+                })
+            },
+        )
+        .await
+        .unwrap()
+        {
+            SourceWrite::Applied { value } => value,
+            SourceWrite::Superseded => SourceWrite::Superseded,
+        }
+    }
+    async fn quick(
+        root: PathBuf,
+        session: String,
+        field: OverlaySettingField,
+        value: bool,
+    ) -> SourceWrite<String> {
+        let admission = crate::shutdown::WriterPermit::accepted_producer();
+        crate::shutdown::ordered_source_call("overlay".into(), session, move |_, _, _| {
+            let _admission = admission;
+            patch_owned_setting(&root, field, value)
+        })
+        .await
+        .unwrap()
+    }
+    fn setup() -> (tempfile::TempDir, String, String) {
+        let root = tempfile::tempdir().unwrap();
+        write_blob(
+            root.path(),
+            SETTINGS,
+            r#"{"autoPaste":false,"disabled":false,"language":"en"}"#,
+        )
+        .unwrap();
+        let main = uuid::Uuid::new_v4().to_string();
+        let overlay = uuid::Uuid::new_v4().to_string();
+        crate::shutdown::register_test_source("main", &main);
+        crate::shutdown::register_test_source("overlay", &overlay);
+        (root, main, overlay)
+    }
+    fn recovered(root: &Path) -> serde_json::Value {
+        // The real source barrier and completion owner's shutdown receipt. No
+        // renderer flush runs. Reopen/recover exactly as the next launch does.
+        let path = root.to_path_buf();
+        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+            murmur_core::completion::recover_source(&path, "dictation-settings").unwrap();
+        }))
+        .unwrap();
+        let service =
+            murmur_core::completion::CompletionService::start(root.into(), false).unwrap();
+        assert_eq!(
+            tauri::async_runtime::block_on(service.shutdown_receipt()),
+            murmur_core::shutdown::WriteOutcome::Committed
+        );
+        murmur_core::completion::recover_source(root, "dictation-settings").unwrap();
+        serde_json::from_str(&read_blob(root, SETTINGS).unwrap().unwrap()).unwrap()
+    }
+    #[test]
+    fn superseded_auto_paste_patch_survives_native_shutdown_without_renderer_flush() {
+        let (root, main, overlay) = setup();
+        tauri::async_runtime::block_on(quick(
+            root.path().into(),
+            overlay,
+            OverlaySettingField::Disabled,
+            true,
+        ));
+        // A is constructed first, but B is accepted/executed first, with no
+        // owned fields and a stale cache (the overlay event has not arrived).
+        let a = save(
+            root.path().into(),
+            main.clone(),
+            1,
+            "en",
+            OwnedEdits {
+                auto_paste: Some(true),
+                disabled: None,
+            },
+            OwnedEditGenerations {
+                auto_paste: Some(1),
+                disabled: None,
+            },
+        );
+        let b = save(
+            root.path().into(),
+            main,
+            2,
+            "es",
+            OwnedEdits::default(),
+            OwnedEditGenerations::default(),
+        );
+        assert!(matches!(
+            tauri::async_runtime::block_on(b),
+            SourceWrite::Applied { .. }
+        ));
+        assert_eq!(tauri::async_runtime::block_on(a), SourceWrite::Superseded);
+        let disk = recovered(root.path());
+        assert_eq!(disk["autoPaste"], true);
+        assert_eq!(disk["disabled"], true);
+        assert_eq!(disk["language"], "es");
+    }
+    #[test]
+    fn concurrent_windows_order_same_field_and_never_clobber_other_fields() {
+        let (root, main, overlay) = setup();
+        let save_auto = |g, value| {
+            save(
+                root.path().into(),
+                main.clone(),
+                g,
+                "es",
+                OwnedEdits {
+                    auto_paste: Some(value),
+                    disabled: None,
+                },
+                OwnedEditGenerations {
+                    auto_paste: Some(g),
+                    disabled: None,
+                },
+            )
+        };
+        tauri::async_runtime::block_on(save_auto(1, true));
+        tauri::async_runtime::block_on(quick(
+            root.path().into(),
+            overlay.clone(),
+            OverlaySettingField::Disabled,
+            true,
+        ));
+        tauri::async_runtime::block_on(quick(
+            root.path().into(),
+            overlay.clone(),
+            OverlaySettingField::AutoPaste,
+            false,
+        ));
+        // Identical retry retains its original field ID, so cannot undo the
+        // later overlay edit even though its snapshot gets a fresh generation.
+        tauri::async_runtime::block_on(save(
+            root.path().into(),
+            main.clone(),
+            2,
+            "es",
+            OwnedEdits {
+                auto_paste: Some(true),
+                disabled: None,
+            },
+            OwnedEditGenerations {
+                auto_paste: Some(1),
+                disabled: None,
+            },
+        ));
+        assert_eq!(recovered(root.path())["autoPaste"], false);
+        tauri::async_runtime::block_on(save_auto(3, true));
+        let disk = recovered(root.path());
+        assert_eq!(disk["autoPaste"], true);
+        assert_eq!(disk["disabled"], true);
+        // Reloading overlay retires only overlay, not main.
+        let reloaded = uuid::Uuid::new_v4().to_string();
+        crate::shutdown::register_test_source("overlay", &reloaded);
+        tauri::async_runtime::block_on(quick(
+            root.path().into(),
+            reloaded,
+            OverlaySettingField::Disabled,
+            false,
+        ));
+        assert_eq!(
+            tauri::async_runtime::block_on(quick(
+                root.path().into(),
+                overlay,
+                OverlaySettingField::Disabled,
+                true
+            )),
+            SourceWrite::Superseded
+        );
+        tauri::async_runtime::block_on(save_auto(4, false));
+        let disk = recovered(root.path());
+        assert_eq!(disk["autoPaste"], false);
+        assert_eq!(disk["disabled"], false);
+    }
 }

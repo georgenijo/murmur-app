@@ -1,3 +1,9 @@
+vi.mock('./sourceWriteVersion', async importOriginal => ({
+  ...await importOriginal<typeof import('./sourceWriteVersion')>(),
+  // These suites exercise publication/field ownership after registration.
+  // The handshake itself is covered by sourceWriteVersion.test.ts.
+  invokeSource: (command: string, args: Record<string, unknown>) => mock.invoke(command, args),
+}));
 import { beforeEach, expect, it, vi } from 'vitest';
 const mock = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke, isTauri: () => true }));
@@ -287,4 +293,19 @@ it('an acknowledgement from a previous renderer session cannot clear this sessio
   await flushSourceState();
   const saves = mock.invoke.mock.calls.filter(([name]) => name === 'save_settings_blob');
   expect(saves[saves.length - 1][1].ownedEdits).toEqual({ autoPaste: true });
+});
+
+it('a superseded document acknowledges only the exact patches owned by native', async () => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  let a!: (receipt: unknown) => void;
+  mock.invoke.mockImplementationOnce(() => new Promise(resolve => { a = resolve; })).mockResolvedValue(undefined);
+  persistSourceState('dictation-settings', '{"autoPaste":true,"disabled":false,"language":"en"}', { autoPaste: true });
+  persistSourceState('dictation-settings', '{"autoPaste":true,"disabled":false,"language":"es"}', {});
+  const first = mock.invoke.mock.calls[0][1];
+  await new Promise(resolve => setTimeout(resolve, 0));
+  a({ status: 'superseded', ownedPatchGenerations: { autoPaste: first.ownedEditGenerations.autoPaste } });
+  await flushSourceState();
+  const saves = mock.invoke.mock.calls.filter(([name]) => name === 'save_settings_blob');
+  expect(saves[saves.length - 1][1].ownedEdits).toEqual({});
+  expect(JSON.parse(saves[saves.length - 1][1].blob).language).toBe('es');
 });

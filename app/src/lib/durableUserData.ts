@@ -1,4 +1,4 @@
-import { nextSourceWriteVersion } from './sourceWriteVersion';
+import { nextSourceWriteVersion, invokeSource } from './sourceWriteVersion';
 import { presentationStorage } from './presentationStorage';
 import { persistSourceState } from './webkitLifecycle';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -98,7 +98,7 @@ export async function hydrateDurableStore(store: DurableBlobStore): Promise<void
     // store. The Rust side re-checks the bounded JSON container.
     const cached = presentationStorage.getItem(store.storageKey);
     if (cached !== null) {
-      await invoke(store.saveCommand, { blob: cached, ...nextSourceWriteVersion() });
+      await invokeSource(store.saveCommand, { blob: cached, ...nextSourceWriteVersion() });
     }
   } catch (error) {
     // A storage problem must not block startup. Keep the localStorage cache as

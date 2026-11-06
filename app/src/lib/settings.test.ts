@@ -1,3 +1,9 @@
+vi.mock('./sourceWriteVersion', async importOriginal => ({
+  ...await importOriginal<typeof import('./sourceWriteVersion')>(),
+  // These suites exercise publication/field ownership after registration.
+  // The handshake itself is covered by sourceWriteVersion.test.ts.
+  invokeSource: (command: string, args: Record<string, unknown>) => mocks.invoke(command, args),
+}));
 import { flushSourceState } from './webkitLifecycle';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
