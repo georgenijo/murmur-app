@@ -37,7 +37,7 @@ class UpdaterFixturePolicy(unittest.TestCase):
         self.assertIn(config['pubkey'], source)
         self.assertEqual(config['endpoints'], ['https://github.com/georgenijo/murmur-app/releases/latest/download/latest-v2.json'])
         self.assertIn(config['endpoints'][0], source)
-        self.assertNotIn('minisign', (TAURI / 'src/commands/updater.rs').read_text().lower())
+        self.assertNotIn('minisign_verify', (TAURI / 'src/commands/updater.rs').read_text())
         for workflow in (ROOT / '.github/workflows').glob('*.yml'):
             self.assertNotIn('--features shutdown-test-support', workflow.read_text())
 

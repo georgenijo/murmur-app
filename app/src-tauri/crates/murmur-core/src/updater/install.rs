@@ -300,6 +300,35 @@ pub fn install(
     sync(&stage)?;
     validate(target, &offer.version, identifier)
 }
+/// Resolve an uncertain post-exchange sync without exchanging twice. Keep the
+/// old bundle until a new process validates its own running version.
+pub fn adopted(root: &Path, target: &Path, offered: &str, identifier: &str) -> Result<bool> {
+    let path = root.join(JOURNAL);
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(io(e)),
+    };
+    if raw.len() > 65536 {
+        return Err("Invalid update recovery receipt".into());
+    }
+    let journal: Journal =
+        serde_json::from_slice(&raw).map_err(|_| "Invalid update recovery receipt")?;
+    if journal.schema != 1
+        || journal.bundle != target
+        || journal.identifier != identifier
+        || journal.version != offered
+    {
+        return Err("Update recovery identity mismatch".into());
+    }
+    if validate(target, offered, identifier).is_err() {
+        return Ok(false);
+    }
+    sync(target.parent().ok_or("Missing app parent")?)?;
+    sync(&staging(target, journal.id)?)?;
+    sync(root)?;
+    Ok(true)
+}
 /// Recover before the first check. A pre-exchange receipt is discarded only
 /// while the original bundle is present; a post-exchange receipt is consumed
 /// only by a process running the offered version. Future/corrupt evidence stays.

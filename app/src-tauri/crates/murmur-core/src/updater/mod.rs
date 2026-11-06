@@ -116,6 +116,8 @@ pub struct Updater {
     feed: String,
     key: String,
     local_fixture: bool,
+    canary: Option<PathBuf>,
+    dry_run: bool,
     changed: Arc<dyn Fn(Snapshot) + Send + Sync>,
     notify: Arc<dyn Fn(String) + Send + Sync>,
 }
@@ -149,6 +151,8 @@ impl Updater {
             feed: FEED.into(),
             key: PUBLIC_KEY.into(),
             local_fixture: false,
+            canary: canary_path(),
+            dry_run: canary_dry_run(),
             changed: Arc::new(changed),
             notify: Arc::new(notify),
         }
@@ -370,6 +374,10 @@ impl Updater {
             );
         })?;
         self.require_active()?;
+        if let Some(mut result) = self.read_canary().filter(|r| r["status"] == "pending") {
+            result["stages"]["download"] = json!("passed");
+            self.write_canary(&result)?;
+        }
         verify(&bytes, &offer.signature, &self.key)?;
         engine.bytes = Some(bytes);
         self.state(
@@ -395,17 +403,18 @@ impl Updater {
                 },
                 true,
             );
-            // Do not recover here after an uncertain install: startup verifies the
-            // receipt. Retrying cannot exchange the bundles a second time.
-            install::install(
-                &self.root,
-                &bundle,
-                offer,
-                bytes,
-                &self.key,
-                &self.identifier,
-                || !self.stopping.load(Ordering::Acquire),
-            )?;
+            if !install::adopted(&self.root, &bundle, &offer.version, &self.identifier)? {
+                install::recover(&self.root, &bundle, &self.current, &self.identifier)?;
+                install::install(
+                    &self.root,
+                    &bundle,
+                    offer,
+                    bytes,
+                    &self.key,
+                    &self.identifier,
+                    || !self.stopping.load(Ordering::Acquire),
+                )?;
+            }
             engine.installed = true;
             engine.bytes = None;
         }
@@ -481,13 +490,14 @@ impl Updater {
             _ => "check",
         };
         let result = (|| {
+            self.require_active()?;
             match action {
                 Action::Configure { automatic } => {
                     self.automatic.store(automatic, Ordering::Release);
                     self.refresh_completed()?;
                     if automatic && !engine.startup {
                         engine.startup = true;
-                        if canary_path().is_some() {
+                        if self.canary.is_some() {
                             return self.run_canary(&mut engine);
                         }
                         self.check(&mut engine, true)?;
@@ -556,9 +566,23 @@ pub fn canary_dry_run() -> bool {
         .is_ok_and(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "True"))
 }
 impl Updater {
+    fn read_canary(&self) -> Option<Value> {
+        self.canary
+            .as_ref()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|v| serde_json::from_slice(&v).ok())
+    }
+    fn write_canary(&self, result: &Value) -> Result<()> {
+        install::atomic_json(
+            self.canary
+                .as_deref()
+                .ok_or("Updater canary is not enabled")?,
+            result,
+        )
+    }
     fn run_canary(&self, engine: &mut Engine) -> Result<bool> {
-        let previous = canary_read();
-        if !canary_dry_run()
+        let previous = self.read_canary();
+        if !self.dry_run
             && previous.as_ref().is_some_and(|p| {
                 p["status"] == "pending"
                     && p["offeredVersion"] == self.current
@@ -580,18 +604,18 @@ impl Updater {
             if let Ok(bundle) = install::bundle(&self.executable) {
                 install::recover(&self.root, &bundle, &self.current, &self.identifier)?;
             }
-            canary_write(&result)?;
+            self.write_canary(&result)?;
             return Ok(false);
         }
-        canary_write(
-            &json!({"schemaVersion":1,"status":"pending","checkedVersion":self.current,"offeredVersion":null,"forced":false,"dryRun":canary_dry_run(),"stages":{"discover":"pending","policy":"pending","download":"pending","signatureVerify":"pending","install":"pending","relaunch":"pending"},"error":null}),
+        self.write_canary(
+            &json!({"schemaVersion":1,"status":"pending","checkedVersion":self.current,"offeredVersion":null,"forced":false,"dryRun":self.dry_run,"stages":{"discover":"pending","policy":"pending","download":"pending","signatureVerify":"pending","install":"pending","relaunch":"pending"},"error":null}),
         )?;
         self.check(engine, false)?;
         let offer = engine
             .offer
             .as_ref()
             .ok_or("No update available for OTA canary")?;
-        let mut result = canary_read().ok_or("Canary result unavailable")?;
+        let mut result = self.read_canary().ok_or("Canary result unavailable")?;
         result["offeredVersion"] = json!(offer.version);
         result["forced"] = json!(offer.forced);
         result["stages"]["discover"] = json!("passed");
@@ -600,30 +624,30 @@ impl Updater {
         } else {
             "failed"
         });
-        canary_write(&result)?;
+        self.write_canary(&result)?;
         if !offer.policy_verified {
             return Err("Update policy could not be parsed from native manifest".into());
         }
-        if canary_dry_run() {
+        if self.dry_run {
             result["status"] = json!("dry-run");
-            canary_write(&result)?;
+            self.write_canary(&result)?;
             return Ok(false);
         }
         self.download(engine)?;
         result["stages"]["download"] = json!("passed");
         result["stages"]["signatureVerify"] = json!("passed");
-        canary_write(&result)?;
+        self.write_canary(&result)?;
         self.install(engine)
     }
     fn canary_installed(&self) -> Result<()> {
-        if let Some(mut result) = canary_read().filter(|r| r["status"] == "pending") {
+        if let Some(mut result) = self.read_canary().filter(|r| r["status"] == "pending") {
             result["stages"]["install"] = json!("passed");
-            canary_write(&result)?;
+            self.write_canary(&result)?;
         }
         Ok(())
     }
     fn canary_failed(&self, error: &str) {
-        if let Some(mut result) = canary_read().filter(|r| r["status"] == "pending") {
+        if let Some(mut result) = self.read_canary().filter(|r| r["status"] == "pending") {
             let stage = [
                 "discover",
                 "policy",
@@ -639,7 +663,7 @@ impl Updater {
             }
             result["status"] = json!("failed");
             result["error"] = json!(error);
-            let _ = canary_write(&result);
+            let _ = self.write_canary(&result);
         }
     }
 }

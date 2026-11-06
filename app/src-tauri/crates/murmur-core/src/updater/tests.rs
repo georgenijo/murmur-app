@@ -322,3 +322,316 @@ fn rust_owner_requires_v3_before_network_and_generic_sources_cannot_seed_invalid
         .contains("migration"));
     assert!(crate::state::normalize("updater-last-check", json!(-1)).is_err());
 }
+
+struct Server {
+    address: std::net::SocketAddr,
+    routes: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    count: Arc<std::sync::atomic::AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Server {
+    fn new() -> Self {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let routes = Arc::new(Mutex::new(
+            std::collections::HashMap::<String, Vec<u8>>::new(),
+        ));
+        let copy = routes.clone();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = count.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !done.load(Ordering::Acquire) {
+                if let Ok((mut socket, _)) = listener.accept() {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut bytes = [0; 8192];
+                    let n = socket.read(&mut bytes).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&bytes[..n]);
+                    let path = request.split_whitespace().nth(1).unwrap_or("");
+                    calls.fetch_add(1, Ordering::AcqRel);
+                    let body = copy.lock().unwrap().get(path).cloned();
+                    let (code, body) = body
+                        .map(|b| ("200 OK", b))
+                        .unwrap_or_else(|| ("503 Unavailable", vec![]));
+                    let header = format!(
+                        "HTTP/1.1 {code}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = socket.write_all(header.as_bytes());
+                    let _ = socket.write_all(&body);
+                } else {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        });
+        Self {
+            address,
+            routes,
+            count,
+            stop,
+            thread: Some(thread),
+        }
+    }
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.address)
+    }
+    fn set(&self, path: &str, bytes: Vec<u8>) {
+        self.routes.lock().unwrap().insert(path.into(), bytes);
+    }
+    fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+}
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        self.thread.take().unwrap().join().unwrap();
+    }
+}
+fn network_owner(
+    temp: &Path,
+    server: &Server,
+    forced: bool,
+) -> (Updater, CompletionService, PathBuf) {
+    let root = temp.join("data");
+    let target = temp.join("Murmur.app");
+    make_bundle(&target, "1.0.0");
+    let new = temp.join("New.app");
+    make_bundle(&new, "1.2.0");
+    let bytes = archive(&new);
+    let (key, sig) = signed(&bytes);
+    let mut manifest = json!({"version":"1.2.0","notes":"Synthetic upgrade","platforms":{platform():{"url":server.url("/archive"),"signature":sig}}});
+    if forced {
+        manifest["min_version"] = json!("1.1.0");
+    }
+    server.set("/feed", manifest.to_string().into_bytes());
+    server.set("/archive", bytes);
+    let store = CompletionService::start(root.clone(), false).unwrap();
+    let mut updater = Updater::production(
+        root,
+        target.join("Contents/MacOS/ui"),
+        ID.into(),
+        "1.0.0".into(),
+        store.clone(),
+        |_| {},
+        |_| {},
+    );
+    updater.feed = server.url("/feed");
+    updater.key = key;
+    updater.local_fixture = true;
+    (updater, store, target)
+}
+#[test]
+fn real_http_owner_checks_downloads_retries_installs_and_confirms_notes_on_new_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let (updater, store, target) = network_owner(temp.path(), &server, false);
+    updater.act(Action::Configure { automatic: false }).unwrap();
+    assert_eq!(server.count(), 0);
+    updater.act(Action::Check { background: false }).unwrap();
+    assert!(matches!(
+        updater.snapshot().update_status,
+        Status::Available {
+            is_forced: false,
+            ..
+        }
+    ));
+    updater.act(Action::Dismiss).unwrap();
+    assert!(!updater.snapshot().is_update_dialog_open);
+    updater.act(Action::Show).unwrap();
+    assert!(updater.snapshot().is_update_dialog_open);
+    // Failed signature leaves the old app intact, then a corrected download retries.
+    let original = server
+        .routes
+        .lock()
+        .unwrap()
+        .get("/archive")
+        .unwrap()
+        .clone();
+    server.set("/archive", b"tampered".to_vec());
+    assert!(updater.act(Action::Download).is_err());
+    assert_eq!(
+        fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+        "synthetic 1.0.0"
+    );
+    server.set("/archive", original);
+    updater.act(Action::Download).unwrap();
+    let calls = server.count();
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Download).unwrap();
+    assert_eq!(server.count(), calls);
+    assert!(matches!(
+        updater.snapshot().update_status,
+        Status::Ready { .. }
+    ));
+    updater.act(Action::Dismiss).unwrap();
+    assert!(!updater.snapshot().is_update_dialog_open);
+    // Fail an actual exchange and retry from retained verified bytes, without HTTP.
+    let blocked = target.parent().unwrap().join("placeholder");
+    fs::rename(&target, &blocked).unwrap();
+    assert!(updater.act(Action::Install).is_err());
+    fs::rename(&blocked, &target).unwrap();
+    assert!(updater.act(Action::Install).unwrap());
+    assert_eq!(server.count(), calls);
+    assert!(!updater.act(Action::Install).unwrap());
+    let next = Updater::production(
+        temp.path().join("data"),
+        target.join("Contents/MacOS/ui"),
+        ID.into(),
+        "1.2.0".into(),
+        store.clone(),
+        |_| {},
+        |_| {},
+    );
+    next.act(Action::Configure { automatic: false }).unwrap();
+    assert_eq!(
+        next.snapshot().completed_update.unwrap().notes,
+        "Synthetic upgrade"
+    );
+    assert!(!temp.path().join("data/updater-install.json").exists());
+    next.act(Action::DismissCompleted).unwrap();
+    next.act(Action::Configure { automatic: false }).unwrap();
+    assert!(next.snapshot().completed_update.is_none());
+}
+#[test]
+fn rust_schedule_gates_setup_six_hours_ready_and_forced_dismissal() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let (updater, store, _) = network_owner(temp.path(), &server, true);
+    updater.act(Action::Configure { automatic: false }).unwrap();
+    updater.act(Action::Check { background: true }).unwrap();
+    assert_eq!(server.count(), 0);
+    updater.act(Action::Configure { automatic: true }).unwrap();
+    assert_eq!(server.count(), 1);
+    updater.act(Action::Check { background: true }).unwrap();
+    assert_eq!(server.count(), 1);
+    updater.act(Action::Dismiss).unwrap();
+    assert!(updater.snapshot().is_update_dialog_open);
+    store
+        .lifecycle(Operation::Save {
+            key: "updater-last-check".into(),
+            value: json!(now() - INTERVAL - 1),
+        })
+        .unwrap();
+    updater.act(Action::Check { background: true }).unwrap();
+    assert_eq!(server.count(), 2);
+    updater.act(Action::Download).unwrap();
+    updater.act(Action::Dismiss).unwrap();
+    assert!(updater.snapshot().is_update_dialog_open);
+    let count = server.count();
+    updater.act(Action::Check { background: false }).unwrap();
+    assert_eq!(server.count(), count);
+}
+#[test]
+fn freshness_failure_keeps_prior_signed_offer_and_shutdown_fences_continuations() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let (updater, _, target) = network_owner(temp.path(), &server, false);
+    updater.act(Action::Check { background: false }).unwrap();
+    updater
+        .engine
+        .lock()
+        .unwrap()
+        .offer
+        .as_mut()
+        .unwrap()
+        .discovered = 0;
+    server.routes.lock().unwrap().remove("/feed");
+    updater.act(Action::Download).unwrap();
+    assert!(matches!(
+        updater.snapshot().update_status,
+        Status::Ready { .. }
+    ));
+    updater.stop();
+    assert!(updater.drained());
+    assert!(updater.act(Action::Install).is_err());
+    assert_eq!(
+        fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+        "synthetic 1.0.0"
+    );
+}
+#[test]
+fn uncertain_install_adopts_new_bundle_and_pre_exchange_failure_retries_without_swapback() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = Server::new();
+    let (updater, _, target) = network_owner(temp.path(), &server, false);
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Download).unwrap();
+    let offer = updater.engine.lock().unwrap().offer.clone().unwrap();
+    let bytes = updater.engine.lock().unwrap().bytes.clone().unwrap();
+    // Complete the real exchange but lose the process-local acknowledgement.
+    install::install(
+        &updater.root,
+        &target,
+        &offer,
+        &bytes,
+        &updater.key,
+        ID,
+        || true,
+    )
+    .unwrap();
+    assert!(updater.act(Action::Install).unwrap());
+    assert_eq!(
+        fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+        "synthetic 1.2.0"
+    );
+}
+#[test]
+fn canary_dry_run_preserves_pending_stages_and_actual_flow_marks_only_new_version_passed() {
+    for dry in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let server = Server::new();
+        let (mut updater, store, target) = network_owner(temp.path(), &server, false);
+        let path = temp.path().join("canary/result.json");
+        updater.canary = Some(path.clone());
+        updater.dry_run = dry;
+        assert_eq!(
+            updater.act(Action::Configure { automatic: true }).unwrap(),
+            !dry
+        );
+        let result = updater.read_canary().unwrap();
+        assert_eq!(result["checkedVersion"], "1.0.0");
+        assert_eq!(result["offeredVersion"], "1.2.0");
+        if dry {
+            assert_eq!(result["status"], "dry-run");
+            assert_eq!(result["stages"]["download"], "pending");
+            assert_eq!(server.count(), 1);
+        } else {
+            assert_eq!(result["status"], "pending");
+            assert_eq!(result["stages"]["install"], "passed");
+            assert_eq!(result["stages"]["relaunch"], "pending");
+            let mut next = Updater::production(
+                temp.path().join("data"),
+                target.join("Contents/MacOS/ui"),
+                ID.into(),
+                "1.2.0".into(),
+                store,
+                |_| {},
+                |_| {},
+            );
+            next.canary = Some(path);
+            assert!(!next.act(Action::Configure { automatic: true }).unwrap());
+            let result = next.read_canary().unwrap();
+            assert_eq!(result["status"], "passed");
+            for stage in [
+                "discover",
+                "policy",
+                "download",
+                "signatureVerify",
+                "install",
+                "relaunch",
+            ] {
+                assert_eq!(result["stages"][stage], "passed");
+            }
+        }
+    }
+}
