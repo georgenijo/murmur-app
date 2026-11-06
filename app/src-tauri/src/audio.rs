@@ -11,7 +11,6 @@ use murmur_capture_helper_protocol::{
     ProductionDeviceKind, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
     ProductionLidState, SessionNonce, SetupTransition,
 };
-use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;

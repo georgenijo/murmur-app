@@ -50,8 +50,8 @@ The pinned Tauri 2.11.2 `Emitter` source defines `emit`, `emit_str`, `emit_to`,
 `emit_str_to`, `emit_filter` and `emit_str_filter`; the reserved prefix also
 covers future `emit_*` names. `Emitter` identifier tokens are forbidden outside
 the adapter, including aliased imports and UFCS. Tauri glob imports (including
-nested groups), crate aliases and Tauri re-exports are forbidden there, preventing
-repository facades from hiding a glob import. Inside the adapter, only `emit_to`
+nested groups), crate aliases and Tauri re-exports are forbidden throughout the
+repository (including the adapter), preventing facades from hiding a glob import. Inside the adapter, only `emit_to`
 and `emit_str_to` with the literal `tauri::EventTarget::webview_window(label)`
 target are permitted. Broadcast methods, `Any`, `AnyLabel`, other target kinds,
 target variables, string targets/conversions and macro metavariables are rejected.
@@ -60,10 +60,11 @@ Existing targeted producers use its named-consumer `send_to` transport.
 Literal `#[path]`, `include!`, and Rust-file `include_str!`/`include_bytes!`
 destinations must resolve to scanned files. Nonliteral inclusion paths,
 conditional path attributes, inline-module path attributes with ambiguous bases,
-and escaping source/directory symlinks fail closed. Ordinary non-Rust fixture
+macro-forwarded attributes/inclusion names, and escaping source/directory
+symlinks fail closed. Ordinary non-Rust fixture
 inclusions are allowed. This is a **source-level guard**, not a compiler or a
-sandbox: arbitrary procedural-macro/build-script code synthesis is not proved
-safe by it. The guard and its regression fixtures remain wired into CI alongside
+sandbox: arbitrary procedural-macro/build-script code synthesis and full Rust
+macro expansion are not proved safe by it. The guard and its regression fixtures remain wired into CI alongside
 the core dependency guard.
 
 Audit commands: `rg -n '\.emit|emit_all|Emitter::emit|AppHandle::emit' app/src-tauri`,
@@ -245,9 +246,9 @@ stop, cancel and replacement transitions, asserting that old samples disappear
 and the replacement's sample arrives. Additional tests cover warm reactivation
 of the same activity allocation and revocation during the visibility query.
 Ownership-check mutation testing must fail these regressions. Hide/show,
-dispatch-failure recovery and
-cleanup before a failing reload are covered. Existing completion/gesture
-regressions run with no retired assertions. Guard regression fixtures include macro repetition, glob/aliased imports, both
+dispatch-failure recovery and cleanup before a failing reload are covered. Existing completion/gesture
+regressions run with no retired assertions. Guard regression fixtures include
+macro repetition, glob/aliased imports, both
 UFCS forms, `AnyLabel`, filtered/string broadcasts, cfg-gated code, source outside
 the former app scan root, external/excluded `#[path]`/include escapes, symlinks,
 raw identifiers, re-export facades and constrained-adapter targets, plus literal
@@ -258,3 +259,38 @@ The command reference now contains **180 commands**, including
 macOS and CI results are recorded in the draft PR. No native synthetic input is
 sent while another task's Murmur occupies the Mac mini GUI. No production data,
 logs, transcript, audio, clipboard contents or WebKit directory are inspected.
+
+## Test-count reconciliation
+
+On the Mac mini with Rust 1.98.1, the identical command from `app/src-tauri`,
+`cargo test -- --test-threads=1`, selects the app package because the workspace
+sets `default-members = ["."]`. It includes all that package's unit/integration
+binaries and doc tests; it does **not** select the other workspace packages.
+
+| Binary | `0e853722` passed / ignored | Generation fix passed / ignored |
+|---|---:|---:|
+| `ui_lib` unit tests | 1,505 / 14 | 1,513 / 14 |
+| `ui` main | 0 / 0 | 0 / 0 |
+| `capture_helper_spike` | 12 / 0 | 12 / 0 |
+| `coreml_transcription_integration` | 0 / 1 | 0 / 1 |
+| `headless_benchmark` ordinary unit tests | 4 / 1 | 4 / 1 |
+| `transcription_integration` | 1 / 0 | 1 / 0 |
+| `ui_lib` doc tests | 0 / 0 | 0 / 0 |
+| **libtest total** | **1,522 / 16** | **1,530 / 16** |
+
+The separate `main_thread_queue` executable has `harness = false` and passed
+at both revisions; it has no libtest count. Comparing app test names finds no
+removed test and eight additions: three from the preceding coalescing/crash
+fixes, plus five capture-ownership regressions in this fix.
+
+An explicit reproduction at `4617b7a2` with `cargo test --workspace --
+--test-threads=1` returns exactly the earlier **1,692 passed / 17 ignored**:
+the same 1,522 / 16 app subtotal, plus capture-helper **46 / 0**, its
+`topology_watch` integration binary **0 / 1**, capture-helper-protocol **13 / 0**,
+and murmur-core **111 / 0** (83 unit, 19 dictation-control, 5 foundation,
+3 gesture, 1 main-thread tests; doc tests 0). The reported discrepancy was
+workspace selection, not lost tests. The intermediate `3047a800` app subtotal
+was 1,525 / 16, before the five new ownership tests. Removing the weak
+source-text-only integration assertion reduces the separate core subtotal from
+112 back to 111; its behavioral adapter coverage remains in the app suite.
+The PR body records the exact final revision and check outcomes.

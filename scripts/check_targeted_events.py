@@ -92,17 +92,16 @@ def violations(source: str, *, adapter: bool = False) -> list[int]:
         # The adapter has no macro definitions/forwarding. A target or method
         # must not be hidden behind a metavariable in this sanctioned file.
         offsets.update(m.start() for m in re.finditer(r'\$', code))
-    else:
-        for statement in re.finditer(r'\buse\b[^;]*;', code):
-            body = statement.group()
-            if re.search(r'\btauri\b', body):
-                # Reject tauri globs (nested groups too), crate aliases and
-                # self aliases. No re-export facade may hide the crate name.
-                if ('*' in body or re.search(r'\btauri\s*(?:as\b|[,;}])', body)
-                        or re.search(r'\bself\s+as\b', body)
-                        or re.search(r'\bpub(?:\s*\([^)]*\))?\s*$', code[:statement.start()])):
-                    offsets.add(statement.start())
-        offsets.update(m.start() for m in re.finditer(r'\bextern\s+crate\s+tauri\b', code))
+    # Keep the adapter from becoming a re-export facade itself. No maintained
+    # source needs a tauri glob, crate alias or re-export, even in that file.
+    for statement in re.finditer(r'\buse\b[^;]*;', code):
+        body = statement.group()
+        if re.search(r'\btauri\b', body):
+            if ('*' in body or re.search(r'\btauri\s*(?:as\b|[,;}])', body)
+                    or re.search(r'\bself\s+as\b', body)
+                    or re.search(r'\bpub(?:\s*\([^)]*\))?\s*$', code[:statement.start()])):
+                offsets.add(statement.start())
+    offsets.update(m.start() for m in re.finditer(r'\bextern\s+crate\s+tauri\b', code))
     return sorted({code.count('\n', 0, offset) + 1 for offset in offsets})
 
 
@@ -139,6 +138,14 @@ def source_references(source: str, path: Path, scanned: set[Path]) -> list[int]:
     # conservatively; the maintained paths use ordinary file-level attributes.
     for match in re.finditer(r'#\s*\[\s*cfg_attr\b[^;]*?\bpath\s*=', code):
         failures.add(match.start())
+    # A macro cannot forward an uninspected module attribute or alias/forward
+    # the built-in inclusion macro. Direct literal inclusions are checked below.
+    failures.update(m.start() for m in re.finditer(r'#\s*\[[^\]]*\$', code))
+    for token in IDENTIFIER.finditer(code):
+        if token.group() in {'include', 'include_str', 'include_bytes'} and not re.match(
+            r'\s*!\s*[({\[]', code[token.end():]
+        ):
+            failures.add(token.start())
     patterns = [r'#\s*\[\s*path\s*=', r'\binclude(?:_str|_bytes)?\s*!\s*[({\[]']
     for pattern in patterns:
         for match in re.finditer(pattern, code):

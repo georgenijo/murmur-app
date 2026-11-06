@@ -77,6 +77,8 @@ class TargetedEventsGuardTests(unittest.TestCase):
                 with self.subTest(method=method, target=target):
                     self.assertTrue(violations(f'app.{method}({target}, "event", payload);', adapter=True))
         for source in [
+            'pub use tauri::*;',
+            'use tauri as transport;',
             'use tauri::EventTarget::{AnyLabel as Broad};',
             'let transport = Emitter::emit_to;',
             'app.r#emit("event", ());',
@@ -120,6 +122,9 @@ class TargetedEventsGuardTests(unittest.TestCase):
                 '#[r#path = "../../native_events.rs"] mod native;',
                 'mod inner { #[path = "../../native_events.rs"] mod native; }',
                 'r#include!("../../native_events.rs");',
+                'use std::include as load; load!("../../native_events.rs");',
+                'macro_rules! load { ($m:ident) => { $m!("../../native_events.rs") } } load!(include);',
+                'macro_rules! load { ($attr:meta) => { #[$attr] mod native; } } load!(path = "../../native_events.rs");',
             ]:
                 with self.subTest(source=source):
                     (root / 'src/lib.rs').write_text(source)
@@ -151,6 +156,19 @@ class TargetedEventsGuardTests(unittest.TestCase):
             (root / 'lib.rs').unlink()
             (root / 'native').symlink_to(outer, target_is_directory=True)
             self.assertTrue(check_repository(root))
+
+    def test_literal_boundaries_cannot_mask_following_code(self):
+        for source in [
+            'r#"emit in raw literal"#; app.emit("event", ());',
+            'br##"/* emit */"##; app.emit_filter("event", (), |_| true);',
+            'c"emit"; <AppHandle as Emitter>::emit(&app, "event", ());',
+            '/* one /* nested */ still comment */ forward!(app, r#emit);',
+            'use tauri::{self as t, AppHandle}; use t::*;',
+            'pub(crate) use tauri::{Manager}; use facade::*;',
+            '#[cfg(any())] macro_rules! f { () => { app.emit_str("event", payload) } }',
+        ]:
+            with self.subTest(source=source):
+                self.assertTrue(violations(source))
 
     def test_token_pasting_input_is_still_reserved(self):
         # Stable macro tokens cannot smuggle in a complete reserved identifier.
