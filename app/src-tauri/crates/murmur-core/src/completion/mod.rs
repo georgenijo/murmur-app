@@ -1400,7 +1400,21 @@ pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
     if root.join(format!("{file}.required")).exists() || storage.quarantined(file)? {
         return Ok(true);
     }
-    let ui: Option<serde_json::Value> = storage.read("ui-state.json", |v: &Value| v.is_object())?;
+    storage.reject_future("ui-state.json", "schema", 1)?;
+    let existed = root.join("ui-state.json").exists();
+    let ui: Option<serde_json::Value> = storage.read("ui-state.json", |v: &Value| {
+        v["schema"] == 1
+            && v["v2_imported"].is_boolean()
+            && v["destinations"].as_array().is_some_and(|a| {
+                a.iter()
+                    .all(|k| k.as_str().is_some_and(|k| crate::state::file(k).is_some()))
+            })
+    })?;
+    let migration: Option<Migration> = storage.read(MIGRATION, |v: &Migration| v.schema == 1)?;
+    let expected_ui = migration.is_some_and(|m| m.lifecycle.v2);
+    if ui.is_none() && (existed || expected_ui || storage.quarantined("ui-state.json")?) {
+        return Err(Error::Invalid);
+    }
     Ok(ui.is_some_and(|v| {
         v["destinations"]
             .as_array()

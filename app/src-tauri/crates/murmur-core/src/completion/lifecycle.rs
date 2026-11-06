@@ -38,7 +38,6 @@ struct UiState {
     schema: u32,
     v2_imported: bool,
     values: BTreeMap<String, Value>,
-    #[serde(default)]
     destinations: Vec<String>,
 }
 impl Default for UiState {
@@ -93,6 +92,9 @@ impl Engine {
         let existed = self.storage.root.join(UI_STATE).exists();
         let state = self.storage.read(UI_STATE, |v: &UiState| {
             v.schema == 1
+                && v.destinations.iter().enumerate().all(|(i, k)| {
+                    crate::state::file(k).is_some() && !v.destinations[..i].contains(k)
+                })
                 && v.values
                     .iter()
                     .all(|(k, v)| crate::state::normalize(k, v.clone()).is_ok())
@@ -608,14 +610,23 @@ mod review_safety {
     }
     #[test]
     fn repeated_corrupt_ui_recovery_with_committed_v2_is_never_empty_success() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = engine(dir.path(), true);
-        e.lifecycle(Operation::Import(source())).unwrap();
-        std::fs::write(dir.path().join(UI_STATE), b"{bad").unwrap();
-        for _ in 0..3 {
-            e = restart(&e);
-            assert!(e.lifecycle(Operation::Status).is_err());
-            assert!(e.lifecycle(Operation::Import(source())).is_err());
+        for missing_destination_receipt in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut e = engine(dir.path(), true);
+            e.lifecycle(Operation::Import(source())).unwrap();
+            if missing_destination_receipt {
+                let path = dir.path().join(UI_STATE);
+                let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                v.as_object_mut().unwrap().remove("destinations");
+                std::fs::write(path, serde_json::to_vec(&v).unwrap()).unwrap();
+            } else {
+                std::fs::write(dir.path().join(UI_STATE), b"{bad").unwrap();
+            }
+            for _ in 0..3 {
+                e = restart(&e);
+                assert!(e.lifecycle(Operation::Status).is_err());
+                assert!(e.lifecycle(Operation::Import(source())).is_err());
+            }
         }
     }
     #[test]

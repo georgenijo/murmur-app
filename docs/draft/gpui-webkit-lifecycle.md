@@ -175,7 +175,7 @@ install now creates explicit empty destination envelopes before committing v1.
 The v2 UI receipt records the settings/library destinations actually imported,
 including empty values. Later creations have separate durable `.required`
 receipts. Missing expected files and quarantine stay errors across repeated
-reads and relaunches; status, import replay and retirement all check them. Failed
+reads and relaunches; status, import replay and retirement all check them. Destination-receipt metadata is mandatory; a missing field fails visibly too. Failed
 first publication can conservatively require explicit recovery. No defaults are
 published to replace an expected missing destination.
 
