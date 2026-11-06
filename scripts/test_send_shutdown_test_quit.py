@@ -23,9 +23,11 @@ class SenderIdentity(unittest.TestCase):
         fixture = json.loads((root / 'tauri.shutdown-test.conf.json').read_text())
         self.assertEqual(fixture['identifier'], IDENTIFIER)
         capabilities = fixture['app']['security']['capabilities']
-        permission = [cap for cap in capabilities if isinstance(cap, dict)]
+        permission = [cap for cap in capabilities
+                      if isinstance(cap, dict) and cap.get('identifier') == 'shutdown-test-actions']
         self.assertEqual(len(permission), 1)
         self.assertEqual(permission[0]['windows'], ['main'])
         self.assertEqual(permission[0]['permissions'], ['shutdown-test:allow-shutdown-test-action'])
         for path in (root / 'capabilities').glob('*.json'):
             self.assertNotIn('shutdown-test:', path.read_text())
+            self.assertNotIn('qa-clipboard:', path.read_text())
