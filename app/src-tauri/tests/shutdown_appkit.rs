@@ -6,6 +6,7 @@ mod main_thread_queue;
 #[cfg(not(target_os = "macos"))]
 fn main() {}
 #[cfg(target_os = "macos")]
+#[allow(clippy::disallowed_methods)]
 fn main() {
     use murmur_core::context::MainThread;
     use objc2::MainThreadMarker;

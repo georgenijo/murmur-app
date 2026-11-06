@@ -331,6 +331,9 @@ pub(crate) async fn retry_last_delivery(
             ),
             InjectionOutcome::ClipboardOnly(reason) => {
                 let message = match reason {
+                    ClipboardOnlyReason::IsolatedIdentity => {
+                        "Text saved to the private test clipboard. External paste is disabled."
+                    }
                     ClipboardOnlyReason::SmartTargetUnavailable => {
                         preparation_failure.map(PreparationFailure::copied_message).unwrap_or(
                             "The original text field is no longer verified. Click your destination and press Cmd+V.")

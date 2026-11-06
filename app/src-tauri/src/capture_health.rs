@@ -151,9 +151,20 @@ impl CaptureHealthAccumulator {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct CaptureHealthDiagnostics {
     inner: Arc<Mutex<CaptureHealthInner>>,
+    io: Arc<Mutex<()>>,
+    restore_before_ms: i64,
+}
+impl Default for CaptureHealthDiagnostics {
+    fn default() -> Self {
+        Self {
+            inner: Default::default(),
+            io: Default::default(),
+            restore_before_ms: chrono::Utc::now().timestamp_millis(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -161,35 +172,66 @@ struct CaptureHealthInner {
     accumulator: CaptureHealthAccumulator,
     file_path: Option<PathBuf>,
     writer_running: bool,
+    generation: u64,
 }
 
 impl CaptureHealthDiagnostics {
-    pub(crate) fn initialize(
+    pub(crate) fn generation(&self) -> u64 {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .generation
+    }
+    #[cfg(test)]
+    pub(crate) fn initialize(&self, root: PathBuf, paths: &[PathBuf]) -> Result<(), String> {
+        self.initialize_at(root, paths, self.generation())
+    }
+    pub(crate) fn initialize_at(
         &self,
         diagnostics_root: PathBuf,
         event_log_paths: &[PathBuf],
+        generation: u64,
     ) -> Result<(), String> {
-        fs::create_dir_all(&diagnostics_root).map_err(|_| storage_error())?;
         let file_path = diagnostics_root.join(CAPTURE_HEALTH_FILE);
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.file_path = Some(file_path.clone());
-
-        if file_path.exists() {
-            inner.accumulator = CaptureHealthAccumulator::from_history(load_history(&file_path)?);
-            return Ok(());
-        }
-
-        let mut migrated = CaptureHealthAccumulator::default();
-        for path in event_log_paths {
-            replay_event_log(path, &mut migrated);
-        }
-        let history = migrated.history();
-        save_history(&file_path, &history)?;
-        inner.accumulator = migrated;
-        Ok(())
+        self.initialize_with(file_path.clone(), generation, || {
+            fs::create_dir_all(&diagnostics_root).map_err(|_| storage_error())?;
+            if file_path.exists() {
+                return load_history(&file_path).map(CaptureHealthAccumulator::from_history);
+            }
+            let mut migrated = CaptureHealthAccumulator::default();
+            for path in event_log_paths {
+                replay_event_log(path, &mut migrated, self.restore_before_ms);
+            }
+            Ok(migrated)
+        })
+    }
+    fn initialize_with(
+        &self,
+        file_path: PathBuf,
+        generation: u64,
+        read: impl FnOnce() -> Result<CaptureHealthAccumulator, String>,
+    ) -> Result<(), String> {
+        // Disk I/O never holds the live accumulator lock used by tracing/main.
+        let _io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+        let mut restored = read()?;
+        let history = {
+            let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            if generation == inner.generation {
+                restored
+                    .observations
+                    .append(&mut inner.accumulator.observations);
+                while restored.observations.len() > MAX_CAPTURE_OBSERVATIONS {
+                    restored.observations.pop_front();
+                }
+                restored
+                    .pending_fallbacks
+                    .extend(inner.accumulator.pending_fallbacks.drain());
+                inner.accumulator = restored;
+            }
+            inner.file_path = Some(file_path.clone());
+            inner.accumulator.history()
+        };
+        save_history(&file_path, &history)
     }
 
     pub(crate) fn observe(&self, event: &AppEvent) {
@@ -237,26 +279,35 @@ impl CaptureHealthDiagnostics {
     }
 
     pub(crate) fn clear(&self) -> Result<(), String> {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.accumulator.clear();
-        if let Some(path) = &inner.file_path {
-            save_history(path, &inner.accumulator.history())?;
+        // Invalidate restoration before waiting for any disk operation.
+        {
+            let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            inner.generation = inner.generation.wrapping_add(1);
+            inner.accumulator.clear();
+        }
+        let _io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+        let (path, history) = {
+            let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            (inner.file_path.clone(), inner.accumulator.history())
+        };
+        if let Some(path) = path {
+            save_history(&path, &history)?;
         }
         Ok(())
     }
 
     fn persist_current(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(path) = &inner.file_path {
-            let _ = save_history(path, &inner.accumulator.history());
+        let _io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+        let (path, history) = {
+            let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+            // Release the scheduling latch before snapshot publication: an
+            // observation arriving during the write schedules the next writer.
+            inner.writer_running = false;
+            (inner.file_path.clone(), inner.accumulator.history())
+        };
+        if let Some(path) = path {
+            let _ = save_history(&path, &history);
         }
-        inner.writer_running = false;
     }
 }
 
@@ -336,13 +387,21 @@ fn save_history(path: &Path, history: &CaptureHealthHistoryV1) -> Result<(), Str
     write_result
 }
 
-fn replay_event_log(path: &Path, accumulator: &mut CaptureHealthAccumulator) {
+fn replay_event_log(
+    path: &Path,
+    accumulator: &mut CaptureHealthAccumulator,
+    restore_before_ms: i64,
+) {
     let Ok(contents) = fs::read_to_string(path) else {
         return;
     };
     for line in contents.lines() {
         if let Ok(event) = serde_json::from_str::<AppEvent>(line) {
-            accumulator.observe(&event);
+            // Events from this instance already reached the live accumulator.
+            // Deferred migration must not count them a second time from JSONL.
+            if observed_at_ms(&event).is_some_and(|at| at < restore_before_ms) {
+                accumulator.observe(&event);
+            }
         }
     }
 }
@@ -360,6 +419,75 @@ fn storage_error() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_log_replay_prepends_old_history_without_replaying_live_events() {
+        let fixture = tempfile::tempdir().unwrap();
+        let diagnostics = CaptureHealthDiagnostics::default();
+        let boundary = diagnostics.restore_before_ms;
+        let old = ready(boundary - 1000, 1, 999, "dictation");
+        let live = ready(boundary + 1, 2, 12, "dictation");
+        let log = fixture.path().join("events.jsonl");
+        fs::write(
+            &log,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&old).unwrap(),
+                serde_json::to_string(&live).unwrap()
+            ),
+        )
+        .unwrap();
+        diagnostics.observe(&live);
+        diagnostics
+            .initialize(fixture.path().join("diagnostics"), &[log])
+            .unwrap();
+        assert_eq!(
+            diagnostics
+                .history()
+                .observations
+                .iter()
+                .map(|v| v.startup_ms)
+                .collect::<Vec<_>>(),
+            [999, 12]
+        );
+    }
+
+    #[test]
+    fn stalled_restore_does_not_block_live_observations_or_resurrect_clear() {
+        use std::{sync::mpsc, time::Duration};
+        let fixture = tempfile::tempdir().unwrap();
+        let diagnostics = CaptureHealthDiagnostics::default();
+        let restored = diagnostics.clone();
+        let path = fixture.path().join(CAPTURE_HEALTH_FILE);
+        let (entered, reading) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let generation = diagnostics.generation();
+        let worker = std::thread::spawn(move || {
+            restored.initialize_with(path, generation, || {
+                entered.send(()).unwrap();
+                resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                let mut old = CaptureHealthAccumulator::default();
+                old.observe(&ready(1, 1, 999, "dictation"));
+                Ok(old)
+            })
+        });
+        reading.recv_timeout(Duration::from_secs(2)).unwrap();
+        // This is the same synchronous observe call made by the tracing layer.
+        diagnostics.observe(&ready(2, 2, 12, "dictation"));
+        assert_eq!(diagnostics.history().observations[0].startup_ms, 12);
+        let clearing = diagnostics.clone();
+        let clear = std::thread::spawn(move || clearing.clear());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while diagnostics.generation() == generation && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_ne!(diagnostics.generation(), generation);
+        assert!(diagnostics.history().observations.is_empty());
+        release.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        clear.join().unwrap().unwrap();
+        assert!(diagnostics.history().observations.is_empty());
+    }
 
     fn event(at_ms: i64, summary: &str, data: serde_json::Value) -> AppEvent {
         AppEvent {

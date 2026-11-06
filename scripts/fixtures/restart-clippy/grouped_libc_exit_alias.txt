@@ -1,0 +1,1 @@
+use libc::{exit as leave}; fn main() { unsafe { leave(37) }; }

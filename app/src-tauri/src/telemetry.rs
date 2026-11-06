@@ -1047,6 +1047,7 @@ fn is_safe_smart_destination_delivery_field(key: &str, value: &serde_json::Value
                     | "clipboard_only_clipboard_changed"
                     | "clipboard_only_paste_failed"
                     | "clipboard_only_smart_target_unavailable"
+                    | "clipboard_only_isolated_identity"
                     | "clipboard_write_failed"
                     | "unconfirmed"
                     | "cancelled"
@@ -2316,8 +2317,11 @@ fn read_recent_events(paths: &[PathBuf], n: usize) -> Vec<AppEvent> {
 /// Read without holding the live buffer lock, then prepend history. Events
 /// observed during a stalled read stay newer than restored history and survive
 /// the capacity cap. The writer has not consumed any new JSONL events yet.
-fn seed_buffer_with(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, read: impl FnOnce() -> Vec<AppEvent>) {
-    let generation = BUFFER_GENERATION.load(Ordering::SeqCst);
+fn seed_buffer_with(
+    buffer: &Arc<Mutex<VecDeque<AppEvent>>>,
+    generation: u64,
+    read: impl FnOnce() -> Vec<AppEvent>,
+) {
     let mut restored: VecDeque<_> = read().into();
     let mut live = buffer.lock().unwrap_or_else(|p| p.into_inner());
     if generation != BUFFER_GENERATION.load(Ordering::SeqCst) {
@@ -2334,15 +2338,86 @@ fn seed_buffer_with(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, read: impl FnOnce()
 enum LogWrite {
     Event(Vec<u8>),
     Pretty(Vec<u8>),
+    Flush(mpsc::Sender<bool>),
 }
 
+#[derive(Default)]
+struct LogQueueState {
+    admission: Mutex<bool>, // true once the final drain seals producers
+    pending: AtomicU64,
+    failed: AtomicU64,
+    rejected: AtomicU64,
+}
 #[derive(Clone)]
-struct QueuedLogSender(mpsc::Sender<(u64, LogWrite)>);
+struct QueuedLogSender {
+    sender: mpsc::Sender<(u64, LogWrite)>,
+    state: Arc<LogQueueState>,
+}
 impl QueuedLogSender {
     fn send(&self, record: LogWrite) -> Result<(), mpsc::SendError<(u64, LogWrite)>> {
-        self.0
-            .send((LOG_WRITE_GENERATION.load(Ordering::SeqCst), record))
+        let sealed = self
+            .state
+            .admission
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if *sealed {
+            self.state.rejected.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+        self.state.pending.fetch_add(1, Ordering::SeqCst);
+        let result = self
+            .sender
+            .send((LOG_WRITE_GENERATION.load(Ordering::SeqCst), record));
+        if result.is_err() {
+            self.state.pending.fetch_sub(1, Ordering::SeqCst);
+            self.state.failed.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
+    fn flush_until(&self, deadline: std::time::Instant) -> bool {
+        let (send, receive) = mpsc::channel();
+        {
+            let mut sealed = self
+                .state
+                .admission
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *sealed = true;
+            if self.sender.send((0, LogWrite::Flush(send))).is_err() {
+                return false;
+            }
+        }
+        receive
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .unwrap_or(false)
+    }
+}
+// Retain the worker for the process lifetime. Never join a possibly stalled I/O
+// thread on main or on the independent shutdown deadline driver.
+struct LogWorker {
+    sender: QueuedLogSender,
+    _worker: std::thread::JoinHandle<()>,
+}
+static LOG_WORKER: OnceLock<LogWorker> = OnceLock::new();
+#[derive(Debug, Default)]
+pub(crate) struct ShutdownLogReceipt {
+    pub(crate) pending_records: u64,
+    pub(crate) failed_records: u64,
+    pub(crate) rejected_records: u64,
+}
+pub(crate) fn shutdown_receipt() -> ShutdownLogReceipt {
+    LOG_WORKER
+        .get()
+        .map_or_else(ShutdownLogReceipt::default, |worker| ShutdownLogReceipt {
+            pending_records: worker.sender.state.pending.load(Ordering::SeqCst),
+            failed_records: worker.sender.state.failed.load(Ordering::SeqCst),
+            rejected_records: worker.sender.state.rejected.load(Ordering::SeqCst),
+        })
+}
+pub(crate) fn shutdown_flush(deadline: std::time::Instant) -> bool {
+    LOG_WORKER
+        .get()
+        .is_none_or(|worker| worker.sender.flush_until(deadline))
 }
 
 #[derive(Clone)]
@@ -2366,6 +2441,8 @@ fn start_log_worker(
     initialize: impl FnOnce() -> (SizeRotatingFile, SizeRotatingFile) + Send + 'static,
 ) -> (QueuedLogSender, std::thread::JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel();
+    let state = Arc::new(LogQueueState::default());
+    let worker_state = state.clone();
     let worker = std::thread::Builder::new()
         .name("telemetry-writer".into())
         .spawn(move || {
@@ -2375,23 +2452,28 @@ fn start_log_worker(
             };
             for (generation, message) in receiver {
                 let _io = LOG_IO_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-                if generation != LOG_WRITE_GENERATION.load(Ordering::SeqCst) {
+                if let LogWrite::Flush(reply) = message {
+                    let flushed = jsonl.flush().is_ok() & pretty.flush().is_ok();
+                    let _ = reply.send(flushed && worker_state.failed.load(Ordering::SeqCst) == 0);
                     continue;
                 }
-                match message {
-                    LogWrite::Event(bytes) => {
-                        let _ = jsonl.write_all(&bytes);
-                    }
-                    LogWrite::Pretty(bytes) => {
-                        let _ = pretty.write_all(&bytes);
+                if generation == LOG_WRITE_GENERATION.load(Ordering::SeqCst) {
+                    let result = match message {
+                        LogWrite::Event(bytes) => jsonl.write_all(&bytes),
+                        LogWrite::Pretty(bytes) => pretty.write_all(&bytes),
+                        LogWrite::Flush(_) => unreachable!(),
+                    };
+                    if result.is_err() {
+                        worker_state.failed.fetch_add(1, Ordering::SeqCst);
                     }
                 }
+                worker_state.pending.fetch_sub(1, Ordering::SeqCst);
             }
             let _ = jsonl.flush();
             let _ = pretty.flush();
         })
         .expect("Failed to start telemetry writer");
-    (QueuedLogSender(sender), worker)
+    (QueuedLogSender { sender, state }, worker)
 }
 
 pub fn init(app_handle: tauri::AppHandle) {
@@ -2411,9 +2493,10 @@ pub fn init(app_handle: tauri::AppHandle) {
 
     let buffer = get_event_buffer();
     let restore_buffer = buffer.clone();
-    let (sender, _worker) = start_log_worker(move || {
+    let restore_generation = BUFFER_GENERATION.load(Ordering::SeqCst);
+    let (sender, worker) = start_log_worker(move || {
         std::fs::create_dir_all(&log_dir).ok();
-        seed_buffer_with(&restore_buffer, || {
+        seed_buffer_with(&restore_buffer, restore_generation, || {
             read_recent_events(&event_jsonl_paths(), 500)
         });
         let jsonl_writer = SizeRotatingFile::open(
@@ -2435,6 +2518,10 @@ pub fn init(app_handle: tauri::AppHandle) {
         });
         register_writer(&pretty_file);
         (jsonl_writer, pretty_file)
+    });
+    let _ = LOG_WORKER.set(LogWorker {
+        sender: sender.clone(),
+        _worker: worker,
     });
     let pretty_sender = QueuedPrettyWriter(sender.clone());
     let pretty_layer = tracing_subscriber::fmt::layer()
@@ -4215,6 +4302,7 @@ mod tests {
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::PasteFailed),
             InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::SmartTargetUnavailable),
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::IsolatedIdentity),
         ];
         for outcome in outcomes {
             assert!(
@@ -5096,10 +5184,104 @@ mod startup_io_tests {
     use super::*;
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]
+    fn clear_before_restoration_starts_wins() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let scheduled_generation = BUFFER_GENERATION.load(Ordering::SeqCst);
+        BUFFER_GENERATION.fetch_add(1, Ordering::SeqCst);
+        buffer.lock().unwrap().clear();
+        seed_buffer_with(&buffer, scheduled_generation, || {
+            vec![AppEvent {
+                timestamp: "old".into(),
+                stream: "system".into(),
+                level: "info".into(),
+                summary: "OLD_HISTORY".into(),
+                data: serde_json::json!({}),
+            }]
+        });
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn shutdown_barrier_is_bounded_and_accounts_for_stalled_startup_output() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let output = fixture.path().join("events.jsonl");
+        let pretty = fixture.path().join("app.log");
+        let worker_output = output.clone();
+        let (entered, reading) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let (sender, worker) = start_log_worker(move || {
+            entered.send(()).unwrap();
+            resume
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            (
+                SizeRotatingFile::open(worker_output, 4096, 1).unwrap(),
+                SizeRotatingFile::open(pretty, 4096, 1).unwrap(),
+            )
+        });
+        reading
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        sender
+            .send(LogWrite::Event(b"synthetic early event\n".to_vec()))
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert!(!sender.flush_until(started + std::time::Duration::from_millis(30)));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(sender.state.pending.load(Ordering::SeqCst), 1);
+        sender.send(LogWrite::Event(b"late\n".to_vec())).unwrap();
+        assert_eq!(sender.state.rejected.load(Ordering::SeqCst), 1);
+        release.send(()).unwrap();
+        assert!(sender.flush_until(std::time::Instant::now() + std::time::Duration::from_secs(2)));
+        assert_eq!(sender.state.pending.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            "synthetic early event\n"
+        );
+        drop(sender);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_barrier_drains_early_events_when_startup_reader_is_released() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let output = fixture.path().join("events.jsonl");
+        let pretty = fixture.path().join("app.log");
+        let worker_output = output.clone();
+        let (release, resume) = mpsc::channel();
+        let (sender, worker) = start_log_worker(move || {
+            resume
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            (
+                SizeRotatingFile::open(worker_output, 4096, 1).unwrap(),
+                SizeRotatingFile::open(pretty, 4096, 1).unwrap(),
+            )
+        });
+        sender
+            .send(LogWrite::Event(b"synthetic queued event\n".to_vec()))
+            .unwrap();
+        let drain = sender.clone();
+        let barrier = std::thread::spawn(move || {
+            drain.flush_until(std::time::Instant::now() + std::time::Duration::from_secs(2))
+        });
+        release.send(()).unwrap();
+        assert!(barrier.join().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            "synthetic queued event\n"
+        );
+        drop(sender);
+        worker.join().unwrap();
+    }
+    #[test]
     fn clear_during_restore_does_not_resurrect_history() {
         let _test = TEST_LOCK.lock().unwrap();
         let buffer = Arc::new(Mutex::new(VecDeque::new()));
-        seed_buffer_with(&buffer, || {
+        seed_buffer_with(&buffer, BUFFER_GENERATION.load(Ordering::SeqCst), || {
             BUFFER_GENERATION.fetch_add(1, Ordering::SeqCst);
             buffer.lock().unwrap().clear();
             vec![AppEvent {
@@ -5171,9 +5353,10 @@ mod startup_io_tests {
         let (reading, reader_entered) = mpsc::channel();
         let (release, resume) = mpsc::channel();
         let (setup_done, setup_returned) = mpsc::channel();
+        let restore_generation = BUFFER_GENERATION.load(Ordering::SeqCst);
         let setup = std::thread::spawn(move || {
             let pair = start_log_worker(move || {
-                seed_buffer_with(&restored_buffer, || {
+                seed_buffer_with(&restored_buffer, restore_generation, || {
                     reading.send(()).unwrap();
                     resume.recv().unwrap();
                     vec![AppEvent {

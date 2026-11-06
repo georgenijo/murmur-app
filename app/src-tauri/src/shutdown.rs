@@ -104,6 +104,13 @@ pub(crate) fn permitted(app: &tauri::AppHandle) -> bool {
         .is_some_and(|s| s.core.lock_or_recover().termination_permitted())
 }
 pub(crate) fn receipt(app: &tauri::AppHandle) {
+    let logs = crate::telemetry::shutdown_receipt();
+    // The log queue is sealed by the bounded drain. Keep this terminal receipt
+    // content-free and independent of the queue it accounts for.
+    eprintln!(
+        "shutdown telemetry: pending_records={} failed_records={} rejected_records={}",
+        logs.pending_records, logs.failed_records, logs.rejected_records
+    );
     if let Some(shutdown) = app.try_state::<Shutdown>() {
         let mut core = shutdown.core.lock_or_recover();
         tracing::info!(target:"shutdown", permitted=core.termination_permitted(), receipt=?core.receipt, "terminal shutdown receipt");
@@ -201,6 +208,12 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
             Outcome::Helpers(confirmed)
         }
         Step::Writers => {
+            // Join telemetry concurrently: a stalled completion/source owner
+            // must not prevent the log barrier from being queued. Neither task
+            // can hold the independent +10s terminal deadline driver.
+            let telemetry = tauri::async_runtime::spawn_blocking(move || {
+                crate::telemetry::shutdown_flush(deadline)
+            });
             let app = app.clone();
             let committed = tauri::async_runtime::spawn_blocking(move || {
                 wait_accepted_producers();
@@ -216,11 +229,13 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
             })
             .await
             .unwrap_or(WriteOutcome::UnpreservedFailure);
+            let _ = telemetry.await;
             Outcome::Writers(committed)
         }
         Step::Terminate => unreachable!(),
     }
 }
+#[allow(clippy::disallowed_methods)]
 fn terminal(app: &tauri::AppHandle, action: Action) {
     // This is the sole application restart API call; the reducer committed its
     // drained permit before queuing this callback.
@@ -528,6 +543,7 @@ pub(crate) mod test_support {
             .build()
     }
     #[tauri::command]
+    #[allow(clippy::disallowed_methods)]
     pub(crate) fn shutdown_test_action(
         app: tauri::AppHandle,
         window: tauri::WebviewWindow,

@@ -14,7 +14,47 @@ pub(crate) struct Completion {
     pub(crate) producers: Producers,
     pub(crate) admitted: AtomicBool,
 }
+struct CompletionInitialization {
+    failed: AtomicBool,
+}
 pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
+    app.manage(CompletionInitialization {
+        failed: AtomicBool::new(false),
+    });
+    crate::startup::spawn(app, "completion-init", |app| {
+        match initialize_worker(&app) {
+            Ok(()) => start_gate(app),
+            Err(_) => {
+                app.state::<CompletionInitialization>()
+                    .failed
+                    .store(true, Ordering::SeqCst);
+                storage_error(&app);
+            }
+        }
+    })
+}
+fn ready<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::State<'_, Completion>, String> {
+    app.try_state::<Completion>()
+        .ok_or_else(|| "Completion storage is still initializing".into())
+}
+async fn wait_ready(app: &tauri::AppHandle) -> Result<(), String> {
+    loop {
+        if app.try_state::<Completion>().is_some() {
+            return Ok(());
+        }
+        if crate::shutdown::closing()
+            || app
+                .try_state::<CompletionInitialization>()
+                .is_none_or(|state| state.failed.load(Ordering::SeqCst))
+        {
+            return Err("Completion storage unavailable".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+fn initialize_worker(app: &tauri::AppHandle) -> Result<(), String> {
     let root = crate::commands::settings_store::data_dir(app)?;
     // Existence only; never enumerate/read the WebKit store. Isolated bundle
     // identities use their own directory, with no access to production data.
@@ -44,8 +84,18 @@ pub(crate) fn start_gate(app: tauri::AppHandle) {
         let mut gate = MigrationGate::default();
         let start = std::time::Instant::now();
         loop {
-            let state = app.state::<Completion>();
-            let snapshot = state.service.execute(Command::Snapshot);
+            if crate::shutdown::closing() {
+                break;
+            }
+            let worker_app = app.clone();
+            let snapshot = tauri::async_runtime::spawn_blocking(move || {
+                ready(&worker_app)?
+                    .service
+                    .execute(Command::Snapshot)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|_| Err("Completion worker unavailable".into()));
             let action = gate.tick(
                 snapshot.is_ok(),
                 snapshot.as_ref().is_ok_and(|s| s.v1_committed),
@@ -53,6 +103,9 @@ pub(crate) fn start_gate(app: tauri::AppHandle) {
             );
             match action {
                 GateAction::Arm | GateAction::ArmHolding => {
+                    let Ok(state) = ready(&app) else {
+                        break;
+                    };
                     state.admitted.store(true, Ordering::SeqCst);
                     if action == GateAction::ArmHolding {
                         tracing::warn!(target:"completion",code="migration_timeout_held","completion migration timed out");
@@ -83,8 +136,7 @@ pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
         .is_some_and(|s| s.admitted.load(Ordering::SeqCst))
 }
 fn execute(app: &tauri::AppHandle, command: Command) -> Result<Snapshot, String> {
-    let result = app
-        .state::<Completion>()
+    let result = ready(app)?
         .service
         .execute(command)
         .map_err(|e| e.to_string());
@@ -98,7 +150,10 @@ pub(crate) fn produce<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     f: impl FnOnce(&Producers) -> murmur_core::completion::Result<Snapshot>,
 ) {
-    let state = app.state::<Completion>();
+    let Ok(state) = ready(app) else {
+        storage_error(app);
+        return;
+    };
     match f(&state.producers) {
         Ok(_) => {
             let _ = app.events().publish(EventKind::HistoryChanged, ());
@@ -156,9 +211,7 @@ pub(crate) fn cancel_file_transcription<R: tauri::Runtime>(
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
-    app.state::<Completion>()
-        .producers
-        .cancel_file(&operation_id);
+    ready(&app)?.producers.cancel_file(&operation_id);
     Ok(())
 }
 #[tauri::command]
@@ -172,10 +225,10 @@ pub(crate) async fn accept_file_transcription<R: tauri::Runtime>(
     let worker_app = app.clone();
     if tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
-        worker_app
-            .state::<Completion>()
+        ready(&worker_app)?
             .producers
             .accept_file(&operation_id)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|_| {
@@ -228,19 +281,24 @@ pub(crate) async fn recover_completion_pending(
         .map_err(|_| "Completion recovery worker unavailable".to_string())?
 }
 #[tauri::command]
-pub(crate) fn completion_snapshot(
+pub(crate) async fn completion_snapshot(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<Snapshot, String> {
     if !matches!(window.label(), "main" | "diagnostics") {
         return Err("Completion data is unavailable in this window".into());
     }
-    app.state::<Completion>()
-        .service
-        .execute(Command::Snapshot)
-        .map_err(|e| e.to_string())
+    wait_ready(&app).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        ready(&app)?
+            .service
+            .execute(Command::Snapshot)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "Completion worker unavailable".to_owned())?
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn import_completion_v1(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -249,7 +307,7 @@ pub(crate) fn import_completion_v1(
     main_only(&window)?;
     execute(&app, Command::Import(source))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn mutate_history(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -258,7 +316,7 @@ pub(crate) fn mutate_history(
     main_only(&window)?;
     execute(&app, Command::History(mutation))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn clear_completion_destination(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -273,7 +331,7 @@ pub(crate) fn clear_completion_destination(
         },
     )
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn store_benchmark_report(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -283,14 +341,14 @@ pub(crate) fn store_benchmark_report(
     execute(&app, Command::Report(report))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn acknowledge_completion_keys(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     destinations: Vec<Destination>,
 ) -> Result<(), String> {
     main_only(&window)?;
-    app.state::<Completion>()
+    ready(&app)?
         .service
         .execute(Command::KeysRemoved(destinations))
         .map(|_| ())
@@ -412,7 +470,7 @@ mod dispatch_tests {
 fn webkit_state_snapshot_worker(
     app: tauri::AppHandle,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
-    source_status(&app.state::<Completion>().service)
+    source_status(&ready(&app)?.service)
 }
 fn source_status(
     service: &CompletionService,
@@ -431,7 +489,7 @@ fn import_webkit_state_worker(
     main_only(&window)?;
     use crate::MutexExt;
     let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    app.state::<Completion>()
+    ready(&app)?
         .service
         .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
             source,
@@ -450,7 +508,7 @@ fn save_webkit_source_worker(
     }
     use crate::MutexExt;
     let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    app.state::<Completion>()
+    ready(&app)?
         .service
         .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
         .map(|_| ())
@@ -510,6 +568,7 @@ pub(crate) fn shutdown_flush(app: &tauri::AppHandle) -> murmur_core::shutdown::W
 pub(crate) async fn webkit_state_snapshot(
     app: tauri::AppHandle,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    wait_ready(&app).await?;
     let admission = crate::shutdown::WriterPermit::acquire()?;
     crate::shutdown::source_call(move || {
         let _admission = admission;
@@ -525,6 +584,7 @@ pub(crate) async fn import_webkit_state(
     app: tauri::AppHandle,
     source: std::collections::BTreeMap<String, Option<String>>,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    wait_ready(&app).await?;
     let admission = crate::shutdown::WriterPermit::acquire()?;
     crate::shutdown::source_call(move || {
         let _admission = admission;

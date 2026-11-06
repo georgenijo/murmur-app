@@ -354,6 +354,7 @@ fn restrict_worker_io() -> bool {
     false
 }
 
+#[allow(clippy::disallowed_methods)]
 pub fn run_cli_if_requested() -> Option<i32> {
     #[cfg(all(debug_assertions, target_os = "macos", target_arch = "aarch64"))]
     if let Some(exit) = probe::run_cli_if_requested() {

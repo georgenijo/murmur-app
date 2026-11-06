@@ -236,6 +236,7 @@ fn read_bounded_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn start_parent_watchdog() {
     std::thread::spawn(|| {
         let mut input = std::io::stdin();

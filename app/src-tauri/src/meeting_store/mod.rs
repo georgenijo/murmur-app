@@ -16,6 +16,7 @@ use crate::MutexExt;
 #[derive(Clone, Default)]
 pub struct MeetingStore {
     inner: Arc<Mutex<MeetingStoreInner>>,
+    initialization: Arc<Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -26,10 +27,14 @@ struct MeetingStoreInner {
 
 impl MeetingStore {
     pub fn initialize(&self, root: PathBuf) -> MeetingStoreStatus {
+        let _initialization = self.initialization.lock_or_recover();
+        let result = MeetingRepository::initialize(root).map(|(repository, outcome)| {
+            let status = repository.status().unwrap_or_default();
+            (repository, outcome, status)
+        });
         let mut inner = self.inner.lock_or_recover();
-        match MeetingRepository::initialize(root) {
-            Ok((repository, outcome)) => {
-                let mut status = repository.status().unwrap_or_default();
+        match result {
+            Ok((repository, outcome, mut status)) => {
                 status.availability = match outcome {
                     InitializationOutcome::Opened => MeetingStoreAvailability::Available,
                     InitializationOutcome::Recovered | InitializationOutcome::Reinitialized => {

@@ -654,3 +654,54 @@ recognize `clippy::chunks_exact_to_as_chunks`; only that unsupported exemption
 was omitted for the passing run. Rustfmt checks and `git diff --check` pass.
 All test data is synthetic and temporary test roots use `~/.cache/`. No app
 caller changes, Mac checkout, GUI action or app launch were needed.
+## Round-three isolation, telemetry and guard corrections
+
+- **P1, clipboard/input isolation:** shared clipboard reads, writes and change
+  counts now require initialized production identity. All other identities use a
+  private, identity-named NSPasteboard; the naming includes an absent-identity
+  discriminator and injective UTF-8 encoding. Snippets and transform apply/undo
+  share those primitives. QA cannot auto-paste, activate a Smart destination or
+  post keys to another app. There is no unproven target exemption. Production
+  retains its existing arboard/general-pasteboard route and delivery policy.
+  Pure routing tests cover production, absent/empty, shutdown-test, bench,
+  refactor-test, future and path-like IDs, without touching any OS clipboard.
+- **P2, resolved process guard:** root `clippy.toml` disallows process exit/abort,
+  libc termination, Unix exec replacement, Tauri AppHandle exit/restart and the
+  process-plugin exit/restart methods. The existing Python guard still enforces
+  numeric runtime exit codes, the sole request_restart adapter and plugin/Cargo
+  aliases. It now enforces function-scoped Clippy allowances at an explicit
+  CLI/helper/watchdog/adapter allowlist, rejects broader lint suppressions and
+  nested config overrides, and permits unrelated bare functions named exit.
+  Compile-only fixtures exercise grouped std/libc aliases, macro-forwarded exit,
+  direct zero exit outside CLI, abort, Tauri methods and the unrelated-function
+  positive control. They never execute termination code.
+- **P2, telemetry drain:** the worker handle and sender are retained. Writers
+  queues a sealed flush barrier concurrently with source/completion draining,
+  bounded by the existing +10 s absolute deadline. The +5/+7/+10 s driver never
+  waits on the disk worker. A terminal content-free stderr receipt accounts for
+  pending, failed and rejected records even when startup history remains stalled.
+  Tests cover timeout accounting and successful early-event drain after release.
+- **P2, Clear precedence:** history restoration receives the generation captured
+  at schedule time. A Clear before the worker starts, or during its read, wins.
+  Clear IPC invalidates the in-memory generation before waiting for disk and
+  does its filesystem work off main. A new regression covers Clear-before-start.
+- **N2, startup dispatch:** completion initialization, legacy cleanup,
+  capture-health replay, performance/diagnostics, knowledge and meetings run on
+  retained startup workers. Completion readiness/initial IPC do not block main;
+  recording remains gated. Capture-health and repository initialization do not
+  hold main-visible locks during file I/O. Capture-health retains live events
+  after restored history, avoids replaying current-instance events twice, and
+  honors Clear during its stalled read. Synthetic tests prove live observations
+  remain available and the quit adapter can issue termination at +10 s while a
+  startup reader remains blocked. DEVELOPMENT documents the required native
+  main-thread registration work and its OS-controlled timing boundary.
+
+The identity audit now includes shared clipboard/pasteboard access and OS-managed
+crash reports, explicitly qualified as having no application-owned crash reader.
+No base-branch change, GUI launch, permission grant, production clipboard access
+or merge is part of this worker's scope. Independent Sol rechecks remain with
+the parent implementation task.
+
+Verification results will be appended after the requested Linux and disposable
+Mac mini checks. Native build/test scratch uses only `~/Builds/gpui-stack-22`,
+`~/Builds/gpui-stack-22-target` and task cache paths.

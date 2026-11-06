@@ -1,0 +1,1 @@
+fn bypass(app: &tauri::AppHandle) { app.exit(0); } fn main() { let _ = bypass; }

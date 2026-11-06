@@ -14,6 +14,7 @@ pub(crate) enum ClipboardOnlyReason {
     ClipboardChanged,
     PasteFailed,
     SmartTargetUnavailable,
+    IsolatedIdentity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,7 @@ impl InjectionOutcome {
                 ClipboardOnlyReason::SmartTargetUnavailable => {
                     "clipboard_only_smart_target_unavailable"
                 }
+                ClipboardOnlyReason::IsolatedIdentity => "clipboard_only_isolated_identity",
             },
         }
     }
@@ -245,6 +247,11 @@ fn post_decision_outcome(
 }
 
 pub(crate) fn read_clipboard_text() -> Result<String, String> {
+    if let Some(name) =
+        crate::identity::private_pasteboard_name(crate::identity::initialized_identifier())
+    {
+        return private_clipboard_read(&name);
+    }
     let mut clipboard =
         Clipboard::new().map_err(|_| "Clipboard access is unavailable.".to_string())?;
     clipboard
@@ -259,6 +266,11 @@ pub(crate) fn read_clipboard_text() -> Result<String, String> {
 /// the later restore of the user's original clipboard contents — instead of
 /// duplicating the `arboard` call.
 pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
+    if let Some(name) =
+        crate::identity::private_pasteboard_name(crate::identity::initialized_identifier())
+    {
+        return private_clipboard_write(&name, text);
+    }
     let mut clipboard =
         Clipboard::new().map_err(|e| format!("Failed to access clipboard: {}", e))?;
     clipboard
@@ -268,11 +280,53 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+fn private_clipboard_read(name: &str) -> Result<String, String> {
+    autoreleasepool(|_| {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+        let board = NSPasteboard::pasteboardWithName(&objc2_foundation::NSString::from_str(name));
+        board
+            .stringForType(unsafe { NSPasteboardTypeString })
+            .map(|text| text.to_string())
+            .ok_or_else(|| "Private clipboard does not contain readable text.".into())
+    })
+}
+#[cfg(target_os = "macos")]
+fn private_clipboard_write(name: &str, text: &str) -> Result<(), String> {
+    autoreleasepool(|_| {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+        use objc2_foundation::NSString;
+        let board = NSPasteboard::pasteboardWithName(&NSString::from_str(name));
+        board.clearContents();
+        if board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
+            Ok(())
+        } else {
+            Err("Private clipboard write failed.".into())
+        }
+    })
+}
+#[cfg(not(target_os = "macos"))]
+fn private_clipboard_read(_: &str) -> Result<String, String> {
+    Err("Private clipboard is unavailable on this platform.".into())
+}
+#[cfg(not(target_os = "macos"))]
+fn private_clipboard_write(_: &str, _: &str) -> Result<(), String> {
+    Err("Private clipboard is unavailable on this platform.".into())
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) fn pasteboard_change_count() -> Option<i64> {
     autoreleasepool(|_| {
         use objc2_app_kit::NSPasteboard;
 
-        Some(NSPasteboard::generalPasteboard().changeCount() as i64)
+        let board = match crate::identity::private_pasteboard_name(
+            crate::identity::initialized_identifier(),
+        ) {
+            Some(name) => {
+                NSPasteboard::pasteboardWithName(&objc2_foundation::NSString::from_str(&name))
+            }
+            None => NSPasteboard::generalPasteboard(),
+        };
+        Some(board.changeCount() as i64)
     })
 }
 
@@ -474,6 +528,15 @@ fn inject_with_destination(
 ) -> Result<InjectionResult, InjectionError> {
     if let Some(reason) = authority.and_then(PasteAttempt::stop_reason) {
         return Err(InjectionError::Stopped(reason));
+    }
+    if !crate::identity::external_input_allowed() {
+        // QA may retain its result in its own pasteboard, but cannot activate,
+        // edit, or post keys to a real focused application, even via Smart.
+        authorized_clipboard_write(text, authority)?;
+        return Ok(InjectionResult {
+            outcome: InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::IsolatedIdentity),
+            verification: None,
+        });
     }
     if matches!(smart, crate::smart_destination::Snapshot::Disabled) || !auto_paste {
         return inject_text_with_policy(text, auto_paste, delay_ms, target, false, authority);
@@ -729,6 +792,9 @@ fn post_paste_native_guarded(
     use std::thread;
     use std::time::Duration;
 
+    if !crate::identity::external_input_allowed() {
+        return Ok(PostDecision::Refused);
+    }
     let (key_down, key_up) = create_native_paste_events()?;
     let post = || {
         key_down.post(CGEventTapLocation::HID);

@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Compile synthetic bypass fixtures; never execute an exit or access OS input.
+Run in a disposable Mac checkout. Clippy resolves real libc/Tauri definitions.
+"""
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+def main():
+    directory = ROOT / 'app/src-tauri/examples'
+    for fixture in sorted((ROOT / 'scripts/fixtures/restart-clippy').glob('*.txt')):
+        name = '__murmur_restart_guard_' + fixture.stem
+        target = directory / (name + '.rs')
+        created = False
+        try:
+            with target.open('x') as output:
+                created = True
+                output.write(fixture.read_text())
+            command = ['cargo', 'clippy', '--example', name, '--', '-D', 'warnings',
+                       '-A', 'clippy::chunks_exact_to_as_chunks', '-A', 'clippy::byte_char_slices']
+            result = subprocess.run(command, cwd=ROOT / 'app/src-tauri', text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            positive = fixture.stem == 'unrelated_exit'
+            passed = result.returncode == 0 if positive else (
+                result.returncode != 0 and 'clippy::disallowed_methods' in result.stdout
+                and 'use of a disallowed method' in result.stdout)
+            if not passed:
+                print(result.stdout)
+                print(f'FAIL resolved restart policy fixture: {fixture.stem}')
+                return 1
+            print(f'PASS resolved restart policy fixture: {fixture.stem}', flush=True)
+        finally:
+            if created:
+                target.unlink(missing_ok=True)
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

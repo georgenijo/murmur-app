@@ -69,6 +69,7 @@ mod microphone_preview;
 mod microphone_signal;
 mod process_plugin;
 mod shutdown;
+mod startup;
 use murmur_core::{model_artifact, model_digest};
 mod model_download;
 mod model_hardware_guidance;
@@ -523,9 +524,7 @@ pub fn run() {
                         .expect("WebKit store identity could not be established; preserve legacy store");
                 })?;
             }
-            completion::initialize(app.handle())?;
             dictation_control::initialize(app.handle());
-            completion::start_gate(app.handle().clone());
             dictation_cues::initialize(app.handle());
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
@@ -558,85 +557,8 @@ pub fn run() {
             }
             commands::dictation_preview::apply_initial_size(app.handle());
 
-            let app_data_root = app.path().app_data_dir()?;
-            if legacy_query_cleanup::cleanup(&app_data_root).is_err() {
-                tracing::warn!(target: "system", "legacy conversation cleanup failed");
-            }
-            if legacy_transform_cleanup::cleanup(&app_data_root).is_err() {
-                tracing::warn!(target: "system", "legacy transform capture cleanup failed");
-            }
-            let performance_root = app_data_root.join("diagnostics");
-            if let Err(error) = app
-                .state::<State>()
-                .capture_health
-                .initialize(performance_root.clone(), &telemetry::event_jsonl_paths())
-            {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "capture-health diagnostics store unavailable: {}",
-                    error
-                );
-            }
-            if let Err(error) = app
-                .state::<State>()
-                .performance
-                .initialize(performance_root.clone(), Some(app.handle().clone()))
-            {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "performance diagnostics store unavailable: {}",
-                    error
-                );
-            }
-            if app
-                .state::<State>()
-                .dictation_diagnostics
-                .initialize(performance_root.join("dictation-captures"))
-                .is_err()
-            {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "dictation diagnostic capture store unavailable"
-                );
-            }
-
-            let knowledge_root = app.path().app_data_dir()?.join("knowledge");
-            let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
-            if knowledge_status.availability != knowledge_store::StoreAvailability::Unavailable {
-                if let Err(error) = commands::knowledge::refresh_correction_rules(&app.state::<State>()) {
-                    tracing::warn!(target: "system", error, "initial knowledge correction matcher refresh failed");
-                }
-            }
-            tracing::info!(
-                target: "system",
-                availability = ?knowledge_status.availability,
-                schema_version = knowledge_status.schema_version,
-                record_count = knowledge_status.record_count,
-                "personal knowledge store initialized"
-            );
-
-            let meeting_root = app.path().app_data_dir()?.join("meetings");
-            diarization_audio::sweep_abandoned(&meeting_root);
-            let meeting_status = app
-                .state::<State>()
-                .meeting_store
-                .initialize(meeting_root);
-            tracing::info!(
-                target: "meeting",
-                availability = ?meeting_status.availability,
-                schema_version = meeting_status.schema_version,
-                session_count = meeting_status.session_count,
-                pending_segment_count = meeting_status.pending_segment_count,
-                "meeting transcript store initialized"
-            );
-            if let Ok(repository) = app.state::<State>().meeting_store.repository() {
-                app.state::<State>()
-                    .meetings
-                    .recover_pending(app.handle().clone(), repository);
-            }
+            completion::initialize(app.handle())?;
+            startup::initialize(app.handle())?;
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 

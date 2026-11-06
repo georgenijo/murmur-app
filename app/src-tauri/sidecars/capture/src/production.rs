@@ -117,6 +117,7 @@ fn check_automatic_probe(deadline: Option<u64>) -> Result<(), FailureCode> {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn spawn_automatic_probe_watchdog(deadline_ns: u64) -> Result<(), ()> {
     std::thread::Builder::new()
         .name("automatic-probe-deadline".into())
@@ -1860,6 +1861,7 @@ fn parent_is_gone(original_parent: u32, current_parent: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::disallowed_methods)]
 fn spawn_parent_watchdog() -> Result<(), ()> {
     let original_parent = unsafe { libc::getppid() as u32 };
     std::thread::Builder::new()
@@ -3441,6 +3443,7 @@ fn prepare_input_command(
     Ok((command, Some(prepared)))
 }
 
+#[allow(clippy::disallowed_methods)]
 pub fn run(arguments: &[String]) -> Result<(), ()> {
     spawn_parent_watchdog()?;
     let capture_id = arguments

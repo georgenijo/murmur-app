@@ -205,6 +205,7 @@ mod supported {
         wait_for_cancel(host_rx, stdout, nonce)
     }
 
+    #[allow(clippy::disallowed_methods)]
     pub fn run(synthetic: bool, ignore_cancel: bool) -> Result<(), ()> {
         disable_core_dumps();
         // The worker establishes its own group before reading the host hello or
@@ -387,6 +388,7 @@ mod supported {
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {

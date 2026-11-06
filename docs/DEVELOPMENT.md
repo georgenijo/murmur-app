@@ -269,6 +269,8 @@ Initialization precedes CLI worker dispatch as well as Tauri setup.
 | FluidAudio/shared model caches | Inspection, download destinations and repair markers are namespaced. The pinned FluidAudio SDK has no cache-path API: its ASR initializer is refused for internal bundles, and speaker diarization is unavailable there, preventing implicit SDK access to the shared production cache. Use isolated Whisper/Parakeet for QA. |
 | Corpus stores | Namespaced legacy roots; internal identities ignore global corpus directory overrides. Synthetic fixtures must be provisioned inside the isolated root. |
 | WebKit | Wry uses the configured bundle identity; lifecycle checks only the exact identity subdirectory. QA uses `com.localdictation.shutdown-test`, never the production store or a directory enumeration of the global WebKit root. |
+| Shared clipboard and pasteboard | Only an explicitly initialized `com.localdictation` process uses the general pasteboard. Every other identity, including absent/empty/future IDs, routes text reads, writes and change-count checks to its own injectively named `NSPasteboard`. Clipboard snippets and transform apply/undo use the same primitives. QA refuses all external key posts and Smart insertion before activation or mutation; no QA-only target exemption exists. Routing tests use strings only and never access any OS pasteboard. |
+| OS-managed crash reports | macOS may create identity/process-attributed crash reports outside the application-owned roots. Murmur has no application-owned reader for those reports and does not enumerate, import, upload or delete them. These OS-managed files are not claimed to be application-namespaced stores. |
 | UserDefaults/preferences | App defaults use NSBundle identity. Explicit appearance/Dock reads access system appearance/layout preferences only; no app data is read or written in another app domain. |
 | Keychain | No application keychain store/API is used. Updater signature verification uses the bundled public key. |
 | Temp directories | Generated cue files use a namespaced temp root and UUID; explicit test fixtures use unique synthetic roots. Owned publication temps are exclusive 0600 siblings of their isolated destinations. |
@@ -286,35 +288,41 @@ No production data is accessed by the tests. Regression coverage includes indepe
 production/QA default-export numbering, all refused capture-agent operations,
 and queued early logs during an injected stalled telemetry history reader.
 
-#### Startup disk-I/O audit (round two)
+#### Startup disk-I/O audit (round three)
 
-Telemetry installs its subscriber synchronously using only memory/channel setup.
-A dedicated worker reads history, merges it before live ring-buffer events, opens
-and rotates both log formats, and drains queued early output. Tracing calls no
-longer write JSONL synchronously. A stalled reader/writer cannot hold the setup
-thread or a disk-writer lock needed by that thread.
+Setup registers the shutdown coordinator before starting optional storage work.
+Telemetry installs its subscriber using memory/channel setup. Its worker reads
+history, opens/rotates files and writes both log formats. Restoration captures
+Clear's generation **before scheduling**; Clear invalidates the live ring before
+waiting for disk. Early records remain queued behind a stalled startup reader.
+The shutdown Writers phase concurrently seals telemetry producers and queues a
+file-flush barrier, waiting only until its existing absolute +10 s deadline.
+The +5/+7/+10 s coordinator driver never joins a disk worker. A content-free
+terminal stderr receipt reports pending, failed and post-seal rejected records,
+including records that cannot reach disk by the deadline.
 
-Other setup disk work remains synchronous and is explicitly **not covered** by
-that telemetry guarantee:
-
-| Setup call | Remaining synchronous file work |
+| Setup call | Worker ownership and main-thread behavior |
 |---|---|
-| `completion::initialize` | `settings_store::data_dir` creates the identity app-data root; exact-identity WebKit existence check; completion service startup may wait for its storage owner. |
-| Legacy query/transform cleanup | Enumerates/removes retired app-data files. |
-| `capture_health.initialize` | Creates diagnostics, loads history or replays JSONL, and publishes migrated history while holding its accumulator lock. |
-| `performance.initialize` | Machine-ID load/create and SQLite repository initialization/migrations. |
-| `dictation_diagnostics.initialize` | Private-directory creation and capture pruning. |
-| `knowledge.initialize` / correction refresh | SQLite open/migration, queries and correction matcher load. |
-| `diarization_audio::sweep_abandoned` / `meeting_store.initialize` | Removes abandoned isolated spools; opens/migrates/queries the meeting database. |
+| `completion::initialize` | A retained startup worker creates/locks the identity root, checks only the exact identity WebKit path and starts the completion owner. Readiness waits and initial Snapshot/migration IPC run off main; commands arriving before publication fail safely or await readiness asynchronously. Recording remains gated until migration admission. |
+| Legacy query/transform cleanup | A separate startup worker enumerates/removes retired identity app-data files. |
+| Capture-health | A separate startup worker loads history/replays prior-launch JSONL and publishes migration. Disk reads/writes never hold the live accumulator lock used by tracing/main. Live observations are appended after restored observations; current-instance JSONL events are not counted twice. Clear invalidates scheduled/in-progress restoration. |
+| Performance / dictation diagnostics | A startup worker creates machine identity, opens/migrates SQLite, creates private directories and prunes captures. Machine-ID I/O does not hold the live production accumulator; pruning completes before publishing its root. Initial performance read/recovery and Clear IPC run off main. |
+| Knowledge / correction refresh | A separate startup worker opens/migrates/queries SQLite and loads the correction matcher. Publication locks cover only in-memory state; early status/read calls see unavailable state rather than waiting for initialization I/O. |
+| Meeting / abandoned spools | A separate startup worker sweeps abandoned identity spools, opens/migrates/queries SQLite and recovers pending segments. Repository publication does not hold the reader lock across initialization I/O. |
 
-Window snapshot and capture memo restoration already run on workers. Launch
-settings recovery uses the source FIFO; cue WAV creation occurs only in a
-blocking playback worker. Audio inventory, Smart Auto, meeting suggestions,
-log shipping and resource heartbeats schedule workers/tasks; their startup
-registration does not perform app-file reads on main. Native menu/window,
-AppKit observer, WebKit identity and system-device/display calls remain on main
-as required by their APIs. This audit does not claim all startup disk I/O has
-been removed; the rows above can still delay main dispatch before setup ends.
+Each startup worker owns an accepted producer permit for shutdown recovery.
+A stalled reader cannot keep setup on main, and the deadline driver can finish
+without joining that worker. Window snapshots, capture memo and launch settings
+recovery also run on workers. Cue WAV creation occurs in its playback worker.
+Audio inventory, Smart Auto, meeting suggestions, log shipping and heartbeats
+schedule workers/tasks without application-file reads during registration.
+Native menu/window mutations, AppKit observers, WebKit identity validation and
+system-device/display calls remain on main because their APIs require it. They
+perform no application-owned file replay or migrations and acquire no startup
+storage lock; OS framework dispatch itself has no application-controlled hard
+time bound. Synthetic stalled-reader tests cover setup returning, live logging,
+Clear precedence, and quit reaching the existing terminal deadline while I/O
+is still blocked. This is windowless verification, not a GUI acceptance claim.
 
 ### Completion pending recovery
 

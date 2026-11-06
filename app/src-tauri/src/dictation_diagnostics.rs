@@ -152,9 +152,13 @@ impl DictationDiagnostics {
     pub(crate) fn initialize(&self, root: PathBuf) -> Result<(), String> {
         ensure_private_dir(&root)?;
         ensure_private_dir(&root.join("captures"))?;
+        let initial = Inner {
+            root: Some(root.clone()),
+            ..Default::default()
+        };
+        prune_captures(&initial)?;
         let mut inner = self.inner.lock_or_recover();
         inner.root = Some(root);
-        prune_captures(&inner)?;
         Ok(())
     }
 

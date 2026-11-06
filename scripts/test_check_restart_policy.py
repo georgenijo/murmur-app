@@ -1,5 +1,5 @@
 import unittest
-from check_restart_policy import violations, check_repository
+from check_restart_policy import violations, check_repository, method_allow_scopes, check_clippy_config, REQUIRED_METHODS
 from pathlib import Path
 import tempfile
 class RestartPolicy(unittest.TestCase):
@@ -57,3 +57,49 @@ class RestartPolicy(unittest.TestCase):
             root = Path(directory)
             (root / 'Cargo.toml').write_text('[dependencies')
             self.assertTrue(check_repository(root))
+
+    def test_unrelated_exit_is_not_reserved(self):
+        for source in ['fn exit(code: i32) -> i32 { code } let result = exit(37);', 'let gate = self.exit.clone();']:
+            self.assertFalse(violations(source))
+        self.assertTrue(violations('fn bypass() { std::process::exit(0); }'))
+
+    def test_lint_allowances_are_exact_function_scopes(self):
+        sanctioned = '#[allow(clippy::disallowed_methods)] fn terminal(app: &tauri::AppHandle) { app.exit(0); }'
+        scopes, failures = method_allow_scopes(sanctioned, Path('app/src-tauri/src/shutdown.rs'))
+        self.assertFalse(failures)
+        self.assertEqual(len(scopes), 1)
+        for source in [
+            '#![allow(clippy::disallowed_methods)] fn terminal() {}',
+            '#[allow(clippy::disallowed_methods)] mod terminal {}',
+            '#[allow(clippy::disallowed_methods)] fn other() {}',
+            '#[expect(clippy::disallowed_methods)] fn terminal() {}',
+            '#[cfg_attr(test, allow(clippy::disallowed_methods))] fn terminal() {}',
+            '#[allow(warnings)] fn terminal() {}',
+            '#[allow(clippy::restriction)] fn terminal() {}',
+        ]:
+            with self.subTest(source=source):
+                self.assertTrue(method_allow_scopes(source, Path('app/src-tauri/src/shutdown.rs'))[1])
+        self.assertTrue(method_allow_scopes(sanctioned, Path('other.rs'))[1])
+
+    def test_process_exit_allowance_does_not_spill_outside_function(self):
+        source = '#[allow(clippy::disallowed_methods)] fn terminal() { std::process::exit(0); } fn bypass() { std::process::exit(0); }'
+        scopes, _ = method_allow_scopes(source, Path('app/src-tauri/src/shutdown.rs'))
+        failures = violations(source, method_scopes=scopes)
+        self.assertEqual(len(failures), 1)
+        self.assertGreater(failures[0], scopes[0][1])
+
+    def test_clippy_config_cannot_be_overridden(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertTrue(check_clippy_config(root))
+            (root / 'clippy.toml').write_text('disallowed-methods = ' + str(sorted(REQUIRED_METHODS)).replace("'", '"'))
+            self.assertFalse(check_clippy_config(root))
+            member = root / 'member'
+            member.mkdir()
+            (member / '.clippy.toml').write_text('disallowed-methods = []')
+            self.assertTrue(check_clippy_config(root))
+
+    def test_compiled_bypass_fixture_inventory(self):
+        fixtures = Path(__file__).parent / 'fixtures/restart-clippy'
+        for name in ['grouped_std_alias', 'grouped_libc_alias', 'grouped_libc_exit_alias', 'macro_forwarded_exit', 'direct_zero_outside_cli', 'apphandle_exit', 'apphandle_restart', 'abort_alias', 'libc_abort', 'plugin_init_alias', 'unrelated_exit']:
+            self.assertTrue((fixtures / (name + '.txt')).is_file())
