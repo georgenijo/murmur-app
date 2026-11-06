@@ -6,11 +6,146 @@ use serde::Serialize;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write},
+    panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
 };
 
 const QA_ID: &str = "com.localdictation.shutdown-test";
+
+/// One wait shared by the queued callback and the permitted runtime event.
+/// Neither filesystem work, diagnostics nor an evidence mutex runs on main.
+pub(crate) const TERMINAL_EVIDENCE_BUDGET: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum AttemptOutcome {
+    InProgress,
+    CompletedWithinBound,
+    TimedOut,
+    IoFailure,
+    Panicked,
+    Unavailable,
+}
+
+#[derive(Default)]
+pub(crate) struct TerminalAttempt {
+    started: AtomicBool,
+    outcome: AtomicU8,
+}
+
+fn contain<T>(work: impl FnOnce() -> T) -> Option<T> {
+    match catch_unwind(AssertUnwindSafe(work)) {
+        Ok(result) => Some(result),
+        Err(payload) => {
+            // Even dropping a custom panic payload can panic. Evidence must
+            // never propagate that second unwind into the terminal caller.
+            std::mem::forget(payload);
+            None
+        }
+    }
+}
+impl TerminalAttempt {
+    pub const fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            outcome: AtomicU8::new(0),
+        }
+    }
+
+    pub fn run(&self, write: impl FnOnce() -> io::Result<()> + Send + 'static) -> AttemptOutcome {
+        if self.started.swap(true, Ordering::AcqRel) {
+            return self.outcome();
+        }
+        let deadline = Instant::now() + TERMINAL_EVIDENCE_BUDGET;
+        // Also contain a panic during thread setup; callers additionally contain
+        // evidence preparation so no evidence panic can skip the native action.
+        let result = contain(|| {
+            let (done, receive) = mpsc::channel();
+            let (report, reported) = mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("shutdown-qa-evidence".into())
+                .spawn(move || {
+                    let result = match contain(write) {
+                        Some(Ok(())) => AttemptOutcome::CompletedWithinBound,
+                        Some(Err(_)) => AttemptOutcome::IoFailure,
+                        None => AttemptOutcome::Panicked,
+                    };
+                    let _ = done.send((result, Instant::now()));
+                    // The waiting caller records the actual bounded-wait result.
+                    // Diagnostics can themselves block or fail without delaying
+                    // termination. Never print paths, payloads or panic messages.
+                    if let Ok(outcome) = reported.recv() {
+                        let _ = contain(|| {
+                            diagnostic(&mut io::stderr(), outcome);
+                        });
+                    }
+                });
+            let outcome = if spawned.is_err() {
+                AttemptOutcome::Unavailable
+            } else {
+                match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok((outcome, completed)) if completed <= deadline => outcome,
+                    Ok(_) => AttemptOutcome::TimedOut,
+                    Err(mpsc::RecvTimeoutError::Timeout) => AttemptOutcome::TimedOut,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => AttemptOutcome::Panicked,
+                }
+            };
+            self.outcome.store(outcome as u8, Ordering::Release);
+            let _ = report.send(outcome);
+            outcome
+        })
+        .unwrap_or(AttemptOutcome::Panicked);
+        self.outcome.store(result as u8, Ordering::Release);
+        result
+    }
+
+    fn outcome(&self) -> AttemptOutcome {
+        match self.outcome.load(Ordering::Acquire) {
+            1 => AttemptOutcome::CompletedWithinBound,
+            2 => AttemptOutcome::TimedOut,
+            3 => AttemptOutcome::IoFailure,
+            4 => AttemptOutcome::Panicked,
+            5 => AttemptOutcome::Unavailable,
+            _ => AttemptOutcome::InProgress,
+        }
+    }
+}
+
+fn diagnostic(output: &mut impl Write, outcome: AttemptOutcome) {
+    let message: &[u8] = match outcome {
+        AttemptOutcome::CompletedWithinBound => {
+            b"shutdown QA evidence: completed_within_bound=true\n"
+        }
+        AttemptOutcome::TimedOut => {
+            b"shutdown QA evidence: completed_within_bound=false timed_out\n"
+        }
+        AttemptOutcome::IoFailure => {
+            b"shutdown QA evidence: completed_within_bound=false receipt_io_failure\n"
+        }
+        AttemptOutcome::Panicked => {
+            b"shutdown QA evidence: completed_within_bound=false evidence_panicked\n"
+        }
+        AttemptOutcome::Unavailable => {
+            b"shutdown QA evidence: completed_within_bound=false worker_unavailable\n"
+        }
+        AttemptOutcome::InProgress => return,
+    };
+    let _ = output.write_all(message);
+}
+
+/// The terminal continuation runs once even if evidence preparation panics.
+pub(crate) fn with_terminal_evidence<T>(
+    evidence: impl FnOnce(),
+    terminal: impl FnOnce() -> T,
+) -> T {
+    let _ = contain(evidence);
+    terminal()
+}
 
 #[derive(Default)]
 pub(crate) struct DispatcherCounts {
@@ -174,6 +309,15 @@ impl Evidence {
         }
     }
     pub fn write_terminal(&mut self, action: Action, counts: Counts) -> io::Result<bool> {
+        self.write_terminal_with_sync(action, counts, File::sync_all)
+    }
+
+    fn write_terminal_with_sync(
+        &mut self,
+        action: Action,
+        counts: Counts,
+        mut sync: impl FnMut(&File) -> io::Result<()>,
+    ) -> io::Result<bool> {
         if self.written {
             return Ok(false);
         }
@@ -201,11 +345,13 @@ impl Evidence {
         let bytes = serde_json::to_vec(&receipt)?;
         fs::create_dir_all(&self.directory)?;
         // Persist the directory itself when first created, too.
-        File::open(self.directory.parent().ok_or(io::ErrorKind::InvalidInput)?)?.sync_all()?;
+        sync(&File::open(
+            self.directory.parent().ok_or(io::ErrorKind::InvalidInput)?,
+        )?)?;
         let path = self
             .directory
             .join(format!("{}-{}.json", self.pid, self.process_start_id));
-        atomic_publish(&path, &bytes, || Ok(()))?;
+        atomic_publish(&path, &bytes, || Ok(()), &mut sync)?;
         self.written = true;
         Ok(true)
     }
@@ -218,6 +364,7 @@ fn atomic_publish(
     path: &Path,
     bytes: &[u8],
     before_publish: impl FnOnce() -> io::Result<()>,
+    sync: &mut impl FnMut(&File) -> io::Result<()>,
 ) -> io::Result<()> {
     let staged = path.with_extension("pending");
     let mut file = OpenOptions::new()
@@ -226,16 +373,20 @@ fn atomic_publish(
         .open(&staged)?;
     let result = (|| {
         file.write_all(bytes)?;
-        file.sync_all()?;
+        sync(&file)?;
         before_publish()?;
         fs::hard_link(&staged, path)?;
-        File::open(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?.sync_all()
+        sync(&File::open(
+            path.parent().ok_or(io::ErrorKind::InvalidInput)?,
+        )?)
     })();
     drop(file);
     let cleanup = fs::remove_file(&staged);
     result?;
     cleanup?;
-    File::open(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?.sync_all()
+    sync(&File::open(
+        path.parent().ok_or(io::ErrorKind::InvalidInput)?,
+    )?)
 }
 
 #[cfg(test)]
@@ -246,6 +397,176 @@ mod tests {
             .join(".cache/murmur-shutdown-evidence-tests");
         fs::create_dir_all(&root).unwrap();
         tempfile::tempdir_in(root).unwrap()
+    }
+
+    #[test]
+    fn successful_bounded_write_is_recorded_once_with_content_free_status() {
+        let root = scratch();
+        let mut evidence =
+            Evidence::new(QA_ID, Some(QA_ID), || Some(root.path().to_owned())).unwrap();
+        let attempt = TerminalAttempt::new();
+        let outcome = attempt.run(move || {
+            evidence
+                .write_terminal(Action::Quit, Counts::default())
+                .map(|_| ())
+        });
+        assert_eq!(outcome, AttemptOutcome::CompletedWithinBound);
+        assert_eq!(
+            attempt.run(|| panic!("duplicate evidence attempt")),
+            outcome
+        );
+        let mut output = Vec::new();
+        diagnostic(&mut output, outcome);
+        assert_eq!(
+            output,
+            b"shutdown QA evidence: completed_within_bound=true\n"
+        );
+        assert_eq!(
+            fs::read_dir(root.path().join("shutdown-evidence"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn slow_fsync_cannot_hold_terminal_action_or_start_a_second_attempt() {
+        let root = scratch();
+        let mut evidence =
+            Evidence::new(QA_ID, Some(QA_ID), || Some(root.path().to_owned())).unwrap();
+        let attempt = TerminalAttempt::new();
+        let (finished, drained) = mpsc::channel();
+        let start = Instant::now();
+        let mut terminal_count = 0;
+        with_terminal_evidence(
+            || {
+                assert_eq!(
+                    attempt.run(move || {
+                        let mut sync_count = 0;
+                        let result = evidence.write_terminal_with_sync(
+                            Action::Quit,
+                            Counts::default(),
+                            |file| {
+                                sync_count += 1;
+                                std::thread::sleep(Duration::from_secs(3));
+                                file.sync_all()
+                            },
+                        );
+                        let _ = finished.send(sync_count);
+                        result.map(|_| ())
+                    }),
+                    AttemptOutcome::TimedOut
+                );
+            },
+            || {
+                terminal_count += 1;
+                assert!(start.elapsed() <= Duration::from_millis(250));
+            },
+        );
+        // A runtime event arriving after the queued callback consumes no second
+        // budget and cannot try to lock or join the blocked evidence writer.
+        assert_eq!(
+            attempt.run(|| panic!("duplicate evidence attempt")),
+            AttemptOutcome::TimedOut
+        );
+        assert!(start.elapsed() <= Duration::from_millis(250));
+        assert_eq!(terminal_count, 1);
+        assert_eq!(drained.recv_timeout(Duration::from_secs(15)).unwrap(), 4);
+        // A late disk completion cannot rewrite the bounded-wait result.
+        assert_eq!(attempt.outcome(), AttemptOutcome::TimedOut);
+    }
+
+    #[test]
+    fn evidence_panics_still_run_the_terminal_continuation_once() {
+        for preparation_panics in [false, true] {
+            let attempt = TerminalAttempt::new();
+            let mut terminal_count = 0;
+            with_terminal_evidence(
+                || {
+                    if preparation_panics {
+                        panic!("synthetic evidence preparation panic");
+                    }
+                    assert_eq!(
+                        attempt.run(|| panic!("synthetic evidence worker panic")),
+                        AttemptOutcome::Panicked
+                    );
+                },
+                || terminal_count += 1,
+            );
+            assert_eq!(terminal_count, 1);
+            if !preparation_panics {
+                assert_eq!(attempt.outcome(), AttemptOutcome::Panicked);
+            }
+        }
+    }
+
+    #[test]
+    fn panicking_payload_destructor_cannot_skip_terminal_action() {
+        struct Payload;
+        impl Drop for Payload {
+            fn drop(&mut self) {
+                panic!("synthetic panic payload destructor");
+            }
+        }
+        let mut terminal_count = 0;
+        with_terminal_evidence(|| std::panic::panic_any(Payload), || terminal_count += 1);
+        assert_eq!(terminal_count, 1);
+        assert_eq!(
+            TerminalAttempt::new().run(|| std::panic::panic_any(Payload)),
+            AttemptOutcome::Panicked
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_destination_and_broken_stderr_cannot_skip_terminal_action() {
+        const CHILD: &str = "MURMUR_QA_BROKEN_STDERR_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::{
+                os::{fd::OwnedFd, unix::net::UnixStream},
+                process::{Command, Stdio},
+            };
+            let (reader, writer) = UnixStream::pair().unwrap();
+            drop(reader);
+            let fd: OwnedFd = writer.into();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "shutdown::qa_evidence::tests::unwritable_destination_and_broken_stderr_cannot_skip_terminal_action", "--nocapture"])
+                .env(CHILD, "1")
+                .stderr(Stdio::from(fd))
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "child failed: {:?}", output.status);
+            assert!(String::from_utf8_lossy(&output.stdout).contains("terminal-count=1"));
+            return;
+        }
+        // A file in place of the destination directory fails even as root.
+        assert!(io::stderr()
+            .write_all(b"synthetic broken-stderr probe\n")
+            .is_err());
+        let root = scratch();
+        fs::write(root.path().join("shutdown-evidence"), b"synthetic blocker").unwrap();
+        let mut evidence =
+            Evidence::new(QA_ID, Some(QA_ID), || Some(root.path().to_owned())).unwrap();
+        let attempt = TerminalAttempt::new();
+        let mut terminal_count = 0;
+        with_terminal_evidence(
+            || {
+                let outcome = attempt.run(move || {
+                    evidence
+                        .write_terminal(Action::Quit, Counts::default())
+                        .map(|_| ())
+                });
+                assert_eq!(outcome, AttemptOutcome::IoFailure);
+                // Exercise the exact diagnostic against the child's real broken
+                // stderr, without changing the parent test runner's descriptors.
+                diagnostic(&mut io::stderr(), outcome);
+            },
+            || terminal_count += 1,
+        );
+        assert_eq!(terminal_count, 1);
+        assert_eq!(attempt.outcome(), AttemptOutcome::IoFailure);
+        assert!(catch_unwind(|| diagnostic(&mut io::stderr(), AttemptOutcome::IoFailure)).is_ok());
+        println!("terminal-count={terminal_count}");
     }
     #[test]
     fn identity_gate_precedes_all_directory_access() {
@@ -329,22 +650,32 @@ mod tests {
         let root = scratch();
         let path = root.path().join("synthetic.json");
         let bytes = br#"{"count":195}"#;
-        let failure = atomic_publish(&path, bytes, || {
-            assert!(!path.exists());
-            assert_eq!(fs::read(path.with_extension("pending")).unwrap(), bytes);
-            Err(io::ErrorKind::Interrupted.into())
-        });
+        let failure = atomic_publish(
+            &path,
+            bytes,
+            || {
+                assert!(!path.exists());
+                assert_eq!(fs::read(path.with_extension("pending")).unwrap(), bytes);
+                Err(io::ErrorKind::Interrupted.into())
+            },
+            &mut File::sync_all,
+        );
         assert!(failure.is_err());
         assert!(!path.exists());
         assert!(!path.with_extension("pending").exists());
-        atomic_publish(&path, bytes, || {
-            assert!(!path.exists());
-            Ok(())
-        })
+        atomic_publish(
+            &path,
+            bytes,
+            || {
+                assert!(!path.exists());
+                Ok(())
+            },
+            &mut File::sync_all,
+        )
         .unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(
-            atomic_publish(&path, b"different", || Ok(()))
+            atomic_publish(&path, b"different", || Ok(()), &mut File::sync_all)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::AlreadyExists

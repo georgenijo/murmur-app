@@ -252,14 +252,25 @@ before resolving a path. On macOS the path is:
 
 `process_start_id` is a UUID generated once when that process initializes its
 coordinator. At the permitted terminal callback, after the hold and before the
-native terminal action, the sink syncs a staging file, atomically publishes an
-immutable JSON name, and syncs the directory. Repeated callbacks cannot overwrite
-the receipt. The permitted runtime terminal event also attempts the same write,
+native terminal action, a dedicated worker syncs a staging file, atomically
+publishes an immutable JSON name, and syncs the directory. The terminal caller
+waits at most 100 ms in total for this worker, shared across both entry routes.
+Repeated callbacks cannot overwrite the receipt. The permitted runtime terminal event also attempts the same write,
 covering native termination that observes the permit before the queued terminal
 callback runs. Both routes share the same once-per-process publication. It has
 no IPC read command and never uses the sealed logger.
-An I/O failure emits only `receipt_io_failure` on stderr and must fail the QA
-evidence check; it does not prevent the native terminal action.
+The bounded-wait outcome is recorded atomically; late completion cannot change
+it. Off-main diagnostics report `completed_within_bound=true` or
+`completed_within_bound=false` with a fixed code (`timed_out`,
+`receipt_io_failure`, `evidence_panicked`, `worker_unavailable`). All diagnostic
+writes ignore I/O errors; evidence preparation and worker panics are contained,
+including panic payloads with panicking destructors. The shutdown telemetry
+diagnostic also ignores write errors, and the pretty-log layer suppresses its
+internal stderr fallback when the writer disconnects; queue failure counts remain.
+No evidence failure, blocked stderr, or slow fsync prevents the native action.
+If the process ends before the worker emits its diagnostic or publishes its
+receipt, record an evidence failure. The 100 ms software wait has a 250 ms
+elapsed regression threshold for scheduling; it is not an OS real-time guarantee.
 
 Before each launch inventory existing receipt filenames. After observing that
 exact process finish, require exactly one **new** receipt for its validated PID
@@ -284,6 +295,24 @@ policy tests cover feature, identity, and capability boundaries.
 Every grid cell must run the cheap Clear/retention/source/theme/window replay
 procedure in [Round-eight QA terminal evidence](draft/gpui-shutdown-coordinator.md#round-eight-qa-terminal-evidence).
 Record each assertion per cell; supplementary runs cannot fill missing cells.
+Every cell, including dictation and each pending-write variant, must complete a
+successful nonempty synthetic file-transcription preflight with retention off.
+Await the `transcribe_file` acknowledgement and derive success only from its
+fulfilled result; require `text.trim().length > 0` locally. Record only success,
+positive output character/byte count, and `fileRunId` or a locally computed
+digest; discard text from the harness result and never export it. Empty/error/
+Idle-only results fail. Require zero retained additions before and after replay.
+
+Each pending-write cell has two distinct variants. The successful in-budget
+variant keeps a real owner-produced pending settings receipt, removes the
+Writers delay (or keeps it within budget), and requires exact revision/digest
+commit, coordinator `timed_out=false` / `writes=Committed`, and terminal JSON
+Writers `completed` / `none`. The deadline variant keeps a separate pending
+receipt and sets `MURMUR_SHUTDOWN_DELAY_WRITERS_MS=20000`; require
+`timed_out=true` / `writes=UnpreservedFailure`, Writers `failed` /
+`deadline_expired`, restart suppression, and exact pending recovery on replay.
+The terminal JSON uses closed outcome/failure codes rather than raw coordinator
+fields. A deadline failure cannot stand in for the successful variant.
 
 From the isolated Main context, invoke
 `plugin:shutdown-test|shutdown_test_action` with action quit, relaunch, exit, or

@@ -243,8 +243,9 @@ deadline, or telemetry-seal policy is changed for round eight.
 The independent feature/identity-gated sink records ordered phase outcomes and
 failure codes under the reducer mutex, including transitions caused by requests
 or deadline ticks. Late completions cannot replace a deadline code. After the
-hold, the committed terminal callback publishes one immutable, fsynced JSON
-receipt per process. It contains only PID/start UUID, fixed phase/action codes,
+hold, the committed terminal callback attempts one immutable, fsynced JSON
+receipt per process on a dedicated thread with a single 100 ms wait budget.
+It contains only PID/start UUID, fixed phase/action codes,
 callback counts by source, and a replacement-requested boolean. No owner error
 strings, settings values, transcript, clipboard, or audio enter the schema.
 Location, publication contract, fields, and collection checks are documented in
@@ -271,15 +272,35 @@ app behavior, with IPC/disk metadata as supplementary evidence.
    fixture IDs are present once. Perform History Clear through its native flow
    (`clear_completion_destination` for the history destination is the owner
    boundary), then read the snapshot and require those IDs absent. Keep only
-   counts/ID comparisons in the cell ledger. For the pending-writes condition,
-   also retain that cell's owner-produced settings pending receipt and delay
-   injection; the completion fixture is a separate assertion, not a substitute
-   for pending settings durability.
+   counts/ID comparisons in the cell ledger. Run **two distinct variants** of
+   every pending-writes cell, with separate ledger entries and receipts:
+
+   - **Successful in-budget drain:** retain an owner-produced settings pending
+     receipt, remove the Writers delay injection (or use a bounded sub-deadline
+     delay), then require that exact revision/digest committed, Writers
+     `completed` / `failure_code=none`, coordinator `timed_out=false` and
+     `writes=Committed`. Replay must preserve that revision without duplication.
+   - **Deadline failure:** retain a separate owner-produced settings pending
+     receipt and set `MURMUR_SHUTDOWN_DELAY_WRITERS_MS=20000`, beyond the absolute
+     +10 s deadline. Require coordinator `timed_out=true`,
+     `writes=UnpreservedFailure`, Writers `failed` / `deadline_expired`, and
+     restart suppressed. Verify the pending revision recovers exactly on replay;
+     this variant cannot count as a successful writer drain.
+
+   The completion fixture is separate from pending settings durability. Read
+   coordinator fields from test/reducer evidence when available; the independent
+   terminal JSON encodes them as Writers outcome/failure code, not raw field names.
 3. Disable transcript retention through the native Settings owner before starting
    the cell's active capture. Verify the runtime acknowledgement. Complete one
-   short synthetic file transcription in preflight when the cell has no dictation
-   producer (meeting/pending/startup/deadline), so retention refusal is observable
-   even if its main capture produces no text. Require no new retained history IDs.
+   short synthetic file transcription in preflight in **every cell**, including
+   dictation cells and both pending-write variants. Require a successful,
+   nonempty completion: await `transcribe_file`, derive `success=true` only
+   from its fulfilled acknowledgement, and require `text.trim().length > 0`
+   locally. Record only that success boolean, output character/byte count and
+   the acknowledgement's `fileRunId` (or a locally computed digest); discard
+   text from the harness result. Never export text.
+   An error, empty result, or merely returning to Idle fails the preflight and
+   cannot establish retention. Require no new retained history IDs.
    Keep retention disabled across the target quit and replay. This establishes
    both Clear and retention per cell instead of borrowing a supplementary result.
 4. Submit a small, distinct synthetic source edit and theme-library revision
@@ -290,8 +311,11 @@ app behavior, with IPC/disk metadata as supplementary evidence.
    one of two valid on-screen rectangles and change chrome appearance through
    the native flow. Record logical bounds/scale, maximized state and appearance
    code. Use Rust window-state publication, never renderer-written geometry.
-5. Run the cell's specified termination request(s) while its dictation, meeting,
-   or pending-write condition is established. Collect the new terminal JSON
+5. Establish the pending settings receipt for each pending-write variant **after**
+   steps 3–4, so preflight and source saves cannot consume it. Record this final
+   pending intent's expected revision/digest for the replay comparison. Run the
+   cell's specified termination request(s) while its dictation, meeting, or
+   pending-write condition is established. Collect the new terminal JSON
    directly from the exact QA directory after process completion. Require 65/65/65
    callbacks, one terminal receipt, expected phase failures/action/replacement
    flag, no owned helper survivors, and the expected replacement-process count.
@@ -1154,3 +1178,61 @@ changed inputs matched the Mac checkout before cleanup. Synthetic logs were
 preserved, and `gpui-stack-30`, its target and synthetic scratch were removed.
 No GUI or app was launched. Independent Sol recheck remains with the parent;
 PR #1025 remains draft, stacked on its original base, unmerged and unretargeted.
+
+
+### Round-eight review corrections
+
+QA terminal evidence now gets one dedicated worker and one shared 100 ms wait
+budget across the queued callback and permitted runtime event. Disk writes,
+all four fsyncs, evidence locking, and diagnostics run off main. Timeout, spawn
+failure, I/O failure, and evidence panics all continue to the existing terminal
+action; the coordinator still issues that action exactly once. Evidence
+preparation is also protected by `catch_unwind`. Diagnostics use ignored
+`Write` results with fixed content-free bytes, never `eprintln!` or error/panic
+formatting. The shutdown telemetry diagnostic also ignores write errors; the
+pretty tracing layer disables its internal panicking stderr fallback when the
+queue's writer is disconnected. Queue failure counters still record those
+errors. Evidence panic payloads are retained without dropping them, so a custom
+panicking destructor cannot unwind past containment. The feature and initialized
+QA identity gates are unchanged.
+
+The bounded-wait outcome is recorded atomically once; late completion never
+changes a timeout to success. The worker emits `completed_within_bound=true`
+or `completed_within_bound=false` plus a fixed failure code after receiving
+that outcome. Capture this stderr metadata when available. A killed or blocked
+worker may leave no diagnostic/receipt or a `.pending` file: record an evidence
+failure, never delay termination or treat a late receipt as in-budget success.
+The wait is 100 ms; regression tests allow 250 ms elapsed to accommodate thread
+scheduling. This is a bounded software wait, not a real-time OS guarantee.
+
+The per-cell procedure now separates successful pending-write drains from
+Writers deadline failures. Every cell requires successful nonempty synthetic
+file-transcription preflight, including active dictation; Idle/no-history alone
+cannot satisfy retention assertions. No additional QA hook or production
+permission, identity, path, or capability change is needed.
+
+Regression coverage injects 3 s into each of the four real fsync sites and
+checks the terminal continuation runs once within 250 ms, repeated evidence
+entry cannot wait again, and late completion preserves the timeout result.
+A subprocess uses an unwritable destination and an actually broken stderr
+socket, proving the fixed diagnostic cannot panic or skip the terminal action.
+Separate cases contain evidence worker/preparation panics and panicking panic
+payload destructors. A second broken-stderr subprocess exercises the actual
+shutdown telemetry diagnostic and a disconnected production pretty-log writer.
+Native GUI QA and independent Sol recheck remain with the parent; no app
+launch is performed.
+
+
+Verification: all 215 core tests pass. Mac mini / Rust 1.98.1 full single-threaded
+`cargo test` passes in default and `shutdown-test-support` configurations
+(1,570 / 1,581 unit tests, plus integration and windowless suites). Both include
+the final telemetry broken-stderr regression. Workspace/all-target strict Clippy
+passes in both with only the two requested allowances. All 18 foreign-source and
+11 resolved-Clippy termination fixtures pass, alongside restart-policy tests,
+core-dependency, targeted-event, sender/identity, reference/link, capture-boundary,
+workflow, formatting and diff checks. The production library excludes QA symbols
+and receipt markers; the QA library provides the positive control. All three
+changed native sources match their Mac-verified SHA-256 values. Generated schemas
+were restored; synthetic logs were preserved; the `gpui-stack-33` checkout and
+external target were removed. No GUI or app launch was used. PR #1025 remains
+draft on its original stack base, unmerged and unretargeted.
