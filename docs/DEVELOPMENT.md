@@ -241,6 +241,50 @@ per-phase delay variables documented in the [shutdown contract](draft/gpui-shutd
 During that hold require 195 callbacks across AppContext, Tauri and a native
 common-mode heartbeat. It accepts mixed requests before terminal commit.
 
+Read terminal evidence from the filesystem, not the telemetry event stream.
+Only `shutdown-test-support` compiles this sink; it also requires both the
+configured and initialized identity to equal `com.localdictation.shutdown-test`
+before resolving a path. On macOS the path is:
+
+```text
+~/Library/Application Support/com.localdictation.shutdown-test/shutdown-evidence/<pid>-<process_start_id>.json
+```
+
+`process_start_id` is a UUID generated once when that process initializes its
+coordinator. At the permitted terminal callback, after the hold and before the
+native terminal action, the sink syncs a staging file, atomically publishes an
+immutable JSON name, and syncs the directory. Repeated callbacks cannot overwrite
+the receipt. The permitted runtime terminal event also attempts the same write,
+covering native termination that observes the permit before the queued terminal
+callback runs. Both routes share the same once-per-process publication. It has
+no IPC read command and never uses the sealed logger.
+An I/O failure emits only `receipt_io_failure` on stderr and must fail the QA
+evidence check; it does not prevent the native terminal action.
+
+Before each launch inventory existing receipt filenames. After observing that
+exact process finish, require exactly one **new** receipt for its validated PID
+and start UUID, excluding any replacement process's receipt. Require schema 1,
+five ordered phases (`admission`, `capture`, `helpers`, `writers`, `terminate`),
+65 callbacks from each of `app_context`, `tauri_dispatch`, and `cf_heartbeat`
+(195 total/expected), and `terminal_action_count=1`. Check `terminal_action`
+(`quit`/`restart`) and `replacement_requested` against that cell's requests and
+restart prerequisites. Phase outcomes are `completed`, `preserved_for_replay`,
+or `failed`; failure codes are `none`, `owner_failed`, `deadline_expired`, or
+`unpreserved_failure`. Deadline cells must assert the affected phase's code and
+restart suppression, rather than treating process disappearance as success.
+This receipt proves entry to the committed terminal callback; independently
+check process death, replacement PID count, and absence of owned helpers.
+Missing/duplicate/malformed receipts or `.pending` files are evidence failures.
+Keep receipts until the cell's sanitized results have been collected; remove
+only that run's inventoried QA files afterward. History Clear and transcript
+retention do not delete these content-free QA receipts. Production builds contain
+neither the sink nor its receipt types; default/feature ACL tests and the sender
+policy tests cover feature, identity, and capability boundaries.
+
+Every grid cell must run the cheap Clear/retention/source/theme/window replay
+procedure in [Round-eight QA terminal evidence](draft/gpui-shutdown-coordinator.md#round-eight-qa-terminal-evidence).
+Record each assertion per cell; supplementary runs cannot fill missing cells.
+
 From the isolated Main context, invoke
 `plugin:shutdown-test|shutdown_test_action` with action quit, relaunch, exit, or
 destroy-last. The feature generates its inline-plugin permission manifest; only
