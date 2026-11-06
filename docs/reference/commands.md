@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 176 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 177 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -403,6 +403,7 @@ All successful mutations return the latest `Snapshot` and publish read-only
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `completion_snapshot` | — | `Result<Snapshot, String>` | Main/diagnostics read of History, statistics, saved reports, migration notice and per-destination key-removal receipts. |
+| `acknowledge_completion_keys` | `destinations: Destination[]` | `Result<(), String>` | Main-only durable acknowledgement after targeted WebKit key removal. Safe to repeat on later launches. |
 | `import_completion_v1` | `source: LegacyImport` | `Result<Snapshot, String>` | Main-only fill/recovery import of History, statistics and reports. Disk wins when valid; durable markers prevent reimport. |
 | `mutate_history` | `mutation: HistoryMutation` | `Result<Snapshot, String>` | Main-only exact-row edit, pin or delete; held data and deletion records use the same serialized owner. |
 | `clear_completion_destination` | `destination: history \| statistics \| reports` | `Result<Snapshot, String>` | Main-only atomic explicit empty/reset destination, watermark and generation discard. |

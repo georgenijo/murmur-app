@@ -59,6 +59,8 @@ struct Document {
     v1_imported: bool,
     generation: Option<String>,
     cleared_at: Option<u64>,
+    #[serde(default)]
+    reset_at: Option<u64>,
     applied_through: u64,
     data: Value,
 }
@@ -69,6 +71,7 @@ impl Document {
             v1_imported: false,
             generation: None,
             cleared_at: None,
+            reset_at: None,
             applied_through: 0,
             data: match d {
                 Destination::Statistics => json!(Stats::default()),
@@ -92,7 +95,7 @@ struct State {
     next: u64,
     journal: Vec<Record>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct List {
     generation: String,
@@ -106,13 +109,13 @@ impl Default for List {
         }
     }
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Deletion {
     id: String,
     digest: String,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Holding {
     schema: u32,
@@ -137,6 +140,8 @@ impl Default for Holding {
 struct Migration {
     schema: u32,
     v1: bool,
+    #[serde(default)]
+    keys_removed: Vec<Destination>,
 }
 #[derive(Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -148,6 +153,7 @@ pub struct LegacyImport {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    pub revision: u64,
     pub history: Vec<Value>,
     pub statistics: Stats,
     pub reports: Vec<Value>,
@@ -166,6 +172,7 @@ pub enum HistoryMutation {
 pub enum Command {
     Snapshot,
     Import(LegacyImport),
+    KeysRemoved(Vec<Destination>),
     Clear {
         destination: Destination,
         at: u64,
@@ -213,6 +220,7 @@ impl CompletionService {
                     },
                     webkit_exists,
                     seen: HashSet::new(),
+                    revision: 0,
                 };
                 if engine.initialize().is_err() {
                     diagnostic("initialization_failed");
@@ -249,6 +257,7 @@ fn diagnostic(code: &'static str) {
     tracing::warn!(target:"completion",code,"completion service diagnostic");
 }
 struct Engine {
+    revision: u64,
     storage: Storage,
     webkit_exists: bool,
     seen: HashSet<String>,
@@ -345,7 +354,7 @@ impl Engine {
         self.drop_consumed(&mut holding)?;
         if !self.migration()?.v1 {
             holding.launches += 1;
-            diagnostic("migration_pending");
+            tracing::warn!(target:"completion", code="migration_pending", held_history=holding.history.entries.len(), held_reports=holding.reports.entries.len(), pending_statistics=self.state()?.journal.len(), "completion migration pending");
         }
         self.storage.write(HOLD, &holding)?;
         if !self.webkit_exists && !self.migration()?.v1 {
@@ -354,6 +363,7 @@ impl Engine {
                 &Migration {
                     schema: 1,
                     v1: true,
+                    keys_removed: vec![],
                 },
             )?;
         }
@@ -368,6 +378,9 @@ impl Engine {
                 };
                 if doc.generation.as_ref() == Some(&list.generation) {
                     *list = List::default();
+                    if d == Destination::History {
+                        h.deletions.clear();
+                    }
                 }
             }
         }
@@ -379,13 +392,19 @@ impl Engine {
         // to compact a journal or drain a consumed holding generation.
         self.storage.sync_directory()?;
         let mut h = self.holding()?;
+        let previous = h.clone();
         self.drop_consumed(&mut h)?;
-        self.storage.write(HOLD, &h)?;
+        if h != previous {
+            self.storage.write(HOLD, &h)?;
+        }
         self.apply_statistics()?;
         Ok(())
     }
     fn apply_statistics(&mut self) -> Result<()> {
         let mut state = self.state()?;
+        if state.journal.is_empty() {
+            return Ok(());
+        }
         let mut doc = self
             .document(Destination::Statistics)?
             .unwrap_or_else(|| Document::new(Destination::Statistics));
@@ -454,6 +473,7 @@ impl Engine {
             }
         }
         Ok(Snapshot {
+            revision: self.revision,
             history,
             statistics,
             reports,
@@ -463,6 +483,7 @@ impl Engine {
         })
     }
     fn execute(&mut self, command: Command) -> Result<Snapshot> {
+        self.revision += 1;
         // Initialization retry must not inflate launch counts on every command.
         if self.state().is_err() || self.holding().is_err() {
             self.initialize()?;
@@ -471,6 +492,25 @@ impl Engine {
         match command {
             Command::Snapshot => {}
             Command::Import(source) => self.import(source)?,
+            Command::KeysRemoved(destinations) => {
+                let mut migration = self.migration()?;
+                let before = migration.keys_removed.len();
+                for destination in destinations {
+                    let doc = self
+                        .document(destination)?
+                        .unwrap_or_else(|| Document::new(destination));
+                    if !self.ready(destination, &doc)? {
+                        return Err(Error::Invalid);
+                    }
+                    if !migration.keys_removed.contains(&destination) {
+                        migration.keys_removed.push(destination);
+                    }
+                }
+                if before != migration.keys_removed.len() {
+                    migration.schema = 1;
+                    self.storage.write(MIGRATION, &migration)?;
+                }
+            }
             Command::Clear { destination, at } => self.clear(destination, at)?,
             Command::History(mutation) => self.mutate_history(mutation)?,
             Command::Report(report) => {
@@ -523,7 +563,10 @@ impl Engine {
         }
         self.snapshot()
     }
-    fn add_content(&mut self, d: Destination, value: Value) -> Result<()> {
+    fn add_content(&mut self, d: Destination, mut value: Value) -> Result<()> {
+        if d == Destination::Reports && value.get("completionUuid").is_none() {
+            value["completionUuid"] = json!(uuid());
+        }
         let mut doc = self.document(d)?.unwrap_or_else(|| Document::new(d));
         if self.ready(d, &doc)? {
             let entries = doc.data.as_array_mut().ok_or(Error::Invalid)?;
@@ -595,7 +638,11 @@ impl Engine {
     fn clear(&mut self, d: Destination, at: u64) -> Result<()> {
         let mut doc = Document::new(d);
         doc.v1_imported = true;
-        doc.cleared_at = Some(at);
+        if d == Destination::Statistics {
+            doc.reset_at = Some(at);
+        } else {
+            doc.cleared_at = Some(at);
+        }
         let mut h = self.holding()?;
         match d {
             Destination::History => doc.generation = Some(h.history.generation.clone()),
@@ -735,7 +782,7 @@ impl Engine {
                 Destination::Reports => {
                     let entries = doc.data.as_array_mut().ok_or(Error::Invalid)?;
                     for v in &h.reports.entries {
-                        if !entries.contains(v) {
+                        if !entries.iter().any(|e| same_report(e, v)) {
                             entries.push(v.clone());
                         }
                     }
@@ -754,6 +801,7 @@ impl Engine {
             &Migration {
                 schema: 1,
                 v1: true,
+                keys_removed: self.migration()?.keys_removed,
             },
         )
     }
@@ -787,9 +835,20 @@ fn trim_history(entries: &mut Vec<Value>) {
         }
     }
 }
+fn same_report(a: &Value, b: &Value) -> bool {
+    let mut a = a.clone();
+    let mut b = b.clone();
+    if let Some(v) = a.as_object_mut() {
+        v.remove("completionUuid");
+    }
+    if let Some(v) = b.as_object_mut() {
+        v.remove("completionUuid");
+    }
+    a == b
+}
 fn trim_reports(entries: &mut Vec<Value>) {
     entries.sort_by(|a, b| a["createdAt"].as_str().cmp(&b["createdAt"].as_str()));
-    entries.dedup();
+    entries.dedup_by(|a, b| same_report(a, b));
     if entries.len() > 10 {
         entries.drain(..entries.len() - 10);
     }

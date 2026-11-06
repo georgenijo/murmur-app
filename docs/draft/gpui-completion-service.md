@@ -38,7 +38,8 @@ skip one matching legacy row. Holding caps cover the combined original/held view
 in memory and include the Retry notice after repeated uncommitted launches.
 
 The main React startup importer reads only the four targeted legacy keys, sends
-v1 to Rust, and removes each destination's keys after a durable receipt. Valid
+v1 to Rust, and removes each destination's keys after a durable receipt, then acknowledges
+that removal in the migration file. Interrupted removal repeats on startup. Valid
 disk wins; missing/unusable destinations recover from WebKit. Holding generations
 drain after the destination commits. `migrations.json` is separate from whole
 settings snapshots; losing it safely reruns marker-based decisions. No WebKit
@@ -121,7 +122,10 @@ real completion actor to the fake capture/delivery effects. It covers successful
 stop and auto-stop, cancellation, retention-off, file transcription, meeting,
 taught correction and Paste Last; duplicate attachment adds nothing. Reopening
 readers and relaunching the service preserve History and counters. Additional
-actor tests cover concurrent producers and rejection of a second owner.
+actor tests cover concurrent producers, rejection of a second owner, exact-row
+edits and pin limits, legacy WPM ordering and transform counters, report metadata,
+UUID de-duplication, removal acknowledgements, and unknown journal outcomes.
+Snapshot revisions prevent delayed IPC responses from replacing newer data.
 
 Run Linux core tests/Clippy, TypeScript/Vitest, core dependency and repository
 reference/markdown policy validators. macOS full-crate and native observations

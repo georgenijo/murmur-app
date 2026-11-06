@@ -591,7 +591,7 @@ impl MeetingCoordinator {
     }
 
     fn finish(&self, app: &tauri::AppHandle, generation: u64, error: Option<&MeetingError>) {
-        let status = {
+        let (status, completed_seconds) = {
             let mut inner = self.inner.lock_or_recover();
             if inner
                 .active
@@ -606,19 +606,10 @@ impl MeetingCoordinator {
             if error.is_some_and(|error| error.code == "unsupported_os") {
                 inner.permission = SystemAudioPermissionState::Unsupported;
             }
-            if error.is_none()
+            let completed_seconds = (error.is_none()
                 && inner.status.phase == MeetingRuntimePhase::Processing
-                && inner.status.session_id.is_some()
-            {
-                crate::completion::activity(
-                    app,
-                    format!("meeting:{generation}"),
-                    murmur_core::completion::StatisticsEvent::Meeting {
-                        seconds: inner.status.elapsed_ms as f64 / 1000.0,
-                        month: chrono::Local::now().format("%Y-%m").to_string(),
-                    },
-                );
-            }
+                && inner.status.session_id.is_some())
+            .then_some(inner.status.elapsed_ms as f64 / 1000.0);
             inner.active = None;
             inner.status.phase = if error.is_some() {
                 MeetingRuntimePhase::Failed
@@ -633,8 +624,18 @@ impl MeetingCoordinator {
                 inner.status.echo_cancellation = MeetingEchoCancellationRuntime::Off;
             }
             inner.status.error_code = error.map(|error| error.code.to_string());
-            inner.status.clone()
+            (inner.status.clone(), completed_seconds)
         };
+        if let Some(seconds) = completed_seconds {
+            crate::completion::activity(
+                app,
+                format!("meeting:{generation}"),
+                murmur_core::completion::StatisticsEvent::Meeting {
+                    seconds,
+                    month: chrono::Local::now().format("%Y-%m").to_string(),
+                },
+            );
+        }
         if let Some(error) = error {
             tracing::warn!(
                 target: "meeting",

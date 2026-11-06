@@ -5,6 +5,7 @@ import type { DictationStats } from './stats';
 import type { BenchmarkReport } from './benchmark';
 
 export interface CompletionSnapshot {
+  revision?: number;
   history: HistoryEntry[];
   statistics: DictationStats;
   reports: BenchmarkReport[];
@@ -15,22 +16,35 @@ export interface CompletionSnapshot {
 // Presentation snapshots only. No WebKit cache and no client-side durable writer.
 let current: CompletionSnapshot | null = null;
 export const COMPLETION_CHANGED = 'murmur-completion-changed';
+export const COMPLETION_FAILED = 'murmur-completion-failed';
 export const completionSnapshot = () => current;
 export function acceptCompletionSnapshot(snapshot: CompletionSnapshot): CompletionSnapshot {
+  if (snapshot.revision !== undefined && current?.revision !== undefined && snapshot.revision < current.revision) return current;
   current = snapshot;
   window.dispatchEvent(new Event(COMPLETION_CHANGED));
   return snapshot;
 }
-function removeImportedKeys(snapshot: CompletionSnapshot): void {
+async function removeImportedKeys(snapshot: CompletionSnapshot): Promise<void> {
   for (const key of snapshot.removeKeys) localStorage.removeItem(key);
+  const destinations = [
+    snapshot.removeKeys.includes('dictation-history') ? 'history' : null,
+    snapshot.removeKeys.includes('dictation-stats') ? 'statistics' : null,
+    snapshot.removeKeys.includes('murmur-benchmark-reports') ? 'reports' : null,
+  ].filter((value): value is string => value !== null);
+  if (destinations.length) await invoke('acknowledge_completion_keys', { destinations });
 }
 export async function refreshCompletion(): Promise<CompletionSnapshot> {
   return acceptCompletionSnapshot(await invoke<CompletionSnapshot>('completion_snapshot'));
 }
 export async function completionMutation(command: string, args?: Record<string, unknown>): Promise<CompletionSnapshot> {
-  const snapshot = acceptCompletionSnapshot(await invoke<CompletionSnapshot>(command, args));
-  removeImportedKeys(snapshot);
-  return snapshot;
+  try {
+    const snapshot = acceptCompletionSnapshot(await invoke<CompletionSnapshot>(command, args));
+    await removeImportedKeys(snapshot);
+    return snapshot;
+  } catch (error) {
+    window.dispatchEvent(new Event(COMPLETION_FAILED));
+    throw error;
+  }
 }
 function legacy(key: string): unknown {
   const raw = localStorage.getItem(key);
@@ -40,7 +54,7 @@ function legacy(key: string): unknown {
 export async function importCompletionV1(): Promise<void> {
   try {
     const snapshot = await refreshCompletion();
-    removeImportedKeys(snapshot);
+    await removeImportedKeys(snapshot);
     if (snapshot.v1Committed) return;
     const reports = legacy('murmur-benchmark-reports');
     const single = legacy('murmur-benchmark-report');
@@ -51,7 +65,7 @@ export async function importCompletionV1(): Promise<void> {
   } finally {
     // Partial imports remove only destinations with durable markers, even if
     // another destination failed. Retry never reimports a marked destination.
-    try { removeImportedKeys(await refreshCompletion()); } catch { /* Retry notice owns failure. */ }
+    try { await removeImportedKeys(await refreshCompletion()); } catch { /* Retry notice owns failure. */ }
   }
 }
 let subscribed = false;

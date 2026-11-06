@@ -9,6 +9,7 @@ fn engine(root: &std::path::Path, webkit: bool) -> Engine {
         },
         webkit_exists: webkit,
         seen: HashSet::new(),
+        revision: 0,
     };
     e.initialize().unwrap();
     e
@@ -213,7 +214,7 @@ fn reset_with_pending_records_advances_watermark_in_one_write() {
     e.clear(Destination::Statistics, 42).unwrap();
     let d = e.document(Destination::Statistics).unwrap().unwrap();
     assert_eq!(d.applied_through, 1);
-    assert_eq!(d.cleared_at, Some(42));
+    assert_eq!(d.reset_at, Some(42));
     e.import(legacy()).unwrap();
     assert_eq!(
         restart(&e).snapshot().unwrap().statistics.total_recordings,
@@ -257,6 +258,7 @@ fn state_first_creation_failure_blocks_all_writes_and_arming() {
         },
         webkit_exists: true,
         seen: HashSet::new(),
+        revision: 0,
     };
     assert!(e.initialize().is_err());
     assert!(!dir.path().join("history.json").exists());
@@ -762,4 +764,145 @@ fn headless_completions_retention_file_activity_reopen_and_relaunch() {
     assert_eq!(after.statistics.activity.corrections.taught, 1);
     assert_eq!(after.statistics.activity.paste_last_uses, 1);
     assert_eq!(after.statistics, before.statistics);
+}
+
+#[test]
+fn pin_limit_exact_row_edits_preserve_raw_provenance_and_statistics() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    for i in 0..21 {
+        let mut v = entry(&i.to_string(), "synthetic final");
+        v["rawText"] = json!("synthetic raw");
+        v["pinned"] = json!(i < 20);
+        e.add_content(Destination::History, v).unwrap();
+    }
+    let before = e.snapshot().unwrap();
+    let target = before.history[20].clone();
+    assert!(e
+        .mutate_history(HistoryMutation::Pin {
+            target: target.clone()
+        })
+        .is_err());
+    e.mutate_history(HistoryMutation::Edit {
+        target,
+        text: "synthetic edit".into(),
+    })
+    .unwrap();
+    let after = e.snapshot().unwrap();
+    assert_eq!(after.history[20]["rawText"], "synthetic raw");
+    assert_eq!(after.history[20]["text"], "synthetic edit");
+    assert_eq!(before.statistics, after.statistics);
+}
+#[test]
+fn upgrade_keeps_legacy_transforms_and_wpm_order_with_private_prototype_labels() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    let mut stats = Stats {
+        wpm_samples: vec![1.0; 100],
+        ..Default::default()
+    };
+    stats.activity.transforms.runs = 7;
+    stats.activity.transforms.by_preset_name.insert(
+        "__proto__".into(),
+        stats::Counts {
+            runs: 7,
+            approved: 2,
+            undone: 1,
+        },
+    );
+    for i in 0..3 {
+        append(
+            &mut e,
+            StatisticsEvent::Dictation {
+                words: i + 1,
+                seconds: 1.0,
+                mode: Some("constructor".into()),
+                day: "2026-11-05".into(),
+            },
+        );
+    }
+    e.import(LegacyImport {
+        statistics: Some(json!(stats)),
+        ..Default::default()
+    })
+    .unwrap();
+    let s = e.snapshot().unwrap().statistics;
+    assert_eq!(s.activity.transforms.runs, 7);
+    assert_eq!(s.activity.transforms.by_preset_name["__proto__"].runs, 7);
+    assert_eq!(s.activity.recordings_by_mode["constructor"], 3);
+    assert_eq!(s.wpm_samples.len(), 100);
+    assert_eq!(&s.wpm_samples[97..], &[60.0, 120.0, 180.0]);
+    assert_eq!(s, restart(&e).snapshot().unwrap().statistics);
+}
+#[test]
+fn durable_key_removal_acknowledgements_survive_partial_import_and_relaunch() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    assert!(e
+        .execute(Command::KeysRemoved(vec![Destination::History]))
+        .is_err());
+    e.clear(Destination::History, 1).unwrap();
+    e.execute(Command::KeysRemoved(vec![Destination::History]))
+        .unwrap();
+    e = restart(&e);
+    assert_eq!(
+        e.migration().unwrap().keys_removed,
+        vec![Destination::History]
+    );
+    e.import(legacy()).unwrap();
+    e.execute(Command::KeysRemoved(vec![
+        Destination::Statistics,
+        Destination::Reports,
+    ]))
+    .unwrap();
+    e = restart(&e);
+    assert_eq!(e.migration().unwrap().keys_removed.len(), 3);
+    assert!(e.snapshot().unwrap().history.is_empty());
+}
+#[test]
+fn report_uuid_does_not_prevent_creation_time_and_content_deduplication() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    e.execute(Command::Report(report(0))).unwrap();
+    assert!(e.holding().unwrap().reports.entries[0]["completionUuid"].is_string());
+    e.import(legacy()).unwrap();
+    assert_eq!(e.snapshot().unwrap().reports.len(), 1);
+    let mut other = report(0);
+    other["sharedInitMs"] = json!(10);
+    e.execute(Command::Report(other)).unwrap();
+    assert_eq!(e.snapshot().unwrap().reports.len(), 2);
+    e = restart(&e);
+    assert_eq!(e.snapshot().unwrap().reports.len(), 2);
+}
+#[test]
+fn report_schema_ports_legacy_v2_v3_metadata_and_rejects_future_or_malformed_fields() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../src/lib/__fixtures__/diagnostic-reports/benchmark-v2.json");
+    let mut v: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert!(valid_report(&v));
+    v["reportVersion"] = json!(3);
+    assert!(!valid_report(&v));
+    v["corpus"]["source"] = json!("bundled");
+    assert!(valid_report(&v));
+    v["reportVersion"] = json!(99);
+    assert!(!valid_report(&v));
+    v["reportVersion"] = json!(2);
+    v["configuration"]["modelRunOrder"] = json!([null]);
+    assert!(!valid_report(&v));
+}
+#[test]
+fn unknown_outcome_at_real_journal_append_is_claimed_before_retry() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some((STATE.into(), Boundary::AfterRename));
+    let command = Command::Complete {
+        source: "recording:1".into(),
+        entry: Some(entry("1", "synthetic")),
+        event: Some(dictation()),
+    };
+    assert!(e.execute(command.clone()).is_err());
+    let s = e.execute(command).unwrap();
+    assert_eq!(s.statistics.total_recordings, 1);
+    assert!(s.history.is_empty());
+    assert!(e.state().unwrap().journal.is_empty());
 }

@@ -427,8 +427,6 @@ mod tests {
         let dir = temp_dir("missing");
         assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
         assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
-        assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
-        assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

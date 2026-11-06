@@ -588,7 +588,7 @@ export function useRecordingState({ microphone, smartAuto = null, canStart }: Us
       const res = await stopRecording(stopTrigger);
       if (res.text) {
         setTranscription(res.text);
-        // addEntry/updateStats handled by transcription-complete event listener
+        // Rust has already committed History/statistics; this result is presentation only.
         // to avoid race-condition duplicates.
       }
       if (res.type === 'error') presentError(res.error || 'Unknown error', { producerEpoch });

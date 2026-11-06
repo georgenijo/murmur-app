@@ -47,3 +47,9 @@ it('retains theme-library hydration through the generic blob store', async () =>
   mocks.invoke.mockResolvedValue('{"library":[]}'); await hydrateThemeLibraryFromDisk();
   expect(localStorage.getItem(THEME_LIBRARY_STORE.storageKey)).toBe('{"library":[]}');
 });
+it('ignores a delayed older IPC snapshot after a newer command has published', async () => {
+  const { acceptCompletionSnapshot, completionSnapshot } = await import('./completionData');
+  acceptCompletionSnapshot({ ...snapshot(true), revision: 20, history: [{ id: 'new', text: 'synthetic', duration: 1, timestamp: 1 }] });
+  acceptCompletionSnapshot({ ...snapshot(true), revision: 19 });
+  expect(completionSnapshot()?.history[0].id).toBe('new');
+});

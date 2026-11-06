@@ -362,6 +362,7 @@ pub fn run() {
             commands::mode_exchange::read_modes_file,
             completion::completion_snapshot,
             completion::import_completion_v1,
+            completion::acknowledge_completion_keys,
             completion::mutate_history,
             completion::clear_completion_destination,
             completion::store_benchmark_report,

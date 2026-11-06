@@ -48,6 +48,7 @@ pub fn propose_learned_correction(
         proposal_safe = matches!(outcome, CorrectionProposalOutcome::Proposal { .. }),
         "correct_and_teach_proposal"
     );
+    drop(dictation);
     if let CorrectionProposalOutcome::Proposal { proposal_id, .. } = &outcome {
         crate::completion::activity(
             &app,
@@ -105,6 +106,7 @@ pub fn propose_specific_learned_correction(
         proposal_safe = matches!(outcome, CorrectionProposalOutcome::Proposal { .. }),
         "correct_and_teach_specific_proposal"
     );
+    drop(dictation);
     if let CorrectionProposalOutcome::Proposal { proposal_id, .. } = &outcome {
         crate::completion::activity(
             &app,

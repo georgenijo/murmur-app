@@ -358,9 +358,10 @@ describe('useRecordingState transition ordering', () => {
 
     expect(mocks.addEntry).not.toHaveBeenCalled();
     expect(mocks.updateStats).not.toHaveBeenCalled();
+    expect(current.transcription).toBe('one final transcript');
   });
 
-  it('attributes stats to the recording-start Mode once, even for a repeated completion', async () => {
+  it('only presents repeated completions; native sources own History and Mode statistics', async () => {
     const payload = {
       text: 'words completed in another Mode', duration: 8,
       recording: { recordingId: 81, modelId: 'parakeet-v3', modeId: 'frozen-mode', profileId: null, stages: [] },

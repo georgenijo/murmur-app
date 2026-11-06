@@ -183,3 +183,17 @@ pub(crate) fn store_benchmark_report(
     main_only(&window)?;
     execute(&app, Command::Report(report))
 }
+
+#[tauri::command]
+pub(crate) fn acknowledge_completion_keys(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    destinations: Vec<Destination>,
+) -> Result<(), String> {
+    main_only(&window)?;
+    app.state::<Completion>()
+        .service
+        .execute(Command::KeysRemoved(destinations))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}

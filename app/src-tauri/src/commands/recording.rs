@@ -6265,6 +6265,7 @@ pub async fn transcribe_file(
             );
         }
     }
+    let retain_history = crate::completion::retain(&app_handle);
     let file_run_id = state.app_state.next_file_run_id();
     if let Err(error) = state
         .performance
@@ -6500,7 +6501,7 @@ pub async fn transcribe_file(
         Some(runtime_identity(&model_name, warm_state)),
     );
 
-    if !text.trim().is_empty() && crate::completion::retain(&app_handle) {
+    if !text.trim().is_empty() && retain_history {
         let mut entry = crate::completion::entry(&text, duration_secs, "file");
         entry["sourceName"] = serde_json::json!(std::path::Path::new(&file_path)
             .file_name()
