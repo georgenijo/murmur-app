@@ -385,7 +385,7 @@ mod tests {
             .unwrap();
         for (window, consumer) in [
             (main.clone(), WaveformConsumer::MainRecording),
-            (main, WaveformConsumer::Corpus),
+            (main.clone(), WaveformConsumer::Corpus),
             (overlay, WaveformConsumer::Overlay),
         ] {
             set_waveform_subscription(app.handle().clone(), window, consumer, true).unwrap();
@@ -415,6 +415,22 @@ mod tests {
             );
             Err("synthetic reload failure")
         });
+        assert_eq!(
+            app.state::<Events>()
+                .router
+                .lock_or_recover()
+                .recipients(EventKind::AudioLevel, |_, _| true),
+            vec![Consumer::Overlay]
+        );
+        // Exercise the registered hook itself against a mock webview, too.
+        set_waveform_subscription(
+            app.handle().clone(),
+            main.clone(),
+            WaveformConsumer::Corpus,
+            true,
+        )
+        .unwrap();
+        web_content_terminated(main.as_ref());
         assert_eq!(
             app.state::<Events>()
                 .router
