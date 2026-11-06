@@ -246,8 +246,15 @@ pub fn save_settings_blob(
     // Conservatively revoke passive input resolution for every persisted
     // settings update, including device/Smart Auto edits that do not change HAL topology.
     crate::audio::prepare::configuration_changed();
-    let revision = crate::dictation_control::accept_configuration(&app);
-    write_blob(&data_dir(&app)?, SETTINGS, &blob)?;
+    let dir = data_dir(&app)?;
+    let revision = {
+        // Assign revisions in durable commit order across concurrent saves.
+        // Native overrides can still supersede this intent during disk I/O.
+        let _guard = WRITE_LOCK.lock_or_recover();
+        let revision = crate::dictation_control::accept_configuration(&app);
+        write_blob_locked(&dir, SETTINGS, &blob)?;
+        revision
+    };
     notify_settings_committed(&app, &blob);
     if let Ok(settings) = serde_json::from_str(&blob) {
         let handle = app.clone();
