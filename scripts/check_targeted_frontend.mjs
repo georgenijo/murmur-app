@@ -31,6 +31,19 @@ function constantString(node) {
 export function violations(source, filename = 'source.tsx') {
   const file = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true);
   const failures = [];
+  const targeted = new Set(['emitTo']);
+  const labels = new Set(['main', 'overlay', 'dictation-preview', 'diagnostics']);
+  const adapter = filename === 'app/src/lib/targetedEvents.ts';
+  for (const statement of file.statements) {
+    if (ts.isImportDeclaration(statement) && constantString(statement.moduleSpecifier) === '@tauri-apps/api/event') {
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const item of bindings.elements) {
+          if ((item.propertyName ?? item.name).text === 'emitTo') targeted.add(item.name.text);
+        }
+      }
+    }
+  }
   const test = /(?:\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)test-utils\/)/.test(filename);
   const report = (node, reason) => failures.push(`${file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1}: ${reason}`);
   for (const diagnostic of file.parseDiagnostics) {
@@ -43,6 +56,16 @@ export function violations(source, filename = 'source.tsx') {
     if (!test && (ts.isStringLiteralLike(node) || ts.isBinaryExpression(node) || ts.isTemplateExpression(node)) && constantString(node) === 'emit') report(node, 'computed broadcast emit name');
     if (!test && ts.isElementAccessExpression(node) && constantString(node.argumentExpression) === 'emit') {
       report(node, 'computed broadcast emit member');
+    }
+    if (ts.isCallExpression(node)) {
+      const name = ts.isIdentifier(node.expression) ? node.expression.text :
+        ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : undefined;
+      if (targeted.has(name)) {
+        const target = node.arguments[0];
+        const fixedLabel = target && ts.isStringLiteral(target) && labels.has(target.text);
+        const helperLabel = adapter && target && ts.isIdentifier(target) && target.text === 'label';
+        if (!fixedLabel && !helperLabel) report(node, 'emitTo requires an explicit consumer window label');
+      }
     }
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
       const api = constantString(node.moduleSpecifier);

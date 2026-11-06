@@ -202,6 +202,8 @@ and `@tauri-apps/api/event` imports, followed by listener/constant searches.
 The TypeScript AST guard reserves `emit` identifiers and statically computed
 `emit` names in shipped `app/src` JS/TS, including Window/WebviewWindow methods,
 aliases, destructuring, optional calls, Unicode escapes and template expressions.
+Direct `emitTo` calls must name one of the four consumer labels; the helper
+alone can forward its typed `label` parameter. `Any`/dynamic targets fail closed.
 It rejects Tauri namespace/default/dynamic imports and re-export facades;
 broadcast imports/re-exports are forbidden even in test files. Tests may use
 local synthetic `emit`/mock helpers, never an imported Tauri broadcast. This

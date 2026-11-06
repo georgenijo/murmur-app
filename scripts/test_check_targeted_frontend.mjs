@@ -12,6 +12,9 @@ test('rejects broadcast imports, aliases, re-exports and window methods', () => 
     `import * as windows from '@tauri-apps/api/window';`,
     `const transport = await import('@tauri-apps/api/event');`,
     `const transport = require('@tauri-apps/api/event');`,
+    `emitTo({ kind: 'Any' }, 'e');`,
+    `emitTo(target, 'e');`,
+    `import { emitTo as send } from '@tauri-apps/api/event'; send({ kind: 'Any' }, 'e');`,
     `getCurrentWebviewWindow().emit('e');`,
     `window.emit?.('e');`,
     `window['emit']('e');`,
@@ -40,4 +43,10 @@ test('allows targeted transports, comments, literals and ordinary property acces
     const template = \`window.emit('e')\`;
     emitTo('overlay', 'e', { active: true });
   `), []);
+});
+
+test('the sanctioned helper can forward a label, but cannot broadcast', () => {
+  const helper = 'app/src/lib/targetedEvents.ts';
+  assert.deepEqual(violations(`import { emitTo as send } from '@tauri-apps/api/event'; send(label, 'e');`, helper), []);
+  assert.notDeepEqual(violations(`import { emitTo as send } from '@tauri-apps/api/event'; send({kind: 'Any'}, 'e');`, helper), []);
 });
