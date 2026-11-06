@@ -1776,7 +1776,6 @@ pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
 mod source_recovery_tests;
 /// Private single-owner immutable snapshot publication, with recovery before
 /// admitting another writer. No host types or runtime are required.
-
 pub fn publish_snapshot<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
     let root = path.parent().ok_or(Error::Invalid)?;
     std::fs::create_dir_all(root).map_err(|_| Error::Io)?;

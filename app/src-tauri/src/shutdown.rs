@@ -25,12 +25,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::Manager;
+pub(crate) mod adapter;
 #[cfg(target_os = "macos")]
 mod macos;
-enum Message {
-    Request(Request),
-    Finished(Event),
-}
+use adapter::Message;
 pub(crate) struct Shutdown {
     core: Arc<Mutex<Coordinator>>,
     send: mpsc::Sender<Message>,
@@ -53,14 +51,8 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
             loop {
                 let now = || clock.elapsed().as_millis() as u64;
                 let message = receive.recv_timeout(Duration::from_millis(10));
-                let effects = {
-                    let mut core = core.lock_or_recover();
-                    match message {
-                        Ok(Message::Request(request)) => core.request(request, now()),
-                        Ok(Message::Finished(event)) => core.advance(event, now()),
-                        Err(mpsc::RecvTimeoutError::Timeout) => core.tick(now()),
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    }
+                let Some(effects) = adapter::reduce(&core, message, now()) else {
+                    break;
                 };
                 for effect in effects {
                     if effect.step == Step::Terminate {
