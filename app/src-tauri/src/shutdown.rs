@@ -250,9 +250,14 @@ fn signals(app: tauri::AppHandle) -> Result<(), String> {
         if libc::pipe(fds.as_mut_ptr()) != 0 {
             return Err("Shutdown self-pipe unavailable".into());
         }
-        libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-        for fd in fds {
-            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        if libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK) == -1
+            || libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC) == -1
+            || libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC) == -1
+        {
+            for fd in fds {
+                libc::close(fd);
+            }
+            return Err("Shutdown self-pipe configuration failed".into());
         }
         SIGNAL_FD.store(fds[1], Ordering::Relaxed);
         let mut action: libc::sigaction = std::mem::zeroed();
