@@ -169,3 +169,41 @@ without opening a cancellable UI gap during native admission.
 Dictation, meeting, correction and Paste Last adapters and native callers were
 inspected: none removes a staged completion before submission. Their existing
 journal/source-claim handling and failed-History-write policy remain unchanged.
+
+The later publication-failure re-check found that `Complete` claimed file sources
+before History publication and suppressed its error. File acceptance now uses a
+separate `AcceptFile` command: staging assigns a stable completion UUID; the actor
+claims the source only after the History or holding write is durable. Publication
+errors reach the existing host `completion_write_failed` diagnostic and
+`completion-storage-error` notice, without content. The producer keeps its staged
+result and the same UUID on failure. No actor-side deferred retry can admit a
+cancelled result; the files mutex still serializes cancellation and acceptance,
+including retries, before entering the owner queue. The owner never takes that
+mutex. The 200-operation staging cap is unchanged.
+
+Every retry first re-establishes directory durability, then rereads History and
+holding data for the staged UUID. An unknown outcome already containing that UUID
+is acknowledged without another append; a failed directory sync still returns an
+error and retains staging. A pre-publication cancellation prevents later retries
+and migration from admitting the result. Cancellation after successful publication
+keeps the already-admitted entry, as before.
+
+Three production-adapter regressions fail on `043f4b10` and pass with the fix:
+
+- `file_history_publication_failure_retains_result_and_retries_once` injects
+  `BeforeRename`, checks the surfaced error and retained staging, then retries to
+  exactly one History entry with no statistics.
+- `file_history_unknown_publication_rereads_before_retry_without_duplicates`
+  injects `AfterRename`, fails the next directory sync, and verifies that recovery
+  acknowledges the reread UUID without republishing or duplicating it.
+- `file_history_cancel_after_publication_failure_never_admits_on_retry` cancels
+  after `BeforeRename` failure and verifies that repeated acceptance and relaunch
+  admit nothing.
+
+Each runs against both `history.json` and pre-v1 `completion-holding.json`, and
+checks migration/relaunch plus unchanged statistics. Dictation continues to use
+its durable statistics journal as the commit point: a History publication failure
+records `history_write_failed`, applies statistics, and adds no History entry
+(plan row 7). Meeting, correction and Paste Last also commit through that journal;
+their source claims follow durable journal publication, so there is no analogous
+file-only claim before their commit point. Their behavior is unchanged.

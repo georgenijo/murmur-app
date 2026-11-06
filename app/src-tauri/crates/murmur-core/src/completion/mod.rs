@@ -191,6 +191,12 @@ pub enum Command {
         entry: Option<Value>,
         event: Option<StatisticsEvent>,
     },
+    /// File-only admission: the staged entry carries a stable completion UUID.
+    /// Success acknowledges durable History/holding publication, without statistics.
+    AcceptFile {
+        source: String,
+        entry: Value,
+    },
 }
 type Job = Box<dyn FnOnce(&mut Engine) + Send>;
 struct Owner {
@@ -507,6 +513,37 @@ impl Engine {
         self.recover()?;
         match command {
             Command::Snapshot => {}
+            Command::AcceptFile { source, entry } => {
+                let id = entry["completionUuid"].as_str().ok_or(Error::Invalid)?;
+                if !valid_history(&entry) || uuid::Uuid::parse_str(id).is_err() {
+                    return Err(Error::Invalid);
+                }
+                if !self.seen.contains(&source) {
+                    // recover() synced the directory before this reread. A previous
+                    // failed rename/fsync may already have published this UUID in
+                    // either store; acknowledge it without appending another entry.
+                    let holding = self.holding()?;
+                    let doc = self.document(Destination::History)?;
+                    let published = holding
+                        .history
+                        .entries
+                        .iter()
+                        .chain(
+                            doc.as_ref()
+                                .and_then(|d| d.data.as_array())
+                                .into_iter()
+                                .flatten(),
+                        )
+                        .any(|v| v["completionUuid"].as_str() == Some(id));
+                    if !published {
+                        self.add_content(Destination::History, entry)
+                            .inspect_err(|_| diagnostic("history_write_failed"))?;
+                    }
+                    // Unlike dictation's journal commit, History is the file
+                    // commit point. A failed publication leaves the source retryable.
+                    self.seen.insert(source);
+                }
+            }
             Command::Import(source) => self.import(source)?,
             Command::KeysRemoved(destinations) => {
                 let mut migration = self.migration()?;

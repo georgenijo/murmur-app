@@ -119,7 +119,15 @@ impl Producers {
     pub fn finish_file(&self, operation: &str, entry: Option<Value>, retain: bool) {
         let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
         if matches!(files.get(operation), Some(FileState::Running)) {
-            files.insert(operation.into(), FileState::Ready(entry.filter(|_| retain)));
+            let entry = entry.filter(|_| retain).map(|mut entry| {
+                // Retain this identity across every admission retry, including
+                // an unknown publication outcome. It contains no source content.
+                if let Some(object) = entry.as_object_mut() {
+                    object.insert("completionUuid".into(), serde_json::json!(super::uuid()));
+                }
+                entry
+            });
+            files.insert(operation.into(), FileState::Ready(entry));
         }
     }
     /// The client accepts only after its cancellation check. A late cancellation
@@ -128,7 +136,10 @@ impl Producers {
         let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
         let snapshot = match files.get(operation) {
             Some(FileState::Ready(Some(entry))) => {
-                Some(self.submit(format!("file:{operation}"), Some(entry.clone()), None)?)
+                Some(self.service.execute(Command::AcceptFile {
+                    source: format!("{}:file:{operation}", self.session),
+                    entry: entry.clone(),
+                })?)
             }
             Some(FileState::Ready(None)) => None,
             _ => return Ok(None),
@@ -150,6 +161,164 @@ impl Producers {
 mod tests {
     use super::*;
     use serde_json::json;
+    // Configure the real owner's storage without replacing the production adapter.
+    fn storage(
+        service: &CompletionService,
+        f: impl FnOnce(&mut super::super::storage::Storage) + Send + 'static,
+    ) {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        service
+            .owner
+            .send
+            .as_ref()
+            .unwrap()
+            .send(Box::new(move |engine| {
+                f(&mut engine.storage);
+                send.send(()).unwrap();
+            }))
+            .unwrap();
+        receive.recv().unwrap();
+    }
+    fn staged_file(service: &CompletionService) -> Producers {
+        service.execute(Command::Snapshot).unwrap();
+        let p = Producers::new(service.clone(), "synthetic".into());
+        p.begin_file("operation").unwrap();
+        p.finish_file(
+            "operation",
+            Some(json!({"id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
+            true,
+        );
+        p
+    }
+    fn assert_no_statistics(snapshot: &Snapshot) {
+        assert_eq!(
+            serde_json::to_value(&snapshot.statistics).unwrap(),
+            serde_json::to_value(super::super::Stats::default()).unwrap()
+        );
+    }
+
+    #[test]
+    fn file_history_publication_failure_retains_result_and_retries_once() {
+        for webkit in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let service = CompletionService::start(dir.path().into(), webkit).unwrap();
+            let p = staged_file(&service);
+            let file = if webkit {
+                super::super::HOLD
+            } else {
+                "history.json"
+            };
+            storage(&service, move |s| {
+                s.fail = Some((file.into(), super::super::storage::Boundary::BeforeRename))
+            });
+            assert!(matches!(p.accept_file("operation"), Err(Error::Io)));
+            assert!(matches!(
+                p.files.lock().unwrap().get("operation"),
+                Some(FileState::Ready(Some(_)))
+            ));
+            assert!(service
+                .execute(Command::Snapshot)
+                .unwrap()
+                .history
+                .is_empty());
+            let snapshot = p.accept_file("operation").unwrap().unwrap();
+            assert_eq!(snapshot.history.len(), 1);
+            assert_no_statistics(&snapshot);
+            assert!(p.accept_file("operation").unwrap().is_none());
+            if webkit {
+                service
+                    .execute(Command::Import(super::super::LegacyImport::default()))
+                    .unwrap();
+            }
+            drop(p);
+            drop(service);
+            let service = CompletionService::start(dir.path().into(), false).unwrap();
+            let snapshot = service.execute(Command::Snapshot).unwrap();
+            assert_eq!(snapshot.history.len(), 1);
+            assert_no_statistics(&snapshot);
+        }
+    }
+
+    #[test]
+    fn file_history_unknown_publication_rereads_before_retry_without_duplicates() {
+        for webkit in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let service = CompletionService::start(dir.path().into(), webkit).unwrap();
+            let p = staged_file(&service);
+            let file = if webkit {
+                super::super::HOLD
+            } else {
+                "history.json"
+            };
+            storage(&service, move |s| {
+                s.fail = Some((file.into(), super::super::storage::Boundary::AfterRename))
+            });
+            assert!(matches!(p.accept_file("operation"), Err(Error::Io)));
+            // A failed directory sync cannot acknowledge the unknown publication.
+            storage(&service, |s| s.fail_sync.set(true));
+            assert!(matches!(p.accept_file("operation"), Err(Error::Io)));
+            assert!(matches!(
+                p.files.lock().unwrap().get("operation"),
+                Some(FileState::Ready(Some(_)))
+            ));
+            storage(&service, |s| s.trace.borrow_mut().clear());
+            let snapshot = p.accept_file("operation").unwrap().unwrap();
+            assert_eq!(snapshot.history.len(), 1);
+            assert_no_statistics(&snapshot);
+            assert!(p.accept_file("operation").unwrap().is_none());
+            storage(&service, move |s| {
+                let trace = s.trace.borrow();
+                assert_eq!(trace.first().map(String::as_str), Some("directory_sync"));
+                assert!(!trace
+                    .iter()
+                    .any(|step| step == &format!("{file}:BeforeRename")));
+            });
+            if webkit {
+                service
+                    .execute(Command::Import(super::super::LegacyImport::default()))
+                    .unwrap();
+            }
+            drop(p);
+            drop(service);
+            let service = CompletionService::start(dir.path().into(), false).unwrap();
+            let snapshot = service.execute(Command::Snapshot).unwrap();
+            assert_eq!(snapshot.history.len(), 1);
+            assert_no_statistics(&snapshot);
+        }
+    }
+
+    #[test]
+    fn file_history_cancel_after_publication_failure_never_admits_on_retry() {
+        for webkit in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let service = CompletionService::start(dir.path().into(), webkit).unwrap();
+            let p = staged_file(&service);
+            let file = if webkit {
+                super::super::HOLD
+            } else {
+                "history.json"
+            };
+            storage(&service, move |s| {
+                s.fail = Some((file.into(), super::super::storage::Boundary::BeforeRename))
+            });
+            assert!(matches!(p.accept_file("operation"), Err(Error::Io)));
+            p.cancel_file("operation");
+            assert!(p.accept_file("operation").unwrap().is_none());
+            assert!(matches!(p.begin_file("operation"), Err(Error::Stopped)));
+            if webkit {
+                service
+                    .execute(Command::Import(super::super::LegacyImport::default()))
+                    .unwrap();
+            }
+            drop(p);
+            drop(service);
+            let service = CompletionService::start(dir.path().into(), false).unwrap();
+            let snapshot = service.execute(Command::Snapshot).unwrap();
+            assert!(snapshot.history.is_empty());
+            assert_no_statistics(&snapshot);
+        }
+    }
+
     #[test]
     fn file_acceptance_storage_failure_retains_result_for_retry_or_cancellation() {
         for file in ["completion-holding.json", "completion-state.json"] {
