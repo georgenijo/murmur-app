@@ -12,9 +12,18 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTER = Path('app/src-tauri/src/events.rs')
-# Build outputs and third-party sources are not maintained repository Rust.
-EXCLUDED = {'target', 'vendor', 'vendored', 'third_party', 'third-party',
-            'node_modules', '.venv', 'venv', '.git'}
+# Exact repository-relative build/dependency paths only. Nested maintained
+# modules named vendor/target/etc. must still be inspected. No third-party Rust
+# trees are currently exempted. .git is Git metadata, not a source directory.
+EXCLUDED = {Path('.git'), Path('app/node_modules'), Path('node_modules'),
+            Path('app/src-tauri/target'), Path('target')}
+
+
+def excluded(path: Path, root: Path) -> bool:
+    relative = path.relative_to(root)
+    return any(relative == prefix or prefix in relative.parents for prefix in EXCLUDED)
+
+
 IDENTIFIER = re.compile(r'(?:r#)?[^\W\d]\w*', re.UNICODE)
 TRANSPORT = re.compile(r'emit(?:_\w*)?\Z', re.UNICODE)
 
@@ -111,7 +120,7 @@ def violations(source: str, *, adapter: bool = False) -> list[int]:
 def rust_sources(root: Path) -> list[Path]:
     paths = []
     for directory, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED)
+        dirs[:] = sorted(d for d in dirs if not excluded(Path(directory) / d, root))
         paths.extend(Path(directory) / name for name in sorted(files) if name.endswith('.rs'))
     return sorted(paths)
 
@@ -180,14 +189,14 @@ def check_repository(root: Path) -> list[str]:
     root = root.resolve()
     paths = rust_sources(root)
     scanned = {path.resolve() for path in paths if path.resolve().is_relative_to(root)
-               and not any(part in EXCLUDED for part in path.resolve().relative_to(root).parts)}
+               and not excluded(path.resolve(), root)}
     failures = []
     for directory, dirs, _ in os.walk(root, followlinks=False):
-        dirs[:] = [name for name in dirs if name not in EXCLUDED]
+        dirs[:] = [name for name in dirs if not excluded(Path(directory) / name, root)]
         for name in dirs:
             path = Path(directory) / name
             if path.is_symlink() and (not path.resolve().is_relative_to(root)
-                    or any(part in EXCLUDED for part in path.resolve().relative_to(root).parts)):
+                    or excluded(path.resolve(), root)):
                 failures.append(f'{path.relative_to(root)}:1: directory symlink outside scanned roots')
     for path in paths:
         relative = path.relative_to(root)

@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
-import { listen } from '../targetedEvents';
+import { listen, sendTo } from '../targetedEvents';
 import { Settings, loadSettings, saveSettings, cacheSettings } from '../settings';
 import { configure, buildConfigureOptions } from '../dictation';
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart';
@@ -72,7 +71,7 @@ export function useSettings() {
               persistSettings(disabled);
               desiredProbePolicyRef.current = { enabled: false };
               desiredProbePolicyVersionRef.current += 1;
-              void emit('settings-changed');
+              void sendTo('overlay', 'settings-changed');
               setProbeConfigureError('Background microphone checks could not be enabled. Review included microphones and try again.');
             } else {
               setProbeConfigureError('Background microphone checks could not be stopped. Quit Murmur before changing microphones.');
@@ -258,7 +257,7 @@ export function useSettings() {
         },
         onError: () => { console.error('Failed to synchronize the selected mode.'); },
       }).catch(() => {});
-      void emit('settings-changed');
+      void sendTo('overlay', 'settings-changed');
     }).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
     });
@@ -357,7 +356,7 @@ export function useSettings() {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.
-      emit('settings-changed').catch((err) => console.error('Failed to emit settings-changed:', err));
+      sendTo('overlay', 'settings-changed').catch((err) => console.error('Failed to emit settings-changed:', err));
     }
 
     if (probePolicyChanged) scheduleProbePolicyWrite();
@@ -488,7 +487,7 @@ export function useSettings() {
               setSettings(confirmed);
               persistSettings(confirmed);
               setConfigureError(null);
-              void emit('settings-changed').catch(() => {});
+              void sendTo('overlay', 'settings-changed').catch(() => {});
             },
           });
         })(),

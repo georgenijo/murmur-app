@@ -8,13 +8,13 @@ import {
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 
 const mocks = vi.hoisted(() => ({
-  emit: vi.fn(),
+  emitTo: vi.fn(),
   invoke: vi.fn(),
   listen: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
-vi.mock('@tauri-apps/api/event', () => ({ emit: mocks.emit, listen: mocks.listen }));
+vi.mock('@tauri-apps/api/event', () => ({ emitTo: mocks.emitTo, listen: mocks.listen }));
 
 function click(container: HTMLElement, label: string): void {
   const button = Array.from(container.querySelectorAll('button')).find(
@@ -46,8 +46,8 @@ describe('OverlayCalibrationControl', () => {
 
   beforeEach(async () => {
     committed = [];
-    mocks.emit.mockReset();
-    mocks.emit.mockResolvedValue(undefined);
+    mocks.emitTo.mockReset();
+    mocks.emitTo.mockResolvedValue(undefined);
     mocks.invoke.mockReset();
     mocks.invoke.mockResolvedValue(undefined);
     mocks.listen.mockReset();
@@ -75,7 +75,7 @@ describe('OverlayCalibrationControl', () => {
       ['show_overlay'],
       ['set_overlay_vertical_offset', { offset: 4 }],
     ]);
-    expect(mocks.emit).toHaveBeenCalledWith('overlay-calibration-changed', { active: true });
+    expect(mocks.emitTo).toHaveBeenCalledWith('overlay', 'overlay-calibration-changed', { active: true });
 
     await act(async () => {
       click(container, 'Move overlay up one point');
@@ -88,7 +88,7 @@ describe('OverlayCalibrationControl', () => {
       await Promise.resolve();
     });
     expect(mocks.invoke).toHaveBeenLastCalledWith('set_overlay_vertical_offset', { offset: 4 });
-    expect(mocks.emit).toHaveBeenLastCalledWith('overlay-calibration-changed', { active: false });
+    expect(mocks.emitTo).toHaveBeenLastCalledWith('overlay', 'overlay-calibration-changed', { active: false });
     expect(committed).toEqual([]);
     expect(container.textContent).toContain('+4 pt');
   });
@@ -108,7 +108,7 @@ describe('OverlayCalibrationControl', () => {
 
     expect(committed).toEqual([1]);
     expect(container.textContent).toContain('+1 pt');
-    expect(mocks.emit).toHaveBeenLastCalledWith('overlay-calibration-changed', { active: false });
+    expect(mocks.emitTo).toHaveBeenLastCalledWith('overlay', 'overlay-calibration-changed', { active: false });
   });
 
   it('resets a saved offset immediately from the inactive state', async () => {
@@ -133,7 +133,7 @@ describe('OverlayCalibrationControl', () => {
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('could not start');
     expect(container.textContent).not.toContain('Save position');
-    expect(mocks.emit).not.toHaveBeenCalled();
+    expect(mocks.emitTo).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -18,7 +18,7 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, RwLockReadGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -27,28 +27,69 @@ use uuid::Uuid;
 /// The supervisor's capture-active state, with an epoch for each activation.
 /// Warm standby reuses the worker and this allocation, but never an epoch.
 #[derive(Default)]
-pub(crate) struct CaptureActivity(AtomicU64);
+pub(crate) struct CaptureActivity {
+    // Bit 0 is supervisor activity, bit 1 is waveform ownership. A failed
+    // backend retires its samples before teardown without cancelling fallback.
+    epoch: AtomicU64,
+    delivery: RwLock<()>,
+    #[cfg(test)]
+    before_teardown: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
 
 impl CaptureActivity {
     pub(crate) fn set_active(&self, active: bool) {
-        // One atomic value owns both activity and generation: odd is active.
-        self.0
+        let _exclusive = self.delivery.write().unwrap_or_else(|p| p.into_inner());
+        self.epoch
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |epoch| {
-                Some(((epoch + 2) & !1) | u64::from(active))
+                Some(((epoch + 4) & !3) | if active { 3 } else { 0 })
             })
             .expect("capture epoch update is unconditional");
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.0.load(Ordering::Acquire) & 1 != 0
+        self.epoch.load(Ordering::Acquire) & 1 != 0
+    }
+
+    fn begin_waveform_attempt(&self) {
+        let _exclusive = self.delivery.write().unwrap_or_else(|p| p.into_inner());
+        self.epoch
+            .fetch_or(2 * u64::from(self.is_active()), Ordering::SeqCst);
+    }
+
+    pub(crate) fn revoke_waveform(&self) {
+        let _exclusive = self.delivery.write().unwrap_or_else(|p| p.into_inner());
+        self.epoch
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |epoch| {
+                Some(((epoch + 4) & !3) | (epoch & 1))
+            })
+            .expect("capture epoch update is unconditional");
+    }
+
+    fn retire_before_teardown(&self) {
+        self.revoke_waveform();
+        #[cfg(test)]
+        {
+            let hook = self.before_teardown.lock_or_recover().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
     }
 
     pub(crate) fn generation(self: &Arc<Self>) -> Option<CaptureGeneration> {
-        let epoch = self.0.load(Ordering::Acquire);
-        (epoch & 1 != 0).then(|| CaptureGeneration {
+        let epoch = self.epoch.load(Ordering::Acquire);
+        (epoch & 3 == 3).then(|| CaptureGeneration {
             activity: self.clone(),
             epoch,
         })
+    }
+}
+
+/// All attempt exits retire ownership; blocking teardown must retire it first.
+struct WaveformAttempt<'a>(&'a CaptureActivity);
+impl Drop for WaveformAttempt<'_> {
+    fn drop(&mut self) {
+        self.0.revoke_waveform();
     }
 }
 
@@ -60,7 +101,19 @@ pub(crate) struct CaptureGeneration {
 
 impl CaptureGeneration {
     pub(crate) fn is_current(&self) -> bool {
-        self.activity.0.load(Ordering::Acquire) == self.epoch
+        self.activity.epoch.load(Ordering::Acquire) == self.epoch
+    }
+
+    /// Acquire only after main-thread/window queries. Writers only update the
+    /// epoch, never dispatch to or wait for main. Transport queues JS evaluation;
+    /// neither the supervisor nor native control waits while holding this lock.
+    pub(crate) fn delivery_permit(&self) -> Option<RwLockReadGuard<'_, ()>> {
+        let permit = self
+            .activity
+            .delivery
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        self.is_current().then_some(permit)
     }
 }
 
@@ -1626,6 +1679,7 @@ fn quarantine_unconfirmed_child(
 // ownership evidence needed when termination cannot be confirmed.
 #[allow(clippy::too_many_arguments)]
 fn terminate_or_quarantine(
+    active: &CaptureActivity,
     child: ManagedChild,
     input: Option<std::process::ChildStdin>,
     capture_id: u64,
@@ -1635,6 +1689,7 @@ fn terminate_or_quarantine(
     event_sender: &AudioWorkerEventSender,
     phase: AudioInitPhase,
 ) -> bool {
+    active.retire_before_teardown();
     match terminate_helper(child, input, capture_id, nonce, control) {
         Ok(()) => true,
         Err(child) => {
@@ -2236,6 +2291,8 @@ fn run_backend(
     {
         return AttemptResult::Stopped;
     }
+    active.begin_waveform_attempt();
+    let _waveform_attempt = WaveformAttempt(active);
     let started_at = Instant::now();
     let mut clock = ActiveAttemptClock::new(started_at);
     let attempt_budget = if ctx.is_primary {
@@ -2350,6 +2407,7 @@ fn run_backend(
                     Instant::now(),
                 );
                 if !terminate_or_quarantine(
+                    active,
                     child,
                     Some(input),
                     capture_id,
@@ -2380,6 +2438,7 @@ fn run_backend(
                 || stop_requested_between_attempts(command_receiver)
             {
                 return if terminate_or_quarantine(
+                    active,
                     child,
                     Some(input),
                     capture_id,
@@ -2417,6 +2476,7 @@ fn run_backend(
             Instant::now(),
         );
         if !terminate_or_quarantine(
+            active,
             child,
             Some(input),
             capture_id,
@@ -2492,6 +2552,7 @@ fn run_backend(
     loop {
         if probe_permit.is_some_and(|permit| !permit.is_valid()) {
             return if terminate_or_quarantine(
+                active,
                 child,
                 Some(input),
                 capture_id,
@@ -2508,6 +2569,7 @@ fn run_backend(
         }
         match command_receiver.try_recv() {
             Ok(AudioCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                active.retire_before_teardown();
                 let stop_started = Instant::now();
                 end_permission_prompt_pause(
                     &mut permission_prompt_started,
@@ -2648,6 +2710,7 @@ fn run_backend(
                     current_phase
                 };
                 if !terminate_or_quarantine(
+                    active,
                     child,
                     Some(input),
                     capture_id,
@@ -2674,6 +2737,7 @@ fn run_backend(
                     now,
                 );
                 if !terminate_or_quarantine(
+                    active,
                     child,
                     Some(input),
                     capture_id,
@@ -2770,6 +2834,7 @@ fn run_backend(
             // delay the kill/fallback sequence below.
             crate::audio_graph_snapshot::observe_capture_timeout(capture_id);
             if !terminate_or_quarantine(
+                active,
                 child,
                 Some(input),
                 capture_id,
@@ -2814,6 +2879,7 @@ fn run_backend(
                         Instant::now(),
                     );
                     if !terminate_or_quarantine(
+                        active,
                         child,
                         Some(input),
                         capture_id,
@@ -3018,6 +3084,7 @@ fn run_backend(
                         Instant::now(),
                     );
                     if !terminate_or_quarantine(
+                        active,
                         child,
                         Some(input),
                         capture_id,
@@ -3100,6 +3167,7 @@ fn run_backend(
                         Instant::now(),
                     );
                     if !terminate_or_quarantine(
+                        active,
                         child,
                         Some(input),
                         capture_id,
@@ -3153,6 +3221,7 @@ fn run_backend(
                         Instant::now(),
                     );
                     if !terminate_or_quarantine(
+                        active,
                         child,
                         Some(input),
                         capture_id,
@@ -3229,6 +3298,7 @@ fn run_backend(
                 );
                 if reported_backend != backend || !input_resolution.permits_failure(code) {
                     if !terminate_or_quarantine(
+                        active,
                         child,
                         Some(input),
                         capture_id,
@@ -3247,6 +3317,7 @@ fn run_backend(
                     };
                 }
                 if !terminate_or_quarantine(
+                    active,
                     child,
                     Some(input),
                     capture_id,
@@ -3275,6 +3346,7 @@ fn run_backend(
                     Instant::now(),
                 );
                 if !terminate_or_quarantine(
+                    active,
                     child,
                     Some(input),
                     capture_id,
@@ -3299,6 +3371,7 @@ fn run_backend(
                     Instant::now(),
                 );
                 if !terminate_or_quarantine(
+                    active,
                     child,
                     Some(input),
                     capture_id,
@@ -4304,6 +4377,54 @@ mod tests {
                 + CAPTURE_PROTOCOL_RESERVE,
             CAPTURE_ACTIVE_BUDGET
         );
+    }
+
+    #[test]
+    fn terminal_teardown_retires_samples_before_it_can_block() {
+        let levels = crate::events::tests::DeferredLevels::new();
+        let activity = Arc::new(CaptureActivity::default());
+        activity.set_active(true);
+        levels.publish(&activity, 0.25);
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let (entry, resume) = (entered.clone(), release.clone());
+        *activity.before_teardown.lock_or_recover() = Some(Arc::new(move || {
+            entry.wait();
+            resume.wait();
+        }));
+        let worker_activity = activity.clone();
+        let worker = thread::spawn(move || {
+            let (child, input, _output) =
+                ManagedChild::spawn(Path::new("/usr/bin/true"), &[]).unwrap();
+            terminate_or_quarantine(
+                &worker_activity,
+                child,
+                Some(input),
+                42,
+                [0; 16],
+                None,
+                crate::audio_lifecycle::AudioOwner::Preview(42),
+                &AudioWorkerEventSender::new(|_| Ok(())),
+                AudioInitPhase::Runtime,
+            )
+        });
+        entered.wait();
+        // Production termination is paused before its blocking helper teardown.
+        // Drain the actual production mailbox while it is paused.
+        levels.drain();
+        let received = levels.received.lock_or_recover().clone();
+        let retired = activity.generation().is_none();
+        release.wait();
+        assert!(worker.join().unwrap());
+        assert!(retired);
+        assert!(received.is_empty());
+        // A retry can obtain fresh ownership, but a supervisor stop cannot be
+        // undone by an attempt starting after it.
+        activity.begin_waveform_attempt();
+        assert!(activity.generation().is_some());
+        activity.set_active(false);
+        activity.begin_waveform_attempt();
+        assert!(activity.generation().is_none());
     }
 
     #[test]

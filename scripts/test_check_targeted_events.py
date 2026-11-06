@@ -102,6 +102,21 @@ class TargetedEventsGuardTests(unittest.TestCase):
             self.assertEqual(len(failures), 1)
             self.assertTrue(failures[0].startswith('native_events.rs:'))
 
+    def test_maintained_vendor_module_and_cargo_target_are_scanned(self):
+        for module, cargo in [('src/vendor/mod.rs', False), ('vendor/lib.rs', True),
+                              ('src/target/mod.rs', False), ('third_party/lib.rs', True)]:
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / module
+                source.parent.mkdir(parents=True)
+                source.write_text('fn f() { app.emit("event", ()); }')
+                if cargo:
+                    (root / 'Cargo.toml').write_text(
+                        '[package]\nname="fixture"\nversion="0.1.0"\n[lib]\npath="' + module + '"\n')
+                else:
+                    (root / 'src/lib.rs').write_text('mod ' + source.parent.name + ';')
+                self.assertTrue(any(failure.startswith(module + ':') for failure in check_repository(root)))
+
     def test_path_escape_outside_repository_and_excluded_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)

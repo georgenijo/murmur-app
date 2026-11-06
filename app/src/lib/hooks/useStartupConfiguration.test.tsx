@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   isEnabled: vi.fn(async () => false),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: () => false }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen, emit: mocks.emit }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen, emitTo: mocks.emit }));
 vi.mock('@tauri-apps/plugin-autostart', () => ({
   isEnabled: mocks.isEnabled, enable: vi.fn(), disable: vi.fn(),
 }));

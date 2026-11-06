@@ -32,14 +32,17 @@ consumers so control, sound cues and durable completion continue independently.
 At the pinned base `dbaa9e4cc7bdd740264f315c361f75d35b86b3d9`, grep of
 `app/src-tauri` found **92 broadcast call sites / 55 distinct event names**,
 including `Window::emit` (which also broadcasts). The plan's historical count
-was 93 emit sites. After conversion: **0 broadcast calls**, **92 converted
+was 93 emit sites. After conversion: **0 Rust broadcast calls**, **92 converted
 sink calls**, plus two previously targeted microphone-preview status and microphone-startup
 progress calls moved to the sink to preserve native subscriptions.
 No `emit_all`, qualified `AppHandle::emit` or `Emitter::emit` calls were present.
 The CI guard scans **every repository Rust source**, including crates, tests,
-sidecars and spikes; it excludes only `target/`, Git metadata and third-party
-source directories (`vendor`, `vendored`, `third_party`, `third-party`,
-`node_modules`, `.venv`, `venv`). Outside the one sanctioned adapter
+sidecars and spikes, including Cargo targets/modules rooted in `vendor/`.
+Exclusions are exact repository-relative paths: `.git/` (Git metadata),
+`target/` and `app/src-tauri/target/` (Cargo output), and `node_modules/` and
+`app/node_modules/` (installed npm dependencies). No third-party Rust source
+path is currently exempted; nested maintained directories with those names
+are scanned. Outside the one sanctioned adapter
 `app/src-tauri/src/events.rs`, **any identifier token named `emit` or `emit_*`**
 (including raw identifiers and macro arguments) is forbidden after masking
 comments, string/byte/raw/C literals and character literals. Local non-Tauri
@@ -66,7 +69,9 @@ symlinks fail closed. Ordinary non-Rust fixture
 inclusions are allowed. This is a **source-level guard**, not a compiler or a
 sandbox: arbitrary procedural-macro/build-script code synthesis and full Rust
 macro expansion are not proved safe by it. The guard and its regression fixtures remain wired into CI alongside
-the core dependency guard.
+the core dependency guard in the unconditional `policy` job. Frontend syntax
+policy and its fixtures run there too, using only the pinned TypeScript parser;
+frontend-only, outside-app Rust and guard-only diffs cannot skip the guard.
 
 Audit commands: `rg -n '\.emit|emit_all|Emitter::emit|AppHandle::emit' app/src-tauri`,
 `rg -n 'listen|once|listen_any|once_any' app/src`, plus Rust listener searches. Generic listeners,
@@ -163,10 +168,45 @@ client listener binding now enforces those targets as well.
 
 `query-state-changed` (Main playback, native Smart Auto) and
 `transform-state-changed` (native Smart Auto) retain named protocol routes for
-their subscriptions; neither has a current producer. Frontend-originated
-`settings-changed`, calibration and preview-lift notifications retain their
-existing producers and intended listeners. `open-settings`, `show-about` and
-`accept-meeting-suggestion` have client listeners but no current Rust emit site.
+their subscriptions; neither has a current producer. `show-about` has a client
+listener but no current Rust or frontend producer.
+
+## Frontend producer audit
+
+The eight frontend broadcasts at `60933c29` (including two appearance calls
+found by the repository grep) now use `targetedEvents.sendTo`, which calls
+Tauri `emitTo` with a named label. Payloads remain undefined/no payload,
+`{ active }`, or the existing appearance receipt; no host command is added.
+There are no Rust/native listeners for these events. A missing label is an
+empty Tauri recipient set, and the helper also silently tolerates a companion
+closing during IPC.
+
+| Event | Producer sites | Actual listeners | Destination |
+|---|---|---|---|
+| `settings-changed` | useSettings (four sites: policy recovery, manual mode, updates, overlay-write reconciliation) | useOverlaySettingsMirror in Overlay | Overlay |
+| `open-settings` | useOverlaySettingsMirror gear action | useOpenSettingsListener in Main/App | Main |
+| `overlay-calibration-changed` | OverlayCalibrationControl | OverlayWidget | Overlay |
+| `appearance-changed` | useAppearance (repair and edit) | None: legacy notification; Main owns the only themed surface and applies changes directly | Main only, preserving the notification/payload without involving companions |
+
+Previously targeted frontend producers were audited too and retain their labels:
+
+| Event | Producer | Actual listeners | Destination |
+|---|---|---|---|
+| `overlay-live-words-lift-request` | DictationPreviewApp | useLiveWordsLift in OverlayWidget | Overlay |
+| `overlay-live-words-lift` | useLiveWordsLift (two sites) | DictationPreviewApp | DictationPreview |
+| `accept-meeting-suggestion` | useMeetingSuggestion | useMeetingSuggestionAcceptance in Main/App | Main |
+| `local-stats-completion` | localStatsEvents | None: legacy local receipt (current statistics use completionData) | Main only |
+
+Audit: `git grep` over frontend `emit(`, generic `emit<`, `emitTo`, `.emit`
+and `@tauri-apps/api/event` imports, followed by listener/constant searches.
+The TypeScript AST guard reserves `emit` identifiers and statically computed
+`emit` names in shipped `app/src` JS/TS, including Window/WebviewWindow methods,
+aliases, destructuring, optional calls, Unicode escapes and template expressions.
+It rejects Tauri namespace/default/dynamic imports and re-export facades;
+broadcast imports/re-exports are forbidden even in test files. Tests may use
+local synthetic `emit`/mock helpers, never an imported Tauri broadcast. This
+source policy does not prove arbitrary runtime reflection, `eval`, computed
+module loading, or generated code safe.
 
 ## Waveform lifecycle
 
@@ -185,9 +225,14 @@ and unregisters on cleanup. Its three named interests are:
   the other, and both still result in at most one event per window per sample.
 
 Capture snapshots the supervisor's active capture generation **before** computing
-the numeric level. The existing capture-active flag is now a single atomic epoch:
-activation (including warm standby reuse) advances it to an active epoch;
-stop, cancel/recovery, cleanup and worker exit revoke it. This extends the existing
+the numeric level. The existing capture-active state carries an atomic epoch plus separate activity
+and waveform-ownership bits. Activation (including warm standby reuse) advances
+it; stop, cancel/recovery, cleanup and worker exit revoke it. Every backend
+attempt retires waveform ownership before blocking helper teardown: protocol
+failure/disconnect, helper crash, permission loss, timeout, helper auto-stop,
+probe cancellation and host stop/shutdown all pass this boundary. Attempt exit
+also retires ownership. A permitted fallback gets fresh waveform ownership only
+while supervisor activity remains set; it cannot reactivate a stopped capture. This extends the existing
 capture ownership state rather than creating a second lifecycle registry. It
 also covers corpus capture, whose identity is independent of dictation IDs.
 Each queued sample carries that immutable ownership token internally; the wire
@@ -198,10 +243,25 @@ Capture replaces one pending sample under a brief mailbox lock. At most one
 main-thread task is queued (plus a task already executing); further samples
 coalesce into the latest value. Capture never queries windows or waits for a
 main-thread reply. The task takes the sample and releases the mailbox lock,
-then reads current interests and visibility/minimization. It rechecks the capture
-epoch on main after those queries and immediately before each callback/window
-send, dropping stale samples even if subscriptions now belong to a replacement
-recording. No ownership/registry lock is held across callbacks. Hide/minimize
+then reads current interests and visibility/minimization. After all native window
+queries, each callback/transport entry takes a capture delivery read permit,
+checks the epoch, and keeps the permit through the call. Revocation takes the
+write side, so it cannot return (or acknowledge stop/cancel) while an old delivery
+is in flight. Once it returns that epoch cannot deliver again. Router, mailbox
+and callback-registry locks are released before callbacks. The writer only
+updates the atomic epoch and never dispatches to or waits for main. No capture
+path window query is introduced.
+
+Pinned Tauri 2.11.2 was inspected locally: `Emitter::emit_str_to` delegates to
+`AppManager::emit_to`/`emit_filter`, whose JS path uses `Listeners::emit_js_filter`,
+`Webview::emit_js` and `Webview::eval`. `tauri-runtime-wry` 2.11.2 dispatches
+`EvaluateScript`; on main it calls Wry immediately, while Wry 0.55.1's macOS
+`InnerWebView::eval` submits `WKWebView::evaluateJavaScript_completionHandler`
+and returns without waiting for JS. The permit covers this short submission,
+not JS execution. Already submitted JS may run later. Tauri native listeners
+run synchronously; there are no production Tauri native `audio-level` listeners
+(the test observer exercises the same callback permit). No synchronous native
+control round trip occurs under it. Hide/minimize
 suppresses delivery; show/restore resumes on the next sample without restarting.
 A blocked main thread retains only one pending sample; dispatch failure resets
 the mailbox for retry.
@@ -246,14 +306,21 @@ latest unchanged numeric payload. Deferred-drain tests use real supervisor
 stop, cancel and replacement transitions, asserting that old samples disappear
 and the replacement's sample arrives. Additional tests cover warm reactivation
 of the same activity allocation and revocation during the visibility query.
-Ownership-check mutation testing must fail these regressions. Hide/show,
+A barrier at the production seam after the final check and before callback/
+transport entry verifies that revocation must wait for delivery. A separate
+barrier holds actual `terminate_or_quarantine` open before helper teardown while
+the production mailbox drains and asserts no sample arrives. Ownership-check
+and delivery-permit mutation testing must fail the corresponding regressions. Hide/show,
 dispatch-failure recovery and cleanup before a failing reload are covered. Existing completion/gesture
 regressions run with no retired assertions. Guard regression fixtures include
 macro repetition, glob/aliased imports, both
 UFCS forms, `AnyLabel`, filtered/string broadcasts, cfg-gated code, source outside
 the former app scan root, external/excluded `#[path]`/include escapes, symlinks,
 raw identifiers, re-export facades and constrained-adapter targets, plus literal
-and nested-comment false positives.
+and nested-comment false positives. Additional Cargo-root and ordinary-module
+fixtures cover maintained `vendor/`, `src/vendor/`, `third_party/` and
+`src/target/` paths. Frontend fixtures cover aliases, re-exports, namespace imports,
+Window methods, escaped/computed properties and nested template expressions.
 
 The command reference now contains **180 commands**, including
 `set_waveform_subscription`; all maintained counts are updated. Exact Linux,
@@ -261,7 +328,7 @@ macOS and CI results are recorded in the draft PR. No native synthetic input is
 sent while another task's Murmur occupies the Mac mini GUI. No production data,
 logs, transcript, audio, clipboard contents or WebKit directory are inspected.
 
-## Test-count reconciliation
+## Historical test-count reconciliation (through `60933c29`)
 
 On the Mac mini with Rust 1.98.1, the identical command from `app/src-tauri`,
 `cargo test -- --test-threads=1`, selects the app package because the workspace
@@ -295,3 +362,14 @@ was 1,525 / 16, before the five new ownership tests. Removing the weak
 source-text-only integration assertion reduces the separate core subtotal from
 112 back to 111; its behavioral adapter coverage remains in the app suite.
 The PR body records the exact final revision and check outcomes.
+
+## Round-2 re-check verification
+
+Linux: core tests **111 passed**, strict core Clippy, TypeScript and all Vitest
+**175 files / 1,812 tests** passed. Both transport guards pass, with **11 Rust
+fixture groups** and **3 frontend fixture groups**. Reference/Markdown/workflow
+validator tests **74 passed**; reference, Markdown, workflow and capture-boundary
+validators passed. Command count stays **180**. macOS results, mutation evidence,
+final CI state and independent review status are recorded in the draft PR body.
+Native GUI verification belongs to the separate worker; this implementation
+worker sends no GUI input and makes no native UI pass claim.

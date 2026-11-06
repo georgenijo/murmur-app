@@ -94,6 +94,24 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-test.txt
 
+      - name: Enforce Tauri-free core
+        run: |
+          python3 scripts/check_core_dependencies.py
+          python3 scripts/check_targeted_events.py
+          python3 -m unittest discover -s scripts -p 'test_check_targeted_events.py'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enforce targeted frontend events
+        run: |
+          # Only the syntax parser is needed; no application install/build.
+          npm install --prefix "$RUNNER_TEMP/event-guard" --no-package-lock --ignore-scripts typescript@5.6.2
+          export TARGETED_EVENTS_TYPESCRIPT="$RUNNER_TEMP/event-guard/node_modules/typescript"
+          node scripts/check_targeted_frontend.mjs
+          node --test scripts/test_check_targeted_frontend.mjs
+
       - name: Validate workflow policy
         run: |
           python3 -m pip install -r requirements-test.txt
@@ -276,12 +294,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
-
-      - name: Enforce Tauri-free core
-        run: |
-          python3 scripts/check_core_dependencies.py
-          python3 scripts/check_targeted_events.py
-          python3 -m unittest discover -s scripts -p 'test_check_targeted_events.py'
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { setTheme } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
+import { sendTo } from '../targetedEvents';
 import {
   applyResolvedTheme,
   appearanceSelection,
@@ -173,7 +173,7 @@ function useMainAppearanceController(): AppearanceController {
       try {
         writeAppearanceDocument(current);
         reflect(current);
-        void emit<AppearanceChangedEvent>(APPEARANCE_CHANGED_EVENT, {
+        void sendTo<AppearanceChangedEvent>('main', APPEARANCE_CHANGED_EVENT, {
           revision: current.revision,
           reason: 'repair',
         }).catch((cause) => setError(`Failed to synchronize repaired appearance: ${String(cause)}`));
@@ -235,7 +235,7 @@ function useMainAppearanceController(): AppearanceController {
         reflect(next);
         await Promise.all([
           applyNativeTheme(next.mode),
-          emit<AppearanceChangedEvent>(APPEARANCE_CHANGED_EVENT, {
+          sendTo<AppearanceChangedEvent>('main', APPEARANCE_CHANGED_EVENT, {
             revision: next.revision,
             reason: eventReason,
           }),

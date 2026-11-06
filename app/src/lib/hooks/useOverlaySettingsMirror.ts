@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { emit } from '@tauri-apps/api/event';
-import { listen } from '../targetedEvents';
+import { listen, sendTo } from '../targetedEvents';
 import { flog } from '../log';
 import {
   loadSettings,
@@ -179,7 +178,7 @@ export function useOverlaySettingsMirror({
     e.stopPropagation();
     try {
       await invoke('show_main_window');
-      await emit('open-settings');
+      await sendTo('main', 'open-settings');
     } catch (err) {
       flog.error('overlay', 'open settings failed', { error: String(err) });
     }

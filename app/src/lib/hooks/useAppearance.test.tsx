@@ -17,7 +17,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   setTheme: vi.fn(async () => {}),
-  emit: vi.fn(async (_event: string, _payload?: unknown): Promise<void> => {}),
+  emitTo: vi.fn(async (_label: string, _event: string, _payload?: unknown): Promise<void> => {}),
   invoke: vi.fn(async (_command: string, _args?: unknown): Promise<unknown> => undefined),
   beforeListenResolve: null as (() => void) | null,
   listeners: [] as Array<{
@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/app', () => ({ setTheme: mocks.setTheme }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({
-  emit: mocks.emit,
+  emitTo: mocks.emitTo,
   listen: vi.fn(async (event: string, callback: (event: { payload: unknown }) => void) => {
     const registration = { event, active: true, callback };
     mocks.listeners.push(registration);
@@ -83,7 +83,7 @@ describe('appearance runtime hooks', () => {
     document.documentElement.removeAttribute('data-appearance');
     document.documentElement.removeAttribute('style');
     mocks.setTheme.mockClear();
-    mocks.emit.mockClear();
+    mocks.emitTo.mockClear();
     mocks.invoke.mockReset();
     mocks.beforeListenResolve = null;
     mocks.listeners.length = 0;
@@ -191,8 +191,8 @@ describe('appearance runtime hooks', () => {
       await controller!.setMode('dark');
     });
     expect(mocks.setTheme).toHaveBeenLastCalledWith('dark');
-    expect(mocks.emit).toHaveBeenLastCalledWith(
-      APPEARANCE_CHANGED_EVENT,
+    expect(mocks.emitTo).toHaveBeenLastCalledWith(
+      'main', APPEARANCE_CHANGED_EVENT,
       { revision: 1, reason: 'user' },
     );
     expect(JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY)!)).toMatchObject({
@@ -209,11 +209,11 @@ describe('appearance runtime hooks', () => {
 
   it('applies system changes locally with zero emitted events', async () => {
     await act(async () => root.render(<Provider><Consumer /></Provider>));
-    mocks.emit.mockClear();
+    mocks.emitTo.mockClear();
     await act(async () => media.dispatch(true));
     expect(document.documentElement.dataset.appearance).toBe('dark');
     expect(controller!.resolvedAppearance).toBe('dark');
-    expect(mocks.emit).not.toHaveBeenCalled();
+    expect(mocks.emitTo).not.toHaveBeenCalled();
     expect(JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toBeNull();
   });
 
@@ -224,8 +224,8 @@ describe('appearance runtime hooks', () => {
     await act(async () => {
       root.render(<StrictMode><Provider><Consumer /></Provider></StrictMode>);
     });
-    expect(mocks.emit.mock.calls.filter((call) =>
-      (call[1] as AppearanceChangedEvent)?.reason === 'repair',
+    expect(mocks.emitTo.mock.calls.filter((call) =>
+      (call[2] as AppearanceChangedEvent)?.reason === 'repair',
     )).toHaveLength(1);
     expect(media.listeners.size).toBe(1);
     expect(media.addEventListener).toHaveBeenCalledTimes(2);
@@ -268,11 +268,11 @@ describe('appearance runtime hooks', () => {
       await controller!.commitImport(preview);
     });
     expect(controller!.document.revision).toBe(5);
-    expect(mocks.emit).toHaveBeenLastCalledWith(
-      APPEARANCE_CHANGED_EVENT,
+    expect(mocks.emitTo).toHaveBeenLastCalledWith(
+      'main', APPEARANCE_CHANGED_EVENT,
       { revision: 5, reason: 'import' },
     );
-    expect(mocks.emit.mock.calls.map((call) => call[1])).toEqual([
+    expect(mocks.emitTo.mock.calls.map((call) => call[2])).toEqual([
       { revision: 1, reason: 'repair' },
       { revision: 2, reason: 'reset' },
       { revision: 3, reason: 'user' },
@@ -297,8 +297,8 @@ describe('appearance runtime hooks', () => {
     });
     expect(controller!.document.revision).toBe(1);
     expect(controller!.document.mode).toBe('dark');
-    expect(mocks.emit).toHaveBeenCalledWith(
-      APPEARANCE_CHANGED_EVENT,
+    expect(mocks.emitTo).toHaveBeenCalledWith(
+      'main', APPEARANCE_CHANGED_EVENT,
       { revision: 1, reason: 'repair' },
     );
 
@@ -419,8 +419,8 @@ describe('appearance runtime hooks', () => {
     expect(controller!.library.document.themes.map((theme) => theme.id)).toEqual(['aurora-new']);
     expect(controller!.document.selection).toEqual({ light: 'sonic', dark: 'sonic' });
     expect(controller!.document.theme.presetId).toBe('sonic');
-    expect(mocks.emit).toHaveBeenLastCalledWith(
-      APPEARANCE_CHANGED_EVENT,
+    expect(mocks.emitTo).toHaveBeenLastCalledWith(
+      'main', APPEARANCE_CHANGED_EVENT,
       expect.objectContaining({ reason: 'library' }),
     );
   });
@@ -453,8 +453,8 @@ describe('appearance runtime hooks', () => {
       dark: entry.id,
     });
     expect(controller!.document.theme).toEqual(entry.theme);
-    expect(mocks.emit).toHaveBeenCalledWith(
-      APPEARANCE_CHANGED_EVENT,
+    expect(mocks.emitTo).toHaveBeenCalledWith(
+      'main', APPEARANCE_CHANGED_EVENT,
       expect.objectContaining({ reason: 'repair' }),
     );
   });

@@ -23,6 +23,8 @@ struct Events {
     visibility: Mutex<Option<Visibility>>,
     #[cfg(test)]
     dispatch: Mutex<Option<Dispatch>>,
+    #[cfg(test)]
+    before_level_transport: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// At most one queued main-thread task and one latest sample. No window or
@@ -167,6 +169,21 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true)
     }
 
+    #[cfg(test)]
+    fn before_level_transport(&self, waveform: bool) {
+        if waveform {
+            let hook = self
+                .0
+                .state::<Events>()
+                .before_level_transport
+                .lock_or_recover()
+                .clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
     fn deliver(
         &self,
         event: EventKind,
@@ -184,7 +201,8 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         });
         // Recheck on main after window queries, immediately before delivery.
         // Stop/cancel/end revoke the capture epoch; standby/new capture cannot
-        // make a queued sample current again. No ownership lock crosses a callback.
+        // make a queued sample current again. The final permit below serializes
+        // delivery with revocation, including the transport call itself.
         if generation.is_some_and(|generation| !generation.is_current()) {
             return Ok(());
         }
@@ -212,9 +230,12 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         };
         if !callbacks.is_empty() {
             for callback in callbacks {
-                if generation.is_some_and(|generation| !generation.is_current()) {
-                    return Ok(());
-                }
+                let _permit = match generation.map(|g| g.delivery_permit()) {
+                    Some(None) => return Ok(()),
+                    permit => permit,
+                };
+                #[cfg(test)]
+                self.before_level_transport(generation.is_some());
                 callback(payload);
             }
         }
@@ -224,9 +245,12 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
                 // The window can disappear after the availability check. An
                 // absent/recreated companion is a normal, silent no-op.
                 if app.get_webview_window(label).is_some() {
-                    if generation.is_some_and(|generation| !generation.is_current()) {
-                        return Ok(());
-                    }
+                    let _permit = match generation.map(|g| g.delivery_permit()) {
+                        Some(None) => return Ok(()),
+                        permit => permit,
+                    };
+                    #[cfg(test)]
+                    self.before_level_transport(generation.is_some());
                     if let Err(error) = app.emit_str_to(
                         tauri::EventTarget::webview_window(label),
                         event.name(),
@@ -306,7 +330,7 @@ pub(crate) fn observe_for_test<R: tauri::Runtime>(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tauri::Listener;
 
     pub(crate) struct DeferredLevels {
@@ -504,6 +528,74 @@ pub(crate) mod tests {
         levels.publish(&activity, 0.25);
         levels.drain();
         assert!(levels.received.lock_or_recover().is_empty());
+    }
+
+    #[test]
+    fn revocation_waits_between_final_check_and_transport_or_callback_entry() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for callback_path in [false, true] {
+            let levels = DeferredLevels::new();
+            let activity = Arc::new(crate::audio::CaptureActivity::default());
+            activity.set_active(true);
+            let callback_count = Arc::new(AtomicUsize::new(0));
+            if callback_path {
+                let count = callback_count.clone();
+                observe_for_test(levels.app.handle(), EventKind::AudioLevel, move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+            let (go, start) = mpsc::channel();
+            let (attempting, attempted) = mpsc::channel();
+            let (done, finished) = mpsc::channel();
+            let revoked = activity.clone();
+            let worker = std::thread::spawn(move || {
+                start.recv().unwrap();
+                attempting.send(()).unwrap();
+                revoked.set_active(false);
+                done.send(()).unwrap();
+            });
+            let first = AtomicBool::new(true);
+            let blocked = Arc::new(AtomicBool::new(false));
+            let held = blocked.clone();
+            let attempted = Mutex::new(attempted);
+            let finished = Mutex::new(finished);
+            *levels
+                .app
+                .state::<Events>()
+                .before_level_transport
+                .lock_or_recover() = Some(Arc::new(move || {
+                if first.swap(false, Ordering::SeqCst) {
+                    // This hook is after the final check, before transport
+                    // entry, while the production delivery permit is alive.
+                    go.send(()).unwrap();
+                    attempted.lock_or_recover().recv().unwrap();
+                    held.store(
+                        matches!(
+                            finished
+                                .lock_or_recover()
+                                .recv_timeout(Duration::from_millis(50)),
+                            Err(mpsc::RecvTimeoutError::Timeout)
+                        ),
+                        Ordering::SeqCst,
+                    );
+                }
+            }));
+            levels.publish(&activity, 0.25);
+            levels.drain();
+            worker.join().unwrap();
+            assert!(
+                blocked.load(Ordering::SeqCst),
+                "revocation acknowledged before transport entry"
+            );
+            if callback_path {
+                assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+            } else {
+                assert_eq!(*levels.received.lock_or_recover(), vec!["0.25"]);
+            }
+            // A stale token cannot enter either path after revocation returns.
+            assert!(activity.generation().is_none());
+        }
     }
 
     #[test]
