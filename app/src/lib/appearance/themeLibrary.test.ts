@@ -368,3 +368,15 @@ describe('theme library selection', () => {
     )).toThrow(/no light variant/);
   });
 });
+
+// Same literal legacy-contract table as the native validator.
+import { parseThemeLibraryEntry } from './themeLibrary';
+import parityFixtures from '../../../src-tauri/crates/murmur-core/src/state/appearance-parity-fixtures.json';
+it.each(parityFixtures)('legacy/native parity: $name', ({ entry, valid }) => {
+  expect(parseThemeLibraryEntry(entry) !== null).toBe(valid);
+});
+it.each([1048576, 1048577])('literal legacy raw library boundary %s bytes', bytes => {
+  const base = JSON.stringify({ version: 1, revision: 2, themes: [] });
+  const storage = { getItem: () => base.padEnd(bytes, ' '), setItem: () => {} };
+  expect(loadThemeLibrary(storage).status === 'ready').toBe(bytes === 1048576);
+});

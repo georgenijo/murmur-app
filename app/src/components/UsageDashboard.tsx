@@ -1,3 +1,4 @@
+import { presentationStorage } from '../lib/presentationStorage';
 import { sourceStorage } from '../lib/webkitLifecycle';
 import { COMPLETION_CHANGED } from '../lib/completionData';
 import { useState, useEffect, useMemo } from 'react';
@@ -16,7 +17,7 @@ const RECENT_DAYS = 7;
 
 function loadCollapsed(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'true';
+    return presentationStorage.getItem(STORAGE_KEY) === 'true';
   } catch {
     return false;
   }

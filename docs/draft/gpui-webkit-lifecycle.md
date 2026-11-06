@@ -140,6 +140,11 @@ documents the host's exclusive directory and no-live-webview preconditions.
 | Retired | Later startup | Host skips WebKit entirely; source state remains on disk |
 | First source save | After pending receipt or required marker, before destination publication | Replay the exact durable pending document before status/import/read/merge; finish marker and destination sync |
 | Required source genuinely missing/quarantined | No valid pending publication | Startup stays blocked visibly; restore a user-selected complete backup; keep quarantine, never seed defaults |
+| Corrupt pending receipt, readable destination | Receipt decode/schema failure | Quarantine receipt, preserve and use destination; no write to destination |
+| Stale pending receipt | Destination differs from both base and target digest | Quarantine receipt and surface recovery; preserve newer/conflicting destination |
+| Foreign pending receipt | Store identity or source key differs | Never replay; quarantine receipt, preserve destination; missing required source still needs explicit backup |
+| Explicit backup restore | Before/after identity, pending, required or destination publication | Before pending commit, remain blocked and retry selected backup; after pending commit, replay exact backup and sync; retain failed-generation evidence |
+| Presentation cache unavailable | setItem/removeItem throws after valid Rust snapshot | Mount from in-memory presentation state; one content-free warning; unreadable legacy input still aborts import |
 | Source edit queued | Commit fails or a newer generation arrives | Keep newest intent; retry; never clear newer intent on old acknowledgement |
 
 Quarantine and diagnostics contain only local data files or content-free
@@ -177,12 +182,11 @@ Retirement and transcript removal require readable destination envelopes with
 install now creates explicit empty destination envelopes before committing v1.
 The v2 UI receipt records the settings/library destinations actually imported,
 including empty values. Later creations have separate durable `.required`
-receipts and exact `.pending` publication documents. Missing expected files and quarantine stay errors across repeated
-reads and relaunches; status, import replay and retirement all check them. Destination-receipt metadata is mandatory; a missing field fails visibly too. An exact pending publication is fully synced before the required marker, replayed
-before reads/merges on restart, and removed only after destination directory sync.
+receipts and exact `.pending` publication documents bound to a durable per-store/source identity, a generation UUID, base/target SHA-256 digests, prior generation-marker digest and target revision. Missing expected files and quarantine stay errors across repeated
+reads and relaunches; status, import replay and retirement all check them. Destination-receipt metadata is mandatory; a missing field fails visibly too. An exact pending publication is fully synced before the required marker and removed only after destination directory sync. Replay requires the same store/source identity and a generation marker matching the expected prior or target generation, plus an absent destination or one matching the base or exact target. Stale/foreign receipts cannot replace newer data.
 Missing or quarantined destinations without a pending document require an explicit
 user-selected complete current-version backup through the startup recovery screen
-and main-only `restore_source_backup`. Quarantines are preserved. No defaults are
+and main-only `restore_source_backup`. Explicit restore supersedes the failed pending generation under `WRITE_LOCK`; a readable destination is preserved even when receipt recovery fails. Corrupt receipts beside readable destinations are quarantined without blocking startup. Evidence and orphan temps are bounded to eight oldest-first entries per source-owned artifact family (legacy prefixes can share a cap). No defaults are
 published to replace an expected missing destination.
 
 React queues Rust intents before attempting cache writes. This includes settings,
@@ -266,3 +270,16 @@ and their CI-invoked suites (15 Python / 42 Node), and reference/Markdown
 validators passed. Native validation evidence and final-head CI status are
 recorded in the PR body. Independent re-check and GUI verification remain with
 the parent and dedicated verifier.
+
+
+## Round-three implementation regressions
+
+| Finding | Root cause and resulting behavior | Regression evidence |
+|---|---|---|
+| DS-A | Pending quarantine used to veto all future attempts, including selected-backup writes. Explicit restore now validates a complete supplied document and publishes a replacement pending generation under the host lock. A readable destination always wins over corrupt receipts. | `corrupt_receipt_beside_valid_destination_preserves_startup` failed before the fix. `selected_backup_resolves_failed_generation_at_every_publish_boundary` covers both destinations, missing/corrupt destination, before/after rename and directory sync for identity, pending, both required-marker writes and destination, then repeated recovery. Native `explicit_backup_restore_requires_complete_supplied_data_and_preserves_quarantine` now includes corrupt receipts. |
+| DS-B | Schema-only receipts could replace any current destination. Schema 2 records source key, store identity, generation UUID, base/target digest, prior generation-marker digest and target revision. Only absent/base/exact-target destinations replay; conflicts surface and preserve data. | `stale_receipts_cannot_replace_newer_destinations` failed before the fix; foreign stores, stale same-store receipts after newer destination loss, mode 0600, idempotent/base replay and oldest-first evidence/temp caps have separate regression tests. Legacy unbound receipts cannot authorize replacement: readable destinations continue, missing destinations require explicit backup. |
+| R1 | Latest configuration rollback inferred ownership from the latest update's keys, leaving a coalesced rejected Auto Paste patch queued. Rollback now explicitly supersedes the Auto Paste field it restores. Disabled is preserved because this rollback does not restore it. | Both `overlapping configure rollback supersedes %s intent without undoing other owned edits` cases failed before and pass after: real hook plus persistence queue, two configuration failures and delayed writes; verifies both owned fields against UI and synthetic disk. |
+| R2 | Native appearance metadata limits and raw-document limits diverged from fa2be313. Version/license are 64 UTF-16 units; extension/collection IDs use their exact 128-character ASCII grammars; collection labels use 64 UTF-16 units; Open VSX URLs use 2048 UTF-16 units, while local extras are ignored. Raw appearance/library limits are 64 KiB/1 MiB before normalization/import and after normalization. | Shared `appearance-parity-fixtures.json` contains 26 literal expectations independently transcribed from fa2be313 TypeScript, run through Rust normalization and frontend parsing. Native parity failed at version65 before the fix. Raw exact-limit/+1 tests run both validators; core also exercises public import and checks rejected data was never published. Incorrect old emoji-extension and local-URL assertions are corrected, with no tests removed. |
+| R3 | Snapshot hydration treated a DOM-cache write failure as an authoritative-source failure. All source presentation readers now use a cache adapter retaining failed writes/removals in memory. Cache errors produce at most one content-free warning per window and never enter backup recovery. Raw legacy getItem still bypasses the adapter and fails closed. | All three real entry modules failed to mount before the fix under throwing setItem. `entryCacheFailure.test.tsx` verifies main/overlay/diagnostics render and settings/appearance/library remain readable from memory; unreadable legacy input still rejects. |
+
+Fault fixtures establish publication-state recovery, not OS process-kill or physical-power-loss proof. Only synthetic data and the isolated `gpui-stack-15` build are used; no GUI input or app launch is part of this worker's verification. The parent owns independent Sol re-checks.

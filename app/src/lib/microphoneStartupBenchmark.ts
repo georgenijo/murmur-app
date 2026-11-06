@@ -1,3 +1,4 @@
+import { presentationStorage } from './presentationStorage';
 import { sourceStorage } from './webkitLifecycle';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -572,7 +573,7 @@ export function saveMicrophoneStartupReports(
 
 export function loadMicrophoneStartupReports(): MicrophoneStartupBenchmarkReport[] {
   try {
-    const saved = localStorage.getItem(REPORTS_KEY);
+    const saved = presentationStorage.getItem(REPORTS_KEY);
     if (!saved) return [];
     const parsed: unknown = JSON.parse(saved);
     return Array.isArray(parsed) ? parsed.map(parseMicrophoneStartupBenchmarkReport).filter((r): r is MicrophoneStartupBenchmarkReport => r !== null).slice(0, MAX_SAVED_MICROPHONE_STARTUP_REPORTS) : [];

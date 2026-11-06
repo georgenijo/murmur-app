@@ -270,3 +270,8 @@ describe('theme file transport helpers', () => {
     });
   });
 });
+it.each([65536, 65537])('literal legacy raw appearance boundary %s bytes', bytes => {
+  const base = JSON.stringify({ version: 1, mode: 'dark', theme: { version: 1, presetId: 'custom' } });
+  const storage = { getItem: () => base.padEnd(bytes, ' '), setItem: () => {} };
+  expect(loadAppearanceDocument(storage).error === null).toBe(bytes === 65536);
+});

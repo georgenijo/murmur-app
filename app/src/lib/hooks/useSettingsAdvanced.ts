@@ -1,3 +1,4 @@
+import { presentationStorage } from '../presentationStorage';
 import { sourceStorage } from '../webkitLifecycle';
 import { useCallback, useRef, useState } from 'react';
 
@@ -13,7 +14,7 @@ type AdvancedState = Partial<Record<SettingsPaneKey, boolean>>;
 
 export function readSettingsAdvanced(): AdvancedState {
   try {
-    const raw = localStorage.getItem(SETTINGS_ADVANCED_KEY);
+    const raw = presentationStorage.getItem(SETTINGS_ADVANCED_KEY);
     if (!raw || raw.length > 2048) return {};
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== 'object' || !('version' in value) || value.version !== 1

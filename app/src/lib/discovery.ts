@@ -1,3 +1,4 @@
+import { presentationStorage } from './presentationStorage';
 import { sourceStorage, persistSourceState } from './webkitLifecycle';
 import type { DictationStats } from './stats';
 import type { Settings } from './settings';
@@ -137,7 +138,7 @@ export function discoveryEvidence(
 
 export function loadDiscoveryState(): DiscoveryStateV1 | null {
   try {
-    const stored = localStorage.getItem(DISCOVERY_STORAGE_KEY);
+    const stored = presentationStorage.getItem(DISCOVERY_STORAGE_KEY);
     return stored === null ? null : parseState(JSON.parse(stored));
   } catch {
     return null;
@@ -243,7 +244,7 @@ export function dismissDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV1 | nu
 export function resetDiscovery(): void {
   try {
     persistSourceState(DISCOVERY_STORAGE_KEY, 'null');
-    localStorage.removeItem(DISCOVERY_STORAGE_KEY);
+    presentationStorage.removeItem(DISCOVERY_STORAGE_KEY);
     window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {
     // Non-fatal.

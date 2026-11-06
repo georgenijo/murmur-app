@@ -1,3 +1,4 @@
+import { presentationStorage } from './presentationStorage';
 import { persistSourceState, type OwnedEdits } from './webkitLifecycle';
 import rustSettingsDefaults from '../../src-tauri/crates/murmur-core/src/state/settings-defaults.json';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -545,7 +546,7 @@ function mirrorToDisk(blob: string, ownedEdits?: OwnedEdits): void {
 
 function writePersistedSettings(settings: Settings, ownedEdits?: OwnedEdits): void {
   let launchOnboardingComplete: boolean | undefined;
-  try { launchOnboardingComplete = localStorage.getItem(ONBOARDING_KEY) === 'true'; }
+  try { launchOnboardingComplete = presentationStorage.getItem(ONBOARDING_KEY) === 'true'; }
   catch { /* Rust preserves the existing gate when this optional cache is unreadable. */ }
   const blob = JSON.stringify({
     ...settings,
@@ -553,7 +554,7 @@ function writePersistedSettings(settings: Settings, ownedEdits?: OwnedEdits): vo
     ...(launchOnboardingComplete !== undefined ? { launchOnboardingComplete } : {}),
   });
   mirrorToDisk(blob, ownedEdits);
-  try { localStorage.setItem(STORAGE_KEY, blob); } catch { /* Rust intent remains queued. */ }
+  try { presentationStorage.setItem(STORAGE_KEY, blob); } catch { /* Rust intent remains queued. */ }
 }
 
 /** Mirror only the onboarding gate; preserve the exact current settings blob.
@@ -562,11 +563,11 @@ function writePersistedSettings(settings: Settings, ownedEdits?: OwnedEdits): vo
 export function persistOnboardingComplete(complete: boolean): void {
   persistSourceState(ONBOARDING_KEY, JSON.stringify(complete));
   try {
-    const cached = localStorage.getItem(STORAGE_KEY);
+    const cached = presentationStorage.getItem(STORAGE_KEY);
     if (cached === null) return;
     const value: unknown = JSON.parse(cached);
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...value, launchOnboardingComplete: complete }));
+    presentationStorage.setItem(STORAGE_KEY, JSON.stringify({ ...value, launchOnboardingComplete: complete }));
   } catch { /* Cache cannot suppress the queued native patch. */ }
 }
 
@@ -593,20 +594,20 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
     if (typeof blob === 'string') {
       // `loadSettings()` re-runs the full validation gauntlet over whatever is
       // in here, so no schema work belongs on this path.
-      localStorage.setItem(STORAGE_KEY, blob);
+      presentationStorage.setItem(STORAGE_KEY, blob);
       // The durable gate survives WebKit eviction with the same settings.
       // Legacy snapshots retain the existing local flag and get mirrored by
       // App's onboarding decision; Rust falls back for that first launch.
       const gate = (JSON.parse(blob) as { launchOnboardingComplete?: unknown }).launchOnboardingComplete;
       if (ownsSettingsMigrations && typeof gate === 'boolean') {
-        if (gate) localStorage.setItem(ONBOARDING_KEY, 'true');
-        else localStorage.removeItem(ONBOARDING_KEY);
+        if (gate) presentationStorage.setItem(ONBOARDING_KEY, 'true');
+        else presentationStorage.removeItem(ONBOARDING_KEY);
       }
       return;
     }
     // No durable copy: either a first run, or an existing install whose
-    // settings only ever lived in localStorage. Repair it once.
-    const cached = localStorage.getItem(STORAGE_KEY);
+    // settings only ever lived in presentationStorage. Repair it once.
+    const cached = presentationStorage.getItem(STORAGE_KEY);
     if (cached !== null && ownsSettingsMigrations) {
       await invoke('save_settings_blob', { blob: cached });
     } else if (ownsSettingsMigrations) {
@@ -614,7 +615,7 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
       // on a missing document (the live-words preview) see default-on.
       const defaults = JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: SETTINGS_VERSION });
       await invoke('save_settings_blob', { blob: defaults });
-      try { localStorage.setItem(STORAGE_KEY, defaults); } catch { /* Native creation succeeded. */ }
+      try { presentationStorage.setItem(STORAGE_KEY, defaults); } catch { /* Native creation succeeded. */ }
     }
   } catch (e) {
     // Boot must never block on the settings store; localStorage stays the
@@ -633,14 +634,14 @@ export function parseSettingsBlob(blob: string | null): Settings {
   } catch { return DEFAULT_SETTINGS; }
 }
 export function loadSettings(): Settings {
-  try { return parseSettingsBlob(localStorage.getItem(STORAGE_KEY)); }
+  try { return parseSettingsBlob(presentationStorage.getItem(STORAGE_KEY)); }
   catch { return DEFAULT_SETTINGS; }
 }
 
 /** Refresh a webview cache after the host has already committed settings. */
 export function cacheSettings(settings: Settings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, settingsVersion: SETTINGS_VERSION }));
+    presentationStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, settingsVersion: SETTINGS_VERSION }));
   } catch (e) {
     console.error('Failed to cache settings:', e);
   }

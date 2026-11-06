@@ -412,7 +412,8 @@ export function useSettings() {
             };
             settingsRef.current = reverted;
             setSettings(reverted);
-            persistSettings(reverted, typeof updates.autoPaste === 'boolean' ? { autoPaste: reverted.autoPaste } : undefined);
+            // Rollback owns Auto Paste even when a later coalesced update changed another key.
+            persistSettings(reverted, { autoPaste: reverted.autoPaste });
             setConfigureError(
               'Settings could not be saved. Previous settings were restored. Check vocabulary aliases and Voice Commands for conflicts, then try again.',
             );

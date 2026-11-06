@@ -89,12 +89,18 @@ fn quarantine(path: &Path, spec: BlobSpec, reason: &str) {
         uuid::Uuid::new_v4()
     ));
     match std::fs::rename(path, &target) {
-        Ok(()) => tracing::warn!(
-            target: "system",
-            store = spec.label,
-            reason,
-            "durable data file quarantined"
-        ),
+        Ok(()) => {
+            let key = if spec.file_name == SETTINGS.file_name {
+                "dictation-settings"
+            } else {
+                "murmur-theme-library"
+            };
+            let _ = murmur_core::completion::prune_source_artifacts(
+                path.parent().expect("source parent"),
+                key,
+            );
+            tracing::warn!(target: "system", store = spec.label, reason, "durable data file quarantined");
+        }
         Err(e) => tracing::warn!(
             target: "system",
             store = spec.label,
@@ -490,7 +496,7 @@ fn restore_source_backup_in(dir: &Path, key: &str, blob: &str) -> Result<(), Str
     if blob_path(dir, spec).exists() {
         return Err("Destination must be missing or quarantined before recovery".into());
     }
-    write_blob_locked(dir, spec, blob)
+    murmur_core::completion::restore_source(dir, key, &value).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -873,6 +879,11 @@ mod explicit_owned_edit_tests {
                 } else {
                     std::fs::remove_file(blob_path(dir.path(), spec)).unwrap();
                 }
+                std::fs::write(
+                    dir.path().join(format!("{}.pending", spec.file_name)),
+                    b"broken receipt",
+                )
+                .unwrap();
                 assert!(read_blob(dir.path(), spec).is_err());
                 assert!(restore_source_backup_in(dir.path(), key, "{}").is_err());
                 restore_source_backup_in(dir.path(), key, &backup).unwrap();
@@ -894,12 +905,33 @@ mod explicit_owned_edit_tests {
             serde_json::json!({"language":"es","autoPasteDelayMs":23,"microphone":"system_default"}),
         )
         .unwrap();
-        std::fs::write(
-            dir.path().join("settings.json.pending"),
-            serde_json::json!({"schema":1,"value":exact}).to_string(),
+        use sha2::{Digest, Sha256};
+        // Stage the current receipt format against an absent destination.
+        let exact: serde_json::Value = serde_json::from_str(
+            &murmur_core::completion::save_source(
+                dir.path(),
+                "dictation-settings",
+                &exact.to_string(),
+            )
+            .unwrap(),
         )
         .unwrap();
-        std::fs::write(dir.path().join("settings.json.required"), b"true").unwrap();
+        let identity: String = serde_json::from_slice(
+            &std::fs::read(dir.path().join("settings.json.identity")).unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(dir.path().join("settings.json")).unwrap();
+        let marker: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join("settings.json.required")).unwrap(),
+        )
+        .unwrap();
+        let base_marker_digest =
+            format!("{:x}", Sha256::digest(serde_json::to_vec(&marker).unwrap()));
+        let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&exact).unwrap()));
+        std::fs::write(dir.path().join("settings.json.pending"), serde_json::json!({
+            "schema":2,"key":"dictation-settings","storeId":identity,"generation":uuid::Uuid::new_v4().to_string(),
+            "baseDigest":null,"baseMarkerDigest":base_marker_digest,"targetDigest":digest,"targetRevision":0,"value":exact
+        }).to_string()).unwrap();
         // Production read/merge on the next launch must replay before reading.
         let committed = merge_owned_fields(dir.path(), &exact.to_string()).unwrap();
         write_blob(dir.path(), SETTINGS, &committed).unwrap();

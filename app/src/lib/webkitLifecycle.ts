@@ -1,3 +1,4 @@
+import { presentationStorage } from './presentationStorage';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 // This cache contains presentation source state only. Migration ownership and
@@ -72,10 +73,10 @@ export function rebasePendingOwnedSettings(settings: OwnedCommit): OwnedCommit {
   return rebased;
 }
 export const sourceStorage = {
-  getItem: (key: string) => localStorage.getItem(key),
+  getItem: (key: string) => presentationStorage.getItem(key),
   setItem(key: string, value: string) {
     persistSourceState(key, value);
-    try { localStorage.setItem(key, value); } catch { /* Rust intent remains queued. */ }
+    try { presentationStorage.setItem(key, value); } catch { /* Rust intent remains queued. */ }
   },
 };
 export async function initializeWebkitState(importLegacy = false): Promise<void> {
@@ -90,11 +91,11 @@ export async function initializeWebkitState(importLegacy = false): Promise<void>
   }
 
   for (const [key, value] of Object.entries(state.values)) {
-    localStorage.setItem(key, JSON.stringify(value));
+    presentationStorage.setItem(key, JSON.stringify(value));
   }
   if (state.v2) {
-    localStorage.removeItem('murmur-overlay-vertical-offset');
-    localStorage.removeItem('murmur-ui-latency-v1');
+    presentationStorage.removeItem('murmur-overlay-vertical-offset');
+    presentationStorage.removeItem('murmur-ui-latency-v1');
   }
   } finally {
     if (importLegacy) {

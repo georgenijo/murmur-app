@@ -126,25 +126,36 @@ pub(super) fn library(v: Value) -> Result<Value> {
             return Err(Error::Invalid);
         }
         let source = &t["source"];
-        if source["kind"] != "local"
-            && (source["kind"] != "open-vsx"
-                || ["extensionId", "version", "license"].iter().any(|k| {
+        let source = if source["kind"] == "local" {
+            // Legacy local metadata extras are ignored, including sourceUrl.
+            json!({"kind":"local"})
+        } else {
+            let extension = source["extensionId"].as_str().unwrap_or("");
+            if source["kind"] != "open-vsx"
+                || !ascii_id(extension, true)
+                || ["version", "license"].iter().any(|k| {
                     !source[k]
                         .as_str()
-                        .is_some_and(|s| !s.is_empty() && s.encode_utf16().count() <= 128)
-                }))
-        {
-            return Err(Error::Invalid);
-        }
-        if source.get("sourceUrl").is_some_and(|v| {
-            !v.as_str().is_some_and(|s| {
-                s.starts_with("https://")
-                    && s.encode_utf16().count() <= 2048
-                    && !s[8..].split('/').next().unwrap_or("").contains('@')
-            })
-        }) {
-            return Err(Error::Invalid);
-        }
+                        .is_some_and(|s| !s.is_empty() && s.encode_utf16().count() <= 64)
+                })
+            {
+                return Err(Error::Invalid);
+            }
+            let mut out = json!({"kind":"open-vsx","extensionId":extension,"version":source["version"],"license":source["license"]});
+            if let Some(raw) = source.get("sourceUrl") {
+                let raw = raw.as_str().ok_or(Error::Invalid)?;
+                if raw.encode_utf16().count() > 2048 {
+                    return Err(Error::Invalid);
+                }
+                let url = url::Url::parse(raw).map_err(|_| Error::Invalid)?;
+                if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some()
+                {
+                    return Err(Error::Invalid);
+                }
+                out["sourceUrl"] = json!(url.as_str());
+            }
+            out
+        };
         let original = t["id"].as_str().unwrap();
         let mut key = original.to_string();
         if reserved.contains(&original) {
@@ -181,10 +192,16 @@ pub(super) fn library(v: Value) -> Result<Value> {
         }
         let mut entry = json!({"version":1,"id":key,"label":label,"modes":modes,"theme":theme(&t["theme"]),"source":source});
         if let Some(collection) = t.get("collection") {
-            if !collection["id"].is_string() || !collection["label"].is_string() {
+            let label = collection["label"].as_str().unwrap_or("").trim();
+            if !collection["id"]
+                .as_str()
+                .is_some_and(|s| ascii_id(s, false))
+                || label.is_empty()
+                || label.encode_utf16().count() > 64
+            {
                 return Err(Error::Invalid);
             }
-            entry["collection"] = collection.clone();
+            entry["collection"] = json!({"id":collection["id"],"label":label});
         }
         out.push(entry);
     }
@@ -193,4 +210,17 @@ pub(super) fn library(v: Value) -> Result<Value> {
         result["legacyRenamedIds"] = json!(renamed);
     }
     Ok(result)
+}
+
+fn ascii_id(s: &str, extension: bool) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.as_bytes()[0].is_ascii_alphanumeric()
+        && s.bytes().all(|b| {
+            (b.is_ascii_lowercase() || b.is_ascii_digit() || (extension && b.is_ascii_uppercase()))
+                || b == b'.'
+                || b == b'-'
+                || b == if extension { b'_' } else { b':' }
+        })
+        && (extension || s.as_bytes()[0].is_ascii_lowercase() || s.as_bytes()[0].is_ascii_digit())
 }

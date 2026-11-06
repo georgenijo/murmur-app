@@ -1,0 +1,612 @@
+[
+  {
+    "name": "version64",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "license": "MIT"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "version65",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "license": "MIT"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "versionemoji32",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "license": "MIT"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "versionemoji33",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+        "license": "MIT"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "license64",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "license65",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "licenseemoji32",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "licenseemoji33",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "extension aaaaaaaa128",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "version": "1",
+        "license": "MIT"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "extension aaaaaaaa129",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "version": "1",
+        "license": "MIT"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "extension A_b.c-97",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "A_b.c-9",
+        "version": "1",
+        "license": "MIT"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "extension 😀1",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "😀",
+        "version": "1",
+        "license": "MIT"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "extension _bad4",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "_bad",
+        "version": "1",
+        "license": "MIT"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "extension a b3",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "a b",
+        "version": "1",
+        "license": "MIT"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "collection aaaaaaaa128",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "label": "Collection"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "collection aaaaaaaa129",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "label": "Collection"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "collection open-vsx14",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "open-vsx:a.b-1",
+        "label": "Collection"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "collection A1",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "A",
+        "label": "Collection"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "collection 😀1",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "😀",
+        "label": "Collection"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "collection a_b3",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "a_b",
+        "label": "Collection"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "collection label 32",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "fixture",
+        "label": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "collection label 33",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "fixture",
+        "label": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀a"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "collection label 1",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT"
+      },
+      "collection": {
+        "id": "fixture",
+        "label": " "
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "url 2028",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT",
+        "sourceUrl": "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "url 2029",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "open-vsx",
+        "extensionId": "sample.theme",
+        "version": "1",
+        "license": "MIT",
+        "sourceUrl": "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "local ignores extras",
+    "entry": {
+      "version": 1,
+      "id": "fixture",
+      "label": "Fixture",
+      "modes": [
+        "dark"
+      ],
+      "theme": {
+        "version": 1,
+        "presetId": "custom"
+      },
+      "source": {
+        "kind": "local",
+        "sourceUrl": 42,
+        "extensionId": "😀",
+        "version": null
+      }
+    },
+    "valid": true
+  }
+]

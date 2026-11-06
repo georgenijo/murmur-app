@@ -1375,6 +1375,9 @@ pub fn save_settings(root: &std::path::Path, blob: &str) -> Result<()> {
 /// Settings/theme commands share the host's writer lock with lifecycle imports.
 /// Publication uses the same full-sync discipline as completion destinations.
 pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<String> {
+    if blob.len() > crate::state::source_size_limit(key) {
+        return Err(Error::Invalid);
+    }
     Storage::new(root.into()).reject_future(
         crate::state::file(key).ok_or(Error::Invalid)?,
         if key == "dictation-settings" {
@@ -1393,18 +1396,107 @@ pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<Stri
     Ok(blob)
 }
 
-/// A pending receipt holds the exact normalized publication, never defaults.
-/// Hosts serialize this with source reads, merges, and lifecycle operations.
+fn source_digest(value: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).expect("JSON value"))
+    )
+}
+fn source_revision(key: &str, value: &Value) -> u64 {
+    value[if key == "dictation-settings" {
+        "ownedFieldsRevision"
+    } else {
+        "revision"
+    }]
+    .as_u64()
+    .unwrap_or(0)
+}
+fn source_destination(storage: &Storage, key: &str) -> Result<Option<Value>> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    storage.reject_future(
+        file,
+        if key == "dictation-settings" {
+            "settingsVersion"
+        } else {
+            "version"
+        },
+        if key == "dictation-settings" { 7 } else { 1 },
+    )?;
+    storage.read(file, |v: &Value| {
+        crate::state::normalize(key, v.clone()).is_ok()
+    })
+}
+
+fn source_marker(storage: &Storage, file: &str) -> Result<Option<Value>> {
+    match std::fs::read(storage.root.join(format!("{file}.required"))) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|_| Error::Invalid),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(Error::Io),
+    }
+}
+fn source_target_marker(receipt: &Value) -> Value {
+    json!({"schema":2,"key":receipt["key"],"storeId":receipt["storeId"],"generation":receipt["generation"],"targetDigest":receipt["targetDigest"],"targetRevision":receipt["targetRevision"]})
+}
+
+/// A receipt proves a transition for this store and source, against the exact
+/// prior destination. The identity is durable before any receipt can be written.
+/// Hosts hold WRITE_LOCK across recovery, read/merge, restore and publication.
 fn publish_source(storage: &mut Storage, key: &str, value: &Value) -> Result<()> {
     let file = crate::state::file(key).ok_or(Error::Invalid)?;
-    storage.write(
-        &format!("{file}.pending"),
-        &json!({"schema":1,"value":value}),
-    )?;
-    storage.write(&format!("{file}.required"), &true)?;
+    let identity_file = format!("{file}.identity");
+    let identity: String = match storage.read(&identity_file, |v: &String| {
+        uuid::Uuid::parse_str(v).is_ok()
+    })? {
+        Some(v) => v,
+        None => {
+            let v = uuid::Uuid::new_v4().to_string();
+            storage.write(&identity_file, &v)?;
+            v
+        }
+    };
+    let base = source_destination(storage, key)?;
+    let marker = source_marker(storage, file)?;
+    let receipt = json!({
+        "schema":2, "key":key, "storeId":identity,
+        "generation":uuid::Uuid::new_v4().to_string(),
+        "baseDigest":base.as_ref().map(source_digest),
+        "baseMarkerDigest":marker.as_ref().map(source_digest),
+        "targetDigest":source_digest(value), "targetRevision":source_revision(key, value), "value":value
+    });
+    storage.write(&format!("{file}.pending"), &receipt)?;
+    storage.write(&format!("{file}.required"), &source_target_marker(&receipt))?;
     storage.write(file, value)?;
     std::fs::remove_file(storage.root.join(format!("{file}.pending"))).map_err(|_| Error::Io)?;
     storage.sync_directory()
+}
+
+/// Explicit user-selected recovery, serialized by the host's WRITE_LOCK. Never
+/// overwrite a readable destination, even if pending recovery itself fails.
+/// Replacing the pending receipt is the restore commit point: before it, recovery
+/// stays blocked; after it, the exact backup replays. Old evidence is retained.
+pub fn restore_source(root: &std::path::Path, key: &str, value: &Value) -> Result<()> {
+    restore_source_with_storage(&mut Storage::new(root.into()), key, value)
+}
+fn restore_source_with_storage(storage: &mut Storage, key: &str, value: &Value) -> Result<()> {
+    if !complete_source_document(key, value) {
+        return Err(Error::Invalid);
+    }
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    std::fs::create_dir_all(&storage.root).map_err(|_| Error::Io)?;
+    storage.sync_directory()?;
+    if source_destination(storage, key)?.is_some() {
+        return Err(Error::Invalid);
+    }
+    if storage.root.join(format!("{file}.pending")).exists() {
+        storage.quarantine(&format!("{file}.pending"))?;
+    }
+    // Required is durable before replacing a failed first generation, so a
+    // crash before the new pending receipt cannot become successful absence.
+    storage.write(&format!("{file}.required"), &true)?;
+    publish_source(storage, key, value)
 }
 
 /// Full normalized source documents only. The legacy microphone migration may
@@ -1419,33 +1511,82 @@ pub fn complete_source_document(key: &str, value: &Value) -> bool {
     })
 }
 
-/// Resume an interrupted publication before any read/merge. A damaged receipt
-/// remains a visible error; it cannot authorize an empty replacement.
+/// Bound per-source evidence and abandoned publication siblings. Host readers
+/// also call this after quarantining a destination under WRITE_LOCK.
+pub fn prune_source_artifacts(root: &std::path::Path, key: &str) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    let storage = Storage::new(root.into());
+    for name in [
+        file.to_string(),
+        format!("{file}.pending"),
+        format!("{file}.required"),
+        format!("{file}.identity"),
+    ] {
+        storage.prune_artifacts(&name)?;
+    }
+    Ok(())
+}
+
+/// Resume only a proven interrupted transition. Corrupt receipts never veto a
+/// readable destination; conflicting receipts surface once and preserve data.
 pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
     let file = crate::state::file(key).ok_or(Error::Invalid)?;
     let pending = format!("{file}.pending");
     std::fs::create_dir_all(root).map_err(|_| Error::Io)?;
     let mut storage = Storage::new(root.into());
     storage.sync_directory()?;
+    prune_source_artifacts(root, key)?;
+    let destination = source_destination(&storage, key)?;
     let existed = root.join(&pending).exists();
     let receipt: Option<Value> = storage.read(&pending, |v: &Value| {
-        v["schema"] == 1 && complete_source_document(key, &v["value"])
+        v["schema"] == 2
+            && v["key"] == key
+            && v["storeId"]
+                .as_str()
+                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+            && v["generation"]
+                .as_str()
+                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+            && (v.get("baseDigest") == Some(&Value::Null)
+                || v["baseDigest"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())))
+            && (v.get("baseMarkerDigest") == Some(&Value::Null)
+                || v["baseMarkerDigest"]
+                    .as_str()
+                    .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())))
+            && complete_source_document(key, &v["value"])
+            && v["targetDigest"] == source_digest(&v["value"])
+            && v["targetRevision"] == source_revision(key, &v["value"])
     })?;
     if let Some(receipt) = receipt {
-        storage.reject_future(
-            file,
-            if key == "dictation-settings" {
-                "settingsVersion"
-            } else {
-                "version"
-            },
-            if key == "dictation-settings" { 7 } else { 1 },
-        )?;
-        storage.write(&format!("{file}.required"), &true)?;
-        storage.write(file, &receipt["value"])?;
+        let identity: Option<String> = storage
+            .read(&format!("{file}.identity"), |v: &String| {
+                uuid::Uuid::parse_str(v).is_ok()
+            })?;
+        let belongs = identity.as_deref() == receipt["storeId"].as_str();
+        let matches_base = destination.as_ref().is_none_or(|v| {
+            let digest = source_digest(v);
+            receipt["baseDigest"] == digest || receipt["targetDigest"] == digest
+        });
+        let marker = source_marker(&storage, file)?;
+        let marker_digest = marker.as_ref().map(source_digest);
+        let matches_generation = receipt["baseMarkerDigest"] == json!(marker_digest)
+            || marker.as_ref() == Some(&source_target_marker(&receipt));
+        if !belongs || !matches_base || !matches_generation {
+            storage.quarantine(&pending)?;
+            return Err(Error::Invalid);
+        }
+        storage.write(&format!("{file}.required"), &source_target_marker(&receipt))?;
+        if destination
+            .as_ref()
+            .is_none_or(|v| source_digest(v) != receipt["targetDigest"])
+        {
+            storage.write(file, &receipt["value"])?;
+        }
         std::fs::remove_file(root.join(&pending)).map_err(|_| Error::Io)?;
         storage.sync_directory()?;
-    } else if existed || storage.quarantined(&pending)? {
+    } else if destination.is_none() && (existed || storage.quarantined(&pending)?) {
         return Err(Error::Invalid);
     }
     Ok(())
@@ -1480,3 +1621,6 @@ pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
             .is_some_and(|a| a.contains(&json!(key)))
     }))
 }
+
+#[cfg(test)]
+mod source_recovery_tests;

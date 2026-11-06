@@ -106,14 +106,61 @@ impl Storage {
                 }
             }
         }
+        self.quarantine(name)?;
+        tracing::warn!(target:"completion", store=name, "unusable completion file quarantined");
+        Ok(None)
+    }
+    pub fn quarantine(&self, name: &str) -> Result<()> {
         fs::rename(
-            &path,
-            path.with_extension(format!("quarantine-{}", uuid::Uuid::new_v4())),
+            self.root.join(name),
+            self.root
+                .join(format!("{name}.quarantine-{}", uuid::Uuid::new_v4())),
         )
         .map_err(|_| Error::Io)?;
         self.sync_directory()?;
-        tracing::warn!(target:"completion", store=name, "unusable completion file quarantined");
-        Ok(None)
+        self.prune_artifacts(name)
+    }
+    /// Bounded evidence and abandoned temp siblings, oldest first. Only exact
+    /// source-owned prefixes are eligible; live files and other stores survive.
+    pub fn prune_artifacts(&self, name: &str) -> Result<()> {
+        let stem = Path::new(name)
+            .file_stem()
+            .ok_or(Error::Invalid)?
+            .to_string_lossy();
+        for prefixes in [
+            vec![
+                format!("{name}.quarantine-"),
+                format!("{stem}.quarantine-"),
+                format!("{name}.corrupt-"),
+            ],
+            vec![format!("{name}.tmp-"), format!("{stem}.tmp-")],
+        ] {
+            let mut files = fs::read_dir(&self.root)
+                .map_err(|_| Error::Io)?
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let n = n.to_string_lossy();
+                    prefixes.iter().any(|p| n.starts_with(p))
+                })
+                .map(|e| {
+                    let modified = e
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    (modified, e.path())
+                })
+                .collect::<Vec<_>>();
+            files.sort();
+            let excess = files.len().saturating_sub(8);
+            for (_, path) in files.into_iter().take(excess) {
+                fs::remove_file(path).map_err(|_| Error::Io)?;
+            }
+            if excess > 0 {
+                self.sync_directory()?;
+            }
+        }
+        Ok(())
     }
     pub fn quarantined(&self, name: &str) -> Result<bool> {
         let stem = std::path::Path::new(name)
@@ -126,7 +173,8 @@ impl Storage {
                 entry.is_ok_and(|e| {
                     let n = e.file_name();
                     let n = n.to_string_lossy();
-                    n.starts_with(&format!("{stem}.quarantine-"))
+                    n.starts_with(&format!("{name}.quarantine-"))
+                        || n.starts_with(&format!("{stem}.quarantine-"))
                         || n.starts_with(&format!("{name}.corrupt-"))
                 })
             }))
@@ -153,6 +201,7 @@ impl Storage {
             return Err(Error::Invalid);
         }
         fs::create_dir_all(&self.root).map_err(|_| Error::Io)?;
+        self.prune_artifacts(name)?;
         let path = self.root.join(name);
         let temp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
         let result = (|| {

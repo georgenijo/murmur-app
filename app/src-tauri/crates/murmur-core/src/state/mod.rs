@@ -179,7 +179,33 @@ pub fn settings(mut v: Value) -> Result<Value> {
 }
 /// Validate durable source state. Derived appearance caches are deliberately
 /// excluded: the renderer regenerates them from the complete source theme.
+pub fn source_size_limit(key: &str) -> usize {
+    match key {
+        "murmur-appearance" => 65536,
+        "murmur-theme-library" => 1048576,
+        _ => 32 * 1024 * 1024,
+    }
+}
 pub fn normalize(key: &str, value: Value) -> Result<Value> {
+    let limit = source_size_limit(key);
+    if serde_json::to_vec(&value)
+        .map_err(|_| Error::Invalid)?
+        .len()
+        > limit
+    {
+        return Err(Error::Invalid);
+    }
+    let normalized = normalize_inner(key, value)?;
+    if serde_json::to_vec(&normalized)
+        .map_err(|_| Error::Invalid)?
+        .len()
+        > limit
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(normalized)
+}
+fn normalize_inner(key: &str, value: Value) -> Result<Value> {
     let valid = match key {
         "dictation-settings" => return settings(value),
         "murmur-appearance" => return appearance::document(value),
@@ -269,6 +295,39 @@ pub(crate) fn file(key: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_appearance_parity_table() {
+        // Literal oracles independently transcribed from fa2be313 themeLibrary.ts.
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("appearance-parity-fixtures.json")).unwrap();
+        for case in cases {
+            let result = normalize(
+                "murmur-theme-library",
+                json!({"version":1,"themes":[case["entry"]]}),
+            );
+            assert_eq!(
+                result.is_ok(),
+                case["valid"].as_bool().unwrap(),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+    #[test]
+    fn appearance_raw_limits_precede_normalization() {
+        for (key, limit, base) in [
+            ("murmur-appearance", 65536, json!({"version":1})),
+            (
+                "murmur-theme-library",
+                1048576,
+                json!({"version":1,"themes":[]}),
+            ),
+        ] {
+            let mut value = base;
+            value["ignored"] = json!("a".repeat(limit));
+            assert!(normalize(key, value).is_err(), "{key}");
+        }
+    }
     #[test]
     fn legacy_settings_contract_fixtures_now_owned_by_rust() {
         let fixtures: Vec<Value> =
@@ -587,7 +646,7 @@ mod round_two_contract_tests {
             }
         }
         for (text, valid) in [
-            ("😀".repeat(64), true),
+            ("😀".repeat(64), false),
             (format!("{}a", "😀".repeat(64)), false),
         ] {
             assert_eq!(normalize("murmur-theme-library",json!({"version":1,"themes":[{"version":1,"id":"fixture","label":"Fixture","modes":["dark"],"theme":{"version":1},"source":{"kind":"open-vsx","extensionId":text,"version":"1","license":"MIT"}}]})).is_ok(), valid);
@@ -596,7 +655,7 @@ mod round_two_contract_tests {
             (format!("https://example.com/{}", "😀".repeat(1014)), true),
             (format!("https://example.com/{}a", "😀".repeat(1014)), false),
         ] {
-            assert_eq!(normalize("murmur-theme-library",json!({"version":1,"themes":[{"version":1,"id":"fixture","label":"Fixture","modes":["dark"],"theme":{"version":1},"source":{"kind":"local","sourceUrl":url}}]})).is_ok(), valid);
+            assert_eq!(normalize("murmur-theme-library",json!({"version":1,"themes":[{"version":1,"id":"fixture","label":"Fixture","modes":["dark"],"theme":{"version":1},"source":{"kind":"open-vsx","extensionId":"fixture","version":"1","license":"MIT","sourceUrl":url}}]})).is_ok(), valid);
         }
     }
 }

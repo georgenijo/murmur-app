@@ -80,7 +80,7 @@ pub struct Receipt {
 fn decode(raw: &BTreeMap<String, Option<String>>, key: &str) -> Result<Option<Value>> {
     match raw.get(key).ok_or(Error::Invalid)? {
         None => Ok(None),
-        Some(s) if s.len() <= 32 * 1024 * 1024 => serde_json::from_str(s)
+        Some(s) if s.len() <= crate::state::source_size_limit(key) => serde_json::from_str(s)
             .map(Some)
             .map_err(|_| Error::Invalid),
         _ => Err(Error::Invalid),
@@ -870,6 +870,51 @@ mod review_safety {
             assert!(e.lifecycle(Operation::Status).is_err());
             assert!(e.lifecycle(Operation::Import(source())).is_err());
             assert!(!dir.path().join("settings.json").exists());
+        }
+    }
+}
+
+#[cfg(test)]
+mod round_three_limits {
+    use super::*;
+    #[test]
+    fn raw_appearance_and_library_limits_are_checked_before_import_or_publication() {
+        for (key, limit, base) in [
+            (
+                "murmur-appearance",
+                65536,
+                json!({"version":1,"mode":"dark","theme":{"version":1,"presetId":"custom"}}),
+            ),
+            (
+                "murmur-theme-library",
+                1048576,
+                json!({"version":1,"revision":2,"themes":[]}),
+            ),
+        ] {
+            for extra in [0, 1] {
+                let mut raw = base.to_string();
+                raw.push_str(&" ".repeat(limit + extra - raw.len()));
+                let sources = BTreeMap::from([(key.into(), Some(raw.clone()))]);
+                assert_eq!(decode(&sources, key).is_ok(), extra == 0);
+                let dir = tempfile::tempdir().unwrap();
+                let service = CompletionService::start(dir.path().into(), true).unwrap();
+                let mut sources = TRANSCRIPT_KEYS
+                    .iter()
+                    .chain(V2_KEYS)
+                    .map(|k| ((*k).into(), None))
+                    .collect::<BTreeMap<_, _>>();
+                sources.insert(key.into(), Some(raw.clone()));
+                assert_eq!(
+                    service.lifecycle(Operation::Import(sources)).is_ok(),
+                    extra == 0,
+                    "{key}/{extra}"
+                );
+                if extra == 1 {
+                    assert!(!dir.path().join(UI_STATE).exists());
+                    assert!(!dir.path().join("theme-library.json").exists());
+                    assert!(save_source(dir.path(), key, &raw).is_err());
+                }
+            }
         }
     }
 }
