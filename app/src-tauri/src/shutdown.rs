@@ -513,6 +513,9 @@ pub(crate) mod test_support {
     static EVIDENCE: OnceLock<Mutex<Option<qa_evidence::Evidence>>> = OnceLock::new();
     static COUNTS: OnceLock<Arc<qa_evidence::DispatcherCounts>> = OnceLock::new();
     static TERMINAL_ATTEMPT: qa_evidence::TerminalAttempt = qa_evidence::TerminalAttempt::new();
+    // Read lock-free on main so diagnostics name their receipt without the
+    // evidence mutex.
+    static PROCESS_START_ID: OnceLock<String> = OnceLock::new();
 
     pub(super) fn evidence_enabled() -> bool {
         EVIDENCE
@@ -526,6 +529,9 @@ pub(crate) mod test_support {
             crate::identity::initialized_identifier(),
             || app.path().app_data_dir().ok(),
         );
+        if let Some(evidence) = &evidence {
+            let _ = PROCESS_START_ID.set(evidence.process_start_id().to_owned());
+        }
         let _ = EVIDENCE.set(Mutex::new(evidence));
     }
     pub(super) fn transition(
@@ -547,7 +553,7 @@ pub(crate) mod test_support {
                 if !isolated(app) {
                     return;
                 }
-                TERMINAL_ATTEMPT.run(move || {
+                TERMINAL_ATTEMPT.run(PROCESS_START_ID.get().cloned(), move || {
                     if let Some(evidence) = EVIDENCE.get() {
                         // Take ownership before I/O: reducer observers and a
                         // repeated terminal event never wait on this disk write.
