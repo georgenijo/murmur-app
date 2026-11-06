@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -3795,7 +3795,7 @@ mod tests {
     fn topology_wait_wakes_on_shutdown_frames_and_eof_without_polling() {
         use std::sync::Arc;
         for shutdown_first in [true, false] {
-            let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let shutdown = Arc::new(AtomicBool::new(false));
             let worker_shutdown = shutdown.clone();
             let (tx, rx) = mpsc::channel::<Option<u8>>();
             let (thread_tx, thread_rx) = mpsc::channel();

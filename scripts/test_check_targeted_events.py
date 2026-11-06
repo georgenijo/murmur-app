@@ -118,6 +118,7 @@ class TargetedEventsGuardTests(unittest.TestCase):
                 '#[cfg(any())] #[path = "../../native_events.rs"] mod native;',
                 '#[cfg_attr(any(), path = "../../native_events.rs")] mod native;',
                 '#[r#path = "../../native_events.rs"] mod native;',
+                'mod inner { #[path = "../../native_events.rs"] mod native; }',
                 'r#include!("../../native_events.rs");',
             ]:
                 with self.subTest(source=source):
@@ -146,6 +147,9 @@ class TargetedEventsGuardTests(unittest.TestCase):
             root.mkdir()
             (outer / 'events.rs').write_text('app.emit("event", ());')
             (root / 'lib.rs').symlink_to(outer / 'events.rs')
+            self.assertTrue(check_repository(root))
+            (root / 'lib.rs').unlink()
+            (root / 'native').symlink_to(outer, target_is_directory=True)
             self.assertTrue(check_repository(root))
 
     def test_token_pasting_input_is_still_reserved(self):

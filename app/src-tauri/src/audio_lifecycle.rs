@@ -4441,7 +4441,7 @@ mod tests {
         // The cancel response is a FIFO barrier proving the stale Ready event
         // was handled before these assertions.
         assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
-        assert!(!active_flags.lock().unwrap()[0].load(Ordering::SeqCst));
+        assert!(!active_flags.lock().unwrap()[0].is_active());
         let invariant = AudioLifecycleEvent::StartupDiagnostic(
             crate::audio::AudioStartupDiagnostic::WorkerInvariantViolation,
         );
@@ -4478,7 +4478,7 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
-        assert!(!active_flags.lock().unwrap()[0].load(Ordering::SeqCst));
+        assert!(!active_flags.lock().unwrap()[0].is_active());
         assert!(!sink
             .events
             .lock()
