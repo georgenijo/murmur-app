@@ -5,6 +5,19 @@ mod adapter;
 use adapter::{intercept_exit, reduce, Message};
 use murmur_core::shutdown::*;
 use std::sync::{mpsc::RecvTimeoutError, Mutex};
+fn request(
+    core: &Mutex<Coordinator>,
+    value: Request,
+    requested_at: u64,
+    now: u64,
+) -> Option<Vec<Effect>> {
+    let (send, receive) = std::sync::mpsc::channel();
+    adapter::accept(core, &send, value, requested_at);
+    // Delivery time cannot extend deadlines even when acceptance was immediate.
+    let mut effects = reduce(core, Ok(receive.recv().unwrap()), now)?;
+    effects.extend(reduce(core, Err(RecvTimeoutError::Timeout), now)?);
+    Some(effects)
+}
 #[test]
 fn exit_is_prevented_before_any_asynchronous_submission() {
     let order = std::cell::RefCell::new(vec![]);
@@ -24,7 +37,7 @@ fn exit_is_prevented_before_any_asynchronous_submission() {
 fn independently_stalled_owner_never_blocks_deadline_routing() {
     for stalled in [Step::Admission, Step::Capture, Step::Helpers, Step::Writers] {
         let core = Mutex::new(Coordinator::default());
-        let mut effect = reduce(&core, Ok(Message::Request(Request::Restart, 0)), 0).unwrap()[0];
+        let mut effect = request(&core, Request::Restart, 0, 0).unwrap()[0];
         while effect.step != stalled {
             let outcome = match effect.step {
                 Step::Admission => Outcome::Admission(true),
@@ -43,11 +56,9 @@ fn independently_stalled_owner_never_blocks_deadline_routing() {
         assert_eq!(effects.last().unwrap().step, Step::Terminate);
         assert!(core.lock().unwrap().receipt.timed_out);
         assert_eq!(core.lock().unwrap().issue(), Some(Action::Quit));
-        assert!(
-            reduce(&core, Ok(Message::Request(Request::Restart, 0)), 10_001)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(request(&core, Request::Restart, 0, 10_001)
+            .unwrap()
+            .is_empty());
         assert!(core.lock().unwrap().issue().is_none());
         release.send(()).unwrap();
         owner.join().unwrap();
@@ -56,8 +67,8 @@ fn independently_stalled_owner_never_blocks_deadline_routing() {
 #[test]
 fn mixed_requests_and_late_owner_receipts_cannot_rearm() {
     let core = Mutex::new(Coordinator::default());
-    let admission = reduce(&core, Ok(Message::Request(Request::Restart, 0)), 0).unwrap()[0];
-    reduce(&core, Ok(Message::Request(Request::System, 0)), 1);
+    let admission = request(&core, Request::Restart, 0, 0).unwrap()[0];
+    request(&core, Request::System, 0, 1);
     reduce(&core, Err(RecvTimeoutError::Timeout), 10_000);
     assert_eq!(core.lock().unwrap().issue(), Some(Action::Quit));
     assert!(reduce(
@@ -76,7 +87,7 @@ fn mixed_requests_and_late_owner_receipts_cannot_rearm() {
 #[test]
 fn request_delivery_delay_does_not_extend_the_absolute_budget() {
     let core = Mutex::new(Coordinator::default());
-    let effects = reduce(&core, Ok(Message::Request(Request::Restart, 0)), 10_000).unwrap();
+    let effects = request(&core, Request::Restart, 0, 10_000).unwrap();
     assert_eq!(effects.first().unwrap().deadline_ms, 250);
     assert_eq!(effects.last().unwrap().step, Step::Terminate);
     assert!(core.lock().unwrap().receipt.timed_out);

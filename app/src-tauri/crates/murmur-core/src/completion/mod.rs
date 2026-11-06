@@ -708,6 +708,11 @@ impl Engine {
         self.state()?;
         self.holding()?;
         self.recover()?;
+        if matches!(&command, Command::Complete { entry: None, .. }) {
+            // A non-retaining producer must not prolong transcript-bearing
+            // rejected publication evidence after its recovery has resolved.
+            self.storage.remove_evidence(PENDING)?;
+        }
         match command {
             Command::Snapshot | Command::RecoverPending => {}
             Command::AcceptFile {

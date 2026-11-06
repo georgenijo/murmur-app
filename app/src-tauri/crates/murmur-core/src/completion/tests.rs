@@ -1291,7 +1291,7 @@ fn startup_replays_held_completion_before_no_webkit_automatic_import() {
 
 #[test]
 fn abandoned_pending_temps_and_resolved_evidence_obey_clear_delete_and_caps() {
-    for mutation in [0, 1, 2] {
+    for mutation in [0, 1, 2, 3] {
         let dir = TempDir::new().unwrap();
         let mut e = engine(dir.path(), false);
         let snapshot = complete(&mut e, "valid", true);
@@ -1318,8 +1318,11 @@ fn abandoned_pending_temps_and_resolved_evidence_obey_clear_delete_and_caps() {
                 }))
                 .unwrap();
             }
-            _ => {
+            2 => {
                 complete(&mut e, "new cap", true);
+            }
+            _ => {
+                complete(&mut e, "not retained", false);
             }
         }
         assert!(!evidence.exists());

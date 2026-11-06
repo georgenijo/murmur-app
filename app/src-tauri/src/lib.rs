@@ -213,14 +213,16 @@ pub(crate) struct State {
     pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
 }
 
+fn generated_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
 pub fn initialize_identity() {
-    let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
-    crate::identity::initialize(&context.config().identifier);
+    crate::identity::initialize(&generated_context().config().identifier);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
+    let context = generated_context();
     crate::identity::initialize(&context.config().identifier);
     launch::process_start();
     let builder = tauri::Builder::default()
