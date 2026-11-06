@@ -106,7 +106,8 @@ fn release_before_readiness_cancels_exact_start_and_stale_levels_cannot_stop_new
         quiet(&mut c, 6, 600, 2000),
         vec![Effect::Stop {
             generation: 6,
-            auto: true
+            auto: true,
+            hold: false
         }]
     );
 }
@@ -120,7 +121,8 @@ fn silence_once_after_speech_and_fresh_per_recording() {
         quiet(&mut c, 1, 5700, 8000),
         vec![Effect::Stop {
             generation: 1,
-            auto: true
+            auto: true,
+            hold: false
         }]
     );
     c.observe(1, Status::Idle, Origin::Toggle);
@@ -133,7 +135,7 @@ fn disabled_off_and_nonrecording_levels_are_ignored() {
         let mut c = control();
         recording(&mut c, 1, Origin::Toggle);
         match variant {
-            0 => c.gate.disabled = true,
+            0 => c.gate.onboarding_complete = false,
             1 => c.silence_ms = 0,
             2 => c.observe(1, Status::Starting, Origin::Toggle),
             _ => c.observe(1, Status::Processing, Origin::Toggle),
@@ -158,7 +160,8 @@ fn hold_exclusion_hold_over_combo_and_cancelled_origin_healing() {
         quiet(&mut c, 2, 9100, 11000),
         vec![Effect::Stop {
             generation: 2,
-            auto: true
+            auto: true,
+            hold: false
         }]
     );
     c.observe(3, Status::Starting, Origin::Hold);
@@ -173,7 +176,6 @@ fn locked_mode_is_hands_free_and_clears_on_cancel() {
     let mut c = control();
     assert!(matches!(c.input(Input::Lock), Some(Effect::Start { .. })));
     recording(&mut c, 1, Origin::Toggle);
-    c.input(Input::Lock);
     assert!(c.locked);
     speech(&mut c, 1, 0);
     assert_eq!(quiet(&mut c, 1, 600, 2000).len(), 1);
@@ -207,7 +209,8 @@ fn smart_threshold_once_per_pause_and_fallback() {
                 answer,
                 Some(Effect::Stop {
                     generation: 1,
-                    auto: true
+                    auto: true,
+                    hold: false
                 })
             );
         } else {
@@ -216,7 +219,8 @@ fn smart_threshold_once_per_pause_and_fallback() {
                 quiet(&mut c, 1, 900, 2000),
                 vec![Effect::Stop {
                     generation: 1,
-                    auto: true
+                    auto: true,
+                    hold: false
                 }]
             );
         }

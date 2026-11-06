@@ -198,7 +198,7 @@ pub const HOLD_DOWN_COOLDOWN_MS: u128 = 50;
 /// ordinary capitalization while staying below Both mode's 200ms promotion.
 /// Capture startup (~220ms p50 to first PCM) still dominates start latency.
 pub const MODIFIER_HOLD_ARMING_MS: u128 = 150;
-pub const _: () = assert!(MODIFIER_HOLD_ARMING_MS < MAX_HOLD_DURATION_MS);
+const _: () = assert!(MODIFIER_HOLD_ARMING_MS < MAX_HOLD_DURATION_MS);
 
 /// Report callback inactivity after this duration; it is not a health check.
 pub const TAP_SILENCE_WARNING_MS: u64 = 5 * 60 * 1000;
@@ -926,8 +926,6 @@ fn event_kind(event_type: &EventType) -> &'static str {
         EventType::Wheel { .. } => "wheel",
     }
 }
-
-/// Inverse of `hotkey_to_rdev_key`: the settings id of a configurable hotkey.
 
 /// Bounded, content-free class of a key for telemetry.
 ///

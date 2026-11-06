@@ -234,6 +234,9 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
       }
       return true;
     };
+    listen<string>('dictation-control-error', ({ payload }) => {
+      if (!cancelled) presentError(payload);
+    }).then((fn) => { if (cancelled) fn(); else unlistens.push(fn); });
     listen<unknown>('dictation-generation-started', (event) => {
       if (cancelled) return;
       const payload = event.payload as Record<string, unknown> | null;

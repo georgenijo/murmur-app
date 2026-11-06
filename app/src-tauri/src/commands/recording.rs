@@ -5117,7 +5117,7 @@ pub async fn start_native_recording(
         state.inner(),
     )
     .await?;
-    if keyboard::is_app_disabled() {
+    if keyboard::is_app_disabled() || !crate::dictation_control::admitted(&app_handle) {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }

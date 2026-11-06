@@ -2,6 +2,7 @@
 //!
 //! Native startup applies a committed v7 configuration before arming control.
 //! Unknown/legacy snapshots still use the existing frontend migration path.
+use crate::MutexExt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     OnceLock,
@@ -55,11 +56,10 @@ struct Preparation {
 /// Do not duplicate the frontend's migrations or guess at unknown settings.
 /// Older installations acquire the durable onboarding mirror on their next
 /// frontend boot and use the existing frontend-driven path for this launch.
-fn preparation(blob: &str, accessibility: bool) -> Option<Preparation> {
+fn preparation(blob: &str, _accessibility: bool) -> Option<Preparation> {
     let value: serde_json::Value = serde_json::from_str(blob).ok()?;
     if value.get("settingsVersion")?.as_u64()? != 7
         || !value.get("launchOnboardingComplete")?.as_bool()?
-        || !accessibility
     {
         return None;
     }
@@ -107,6 +107,22 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
         .is_ok()
         {
             let _ = crate::dictation_control::configure(&handle, settings).await;
+            if crate::model_runtime::model_definition(&plan.model)
+                .is_ok_and(|model| model.warm_on_startup)
+            {
+                let model = plan.model;
+                let configuration = crate::audio::prepare::configuration_generation();
+                let warm_handle = handle.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let state = warm_handle.state::<crate::State>();
+                    *state.app_state.last_transcription_at.lock_or_recover() = Some(Instant::now());
+                    let _ = state.app_state.model_runtime.prepare_startup_if(
+                        Some(&warm_handle),
+                        &model,
+                        || crate::audio::prepare::configuration_generation() == configuration,
+                    );
+                });
+            }
         }
     });
 }
@@ -139,7 +155,7 @@ mod tests {
     fn rust_start_requires_the_same_gates_and_valid_persisted_settings() {
         let settings = settings();
         assert!(preparation(&settings.to_string(), true).is_some());
-        assert!(preparation(&settings.to_string(), false).is_none());
+        assert!(preparation(&settings.to_string(), false).is_some());
         assert!(preparation("invalid", true).is_none());
         for (key, value) in [
             ("launchOnboardingComplete", serde_json::json!(false)),

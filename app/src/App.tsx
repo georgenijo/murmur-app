@@ -4,6 +4,7 @@ import { AppSurface } from './components/ui/AppSurface';
 import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { flog } from './lib/log';
 import {
   SettingsPanel,
@@ -37,14 +38,9 @@ import { useMeetings } from './lib/hooks/useMeetings';
 import { useMeetingSuggestionAcceptance } from './lib/hooks/useMeetingSuggestionAcceptance';
 import { useFileTranscription } from './lib/hooks/useFileTranscription';
 import { useRecordingState } from './lib/hooks/useRecordingState';
-import { useHoldDownToggle } from './lib/hooks/useHoldDownToggle';
-import { useDoubleTapToggle } from './lib/hooks/useDoubleTapToggle';
-import { useCombinedToggle } from './lib/hooks/useCombinedToggle';
 import { useShowAboutListener } from './lib/hooks/useShowAboutListener';
 import { useOverlaySettingsSync } from './lib/hooks/useOverlaySettingsSync';
 import { useOpenSettingsListener } from './lib/hooks/useOpenSettingsListener';
-import { useEscapeCancel } from './lib/hooks/useEscapeCancel';
-import { useSilenceAutoStop } from './lib/hooks/useSilenceAutoStop';
 import { useSoundCues } from './lib/hooks/useSoundCues';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { useDevUpdaterMock } from './lib/hooks/useDevUpdaterMock';
@@ -87,7 +83,7 @@ import {
   retryLastDelivery,
   setPasteLastShortcut,
 } from './lib/deliveryRecovery';
-import { pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
+import { SETTINGS_VERSION, pasteLastShortcutLabel, smartAutoMicrophoneRequest } from './lib/settings';
 import {
   beginCurrentUiTransition,
   useUiLatencyDestination,
@@ -257,7 +253,7 @@ function App() {
     status, isCaptureBusy, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
     dismissError: dismissRecordingError,
-    handleStart, handleHoldStart, handleStop, toggleRecording, audioLevel,
+    handleStart, handleStop, audioLevel,
     smartDestinationStatus, smartDestinationAppName,
   } = useRecordingState({
     addEntry,
@@ -275,25 +271,16 @@ function App() {
   const handleResetStats = useCallback(() => {
     resetStats();
   }, []);
-  // Keep the global hotkeys disarmed until onboarding and model setup complete — accessibility
-  // can be granted mid-wizard, and a hold/double-tap must not start a recording
-  // behind the OnboardingFlow screen.
-  const hotkeysArmed = mainAppReady;
-  useHoldDownToggle({ enabled: hotkeysArmed && settings.recordingMode === 'hold_down', initialized, accessibilityGranted, holdDownKey: settings.doubleTapKey, onStart: handleHoldStart, onStop: handleStop });
-  useDoubleTapToggle({ enabled: hotkeysArmed && settings.recordingMode === 'double_tap', initialized, accessibilityGranted, doubleTapKey: settings.doubleTapKey, status, onToggle: toggleRecording });
-  useCombinedToggle({ enabled: hotkeysArmed && settings.recordingMode === 'both', initialized, accessibilityGranted, triggerKey: settings.doubleTapKey, status, onStart: handleHoldStart, onStop: handleStop, onToggle: toggleRecording });
-  useEscapeCancel({ status, enabled: hotkeysArmed && initialized && accessibilityGranted === true });
-  // Hands-free finish for any recording not started by holding the trigger
-  // key (double-tap, button, overlay, locked mode). The hook tracks the
-  // origin itself and ignores hold-started recordings, where the key release
-  // owns the stop.
-  useSilenceAutoStop({
-    enabled: hotkeysArmed,
-    status,
-    silenceMs: settings.autoStopSilenceMs,
-    smartEnabled: settings.smartAutoStopEnabled,
-    onAutoStop: () => handleStop('auto_stop'),
-  });
+  // React supplies validated settings after first-run migration and reflects
+  // native state. Unmounting this client never disarms the native controller.
+  useEffect(() => {
+    if (!initialized || accessibilityGranted === null) return;
+    void invoke('configure_dictation_control', { settings: {
+      ...getConfirmedSettings(),
+      settingsVersion: SETTINGS_VERSION,
+      launchOnboardingComplete: mainAppReady,
+    } }).catch(() => {});
+  }, [initialized, accessibilityGranted, mainAppReady, settings, getConfirmedSettings]);
   const { showAbout, setShowAbout } = useShowAboutListener();
   const updater = useAutoUpdater({
     automaticChecksEnabled: !INTERNAL_BENCHMARK_BUILD,

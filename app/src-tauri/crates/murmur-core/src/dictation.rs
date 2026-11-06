@@ -34,6 +34,7 @@ impl LaunchGate {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Input {
+    Sync,
     HoldStart(Option<String>),
     HoldStop,
     HoldCancel,
@@ -63,6 +64,7 @@ pub enum Effect {
     Stop {
         generation: u64,
         auto: bool,
+        hold: bool,
     },
     Cancel {
         generation: u64,
@@ -100,7 +102,8 @@ impl Controller {
                 self.terminal_requested = false;
                 self.cancel_requested = false;
             }
-            if generation != self.generation || matches!(status, Status::Idle | Status::Recovering)
+            if (generation != self.generation && self.status != Status::Idle)
+                || matches!(status, Status::Idle | Status::Recovering)
             {
                 self.locked = false;
             }
@@ -120,7 +123,7 @@ impl Controller {
     pub fn keyboard_recording(&self) -> bool {
         matches!(self.status, Status::Starting | Status::Recording) && self.origin != Origin::Hold
     }
-    fn finish(&mut self, cancel: bool, auto: bool) -> Option<Effect> {
+    fn finish(&mut self, cancel: bool, auto: bool, hold: bool) -> Option<Effect> {
         if (if cancel {
             self.cancel_requested
         } else {
@@ -143,11 +146,12 @@ impl Controller {
             Effect::Stop {
                 generation: self.generation,
                 auto,
+                hold,
             }
         })
     }
     fn auto_eligible(&self) -> bool {
-        self.gate.can_start()
+        self.gate.armed()
             && self.status == Status::Recording
             && self.origin != Origin::Hold
             && self.silence_ms > 0
@@ -156,14 +160,14 @@ impl Controller {
     pub fn input(&mut self, input: Input) -> Option<Effect> {
         match input {
             Input::PasteLast => return Some(Effect::PasteLast),
-            Input::Escape if self.gate.armed() => return self.finish(true, false),
+            Input::Escape if self.gate.armed() => return self.finish(true, false, false),
             Input::HoldCancel => {
                 self.origin = Origin::Toggle;
-                return self.finish(true, false);
+                return self.finish(true, false, false);
             }
             Input::HoldStop => {
                 self.origin = Origin::Toggle;
-                return self.finish(false, false);
+                return self.finish(false, false, true);
             }
             Input::HoldOverStart => {
                 self.origin = Origin::Hold;
@@ -193,7 +197,7 @@ impl Controller {
                 }
                 if probability.is_some_and(|p| p.is_finite() && p >= 0.7) {
                     self.silence.stopped = true;
-                    return self.finish(false, true);
+                    return self.finish(false, true, false);
                 }
                 return None;
             }
@@ -206,7 +210,7 @@ impl Controller {
                     return None;
                 }
                 if self.silence.sample(level, at_ms, self.silence_ms) {
-                    return self.finish(false, true);
+                    return self.finish(false, true, false);
                 }
                 if self.smart_enabled
                     && self.smart_in_flight.is_none()
@@ -243,7 +247,7 @@ impl Controller {
                         gesture_token,
                     })
                 } else {
-                    self.finish(false, false)
+                    self.finish(false, false, false)
                 }
             }
             Input::Lock => {
@@ -255,7 +259,7 @@ impl Controller {
                     })
                 } else if matches!(self.status, Status::Starting | Status::Recording) {
                     if self.locked || self.status == Status::Starting {
-                        self.finish(false, false)
+                        self.finish(false, false, false)
                     } else {
                         self.locked = true;
                         None

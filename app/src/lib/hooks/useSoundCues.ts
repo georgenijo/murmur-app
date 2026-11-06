@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
 import type { MeetingRuntimePhase } from '../meetings';
-import { playSoundCue, type SoundCue } from '../soundCues';
+import { playSoundCue } from '../soundCues';
 
 interface SoundCueSettings {
   soundCuesEnabled: boolean;
@@ -9,44 +8,10 @@ interface SoundCueSettings {
   meetingSoundCuesEnabled: boolean;
 }
 
-function deliveryCue(payload: unknown): SoundCue | null {
-  const outcome = (payload as { outcome?: unknown } | null)?.outcome;
-  return outcome === 'autoPastePosted' || outcome === 'clipboardOnly'
-    ? 'success'
-    : outcome === 'unconfirmed' || outcome === 'clipboardWriteFailed' ? 'failure' : null;
-}
-
 export function useSoundCues(settings: SoundCueSettings, meetingPhase: MeetingRuntimePhase): void {
   const settingsRef = useRef(settings);
-  const meetingPhaseRef = useRef(meetingPhase);
   const previousMeetingPhaseRef = useRef(meetingPhase);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
-  useEffect(() => { meetingPhaseRef.current = meetingPhase; }, [meetingPhase]);
-
-  useEffect(() => {
-    const play = (cue: SoundCue) => {
-      const current = settingsRef.current;
-      if (!current.soundCuesEnabled || !['idle', 'failed'].includes(meetingPhaseRef.current)) return;
-      playSoundCue(cue, current.soundCueVolume);
-    };
-    let cancelled = false;
-    const unlistens: Array<() => void> = [];
-    const subscribe = (event: string, cue: SoundCue | ((payload: unknown) => SoundCue | null)) => {
-      listen<unknown>(event, ({ payload }) => {
-        const resolved = typeof cue === 'function' ? cue(payload) : cue;
-        if (resolved) play(resolved);
-      }).then((unlisten) => cancelled ? unlisten() : unlistens.push(unlisten)).catch(() => {});
-    };
-    subscribe('dictation-generation-started', 'start');
-    subscribe('recording-status-changed', (payload) => payload === 'processing' ? 'stop' : null);
-    subscribe('dictation-delivery-outcome', deliveryCue);
-    subscribe('recording-initialization-failed', 'failure');
-    subscribe('recording-interrupted', 'failure');
-    return () => {
-      cancelled = true;
-      unlistens.forEach((unlisten) => unlisten());
-    };
-  }, []);
 
   useEffect(() => {
     const previous = previousMeetingPhaseRef.current;

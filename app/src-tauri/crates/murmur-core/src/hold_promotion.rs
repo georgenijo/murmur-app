@@ -60,6 +60,12 @@ impl HoldPromotion {
     }
 }
 
+impl Default for HoldPromotion {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
