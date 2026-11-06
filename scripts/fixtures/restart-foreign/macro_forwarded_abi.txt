@@ -1,0 +1,3 @@
+macro_rules! ffi { ($abi:literal) => { unsafe extern $abi { fn _exit(code: i32) -> !; } }; }
+ffi!("C");
+fn main() { unsafe { _exit(37) } }

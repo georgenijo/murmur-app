@@ -1,0 +1,4 @@
+fn main() {
+    let library = libloading::os::unix::Library::this();
+    let _symbol = unsafe { library.get::<unsafe extern "C" fn(i32) -> !>(b"_exit\0") };
+}

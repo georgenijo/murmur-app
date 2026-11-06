@@ -1,0 +1,6 @@
+fn main() {
+    let _values = ["exit_code", "abort_reason", "requested exit", "exit completed"];
+    let _bytes = b"exit_code\0";
+    let _c_string = cr#"abort_reason"#;
+    println!("about to exit the settings view");
+}

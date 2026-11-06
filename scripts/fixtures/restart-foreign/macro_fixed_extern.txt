@@ -1,0 +1,3 @@
+macro_rules! ffi { ($ignored:ident) => { unsafe extern "C" { fn getpid() -> i32; } }; }
+ffi!(abort);
+fn main() { let _pid = unsafe { getpid() }; }

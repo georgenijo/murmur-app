@@ -149,6 +149,41 @@ plugin's restart. The core exposes a process-local RestartTicket handoff. Instal
 of process:allow-restart remain #990 work. This layer closes its relaunch bypass;
 it does not claim installation has moved to the native updater.
 
+### Termination guard threat model
+
+The guard prevents accidental or convenience termination that bypasses the
+shutdown coordinator in first-party code. It is a source-level policy check,
+not a sandbox. Coverage combines `scripts/check_restart_policy.py`, the shared
+Rust source/inclusion inventory, and Clippy's resolved `disallowed_methods`:
+
+- Reserved restart identifiers, the sole adapter `request_restart` call,
+  process-plugin Cargo aliases, numeric runtime exit arguments, exact
+  function-scoped lint exceptions, and rejection of nested Clippy overrides.
+- Resolved std/libc exit and abort, Unix `CommandExt::exec`, Tauri
+  AppHandle exit/restart/request_restart, Tauri process restart, and original
+  process-plugin init/exit/restart methods, including import aliases, grouped
+  imports, method references and macro forwarding.
+- Foreign declarations with any literal or default ABI for `exit`, `_exit`,
+  `_Exit`, `abort`, `quick_exit`, `exit_group`, `pthread_exit`, `kill` and `raise`;
+  terminating linker attributes and unprovable linker aliases. Foreign function
+  names or ABIs supplied by macro metavariables fail closed. Conservatively,
+  all extern declarations inside `macro_rules!` definitions are rejected, so forwarding
+  names through invocation arguments cannot evade the check. Ordinary macros
+  without extern blocks remain accepted.
+- Exact termination-symbol string, byte-string and C-string literals, including
+  raw forms and an optional trailing NUL, anywhere in scanned repository Rust
+  sources. This covers literal `dlsym` and `libloading::get` lookups regardless
+  of the lookup function's spelling. The sole literal exception is the exact
+  `"exit" => app.exit(0),` action arm of the isolated
+  `shutdown::test_support::shutdown_test_action` handler; other literals and
+  lookups in that function are still checked. Comments, longer strings such as
+  `"exit_code"`/`"abort_reason"`, and log messages containing exit remain accepted.
+
+Deliberately obfuscated termination is out of scope: inline asm syscalls,
+build-script-generated code, computed symbol names, signals to self via
+non-literal arguments, and third-party crate internals. Code review covers those.
+Fixtures are checked or compiled only; termination code is never executed.
+
 ## Verification and native matrix
 
 Linux: TypeScript passes; Vitest is 181 files / 1,861 tests (updated base 1,859; two

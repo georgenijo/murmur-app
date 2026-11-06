@@ -1,0 +1,6 @@
+macro_rules! identity { ($symbol:ident) => { stringify!($symbol) }; }
+macro_rules! message { () => { r#"extern "C" { fn _exit(); }"# }; }
+fn main() {
+    let _name = identity!(_exit);
+    let _message = message!();
+}

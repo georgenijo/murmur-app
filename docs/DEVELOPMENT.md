@@ -225,6 +225,8 @@ separate check against an isolated bundle and synthetic state.
 
 ## Shutdown coordinator native QA
 
+The termination guard combines `scripts/check_restart_policy.py` with Clippy to prevent accidental first-party coordinator bypasses; it is a source-level policy check, not a sandbox, and code review covers deliberately obfuscated termination (see the [covered cases and threat model](draft/gpui-shutdown-coordinator.md#termination-guard-threat-model)).
+
 Use a dedicated checkout and target directory, synthetic fixtures, and the
 `tauri.shutdown-test.conf.json` identity. Build with Rust 1.98.1 and
 `--features shutdown-test-support`; never use the production bundle/profile.

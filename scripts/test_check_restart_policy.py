@@ -1,5 +1,5 @@
 import unittest
-from check_restart_policy import violations, check_repository, method_allow_scopes, check_clippy_config, REQUIRED_METHODS, TERMINATING_SYMBOLS
+from check_restart_policy import violations, check_repository, method_allow_scopes, symbol_literal_allowances, check_clippy_config, REQUIRED_METHODS, TERMINATING_SYMBOLS
 from pathlib import Path
 import tempfile
 class RestartPolicy(unittest.TestCase):
@@ -133,9 +133,86 @@ class RestartPolicy(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertFalse(violations(source))
 
+    def test_macro_foreign_declarations_fail_closed(self):
+        for delimiter, closing in [('{', '}'), ('(', ')'), ('[', ']')]:
+            for body in [
+                'unsafe extern "C" { fn $symbol(code: i32) -> !; }',
+                'unsafe extern $abi { fn $symbol(code: i32) -> !; }',
+                'unsafe extern $abi { fn getpid() -> i32; }',
+                'unsafe extern $($abi)* { fn $symbol(code: i32) -> !; }',
+                'unsafe extern "C" { fn getpid() -> i32; }',
+            ]:
+                source = (f'macro_rules! ffi {delimiter} ($symbol:ident, $abi:literal) => {{ {body} }}; {closing}'
+                          ' ffi!(_exit, "C");')
+                with self.subTest(source=source):
+                    self.assertTrue(violations(source))
+        # Metavariables also fail closed outside a macro_rules definition.
+        self.assertTrue(violations('extern $abi { fn getpid(); }'))
+        self.assertTrue(violations('extern "C" { fn $symbol(); }'))
+
+    def test_exact_termination_symbol_literals(self):
+        for symbol in sorted(TERMINATING_SYMBOLS):
+            for prefix in ['', 'b', 'c', 'r', 'br', 'cr', 'r##', 'br##', 'cr##']:
+                hashes = '#' * prefix.count('#')
+                for suffix in ['', '\\0', '\\x00'] if 'r' not in prefix else ['', '\0']:
+                    literal = f'{prefix}"{symbol}{suffix}"{hashes}'
+                    with self.subTest(literal=literal):
+                        source = f'let symbol = {literal};'
+                        self.assertIn(source.index(prefix + '"'), violations(source))
+        self.assertTrue(violations('let symbol = b"\\x5fexit\\0";'))
+        self.assertTrue(violations('let symbol = c"\\u{5_f}exit";'))
+        self.assertTrue(violations('let symbol = "_ex\\\n    it\\0";'))
+
+    def test_benign_symbol_text_and_macros(self):
+        for source in [
+            'let values = ["exit_code", "abort_reason", "please exit now", "exit completed"];',
+            'let values = [b"exit_code\\0", c"abort_reason", r#"log exit"#];',
+            'let text = r"\\u{5f}exit";',
+            'let text = "\\\\u{5f}exit";',
+            'macro_rules! identity { ($symbol:ident) => { stringify!($symbol) }; } identity!(_exit);',
+            'macro_rules! message { () => { "extern \\"C\\" { fn _exit(); }" }; }',
+            '// "_exit" b"abort\\0" c"kill" r"raise"\n/* outer /* "exit" */ */',
+        ]:
+            with self.subTest(source=source):
+                self.assertFalse(violations(source))
+
+    def test_symbol_literals_are_checked_in_every_rust_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'nested/examples/symbols.rs'
+            path.parent.mkdir(parents=True)
+            path.write_text('fn main() { let _symbol = c"_exit"; }')
+            self.assertTrue(check_repository(root))
+            path.write_text('fn main() { let _message = "exit completed"; }')
+            self.assertFalse(check_repository(root))
+
+    def test_qa_action_exception_is_scoped_to_the_exact_match_arm(self):
+        source = '''mod test_support {
+            #[allow(clippy::disallowed_methods)]
+            fn shutdown_test_action() {
+                match action.as_str() { "exit" => app.exit(0), _ => () }
+                let symbol = "exit";
+            }
+        }'''
+        path = Path('app/src-tauri/src/shutdown.rs')
+        allowances = symbol_literal_allowances(source, path)
+        self.assertEqual(allowances, {source.index('"exit"')})
+        self.assertEqual(violations(source, symbol_allowances=allowances), [source.rindex('"exit"')])
+        for modified, relative in [
+            (source, Path('other.rs')),
+            (source.replace('shutdown_test_action', 'terminal'), path),
+            (source.replace('mod test_support', 'mod other'), path),
+            (source.replace('app.exit(0)', 'dlsym("exit")'), path),
+        ]:
+            with self.subTest(source=modified, relative=relative):
+                self.assertFalse(symbol_literal_allowances(modified, relative))
+
     def test_foreign_fixture_inventory(self):
         fixtures = Path(__file__).parent / 'fixtures/restart-foreign'
-        self.assertEqual(len(list(fixtures.glob('*.txt'))), 8)
+        for name in ['macro_forwarded_name', 'macro_forwarded_abi', 'macro_fixed_extern',
+                     'dlsym_c_string', 'dlsym_byte_string', 'dlsym_string',
+                     'libloading_get', 'raw_symbol_strings', 'benign_strings', 'benign_macros']:
+            self.assertTrue((fixtures / (name + '.txt')).is_file())
         for fixture in fixtures.glob('*.txt'):
             with self.subTest(fixture=fixture.name):
                 self.assertEqual(not violations(fixture.read_text()), fixture.stem.startswith('benign_'))
