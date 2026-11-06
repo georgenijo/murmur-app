@@ -78,6 +78,8 @@ class TargetedEventsGuardTests(unittest.TestCase):
                     self.assertTrue(violations(f'app.{method}({target}, "event", payload);', adapter=True))
         for source in [
             'pub use tauri::*;',
+            'pub use Emitter as Transport;',
+            'pub(crate) use E as Transport;',
             'use tauri as transport;',
             'use tauri::EventTarget::{AnyLabel as Broad};',
             'let transport = Emitter::emit_to;',

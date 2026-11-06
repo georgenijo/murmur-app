@@ -51,7 +51,8 @@ The pinned Tauri 2.11.2 `Emitter` source defines `emit`, `emit_str`, `emit_to`,
 covers future `emit_*` names. `Emitter` identifier tokens are forbidden outside
 the adapter, including aliased imports and UFCS. Tauri glob imports (including
 nested groups), crate aliases and Tauri re-exports are forbidden throughout the
-repository (including the adapter), preventing facades from hiding a glob import. Inside the adapter, only `emit_to`
+repository (including the adapter), preventing facades from hiding a glob import.
+The adapter permits no re-export imports, including aliases of its local trait import. Inside the adapter, only `emit_to`
 and `emit_str_to` with the literal `tauri::EventTarget::webview_window(label)`
 target are permitted. Broadcast methods, `Any`, `AnyLabel`, other target kinds,
 target variables, string targets/conversions and macro metavariables are rejected.

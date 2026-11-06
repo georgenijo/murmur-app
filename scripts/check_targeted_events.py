@@ -96,10 +96,13 @@ def violations(source: str, *, adapter: bool = False) -> list[int]:
     # source needs a tauri glob, crate alias or re-export, even in that file.
     for statement in re.finditer(r'\buse\b[^;]*;', code):
         body = statement.group()
+        exported = re.search(r'\bpub(?:\s*\([^)]*\))?\s*$', code[:statement.start()])
+        if adapter and exported:
+            offsets.add(statement.start())
         if re.search(r'\btauri\b', body):
             if ('*' in body or re.search(r'\btauri\s*(?:as\b|[,;}])', body)
                     or re.search(r'\bself\s+as\b', body)
-                    or re.search(r'\bpub(?:\s*\([^)]*\))?\s*$', code[:statement.start()])):
+                    or exported):
                 offsets.add(statement.start())
     offsets.update(m.start() for m in re.finditer(r'\bextern\s+crate\s+tauri\b', code))
     return sorted({code.count('\n', 0, offset) + 1 for offset in offsets})
