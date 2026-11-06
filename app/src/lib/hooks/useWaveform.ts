@@ -20,15 +20,15 @@ export interface OverlayWaveform {
  * the DOM from rAF: no React render, layout, or paint invalidation per frame.
  * The loop runs only while recording.
  */
-export function useWaveform(status: DictationStatus): OverlayWaveform {
+export function useWaveform(status: DictationStatus, visible = status === 'recording'): OverlayWaveform {
   const audioLevelRef = useRef(0);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  useAudioLevel('overlay', status === 'recording', level => { audioLevelRef.current = level; });
+  useAudioLevel('overlay', visible && status === 'recording', level => { audioLevelRef.current = level; });
 
   useEffect(() => {
     const bars = () => barRefs.current.filter((el): el is HTMLDivElement => el !== null);
-    if (status !== 'recording') {
+    if (status !== 'recording' || !visible) {
       audioLevelRef.current = 0;
       for (const el of bars()) {
         el.style.transition = 'transform 300ms ease-out';
@@ -53,7 +53,7 @@ export function useWaveform(status: DictationStatus): OverlayWaveform {
     };
     rafId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(rafId);
-  }, [status]);
+  }, [status, visible]);
 
   return { barRefs };
 }

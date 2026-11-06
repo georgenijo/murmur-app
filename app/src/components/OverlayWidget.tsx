@@ -110,7 +110,6 @@ export function OverlayWidget() {
   const { phase, expanded, expandedRef, islandRef, onHoverStart, onHoverEnd } =
     useOverlayExpansion({ forcedOpen: showMeetingSuggestion, content: overlayContent,
       activity, placement: settingsMirror.overlayPlacement, hoverEnabled: !pillHidden });
-  const waveform = useWaveform(status);
   useLiveWordsLift(geometry, expanded);
   // Rust shapes the pill's native Bezel material from this same state.
   const material = useOverlayMaterial({
@@ -134,6 +133,7 @@ export function OverlayWidget() {
     meetingPhase,
     runtime.showClipboardOnly,
   );
+  const waveform = useWaveform(status, visual.waveformVisible);
 
   useEffect(() => {
     void invoke<MeetingRuntimeStatus>('get_meeting_status')

@@ -147,7 +147,8 @@ existing producers and intended listeners. `open-settings`, `show-about` and
 cleanup, serializes activation/deactivation IPC (including StrictMode remounts),
 and unregisters on cleanup. Its three named interests are:
 
-- Overlay, only while recording; native visibility/minimization is checked on
+- Overlay, only while recording with visible waveform bars (priority cues
+  suspend interest); native visibility/minimization is checked on
   each sample. A newly shown overlay receives the next sample without restarting.
 - Main recording, only on the Home surface, after onboarding/model readiness,
   with Settings closed and recording active. MainHeader's recording controls are
