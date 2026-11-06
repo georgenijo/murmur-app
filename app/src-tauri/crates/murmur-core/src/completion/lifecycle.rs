@@ -163,8 +163,8 @@ impl Engine {
             }
             Operation::Import(raw) => {
                 if !m.v1 {
-                    // Destination receipts (including a 1.3 Clear) take priority
-                    // even over malformed obsolete source data.
+                    // Valid disk destinations (including a 1.3 Clear) take
+                    // priority even over malformed obsolete source data.
                     let mut values = vec![];
                     for (d, key) in [
                         (Destination::History, "dictation-history"),
@@ -172,7 +172,7 @@ impl Engine {
                         (Destination::Reports, "murmur-benchmark-reports"),
                     ] {
                         let doc = self.document(d)?;
-                        let v = if doc.as_ref().is_some_and(|v| v.v1_imported) {
+                        let v = if doc.is_some() {
                             None
                         } else {
                             let v = decode(&raw, key)?;
@@ -310,6 +310,17 @@ mod tests {
         assert!(r.values["murmur-appearance"].get("cache").is_none());
         assert_eq!(r.values["dictation-settings"]["overlayVerticalOffset"], 0);
         assert!(e.lifecycle(Operation::BeginRetirement).is_err());
+    }
+    #[test]
+    fn valid_pre_v1_disk_wins_over_corrupt_obsolete_webkit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine(dir.path(), true);
+        std::fs::write(dir.path().join("history.json"), b"[]").unwrap();
+        let mut raw = source();
+        raw.insert("dictation-history".into(), Some("{bad".into()));
+        let result = e.lifecycle(Operation::Import(raw)).unwrap();
+        assert!(result.v1 && result.v2);
+        assert!(e.snapshot().unwrap().history.is_empty());
     }
     #[test]
     fn interrupted_import_and_already_imported_fill_only_and_marker_loss() {
