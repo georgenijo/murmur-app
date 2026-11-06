@@ -1,7 +1,8 @@
 //! Durable, host-owned home for frontend persistence blobs.
 //!
-//! The frontend owns the settings, history, statistics, and theme-library schemas and their
-//! migration rules. This module validates only each bounded JSON container,
+//! The frontend owns the settings and theme-library schemas and their
+//! migration rules. History, statistics and reports belong to murmur-core::completion.
+//! This module validates only each bounded settings/theme JSON container,
 //! then publishes it atomically in the per-bundle app data directory. The
 //! durable files survive WKWebView storage eviction and a manual reinstall;
 //! localStorage remains a synchronous frontend cache.
@@ -16,7 +17,6 @@ use crate::MutexExt;
 #[derive(Clone, Copy)]
 enum JsonShape {
     Object,
-    Array,
 }
 
 #[derive(Clone, Copy)]
@@ -30,22 +30,6 @@ struct BlobSpec {
 const SETTINGS: BlobSpec = BlobSpec {
     label: "Settings",
     file_name: "settings.json",
-    max_bytes: 1024 * 1024,
-    shape: JsonShape::Object,
-};
-
-// History is capped at 200 entries in the frontend, but imported-file
-// transcripts can be substantially larger than the settings object.
-const HISTORY: BlobSpec = BlobSpec {
-    label: "History",
-    file_name: "history.json",
-    max_bytes: 8 * 1024 * 1024,
-    shape: JsonShape::Array,
-};
-
-const STATS: BlobSpec = BlobSpec {
-    label: "Statistics",
-    file_name: "stats.json",
     max_bytes: 1024 * 1024,
     shape: JsonShape::Object,
 };
@@ -99,14 +83,12 @@ fn validate_blob(spec: BlobSpec, blob: &str) -> Result<(), String> {
     let valid_shape = matches!(
         (spec.shape, value),
         (JsonShape::Object, serde_json::Value::Object(_))
-            | (JsonShape::Array, serde_json::Value::Array(_))
     );
     if valid_shape {
         Ok(())
     } else {
         let expected = match spec.shape {
             JsonShape::Object => "object",
-            JsonShape::Array => "array",
         };
         Err(format!("{} blob must be a JSON {expected}", spec.label))
     }
@@ -340,36 +322,6 @@ pub fn patch_overlay_setting(
 }
 
 #[tauri::command]
-pub fn load_history_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, HISTORY)
-}
-
-#[tauri::command]
-pub fn save_history_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
-    write_blob(&data_dir(&app)?, HISTORY, &blob)
-}
-
-#[tauri::command]
-pub fn clear_history_blob(app: tauri::AppHandle) -> Result<(), String> {
-    delete_blob(&data_dir(&app)?, HISTORY)
-}
-
-#[tauri::command]
-pub fn load_stats_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, STATS)
-}
-
-#[tauri::command]
-pub fn save_stats_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
-    write_blob(&data_dir(&app)?, STATS, &blob)
-}
-
-#[tauri::command]
-pub fn clear_stats_blob(app: tauri::AppHandle) -> Result<(), String> {
-    delete_blob(&data_dir(&app)?, STATS)
-}
-
-#[tauri::command]
 pub fn load_theme_library_blob(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -461,22 +413,12 @@ mod tests {
         let dir = temp_dir("round_trip");
         for (spec, blob) in [
             (SETTINGS, r#"{"model":"tiny.en","settingsVersion":1}"#),
-            (HISTORY, r#"[{"id":"one","text":"private transcript"}]"#),
-            (STATS, r#"{"totalWords":42,"totalRecordings":2}"#),
             (THEME_LIBRARY, r#"{"version":1,"revision":1,"themes":[]}"#),
         ] {
             write_blob(&dir, spec, blob).unwrap();
             assert_eq!(read_blob(&dir, spec).unwrap().as_deref(), Some(blob));
         }
-        assert_eq!(
-            entries(&dir),
-            vec![
-                "history.json",
-                "settings.json",
-                "stats.json",
-                "theme-library.json"
-            ]
-        );
+        assert_eq!(entries(&dir), vec!["settings.json", "theme-library.json"]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -484,8 +426,8 @@ mod tests {
     fn reports_none_for_missing_files() {
         let dir = temp_dir("missing");
         assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
-        assert_eq!(read_blob(&dir, HISTORY).unwrap(), None);
-        assert_eq!(read_blob(&dir, STATS).unwrap(), None);
+        assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
+        assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
         assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -493,21 +435,24 @@ mod tests {
     #[test]
     fn creates_the_data_directory_on_first_write() {
         let dir = temp_dir("create_dir").join("nested");
-        write_blob(&dir, HISTORY, "[]").unwrap();
-        assert_eq!(read_blob(&dir, HISTORY).unwrap().as_deref(), Some("[]"));
+        write_blob(&dir, THEME_LIBRARY, "{}").unwrap();
+        assert_eq!(
+            read_blob(&dir, THEME_LIBRARY).unwrap().as_deref(),
+            Some("{}")
+        );
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 
     #[test]
     fn overwrites_atomically_and_leaves_no_temp_file() {
         let dir = temp_dir("overwrite");
-        write_blob(&dir, STATS, r#"{"totalWords":1,"padding":"old"}"#).unwrap();
-        write_blob(&dir, STATS, r#"{"totalWords":2}"#).unwrap();
+        write_blob(&dir, SETTINGS, r#"{"totalWords":1,"padding":"old"}"#).unwrap();
+        write_blob(&dir, SETTINGS, r#"{"totalWords":2}"#).unwrap();
         assert_eq!(
-            read_blob(&dir, STATS).unwrap().as_deref(),
+            read_blob(&dir, SETTINGS).unwrap().as_deref(),
             Some(r#"{"totalWords":2}"#)
         );
-        assert_eq!(entries(&dir), vec![STATS.file_name.to_string()]);
+        assert_eq!(entries(&dir), vec![SETTINGS.file_name.to_string()]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -517,8 +462,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = temp_dir("permissions");
-        write_blob(&dir, HISTORY, r#"[{"id":"private"}]"#).unwrap();
-        let mode = std::fs::metadata(blob_path(&dir, HISTORY))
+        write_blob(&dir, THEME_LIBRARY, r#"{"id":"private"}"#).unwrap();
+        let mode = std::fs::metadata(blob_path(&dir, THEME_LIBRARY))
             .unwrap()
             .permissions()
             .mode()
@@ -530,22 +475,25 @@ mod tests {
     #[test]
     fn quarantines_invalid_json_without_logging_content() {
         let dir = temp_dir("not_json");
-        std::fs::write(blob_path(&dir, HISTORY), "private transcript{{{").unwrap();
-        assert_eq!(read_blob(&dir, HISTORY).unwrap(), None);
+        std::fs::write(blob_path(&dir, THEME_LIBRARY), "private transcript{{{").unwrap();
+        assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("history.json.corrupt-"), "{names:?}");
+        assert!(
+            names[0].starts_with("theme-library.json.corrupt-"),
+            "{names:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn quarantines_invalid_utf8() {
         let dir = temp_dir("invalid_utf8");
-        std::fs::write(blob_path(&dir, STATS), [0xff, 0xfe]).unwrap();
-        assert_eq!(read_blob(&dir, STATS).unwrap(), None);
+        std::fs::write(blob_path(&dir, SETTINGS), [0xff, 0xfe]).unwrap();
+        assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("stats.json.corrupt-"), "{names:?}");
+        assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -553,8 +501,8 @@ mod tests {
     fn enforces_each_container_shape() {
         let dir = temp_dir("shape");
         assert!(write_blob(&dir, SETTINGS, "[]").is_err());
-        assert!(write_blob(&dir, HISTORY, "{}").is_err());
-        assert!(write_blob(&dir, STATS, "[]").is_err());
+        assert!(write_blob(&dir, THEME_LIBRARY, "[]").is_err());
+        assert!(write_blob(&dir, SETTINGS, "[]").is_err());
         assert!(entries(&dir).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -562,12 +510,16 @@ mod tests {
     #[test]
     fn quarantines_an_oversized_file() {
         let dir = temp_dir("oversized");
-        let padding = "a".repeat(STATS.max_bytes);
-        std::fs::write(blob_path(&dir, STATS), format!(r#"{{"pad":"{padding}"}}"#)).unwrap();
-        assert_eq!(read_blob(&dir, STATS).unwrap(), None);
+        let padding = "a".repeat(SETTINGS.max_bytes);
+        std::fs::write(
+            blob_path(&dir, SETTINGS),
+            format!(r#"{{"pad":"{padding}"}}"#),
+        )
+        .unwrap();
+        assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("stats.json.corrupt-"), "{names:?}");
+        assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -584,25 +536,25 @@ mod tests {
     #[test]
     fn rejected_save_leaves_the_previous_blob_intact() {
         let dir = temp_dir("reject_keeps_previous");
-        write_blob(&dir, HISTORY, r#"[{"id":"kept"}]"#).unwrap();
-        assert!(write_blob(&dir, HISTORY, "{}").is_err());
+        write_blob(&dir, THEME_LIBRARY, r#"{"id":"kept"}"#).unwrap();
+        assert!(write_blob(&dir, THEME_LIBRARY, "[]").is_err());
         assert_eq!(
-            read_blob(&dir, HISTORY).unwrap().as_deref(),
-            Some(r#"[{"id":"kept"}]"#)
+            read_blob(&dir, THEME_LIBRARY).unwrap().as_deref(),
+            Some(r#"{"id":"kept"}"#)
         );
-        assert_eq!(entries(&dir), vec![HISTORY.file_name.to_string()]);
+        assert_eq!(entries(&dir), vec![THEME_LIBRARY.file_name.to_string()]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn clear_is_idempotent_and_affects_only_the_selected_blob() {
         let dir = temp_dir("clear");
-        write_blob(&dir, HISTORY, "[]").unwrap();
-        write_blob(&dir, STATS, "{}").unwrap();
-        delete_blob(&dir, HISTORY).unwrap();
-        delete_blob(&dir, HISTORY).unwrap();
-        assert_eq!(read_blob(&dir, HISTORY).unwrap(), None);
-        assert_eq!(read_blob(&dir, STATS).unwrap().as_deref(), Some("{}"));
+        write_blob(&dir, THEME_LIBRARY, "{}").unwrap();
+        write_blob(&dir, SETTINGS, "{}").unwrap();
+        delete_blob(&dir, THEME_LIBRARY).unwrap();
+        delete_blob(&dir, THEME_LIBRARY).unwrap();
+        assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
+        assert_eq!(read_blob(&dir, SETTINGS).unwrap().as_deref(), Some("{}"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -618,7 +570,7 @@ mod tests {
 
     #[test]
     fn temp_path_stays_in_the_data_directory() {
-        let path = blob_path(Path::new("/tmp/murmur"), HISTORY);
+        let path = blob_path(Path::new("/tmp/murmur"), THEME_LIBRARY);
         let temp = temp_path_for(&path);
         assert_eq!(temp.parent(), path.parent());
         assert_ne!(temp.file_name(), path.file_name());

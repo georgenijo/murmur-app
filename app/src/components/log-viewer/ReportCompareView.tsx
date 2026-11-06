@@ -1,3 +1,4 @@
+import { COMPLETION_CHANGED, initializeCompletionReader } from '../../lib/completionData';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { loadBenchmarkReports } from '../../lib/benchmark';
 import {
@@ -336,6 +337,12 @@ function CompatibilityGate({
 
 export function ReportCompareView() {
   const [reports, setReports] = useState<ReportEntry[]>(localReportEntries);
+  useEffect(() => {
+    const changed = () => setReports(current => [...localReportEntries(), ...current.filter(entry => !entry.id.startsWith('local-'))]);
+    window.addEventListener(COMPLETION_CHANGED, changed);
+    void initializeCompletionReader().catch(() => {});
+    return () => window.removeEventListener(COMPLETION_CHANGED, changed);
+  }, []);
   const [baselineId, setBaselineId] = useState('');
   const [candidateId, setCandidateId] = useState('');
   const [error, setError] = useState<string | null>(null);

@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { KnowledgeEntry, KnowledgeScope } from './knowledge';
-import { reportLocalStats } from './localStatsEvents';
 
 export interface TeachingContext {
   appBundleId?: string | null;
@@ -34,7 +33,6 @@ export const proposeLearnedCorrection = async (
   const outcome = await invoke<CorrectionProposalOutcome>('propose_learned_correction', {
     request: { originalText, correctedText, teachingContext },
   });
-  if (outcome?.kind === 'proposal') reportLocalStats({ kind: 'correction_proposed', proposalId: outcome.proposalId });
   return outcome;
 };
 
@@ -47,13 +45,11 @@ export const proposeSpecificLearnedCorrection = async (
   const outcome = await invoke<CorrectionProposalOutcome>('propose_specific_learned_correction', {
     request: { originalText, source, replacement, teachingContext },
   });
-  if (outcome?.kind === 'proposal') reportLocalStats({ kind: 'correction_proposed', proposalId: outcome.proposalId });
   return outcome;
 };
 
 export const confirmLearnedCorrection = async (proposalId: number, scope: KnowledgeScope) => {
   const entry = await invoke<KnowledgeEntry>('confirm_learned_correction', { proposalId, scope });
-  reportLocalStats({ kind: 'correction_taught', proposalId, scope: scope.kind });
   return entry;
 };
 

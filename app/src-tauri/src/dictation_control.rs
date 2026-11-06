@@ -445,6 +445,11 @@ fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Resu
     {
         return Err("Invalid dictation control configuration".into());
     }
+    app.state::<State>()
+        .app_state
+        .dictation
+        .lock_or_recover()
+        .retain_history = settings["retainHistory"].as_bool().unwrap_or(true);
     let configured = settings["model"]
         .as_str()
         .is_some_and(|model| crate::model_runtime::model_definition(model).is_ok());
@@ -454,7 +459,7 @@ fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Resu
     let accessibility = crate::injector::is_accessibility_enabled();
     let control = app.state::<Control>();
     let mut gate = murmur_core::dictation::LaunchGate {
-        configured,
+        configured: configured && crate::completion::admitted(app),
         onboarding_complete: settings["launchOnboardingComplete"]
             .as_bool()
             .unwrap_or(false),

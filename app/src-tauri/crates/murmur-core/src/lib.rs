@@ -1,5 +1,6 @@
 //! Host-independent services and leaves shared by the Tauri and future GPUI hosts.
 pub mod audio_level;
+pub mod completion;
 pub mod context;
 pub mod dictation;
 pub mod hold_promotion;

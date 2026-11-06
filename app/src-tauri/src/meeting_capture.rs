@@ -606,6 +606,19 @@ impl MeetingCoordinator {
             if error.is_some_and(|error| error.code == "unsupported_os") {
                 inner.permission = SystemAudioPermissionState::Unsupported;
             }
+            if error.is_none()
+                && inner.status.phase == MeetingRuntimePhase::Processing
+                && inner.status.session_id.is_some()
+            {
+                crate::completion::activity(
+                    app,
+                    format!("meeting:{generation}"),
+                    murmur_core::completion::StatisticsEvent::Meeting {
+                        seconds: inner.status.elapsed_ms as f64 / 1000.0,
+                        month: chrono::Local::now().format("%Y-%m").to_string(),
+                    },
+                );
+            }
             inner.active = None;
             inner.status.phase = if error.is_some() {
                 MeetingRuntimePhase::Failed

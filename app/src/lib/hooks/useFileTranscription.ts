@@ -16,7 +16,7 @@ export type { QueueItem, QueueItemStatus } from '../fileQueue';
 
 interface UseFileTranscriptionProps {
   /** Persist completed transcriptions to shared history (no WPM stats). */
-  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
+  addEntry?: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string) => void;
 }
 
 /**
@@ -30,7 +30,7 @@ interface UseFileTranscriptionProps {
  * paths (the plain HTML5 drop event does not, for security reasons); the
  * multi-select file picker in the panel supplies paths the same way.
  */
-export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
+export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [error, setError] = useState('');
   const [isDragging, setIsDragging] = useState(false);
@@ -42,8 +42,6 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
   runningRef.current = isRunning;
   const queueRef = useRef(queue);
   queueRef.current = queue;
-  const addEntryRef = useRef(addEntry);
-  addEntryRef.current = addEntry;
   const cancelledIdsRef = useRef(new Set<string>());
 
   const publishQueue = useCallback((next: QueueItem[]) => {
@@ -84,9 +82,6 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
 
         const text = res.text || '';
         publishQueue(updateItem(queueRef.current, item.id, { status: 'done', text }));
-        if (text.trim()) {
-          addEntryRef.current(text, res.duration ?? 0, 'file', item.name);
-        }
         flog.info('file-transcribe', 'complete', { textLen: text.length });
       }
     } finally {

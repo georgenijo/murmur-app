@@ -4,9 +4,6 @@ import {
   MAX_SAVED_BENCHMARK_REPORTS,
   addBenchmarkReport,
   benchmarkReportFileName,
-  clearBenchmarkReports,
-  loadBenchmarkReports,
-  saveBenchmarkReports,
 } from './benchmark';
 
 beforeEach(() => localStorage.clear());
@@ -77,45 +74,5 @@ describe('benchmarkReportFileName', () => {
   it('falls back to the platform for legacy reports without environment', () => {
     expect(benchmarkReportFileName(report('2026-07-16T09:00:00Z')))
       .toBe('benchmark-0-16-0-macos-aarch64-2026-07-16T09-00-00Z.json');
-  });
-});
-
-describe('benchmark report storage', () => {
-  it('round-trips versioned trustworthy-state metadata', () => {
-    const current = versionedReport('2026-07-20T12:00:00Z');
-    saveBenchmarkReports([current]);
-    expect(loadBenchmarkReports()).toEqual([current]);
-  });
-
-  it('keeps pre-metadata reports readable after the additive schema change', () => {
-    const previous = report('2026-07-19T12:00:00Z');
-    localStorage.setItem('murmur-benchmark-reports', JSON.stringify([previous]));
-    expect(loadBenchmarkReports()).toEqual([previous]);
-  });
-
-  it('rejects incomplete or unknown versioned metadata instead of presenting it as trustworthy', () => {
-    const incomplete = { ...versionedReport('2026-07-20T12:00:00Z'), configuration: undefined };
-    const unknown = { ...versionedReport('2026-07-20T13:00:00Z'), reportVersion: 3 };
-    localStorage.setItem('murmur-benchmark-reports', JSON.stringify([incomplete, unknown]));
-    expect(loadBenchmarkReports()).toEqual([]);
-  });
-
-  it('migrates a valid legacy report and clears the legacy key', () => {
-    const legacy = report('2026-07-16T12:00:00Z');
-    localStorage.setItem('murmur-benchmark-report', JSON.stringify(legacy));
-
-    expect(loadBenchmarkReports()).toEqual([legacy]);
-    expect(localStorage.getItem('murmur-benchmark-report')).toBeNull();
-    expect(JSON.parse(localStorage.getItem('murmur-benchmark-reports') ?? '[]')).toEqual([legacy]);
-  });
-
-  it('rejects malformed reports and clears both keys', () => {
-    localStorage.setItem('murmur-benchmark-reports', JSON.stringify([report('2026-07-16T12:00:00Z'), { createdAt: 'bad' }]));
-    expect(loadBenchmarkReports()).toEqual([report('2026-07-16T12:00:00Z')]);
-
-    saveBenchmarkReports([report('2026-07-16T13:00:00Z')]);
-    clearBenchmarkReports();
-    expect(localStorage.getItem('murmur-benchmark-reports')).toBeNull();
-    expect(localStorage.getItem('murmur-benchmark-report')).toBeNull();
   });
 });

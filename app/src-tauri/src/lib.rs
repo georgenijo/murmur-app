@@ -21,6 +21,7 @@ mod cleanup;
 mod cli_command;
 mod code_signing;
 mod commands;
+mod completion;
 pub mod coreml_installer;
 mod correct_and_teach;
 mod correction;
@@ -359,15 +360,14 @@ pub fn run() {
             commands::meeting::prune_meetings,
             commands::export::save_text_export,
             commands::mode_exchange::read_modes_file,
+            completion::completion_snapshot,
+            completion::import_completion_v1,
+            completion::mutate_history,
+            completion::clear_completion_destination,
+            completion::store_benchmark_report,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
             commands::settings_store::patch_overlay_setting,
-            commands::settings_store::load_history_blob,
-            commands::settings_store::save_history_blob,
-            commands::settings_store::clear_history_blob,
-            commands::settings_store::load_stats_blob,
-            commands::settings_store::save_stats_blob,
-            commands::settings_store::clear_stats_blob,
             commands::settings_store::load_theme_library_blob,
             commands::settings_store::save_theme_library_blob,
             commands::settings_store::clear_theme_library_blob,
@@ -450,7 +450,9 @@ pub fn run() {
         })
         .setup(|app| {
             app.manage(app_context::new(app.handle().clone()));
+            completion::initialize(app.handle())?;
             dictation_control::initialize(app.handle());
+            completion::start_gate(app.handle().clone());
             dictation_cues::initialize(app.handle());
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());

@@ -1,0 +1,149 @@
+use super::{Error, Result};
+use serde::{de::DeserializeOwned, Serialize};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::{Path, PathBuf},
+};
+
+/// Test failures occur at real publication boundaries, never by editing data.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Boundary {
+    BeforeRename,
+    AfterRename,
+}
+#[derive(Default)]
+pub struct Storage {
+    pub root: PathBuf,
+    #[cfg(test)]
+    pub fail: Option<(String, Boundary)>,
+}
+impl Storage {
+    pub fn read<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        validate: impl FnOnce(&T) -> bool,
+    ) -> Result<Option<T>> {
+        let path = self.root.join(name);
+        let file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(Error::Io),
+        };
+        let mut bytes = Vec::new();
+        file.take(if name == super::STATE {
+            u64::MAX
+        } else {
+            32 * 1024 * 1024 + 1
+        })
+        .read_to_end(&mut bytes)
+        .map_err(|_| Error::Io)?;
+        if name == super::STATE || bytes.len() <= 32 * 1024 * 1024 {
+            if let Ok(value) = serde_json::from_slice::<T>(&bytes) {
+                if validate(&value) {
+                    return Ok(Some(value));
+                }
+            }
+        }
+        fs::rename(
+            &path,
+            path.with_extension(format!("quarantine-{}", uuid::Uuid::new_v4())),
+        )
+        .map_err(|_| Error::Io)?;
+        self.sync_directory()?;
+        tracing::warn!(target:"completion", store=name, "unusable completion file quarantined");
+        Ok(None)
+    }
+    pub fn sync_directory(&self) -> Result<()> {
+        File::open(&self.root)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| Error::Io)
+    }
+    pub fn write<T: Serialize>(&mut self, name: &str, value: &T) -> Result<()> {
+        let bytes = serde_json::to_vec(value).map_err(|_| Error::Invalid)?;
+        if name != super::STATE && bytes.len() > 32 * 1024 * 1024 {
+            return Err(Error::Invalid);
+        }
+        fs::create_dir_all(&self.root).map_err(|_| Error::Io)?;
+        let path = self.root.join(name);
+        let temp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp).map_err(|_| Error::Io)?;
+            file.write_all(&bytes).map_err(|_| Error::Io)?;
+            full_sync(&file)?;
+            self.boundary(name, Boundary::BeforeRename)?;
+            fs::rename(&temp, &path).map_err(|_| Error::Io)?;
+            self.boundary(name, Boundary::AfterRename)?;
+            self.sync_directory()
+        })();
+        let _ = fs::remove_file(temp);
+        result
+    }
+    fn boundary(&mut self, _name: &str, _at: Boundary) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail
+            .as_ref()
+            .is_some_and(|(name, at)| name == _name && *at == _at)
+        {
+            self.fail = None;
+            return Err(Error::Io);
+        }
+        Ok(())
+    }
+}
+fn full_sync(file: &File) -> Result<()> {
+    file.sync_all().map_err(|_| Error::Io)?;
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: the file descriptor is live for the duration of fcntl.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == -1 {
+            return Err(Error::Io);
+        }
+    }
+    Ok(())
+}
+
+/// One owner per data root, including accidental second service instances.
+/// The host retains this lock until the serialized task drains and exits.
+pub struct RootLock(File);
+impl RootLock {
+    pub fn acquire(root: &Path) -> Result<Self> {
+        fs::create_dir_all(root).map_err(|_| Error::Io)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("completion.lock"))
+            .map_err(|_| Error::Io)?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: live descriptor; nonblocking exclusive advisory lock.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(Error::InUse);
+            }
+        }
+        Ok(Self(file))
+    }
+}
+impl Drop for RootLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}

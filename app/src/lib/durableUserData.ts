@@ -40,22 +40,7 @@ function tauriAvailable(): boolean {
   }
 }
 
-let pendingStatsMutation: Promise<unknown> | null = null;
-
-function persistStats(command: string, blob?: string): void {
-  const write = () => invoke(command, blob === undefined ? undefined : { blob });
-  const pending = (pendingStatsMutation ? pendingStatsMutation.then(write) : write())
-    .catch(() => { console.error('Failed to persist statistics'); });
-  pendingStatsMutation = pending;
-  void pending.then(() => {
-    if (pendingStatsMutation === pending) pendingStatsMutation = null;
-  });
-}
-
-function reportStorageError(store: DurableBlobStore, message: string, error: unknown): void {
-  if (store.storageKey === STATS_STORE.storageKey) console.error(message);
-  else console.error(message, error);
-}
+function reportStorageError(_store: DurableBlobStore, message: string, _error: unknown): void { console.error(message); }
 
 /**
  * Keep localStorage as the synchronous frontend cache while mirroring the exact
@@ -63,12 +48,9 @@ function reportStorageError(store: DurableBlobStore, message: string, error: unk
  * tests continue to work without a Tauri bridge.
  */
 export function mirrorDurableBlob(store: DurableBlobStore, blob: string): void {
+  if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
   try {
     if (!tauriAvailable()) return;
-    if (store.storageKey === STATS_STORE.storageKey) {
-      persistStats(store.saveCommand, blob);
-      return;
-    }
     void invoke(store.saveCommand, { blob }).catch((error) => {
       reportStorageError(store, `Failed to persist ${store.label} to disk:`, error);
     });
@@ -78,6 +60,7 @@ export function mirrorDurableBlob(store: DurableBlobStore, blob: string): void {
 }
 
 export function saveDurableBlob(store: DurableBlobStore, blob: string): void {
+  if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
   try {
     localStorage.setItem(store.storageKey, blob);
   } catch (error) {
@@ -88,6 +71,7 @@ export function saveDurableBlob(store: DurableBlobStore, blob: string): void {
 }
 
 export function clearDurableBlob(store: DurableBlobStore): void {
+  if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
   try {
     localStorage.removeItem(store.storageKey);
   } catch (error) {
@@ -95,10 +79,6 @@ export function clearDurableBlob(store: DurableBlobStore): void {
   }
   try {
     if (!tauriAvailable()) return;
-    if (store.storageKey === STATS_STORE.storageKey) {
-      persistStats(store.clearCommand);
-      return;
-    }
     void invoke(store.clearCommand).catch((error) => {
       reportStorageError(store, `Failed to clear durable ${store.label}:`, error);
     });
@@ -108,6 +88,7 @@ export function clearDurableBlob(store: DurableBlobStore): void {
 }
 
 export async function hydrateDurableStore(store: DurableBlobStore): Promise<void> {
+  if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
   try {
     if (!tauriAvailable()) return;
     const blob = await invoke<string | null>(store.loadCommand);
@@ -132,10 +113,8 @@ export async function hydrateDurableStore(store: DurableBlobStore): Promise<void
 
 /** Seed history and usage-stat caches before the main React tree renders. */
 export async function hydrateUserDataFromDisk(): Promise<void> {
-  await Promise.all([
-    hydrateDurableStore(HISTORY_STORE),
-    hydrateDurableStore(STATS_STORE),
-  ]);
+  const { initializeCompletionReader } = await import('./completionData');
+  await initializeCompletionReader(true);
 }
 
 /** Hydrate the main-window-only installed theme library before its provider mounts. */

@@ -356,28 +356,8 @@ describe('useRecordingState transition ordering', () => {
     });
     await act(async () => current.handleStop());
 
-    expect(mocks.addEntry).toHaveBeenCalledTimes(1);
-    expect(mocks.addEntry).toHaveBeenCalledWith(
-      'one final transcript',
-      12,
-      'recording',
-      undefined,
-      { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
-      undefined,
-      {
-        rawText: 'one final transcript',
-        recording: {
-          recordingId: 7,
-          modelId: 'parakeet-v3',
-          modeId: null,
-          profileId: 'Editor',
-          stages: [],
-        },
-      },
-    );
-    expect(mocks.updateStats).toHaveBeenCalledTimes(1);
-    expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12, null);
-    expect(current.transcription).toBe('one final transcript');
+    expect(mocks.addEntry).not.toHaveBeenCalled();
+    expect(mocks.updateStats).not.toHaveBeenCalled();
   });
 
   it('attributes stats to the recording-start Mode once, even for a repeated completion', async () => {
@@ -389,9 +369,8 @@ describe('useRecordingState transition ordering', () => {
       mocks.listeners.get('transcription-complete')?.({ payload });
       mocks.listeners.get('transcription-complete')?.({ payload });
     });
-    expect(mocks.updateStats).toHaveBeenCalledOnce();
-    expect(mocks.updateStats).toHaveBeenCalledWith(payload.text, 8, 'frozen-mode');
-    expect(mocks.addEntry).toHaveBeenCalledOnce();
+    expect(mocks.updateStats).not.toHaveBeenCalled();
+    expect(mocks.addEntry).not.toHaveBeenCalled();
   });
 
   it('clears an older failure for a new generation and ignores delayed stale presentations', async () => {

@@ -66,12 +66,7 @@ describe('useFileTranscription', () => {
 
     expect(mocks.transcribeFile).toHaveBeenCalledOnce();
     expect(mocks.transcribeFile).toHaveBeenCalledWith('/tmp/selected.wav');
-    expect(mocks.addEntry).toHaveBeenCalledWith(
-      'transcribed locally',
-      1.5,
-      'file',
-      'selected.wav',
-    );
+    expect(mocks.addEntry).not.toHaveBeenCalled();
     expect(current.summary).toMatchObject({
       total: 1,
       queued: 0,

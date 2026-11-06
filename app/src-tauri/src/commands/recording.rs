@@ -5190,6 +5190,10 @@ pub async fn start_native_recording(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    if !crate::completion::admitted(&app_handle) {
+        return Err("Waiting for completion storage migration".into());
+    }
+
     // Consume only this request's stamp before every await or rejected start.
     let gesture_claim = audio_lifecycle::gesture::claim(gesture_token.as_deref());
     // This lock covers only the synchronous ownership transition. Core Audio
@@ -6000,6 +6004,24 @@ pub(crate) async fn stop_native_recording_for(
             context.teaching_project_root.as_deref(),
         );
         let history = history.expect("non-empty completed transcription has history metadata");
+        let mut durable_entry = crate::completion::entry(&text, recording_secs as f64, "recording");
+        durable_entry["rawText"] = serde_json::json!(history.raw_text);
+        durable_entry["teachingContext"] = serde_json::json!(teaching_context);
+        if let Some(interrupted) = &interruption {
+            durable_entry["interruption"] = serde_json::json!(interrupted);
+        }
+        durable_entry["recording"] = serde_json::json!({"recordingId":rid,"modelId":model_name,"modeId":context.resolved_mode_id,"profileId":context.matched_profile.as_ref().map(|p|p.label.as_str()),"stages":history.stages});
+        crate::completion::submit(
+            &app_handle,
+            format!("dictation:{rid}"),
+            context.retain_history.then_some(durable_entry),
+            Some(murmur_core::completion::StatisticsEvent::Dictation {
+                words: text.split_whitespace().count() as u64,
+                seconds: recording_secs as f64,
+                mode: context.resolved_mode_id.clone(),
+                day: crate::completion::day(),
+            }),
+        );
         let _ = app_handle.emit(
             "transcription-complete",
             serde_json::json!({
@@ -6478,6 +6500,19 @@ pub async fn transcribe_file(
         Some(runtime_identity(&model_name, warm_state)),
     );
 
+    if !text.trim().is_empty() && crate::completion::retain(&app_handle) {
+        let mut entry = crate::completion::entry(&text, duration_secs, "file");
+        entry["sourceName"] = serde_json::json!(std::path::Path::new(&file_path)
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("File"));
+        crate::completion::submit(
+            &app_handle,
+            format!("file:{file_run_id}"),
+            Some(entry),
+            None,
+        );
+    }
     Ok(serde_json::json!({
         "type": "file_transcription",
         "fileRunId": file_run_id,

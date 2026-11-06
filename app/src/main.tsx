@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { CompletionNotice } from "./components/CompletionNotice";
 import { flog } from "./lib/log";
 import { NativeWindowLifecycle } from "./lib/windowLifecycle";
 import { AppearanceProvider } from "./lib/hooks/useAppearance";
@@ -30,6 +31,7 @@ Promise.all([
     <React.StrictMode>
       <AppearanceProvider>
         <NativeWindowLifecycle>
+          <CompletionNotice />
           <App />
         </NativeWindowLifecycle>
       </AppearanceProvider>

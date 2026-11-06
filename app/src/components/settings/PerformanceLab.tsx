@@ -1,3 +1,4 @@
+import { COMPLETION_CHANGED, initializeCompletionReader } from '../../lib/completionData';
 import { MiddleTruncate } from '../ui/middle-truncate';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -11,7 +12,6 @@ import {
   BenchmarkProgress,
   BenchmarkReport,
   MAX_SAVED_BENCHMARK_REPORTS,
-  addBenchmarkReport,
   cancelBenchmark,
   clearBenchmarkReports,
   getBenchmarkActivity,
@@ -20,7 +20,7 @@ import {
   openBenchmarkOutputFolder,
   runBenchmark,
   saveBenchmarkReport,
-  saveBenchmarkReports,
+  persistBenchmarkReport,
 } from '../../lib/benchmark';
 import { downloadModel } from '../../lib/dictation';
 import {
@@ -165,6 +165,15 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
     const reports = loadBenchmarkReports();
     return { reports, selectedAt: reports[0]?.createdAt ?? null };
   });
+  useEffect(() => {
+    const changed = () => setDashboard(current => {
+      const reports = loadBenchmarkReports();
+      return { reports, selectedAt: reports.some(report => report.createdAt === current.selectedAt) ? current.selectedAt : reports[0]?.createdAt ?? null };
+    });
+    window.addEventListener(COMPLETION_CHANGED, changed);
+    void initializeCompletionReader().catch(() => {});
+    return () => window.removeEventListener(COMPLETION_CHANGED, changed);
+  }, []);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -273,10 +282,8 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         INTERNAL_BENCHMARK_BUILD ? corpusSource : 'bundled',
       );
       if (!mounted.current) return;
-      setDashboard((current) => {
-        const reports = saveBenchmarkReports(addBenchmarkReport(current.reports, next));
-        return { reports, selectedAt: next.createdAt };
-      });
+      const reports = await persistBenchmarkReport(next);
+      if (mounted.current) setDashboard({ reports, selectedAt: next.createdAt });
       if (settings.benchmarkAutoSave) {
         // Best-effort: a write failure must not fail the completed run.
         try {
@@ -653,8 +660,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             <ConfirmActionButton label="Clear reports" confirmLabel="Confirm clear"
               type="button"
               onConfirm={() => {
-                clearBenchmarkReports();
-                setDashboard({ reports: [], selectedAt: null });
+                void clearBenchmarkReports().then(() => setDashboard({ reports: [], selectedAt: null }), () => setError('Could not clear reports'));
               }}
               className="shrink-0 px-2 py-1.5 text-xs text-on-surface-variant hover:text-error"
              />

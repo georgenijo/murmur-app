@@ -324,7 +324,83 @@ fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
     host.push(c.input(Input::PasteLast).unwrap());
     assert_eq!(host.len(), 7);
     assert_eq!(host.last(), Some(&Effect::PasteLast));
-    // Durable History/statistics and delivery de-duplication are explicitly 1.3.
+    use murmur_core::completion::{Command, CompletionService, Scope, StatisticsEvent};
+    let root = tempfile::tempdir().unwrap();
+    let service = CompletionService::start(root.path().into(), false).unwrap();
+    assert!(service.execute(Command::Snapshot).unwrap().v1_committed);
+    // Native stop and auto-stop effects publish at their successful completion
+    // seam. The cancelled generation 2 never submits a completion.
+    for generation in [1, 3] {
+        for _attachment in 0..2 {
+            let entry = serde_json::json!({"id":generation.to_string(),"text":"synthetic","duration":1,"timestamp":0});
+            service
+                .execute(Command::Complete {
+                    source: format!("session:{generation}"),
+                    entry: Some(entry),
+                    event: Some(StatisticsEvent::Dictation {
+                        words: 1,
+                        seconds: 1.0,
+                        mode: None,
+                        day: "2026-11-05".into(),
+                    }),
+                })
+                .unwrap();
+        }
+    }
+    service
+        .execute(Command::Complete {
+            source: "session:4".into(),
+            entry: None,
+            event: Some(StatisticsEvent::Dictation {
+                words: 1,
+                seconds: 1.0,
+                mode: None,
+                day: "2026-11-05".into(),
+            }),
+        })
+        .unwrap();
+    service.execute(Command::Complete{source:"file".into(),entry:Some(serde_json::json!({"id":"file","text":"synthetic file","duration":2,"timestamp":0,"source":"file"})),event:None}).unwrap();
+    for (source, event) in [
+        (
+            "meeting",
+            StatisticsEvent::Meeting {
+                seconds: 60.0,
+                month: "2026-11".into(),
+            },
+        ),
+        (
+            "taught",
+            StatisticsEvent::CorrectionTaught {
+                scope: Scope::Global,
+            },
+        ),
+        ("paste", StatisticsEvent::PasteLast),
+    ] {
+        service
+            .execute(Command::Complete {
+                source: source.into(),
+                entry: None,
+                event: Some(event),
+            })
+            .unwrap();
+    }
+    let before = service.execute(Command::Snapshot).unwrap();
+    assert_eq!(before.history.len(), 3);
+    assert_eq!(before.statistics.total_recordings, 3);
+    assert_eq!(before.statistics.activity.meetings.count, 1);
+    assert_eq!(before.statistics.activity.corrections.taught, 1);
+    assert_eq!(before.statistics.activity.paste_last_uses, 1);
+    for _ in 0..3 {
+        assert_eq!(
+            service.execute(Command::Snapshot).unwrap().statistics,
+            before.statistics
+        );
+    }
+    drop(service); // drains and joins the owner before reopening its directory.
+    let relaunched = CompletionService::start(root.path().into(), false).unwrap();
+    let after = relaunched.execute(Command::Snapshot).unwrap();
+    assert_eq!(before.history, after.history);
+    assert_eq!(before.statistics, after.statistics);
 }
 
 #[test]

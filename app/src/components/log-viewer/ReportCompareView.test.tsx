@@ -1,3 +1,6 @@
+import { acceptCompletionSnapshot } from '../../lib/completionData';
+import type { BenchmarkReport } from '../../lib/benchmark';
+import { loadStats } from '../../lib/stats';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -126,7 +129,7 @@ describe('ReportCompareView', () => {
   });
 
   it('clears imported session state without deleting saved Performance Lab history', async () => {
-    localStorage.setItem('murmur-benchmark-reports', JSON.stringify([benchmarkV2]));
+    acceptCompletionSnapshot({ history: [], reports: [benchmarkV2 as BenchmarkReport], statistics: loadStats(), v1Committed: true, removeKeys: [], retryNotice: false });
     await act(async () => {
       root.unmount();
       root = createRoot(container);
@@ -138,7 +141,7 @@ describe('ReportCompareView', () => {
       .find(button => button.textContent === 'Clear imports') as HTMLButtonElement;
     await act(async () => clear.click());
 
-    expect(localStorage.getItem('murmur-benchmark-reports')).not.toBeNull();
+    expect(localStorage.getItem('murmur-benchmark-reports')).toBeNull();
     expect(container.textContent).toContain('saved Performance Lab history were not changed');
     const badges = Array.from(container.querySelectorAll('span'))
       .map(element => element.textContent?.trim());
