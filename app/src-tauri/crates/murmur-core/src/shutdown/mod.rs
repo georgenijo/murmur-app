@@ -6,6 +6,12 @@ pub enum Request {
     Restart,
     System,
 }
+/// Opaque, process-local updater handoff. Installation ownership moves in #990;
+/// this token cannot authorize host termination or outlive its coordinator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestartTicket {
+    epoch: u64,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -73,8 +79,10 @@ impl Default for Receipt {
         }
     }
 }
+static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 #[derive(Debug)]
 pub struct Coordinator {
+    epoch: u64,
     pub state: State,
     pub receipt: Receipt,
     action: Action,
@@ -84,6 +92,7 @@ pub struct Coordinator {
 impl Default for Coordinator {
     fn default() -> Self {
         Self {
+            epoch: NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             state: State::Running,
             receipt: Receipt::default(),
             action: Action::Quit,
@@ -93,6 +102,15 @@ impl Default for Coordinator {
     }
 }
 impl Coordinator {
+    pub fn restart_ticket(&self) -> Option<RestartTicket> {
+        (self.state != State::Running
+            && !self.termination_permitted()
+            && self.action == Action::Restart)
+            .then_some(RestartTicket { epoch: self.epoch })
+    }
+    pub fn owns_restart_ticket(&self, ticket: RestartTicket) -> bool {
+        self.restart_ticket() == Some(ticket)
+    }
     pub fn action(&self) -> Action {
         if self.action == Action::Restart
             && self.receipt.producers_fenced
@@ -136,7 +154,7 @@ impl Coordinator {
         };
         self.state = state;
         let effect = Effect {
-            epoch: 1,
+            epoch: self.epoch,
             step,
             deadline_ms: self.start.saturating_add(offset),
         };

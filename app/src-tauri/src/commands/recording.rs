@@ -5211,7 +5211,8 @@ pub(crate) fn dictation_start_blocker(
 /// while a previous dictation's capture cleanup is still pending.
 pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
     let dictation = state.app_state.dictation.lock_or_recover();
-    dictation_start_blocker(state, dictation.status).is_none()
+    !crate::shutdown::closing()
+        && dictation_start_blocker(state, dictation.status).is_none()
         && !state.app_state.microphone_preview.is_active()
         && !audio_lifecycle::is_audio_active()
         && !audio_lifecycle::is_dictation_cleanup_pending(

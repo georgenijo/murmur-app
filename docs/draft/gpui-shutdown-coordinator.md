@@ -3,6 +3,8 @@
 Implements #992, part of #1009. Draft stack layer 07, based on
 `gpui/06-webkit-lifecycle` at `88854edc9fa909b820a7330b88f6e95732749d6b`.
 The approved design is the GPUI 1.8 design produced at that revision.
+During implementation the base moved to `269dfa39`; this layer was rebased onto
+its source-recovery generation and presentation-cache fixes.
 Independent implementation review and the native Tauri matrix belong to the parent.
 
 ## Policy and ownership
@@ -134,13 +136,13 @@ termination cannot be coordinated; durable state and helper parent-watchdogs
 provide recovery/containment, not a successful drain receipt.
 
 Until #990, the existing updater installs before requesting the compatibility
-plugin's restart. Installation transaction ownership, v3 migration and removal
+plugin's restart. The core exposes a process-local RestartTicket handoff. Installation transaction ownership, v3 migration and removal
 of process:allow-restart remain #990 work. This layer closes its relaunch bypass;
 it does not claim installation has moved to the native updater.
 
 ## Verification and native matrix
 
-Linux: TypeScript passes; Vitest is 179 files / 1,798 tests (base 1,797; one
+Linux: TypeScript passes; Vitest is 180 files / 1,834 tests (updated base 1,833; one
 immediate-submission regression added, none removed). Core unit/integration,
 strict Clippy, policy fixtures and final CI results are recorded in the PR.
 Core tests cover phase order, deadlines, arbitration, duplicate/late receipts,

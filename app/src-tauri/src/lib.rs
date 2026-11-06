@@ -798,8 +798,11 @@ pub fn run() {
             }
         }
 
-        if let RunEvent::ExitRequested { api, .. } = &_event {
+        if let RunEvent::ExitRequested { api, code, .. } = &_event {
             if !shutdown::permitted(_app_handle) {
+                if *code == Some(tauri::RESTART_EXIT_CODE) {
+                    tracing::error!(target:"shutdown", "forbidden restart bypass reached runtime without a drained permit");
+                }
                 api.prevent_exit();
                 shutdown::request(_app_handle, murmur_core::shutdown::Request::Quit);
             }

@@ -120,3 +120,16 @@ fn wrong_epoch_or_receipt_cannot_advance() {
         .is_empty());
     assert_eq!(c.state, State::ClosingAdmission);
 }
+
+#[test]
+fn updater_ticket_is_bound_to_current_restart_and_epoch() {
+    let mut original = Coordinator::default();
+    original.request(Request::Restart, 0);
+    let ticket = original.restart_ticket().unwrap();
+    assert!(original.owns_restart_ticket(ticket));
+    let mut next = Coordinator::default();
+    next.request(Request::Restart, 0);
+    assert!(!next.owns_restart_ticket(ticket));
+    original.request(Request::Quit, 1);
+    assert!(!original.owns_restart_ticket(ticket));
+}
