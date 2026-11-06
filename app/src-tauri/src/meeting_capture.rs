@@ -627,14 +627,13 @@ impl MeetingCoordinator {
             (inner.status.clone(), completed_seconds)
         };
         if let Some(seconds) = completed_seconds {
-            crate::completion::activity(
-                app,
-                format!("meeting:{generation}"),
-                murmur_core::completion::StatisticsEvent::Meeting {
+            crate::completion::produce(app, |producer| {
+                producer.meeting(
+                    generation,
                     seconds,
-                    month: chrono::Local::now().format("%Y-%m").to_string(),
-                },
-            );
+                    chrono::Local::now().format("%Y-%m").to_string(),
+                )
+            });
         }
         if let Some(error) = error {
             tracing::warn!(

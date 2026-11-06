@@ -1,5 +1,6 @@
 //! Serialized durable completions. No window, runtime, clock or host dependency.
 //! Only the owner task touches these files; IPC clients never replace snapshots.
+pub mod producers;
 mod stats;
 mod storage;
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,7 @@ use storage::{RootLock, Storage};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
     Io,
+    Missing,
     Invalid,
     InUse,
     Stopped,
@@ -23,6 +25,7 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Missing => "Completion file missing or quarantined",
             Self::Io => "Completion storage unavailable",
             Self::Invalid => "Invalid completion data",
             Self::InUse => "Completion storage already in use",
@@ -213,14 +216,11 @@ impl CompletionService {
             .spawn(move || {
                 let _lock = lock;
                 let mut engine = Engine {
-                    storage: Storage {
-                        root,
-                        #[cfg(test)]
-                        fail: None,
-                    },
+                    storage: Storage::new(root),
                     webkit_exists,
                     seen: HashSet::new(),
                     revision: 0,
+                    initialized: false,
                 };
                 if engine.initialize().is_err() {
                     diagnostic("initialization_failed");
@@ -257,6 +257,7 @@ fn diagnostic(code: &'static str) {
     tracing::warn!(target:"completion",code,"completion service diagnostic");
 }
 struct Engine {
+    initialized: bool,
     revision: u64,
     storage: Storage,
     webkit_exists: bool,
@@ -299,7 +300,7 @@ impl Engine {
                             && uuid::Uuid::parse_str(&r.uuid).is_ok()
                     })
             })?
-            .ok_or(Error::Io)
+            .ok_or(Error::Missing)
     }
     fn holding(&self) -> Result<Holding> {
         self.storage
@@ -308,7 +309,7 @@ impl Engine {
                     && v.history.entries.iter().all(valid_history)
                     && v.reports.entries.iter().all(valid_report)
             })?
-            .ok_or(Error::Io)
+            .ok_or(Error::Missing)
     }
     fn migration(&self) -> Result<Migration> {
         Ok(self
@@ -320,6 +321,18 @@ impl Engine {
         Ok(doc.v1_imported || self.migration()?.v1)
     }
     fn initialize(&mut self) -> Result<()> {
+        self.initialized = false;
+        // Published generations may be unknown rename outcomes from a prior run.
+        // Establish durability before trusting them or draining any held data.
+        self.storage.sync_directory()?;
+        let mut holding = match self.holding() {
+            Ok(v) => v,
+            Err(Error::Missing) => {
+                diagnostic("holding_recreated");
+                Holding::default()
+            }
+            Err(e) => return Err(e),
+        };
         // Read/quarantine destinations before choosing recovery sequence numbers.
         let stats = self.document(Destination::Statistics)?;
         self.document(Destination::History)?;
@@ -343,14 +356,6 @@ impl Engine {
                 },
             )?;
         }
-        let mut holding = match self.holding() {
-            Ok(v) => v,
-            Err(Error::Io) => {
-                diagnostic("holding_recreated");
-                Holding::default()
-            }
-            Err(e) => return Err(e),
-        };
         self.drop_consumed(&mut holding)?;
         if !self.migration()?.v1 {
             holding.launches += 1;
@@ -367,7 +372,9 @@ impl Engine {
                 },
             )?;
         }
-        self.recover()
+        self.recover()?;
+        self.initialized = true;
+        Ok(())
     }
     fn drop_consumed(&self, h: &mut Holding) -> Result<()> {
         for d in [Destination::History, Destination::Reports] {
@@ -485,9 +492,16 @@ impl Engine {
     fn execute(&mut self, command: Command) -> Result<Snapshot> {
         self.revision += 1;
         // Initialization retry must not inflate launch counts on every command.
-        if self.state().is_err() || self.holding().is_err() {
-            self.initialize()?;
+        if !self.initialized
+            || matches!(self.state(), Err(Error::Missing))
+            || matches!(self.holding(), Err(Error::Missing))
+        {
+            self.initialize()
+                .inspect_err(|_| diagnostic("initialization_failed"))?;
         }
+        // Read failures block commands; they never authorize file replacement.
+        self.state()?;
+        self.holding()?;
         self.recover()?;
         match command {
             Command::Snapshot => {}
@@ -686,6 +700,11 @@ impl Engine {
                     .chain(original.iter_mut())
                     .find(|v| **v == target)
                 {
+                    // Keep the pre-upgrade identity with the row, atomically with
+                    // the edit. A later deletion must suppress the WebKit original.
+                    if v.get("legacyIdentity").is_none() {
+                        v["legacyIdentity"] = json!(deletion(v));
+                    }
                     v["text"] = json!(text);
                 }
             }
@@ -813,6 +832,11 @@ fn digest(v: &Value) -> String {
     )
 }
 fn deletion(v: &Value) -> Deletion {
+    if let Some(identity) = v.get("legacyIdentity") {
+        if let Ok(identity) = serde_json::from_value(identity.clone()) {
+            return identity;
+        }
+    }
     Deletion {
         id: v["id"].as_str().unwrap_or_default().into(),
         digest: digest(v),
@@ -897,6 +921,11 @@ fn valid_history(v: &Value) -> bool {
         && strings(v, &["id", "text"])
         && numbers(v, &["timestamp", "duration"])
         && optional(v, "schemaVersion", |v| *v == 2)
+        && optional(v, "legacyIdentity", |v| {
+            serde_json::from_value::<Deletion>(v.clone()).is_ok_and(|d| {
+                d.digest.len() == 64 && d.digest.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+        })
         && optional(v, "pinned", Value::is_boolean)
         && optional(v, "source", |v| {
             matches!(v.as_str(), Some("recording" | "file"))
@@ -1081,3 +1110,13 @@ impl MigrationGate {
 }
 #[cfg(test)]
 mod tests;
+
+/// Shared whole-settings publication path. Migration and journal files are never
+/// part of a settings snapshot, even when that snapshot predates an import.
+pub fn save_settings(root: &std::path::Path, blob: &str) -> Result<()> {
+    let value: Value = serde_json::from_str(blob).map_err(|_| Error::Invalid)?;
+    if !value.is_object() || blob.len() > 1024 * 1024 {
+        return Err(Error::Invalid);
+    }
+    Storage::new(root.into()).write_bytes("settings.json", blob.as_bytes())
+}

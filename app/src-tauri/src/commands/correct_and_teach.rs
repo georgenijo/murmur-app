@@ -50,11 +50,7 @@ pub fn propose_learned_correction(
     );
     drop(dictation);
     if let CorrectionProposalOutcome::Proposal { proposal_id, .. } = &outcome {
-        crate::completion::activity(
-            &app,
-            format!("proposed:{proposal_id}"),
-            murmur_core::completion::StatisticsEvent::CorrectionProposed,
-        );
+        crate::completion::produce(&app, |producer| producer.correction_proposed(*proposal_id));
     }
     outcome
 }
@@ -108,11 +104,7 @@ pub fn propose_specific_learned_correction(
     );
     drop(dictation);
     if let CorrectionProposalOutcome::Proposal { proposal_id, .. } = &outcome {
-        crate::completion::activity(
-            &app,
-            format!("proposed:{proposal_id}"),
-            murmur_core::completion::StatisticsEvent::CorrectionProposed,
-        );
+        crate::completion::produce(&app, |producer| producer.correction_proposed(*proposal_id));
     }
     outcome
 }
@@ -144,11 +136,9 @@ pub fn confirm_learned_correction(
         "project" => murmur_core::completion::Scope::Project,
         _ => murmur_core::completion::Scope::Global,
     };
-    crate::completion::activity(
-        &app,
-        format!("taught:{proposal_id}"),
-        murmur_core::completion::StatisticsEvent::CorrectionTaught { scope },
-    );
+    crate::completion::produce(&app, |producer| {
+        producer.correction_taught(proposal_id, scope)
+    });
     Ok(entry)
 }
 

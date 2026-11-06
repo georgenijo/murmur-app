@@ -361,6 +361,8 @@ pub fn run() {
             commands::export::save_text_export,
             commands::mode_exchange::read_modes_file,
             completion::completion_snapshot,
+            completion::accept_file_transcription,
+            completion::cancel_file_transcription,
             completion::import_completion_v1,
             completion::acknowledge_completion_keys,
             completion::mutate_history,

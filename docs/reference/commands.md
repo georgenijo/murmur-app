@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 177 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 179 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -20,7 +20,7 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 | `cancel_native_recording` | `expected_recording_id: Option<u64>` | `Result<(), String>` | With an expected ID, acts only when that generation still owns dictation. Cancels initialization or capture through a brief `recovering` transition to `idle`, or discards a processing run without delivery. Detached audio cleanup continues asynchronously. |
 | `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
-| `transcribe_file` | `file_path: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
+| `transcribe_file` | `file_path: String`, `operation_id: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
 | `preview_vocabulary_aliases` | `entries`, `voice_commands`, `text`, `cli_formatting` | `Result<String, String>` | Runs alias + command resolution over sample text in memory. No persistence, no delivery. |
 | `scan_code_vocab` | `folder: String`, `scan_id: String` | `Result<VocabScanSummary, String>` | Breadth-first identifier scan of a project folder with throttled progress events. Returns ranked terms, counts, cap state, and whether the result was adopted. |
 | `cancel_code_vocab_scan` | `scan_id: String` | `bool` | Cancels only the matching scan. |
@@ -402,6 +402,8 @@ All successful mutations return the latest `Snapshot` and publish read-only
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
+| `accept_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window accepts a visible, uncancelled file result into History using the operation's start-time retention. No statistics. |
+| `cancel_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window cancels file History admission, including before native start or after transcription. |
 | `completion_snapshot` | — | `Result<Snapshot, String>` | Main/diagnostics read of History, statistics, saved reports, migration notice and per-destination key-removal receipts. |
 | `acknowledge_completion_keys` | `destinations: Destination[]` | `Result<(), String>` | Main-only durable acknowledgement after targeted WebKit key removal. Safe to repeat on later launches. |
 | `import_completion_v1` | `source: LegacyImport` | `Result<Snapshot, String>` | Main-only fill/recovery import of History, statistics and reports. Disk wins when valid; durable markers prevent reimport. |

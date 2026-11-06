@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { transcribeFile } from '../dictation';
+import { transcribeFile, cancelFileTranscription, acceptFileTranscription } from '../dictation';
 import { flog } from '../log';
 import {
   QueueItem,
@@ -42,6 +42,7 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
   runningRef.current = isRunning;
   const queueRef = useRef(queue);
   queueRef.current = queue;
+  const operationsRef = useRef(new Map<string, string>());
   const cancelledIdsRef = useRef(new Set<string>());
 
   const publishQueue = useCallback((next: QueueItem[]) => {
@@ -66,7 +67,10 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
         publishQueue(updateItem(queueRef.current, item.id, { status: 'transcribing' }));
         flog.info('file-transcribe', 'start', { name: item.name });
 
-        const res = await transcribeFile(item.path);
+        const operationId = crypto.randomUUID();
+        operationsRef.current.set(item.id, operationId);
+        const res = await transcribeFile(item.path, operationId);
+        operationsRef.current.delete(item.id);
 
         if (cancelledIdsRef.current.delete(item.id)) {
           flog.info('file-transcribe', 'cancelled', { name: item.name });
@@ -82,6 +86,9 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
 
         const text = res.text || '';
         publishQueue(updateItem(queueRef.current, item.id, { status: 'done', text }));
+        // Accept in the same JS turn as the visible result, after cancellation
+        // was checked. There is no cancellable UI gap while persistence runs.
+        void acceptFileTranscription(operationId).catch(() => {});
         flog.info('file-transcribe', 'complete', { textLen: text.length });
       }
     } finally {
@@ -126,7 +133,11 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
   const cancel = useCallback((id: string) => {
     const item = queueRef.current.find((candidate) => candidate.id === id);
     if (!item || (item.status !== 'queued' && item.status !== 'transcribing')) return;
-    if (item.status === 'transcribing') cancelledIdsRef.current.add(id);
+    if (item.status === 'transcribing') {
+      cancelledIdsRef.current.add(id);
+      const operationId = operationsRef.current.get(id);
+      if (operationId) void cancelFileTranscription(operationId).catch(() => {});
+    }
     publishQueue(updateItem(queueRef.current, id, { status: 'error', error: 'Canceled' }));
   }, [publishQueue]);
 

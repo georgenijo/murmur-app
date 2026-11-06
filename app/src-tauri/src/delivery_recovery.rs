@@ -151,11 +151,9 @@ fn publish(app: &tauri::AppHandle, response: &RetryResult) {
         response.kind,
         RetryResultKind::AutoPasted | RetryResultKind::ClipboardOnly
     ) {
-        crate::completion::activity(
-            app,
-            format!("paste:{}", uuid::Uuid::new_v4()),
-            murmur_core::completion::StatisticsEvent::PasteLast,
-        );
+        crate::completion::produce(app, |producer| {
+            producer.paste_last(&uuid::Uuid::new_v4().to_string())
+        });
     }
     let _ = app.emit("delivery-retry-feedback", response);
 }

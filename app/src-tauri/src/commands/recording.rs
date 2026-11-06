@@ -6011,17 +6011,15 @@ pub(crate) async fn stop_native_recording_for(
             durable_entry["interruption"] = serde_json::json!(interrupted);
         }
         durable_entry["recording"] = serde_json::json!({"recordingId":rid,"modelId":model_name,"modeId":context.resolved_mode_id,"profileId":context.matched_profile.as_ref().map(|p|p.label.as_str()),"stages":history.stages});
-        crate::completion::submit(
-            &app_handle,
-            format!("dictation:{rid}"),
-            context.retain_history.then_some(durable_entry),
-            Some(murmur_core::completion::StatisticsEvent::Dictation {
-                words: text.split_whitespace().count() as u64,
-                seconds: recording_secs as f64,
-                mode: context.resolved_mode_id.clone(),
-                day: crate::completion::day(),
-            }),
-        );
+        crate::completion::produce(&app_handle, |producer| {
+            producer.dictation(
+                rid,
+                durable_entry,
+                context.retain_history,
+                context.resolved_mode_id.clone(),
+                crate::completion::day(),
+            )
+        });
         let _ = app_handle.emit(
             "transcription-complete",
             serde_json::json!({
@@ -6219,7 +6217,10 @@ pub async fn transcribe_file(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     file_path: String,
+    operation_id: String,
 ) -> Result<serde_json::Value, String> {
+    let completion = app_handle.state::<crate::completion::Completion>();
+    let operation = crate::completion::FileOperation::begin(&completion.producers, operation_id)?;
     let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
         state.inner(),
@@ -6501,19 +6502,17 @@ pub async fn transcribe_file(
         Some(runtime_identity(&model_name, warm_state)),
     );
 
-    if !text.trim().is_empty() && retain_history {
+    let entry = if !text.trim().is_empty() {
         let mut entry = crate::completion::entry(&text, duration_secs, "file");
         entry["sourceName"] = serde_json::json!(std::path::Path::new(&file_path)
             .file_name()
             .and_then(|v| v.to_str())
             .unwrap_or("File"));
-        crate::completion::submit(
-            &app_handle,
-            format!("file:{file_run_id}"),
-            Some(entry),
-            None,
-        );
-    }
+        Some(entry)
+    } else {
+        None
+    };
+    operation.finish(entry, retain_history);
     Ok(serde_json::json!({
         "type": "file_transcription",
         "fileRunId": file_run_id,

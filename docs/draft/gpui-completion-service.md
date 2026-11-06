@@ -12,7 +12,9 @@ Native successful dictation, file transcription, meeting completion, correction
 proposal/confirmation and Paste Last submit at their source. The actor claims
 source identities within the app session; a view never submits a completion.
 Live recording retains its immutable start-time History policy. File imports
-write History only. Activity events never change dictation counters.
+write History only, after the main window accepts the result for its unique
+operation UUID; native cancellation suppresses admission before start, during
+transcription, and between the result and acceptance. Activity events never change dictation counters.
 
 `completion-state.json` contains the next sequence and typed content-free
 statistics records with UUIDs. `stats.json` carries `applied_through` and all
@@ -65,43 +67,43 @@ not claim a physical power-loss test.
 
 | Plan case | Rust test |
 |---|---|
-| Crash after the journal append, before History | `dictation` |
-| Crash after History, before statistics | `legacy` |
-| Crash after statistics, before compaction | `crash_after_journal_before_history_replays_statistics_only` |
-| A meeting, a proposed correction, a taught correction, and a Paste Last, each with a crash before statistics | `crash_after_history_before_statistics_has_no_duplicate_history` |
-| Clock moved backwards; equal timestamps | `crash_after_statistics_before_compaction_does_not_reapply` |
-| Statistics write for event N fails, then event N+1 commits | `activity_events_crash_before_statistics_match_uninterrupted_run` |
-| History write fails | `clock_backwards_and_equal_timestamps_do_not_change_counters` |
-| Statistics rename succeeds but the directory fsync fails, then retry | `statistics_n_fails_then_n_plus_one_applies_both_in_order` |
-| The same, with power lost before the retry | `history_write_fails_statistics_apply_and_no_history_entry` |
-| Statistics reset with records pending | `statistics_unknown_outcome_rereads_and_does_not_compact_until_synced` |
-| Clear History; clear benchmark reports | `power_loss_after_unknown_statistics_write_replays_once` |
-| Entry deletion; the 200-entry cap; `retainHistory=false` | `reset_with_pending_records_advances_watermark_in_one_write` |
-| State-file creation fails on first start | `clear_history_and_reports_write_explicit_empty_files` |
-| State file deleted or corrupted, before and after v1 commits | `deletion_cap_and_retain_false_never_change_statistics` |
-| Holding file deleted or corrupted before v1 commits | `state_first_creation_failure_blocks_all_writes_and_arming` |
-| Stale React settings save while records are pending, then a restart | `state_deleted_corrupt_or_future_before_and_after_v1_recovers_sequence` |
-| Shape-valid but malformed disk History (for example `[null]`) or an unsupported version, with a valid WebKit copy | `holding_deleted_corrupt_or_future_does_not_change_import_decision` |
-| Unversioned statistics and legacy History entries on disk | `stale_settings_save_does_not_touch_journal_or_migration` |
-| Late v1 import with disk and WebKit holding the same data | `malformed_history_or_future_schema_quarantined_then_webkit_recovers` |
-| Late v1 import with WebKit-only data | `unversioned_statistics_and_legacy_history_are_valid_destinations` |
-| Valid disk statistics, migration timeout, new dictation, statistics file corrupted, relaunch, more dictation and a meeting, late v1 import | `late_import_disk_wins_over_identical_webkit_counters` |
-| The same sequence for History | `late_import_webkit_only_is_below_held_and_added_once` |
-| Timeout on first launch, new dictation, quit, v1 commits on the next launch | `valid_disk_statistics_corrupt_after_timeout_preserves_all_journal_events` |
-| Clear History, statistics reset, or clearing reports, before a late v1 import | `original_history_corrupt_after_timeout_recovers_legacy_below_held` |
-| Crash after the clear's destination write, before the holding-file write | `timeout_then_quit_then_next_launch_import_keeps_webkit_and_held` |
-| A clear before v1, then the migration file moved aside | `clear_before_late_import_skips_each_destination_and_removes_its_keys` |
-| Delete a held entry and an entry of the original History file, then corrupt the History file before a late v1 import | `crash_after_clear_destination_before_holding_drops_old_keeps_later` |
-| Crash between a destination's import write and draining the holding file | `clear_before_v1_then_migration_file_lost_stays_cleared` |
-| Import write commits, the holding-file write fails, the user deletes an imported entry, relaunch | `deleted_held_and_original_entries_do_not_return_after_corruption` |
-| Two legacy entries share an id; the user deletes one before v1; History file corrupted; late v1 import | `crash_after_import_destination_before_drain_adds_content_once` |
-| Repeated timeouts while new dictation and reports accumulate | `failed_import_drain_then_user_delete_and_relaunch_does_not_resurrect` |
-| Fresh install with no WebKit data directory; relaunch | `duplicate_legacy_ids_delete_skips_exactly_one_matching_text` |
-| Migration file moved aside after the store is retired | `repeated_timeouts_cap_combined_history_pins_reports_and_show_retry_on_third_launch` |
-| Crash between a destination's import write and the v1 commit | `fresh_install_without_webkit_commits_immediately_and_never_holds` |
-| Migration file moved aside before or after v1 commits | `retired_store_migration_file_lost_recommits_without_changing_destinations` |
-| Colliding legacy and new History ids | `crash_after_destination_import_before_v1_commit_skips_marked_destinations` |
-| Killed WebContent process during v1 | `migration_file_lost_before_or_after_commit_never_imports_twice` |
+| Crash after the journal append, before History | `crash_after_journal_before_history_replays_statistics_only` |
+| Crash after History, before statistics | `crash_after_history_before_statistics_has_no_duplicate_history` |
+| Crash after statistics, before compaction | `crash_after_statistics_before_compaction_does_not_reapply` |
+| A meeting, a proposed correction, a taught correction, and a Paste Last, each with a crash before statistics | `activity_events_crash_before_statistics_match_uninterrupted_run` |
+| Clock moved backwards; equal timestamps | `clock_backwards_and_equal_timestamps_do_not_change_counters` |
+| Statistics write for event N fails, then event N+1 commits | `statistics_n_fails_then_n_plus_one_applies_both_in_order` |
+| History write fails | `history_write_fails_statistics_apply_and_no_history_entry` |
+| Statistics rename succeeds but the directory fsync fails, then retry | `statistics_unknown_outcome_rereads_and_does_not_compact_until_synced` |
+| The same, with power lost before the retry | `power_loss_after_unknown_statistics_write_replays_once` |
+| Statistics reset with records pending | `reset_with_pending_records_advances_watermark_in_one_write` |
+| Clear History; clear benchmark reports | `clear_history_and_reports_write_explicit_empty_files` |
+| Entry deletion; the 200-entry cap; `retainHistory=false` | `deletion_cap_and_retain_false_never_change_statistics` |
+| State-file creation fails on first start | `state_first_creation_failure_blocks_all_writes_and_arming` |
+| State file deleted or corrupted, before and after v1 commits | `state_deleted_corrupt_or_future_before_and_after_v1_recovers_sequence` |
+| Holding file deleted or corrupted before v1 commits | `holding_deleted_corrupt_or_future_does_not_change_import_decision` |
+| Stale React settings save while records are pending, then a restart | `stale_settings_save_does_not_touch_journal_or_migration` |
+| Shape-valid but malformed disk History (for example `[null]`) or an unsupported version, with a valid WebKit copy | `malformed_history_or_future_schema_quarantined_then_webkit_recovers` |
+| Unversioned statistics and legacy History entries on disk | `unversioned_statistics_and_legacy_history_are_valid_destinations` |
+| Late v1 import with disk and WebKit holding the same data | `late_import_disk_wins_over_identical_webkit_counters` |
+| Late v1 import with WebKit-only data | `late_import_webkit_only_is_below_held_and_added_once` |
+| Valid disk statistics, migration timeout, new dictation, statistics file corrupted, relaunch, more dictation and a meeting, late v1 import | `valid_disk_statistics_corrupt_after_timeout_preserves_all_journal_events` |
+| The same sequence for History | `original_history_corrupt_after_timeout_recovers_legacy_below_held` |
+| Timeout on first launch, new dictation, quit, v1 commits on the next launch | `timeout_then_quit_then_next_launch_import_keeps_webkit_and_held` |
+| Clear History, statistics reset, or clearing reports, before a late v1 import | `clear_before_late_import_skips_each_destination_and_removes_its_keys` |
+| Crash after the clear's destination write, before the holding-file write | `crash_after_clear_destination_before_holding_drops_old_keeps_later` |
+| A clear before v1, then the migration file moved aside | `clear_before_v1_then_migration_file_lost_stays_cleared` |
+| Delete a held entry and an entry of the original History file, then corrupt the History file before a late v1 import | `deleted_held_and_original_entries_do_not_return_after_corruption` |
+| Crash between a destination's import write and draining the holding file | `crash_after_import_destination_before_drain_adds_content_once` |
+| Import write commits, the holding-file write fails, the user deletes an imported entry, relaunch | `failed_import_drain_then_user_delete_and_relaunch_does_not_resurrect` |
+| Two legacy entries share an id; the user deletes one before v1; History file corrupted; late v1 import | `duplicate_legacy_ids_delete_skips_exactly_one_matching_text` |
+| Repeated timeouts while new dictation and reports accumulate | `repeated_timeouts_cap_combined_history_pins_reports_and_show_retry_on_third_launch` |
+| Fresh install with no WebKit data directory; relaunch | `fresh_install_without_webkit_commits_immediately_and_never_holds` |
+| Migration file moved aside after the store is retired | `retired_store_migration_file_lost_recommits_without_changing_destinations` |
+| Crash between a destination's import write and the v1 commit | `crash_after_destination_import_before_v1_commit_skips_marked_destinations` |
+| Migration file moved aside before or after v1 commits | `migration_file_lost_before_or_after_commit_never_imports_twice` |
+| Colliding legacy and new History ids | `colliding_legacy_and_new_ids_keep_both_entries` |
+| Killed WebContent process during v1 | `killed_webcontent_reload_once_then_arm_holding_and_state_failure_never_arms` |
 
 ## Test port and exit check
 
@@ -118,7 +120,8 @@ retain their TypeScript coverage.
 | `benchmark.test.ts` localStorage reports | Rust report schema/cap/import/clear tests; comparison retains session-import tests and reads a synthetic core snapshot. |
 
 `headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste` now attaches a
-real completion actor to the fake capture/delivery effects. It covers successful
+real completion actor through the same `completion::producers::Producers`
+adapters used by native capture/delivery and activity sources. It covers successful
 stop and auto-stop, cancellation, retention-off, file transcription, meeting,
 taught correction and Paste Last; duplicate attachment adds nothing. Reopening
 readers and relaunching the service preserve History and counters. Additional
@@ -126,8 +129,16 @@ actor tests cover concurrent producers, rejection of a second owner, exact-row
 edits and pin limits, legacy WPM ordering and transform counters, report metadata,
 UUID de-duplication, removal acknowledgements, and unknown journal outcomes.
 Snapshot revisions prevent delayed IPC responses from replacing newer data.
+A source-wiring contract also checks the native adapter callers. Temporarily
+removing the shared dictation submission fails the effect-driven exit test;
+removing its native caller fails the wiring contract. Neither mutation is kept.
+Additional review regressions cover unreadable holding data, initialization fsync
+ordering, no-WebKit initialization retries, edited-original tombstones, file
+cancellation races and duplicate-ID client edits. The main-window importer test
+checks actual legacy-key absence after each destination's durable clear receipt.
 
 Run Linux core tests/Clippy, TypeScript/Vitest, core dependency and repository
 reference/markdown policy validators. macOS full-crate and native observations
 are recorded separately in the stack PR; headless effects do not establish OS
-paste or native GUI behavior.
+paste or native GUI behavior. Row 37 exercises the migration gate only; killing
+a real WebContent process and observing its one reload remains a native check.

@@ -1,14 +1,15 @@
 //! Thin host adapter: native producers submit once, windows only observe.
+use murmur_core::completion::producers::Producers;
 use murmur_core::completion::{
     Command, CompletionService, Destination, GateAction, HistoryMutation, LegacyImport,
-    MigrationGate, Snapshot, StatisticsEvent,
+    MigrationGate, Snapshot,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
 pub(crate) struct Completion {
     service: CompletionService,
-    session: String,
+    pub(crate) producers: Producers,
     pub(crate) admitted: AtomicBool,
 }
 pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
@@ -23,8 +24,8 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .join(&app.config().identifier);
     let service = CompletionService::start(root, webkit.exists()).map_err(|e| e.to_string())?;
     app.manage(Completion {
+        producers: Producers::new(service.clone(), uuid::Uuid::new_v4().to_string()),
         service,
-        session: uuid::Uuid::new_v4().to_string(),
         admitted: AtomicBool::new(false),
     });
     Ok(())
@@ -80,29 +81,80 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Snapshot, String>
     }
     result
 }
-pub(crate) fn submit(
+pub(crate) fn produce(
     app: &tauri::AppHandle,
-    key: String,
-    entry: Option<serde_json::Value>,
-    event: Option<StatisticsEvent>,
+    f: impl FnOnce(&Producers) -> murmur_core::completion::Result<Snapshot>,
 ) {
-    let source = format!("{}:{key}", app.state::<Completion>().session);
-    if execute(
-        app,
-        Command::Complete {
-            source,
-            entry,
-            event,
-        },
-    )
-    .is_err()
-    {
-        tracing::warn!(target:"completion",code="completion_write_failed","completion service write failed");
-        let _ = app.emit_to("main", "completion-storage-error", ());
+    let state = app.state::<Completion>();
+    match f(&state.producers) {
+        Ok(_) => {
+            let _ = app.emit("history-changed", ());
+            let _ = app.emit("statistics-changed", ());
+        }
+        Err(_) => {
+            tracing::warn!(target:"completion",code="completion_write_failed","completion service write failed");
+            let _ = app.emit_to("main", "completion-storage-error", ());
+        }
     }
 }
-pub(crate) fn activity(app: &tauri::AppHandle, key: String, event: StatisticsEvent) {
-    submit(app, key, None, Some(event));
+/// A failed/cancelled native operation drops its pending content on every exit.
+pub(crate) struct FileOperation<'a> {
+    producers: &'a Producers,
+    operation: String,
+    ready: bool,
+}
+impl<'a> FileOperation<'a> {
+    pub(crate) fn begin(producers: &'a Producers, operation: String) -> Result<Self, String> {
+        producers
+            .begin_file(&operation)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            producers,
+            operation,
+            ready: false,
+        })
+    }
+    pub(crate) fn finish(mut self, entry: Option<serde_json::Value>, retain: bool) {
+        self.producers.finish_file(&self.operation, entry, retain);
+        self.ready = true;
+    }
+}
+impl Drop for FileOperation<'_> {
+    fn drop(&mut self) {
+        if !self.ready {
+            self.producers.discard_file(&self.operation);
+        }
+    }
+}
+#[tauri::command]
+pub(crate) fn cancel_file_transcription(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    operation_id: String,
+) -> Result<(), String> {
+    main_only(&window)?;
+    app.state::<Completion>()
+        .producers
+        .cancel_file(&operation_id);
+    Ok(())
+}
+#[tauri::command]
+pub(crate) fn accept_file_transcription(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    operation_id: String,
+) -> Result<(), String> {
+    main_only(&window)?;
+    if app
+        .state::<Completion>()
+        .producers
+        .accept_file(&operation_id)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        let _ = app.emit("history-changed", ());
+    }
+    Ok(())
 }
 pub(crate) fn retain(app: &tauri::AppHandle) -> bool {
     app.state::<crate::dictation_control::Control>()

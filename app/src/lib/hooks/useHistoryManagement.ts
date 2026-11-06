@@ -13,10 +13,9 @@ export function useHistoryManagement(_retainHistory = true) {
   const mutate = useCallback((mutation: Record<string, unknown>) => {
     void completionMutation('mutate_history', { mutation }).catch(() => {});
   }, []);
-  const updateEntry = useCallback((id: string, text: string) => {
-    const target = historyEntries.find(entry => entry.id === id);
-    if (target) mutate({ kind: 'edit', target, text });
-  }, [historyEntries, mutate]);
+  const updateEntry = useCallback((target: HistoryEntry, text: string) => {
+    mutate({ kind: 'edit', target, text });
+  }, [mutate]);
   const togglePinned = useCallback((target: HistoryEntry) => mutate({ kind: 'pin', target }), [mutate]);
   const deleteEntries = useCallback((targets: readonly HistoryEntry[]) => mutate({ kind: 'delete', targets }), [mutate]);
   const clearHistory = useCallback(() => { void clearPersistedHistory().catch(() => {}); }, []);

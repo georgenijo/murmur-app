@@ -10,6 +10,7 @@ fn engine(root: &std::path::Path, webkit: bool) -> Engine {
         webkit_exists: webkit,
         seen: HashSet::new(),
         revision: 0,
+        initialized: false,
     };
     e.initialize().unwrap();
     e
@@ -66,7 +67,14 @@ fn restart(e: &Engine) -> Engine {
 fn crash_after_journal_before_history_replays_statistics_only() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), false);
-    append(&mut e, dictation());
+    e.storage.fail = Some((STATE.into(), Boundary::AfterRename));
+    assert!(e
+        .execute(Command::Complete {
+            source: "crashed".into(),
+            entry: Some(entry("crashed", "synthetic")),
+            event: Some(dictation())
+        })
+        .is_err());
     let s = restart(&e).snapshot().unwrap();
     assert!(s.history.is_empty());
     assert_eq!(s.statistics.total_recordings, 1);
@@ -75,9 +83,14 @@ fn crash_after_journal_before_history_replays_statistics_only() {
 fn crash_after_history_before_statistics_has_no_duplicate_history() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), false);
-    append(&mut e, dictation());
-    e.add_content(Destination::History, entry("a", "synthetic"))
-        .unwrap();
+    e.storage.fail = Some(("stats.json".into(), Boundary::BeforeRename));
+    assert!(e
+        .execute(Command::Complete {
+            source: "crashed".into(),
+            entry: Some(entry("crashed", "synthetic")),
+            event: Some(dictation())
+        })
+        .is_err());
     let s = restart(&e).snapshot().unwrap();
     assert_eq!(s.history.len(), 1);
     assert_eq!(s.statistics.total_recordings, 1);
@@ -110,7 +123,15 @@ fn activity_events_crash_before_statistics_match_uninterrupted_run() {
         },
         StatisticsEvent::PasteLast,
     ] {
-        append(&mut e, event);
+        e.storage.fail = Some(("stats.json".into(), Boundary::BeforeRename));
+        assert!(e
+            .execute(Command::Complete {
+                source: uuid(),
+                entry: None,
+                event: Some(event)
+            })
+            .is_err());
+        e = restart(&e);
     }
     let s = restart(&e).snapshot().unwrap().statistics;
     assert_eq!(s.total_recordings, 0);
@@ -126,8 +147,15 @@ fn activity_events_crash_before_statistics_match_uninterrupted_run() {
 fn clock_backwards_and_equal_timestamps_do_not_change_counters() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), false);
-    for i in 0..3 {
-        complete(&mut e, &i.to_string(), true);
+    for (i, timestamp) in [100, 100, 50].into_iter().enumerate() {
+        let mut v = entry(&i.to_string(), "synthetic");
+        v["timestamp"] = json!(timestamp);
+        e.execute(Command::Complete {
+            source: i.to_string(),
+            entry: Some(v),
+            event: Some(dictation()),
+        })
+        .unwrap();
     }
     let s = restart(&e).snapshot().unwrap();
     assert_eq!(s.statistics.total_words, 9);
@@ -138,19 +166,26 @@ fn clock_backwards_and_equal_timestamps_do_not_change_counters() {
 fn statistics_n_fails_then_n_plus_one_applies_both_in_order() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), false);
-    append(&mut e, dictation());
     e.storage.fail = Some(("stats.json".into(), Boundary::BeforeRename));
-    assert!(e.apply_statistics().is_err());
-    append(
-        &mut e,
-        StatisticsEvent::Dictation {
+    assert!(e
+        .execute(Command::Complete {
+            source: "N".into(),
+            entry: None,
+            event: Some(dictation())
+        })
+        .is_err());
+    assert_eq!(e.state().unwrap().journal.len(), 1);
+    e.execute(Command::Complete {
+        source: "N+1".into(),
+        entry: None,
+        event: Some(StatisticsEvent::Dictation {
             words: 10,
             seconds: 1.0,
             mode: None,
             day: "2026-11-04".into(),
-        },
-    );
-    e.apply_statistics().unwrap();
+        }),
+    })
+    .unwrap();
     let s = e.snapshot().unwrap();
     assert_eq!(s.statistics.total_recordings, 2);
     assert_eq!(s.statistics.wpm_samples, vec![90.0, 600.0]);
@@ -255,10 +290,12 @@ fn state_first_creation_failure_blocks_all_writes_and_arming() {
         storage: Storage {
             root: dir.path().into(),
             fail: Some((STATE.into(), Boundary::BeforeRename)),
+            ..Default::default()
         },
         webkit_exists: true,
         seen: HashSet::new(),
         revision: 0,
+        initialized: false,
     };
     assert!(e.initialize().is_err());
     assert!(!dir.path().join("history.json").exists());
@@ -315,7 +352,11 @@ fn stale_settings_save_does_not_touch_journal_or_migration() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), true);
     complete(&mut e, "a", true);
-    std::fs::write(dir.path().join("settings.json"), "{}").unwrap();
+    let journal = std::fs::read(dir.path().join(STATE)).unwrap();
+    let migration = std::fs::read(dir.path().join(MIGRATION)).ok();
+    save_settings(dir.path(), r#"{"retainHistory":true}"#).unwrap();
+    assert_eq!(std::fs::read(dir.path().join(STATE)).unwrap(), journal);
+    assert_eq!(std::fs::read(dir.path().join(MIGRATION)).ok(), migration);
     e = restart(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 3);
@@ -569,6 +610,23 @@ fn duplicate_legacy_ids_delete_skips_exactly_one_matching_text() {
 #[test]
 fn repeated_timeouts_cap_combined_history_pins_reports_and_show_retry_on_third_launch() {
     let dir = TempDir::new().unwrap();
+    let originals: Vec<_> = (0..40)
+        .map(|i| {
+            let mut v = entry(&format!("original:{i}"), "synthetic");
+            v["pinned"] = json!(true);
+            v
+        })
+        .collect();
+    std::fs::write(
+        dir.path().join("history.json"),
+        json!(originals).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("benchmark-reports.json"),
+        json!([report(20), report(21)]).to_string(),
+    )
+    .unwrap();
     let mut e = engine(dir.path(), true);
     for i in 0..225 {
         let mut v = entry(&i.to_string(), "synthetic");
@@ -587,6 +645,25 @@ fn repeated_timeouts_cap_combined_history_pins_reports_and_show_retry_on_third_l
     assert_eq!(s.history.len(), 200);
     assert_eq!(s.history.iter().filter(|v| v["pinned"] == true).count(), 20);
     assert_eq!(s.reports.len(), 10);
+    assert!(s
+        .history
+        .iter()
+        .any(|v| v["id"].as_str().unwrap().starts_with("original:")));
+    assert!(s
+        .reports
+        .iter()
+        .any(|v| v["createdAt"] == report(21)["createdAt"]));
+    assert_eq!(
+        e.holding().unwrap().history.entries.len()
+            + e.document(Destination::History)
+                .unwrap()
+                .unwrap()
+                .data
+                .as_array()
+                .unwrap()
+                .len(),
+        200
+    );
 }
 #[test]
 fn fresh_install_without_webkit_commits_immediately_and_never_holds() {
@@ -625,16 +702,30 @@ fn crash_after_destination_import_before_v1_commit_skips_marked_destinations() {
 }
 #[test]
 fn migration_file_lost_before_or_after_commit_never_imports_twice() {
-    let dir = TempDir::new().unwrap();
-    let mut e = engine(dir.path(), true);
-    e.import(legacy()).unwrap();
-    for _ in 0..3 {
-        std::fs::remove_file(dir.path().join(MIGRATION)).unwrap();
-        e = restart(&e);
-        e.import(legacy()).unwrap();
-        let s = e.snapshot().unwrap();
-        assert_eq!(s.history.len(), 1);
-        assert_eq!(s.statistics.total_recordings, 2);
+    for committed in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), true);
+        if !committed {
+            e.storage
+                .write(
+                    MIGRATION,
+                    &Migration {
+                        schema: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            e.storage.fail = Some((MIGRATION.into(), Boundary::BeforeRename));
+        }
+        assert_eq!(e.import(legacy()).is_ok(), committed);
+        for _ in 0..3 {
+            std::fs::remove_file(dir.path().join(MIGRATION)).unwrap();
+            e = restart(&e);
+            e.import(legacy()).unwrap();
+            let s = e.snapshot().unwrap();
+            assert_eq!(s.history.len(), 1);
+            assert_eq!(s.statistics.total_recordings, 2);
+        }
     }
 }
 #[test]
@@ -905,4 +996,107 @@ fn unknown_outcome_at_real_journal_append_is_claimed_before_retry() {
     assert_eq!(s.statistics.total_recordings, 1);
     assert!(s.history.is_empty());
     assert!(e.state().unwrap().journal.is_empty());
+}
+
+#[test]
+fn review_initialize_must_sync_unknown_import_before_draining() {
+    for destination in [Destination::History, Destination::Reports] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), true);
+        complete(&mut e, "held", true);
+        e.add_content(Destination::Reports, report(2)).unwrap();
+        e.storage.fail = Some((destination.file().into(), Boundary::AfterRename));
+        assert!(e.execute(Command::Import(legacy())).is_err());
+        e.storage.trace.borrow_mut().clear();
+        let held = std::fs::read(dir.path().join(HOLD)).unwrap();
+        e.storage.fail_sync.set(true);
+        assert!(e.initialize().is_err());
+        assert_eq!(*e.storage.trace.borrow(), vec!["directory_sync"]);
+        assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), held);
+        e.storage.trace.borrow_mut().clear();
+        e.initialize().unwrap();
+        let trace = e.storage.trace.borrow();
+        assert_eq!(trace[0], "directory_sync");
+        assert!(
+            trace
+                .iter()
+                .position(|v| v == "completion-holding.json:BeforeRename")
+                .unwrap()
+                > 0
+        );
+        drop(trace);
+        let snapshot = e.execute(Command::Import(legacy())).unwrap();
+        assert_eq!(snapshot.history.len(), 2);
+        assert_eq!(snapshot.reports.len(), 2);
+    }
+}
+
+#[test]
+fn review_unreadable_holding_blocks_writes_and_arming_without_replacement() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    complete(&mut e, "held", true);
+    let before = std::fs::read(dir.path().join(HOLD)).unwrap();
+    e.storage.fail_read = Some(HOLD.into());
+    assert!(e.initialize().is_err());
+    e.storage.trace.borrow_mut().clear();
+    let result = e.execute(Command::Complete {
+        source: "blocked".into(),
+        entry: Some(entry("blocked", "synthetic")),
+        event: Some(dictation()),
+    });
+    assert!(matches!(result, Err(Error::Io)));
+    assert_eq!(
+        MigrationGate::default().tick(result.is_ok(), false, 20_000),
+        GateAction::Wait
+    );
+    assert!(!e
+        .storage
+        .trace
+        .borrow()
+        .iter()
+        .any(|v| v.contains("Rename")));
+    assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before);
+    e.storage.fail_read = None;
+    assert_eq!(e.execute(Command::Snapshot).unwrap().history.len(), 1);
+}
+
+#[test]
+fn review_no_webkit_migration_initialization_failure_must_retry() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    e.webkit_exists = false;
+    e.storage.fail = Some((MIGRATION.into(), Boundary::BeforeRename));
+    assert!(e.initialize().is_err());
+    assert!(
+        e.execute(Command::Snapshot).unwrap().v1_committed,
+        "initialization must retry the pending no-WebKit commit"
+    );
+}
+
+#[test]
+fn review_deleted_edited_original_must_not_return_from_legacy() {
+    let dir = TempDir::new().unwrap();
+    let old = legacy().history.unwrap();
+    std::fs::write(dir.path().join("history.json"), old.to_string()).unwrap();
+    let mut e = engine(dir.path(), true);
+    let target = e.execute(Command::Snapshot).unwrap().history[0].clone();
+    e.execute(Command::History(HistoryMutation::Edit {
+        target,
+        text: "edited synthetic".into(),
+    }))
+    .unwrap();
+    e = restart(&e); // Original legacy identity survives relaunch and further edits.
+    let target = e.execute(Command::Snapshot).unwrap().history[0].clone();
+    e.execute(Command::History(HistoryMutation::Delete {
+        targets: vec![target],
+    }))
+    .unwrap();
+    assert!(e.execute(Command::Snapshot).unwrap().history.is_empty());
+    std::fs::write(dir.path().join("history.json"), "broken").unwrap();
+    let s = e.execute(Command::Import(legacy())).unwrap();
+    assert!(
+        s.history.is_empty(),
+        "deleted original returned with its pre-edit text"
+    );
 }

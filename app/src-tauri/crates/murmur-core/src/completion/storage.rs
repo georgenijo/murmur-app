@@ -17,13 +17,36 @@ pub struct Storage {
     pub root: PathBuf,
     #[cfg(test)]
     pub fail: Option<(String, Boundary)>,
+    #[cfg(test)]
+    pub fail_read: Option<String>,
+    #[cfg(test)]
+    pub fail_sync: std::cell::Cell<bool>,
+    #[cfg(test)]
+    pub trace: std::cell::RefCell<Vec<String>>,
 }
 impl Storage {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            #[cfg(test)]
+            fail: None,
+            #[cfg(test)]
+            fail_read: None,
+            #[cfg(test)]
+            fail_sync: Default::default(),
+            #[cfg(test)]
+            trace: Default::default(),
+        }
+    }
     pub fn read<T: DeserializeOwned>(
         &self,
         name: &str,
         validate: impl FnOnce(&T) -> bool,
     ) -> Result<Option<T>> {
+        #[cfg(test)]
+        if self.fail_read.as_deref() == Some(name) {
+            return Err(Error::Io);
+        }
         let path = self.root.join(name);
         let file = match File::open(&path) {
             Ok(f) => f,
@@ -55,12 +78,22 @@ impl Storage {
         Ok(None)
     }
     pub fn sync_directory(&self) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.trace.borrow_mut().push("directory_sync".into());
+            if self.fail_sync.replace(false) {
+                return Err(Error::Io);
+            }
+        }
         File::open(&self.root)
             .and_then(|f| f.sync_all())
             .map_err(|_| Error::Io)
     }
     pub fn write<T: Serialize>(&mut self, name: &str, value: &T) -> Result<()> {
         let bytes = serde_json::to_vec(value).map_err(|_| Error::Invalid)?;
+        self.write_bytes(name, &bytes)
+    }
+    pub fn write_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         if name != super::STATE && bytes.len() > 32 * 1024 * 1024 {
             return Err(Error::Invalid);
         }
@@ -76,7 +109,7 @@ impl Storage {
                 options.mode(0o600);
             }
             let mut file = options.open(&temp).map_err(|_| Error::Io)?;
-            file.write_all(&bytes).map_err(|_| Error::Io)?;
+            file.write_all(bytes).map_err(|_| Error::Io)?;
             full_sync(&file)?;
             self.boundary(name, Boundary::BeforeRename)?;
             fs::rename(&temp, &path).map_err(|_| Error::Io)?;
@@ -87,6 +120,8 @@ impl Storage {
         result
     }
     fn boundary(&mut self, _name: &str, _at: Boundary) -> Result<()> {
+        #[cfg(test)]
+        self.trace.borrow_mut().push(format!("{_name}:{_at:?}"));
         #[cfg(test)]
         if self
             .fail

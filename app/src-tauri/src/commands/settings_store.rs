@@ -159,6 +159,9 @@ fn write_blob(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
 /// Caller holds WRITE_LOCK, including any read/merge preceding this publish.
 fn write_blob_locked(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
     validate_blob(spec, blob)?;
+    if spec.file_name == SETTINGS.file_name {
+        return murmur_core::completion::save_settings(dir, blob).map_err(|e| e.to_string());
+    }
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
 
