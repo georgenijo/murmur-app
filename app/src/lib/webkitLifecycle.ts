@@ -13,7 +13,7 @@ const inFlight = new Map<number, Promise<void>>();
 let generation = 0;
 export type OwnedEdits = Partial<Record<'autoPaste' | 'disabled', boolean>>;
 type OwnedField = keyof OwnedEdits;
-export type OwnedCommit = { autoPaste?: boolean; disabled?: boolean; ownedFieldsRevision?: number; intentGeneration?: number };
+export type OwnedCommit = { autoPaste?: boolean; disabled?: boolean; ownedFieldsRevision?: number; intentGeneration?: number; field?: OwnedField; acknowledgedFields?: OwnedField[] };
 const pending = new Map<string, { raw: string; generation: number; ownedEdits?: OwnedEdits; fieldGenerations?: Partial<Record<OwnedField, number>> }>();
 const SOURCE_COMMITTED = 'presentation-source-committed';
 interface SourceCommitted { key: string }
@@ -145,7 +145,11 @@ export function rebasePendingOwnedSettings(settings: OwnedCommit): OwnedCommit {
   const ownedEdits = { ...intent.ownedEdits };
   const fieldGenerations = { ...intent.fieldGenerations };
   for (const field of ['autoPaste', 'disabled'] as const) {
-    if (settings.intentGeneration !== undefined && (fieldGenerations[field] ?? 0) > settings.intentGeneration) {
+    const unacknowledged = settings.intentGeneration !== undefined && settings.acknowledgedFields !== undefined
+      && !settings.acknowledgedFields.includes(field);
+    const otherNativeField = settings.intentGeneration === undefined && settings.field !== undefined && settings.field !== field;
+    if (typeof ownedEdits[field] === 'boolean' && (unacknowledged || otherNativeField
+      || (settings.intentGeneration !== undefined && (fieldGenerations[field] ?? 0) > settings.intentGeneration))) {
       rebased[field] = ownedEdits[field];
     } else if (typeof settings[field] === 'boolean') {
       delete ownedEdits[field];

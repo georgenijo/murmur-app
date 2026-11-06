@@ -1171,8 +1171,8 @@ fn explicit_barriers_seal_and_snapshot_replay() {
         br#"{"schema":1,"value":{"visible":false}}"#,
     )
     .unwrap();
-    recover_snapshot(&path).unwrap();
-    recover_snapshot(&path).unwrap();
+    recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).unwrap();
+    recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["visible"],
         false
@@ -1202,8 +1202,8 @@ fn malformed_snapshot_pending_stays_a_recovery_error() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("synthetic-window.json");
     std::fs::write(path.with_extension("json.pending"), b"{invalid").unwrap();
-    assert!(recover_snapshot(&path).is_err());
-    assert!(recover_snapshot(&path).is_err());
+    assert!(recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).is_err());
+    assert!(recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).is_err());
     assert!(!path.exists());
 }
 
@@ -1385,4 +1385,37 @@ fn explicit_pending_recovery_survives_restart_without_replaying_rejected_evidenc
     .unwrap();
     assert!(!next.storage.quarantined(PENDING).unwrap());
     assert!(reopen(&next).snapshot().unwrap().history.is_empty());
+}
+
+#[test]
+fn explicit_pending_recovery_through_public_service_across_two_launches() {
+    let dir = TempDir::new().unwrap();
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    service.execute(Command::Snapshot).unwrap();
+    service
+        .execute(Command::Complete {
+            source: "synthetic-service".into(),
+            entry: Some(entry("service", "synthetic")),
+            event: None,
+        })
+        .unwrap();
+    drop(service);
+    std::fs::write(dir.path().join(PENDING), b"{damaged synthetic").unwrap();
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    assert!(service.execute(Command::Snapshot).is_err());
+    assert_eq!(
+        service
+            .execute(Command::RecoverPending)
+            .unwrap()
+            .history
+            .len(),
+        1
+    );
+    drop(service);
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    assert_eq!(service.execute(Command::Snapshot).unwrap().history.len(), 1);
+    assert_eq!(
+        futures_executor::block_on(service.shutdown_receipt()),
+        crate::shutdown::WriteOutcome::Committed
+    );
 }

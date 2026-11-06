@@ -257,6 +257,19 @@ pub(crate) fn save_settings_blob_worker(
                     &blob,
                 );
                 notice["intentGeneration"] = serde_json::json!(intent_generation);
+                notice["acknowledgedFields"] = serde_json::json!(owned_edits
+                    .as_ref()
+                    .map(|edits| {
+                        let mut fields = Vec::new();
+                        if edits.auto_paste.is_some() {
+                            fields.push("autoPaste");
+                        }
+                        if edits.disabled.is_some() {
+                            fields.push("disabled");
+                        }
+                        fields
+                    })
+                    .unwrap_or_default());
                 notice
             },
         );

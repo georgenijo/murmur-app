@@ -162,7 +162,7 @@ impl Engine {
     }
     fn lifecycle_inner(&mut self, op: Operation) -> Result<Receipt> {
         self.storage.retry_intents()?;
-        self.storage.recover_snapshot(UI_STATE)?;
+        self.storage.recover_snapshot(UI_STATE, valid_snapshot)?;
         self.storage.sync_directory()?;
         let mut m = self.migration()?;
         let mut state = self.ui_state()?;

@@ -51,7 +51,7 @@ it('preserves the origin generation in main-save acknowledgements', async () => 
   function Harness() { useOverlaySettingsSync(apply); return null; }
   await act(async () => root.render(<Harness />));
   mocks.handler!({ payload: { field: 'autoPaste', value: true, autoPaste: true, disabled: false, ownedFieldsRevision: 2, intentGeneration: 17 } });
-  expect(apply).toHaveBeenCalledWith({ autoPaste: true, disabled: false, ownedFieldsRevision: 2, intentGeneration: 17 });
+  expect(apply).toHaveBeenCalledWith({ field: 'autoPaste', autoPaste: true, disabled: false, ownedFieldsRevision: 2, intentGeneration: 17 });
   mocks.handler!({ payload: { field: 'autoPaste', value: true, autoPaste: true, disabled: false, ownedFieldsRevision: 2, intentGeneration: -1 } });
   expect(apply).toHaveBeenCalledTimes(1);
   await act(async () => root.unmount());

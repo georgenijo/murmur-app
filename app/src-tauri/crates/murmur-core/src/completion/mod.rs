@@ -405,13 +405,7 @@ impl Engine {
         if self.storage.sync_directory().is_ok()
             && self
                 .storage
-                .read::<Value>(PENDING, |v| {
-                    v["schema"] == 1
-                        && matches!(
-                            v["file"].as_str(),
-                            Some(HOLD | "history.json" | "benchmark-reports.json")
-                        )
-                })
+                .read::<Value>(PENDING, valid_pending)
                 .is_ok_and(|v| v.is_some())
         {
             WriteOutcome::PreservedForReplay
@@ -977,6 +971,7 @@ impl Engine {
         for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
             self.storage.remove_temps(file)?;
         }
+        self.storage.prune_artifacts(PENDING)?;
         self.unpreserved_content = false;
         Ok(())
     }
@@ -989,16 +984,7 @@ impl Engine {
                 .map_err(|_| Error::Io)?;
             self.storage.sync_directory()?;
         }
-        let pending: Option<Value> = self.storage.read(PENDING, |v: &Value| {
-            v["schema"] == 1
-                && v["file"].as_str().is_some_and(|f| match f {
-                    HOLD => serde_json::from_value::<Holding>(v["value"].clone())
-                        .is_ok_and(|h| valid_holding(&h)),
-                    "history.json" => valid_document(Destination::History, &v["value"]),
-                    "benchmark-reports.json" => valid_document(Destination::Reports, &v["value"]),
-                    _ => false,
-                })
-        })?;
+        let pending: Option<Value> = self.storage.read(PENDING, valid_pending)?;
         if let Some(pending) = pending {
             self.storage.write(
                 pending["file"].as_str().ok_or(Error::Invalid)?,
@@ -1007,8 +993,7 @@ impl Engine {
             std::fs::remove_file(self.storage.root.join(PENDING)).map_err(|_| Error::Io)?;
             self.storage.sync_directory()?;
         } else if existed
-            || (self.storage.quarantined(PENDING)?
-                && !self.storage.root.join("completion-recovery.json").exists())
+            || (self.storage.quarantined(PENDING)? && !self.storage.pending_recovery_resolved()?)
         {
             return Err(Error::Invalid);
         }
@@ -1869,14 +1854,6 @@ pub fn publish_snapshot<T: Serialize>(path: &std::path::Path, value: &T) -> Resu
         .ok_or(Error::Invalid)?;
     Storage::new(root.into()).publish_snapshot(file, value)
 }
-pub fn recover_snapshot(path: &std::path::Path) -> Result<()> {
-    let root = path.parent().ok_or(Error::Invalid)?;
-    let file = path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .ok_or(Error::Invalid)?;
-    Storage::new(root.into()).recover_snapshot(file)
-}
 
 fn valid_holding(v: &Holding) -> bool {
     v.schema == 1
@@ -1887,13 +1864,6 @@ fn valid_holding(v: &Holding) -> bool {
         && v.reports.entries.iter().all(valid_report)
 }
 
-fn valid_snapshot(file: &str, value: &Value) -> bool {
-    match file {
-        "ui-state.json" => lifecycle::valid_snapshot(value),
-        // Host-owned snapshots must additionally pass the supplied schema validator.
-        _ => value.is_object(),
-    }
-}
 /// Recovery of host-owned snapshots validates the complete host schema before rename.
 pub fn recover_snapshot_validated(
     path: &std::path::Path,
@@ -1904,15 +1874,17 @@ pub fn recover_snapshot_validated(
         .file_name()
         .and_then(|v| v.to_str())
         .ok_or(Error::Invalid)?;
-    let storage = Storage::new(root.into());
-    let pending = format!("{file}.pending");
-    let existed = root.join(&pending).exists();
-    if storage
-        .read::<Value>(&pending, |v| v["schema"] == 1 && validate(&v["value"]))?
-        .is_none()
-        && (existed || storage.quarantined(&pending)?)
-    {
-        return Err(Error::Invalid);
-    }
-    recover_snapshot(path)
+    Storage::new(root.into()).recover_snapshot(file, validate)
+}
+
+fn valid_pending(v: &Value) -> bool {
+    v.as_object().is_some_and(|v| v.len() == 3)
+        && v["schema"] == 1
+        && match v["file"].as_str() {
+            Some(HOLD) => serde_json::from_value::<Holding>(v["value"].clone())
+                .is_ok_and(|h| valid_holding(&h)),
+            Some("history.json") => valid_document(Destination::History, &v["value"]),
+            Some("benchmark-reports.json") => valid_document(Destination::Reports, &v["value"]),
+            _ => false,
+        }
 }

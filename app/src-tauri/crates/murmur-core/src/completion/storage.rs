@@ -41,6 +41,13 @@ pub struct Storage {
     pub trace: std::cell::RefCell<Vec<String>>,
 }
 impl Storage {
+    pub fn pending_recovery_resolved(&self) -> Result<bool> {
+        Ok(self
+            .read::<serde_json::Value>("completion-recovery.json", |v| {
+                v["schema"] == 1 && v["resolved"] == true
+            })?
+            .is_some())
+    }
     pub fn remember_intent(&mut self, file: &str, value: &serde_json::Value) -> Result<()> {
         if self.intents.contains_key(file) {
             return Err(Error::TooManyFiles);
@@ -80,15 +87,19 @@ impl Storage {
         self.remember_intent(&pending, &payload)?;
         self.write(&pending, &payload)?;
         self.resolve_intent(&pending);
-        self.recover_snapshot(file)
+        self.recover_snapshot(file, |v| v == &payload["value"])
     }
-    pub fn recover_snapshot(&mut self, file: &str) -> Result<()> {
+    pub fn recover_snapshot(
+        &mut self,
+        file: &str,
+        validate: impl FnOnce(&serde_json::Value) -> bool,
+    ) -> Result<()> {
         let pending = format!("{file}.pending");
         self.sync_directory()?;
         let existed = self.root.join(&pending).exists();
-        if let Some(receipt) = self.read::<serde_json::Value>(&pending, |v| {
-            v["schema"] == 1 && super::valid_snapshot(file, &v["value"])
-        })? {
+        if let Some(receipt) =
+            self.read::<serde_json::Value>(&pending, |v| v["schema"] == 1 && validate(&v["value"]))?
+        {
             self.write(file, &receipt["value"])?;
             fs::remove_file(self.root.join(&pending)).map_err(|_| Error::Io)?;
             self.sync_directory()?;

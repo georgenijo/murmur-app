@@ -185,3 +185,24 @@ it.each(['autoPaste', 'disabled'] as const)('a successful unrelated save retains
   expect(args.ownedEdits).toEqual({ [field]: true });
   expect(JSON.parse(args.blob).language).toBe('es');
 });
+
+it('a different owned-field acknowledgement preserves the failed field until retry or native supersession', async () => {
+  const { persistSourceState, flushSourceState, rebasePendingOwnedSettings } = await import('./webkitLifecycle');
+  mock.invoke.mockRejectedValueOnce(new Error('synthetic failure'));
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, disabled: false }), { autoPaste: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  mock.invoke.mockImplementation(async (_command: string, args: { intentGeneration: number }) => {
+    const committed = rebasePendingOwnedSettings({ autoPaste: false, disabled: true, ownedFieldsRevision: 1,
+      intentGeneration: args.intentGeneration, acknowledgedFields: ['disabled'] });
+    expect(committed.autoPaste).toBe(true);
+  });
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, disabled: true }), { disabled: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const native = rebasePendingOwnedSettings({ field: 'autoPaste', autoPaste: false, disabled: true, ownedFieldsRevision: 2 });
+  expect(native.autoPaste).toBe(false);
+  mock.invoke.mockResolvedValue(undefined);
+  await flushSourceState();
+  const args = mock.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob').slice(-1)[0]?.[1];
+  expect(args.ownedEdits).toEqual({});
+  expect(JSON.parse(args.blob).autoPaste).toBe(false);
+});

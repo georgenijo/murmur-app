@@ -214,13 +214,13 @@ pub(crate) struct State {
 }
 
 pub fn initialize_identity() {
-    let context = tauri::generate_context!();
+    let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
     crate::identity::initialize(&context.config().identifier);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let context = tauri::generate_context!();
+    let context: tauri::Context<tauri::Wry> = tauri::generate_context!();
     crate::identity::initialize(&context.config().identifier);
     launch::process_start();
     let builder = tauri::Builder::default()
