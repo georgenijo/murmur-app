@@ -204,6 +204,8 @@ Each runs against both `history.json` and pre-v1 `completion-holding.json`, and
 checks migration/relaunch plus unchanged statistics. Dictation continues to use
 its durable statistics journal as the commit point: a History publication failure
 records `history_write_failed`, applies statistics, and adds no History entry
-(plan row 7). Meeting, correction and Paste Last also commit through that journal;
-their source claims follow durable journal publication, so there is no analogous
-file-only claim before their commit point. Their behavior is unchanged.
+(plan row 7). Meeting, correction and Paste Last also use that journal: a failed
+pre-rename append leaves the source unclaimed; an unknown append claims it only
+if a reread finds its UUID. Recovery must sync before applying or compacting those
+records. These producers have no staged History-only result to discard. Their
+journal/source-claim behavior is unchanged.
