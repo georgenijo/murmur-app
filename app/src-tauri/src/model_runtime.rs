@@ -583,8 +583,7 @@ impl ModelRuntimeManager {
             // Admission is ready before a consumer reacts to Installed.
             crate::dictation_control::model_installation_changed(app);
         }
-        self.events()
-            .publish(app, model_name, "installStateChanged")
+        self.publish(app, model_name, "installStateChanged")
     }
 
     fn publish(
@@ -630,7 +629,7 @@ impl ModelRuntimeManager {
                 failure_present,
             },
         );
-        self.events().publish(app, model_name, reason)
+        self.publish(app, model_name, reason)
     }
 
     fn ensure_backend<'a>(

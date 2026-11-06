@@ -1273,7 +1273,7 @@ impl MeetingRepository {
         }
         self.quarantine_live_database(lease)?;
         if let Some(candidate) = candidate {
-            candidate.events().publish(&self.db_path, lease)?;
+            candidate.publish(&self.db_path, lease)?;
             Ok(InitializationOutcome::Recovered)
         } else {
             Ok(InitializationOutcome::Reinitialized)

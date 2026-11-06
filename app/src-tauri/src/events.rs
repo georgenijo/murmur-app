@@ -49,18 +49,19 @@ impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
     fn publish<P: Serialize + Clone>(&self, event: EventKind, payload: P) -> Result<(), String> {
         let app = self.0;
         let events = app.state::<Events>();
-        let recipients = events
-            .router
-            .lock_or_recover()
-            .recipients(event, |consumer, waveform| {
-                consumer.window_label().is_none_or(|label| {
-                    app.get_webview_window(label).is_some_and(|window| {
-                        !waveform
-                            || (window.is_visible().unwrap_or(false)
-                                && !window.is_minimized().unwrap_or(true))
-                    })
+        // Native visibility queries can dispatch to AppKit. Never hold the
+        // subscription mutex while waiting for that dispatch: a main-thread
+        // subscription command could otherwise deadlock capture delivery.
+        let routing = events.router.lock_or_recover().clone();
+        let recipients = routing.recipients(event, |consumer, waveform| {
+            consumer.window_label().is_none_or(|label| {
+                app.get_webview_window(label).is_some_and(|window| {
+                    !waveform
+                        || (window.is_visible().unwrap_or(false)
+                            && !window.is_minimized().unwrap_or(true))
                 })
-            });
+            })
+        });
         // No registry/router lock is held across callbacks: a consumer may
         // publish another event. Native delivery works without any webview.
         let callbacks: Vec<_> = events

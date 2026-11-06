@@ -243,7 +243,7 @@ pub trait EventSink {
     fn publish<P: Serialize + Clone>(&self, event: EventKind, payload: P) -> Result<(), String>;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Router {
     waveforms: BTreeSet<WaveformConsumer>,
 }

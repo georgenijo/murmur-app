@@ -3116,7 +3116,7 @@ async fn run_transcription_pipeline(
                     with_current_recording_generation(&state.app_state, recording_id, move || {
                         if installed {
                             if let Some(prepared) = prepared {
-                                let _ = prepared.events().publish();
+                                let _ = prepared.publish();
                             }
                         } else {
                             // The preference may survive an uninstall so it can
