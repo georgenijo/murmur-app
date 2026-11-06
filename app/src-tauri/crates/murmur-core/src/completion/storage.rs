@@ -16,6 +16,8 @@ pub enum Boundary {
 #[derive(Default)]
 pub struct Storage {
     pub root: PathBuf,
+    // Certainty of the most recent write, including failures before rename.
+    pub renamed: bool,
     #[cfg(test)]
     pub fail: Option<(String, Boundary)>,
     #[cfg(test)]
@@ -36,6 +38,7 @@ impl Storage {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            renamed: false,
             #[cfg(test)]
             fail: None,
             #[cfg(test)]
@@ -104,6 +107,7 @@ impl Storage {
         self.write_bytes(name, &bytes)
     }
     pub fn write_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
+        self.renamed = false;
         if name != super::STATE && bytes.len() > 32 * 1024 * 1024 {
             return Err(Error::Invalid);
         }
@@ -123,6 +127,7 @@ impl Storage {
             full_sync(&file)?;
             self.boundary(name, Boundary::BeforeRename)?;
             fs::rename(&temp, &path).map_err(|_| Error::Io)?;
+            self.renamed = true;
             self.boundary(name, Boundary::AfterRename)?;
             self.boundary(name, Boundary::DirectorySync)?;
             self.sync_directory()

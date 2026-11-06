@@ -22,6 +22,7 @@ pub enum Error {
     InUse,
     Stopped,
     TooManyFiles,
+    Uncertain,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -31,6 +32,7 @@ impl std::fmt::Display for Error {
             Self::Invalid => "Invalid completion data",
             Self::InUse => "Completion storage already in use",
             Self::Stopped => "Completion service stopped",
+            Self::Uncertain => "File admission outcome uncertain; completion storage unavailable",
             Self::TooManyFiles => "Too many pending file transcriptions",
         })
     }
@@ -98,10 +100,18 @@ struct Record {
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct Admission {
+    uuid: String,
+    admitted: bool,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct State {
     schema: u32,
     next: u64,
     journal: Vec<Record>,
+    #[serde(default)]
+    file_admissions: Vec<Admission>,
 }
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -305,6 +315,12 @@ impl Engine {
         self.storage
             .read(STATE, |v: &State| {
                 v.schema == 1
+                    && valid_receipts(
+                        &v.file_admissions
+                            .iter()
+                            .map(|a| a.uuid.clone())
+                            .collect::<Vec<_>>(),
+                    )
                     && v.next > 0
                     && v.journal.windows(2).all(|w| w[0].sequence < w[1].sequence)
                     && v.journal.iter().all(|r| {
@@ -357,6 +373,12 @@ impl Engine {
             .storage
             .read::<State>(STATE, |v| {
                 v.schema == 1
+                    && valid_receipts(
+                        &v.file_admissions
+                            .iter()
+                            .map(|a| a.uuid.clone())
+                            .collect::<Vec<_>>(),
+                    )
                     && v.next > 0
                     && v.journal.iter().all(|r| r.schema == 1 && r.event.valid())
             })?
@@ -369,9 +391,11 @@ impl Engine {
                     schema: 1,
                     next: stats.as_ref().map_or(1, |s| s.applied_through + 1),
                     journal: vec![],
+                    file_admissions: vec![],
                 },
             )?;
         }
+        self.observe_file_receipts(&holding)?;
         self.drop_consumed(&mut holding)?;
         if !self.migration()?.v1 {
             holding.launches += 1;
@@ -415,6 +439,7 @@ impl Engine {
         // to compact a journal or drain a consumed holding generation.
         self.storage.sync_directory()?;
         let mut h = self.holding()?;
+        self.observe_file_receipts(&h)?;
         let previous = h.clone();
         self.drop_consumed(&mut h)?;
         if h != previous {
@@ -539,14 +564,27 @@ impl Engine {
                 self.compact_file_receipts(&active)?;
                 let holding = self.holding()?;
                 let doc = self.document(Destination::History)?;
-                let published = holding
-                    .file_receipts
-                    .iter()
-                    .chain(doc.iter().flat_map(|d| &d.file_receipts))
-                    .any(|v| v == id);
+                let mut state = self.state()?;
+                let evidence = state.file_admissions.iter().find(|a| a.uuid == id);
+                let published = evidence.is_some_and(|a| a.admitted)
+                    || holding
+                        .file_receipts
+                        .iter()
+                        .chain(doc.iter().flat_map(|d| &d.file_receipts))
+                        .any(|v| v == id);
                 if published {
                     intent.admitted();
+                } else if evidence.is_some() || intent.attempted() {
+                    diagnostic("file_admission_uncertain");
+                    return Err(Error::Uncertain);
                 } else {
+                    // Durable write-ahead evidence must precede any content publication.
+                    intent.mark_attempted();
+                    state.file_admissions.push(Admission {
+                        uuid: id.into(),
+                        admitted: false,
+                    });
+                    self.storage.write(STATE, &state)?;
                     self.add_file(entry, &intent)
                         .inspect_err(|_| diagnostic("history_write_failed"))?;
                 }
@@ -623,7 +661,33 @@ impl Engine {
         }
         self.snapshot()
     }
+    fn observe_file_receipts(&mut self, h: &Holding) -> Result<()> {
+        let doc = self.document(Destination::History)?;
+        let mut state = self.state()?;
+        let mut changed = false;
+        for admission in &mut state.file_admissions {
+            if !admission.admitted
+                && h.file_receipts
+                    .iter()
+                    .chain(doc.iter().flat_map(|d| &d.file_receipts))
+                    .any(|id| id == &admission.uuid)
+            {
+                admission.admitted = true;
+                changed = true;
+            }
+        }
+        if changed {
+            self.storage.write(STATE, &state)?;
+        }
+        Ok(())
+    }
     fn compact_file_receipts(&mut self, active: &[String]) -> Result<()> {
+        let mut state = self.state()?;
+        let before = state.file_admissions.len();
+        state.file_admissions.retain(|a| active.contains(&a.uuid));
+        if before != state.file_admissions.len() {
+            self.storage.write(STATE, &state)?;
+        }
         let mut h = self.holding()?;
         let before = h.file_receipts.len();
         h.file_receipts.retain(|id| active.contains(id));
@@ -648,7 +712,7 @@ impl Engine {
             .document(Destination::History)?
             .unwrap_or_else(|| Document::new(Destination::History));
         if self.ready(Destination::History, &doc)? {
-            doc.file_receipts.push(id);
+            doc.file_receipts.push(id.clone());
             let entries = doc.data.as_array_mut().ok_or(Error::Invalid)?;
             entries.push(entry);
             trim_history(entries);
@@ -656,26 +720,53 @@ impl Engine {
             // Preparation is complete. This CAS begins publication; an earlier
             // cancellation wins even while reads or receipt compaction were busy.
             if !intent.begin_publication() {
-                return Ok(());
+                return self.finish_file_publication(&id, intent, Ok(()), false);
             }
             let result = self.storage.write(Destination::History.file(), &doc);
+            let renamed = self.storage.renamed;
             intent.end_publication(result.is_ok());
-            result
+            self.finish_file_publication(&id, intent, result, renamed)
         } else {
             let mut h = self.holding()?;
-            h.file_receipts.push(id);
+            h.file_receipts.push(id.clone());
             h.history.entries.push(entry);
             // cap_held can publish original-row eviction, so gate before its
             // first write as well as the final atomic holding publication.
             if !intent.begin_publication() {
-                return Ok(());
+                return self.finish_file_publication(&id, intent, Ok(()), false);
             }
             let result = self
                 .cap_held(&mut h, Destination::History, &mut doc)
                 .and_then(|()| self.storage.write(HOLD, &h));
+            let renamed = self.storage.renamed;
             intent.end_publication(result.is_ok());
-            result
+            self.finish_file_publication(&id, intent, result, renamed)
         }
+    }
+    fn finish_file_publication(
+        &mut self,
+        id: &str,
+        intent: &producers::FileIntent,
+        result: Result<()>,
+        renamed: bool,
+    ) -> Result<()> {
+        if result.is_ok() || !renamed {
+            let mut state = self.state()?;
+            if result.is_ok() && renamed {
+                if let Some(a) = state.file_admissions.iter_mut().find(|a| a.uuid == id) {
+                    a.admitted = true;
+                }
+            } else {
+                // Only proven non-publication permits another attempt. If this
+                // cleanup fails, pending evidence conservatively blocks that UUID.
+                state.file_admissions.retain(|a| a.uuid != id);
+            }
+            self.storage.write(STATE, &state)?;
+            if !renamed {
+                intent.clear_attempted();
+            }
+        }
+        result
     }
     fn add_content(&mut self, d: Destination, mut value: Value) -> Result<()> {
         if d == Destination::Reports && value.get("completionUuid").is_none() {

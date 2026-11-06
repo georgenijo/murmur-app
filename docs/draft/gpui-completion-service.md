@@ -23,7 +23,7 @@ notice, and the existing file queue reports a content-free error. No transcript 
 rejected error payload enters diagnostics. Activity events never change dictation counters.
 
 `completion-state.json` contains the next sequence and typed content-free
-statistics records with UUIDs. `stats.json` carries `applied_through` and all
+statistics records with UUIDs and bounded content-free file-admission evidence. `stats.json` carries `applied_through` and all
 counters, including legacy transform counters with no current producer. History
 is never a statistics replay source. The journal is unbounded while migration
 holds it; successful statistics publication allows compaction. Content files
@@ -222,21 +222,46 @@ durable receipt together; no attempted in-memory write is treated as durability.
 **failed-retryable** has no receipt after successful recovery. Running capture
 precedes staged and is covered by the existing cancellation/cap tests.
 
-`file_receipts` holds UUIDs only, independently of live rows, atomically in the
-same History/holding envelope as admission. Delete, edit, clear, cap eviction,
-holding-generation drain and migration never discard these receipts. On every
-acceptance the sole app-lifetime producer supplies its complete ready staging UUID
-set (at most 200). The actor compacts only receipts absent from that set, before
-publication. Successful consumption, cancellation or abandonment retires staging;
-its receipt may then be removed on the next acceptance. This also retires orphan
-receipts on the first acceptance of a new app session. Without another acceptance
-there are at most 200 receipts in each envelope, with at most 200 distinct active
-UUIDs across them. Startup and Snapshot do not compact receipts. Relaunch retains
-receipts; production abandons in-memory staged content, so it never automatically
-retranscribes or accepts an old result. Tests additionally preserve a synthetic
-staged UUID across actor relaunch, proving even such a retry cannot resurrect it.
+Admission uses a UUID-only write-ahead record in `completion-state.json`, with
+an `admitted` flag, before publishing transcript content. The History/holding
+publication still atomically includes its UUID receipt. Recovery syncs first,
+then promotes any matching pending record to admitted **before** draining a
+holding generation. Delete, clear, edits, caps and migration preserve state
+records. This places admission evidence in the existing recovery-critical journal
+instead of trusting a losable holding file alone; no transcript is added to the
+journal and no new durable file or deletion-specific protocol is needed.
 
-Cancellation records an atomic intent before waiting for the files mutex. The
+A proven pre-rename failure durably removes pending evidence before allowing
+retry. A post-rename failure keeps pending evidence: a synced receipt proves
+admission, but an absent receipt cannot prove non-publication. It stays uncertain
+and acceptance returns the content-free storage error/notice without appending.
+The staged intent also remembers that publication was attempted, so loss of the
+state evidence cannot turn that same live operation into a fresh admission.
+Admitted evidence acknowledges retry without touching rows, even after receipt
+loss. State loss retains the plan's diagnostic/reconstruction behavior; matching
+surviving receipts still prove admission. Loss of all evidence for a live attempted
+operation stays uncertain. Production relaunch abandons staging and never retries
+it; tests additionally preserve the synthetic staging/intent across actor relaunch.
+
+Only acceptance consults an operation's unresolved evidence. Snapshot, migration,
+dictation, meetings, corrections and Paste Last continue independently. Missing or
+unusable files recover as the plan specifies. Read errors still block actual
+storage access. Every acceptance compacts state evidence and envelope receipts
+against the sole producer's complete live ready UUID set, at most 200; Snapshot
+and launch never discard live evidence. Normal statistics compaction preserves
+these fields. Unknown evidence is retired only when its staged ownership ends.
+
+The intent registry has explicit active ownership plus the most recent 200
+content-free operation-ID tombstones. Begin creates ownership; acceptance,
+completed cancellation and discard retire it. A cancelled running native job pins
+its intent until finish/discard, preventing a delayed finish from finding a new
+intent after tombstone eviction. Running ownership, including cancelled jobs not
+yet finished, counts toward the 200-operation cap. Ready cancellation releases
+capacity; queued accepts retain the original `Arc`. Operation UUIDs are never
+reused; older retired IDs leaving the bounded window cannot have native work
+remaining. Unknown cancel IDs create bounded tombstones, not active intents.
+
+Cancellation records an atomic intent without waiting for the files mutex or owner. The
 actor's compare-and-exchange immediately before the first publication write is
 the linearization point. Intent recorded earlier prevents publication. Once that
 step starts, cancellation may discard staging but cannot undo a durable publish;
@@ -244,12 +269,13 @@ a pre-rename failure still leaves no entry, while a post-rename failure requires
 a directory sync and disk reread. A cancel arriving after durable publication
 leaves the entry in History. Cancellation never deletes History implicitly.
 
-Lock order: `files` may briefly acquire the intent registry, then release the
-registry before enqueueing/waiting on the owner. Cancel/discard acquire and release
-the registry, mark the atomic intent, then acquire `files`. The actor accesses
-only atomics and never either producer mutex. No path waits for `files` while
-holding the registry. Concurrent accepts serialize on `files`; cancellation does
-not need that mutex to veto either queued accept. The root lock remains actor-owned.
+Lock order: `files` may briefly acquire the intent registry, then release it
+before enqueueing/waiting on the owner. Cancel acquires/releases the registry,
+marks the atomic intent and only **tries** `files`; a busy accept/finish observes
+that same intent and handles cleanup. Discard may wait for files after releasing
+the registry. The actor uses only atomics, never either producer mutex. Concurrent
+accepts serialize on files; neither blocks cancellation dispatch. The root lock
+remains actor-owned.
 
 The table exhaustively partitions events by state. Test keys below apply to each
 cell carrying that key. **—** means impossible: a publication callback belongs
@@ -260,14 +286,14 @@ nothing and permits no mutation.
 
 | Event | staged | accepting | published-unknown | admitted | cancelled | failed-retryable |
 |---|---|---|---|---|---|---|
-| accept | accepting (B) | serialized retry (Q) | recover, acknowledge or retry (U) | no append (B) | no append (C) | accepting (B) |
-| retry | accepting (B) | serialized retry (Q) | recover, acknowledge or retry (U) | no append (B) | no append (C) | accepting (B) |
+| accept | accepting (B) | serialized retry (Q) | recover, acknowledge or stay uncertain (U/X) | no append (B) | no append (C) | accepting (B) |
+| retry | accepting (B) | serialized retry (Q) | recover, acknowledge or stay uncertain (U/X) | no append (B) | no append (C) | accepting (B) |
 | cancel | cancelled (C) | intent wins before publication; otherwise finish write (Q/P) | discard staging, preserve any published row (L) | stays admitted (L) | stays cancelled (C) | cancelled (C) |
 | publish ok | — | admitted, retire staging (B/P) | — | — | — | — |
 | fail before rename | — | failed-retryable; retain staging unless cancelled (B/P) | — | — | — | — |
 | fail after rename | — | published-unknown (U/P) | — | — | — | — |
 | failed directory fsync | — | published-unknown (D) | stays unknown; no mutation (U) | — | — | — |
-| recovery / Snapshot | = (B) | ordered behind acceptance (Q/P) | synced receipt -> admitted; absent -> failed-retryable (U/D) | = (L) | no new row (C/P) | = (B) |
+| recovery / Snapshot | = (B) | ordered behind acceptance (Q/P) | synced receipt -> admitted; absent after unknown publication -> uncertain (X) | = (L) | no new row (C/P) | = (B) |
 | delete | = (D) | ordered before/after write (D/Q) | receipt survives, retry cannot resurrect (D) | =; row removed (D) | =; cannot admit (C/D) | =; still retryable (B/D) |
 | clear | = (H) | ordered before/after write (H/Q) | receipt survives (H) | =; row removed (H) | =; cannot admit (C/H) | =; still retryable (B/H) |
 | cap eviction | = (E) | ordered before/after write (E/Q) | receipt survives (E/K) | =; row may leave (E) | =; cannot admit (C/E) | =; still retryable (B/E) |
@@ -313,11 +339,71 @@ Receipt-compaction failure is itself retryable: it changes no History rows and
 staging remains intact. If compaction renamed before failing, recovery rereads it;
 it removed only UUIDs whose staging had already retired. A power loss after a
 file publication has the same two directory-entry outcomes as U/D: old envelope
-means absent receipt and retryable result, new envelope means admitted receipt
-and no duplicate. None of these paths changes dictation's row-7 journal commit,
+means pending evidence and conservative uncertainty; new envelope means admitted
+receipt and no duplicate. None of these paths changes dictation's row-7 journal commit,
 the content-free storage-error notice, or activity producer semantics.
 
 The delete, clear, cap-eviction and relaunch regressions and the queued-retry
 cancellation regression all fail against `ffe2fcb2` with only the test pause/fault
 seams added. The edit and cancel-after-durable-publication cases are preservation
 controls: those outcomes already worked and must remain unchanged.
+
+
+### Evidence recovery and native dispatch (fourth re-check)
+
+The uncertain state retains staging until cancellation or process exit and never
+retries a publication automatically. The following rows extend the transition
+table above. X is `file_unknown_publication_loss_matrix_never_duplicates_or_resurrects`;
+I is `file_uncertainty_isolated_from_all_other_producers`; O is
+`file_intent_ownership_and_tombstones_are_bounded`; N is
+`file_cancel_ipc_completes_while_accept_owner_is_blocked`.
+
+| Event after unknown publication | Transition/outcome | Evidence |
+|---|---|---|
+| Holding receipt file deleted, corrupt or future schema before recovery | Recreate holding; pending journal evidence stays uncertain; no append | X, all three losses |
+| Holding receipt file lost after migration, including after exact-row delete | Admitted journal evidence survives; acknowledge without resurrecting | X |
+| History receipt file deleted, corrupt or future schema | Admitted evidence acknowledges; pending evidence with no receipt stays uncertain | X |
+| State evidence file deleted, corrupt or future schema | Recreate per plan; surviving receipt proves admission; otherwise attempted live intent refuses append | X |
+| State and both possible receipt files lost/corrupt/future | Same live operation stays uncertain, never authorizes append | X |
+| Migration file lost/corrupt/future | Rerun marker-based import, preserving journal evidence | X |
+| Unknown publication plus any loss above, then cancel and relaunch | Cancel drops staging; no replay, duplicate or resurrection | X |
+| Uncertain file plus dictation/meeting/proposed/taught correction/Paste Last | Other producers still complete through their unchanged journal path | I |
+| 1,000 completed/cancelled operations, plus a cancelled job with delayed finish | At most 200 tombstones plus live owners; delayed finish cannot admit | O |
+| Accept awaiting owner while cancel arrives on the same IPC dispatcher | Async accept returns dispatch promptly; cancel completes before owner resumes | N |
+
+The adversarial enumeration in X crosses History vs pre-v1 holding publication,
+missing/corrupt/future files, loss before recovery vs import-and-delete first,
+actor relaunch with preserved synthetic staging, retry, cancellation, migration,
+and a second relaunch. The joint-loss case removes state **and both** receipt
+stores. Storage errors never authorize another append. Content-free pending
+records do not affect statistics or migration decisions (I). Existing U/P tests
+also cover failed directory sync and cancellation during actual publication.
+There is no automatic restoration of content lost under the plan's accepted
+state/holding/destination loss rules.
+
+Pinned sources inspected locally: `Cargo.lock` pins Tauri 2.11.2, tauri-macros
+2.6.2 and Wry 0.55.1. The macro's
+[`body_blocking` / `body_async`](https://docs.rs/crate/tauri-macros/2.6.2/source/src/command/wrapper.rs)
+call synchronous commands inline, while async commands use
+[`respond_async_serialized_inner`](https://docs.rs/crate/tauri/2.11.2/source/src/ipc/mod.rs),
+which spawns the future. Wry's macOS
+[`WryWebViewDelegate::did_receive`](https://docs.rs/crate/wry/0.55.1/source/src/wkwebview/class/wry_web_view_delegate.rs)
+calls `ipc_handler` inline in the WKScriptMessageHandler callback. Accept is now
+an async Tauri command and moves the blocking owner wait to `spawn_blocking`;
+cancel remains a short synchronous command with no owner/files wait.
+
+N uses `tauri::test::MockRuntime`, the actual registered command wrappers and
+`Webview::on_message`, dispatching accept then cancel on one thread. A FIFO in
+a synthetic temporary data root blocks the real core owner during initialization;
+a watchdog releases it after five seconds so a synchronous regression fails
+instead of hanging. Cancellation must return successfully before that release,
+and acceptance must eventually leave History empty. This proves production
+Tauri wrapper dispatch and cancellation independence from the blocked owner. It
+does not run WKWebView's Objective-C callback or establish native GUI behavior;
+its inline behavior is established by the pinned source inspection above.
+
+All producer fixtures used for exact-row mutation now include native
+`schemaVersion: 2`, `source` and `pinned`. Delete/clear assert an empty History,
+eviction asserts 200 entries without the target, and edit asserts the changed
+text **before** retry. The other completion fixture helper already carries
+`schemaVersion: 2`; intentionally legacy fixtures retain their legacy shape.

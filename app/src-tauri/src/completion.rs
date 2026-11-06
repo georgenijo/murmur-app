@@ -96,7 +96,7 @@ pub(crate) fn produce(
         }
     }
 }
-fn storage_error(app: &tauri::AppHandle) {
+fn storage_error<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     tracing::warn!(target:"completion",code="completion_write_failed","completion service write failed");
     let _ = app.emit_to("main", "completion-storage-error", ());
 }
@@ -130,9 +130,9 @@ impl Drop for FileOperation<'_> {
     }
 }
 #[tauri::command]
-pub(crate) fn cancel_file_transcription(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+pub(crate) fn cancel_file_transcription<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
+    app: tauri::AppHandle<R>,
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
@@ -142,21 +142,29 @@ pub(crate) fn cancel_file_transcription(
     Ok(())
 }
 #[tauri::command]
-pub(crate) fn accept_file_transcription(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+pub(crate) async fn accept_file_transcription<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
+    app: tauri::AppHandle<R>,
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
-    if app
-        .state::<Completion>()
-        .producers
-        .accept_file(&operation_id)
-        .map_err(|e| {
-            storage_error(&app);
-            e.to_string()
-        })?
-        .is_some()
+    let worker_app = app.clone();
+    if tauri::async_runtime::spawn_blocking(move || {
+        worker_app
+            .state::<Completion>()
+            .producers
+            .accept_file(&operation_id)
+    })
+    .await
+    .map_err(|_| {
+        storage_error(&app);
+        "Completion worker unavailable".to_owned()
+    })?
+    .map_err(|e| {
+        storage_error(&app);
+        e.to_string()
+    })?
+    .is_some()
     {
         let _ = app.emit("history-changed", ());
     }
@@ -179,7 +187,7 @@ pub(crate) fn day() -> String {
 pub(crate) fn entry(text: &str, duration: f64, source: &str) -> serde_json::Value {
     serde_json::json!({"schemaVersion":2,"id":uuid::Uuid::new_v4().to_string(),"text":text,"duration":duration,"source":source,"timestamp":now(),"pinned":false})
 }
-fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn main_only<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     if window.label() == "main" {
         Ok(())
     } else {
@@ -254,4 +262,112 @@ pub(crate) fn acknowledge_completion_keys(
         .execute(Command::KeysRemoved(destinations))
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use std::{
+        io::Write,
+        sync::{mpsc, Arc},
+        time::Duration,
+    };
+
+    // Exercises the actual generated Tauri wrappers and Webview::on_message on
+    // one dispatch thread. A synthetic FIFO blocks the real completion owner.
+    // MockRuntime does not run WKWebView's Objective-C main-thread callback.
+    #[test]
+    fn file_cancel_ipc_completes_while_accept_owner_is_blocked() {
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        service.execute(Command::Snapshot).unwrap();
+        drop(service);
+        let path = root.path().join("completion-holding.json");
+        let holding = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: synthetic temporary path, valid nul-terminated string.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let (blocked, observed) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let writer_released = released.clone();
+        let writer = std::thread::spawn(move || {
+            let mut fifo = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            blocked.send(()).unwrap();
+            // Watchdog releases even if the old synchronous handler deadlocks
+            // this test's dispatcher, making the regression fail without hanging.
+            let _ = resume.recv_timeout(Duration::from_secs(5));
+            writer_released.store(true, Ordering::SeqCst);
+            fifo.write_all(&holding).unwrap();
+        });
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        let producers = Producers::new(service.clone(), "synthetic-ipc".into());
+        producers.begin_file("synthetic-operation").unwrap();
+        producers.finish_file(
+            "synthetic-operation",
+            Some(entry("synthetic", 1., "file")),
+            true,
+        );
+        let app = tauri::test::mock_builder()
+            .manage(Completion {
+                service,
+                producers,
+                admitted: AtomicBool::new(true),
+            })
+            .invoke_handler(tauri::generate_handler![
+                accept_file_transcription,
+                cancel_file_transcription
+            ])
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let request = |cmd: &str| tauri::webview::InvokeRequest {
+            cmd: cmd.into(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(
+                serde_json::json!({"operationId":"synthetic-operation"}),
+            ),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.into(),
+        };
+        let (accepted, acceptance) = mpsc::channel();
+        window.as_ref().clone().on_message(
+            request("accept_file_transcription"),
+            Box::new(move |_, _, response, _, _| {
+                accepted.send(response).unwrap();
+            }),
+        );
+        let (cancelled, cancellation) = mpsc::channel();
+        window.as_ref().clone().on_message(
+            request("cancel_file_transcription"),
+            Box::new(move |_, _, response, _, _| {
+                cancelled.send(response).unwrap();
+            }),
+        );
+        let response = cancellation.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(response, tauri::ipc::InvokeResponse::Ok(_)));
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "cancel queued behind acceptance"
+        );
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        assert!(matches!(
+            acceptance.recv_timeout(Duration::from_secs(5)).unwrap(),
+            tauri::ipc::InvokeResponse::Ok(_)
+        ));
+        assert!(app
+            .state::<Completion>()
+            .service
+            .execute(Command::Snapshot)
+            .unwrap()
+            .history
+            .is_empty());
+    }
 }

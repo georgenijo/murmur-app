@@ -2,7 +2,7 @@
 use super::{Command, CompletionService, Error, Result, Scope, Snapshot, StatisticsEvent};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicU8, Ordering},
         Arc, Mutex,
@@ -16,9 +16,29 @@ pub struct Producers {
     service: CompletionService,
     session: String,
     files: Mutex<HashMap<String, FileState>>,
-    intents: Mutex<HashMap<String, Arc<FileIntent>>>,
+    intents: Mutex<IntentRegistry>,
     #[cfg(test)]
     cancel_recorded: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+}
+#[derive(Default)]
+struct IntentRegistry {
+    active: HashMap<String, Arc<FileIntent>>,
+    retired: VecDeque<String>,
+}
+impl IntentRegistry {
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.active.len() + self.retired.len()
+    }
+    fn retire(&mut self, operation: &str) {
+        self.active.remove(operation);
+        if !self.retired.iter().any(|id| id == operation) {
+            self.retired.push_back(operation.into());
+        }
+        while self.retired.len() > MAX_PENDING_FILES {
+            self.retired.pop_front();
+        }
+    }
 }
 enum FileState {
     Running,
@@ -34,12 +54,27 @@ impl FileIntent {
     const CANCELLED: u8 = 1;
     const PUBLISHING: u8 = 2;
     const ADMITTED: u8 = 4;
+    const ATTEMPTED: u8 = 8;
+    pub(super) fn attempted(&self) -> bool {
+        self.0.load(Ordering::SeqCst) & Self::ATTEMPTED != 0
+    }
+    pub(super) fn mark_attempted(&self) {
+        self.0.fetch_or(Self::ATTEMPTED, Ordering::SeqCst);
+    }
+    pub(super) fn clear_attempted(&self) {
+        self.0.fetch_and(!Self::ATTEMPTED, Ordering::SeqCst);
+    }
     fn cancel(&self) {
         self.0.fetch_or(Self::CANCELLED, Ordering::SeqCst);
     }
     pub(super) fn begin_publication(&self) -> bool {
         self.0
-            .compare_exchange(0, Self::PUBLISHING, Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(
+                Self::ATTEMPTED,
+                Self::ATTEMPTED | Self::PUBLISHING,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
             .is_ok()
     }
     pub(super) fn admitted(&self) {
@@ -61,7 +96,7 @@ impl Producers {
             service,
             session,
             files: Mutex::new(HashMap::new()),
-            intents: Mutex::new(HashMap::new()),
+            intents: Mutex::new(IntentRegistry::default()),
             #[cfg(test)]
             cancel_recorded: Mutex::new(None),
         }
@@ -137,17 +172,16 @@ impl Producers {
             Some(FileState::Cancelled) => Err(Error::Stopped),
             Some(_) => Err(Error::InUse),
             None => {
-                if files
-                    .values()
-                    .filter(|state| !matches!(state, FileState::Cancelled))
-                    .count()
-                    >= MAX_PENDING_FILES
-                {
-                    return Err(Error::TooManyFiles);
-                }
-                if self.intent(operation).0.load(Ordering::SeqCst) != 0 {
+                let mut intents = self.intents.lock().unwrap_or_else(|p| p.into_inner());
+                if intents.retired.iter().any(|id| id == operation) {
                     return Err(Error::Stopped);
                 }
+                if files.len() >= MAX_PENDING_FILES {
+                    return Err(Error::TooManyFiles);
+                }
+                intents
+                    .active
+                    .insert(operation.into(), Arc::new(FileIntent::default()));
                 files.insert(operation.into(), FileState::Running);
                 Ok(())
             }
@@ -157,25 +191,50 @@ impl Producers {
         self.intents
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .entry(operation.into())
-            .or_default()
+            .active[operation]
             .clone()
     }
+    fn retire(&self, operation: &str) {
+        self.intents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retire(operation);
+    }
     pub fn cancel_file(&self, operation: &str) {
-        // Release the small registry lock before taking files. The actor only
-        // uses atomics, so files -> owner queue can never invert this ordering.
-        self.intent(operation).cancel();
+        // Never wait for files or the owner on the IPC dispatch thread. Running
+        // ownership pins its intent until finish/discard; queued accepts hold Arc.
+        {
+            let mut intents = self.intents.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(intent) = intents.active.get(operation) {
+                intent.cancel();
+            } else {
+                intents.retire(operation);
+            }
+        }
         #[cfg(test)]
         if let Some(send) = self.cancel_recorded.lock().unwrap().take() {
             send.send(()).unwrap();
         }
-        self.files
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(operation.into(), FileState::Cancelled);
+        if let Ok(mut files) = self.files.try_lock() {
+            match files.get(operation) {
+                Some(FileState::Running | FileState::Cancelled) => {
+                    files.insert(operation.into(), FileState::Cancelled);
+                }
+                Some(FileState::Ready(_)) => {
+                    files.remove(operation);
+                    self.retire(operation);
+                }
+                None => {}
+            }
+        }
     }
     pub fn finish_file(&self, operation: &str, entry: Option<Value>, retain: bool) {
         let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        if files.contains_key(operation) && self.intent(operation).cancelled_before_admission() {
+            files.remove(operation);
+            self.retire(operation);
+            return;
+        }
         if matches!(files.get(operation), Some(FileState::Running)) {
             let entry = entry.filter(|_| retain).map(|mut entry| {
                 // Retain this identity across every admission retry, including
@@ -192,11 +251,16 @@ impl Producers {
     /// before acceptance still wins, including after native transcription ends.
     pub fn accept_file(&self, operation: &str) -> Result<Option<Snapshot>> {
         let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
-        let snapshot = match files.get(operation) {
-            Some(FileState::Ready(Some(entry))) => Some(
-                self.service.execute(Command::AcceptFile {
+        if !matches!(files.get(operation), Some(FileState::Ready(_))) {
+            return Ok(None);
+        }
+        let intent = self.intent(operation);
+        let result = match files.get(operation) {
+            Some(FileState::Ready(Some(entry))) => self
+                .service
+                .execute(Command::AcceptFile {
                     entry: entry.clone(),
-                    intent: self.intent(operation),
+                    intent: intent.clone(),
                     active: files
                         .values()
                         .filter_map(|state| match state {
@@ -206,26 +270,28 @@ impl Producers {
                             _ => None,
                         })
                         .collect(),
-                })?,
-            ),
-            Some(FileState::Ready(None)) => None,
+                })
+                .map(Some),
+            Some(FileState::Ready(None)) => Ok(None),
             _ => return Ok(None),
         };
-        // Errors retain staging; cancellation intent already reached the actor
-        // even if cancel_file is still waiting to erase its content here.
-        files.remove(operation);
-        if self.intent(operation).cancelled_before_admission() {
-            Ok(None)
+        if result.is_ok() || intent.cancelled_before_admission() {
+            files.remove(operation);
+            self.retire(operation);
+        }
+        if intent.cancelled_before_admission() {
+            result.map(|_| None)
         } else {
-            Ok(snapshot)
+            result
         }
     }
     pub fn discard_file(&self, operation: &str) {
-        self.intent(operation).cancel();
+        self.cancel_file(operation);
         self.files
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(operation);
+        self.retire(operation);
     }
 }
 
@@ -257,10 +323,157 @@ mod tests {
         p.begin_file("operation").unwrap();
         p.finish_file(
             "operation",
-            Some(json!({"id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
+            Some(json!({"schemaVersion":2,"pinned":false,"source":"file","id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
             true,
         );
         p
+    }
+    fn lose(root: &std::path::Path, file: &str, how: u8) {
+        let path = root.join(file);
+        match how {
+            0 => {
+                let _ = std::fs::remove_file(path);
+            }
+            1 => std::fs::write(path, b"broken synthetic JSON").unwrap(),
+            _ => std::fs::write(path, br#"{"schema":999}"#).unwrap(),
+        }
+    }
+
+    #[test]
+    fn file_unknown_publication_loss_matrix_never_duplicates_or_resurrects() {
+        for webkit in [false, true] {
+            for file in [
+                super::super::HOLD,
+                super::super::STATE,
+                super::super::MIGRATION,
+                "history.json",
+                "both-evidence-stores",
+            ] {
+                for how in 0..3 {
+                    for removed in [false, true] {
+                        let dir = tempfile::tempdir().unwrap();
+                        let service = CompletionService::start(dir.path().into(), webkit).unwrap();
+                        let mut p = staged_file(&service);
+                        drop(service);
+                        publication_fault(&p, webkit, super::super::storage::Boundary::AfterRename);
+                        if removed {
+                            p.service
+                                .execute(Command::Import(super::super::LegacyImport::default()))
+                                .unwrap();
+                            let snapshot = p.service.execute(Command::Snapshot).unwrap();
+                            assert_eq!(snapshot.history.len(), 1);
+                            p.service
+                                .execute(Command::History(super::super::HistoryMutation::Delete {
+                                    targets: snapshot.history,
+                                }))
+                                .unwrap();
+                            assert!(p
+                                .service
+                                .execute(Command::Snapshot)
+                                .unwrap()
+                                .history
+                                .is_empty());
+                        }
+                        if file == "both-evidence-stores" {
+                            lose(dir.path(), super::super::STATE, how);
+                            lose(dir.path(), super::super::HOLD, how);
+                            lose(
+                                dir.path(),
+                                if webkit && !removed {
+                                    super::super::HOLD
+                                } else {
+                                    "history.json"
+                                },
+                                how,
+                            );
+                        } else {
+                            lose(dir.path(), file, how);
+                        }
+                        restart(&mut p, dir.path(), webkit);
+                        let before = p.service.execute(Command::Snapshot).unwrap();
+                        let result = p.accept_file("operation");
+                        if (file == "both-evidence-stores")
+                            || (webkit && !removed && file == super::super::HOLD)
+                            || (!webkit && !removed && file == "history.json")
+                        {
+                            assert!(result.is_err(), "lost evidence must remain uncertain: {webkit}/{file}/{how}/{removed}");
+                        }
+                        assert_eq!(
+                            p.service.execute(Command::Snapshot).unwrap().history,
+                            before.history,
+                            "retry after {file}/{how}/{removed}"
+                        );
+                        p.cancel_file("operation");
+                        assert!(p.accept_file("operation").unwrap().is_none());
+                        p.service
+                            .execute(Command::Import(super::super::LegacyImport::default()))
+                            .unwrap();
+                        let after = p.service.execute(Command::Snapshot).unwrap();
+                        assert_eq!(after.history, before.history);
+                        assert_no_statistics(&after);
+                        restart(&mut p, dir.path(), false);
+                        assert_eq!(
+                            p.service.execute(Command::Snapshot).unwrap().history,
+                            before.history
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn file_uncertainty_isolated_from_all_other_producers() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(dir.path().into(), true).unwrap();
+        let p = staged_file(&service);
+        publication_fault(&p, true, super::super::storage::Boundary::AfterRename);
+        lose(dir.path(), super::super::HOLD, 0);
+        assert!(p.accept_file("operation").is_err());
+        p.dictation(1, json!({"schemaVersion":2,"id":"dictation","text":"synthetic","timestamp":2,"duration":1}), true, None, "2026-11-05".into()).unwrap();
+        p.meeting(1, 60., "2026-11".into()).unwrap();
+        p.correction_proposed(1).unwrap();
+        p.correction_taught(1, Scope::Global).unwrap();
+        p.paste_last("synthetic").unwrap();
+        let before = service.execute(Command::Snapshot).unwrap();
+        assert_eq!(before.history.len(), 1);
+        assert_eq!(before.statistics.total_recordings, 1);
+        assert!(p.accept_file("operation").is_err());
+        assert_eq!(
+            service.execute(Command::Snapshot).unwrap().history,
+            before.history
+        );
+    }
+
+    #[test]
+    fn file_intent_ownership_and_tombstones_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(dir.path().into(), false).unwrap();
+        let p = Producers::new(service, "synthetic".into());
+        // A cancelled native operation keeps ownership until its finish arrives,
+        // even while older completed tombstones leave the bounded window.
+        p.begin_file("still-running").unwrap();
+        p.cancel_file("still-running");
+        for n in 0..1000 {
+            let operation = n.to_string();
+            p.begin_file(&operation).unwrap();
+            p.finish_file(&operation, None, false);
+            if n % 2 == 0 {
+                p.accept_file(&operation).unwrap();
+            } else {
+                p.cancel_file(&operation);
+            }
+            assert!(p.intents.lock().unwrap().len() <= MAX_PENDING_FILES + 1);
+            assert!(p.files.lock().unwrap().len() <= 1);
+        }
+        assert!(p.begin_file("still-running").is_err());
+        p.finish_file("still-running", Some(json!({"text":"synthetic"})), true);
+        assert!(p.accept_file("still-running").unwrap().is_none());
+        for n in 0..1000 {
+            p.cancel_file(&format!("never-started-{n}"));
+        }
+        assert!(p.intents.lock().unwrap().len() <= MAX_PENDING_FILES);
+        assert!(p.files.lock().unwrap().is_empty());
     }
     fn assert_no_statistics(snapshot: &Snapshot) {
         assert_eq!(
@@ -322,7 +535,7 @@ mod tests {
                     }
                     2 => {
                         for n in 0..200 {
-                            p.dictation(n, json!({"id":format!("synthetic-{n}"),"text":"synthetic","timestamp":n+2,"duration":1}), true, None, "2026-11-05".into()).unwrap();
+                            p.dictation(n, json!({"schemaVersion":2,"pinned":false,"source":"file","id":format!("synthetic-{n}"),"text":"synthetic","timestamp":n+2,"duration":1}), true, None, "2026-11-05".into()).unwrap();
                         }
                     }
                     3 => {
@@ -336,6 +549,15 @@ mod tests {
                     _ => unreachable!(),
                 }
                 let before = p.service.execute(Command::Snapshot).unwrap();
+                match mutation {
+                    0 | 1 => assert!(before.history.is_empty(), "mutation must remove the row"),
+                    2 => {
+                        assert_eq!(before.history.len(), 200);
+                        assert!(before.history.iter().all(|v| v["id"] != "synthetic"));
+                    }
+                    3 => assert_eq!(before.history[0]["text"], "synthetic edited"),
+                    _ => unreachable!(),
+                }
                 if relaunch {
                     restart(&mut p, dir.path(), webkit);
                 }
@@ -529,7 +751,7 @@ mod tests {
             p.begin_file(&operation).unwrap();
             p.finish_file(
                 &operation,
-                Some(json!({"id":operation,"text":"synthetic","timestamp":n+2,"duration":1})),
+                Some(json!({"schemaVersion":2,"pinned":false,"source":"file","id":operation,"text":"synthetic","timestamp":n+2,"duration":1})),
                 true,
             );
             p.accept_file(&operation).unwrap();
@@ -684,7 +906,7 @@ mod tests {
                 p.begin_file("operation").unwrap();
                 p.finish_file(
                     "operation",
-                    Some(json!({"id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
+                    Some(json!({"schemaVersion":2,"pinned":false,"source":"file","id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
                     true,
                 );
                 // A directory at the file path is unreadable even under root.
@@ -753,7 +975,7 @@ mod tests {
             }
             p.finish_file(
                 "operation",
-                Some(json!({"id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
+                Some(json!({"schemaVersion":2,"pinned":false,"source":"file","id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
                 true,
             );
             if phase == 2 {
@@ -784,7 +1006,7 @@ mod tests {
             barrier.wait();
             p.finish_file(
                 "operation",
-                Some(json!({"id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
+                Some(json!({"schemaVersion":2,"pinned":false,"source":"file","id":"synthetic","text":"synthetic file","timestamp":1,"duration":2})),
                 true,
             );
         });
