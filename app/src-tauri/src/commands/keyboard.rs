@@ -1,6 +1,7 @@
 use crate::{injector, keyboard, MutexExt};
+use murmur_core::events::{EventKind, EventSink};
 use std::sync::Mutex;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 #[derive(Default)]
 struct ListenerRegistration(Option<(String, String)>);
@@ -81,7 +82,7 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Resu
     }
     if should_stop {
         crate::dictation_control::send(&app_handle, murmur_core::dictation::Input::HoldStop);
-        let _ = app_handle.emit("hold-down-stop", ());
+        let _ = app_handle.publish(EventKind::HoldDownStop, ());
         tracing::info!(target: "keyboard", "Keyboard key changed while held — emitted stop; updated to: {}", hotkey);
     } else {
         tracing::info!(target: "keyboard", "Keyboard key updated to: {}", hotkey);
@@ -115,7 +116,7 @@ pub(crate) fn apply_app_disabled(
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
     sync_tray_disabled_item(&app_handle);
     app_handle
-        .emit("app-disabled-changed", disabled)
+        .publish(EventKind::AppDisabledChanged, disabled)
         .map_err(|e| e.to_string())
 }
 

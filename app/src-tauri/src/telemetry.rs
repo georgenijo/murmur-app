@@ -1,10 +1,11 @@
 //! Structured telemetry: tracing subscriber with file + event-emitter layers.
 
+use murmur_core::events::{EventKind, EventSink};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 mod key_identity;
 pub(crate) use key_identity::sanitize_persisted_line;
@@ -196,7 +197,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         }
 
         // Emit to all windows
-        let _ = self.app_handle.emit("app-event", &app_event);
+        let _ = self.app_handle.publish(EventKind::AppEvent, &app_event);
     }
 }
 

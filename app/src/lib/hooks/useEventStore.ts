@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import type { AppEvent, StreamName, LevelName } from '../events';
 
 const MAX_EVENTS = 500;

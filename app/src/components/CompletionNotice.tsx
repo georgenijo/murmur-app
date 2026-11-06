@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../lib/targetedEvents';
 import { COMPLETION_CHANGED, COMPLETION_FAILED, completionSnapshot, importCompletionV1 } from '../lib/completionData';
 
 export function CompletionNotice() {

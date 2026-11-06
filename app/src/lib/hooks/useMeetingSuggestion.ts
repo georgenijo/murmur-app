@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { emitTo, listen } from '@tauri-apps/api/event';
+import { emitTo } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import {
   dismissMeetingSuggestion,
   getMeetingSuggestion,

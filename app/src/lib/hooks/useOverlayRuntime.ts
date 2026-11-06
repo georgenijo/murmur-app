@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import { flog } from '../log';
 import { loadSettings } from '../settings';
 import type { DictationStatus } from '../types';

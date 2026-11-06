@@ -1,5 +1,6 @@
+import { useAudioLevel } from '../../lib/hooks/useAudioLevel';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import {
   audioDeviceSelectOptions,
   selectedDeviceExists,
@@ -50,6 +51,7 @@ function levelPercent(level: number): number {
 }
 
 export function CorpusRecorder({
+  active = true,
   status,
   benchmarkRunning,
   fileTranscribing,
@@ -58,6 +60,7 @@ export function CorpusRecorder({
   onUpdateSettings,
   onBusyChange,
 }: {
+  active?: boolean;
   status: DictationStatus;
   benchmarkRunning: boolean;
   fileTranscribing: boolean;
@@ -78,6 +81,7 @@ export function CorpusRecorder({
   const phaseRef = useRef<RecorderPhase>('idle');
 
   const busy = phase !== 'idle' && phase !== 'error';
+  useAudioLevel('corpus', active && phase === 'recording', setLevel);
   useEffect(() => {
     phaseRef.current = phase;
     onBusyChange(busy);
@@ -110,7 +114,6 @@ export function CorpusRecorder({
 
   useEffect(() => {
     let statusUnlisten: (() => void) | undefined;
-    let levelUnlisten: (() => void) | undefined;
     let disposed = false;
     listen<CorpusStatusEvent>('corpus-recording-status', (event) => {
       if (disposed) return;
@@ -124,16 +127,9 @@ export function CorpusRecorder({
       if (disposed) unlisten();
       else statusUnlisten = unlisten;
     }).catch(() => {});
-    listen<number>('audio-level', (event) => {
-      if (!disposed && phaseRef.current === 'recording') setLevel(event.payload);
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else levelUnlisten = unlisten;
-    }).catch(() => {});
     return () => {
       disposed = true;
       statusUnlisten?.();
-      levelUnlisten?.();
     };
   }, []);
 

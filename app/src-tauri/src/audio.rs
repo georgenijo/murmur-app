@@ -10,6 +10,7 @@ use murmur_capture_helper_protocol::{
     ProductionDeviceKind, ProductionFrame, ProductionHelperMessage, ProductionHostMessage,
     ProductionLidState, SessionNonce, SetupTransition,
 };
+use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
@@ -2947,7 +2948,7 @@ fn run_backend(
                             if let Some(generation) = owner.dictation_id() {
                                 crate::dictation_control::level(handle, generation, level);
                             }
-                            let _ = handle.emit("audio-level", level);
+                            let _ = handle.publish(EventKind::AudioLevel, level);
                         }
                     }
                     last_level_emit = Instant::now();

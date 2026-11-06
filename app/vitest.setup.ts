@@ -1,3 +1,8 @@
+import { mockWindows } from '@tauri-apps/api/mocks';
+
+// Match native client event subscriptions to the synthetic test window.
+mockWindows('main');
+
 // jsdom under vitest 4 does not expose a spec-complete `localStorage`
 // (notably `clear()` is missing), so tests that persist via localStorage fail
 // with "localStorage.clear is not a function". Provide a small in-memory Storage

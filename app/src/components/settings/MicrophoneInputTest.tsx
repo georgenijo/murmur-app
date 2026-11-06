@@ -2,7 +2,7 @@ import { SettingsRow } from './SettingsRow';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Popover } from '@base-ui/react/popover';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import type { AudioDeviceDescriptor, AudioInputLidState } from '../../lib/audioDevices';
 import {
   audioDeviceSelectOptions,

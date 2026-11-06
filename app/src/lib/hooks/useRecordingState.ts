@@ -1,5 +1,6 @@
+import { useAudioLevel } from './useAudioLevel';
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 import { cancelRecording, startRecording, stopRecording, type DictationStopTrigger } from '../dictation';
 import type { SmartAutoMicrophoneRequest } from '../settings';
 import { isDictationStatus } from '../types';
@@ -20,6 +21,7 @@ import {
 
 interface UseRecordingStateProps {
   addEntry?: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
+  waveformActive?: boolean;
   microphone: string;
   smartAuto?: SmartAutoMicrophoneRequest | null;
   /** Synchronous admission check, including for already queued hotkey callbacks. */
@@ -41,7 +43,7 @@ interface PresentErrorOptions {
   producerEpoch?: number;
 }
 
-export function useRecordingState({ microphone, smartAuto = null, canStart }: UseRecordingStateProps) {
+export function useRecordingState({ microphone, smartAuto = null, canStart, waveformActive = true }: UseRecordingStateProps) {
   const [status, setStatus] = useState<DictationStatus>('idle');
   const [transcription, setTranscription] = useState('');
   const [errorPresentation, setErrorPresentation] = useState<RecordingErrorPresentation | null>(null);
@@ -349,17 +351,7 @@ export function useRecordingState({ microphone, smartAuto = null, canStart }: Us
     };
   }, [clearError, presentError]);
 
-  // Subscribe to live audio level for waveform visualisation
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<number>('audio-level', (event) => {
-      setAudioLevel(event.payload);
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  useAudioLevel('main-recording', waveformActive && status === 'recording', setAudioLevel);
 
   // Listen for auto-paste failures and surface a hint to the user
   const pasteErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

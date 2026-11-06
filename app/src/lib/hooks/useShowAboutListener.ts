@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 
 export function useShowAboutListener() {
   const [showAbout, setShowAbout] = useState(false);

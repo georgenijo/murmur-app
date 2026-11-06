@@ -1,6 +1,6 @@
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 import {
   MICROPHONE_STARTUP_BENCHMARK_CYCLES,

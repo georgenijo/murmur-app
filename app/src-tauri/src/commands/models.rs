@@ -3,9 +3,10 @@ use crate::model_runtime::{self, InstallKind, InstallState};
 use crate::transcriber::{self, TranscriptionBackend};
 use crate::vad;
 use crate::{MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 static VAD_INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -205,8 +206,8 @@ fn emit_download_progress(
     if context.cancel.is_cancelled() {
         return;
     }
-    let _ = app_handle.emit(
-        "download-progress",
+    let _ = app_handle.publish(
+        EventKind::DownloadProgress,
         serde_json::json!({
             "modelName": context.model_name,
             "attemptId": context.attempt_id,

@@ -1,18 +1,19 @@
 //! Output-only synthetic cues. Same sine tones/envelopes as the React player;
 //! no microphone samples, transcripts or clipboard contents enter this path.
 use crate::{dictation_control::Control, MutexExt};
-use tauri::{Listener, Manager};
+use murmur_core::events::{Consumer, EventKind};
+use tauri::Manager;
 pub(crate) fn initialize(app: &tauri::AppHandle) {
     for (event, cue) in [
-        ("dictation-generation-started", "start"),
-        ("recording-status-changed", "stop"),
-        ("dictation-delivery-outcome", "delivery"),
-        ("recording-initialization-failed", "failure"),
-        ("recording-interrupted", "failure"),
+        (EventKind::DictationGenerationStarted, "start"),
+        (EventKind::RecordingStatusChanged, "stop"),
+        (EventKind::DictationDeliveryOutcome, "delivery"),
+        (EventKind::RecordingInitializationFailed, "failure"),
+        (EventKind::RecordingInterrupted, "failure"),
     ] {
         let handle = app.clone();
-        app.listen(event, move |event| {
-            let Some(cue) = cue_for(cue, event.payload()) else {
+        crate::events::subscribe(app, Consumer::SoundCues, event, move |payload| {
+            let Some(cue) = cue_for(cue, payload) else {
                 return;
             };
             let control = handle.state::<Control>();

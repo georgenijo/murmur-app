@@ -1,3 +1,4 @@
+use murmur_core::events::{EventKind, EventSink};
 #[cfg(feature = "internal-benchmark")]
 mod accuracy_corpus;
 #[cfg(target_os = "macos")]
@@ -8,6 +9,7 @@ mod audio_decode;
 mod audio_graph_snapshot;
 mod audio_inventory;
 mod audio_lifecycle;
+mod events;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
@@ -141,9 +143,9 @@ use state::AppState;
 use std::sync::{Mutex, MutexGuard};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::Manager;
 #[cfg(target_os = "macos")]
 use tauri::RunEvent;
-use tauri::{Emitter, Manager};
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
@@ -424,6 +426,7 @@ pub fn run() {
             commands::overlay_material::set_live_words_material,
             commands::overlay::set_overlay_vertical_offset,
             commands::overlay::show_main_window,
+            events::set_waveform_subscription,
             commands::overlay::get_overlay_geometry,
             commands::dictation_preview::show_dictation_preview,
             telemetry::get_event_history,
@@ -431,8 +434,16 @@ pub fn run() {
             resource_monitor::get_resource_usage,
             window_state::sync_window_chrome
         ])
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                events::clear_window(webview.app_handle(), webview.label());
+            }
+        })
         .on_window_event(|window, event| {
             window_state::on_event(window, event);
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                events::clear_window(window.app_handle(), window.label());
+            }
             #[cfg(target_os = "macos")]
             if let tauri::WindowEvent::Destroyed = event {
                 commands::overlay_material::window_destroyed(window.app_handle(), window.label());
@@ -452,6 +463,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            events::initialize(app.handle());
             app.manage(app_context::new(app.handle().clone()));
             completion::initialize(app.handle())?;
             dictation_control::initialize(app.handle());
@@ -688,7 +700,7 @@ pub fn run() {
                                 let _ = win.show();
                                 let _ = win.set_focus();
                             }
-                            let _ = app_handle.emit("check-for-updates-requested", ());
+                            let _ = app_handle.publish(EventKind::CheckForUpdatesRequested, ());
                         }
                         "quit" => {
                             app_handle.exit(0);

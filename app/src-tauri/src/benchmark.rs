@@ -6,12 +6,12 @@ use crate::transcript_transform::{
     transform_transcript, TranscriptContext, TranscriptSource, TranscriptStageConfig,
     TranscriptTransformResources,
 };
+use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::Emitter;
 
 const BALANCED_ACCURACY_WINDOW: f64 = 0.02;
 const BENCHMARK_REPORT_VERSION: u32 = 3;
@@ -750,8 +750,8 @@ fn emit_progress<R: tauri::Runtime>(
     fixture: Option<&str>,
     phase: &'static str,
 ) {
-    let _ = app.emit(
-        "benchmark-progress",
+    let _ = app.publish(
+        EventKind::BenchmarkProgress,
         BenchmarkProgress {
             completed,
             total,

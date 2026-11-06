@@ -306,7 +306,27 @@ fn detector_threshold_cumulative_speech_resumption_gaps_backwards_and_nonfinite(
 #[test]
 fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
     use murmur_core::completion::{producers::Producers, Command, CompletionService, Scope};
+    use murmur_core::events::{Consumer, EventKind, EventSink, Router, WaveformConsumer};
+    #[derive(Default)]
+    struct FakeSink(std::sync::Mutex<Vec<(Consumer, EventKind)>>);
+    impl EventSink for FakeSink {
+        fn publish<P: serde::Serialize + Clone>(
+            &self,
+            event: EventKind,
+            _payload: P,
+        ) -> Result<(), String> {
+            let mut router = Router::default();
+            router.set_waveform(WaveformConsumer::Overlay, true);
+            let recipients = router.recipients(event, |consumer, _| consumer != Consumer::Main);
+            self.0
+                .lock()
+                .unwrap()
+                .extend(recipients.into_iter().map(|consumer| (consumer, event)));
+            Ok(())
+        }
+    }
     struct FakeHost {
+        sink: FakeSink,
         producer: Producers,
         generation: u64,
         retained: std::collections::HashMap<u64, bool>,
@@ -323,6 +343,10 @@ fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
                         self.settings["retainHistory"].as_bool().unwrap_or(true),
                     );
                     recording(controller, self.generation, origin);
+                    self.sink
+                        .publish(EventKind::RecordingStatusChanged, "recording")
+                        .unwrap();
+                    self.sink.publish(EventKind::AudioLevel, 0.25).unwrap();
                 }
                 Effect::Stop { generation, .. } => {
                     let entry = serde_json::json!({"id":generation.to_string(),"text":"synthetic","duration":1,"timestamp":0});
@@ -337,6 +361,11 @@ fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
                             )
                             .unwrap();
                     }
+                    self.sink.publish(EventKind::HistoryChanged, ()).unwrap();
+                    self.sink.publish(EventKind::StatisticsChanged, ()).unwrap();
+                    self.sink
+                        .publish(EventKind::RecordingStatusChanged, "idle")
+                        .unwrap();
                     controller.observe(generation, Status::Idle, Origin::Toggle);
                 }
                 Effect::Cancel { generation } => {
@@ -359,6 +388,7 @@ fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
     let root = tempfile::tempdir().unwrap();
     let service = CompletionService::start(root.path().into(), false).unwrap();
     let mut host = FakeHost {
+        sink: FakeSink::default(),
         producer: Producers::new(service.clone(), "fake-native-session".into()),
         generation: 0,
         retained: Default::default(),
@@ -401,6 +431,27 @@ fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
             before.statistics
         );
     }
+    let deliveries = host.sink.0.lock().unwrap();
+    assert!(!deliveries
+        .iter()
+        .any(|(consumer, _)| *consumer == Consumer::Main));
+    for route in [
+        (
+            Consumer::DictationControl,
+            EventKind::RecordingStatusChanged,
+        ),
+        (Consumer::SoundCues, EventKind::RecordingStatusChanged),
+        (Consumer::SmartAuto, EventKind::RecordingStatusChanged),
+        (Consumer::Overlay, EventKind::AudioLevel),
+        (Consumer::Diagnostics, EventKind::HistoryChanged),
+        (Consumer::Diagnostics, EventKind::StatisticsChanged),
+    ] {
+        assert!(
+            deliveries.contains(&route),
+            "missing headless route {route:?}"
+        );
+    }
+    drop(deliveries);
     drop(host);
     drop(service);
     let relaunched = CompletionService::start(root.path().into(), false).unwrap();

@@ -2,7 +2,7 @@ import { COMPLETION_CHANGED, initializeCompletionReader } from '../../lib/comple
 import { MiddleTruncate } from '../ui/middle-truncate';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   BenchmarkModel,
@@ -145,7 +145,8 @@ function AccuracyChart({ report }: { report: BenchmarkReport }) {
   );
 }
 
-export function PerformanceLab({ status, settings, onUpdateSettings, audioInventory }: {
+export function PerformanceLab({ active = true, status, settings, onUpdateSettings, audioInventory }: {
+  active?: boolean;
   status: DictationStatus;
   settings: Settings;
   onUpdateSettings: (updates: Partial<Settings>) => void;
@@ -399,6 +400,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         onRunningChange={setMicrophoneBenchmarkRunning}
       />
       {INTERNAL_BENCHMARK_BUILD && <CorpusRecorder
+        active={active}
         status={status}
         benchmarkRunning={running || microphoneBenchmarkRunning}
         fileTranscribing={fileTranscribing}

@@ -278,7 +278,10 @@ jobs:
         uses: dtolnay/rust-toolchain@1.96.0
 
       - name: Enforce Tauri-free core
-        run: python3 scripts/check_core_dependencies.py
+        run: |
+          python3 scripts/check_core_dependencies.py
+          python3 scripts/check_targeted_events.py
+          python3 -m unittest discover -s scripts -p 'test_check_targeted_events.py'
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

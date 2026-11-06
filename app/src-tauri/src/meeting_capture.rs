@@ -13,6 +13,7 @@ use murmur_capture_helper_protocol::{
     ProductionHelperMessage, ProductionHostMessage, ProductionPcm, SessionNonce, SetupTransition,
     SystemAudioPermissionStatus, MAX_ECHO_CANCELLATION_RECOVERY_ATTEMPTS,
 };
+use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
@@ -22,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError, TrySendErr
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use uuid::Uuid;
 
 const CAPTURE_WORKER_IDENTIFIER: &str = "com.localdictation.capture-worker";
@@ -658,7 +659,7 @@ impl MeetingCoordinator {
 }
 
 fn publish_status(app: &tauri::AppHandle, status: &MeetingRuntimeStatus) {
-    let _ = app.emit("meeting-status-changed", status);
+    let _ = app.publish(EventKind::MeetingStatusChanged, status);
 }
 
 fn helper_path() -> Result<std::path::PathBuf, MeetingError> {
@@ -2152,15 +2153,17 @@ fn process_pending_segment(
                     error_code: None,
                 };
                 if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.emit("meeting-segment-finalized", segment);
+                    let _ = main
+                        .app_handle()
+                        .publish(EventKind::MeetingSegmentFinalized, segment);
                 }
             }
         }
         Err(()) => {
             let _ = repository.fail_segment(pending.id, "transcription_failed");
             if let Some(main) = app.get_webview_window("main") {
-                let _ = main.emit(
-                    "meeting-segment-failed",
+                let _ = main.app_handle().publish(
+                    EventKind::MeetingSegmentFailed,
                     serde_json::json!({
                         "sessionId": pending.session_id,
                         "segmentId": pending.id,

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { useAudioLevel } from './useAudioLevel';
 import type { DictationStatus } from '../types';
 
 /** Bars in the notch's right wing. */
@@ -24,18 +24,7 @@ export function useWaveform(status: DictationStatus): OverlayWaveform {
   const audioLevelRef = useRef(0);
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<number>('audio-level', (event) => {
-      audioLevelRef.current = event.payload;
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
-    }).catch(() => {
-      // Non-Tauri previews do not expose the native event bridge.
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, []);
+  useAudioLevel('overlay', status === 'recording', level => { audioLevelRef.current = level; });
 
   useEffect(() => {
     const bars = () => barRefs.current.filter((el): el is HTMLDivElement => el !== null);

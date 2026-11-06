@@ -2,7 +2,7 @@ import { DEFAULT_SETTINGS } from '../../lib/settings';
 import { SettingsRow } from './SettingsRow';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../../lib/targetedEvents';
 import {
   downloadDiarizationModel,
   getDiarizationModelStatus,

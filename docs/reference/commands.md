@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 179 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 180 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -410,3 +410,9 @@ All successful mutations return the latest `Snapshot` and publish read-only
 | `mutate_history` | `mutation: HistoryMutation` | `Result<Snapshot, String>` | Main-only exact-row edit, pin or delete; held data and deletion records use the same serialized owner. |
 | `clear_completion_destination` | `destination: history \| statistics \| reports` | `Result<Snapshot, String>` | Main-only atomic explicit empty/reset destination, watermark and generation discard. |
 | `store_benchmark_report` | `report: JSON` | `Result<Snapshot, String>` | Main-only schema-validated saved report; newest ten retained. |
+
+## Targeted event subscriptions (`events.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `set_waveform_subscription` | `consumer: WaveformConsumer`, `active: bool` | `Result<(), String>` | Registers main-recording, corpus, or overlay waveform interest. The caller window must own the named consumer; native visibility and minimization also gate delivery. |

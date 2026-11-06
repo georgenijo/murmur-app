@@ -16,6 +16,7 @@ use crate::microphone_auto::{
 use crate::microphone_signal::SignalVerificationResult;
 use crate::MutexExt;
 use murmur_capture_helper_protocol::ProductionLidState;
+use murmur_core::events::{EventKind, EventSink};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -361,14 +362,14 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     if let Some(app_handle) = app_handle {
         let _ = app_handle.emit_to("main", INVENTORY_EVENT, snapshot.clone());
         let _ = app_handle.emit_to("overlay", INVENTORY_EVENT, snapshot.clone());
-        let _ = app_handle.emit("smart-auto-microphone-changed", ());
+        let _ = app_handle.publish(EventKind::SmartAutoMicrophoneChanged, ());
     }
 }
 
 pub(crate) fn emit_routing_changed() {
     crate::smart_auto_probe::wake();
     if let Some(app_handle) = app_handle_slot().lock_or_recover().clone() {
-        let _ = app_handle.emit("smart-auto-microphone-changed", ());
+        let _ = app_handle.publish(EventKind::SmartAutoMicrophoneChanged, ());
     }
 }
 

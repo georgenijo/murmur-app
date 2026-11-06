@@ -12,12 +12,13 @@ use crate::microphone_preview::{
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use chrono::Utc;
+use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const CORPUS_SCHEMA_VERSION: u32 = 1;
 const CORPUS_ID: &str = "personal-v1";
@@ -462,8 +463,8 @@ fn persist_recording(
 
 fn emit_status(app_handle: &tauri::AppHandle, state: &str, error: Option<&str>) {
     crate::smart_auto_probe::wake();
-    let _ = app_handle.emit(
-        "corpus-recording-status",
+    let _ = app_handle.publish(
+        EventKind::CorpusRecordingStatus,
         serde_json::json!({ "state": state, "error": error }),
     );
 }

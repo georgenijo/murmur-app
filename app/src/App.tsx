@@ -3,7 +3,7 @@ import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
 import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from './lib/targetedEvents';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from './lib/log';
 import {
@@ -260,6 +260,7 @@ function App() {
     handleStart, handleStop, audioLevel,
     smartDestinationStatus, smartDestinationAppName,
   } = useRecordingState({
+    waveformActive: onboardingState === 'done' && modelReady === true && !isSettingsOpen && mainDestination === 'home',
     microphone: settings.microphone,
     smartAuto: smartAutoMicrophoneRequest(settings),
     canStart: canStartRecording,

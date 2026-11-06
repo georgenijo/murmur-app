@@ -4,6 +4,7 @@ use murmur_core::completion::{
     Command, CompletionService, Destination, GateAction, HistoryMutation, LegacyImport,
     MigrationGate, Snapshot,
 };
+use murmur_core::events::{EventKind, EventSink};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager};
 
@@ -76,8 +77,8 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Snapshot, String>
         .execute(command)
         .map_err(|e| e.to_string());
     if result.is_ok() {
-        let _ = app.emit("history-changed", ());
-        let _ = app.emit("statistics-changed", ());
+        let _ = app.publish(EventKind::HistoryChanged, ());
+        let _ = app.publish(EventKind::StatisticsChanged, ());
     }
     result
 }
@@ -88,8 +89,8 @@ pub(crate) fn produce(
     let state = app.state::<Completion>();
     match f(&state.producers) {
         Ok(_) => {
-            let _ = app.emit("history-changed", ());
-            let _ = app.emit("statistics-changed", ());
+            let _ = app.publish(EventKind::HistoryChanged, ());
+            let _ = app.publish(EventKind::StatisticsChanged, ());
         }
         Err(_) => {
             storage_error(app);
@@ -166,7 +167,7 @@ pub(crate) async fn accept_file_transcription<R: tauri::Runtime>(
     })?
     .is_some()
     {
-        let _ = app.emit("history-changed", ());
+        let _ = app.publish(EventKind::HistoryChanged, ());
     }
     Ok(())
 }

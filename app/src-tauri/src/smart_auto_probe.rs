@@ -4,11 +4,12 @@
 use crate::microphone_auto::{SmartAutoRequest, SmartAutoStatus};
 use crate::microphone_signal::SignalVerificationResult;
 use crate::{MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Listener, Manager};
+use tauri::Manager;
 use tokio::sync::Notify;
 
 pub(crate) const PROBE_LIMIT: Duration = Duration::from_secs(8);
@@ -226,7 +227,7 @@ pub(crate) async fn notified_for_test() {
 
 fn emit() {
     if let Some(app) = controller().app.get() {
-        let _ = app.emit("smart-auto-microphone-changed", ());
+        let _ = app.publish(EventKind::SmartAutoMicrophoneChanged, ());
     }
 }
 
@@ -406,15 +407,20 @@ pub(crate) fn initialize(app: tauri::AppHandle) {
     // Notifications only wake a pending finite budget. Their payloads never
     // authorize work; admission re-reads all backend owner state under lock.
     for event in [
-        "recording-status-changed",
-        "file-transcription-status-changed",
-        "transform-state-changed",
-        "query-state-changed",
-        "meeting-status-changed",
-        "app-disabled-changed",
-        "microphone-preview-status",
+        EventKind::RecordingStatusChanged,
+        EventKind::FileTranscriptionStatusChanged,
+        EventKind::TransformStateChanged,
+        EventKind::QueryStateChanged,
+        EventKind::MeetingStatusChanged,
+        EventKind::AppDisabledChanged,
+        EventKind::MicrophonePreviewStatus,
     ] {
-        app.listen(event, |_| wake());
+        crate::events::subscribe(
+            &app,
+            murmur_core::events::Consumer::SmartAuto,
+            event,
+            |_| wake(),
+        );
     }
     tauri::async_runtime::spawn(run(app));
 }

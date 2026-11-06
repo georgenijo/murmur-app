@@ -1,3 +1,4 @@
+use murmur_core::events::{EventKind, EventSink};
 #[cfg(all(debug_assertions, target_os = "macos", target_arch = "aarch64"))]
 #[path = "meeting_diarization_probe.rs"]
 mod probe;
@@ -12,7 +13,7 @@ use std::io::{BufRead, Read, Write};
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const WORKER_ARGUMENT: &str = "--meeting-diarization-worker-v1";
 const PREFIX: &str = "MRMR_DIARIZATION_V1 ";
@@ -278,8 +279,8 @@ pub fn schedule(
                         .apply_remote_speakers(&session_id, &assignments)
                         .is_ok()
                 {
-                    let _ = app.emit(
-                        "meeting-speakers-updated",
+                    let _ = app.publish(
+                        EventKind::MeetingSpeakersUpdated,
                         serde_json::json!({"sessionId":session_id}),
                     );
                 }

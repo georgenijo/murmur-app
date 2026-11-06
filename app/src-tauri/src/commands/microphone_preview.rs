@@ -3,8 +3,9 @@ use crate::microphone_auto::SmartAutoRequest;
 use crate::microphone_preview::{MicrophonePreviewStatus, PreviewPhase};
 use crate::state::DictationStatus;
 use crate::{keyboard, MutexExt, State};
+use murmur_core::events::{EventKind, EventSink};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const CONFIRMED_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -22,7 +23,7 @@ fn emit_status(app_handle: &tauri::AppHandle) {
         .app_state
         .microphone_preview
         .status();
-    let _ = app_handle.emit_to("main", "microphone-preview-status", status);
+    let _ = app_handle.publish(EventKind::MicrophonePreviewStatus, status);
 }
 
 fn normalized_device_id(device_id: String) -> Result<Option<String>, String> {

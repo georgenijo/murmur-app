@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { flog } from '../log';
 import type { DictationStatus } from '../types';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../targetedEvents';
 
 export interface UseRecordingControlsArgs {
   /** Current dictation status (reactive value, drives the locked-mode reset). */
