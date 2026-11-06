@@ -406,11 +406,18 @@ fn disabled_lock_cancels_starting_and_stops_locked_recording() {
         c.observe(1, phase, Origin::Toggle);
         assert!(c.locked);
         c.gate.disabled = true;
-        assert_eq!(c.input(Input::Lock), Some(if phase == Status::Starting {
-            Effect::Cancel { generation: 1 }
-        } else {
-            Effect::Stop { generation: 1, auto: false, hold: false }
-        }));
+        assert_eq!(
+            c.input(Input::Lock),
+            Some(if phase == Status::Starting {
+                Effect::Cancel { generation: 1 }
+            } else {
+                Effect::Stop {
+                    generation: 1,
+                    auto: false,
+                    hold: false,
+                }
+            })
+        );
         assert!(!c.locked);
         c.observe(1, Status::Idle, Origin::Toggle);
         assert_eq!(c.input(Input::Lock), None);

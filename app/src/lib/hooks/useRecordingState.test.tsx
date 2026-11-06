@@ -91,13 +91,13 @@ describe('useRecordingState transition ordering', () => {
       emit('dictation-generation-started', { recordingId: 13 });
       emit('dictation-stop-failed', { recordingId: 12 });
     });
-    expect(current.error).toBeNull();
+    expect(current.error).toBe('');
     await act(async () => {
       emit('recording-cancelled', { recordingId: 13 });
       emit('dictation-stop-failed', { recordingId: 13 });
       emit('dictation-stop-failed', { recordingId: 'invalid' });
     });
-    expect(current.error).toBeNull();
+    expect(current.error).toBe('');
   });
 
   it('cancels promptly while microphone initialization is still starting', async () => {
