@@ -23,7 +23,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use tauri::Emitter;
 
 const INVENTORY_SCHEMA_VERSION: u8 = 2;
 #[cfg(target_os = "macos")]
@@ -361,8 +360,16 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     crate::smart_auto_probe::inventory_changed();
     let app_handle = app_handle_slot().lock_or_recover().clone();
     if let Some(app_handle) = app_handle {
-        let _ = app_handle.emit_to("main", INVENTORY_EVENT, snapshot.clone());
-        let _ = app_handle.emit_to("overlay", INVENTORY_EVENT, snapshot.clone());
+        let _ = app_handle.events().send_to(
+            murmur_core::events::Consumer::Main,
+            INVENTORY_EVENT,
+            snapshot.clone(),
+        );
+        let _ = app_handle.events().send_to(
+            murmur_core::events::Consumer::Overlay,
+            INVENTORY_EVENT,
+            snapshot.clone(),
+        );
         let _ = app_handle
             .events()
             .publish(EventKind::SmartAutoMicrophoneChanged, ());

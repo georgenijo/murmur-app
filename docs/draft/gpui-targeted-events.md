@@ -38,8 +38,15 @@ progress calls moved to the sink to preserve native subscriptions.
 No `emit_all`, qualified `AppHandle::emit` or `Emitter::emit` calls were present.
 Capture-sidecar `emit(observation)` callbacks and the gesture-correlation helper
 are not Tauri broadcasts. The CI guard scans all Rust files under
-`app/src-tauri`, including tests and sidecars, and rejects broadcast methods,
-qualified calls, aliases, string emits and filtered-broadcast escape hatches.
+`app/src-tauri`, including tests and sidecars, and confines Tauri's `Emitter` trait and every `emit_to`/`emit_str_to` call to
+`src/events.rs`. Existing targeted producers use its named-consumer `send_to`
+transport, preserving their labels and DTOs. Inside the adapter, every transport
+must use the literal `EventTarget::webview_window(label)` constructor; arbitrary
+target variables, string targets (Tauri converts these to `AnyLabel`), `Any`,
+`AnyLabel`, `any()`, `labeled()` and other target kinds are rejected. The guard
+normalizes raw identifiers (`r#emit`), rejects broadcast/filtered/string methods,
+trait aliases and method-ident macro forwarding. The same guard/tests remain in
+CI alongside the core dependency guard.
 
 Audit commands: `rg -n '\.emit|emit_all|Emitter::emit|AppHandle::emit' app/src-tauri`,
 `rg -n 'listen|once|listen_any|once_any' app/src`, plus Rust listener searches. Generic listeners,
@@ -149,7 +156,7 @@ and unregisters on cleanup. Its three named interests are:
 
 - Overlay, only while recording with visible waveform bars (priority cues
   suspend interest); native visibility/minimization is checked on
-  each sample. A newly shown overlay receives the next sample without restarting.
+  each coalesced main-thread delivery. A newly shown overlay receives the next sample without restarting.
 - Main recording, only on the Home surface, after onboarding/model readiness,
   with Settings closed and recording active. MainHeader's recording controls are
   disabled by the current App entry point, so it has no additional waveform.
@@ -157,10 +164,23 @@ and unregisters on cleanup. Its three named interests are:
   Its interest is separate from main recording; disabling either cannot disable
   the other, and both still result in at most one event per window per sample.
 
-Hiding/minimizing main immediately prevents the next native delivery even if
-React is throttled or a cleanup IPC is pending. Showing it resumes the next
-sample when interest is still active. Main stays free of level-driven renders
-while hidden. Navigation/reload and destruction clear interests for that label.
+Capture serializes the existing numeric level payload and replaces a single
+pending sample under a brief mailbox lock. At most one main-thread delivery task
+is queued (plus a task already executing); further samples overwrite the pending
+value. Capture never queries windows or waits for a main-thread reply. The task
+takes the latest sample and releases the mailbox lock before querying native
+visibility/minimization and routing. It uses the current interests and window
+state, so hiding/minimizing main prevents the next delivery even if React is
+throttled, and showing/restoring a subscribed consumer receives the next sample
+without restarting capture. A blocked main thread retains one latest sample,
+not an unbounded queue. Dispatch failure resets the mailbox for the next sample.
+
+Main stays free of level-driven renders while hidden. Navigation/reload and
+destruction clear interests for that label. WebContent termination clears the
+crashed label's interests **before** native reload, so a failed reload cannot
+retain them. Pinned `tauri-runtime-wry` owns the previous default termination
+recovery; the application hook calls the same `Webview::reload()` operation
+after cleanup, with no added JS reload, retry loop or recovery policy.
 Synthetic native regression listeners use a test-only typed observer registry;
 their ordering/terminal assertions are unchanged. The subscription command authorizes the caller's window against the fixed
 consumer identity; a companion cannot register main interest. No caller chooses
@@ -176,11 +196,26 @@ The macOS adapter test drives the actual sink with Tauri's mock host, a named
 Diagnostics window, an unrelated window, and no main. It checks exact native
 callback delivery and silent absent-window handling. Client tests cover label
 binding and each waveform's activation, cleanup, reactivation and delayed listen.
-The existing headless control/completion test retains all 1.2/1.3 scenarios and
-adds typed sink receipts for native lifecycle, overlay levels, and durable
-completion notifications without main. Existing completion/gesture regressions
-run with no retired assertions. Guard unit tests exercise method, qualified,
-generic and alias spellings plus comment/raw-string false positives.
+The existing core headless control/completion test retains all 1.2/1.3 controller
+and durable-state assertions; its fabricated `FakeSink` receipts are removed.
+A separate app adapter regression initializes the production consumer subscription
+registrations (substituting only their OS/worker effects), production completion
+state with a temporary synthetic service, and the authorized waveform command.
+It invokes the recording/capture publication helpers used by production and
+`completion::produce`, then asserts actual native callbacks and window listeners
+without creating main. Completion notifications are generated by the production
+adapter rather than by the fake host. A wiring contract also checks that native
+startup and capture/recording still call these shared adapters.
+
+The busy-main regression drives the actual capture publisher and sink with a
+deferred dispatcher and a window-query function that panics: 5,000 publications
+queue exactly one task without querying windows; draining delivers only the
+latest unchanged numeric payload. Hide/show, dispatch-failure recovery and
+cleanup before a failing reload are covered. Existing completion/gesture
+regressions run with no retired assertions. Guard regression fixtures include
+`Any`, `AnyLabel`, string conversions, raw identifiers, method macros, aliases,
+filtered/string methods and constrained-adapter targets, plus nested-comment and
+raw-string false positives.
 
 The command reference now contains **180 commands**, including
 `set_waveform_subscription`; all maintained counts are updated. Exact Linux,

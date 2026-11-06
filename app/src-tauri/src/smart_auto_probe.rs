@@ -403,12 +403,11 @@ fn corpus_idle(_state: &State) -> bool {
     }
 }
 
-pub(crate) fn initialize(app: tauri::AppHandle) {
-    if controller().app.set(app.clone()).is_err() {
-        return;
-    }
-    // Notifications only wake a pending finite budget. Their payloads never
-    // authorize work; admission re-reads all backend owner state under lock.
+pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    callback: impl Fn() + Send + Sync + 'static,
+) {
+    let callback = std::sync::Arc::new(callback);
     for event in [
         EventKind::RecordingStatusChanged,
         EventKind::FileTranscriptionStatusChanged,
@@ -418,13 +417,23 @@ pub(crate) fn initialize(app: tauri::AppHandle) {
         EventKind::AppDisabledChanged,
         EventKind::MicrophonePreviewStatus,
     ] {
+        let callback = callback.clone();
         crate::events::subscribe(
-            &app,
+            app,
             murmur_core::events::Consumer::SmartAuto,
             event,
-            |_| wake(),
+            move |_| callback(),
         );
     }
+}
+
+pub(crate) fn initialize(app: tauri::AppHandle) {
+    if controller().app.set(app.clone()).is_err() {
+        return;
+    }
+    // Notifications only wake a pending finite budget. Their payloads never
+    // authorize work; admission re-reads all backend owner state under lock.
+    initialize_event_subscriptions(&app, wake);
     tauri::async_runtime::spawn(run(app));
 }
 

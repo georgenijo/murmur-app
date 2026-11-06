@@ -6,13 +6,41 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+type MainTask = Box<dyn FnOnce() + Send>;
+#[cfg(test)]
+type Dispatch = Arc<dyn Fn(MainTask) -> Result<(), String> + Send + Sync>;
+#[cfg(test)]
+type Visibility = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 type Callback = Arc<dyn Fn(&str) + Send + Sync>;
 #[derive(Default)]
 struct Events {
     router: Mutex<Router>,
+    levels: Mutex<PendingLevel>,
     native: Mutex<Vec<(Consumer, EventKind, Callback)>>,
     #[cfg(test)]
     observers: Mutex<Vec<(EventKind, Callback)>>,
+    #[cfg(test)]
+    visibility: Mutex<Option<Visibility>>,
+    #[cfg(test)]
+    dispatch: Mutex<Option<Dispatch>>,
+}
+
+/// At most one queued main-thread task and one latest sample. No window or
+/// main-thread work is performed while this mutex is held.
+#[derive(Default)]
+struct PendingLevel {
+    latest: Option<String>,
+    scheduled: bool,
+}
+impl PendingLevel {
+    fn replace(&mut self, payload: String) -> bool {
+        self.latest = Some(payload);
+        !std::mem::replace(&mut self.scheduled, true)
+    }
+    fn take(&mut self) -> Option<String> {
+        self.scheduled = false;
+        self.latest.take()
+    }
 }
 
 pub(crate) fn initialize<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -30,7 +58,7 @@ pub(crate) fn subscribe<R: tauri::Runtime>(
         .lock_or_recover()
         .push((consumer, event, Arc::new(callback)));
 }
-pub(crate) fn clear_window(app: &tauri::AppHandle, label: &str) {
+pub(crate) fn clear_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) {
     if let Some(events) = app.try_state::<Events>() {
         events.router.lock_or_recover().clear_window(label);
     }
@@ -51,21 +79,81 @@ impl<R: tauri::Runtime> EventsExt<R> for tauri::AppHandle<R> {
     }
 }
 
-impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
-    fn publish<P: Serialize + Clone>(&self, event: EventKind, payload: P) -> Result<(), String> {
+impl<R: tauri::Runtime> TauriEventSink<'_, R> {
+    /// Existing explicitly targeted notifications retain their payloads/routes.
+    /// Callers supply a named window consumer, never an arbitrary EventTarget.
+    pub(crate) fn send_to<P: Serialize + Clone>(
+        &self,
+        consumer: Consumer,
+        event: &str,
+        payload: P,
+    ) -> tauri::Result<()> {
+        let label = consumer.window_label().expect("window consumer required");
+        self.0
+            .emit_to(tauri::EventTarget::webview_window(label), event, payload)
+    }
+
+    fn queue_level(&self, payload: String) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(dispatch) = self.0.state::<Events>().dispatch.lock_or_recover().clone() {
+            return self.queue_level_with(payload, |task| dispatch(task));
+        }
+        self.queue_level_with(payload, |task| {
+            self.0.run_on_main_thread(task).map_err(|e| e.to_string())
+        })
+    }
+
+    fn queue_level_with(
+        &self,
+        payload: String,
+        schedule: impl FnOnce(MainTask) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let app = self.0;
+        if !app
+            .state::<Events>()
+            .levels
+            .lock_or_recover()
+            .replace(payload)
+        {
+            return Ok(());
+        }
+        let handle = app.clone();
+        if let Err(error) = schedule(Box::new(move || {
+            let payload = handle.state::<Events>().levels.lock_or_recover().take();
+            if let Some(payload) = payload {
+                // This callback runs on the main thread, with no mailbox/router
+                // lock held. Visibility is fresh even after show/hide/restore.
+                let _ = handle.events().deliver(EventKind::AudioLevel, &payload);
+            }
+        })) {
+            app.state::<Events>().levels.lock_or_recover().take();
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    fn waveform_visible(&self, window: &tauri::WebviewWindow<R>) -> bool {
+        #[cfg(test)]
+        if let Some(query) = self
+            .0
+            .state::<Events>()
+            .visibility
+            .lock_or_recover()
+            .clone()
+        {
+            return query(window.label());
+        }
+        window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true)
+    }
+
+    fn deliver(&self, event: EventKind, payload: &str) -> Result<(), String> {
         let app = self.0;
         let events = app.state::<Events>();
-        // Native visibility queries can dispatch to AppKit. Never hold the
-        // subscription mutex while waiting for that dispatch: a main-thread
-        // subscription command could otherwise deadlock capture delivery.
         let routing = events.router.lock_or_recover().clone();
         let recipients = routing.recipients(event, |consumer, waveform| {
             consumer.window_label().is_none_or(|label| {
-                app.get_webview_window(label).is_some_and(|window| {
-                    !waveform
-                        || (window.is_visible().unwrap_or(false)
-                            && !window.is_minimized().unwrap_or(true))
-                })
+                app.get_webview_window(label)
+                    .is_some_and(|window| !waveform || self.waveform_visible(&window))
             })
         });
         // No registry/router lock is held across callbacks: a consumer may
@@ -91,10 +179,8 @@ impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
             callbacks
         };
         if !callbacks.is_empty() {
-            let serialized = serde_json::to_string(&payload)
-                .map_err(|_| "Event serialization failed".to_string())?;
             for callback in callbacks {
-                callback(&serialized);
+                callback(payload);
             }
         }
         let mut failure = None;
@@ -103,10 +189,10 @@ impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
                 // The window can disappear after the availability check. An
                 // absent/recreated companion is a normal, silent no-op.
                 if app.get_webview_window(label).is_some() {
-                    if let Err(error) = app.emit_to(
+                    if let Err(error) = app.emit_str_to(
                         tauri::EventTarget::webview_window(label),
                         event.name(),
-                        payload.clone(),
+                        payload.to_owned(),
                     ) {
                         failure = Some(error.to_string());
                     }
@@ -117,10 +203,40 @@ impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
     }
 }
 
+impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
+    fn publish<P: Serialize + Clone>(&self, event: EventKind, payload: P) -> Result<(), String> {
+        let payload = serde_json::to_string(&payload)
+            .map_err(|_| "Event serialization failed".to_string())?;
+        if event == EventKind::AudioLevel {
+            self.queue_level(payload)
+        } else {
+            self.deliver(event, &payload)
+        }
+    }
+}
+
+/// Cleanup must happen even when the existing native reload operation fails.
+pub(crate) fn web_content_terminated<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
+    clear_before_reload(webview.app_handle(), webview.label(), || {
+        // Same native recovery used by pinned tauri-runtime-wry's default
+        // termination handler. Do not introduce a second JS/retry recovery path.
+        webview.reload()
+    });
+}
+
+fn clear_before_reload<R: tauri::Runtime, E>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    reload: impl FnOnce() -> Result<(), E>,
+) {
+    clear_window(app, label);
+    let _ = reload();
+}
+
 #[tauri::command]
-pub(crate) fn set_waveform_subscription(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+pub(crate) fn set_waveform_subscription<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    window: tauri::WebviewWindow<R>,
     consumer: WaveformConsumer,
     active: bool,
 ) -> Result<(), String> {
@@ -198,6 +314,238 @@ mod tests {
             .publish(EventKind::RecordingStatusChanged, "recording")
             .unwrap();
         assert_eq!(native.load(Ordering::SeqCst), 1);
+        assert!(app.get_webview_window("main").is_none());
+    }
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        initialize(app.handle());
+        app
+    }
+
+    #[test]
+    fn capture_publication_never_queries_windows_and_coalesces_a_busy_main_thread() {
+        let app = mock_app();
+        let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
+            .build()
+            .unwrap();
+        set_waveform_subscription(
+            app.handle().clone(),
+            overlay.clone(),
+            WaveformConsumer::Overlay,
+            true,
+        )
+        .unwrap();
+        let tasks = Arc::new(Mutex::new(Vec::<MainTask>::new()));
+        let pending = tasks.clone();
+        *app.state::<Events>().dispatch.lock_or_recover() = Some(Arc::new(move |task| {
+            pending.lock_or_recover().push(task);
+            Ok(())
+        }));
+        *app.state::<Events>().visibility.lock_or_recover() =
+            Some(Arc::new(|_| panic!("capture queried a window")));
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let receipts = received.clone();
+        overlay.listen("audio-level", move |event| {
+            receipts.lock_or_recover().push(event.payload().to_owned())
+        });
+        for sample in 0..5000 {
+            // The exact helper used by capture, through the real EventSink.
+            crate::audio::publish_waveform(app.handle(), sample as f32).unwrap();
+        }
+        assert_eq!(tasks.lock_or_recover().len(), 1);
+        assert!(received.lock_or_recover().is_empty());
+        // The latest value is delivered after main is unblocked. Query only now.
+        *app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(|_| true));
+        let task = tasks.lock_or_recover().pop().unwrap();
+        task();
+        assert_eq!(*received.lock_or_recover(), vec!["4999.0"]);
+        // Hidden/minimized consumers get no delivery. Show/restore is read fresh
+        // on the next sample, without changing interest or restarting capture.
+        for visible in [false, true, false, true] {
+            *app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(move |_| visible));
+            crate::audio::publish_waveform(app.handle(), 0.25).unwrap();
+            let task = tasks.lock_or_recover().pop().unwrap();
+            task();
+        }
+        assert_eq!(*received.lock_or_recover(), vec!["4999.0", "0.25", "0.25"]);
+        assert!(!app.state::<Events>().levels.lock_or_recover().scheduled);
+    }
+
+    #[test]
+    fn failed_dispatch_can_retry_and_failed_reload_still_clears_only_crashed_interest() {
+        let app = mock_app();
+        let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
+            .build()
+            .unwrap();
+        for (window, consumer) in [
+            (main.clone(), WaveformConsumer::MainRecording),
+            (main, WaveformConsumer::Corpus),
+            (overlay, WaveformConsumer::Overlay),
+        ] {
+            set_waveform_subscription(app.handle().clone(), window, consumer, true).unwrap();
+        }
+        assert!(app
+            .handle()
+            .events()
+            .queue_level_with("0.1".into(), |_| Err("closed".into()))
+            .is_err());
+        assert!(!app.state::<Events>().levels.lock_or_recover().scheduled);
+        let callbacks = AtomicUsize::new(0);
+        app.handle()
+            .events()
+            .queue_level_with("0.2".into(), |_| {
+                callbacks.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(callbacks.load(Ordering::SeqCst), 1);
+        clear_before_reload(app.handle(), "main", || {
+            assert_eq!(
+                app.state::<Events>()
+                    .router
+                    .lock_or_recover()
+                    .recipients(EventKind::AudioLevel, |_, _| true),
+                vec![Consumer::Overlay]
+            );
+            Err("synthetic reload failure")
+        });
+        assert_eq!(
+            app.state::<Events>()
+                .router
+                .lock_or_recover()
+                .recipients(EventKind::AudioLevel, |_, _| true),
+            vec![Consumer::Overlay]
+        );
+    }
+
+    #[test]
+    fn production_subscriptions_and_producers_deliver_headlessly_with_synthetic_state() {
+        use murmur_core::completion::{Command, CompletionService};
+        use murmur_core::dictation::{Controller, Effect, Input, LaunchGate, Origin, Status};
+        let app = mock_app();
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        crate::completion::initialize_with_service(app.handle(), service.clone());
+        let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
+            .build()
+            .unwrap();
+        let diagnostics = tauri::WebviewWindowBuilder::new(&app, "diagnostics", Default::default())
+            .build()
+            .unwrap();
+        set_waveform_subscription(
+            app.handle().clone(),
+            overlay.clone(),
+            WaveformConsumer::Overlay,
+            true,
+        )
+        .unwrap();
+        // Initialize the production subscription registrations, substituting only
+        // their OS/worker effects. No fabricated router, routes or manual emits.
+        let receipts = Arc::new(Mutex::new(Vec::new()));
+        let r = receipts.clone();
+        crate::dictation_control::initialize_event_subscription(app.handle(), move |payload| {
+            r.lock_or_recover()
+                .push((Consumer::DictationControl, payload.to_owned()))
+        });
+        let r = receipts.clone();
+        crate::dictation_cues::initialize_event_subscriptions(app.handle(), move |_, payload| {
+            r.lock_or_recover()
+                .push((Consumer::SoundCues, payload.to_owned()))
+        });
+        let r = receipts.clone();
+        crate::smart_auto_probe::initialize_event_subscriptions(app.handle(), move || {
+            r.lock_or_recover()
+                .push((Consumer::SmartAuto, String::new()))
+        });
+        let r = receipts.clone();
+        crate::meeting_suggestions::initialize_event_subscriptions(app.handle(), move || {
+            r.lock_or_recover()
+                .push((Consumer::MeetingSuggestions, String::new()))
+        });
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        for event in ["history-changed", "statistics-changed"] {
+            let r = notifications.clone();
+            diagnostics.listen(event, move |payload| {
+                assert_eq!(payload.payload(), "null");
+                r.lock_or_recover().push(event);
+            });
+        }
+        let levels = Arc::new(Mutex::new(Vec::new()));
+        let r = levels.clone();
+        overlay.listen("audio-level", move |payload| {
+            r.lock_or_recover().push(payload.payload().to_owned())
+        });
+        let mut controller = Controller::default();
+        controller.gate = LaunchGate {
+            configured: true,
+            onboarding_complete: true,
+            model_installed: true,
+            accessibility: true,
+            disabled: false,
+        };
+        assert!(matches!(
+            controller.input(Input::Toggle(None)),
+            Some(Effect::Start { .. })
+        ));
+        controller.observe(1, Status::Recording, Origin::Toggle);
+        crate::commands::recording::publish_status(app.handle(), "recording").unwrap();
+        crate::audio::publish_waveform(app.handle(), 0.25).unwrap();
+        assert_eq!(*levels.lock_or_recover(), vec!["0.25"]);
+        assert!(matches!(
+            controller.input(Input::Toggle(None)),
+            Some(Effect::Stop { generation: 1, .. })
+        ));
+        // Production completion adapter publishes notifications as part of the
+        // producer operation, including duplicate attachment and retention paths.
+        for (generation, retain) in [(1, true), (1, true), (2, false)] {
+            crate::completion::produce(app.handle(), |producer| {
+                producer.dictation(generation,
+                serde_json::json!({"id":generation.to_string(), "text":"synthetic", "duration":1,"timestamp":0}), retain, None, "2026-11-06".into())
+            });
+        }
+        crate::commands::recording::publish_status(app.handle(), "idle").unwrap();
+        controller.observe(1, Status::Idle, Origin::Toggle);
+        for consumer in [
+            Consumer::DictationControl,
+            Consumer::SoundCues,
+            Consumer::SmartAuto,
+            Consumer::MeetingSuggestions,
+        ] {
+            assert_eq!(
+                receipts
+                    .lock_or_recover()
+                    .iter()
+                    .filter(|(c, _)| *c == consumer)
+                    .count(),
+                2,
+                "missing/duplicate production subscription {consumer:?}"
+            );
+        }
+        assert_eq!(
+            notifications
+                .lock_or_recover()
+                .iter()
+                .filter(|e| **e == "history-changed")
+                .count(),
+            3
+        );
+        assert_eq!(
+            notifications
+                .lock_or_recover()
+                .iter()
+                .filter(|e| **e == "statistics-changed")
+                .count(),
+            3
+        );
+        let snapshot = service.execute(Command::Snapshot).unwrap();
+        assert_eq!(snapshot.history.len(), 1);
+        assert_eq!(snapshot.statistics.total_recordings, 2);
         assert!(app.get_webview_window("main").is_none());
     }
 }

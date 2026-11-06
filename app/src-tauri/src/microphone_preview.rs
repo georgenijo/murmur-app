@@ -1,3 +1,4 @@
+use crate::events::EventsExt;
 use crate::microphone_signal::{
     SignalVerification, SignalVerificationResult, VERIFICATION_COOLDOWN,
 };
@@ -7,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::sync::Notify;
 
 pub(crate) const NO_SIGNAL_RMS_THRESHOLD: f32 = 0.001;
@@ -611,8 +612,8 @@ fn emit_vad_decision(
     sensitivity: u32,
     decision: PreviewVadDecision,
 ) {
-    let _ = app_handle.emit_to(
-        "main",
+    let _ = app_handle.events().send_to(
+        murmur_core::events::Consumer::Main,
         "microphone-preview-vad",
         MicrophonePreviewVad {
             preview_id,

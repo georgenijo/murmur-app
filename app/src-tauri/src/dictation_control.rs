@@ -103,6 +103,18 @@ pub(crate) fn model_installation_changed(app: &tauri::AppHandle) {
     );
 }
 
+pub(crate) fn initialize_event_subscription<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    callback: impl Fn(&str) + Send + Sync + 'static,
+) {
+    crate::events::subscribe(
+        app,
+        murmur_core::events::Consumer::DictationControl,
+        EventKind::RecordingStatusChanged,
+        callback,
+    );
+}
+
 pub(crate) fn initialize(app: &tauri::AppHandle) {
     let (sender, mut receive) = tokio::sync::mpsc::unbounded_channel();
     app.manage(Control {
@@ -114,12 +126,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
         settings: Mutex::new(serde_json::Value::Null),
     });
     let sync_handle = app.clone();
-    crate::events::subscribe(
-        app,
-        murmur_core::events::Consumer::DictationControl,
-        EventKind::RecordingStatusChanged,
-        move |_| send(&sync_handle, Input::Sync),
-    );
+    initialize_event_subscription(app, move |_| send(&sync_handle, Input::Sync));
     let handle = app.clone();
     let context = app.state::<AppContext>().inner().clone();
     let _ = context.background.spawn(Box::pin(async move {

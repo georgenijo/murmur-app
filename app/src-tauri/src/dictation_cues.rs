@@ -3,7 +3,11 @@
 use crate::{dictation_control::Control, MutexExt};
 use murmur_core::events::{Consumer, EventKind};
 use tauri::Manager;
-pub(crate) fn initialize(app: &tauri::AppHandle) {
+pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    callback: impl Fn(&str, &str) + Send + Sync + 'static,
+) {
+    let callback = std::sync::Arc::new(callback);
     for (event, cue) in [
         (EventKind::DictationGenerationStarted, "start"),
         (EventKind::RecordingStatusChanged, "stop"),
@@ -11,33 +15,40 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
         (EventKind::RecordingInitializationFailed, "failure"),
         (EventKind::RecordingInterrupted, "failure"),
     ] {
-        let handle = app.clone();
+        let callback = callback.clone();
         crate::events::subscribe(app, Consumer::SoundCues, event, move |payload| {
-            let Some(cue) = cue_for(cue, payload) else {
-                return;
-            };
-            let control = handle.state::<Control>();
-            let settings = control.settings.lock_or_recover();
-            if settings["soundCuesEnabled"] != true
-                || handle.state::<crate::State>().meetings.is_active()
-            {
-                return;
-            }
-            let volume = settings["soundCueVolume"]
-                .as_f64()
-                .unwrap_or(45.0)
-                .round()
-                .clamp(0.0, 100.0);
-            if volume == 0.0 {
-                return;
-            }
-            drop(settings);
-            // A blocking worker owns only this short-lived output player and
-            // removes its synthetic WAV after playback. It cannot capture input.
-            tauri::async_runtime::spawn_blocking(move || play(cue, volume));
+            callback(cue, payload)
         });
     }
 }
+pub(crate) fn initialize(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    initialize_event_subscriptions(app, move |cue, payload| {
+        let Some(cue) = cue_for(cue, payload) else {
+            return;
+        };
+        let control = handle.state::<Control>();
+        let settings = control.settings.lock_or_recover();
+        if settings["soundCuesEnabled"] != true
+            || handle.state::<crate::State>().meetings.is_active()
+        {
+            return;
+        }
+        let volume = settings["soundCueVolume"]
+            .as_f64()
+            .unwrap_or(45.0)
+            .round()
+            .clamp(0.0, 100.0);
+        if volume == 0.0 {
+            return;
+        }
+        drop(settings);
+        // A blocking worker owns only this short-lived output player and
+        // removes its synthetic WAV after playback. It cannot capture input.
+        tauri::async_runtime::spawn_blocking(move || play(cue, volume));
+    });
+}
+
 fn cue_for(event: &str, payload: &str) -> Option<&'static str> {
     match event {
         "start" => Some("start"),

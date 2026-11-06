@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Reject broadcast transports, including qualified calls and method aliases.
 
-Plain `emit(...)` callbacks in capture sidecars are not Tauri broadcasts.
+Tauri's Emitter trait and all emit transports belong exclusively to events.rs.
+That adapter permits only literal WebviewWindow targets. Plain `emit(...)`
+callbacks in capture sidecars are not Tauri broadcasts.
 """
 from pathlib import Path
 import re
@@ -49,15 +51,34 @@ def mask_literals(source: str) -> str:
     return ''.join(chars)
 
 
-def violations(source: str) -> list[int]:
+ADAPTER = Path('app/src-tauri/src/events.rs')
+
+
+def violations(source: str, *, adapter: bool = False) -> list[int]:
     code = mask_literals(source)
-    # This fully qualified helper publishes only a synthetic gesture token into
-    # the capture correlation ledger; it is not a Tauri emitter.
+    # Rust raw identifiers are the same identifiers, not an escape hatch.
+    code = re.sub(r'\br#(?=[A-Za-z_])', '  ', code)
+    # This exact helper publishes synthetic gesture tokens, not Tauri events.
     code = re.sub(r'\bcrate\s*::\s*audio_lifecycle\s*::\s*gesture\s*::\s*emit\b',
                   lambda m: ' ' * len(m.group()), code)
-    # Match names even when taken as function pointers or called with turbofish.
-    forbidden = r'(?:\.|::)\s*(?:emit|emit_str|emit_filter|emit_str_filter)\b|\bemit_all\b'
-    return [code.count('\n', 0, m.start()) + 1 for m in re.finditer(forbidden, code)]
+    patterns = [
+        # No macro may hide the transport method behind an ident metavariable.
+        r'(?:\.|::)\s*\$\s*[A-Za-z_]\w*',
+        r'(?:\.|::)\s*(?:emit|emit_all|emit_str|emit_filter|emit_str_filter)\b',
+        # Pinned Tauri 2.11.2 has Any, AnyLabel (including string conversions),
+        # App, Window, Webview and WebviewWindow. Only the latter is sanctioned.
+        r'\bEventTarget\s*::\s*(?!webview_window\b)[A-Za-z_]\w*',
+    ]
+    if not adapter:
+        # Structural boundary: catches aliases, qualified imports, UFCS, function
+        # pointers and macro invocations with a literal emit method argument.
+        patterns += [r'\bEmitter\b', r'\b(?:emit_to|emit_str_to)\b']
+    else:
+        # Every adapter transport call must carry the exact constructor here.
+        # Forbid pointers, aliases, dynamic targets and qualified alternative calls.
+        patterns += [r'\b(?:emit_to|emit_str_to)\b(?!\s*\(\s*tauri\s*::\s*EventTarget\s*::\s*webview_window\s*\(\s*label\s*\)\s*,)']
+    offsets = {m.start() for pattern in patterns for m in re.finditer(pattern, code)}
+    return sorted({code.count('\n', 0, offset) + 1 for offset in offsets})
 
 
 def main() -> int:
@@ -65,11 +86,11 @@ def main() -> int:
     for path in sorted((ROOT / 'app/src-tauri').rglob('*.rs')):
         if 'target' in path.relative_to(ROOT).parts:
             continue
-        failures.extend(f'{path.relative_to(ROOT)}:{line}: broadcast transport' for line in violations(path.read_text()))
+        failures.extend(f'{path.relative_to(ROOT)}:{line}: broadcast transport' for line in violations(path.read_text(), adapter=path.relative_to(ROOT) == ADAPTER))
     if failures:
         print('\n'.join(failures), file=sys.stderr)
         return 1
-    print('app/src-tauri: zero broadcast emits (methods, qualified calls, aliases)')
+    print('app/src-tauri: zero broadcast emits; Emitter confined to the constrained sink adapter')
     return 0
 
 

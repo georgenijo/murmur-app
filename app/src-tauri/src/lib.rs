@@ -230,6 +230,9 @@ pub fn run() {
     #[cfg(feature = "internal-benchmark")]
     let builder = builder.plugin(commands::corpus::plugin());
 
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_web_content_process_terminate(events::web_content_terminated);
+
     let app = builder
         .manage(State {
             app_state: AppState::default(),

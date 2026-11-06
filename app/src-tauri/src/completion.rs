@@ -7,7 +7,7 @@ use murmur_core::completion::{
 };
 use murmur_core::events::{EventKind, EventSink};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 pub(crate) struct Completion {
     service: CompletionService,
@@ -25,13 +25,20 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .join("Library/WebKit")
         .join(&app.config().identifier);
     let service = CompletionService::start(root, webkit.exists()).map_err(|e| e.to_string())?;
+    initialize_with_service(app, service);
+    Ok(())
+}
+pub(crate) fn initialize_with_service<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    service: CompletionService,
+) {
     app.manage(Completion {
         producers: Producers::new(service.clone(), uuid::Uuid::new_v4().to_string()),
         service,
         admitted: AtomicBool::new(false),
     });
-    Ok(())
 }
+
 pub(crate) fn start_gate(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut gate = MigrationGate::default();
@@ -61,7 +68,11 @@ pub(crate) fn start_gate(app: tauri::AppHandle) {
                 GateAction::Wait => {}
             }
             if snapshot.is_err() {
-                let _ = app.emit_to("main", "completion-storage-error", ());
+                let _ = app.events().send_to(
+                    murmur_core::events::Consumer::Main,
+                    "completion-storage-error",
+                    (),
+                );
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
@@ -83,8 +94,8 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Snapshot, String>
     }
     result
 }
-pub(crate) fn produce(
-    app: &tauri::AppHandle,
+pub(crate) fn produce<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     f: impl FnOnce(&Producers) -> murmur_core::completion::Result<Snapshot>,
 ) {
     let state = app.state::<Completion>();
@@ -100,7 +111,11 @@ pub(crate) fn produce(
 }
 fn storage_error<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     tracing::warn!(target:"completion",code="completion_write_failed","completion service write failed");
-    let _ = app.emit_to("main", "completion-storage-error", ());
+    let _ = app.events().send_to(
+        murmur_core::events::Consumer::Main,
+        "completion-storage-error",
+        (),
+    );
 }
 /// A failed/cancelled native operation drops its pending content on every exit.
 pub(crate) struct FileOperation<'a> {

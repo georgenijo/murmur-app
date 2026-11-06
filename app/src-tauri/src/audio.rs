@@ -22,8 +22,15 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use uuid::Uuid;
+
+pub(crate) fn publish_waveform<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    level: f32,
+) -> Result<(), String> {
+    app.events().publish(EventKind::AudioLevel, level)
+}
 
 #[path = "audio_prepare.rs"]
 pub(crate) mod prepare;
@@ -2934,8 +2941,8 @@ fn run_backend(
                                     "microphone preview observed a signal classification"
                                 );
                             }
-                            let _ = handle.emit_to(
-                                "main",
+                            let _ = handle.events().send_to(
+                                murmur_core::events::Consumer::Main,
                                 "microphone-preview-level",
                                 MicrophonePreviewLevel {
                                     preview_id,
@@ -2949,7 +2956,7 @@ fn run_backend(
                             if let Some(generation) = owner.dictation_id() {
                                 crate::dictation_control::level(handle, generation, level);
                             }
-                            let _ = handle.events().publish(EventKind::AudioLevel, level);
+                            let _ = publish_waveform(handle, level);
                         }
                     }
                     last_level_emit = Instant::now();
