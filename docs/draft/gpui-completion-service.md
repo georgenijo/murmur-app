@@ -216,7 +216,8 @@ journal/source-claim behavior is unchanged.
 One file operation is identified by its staging UUID. The following states are
 logical states of that operation, derived from staging, cancellation intent and
 durable receipt together; no attempted in-memory write is treated as durability.
-**Staged** has a ready result; **accepting** is queued or publishing;
+**Staged** has a ready result; **accepting** is queued, preparing or publishing;
+**preparing** writes UUID-only evidence without publishing this file’s content;
 **published-unknown** is a returned error whose publication may have renamed;
 **admitted** has a synced receipt; **cancelled** has intent and no new publication;
 **failed-retryable** has a proven pre-rename failure; **uncertain** has an unknown
@@ -232,8 +233,16 @@ records. This places admission evidence in the existing recovery-critical journa
 instead of trusting a losable holding file alone; no transcript is added to the
 journal and no new durable file or deletion-specific protocol is needed.
 
-A proven pre-rename failure durably removes pending evidence before allowing
-retry. A post-rename failure keeps pending evidence: a synced receipt proves
+The live intent distinguishes PREPARING from ATTEMPTED. Writing pending evidence
+sets only PREPARING; the publication CAS replaces it with ATTEMPTED/PUBLISHING.
+A preparation failure at any boundary leaves the transcript staged and retryable.
+The next command syncs the directory and rereads state, resolving an unknown
+state rename before reusing or recreating that UUID's pending record. It never
+adds a second pending record. A proven non-publication returns to PREPARING
+**before** evidence cleanup, so failed cleanup cannot strand an unpublished file.
+A pre-v1 cap write changes only old History rows; even its unknown rename cannot
+have published the new file, which goes only into the subsequent holding write.
+A content post-rename failure keeps pending evidence: a synced receipt proves
 admission, but an absent receipt cannot prove non-publication. It stays uncertain
 and acceptance returns the content-free storage error/notice without appending.
 The staged intent also remembers that publication was attempted, so loss of the
@@ -258,7 +267,8 @@ completed cancellation and discard retire it. A cancelled running native job pin
 its intent until finish/discard, preventing a delayed finish from finding a new
 intent after tombstone eviction. Running ownership, including cancelled jobs not
 yet finished, counts toward the 200-operation cap. Ready cancellation releases
-capacity; queued accepts retain the original `Arc`. Operation UUIDs are never
+capacity and drops the staged transcript; queued accepts retain the original `Arc`.
+Staging is memory-only; no transcript-bearing staging file needs deletion. Operation UUIDs are never
 reused; older retired IDs leaving the bounded window cannot have native work
 remaining. Unknown cancel IDs create bounded tombstones, not active intents.
 
@@ -272,13 +282,35 @@ leaves the entry in History. Cancellation never deletes History implicitly.
 
 Lock order: `files` may briefly acquire the intent registry, then release it
 before enqueueing/waiting on the owner. Cancel acquires/releases the registry,
-marks the atomic intent and only **tries** `files`; a busy accept/finish observes
-that same intent and handles cleanup. Discard may wait for files after releasing
-the registry. The actor uses only atomics, never either producer mutex. Concurrent
+marks the atomic intent and only **tries** `files`. Every production files guard
+drains **all** cancelled operations on release: ready values are dropped and
+retired, while running jobs become Cancelled and retain ownership until finish or
+discard. The guard holds the registry through unlocking files, closing the race
+between the last drain and a new cancellation: the canceller either joins that
+drain or acquires free files and drains itself. It never waits for the owner or
+files. Discard may wait for files after releasing the registry. The actor uses only atomics, never either producer mutex. Concurrent
 accepts serialize on files; neither blocks cancellation dispatch. The root lock
 remains actor-owned.
 
-The table exhaustively partitions events by state. Test keys below apply to each
+Preparation and publication have separate transitions (F is the 180-case fault
+matrix below; V is the deferred-cancel capacity regression):
+
+| Phase / event | Evidence and live intent | Result |
+|---|---|---|
+| Preparation write succeeds | Pending UUID durable; PREPARING | Publication CAS may proceed (F) |
+| Preparation fails before rename | No content attempted; PREPARING | Retry after recovery, or cancel/drop staging (F) |
+| Preparation fails after rename or directory fsync | Pending UUID may exist; PREPARING | Sync and reread state, then retry without uncertainty (F) |
+| Content publication CAS | PREPARING becomes ATTEMPTED/PUBLISHING unless cancelled | Earlier cancellation prevents publication (Q/P) |
+| Pre-v1 old-History cap write fails at any boundary | New content not published | Return to PREPARING; retry or cancel (F) |
+| Content write fails before rename; cleanup write also fails | Pending UUID may remain; PREPARING restored before cleanup | Sync/reread, retry or cancel; never stuck uncertain (F) |
+| Content write fails after rename or directory fsync | ATTEMPTED; possible content publication | Sync/reread receipts; acknowledge or remain uncertain only if evidence was lost (F/X) |
+| Content succeeds; final admitted-state write fails | Content receipt survives; ADMITTED live intent | Recovery promotes pending evidence, acknowledges exactly once (F) |
+| Cancel while another operation holds files | Atomic intent recorded; no files/owner wait | Guard drains all cancelled ready results when released (V) |
+| Cancel running job during deferred drain | Cancelled native ownership remains | Finish/discard drops result and retires owner (O) |
+
+The following table partitions the remaining events by state. Rename and fsync
+failures in its accepting column refer to **content publication**; preparation
+failures follow the table above. Test keys below apply to each
 cell carrying that key. **—** means impossible: a publication callback belongs
 only to an accepting operation. **=** means no file-state transition: History
 mutations cannot themselves submit an acceptance (tested by the adjacent key).
@@ -420,3 +452,35 @@ assertions to that baseline makes delete and edit fail: neither mutation had
 actually run. Switching those fixtures to the native shape makes all five
 receipt mutation controls pass, confirming the fixture repair rather than a
 production mutation change.
+
+## Fifth re-check regressions
+
+- `review_evidence_before_rename_failure_remains_retryable` and
+  `review_evidence_after_rename_failure_remains_retryable` start from the reviewer's
+  scratch reproductions. Before/after v1, each checks empty History after the
+  preparation fault, actor restart with preserved synthetic live phase, repeated
+  acceptance, migration and relaunch: exactly one History entry, zero statistics.
+- V: `review_cancel_ready_while_other_accept_holds_files_releases_capacity`
+  fills all 200 slots with ready synthetic transcripts, blocks acceptance of 0,
+  cancels 1–199 without releasing the owner, then verifies zero remaining staged
+  results and all 200 replacement slots available. The next begin still rejects
+  at the cap; discarding those running jobs releases all slots again.
+- F: `file_acceptance_write_fault_matrix_is_retryable_or_admitted_once` covers
+  **180 combinations**: before/after v1; each of BeforeRename, AfterRename and
+  DirectorySync; cancel or retry; actor relaunch or same actor. Write sites are
+  state preparation, content History/holding, final admitted state, pre-v1
+  old-History cap, and state/holding/History receipt compaction. A paired-fault
+  scenario fails content before rename and then fails the state cleanup at each
+  boundary. The state file is the existing statistics journal, not an additional
+  file. Every injected fault must be consumed at its intended write. Each case
+  checks the immediate published count, three retries, migration and another
+  relaunch, with zero statistics and exactly one entry (or zero if cancelled
+  before any publication). No case without potential content publication is
+  permitted to remain uncertain. Existing P/Q tests cover cancellation queued
+  before and racing actual content writes; X retains evidence-loss coverage.
+
+The three reviewer-derived regressions fail on `a2dfaa0c` with only the tests
+added. The matrix also fails on that baseline with only its test fault seam:
+preparation BeforeRename leaves an empty History permanently Uncertain. The
+production changes preserve dictation's plan row 7 and the content-free error
+notice. No other producer or durable schema changes.

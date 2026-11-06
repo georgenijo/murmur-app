@@ -574,16 +574,21 @@ impl Engine {
                         .any(|v| v == id);
                 if published {
                     intent.admitted();
-                } else if evidence.is_some() || intent.attempted() {
+                } else if intent.attempted() || (evidence.is_some() && !intent.preparing()) {
                     diagnostic("file_admission_uncertain");
                     return Err(Error::Uncertain);
                 } else {
                     // Durable write-ahead evidence must precede any content publication.
-                    intent.mark_attempted();
-                    state.file_admissions.push(Admission {
-                        uuid: id.into(),
-                        admitted: false,
-                    });
+                    // A failed preparation write cannot have published content.
+                    // On retry recover() syncs and rereads its unknown outcome;
+                    // live PREPARING permits reuse of that pending UUID record.
+                    intent.prepare();
+                    if evidence.is_none() {
+                        state.file_admissions.push(Admission {
+                            uuid: id.into(),
+                            admitted: false,
+                        });
+                    }
                     self.storage.write(STATE, &state)?;
                     self.add_file(entry, &intent)
                         .inspect_err(|_| diagnostic("history_write_failed"))?;
@@ -735,9 +740,13 @@ impl Engine {
             if !intent.begin_publication() {
                 return self.finish_file_publication(&id, intent, Ok(()), false);
             }
-            let result = self
-                .cap_held(&mut h, Destination::History, &mut doc)
-                .and_then(|()| self.storage.write(HOLD, &h));
+            // cap_held may write old History rows, but cannot publish this file.
+            // Only the holding write can make this completion's outcome unknown.
+            if let Err(error) = self.cap_held(&mut h, Destination::History, &mut doc) {
+                intent.end_publication(false);
+                return self.finish_file_publication(&id, intent, Err(error), false);
+            }
+            let result = self.storage.write(HOLD, &h);
             let renamed = self.storage.renamed;
             intent.end_publication(result.is_ok());
             self.finish_file_publication(&id, intent, result, renamed)
@@ -750,6 +759,11 @@ impl Engine {
         result: Result<()>,
         renamed: bool,
     ) -> Result<()> {
+        if !renamed {
+            // Preserve proven non-publication even if pending-evidence cleanup
+            // itself fails. The live intent can safely reconcile and retry it.
+            intent.prepare();
+        }
         if result.is_ok() || !renamed {
             let mut state = self.state()?;
             if result.is_ok() && renamed {
@@ -758,13 +772,10 @@ impl Engine {
                 }
             } else {
                 // Only proven non-publication permits another attempt. If this
-                // cleanup fails, pending evidence conservatively blocks that UUID.
+                // cleanup fails, the live preparation phase permits safe retry.
                 state.file_admissions.retain(|a| a.uuid != id);
             }
             self.storage.write(STATE, &state)?;
-            if !renamed {
-                intent.clear_attempted();
-            }
         }
         result
     }

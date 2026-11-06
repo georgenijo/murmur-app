@@ -3,9 +3,10 @@ use super::{Command, CompletionService, Error, Result, Scope, Snapshot, Statisti
 use serde_json::Value;
 use std::{
     collections::{HashMap, VecDeque},
+    ops::{Deref, DerefMut},
     sync::{
         atomic::{AtomicU8, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
     },
 };
 
@@ -45,6 +46,46 @@ enum FileState {
     Cancelled,
     Ready(Option<Value>),
 }
+// Every production files lock drains cancellation on release. Keep the registry
+// locked until files is unlocked: a concurrent canceller either joins this drain
+// or sees an unlocked files mutex and performs its own drain. No wakeup is lost.
+struct FilesGuard<'a> {
+    files: Option<MutexGuard<'a, HashMap<String, FileState>>>,
+    intents: &'a Mutex<IntentRegistry>,
+}
+impl Deref for FilesGuard<'_> {
+    type Target = HashMap<String, FileState>;
+    fn deref(&self) -> &Self::Target {
+        self.files.as_ref().unwrap()
+    }
+}
+impl DerefMut for FilesGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.files.as_mut().unwrap()
+    }
+}
+impl Drop for FilesGuard<'_> {
+    fn drop(&mut self) {
+        let mut intents = self.intents.lock().unwrap_or_else(|p| p.into_inner());
+        self.files.as_mut().unwrap().retain(|operation, state| {
+            if !intents.active[operation].cancelled() {
+                return true;
+            }
+            match state {
+                FileState::Running | FileState::Cancelled => {
+                    *state = FileState::Cancelled;
+                    true // Native work retains ownership until finish/discard.
+                }
+                FileState::Ready(_) => {
+                    intents.retire(operation);
+                    false // Drop transcript content as well as the capacity slot.
+                }
+            }
+        });
+        drop(self.files.take());
+        drop(intents);
+    }
+}
 // Independent of the transcript-bearing files mutex. Cancellation can mark a
 // queued acceptance without waiting for the owner. Bits preserve late intent
 // across a failed in-progress publication; a durable receipt always wins later.
@@ -58,11 +99,16 @@ impl FileIntent {
     pub(super) fn attempted(&self) -> bool {
         self.0.load(Ordering::SeqCst) & Self::ATTEMPTED != 0
     }
-    pub(super) fn mark_attempted(&self) {
-        self.0.fetch_or(Self::ATTEMPTED, Ordering::SeqCst);
+    const PREPARING: u8 = 16;
+    pub(super) fn preparing(&self) -> bool {
+        self.0.load(Ordering::SeqCst) & Self::PREPARING != 0
     }
-    pub(super) fn clear_attempted(&self) {
+    pub(super) fn prepare(&self) {
+        self.0.fetch_or(Self::PREPARING, Ordering::SeqCst);
         self.0.fetch_and(!Self::ATTEMPTED, Ordering::SeqCst);
+    }
+    fn cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst) & Self::CANCELLED != 0
     }
     fn cancel(&self) {
         self.0.fetch_or(Self::CANCELLED, Ordering::SeqCst);
@@ -70,7 +116,7 @@ impl FileIntent {
     pub(super) fn begin_publication(&self) -> bool {
         self.0
             .compare_exchange(
-                Self::ATTEMPTED,
+                Self::PREPARING,
                 Self::ATTEMPTED | Self::PUBLISHING,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
@@ -99,6 +145,12 @@ impl Producers {
             intents: Mutex::new(IntentRegistry::default()),
             #[cfg(test)]
             cancel_recorded: Mutex::new(None),
+        }
+    }
+    fn lock_files(&self) -> FilesGuard<'_> {
+        FilesGuard {
+            files: Some(self.files.lock().unwrap_or_else(|p| p.into_inner())),
+            intents: &self.intents,
         }
     }
     fn submit(
@@ -167,7 +219,7 @@ impl Producers {
         )
     }
     pub fn begin_file(&self, operation: &str) -> Result<()> {
-        let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        let mut files = self.lock_files();
         match files.get(operation) {
             Some(FileState::Cancelled) => Err(Error::Stopped),
             Some(_) => Err(Error::InUse),
@@ -215,21 +267,16 @@ impl Producers {
         if let Some(send) = self.cancel_recorded.lock().unwrap().take() {
             send.send(()).unwrap();
         }
-        if let Ok(mut files) = self.files.try_lock() {
-            match files.get(operation) {
-                Some(FileState::Running | FileState::Cancelled) => {
-                    files.insert(operation.into(), FileState::Cancelled);
-                }
-                Some(FileState::Ready(_)) => {
-                    files.remove(operation);
-                    self.retire(operation);
-                }
-                None => {}
-            }
+        if let Ok(files) = self.files.try_lock() {
+            drop(FilesGuard {
+                files: Some(files),
+                intents: &self.intents,
+            });
         }
     }
+
     pub fn finish_file(&self, operation: &str, entry: Option<Value>, retain: bool) {
-        let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        let mut files = self.lock_files();
         if files.contains_key(operation) && self.intent(operation).cancelled_before_admission() {
             files.remove(operation);
             self.retire(operation);
@@ -250,7 +297,7 @@ impl Producers {
     /// The client accepts only after its cancellation check. A late cancellation
     /// before acceptance still wins, including after native transcription ends.
     pub fn accept_file(&self, operation: &str) -> Result<Option<Snapshot>> {
-        let mut files = self.files.lock().unwrap_or_else(|p| p.into_inner());
+        let mut files = self.lock_files();
         if !matches!(files.get(operation), Some(FileState::Ready(_))) {
             return Ok(None);
         }
@@ -287,10 +334,8 @@ impl Producers {
     }
     pub fn discard_file(&self, operation: &str) {
         self.cancel_file(operation);
-        self.files
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(operation);
+        let mut files = self.lock_files();
+        files.remove(operation);
         self.retire(operation);
     }
 }
@@ -1035,5 +1080,219 @@ mod tests {
             .unwrap()
             .history
             .is_empty());
+    }
+    fn review_evidence_write_fault(at: super::super::storage::Boundary) {
+        for webkit in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let service = CompletionService::start(dir.path().into(), webkit).unwrap();
+            let mut p = staged_file(&service);
+            drop(service);
+            storage(&p.service, move |s| {
+                s.fail = Some((super::super::STATE.into(), at))
+            });
+            assert!(matches!(p.accept_file("operation"), Err(Error::Io)));
+            let before = p.service.execute(Command::Snapshot).unwrap();
+            assert!(before.history.is_empty());
+            assert_no_statistics(&before);
+            // Also retain the live phase through actor restart; production exit
+            // drops staging altogether and therefore has no automatic replay.
+            restart(&mut p, dir.path(), webkit);
+            for _ in 0..3 {
+                p.accept_file("operation").unwrap();
+                let snapshot = p.service.execute(Command::Snapshot).unwrap();
+                assert_eq!(snapshot.history.len(), 1);
+                assert_no_statistics(&snapshot);
+            }
+            p.service
+                .execute(Command::Import(super::super::LegacyImport::default()))
+                .unwrap();
+            restart(&mut p, dir.path(), false);
+            p.accept_file("operation").unwrap();
+            let snapshot = p.service.execute(Command::Snapshot).unwrap();
+            assert_eq!(snapshot.history.len(), 1);
+            assert_no_statistics(&snapshot);
+        }
+    }
+    #[test]
+    fn review_evidence_before_rename_failure_remains_retryable() {
+        review_evidence_write_fault(super::super::storage::Boundary::BeforeRename);
+    }
+    #[test]
+    fn review_evidence_after_rename_failure_remains_retryable() {
+        review_evidence_write_fault(super::super::storage::Boundary::AfterRename);
+    }
+    #[test]
+    fn review_cancel_ready_while_other_accept_holds_files_releases_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(dir.path().into(), false).unwrap();
+        service.execute(Command::Snapshot).unwrap();
+        let p = Producers::new(service.clone(), "synthetic".into());
+        for n in 0..MAX_PENDING_FILES {
+            let id = n.to_string();
+            p.begin_file(&id).unwrap();
+            p.finish_file(&id, Some(json!({"schemaVersion":2,"source":"file","pinned":false,"id":id,"text":"synthetic","timestamp":1,"duration":1})), true);
+        }
+        let (blocked, observed) = std::sync::mpsc::channel();
+        let (resume, release) = std::sync::mpsc::channel();
+        service
+            .owner
+            .send
+            .as_ref()
+            .unwrap()
+            .send(Box::new(move |_| {
+                blocked.send(()).unwrap();
+                release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }))
+            .unwrap();
+        observed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        std::thread::scope(|scope| {
+            let accept = scope.spawn(|| p.accept_file("0"));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while p.files.try_lock().is_ok() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            // These are ready results, including failed admissions the UI can dismiss.
+            // Their owners send cancellation once and then forget their IDs.
+            for n in 1..MAX_PENDING_FILES {
+                p.cancel_file(&n.to_string());
+            }
+            resume.send(()).unwrap();
+            accept.join().unwrap().unwrap();
+        });
+        let stranded = p.files.lock().unwrap().len();
+        assert_eq!(
+            stranded, 0,
+            "cancelled ready transcripts must be released at unlock"
+        );
+        for n in 0..MAX_PENDING_FILES {
+            p.begin_file(&format!("replacement-{n}")).unwrap();
+        }
+        assert_eq!(p.begin_file("overflow"), Err(Error::TooManyFiles));
+        for n in 0..MAX_PENDING_FILES {
+            p.discard_file(&format!("replacement-{n}"));
+        }
+        assert!(p.files.lock().unwrap().is_empty());
+        assert_eq!(service.execute(Command::Snapshot).unwrap().history.len(), 1);
+    }
+    #[test]
+    fn file_acceptance_write_fault_matrix_is_retryable_or_admitted_once() {
+        use super::super::{storage::Boundary::*, Destination, Document, HOLD, STATE};
+        // STATE is also the statistics journal: preparation, receipt compaction,
+        // final admission and failed-publication cleanup must preserve its data.
+        let mut cases = 0;
+        for webkit in [false, true] {
+            for phase in [
+                "prepare",
+                "content",
+                "admit",
+                "cap",
+                "compact_state",
+                "compact_holding",
+                "compact_history",
+                "cleanup",
+            ] {
+                if phase == "cap" && !webkit {
+                    continue;
+                }
+                for boundary in [BeforeRename, AfterRename, DirectorySync] {
+                    for cancel in [false, true] {
+                        for relaunch in [false, true] {
+                            let dir = tempfile::tempdir().unwrap();
+                            let service =
+                                CompletionService::start(dir.path().into(), webkit).unwrap();
+                            let mut p = staged_file(&service);
+                            drop(service);
+                            storage(&p.service, move |s| {
+                                let stale = super::super::uuid();
+                                if phase == "cap" || phase == "compact_history" {
+                                    let mut doc = Document::new(Destination::History);
+                                    doc.v1_imported = !webkit;
+                                    if phase == "compact_history" {
+                                        doc.file_receipts.push(stale.clone());
+                                    }
+                                    s.write("history.json", &doc).unwrap();
+                                }
+                                if phase == "compact_holding" {
+                                    let mut h: super::super::Holding =
+                                        s.read(HOLD, |_| true).unwrap().unwrap();
+                                    h.file_receipts.push(stale.clone());
+                                    s.write(HOLD, &h).unwrap();
+                                }
+                                if phase == "compact_state" {
+                                    let mut state: super::super::State =
+                                        s.read(STATE, |_| true).unwrap().unwrap();
+                                    state.file_admissions.push(super::super::Admission {
+                                        uuid: stale,
+                                        admitted: true,
+                                    });
+                                    s.write(STATE, &state).unwrap();
+                                }
+                                let content = if webkit { HOLD } else { "history.json" };
+                                let (file, skip) = match phase {
+                                    "prepare" | "compact_state" => (STATE, 0),
+                                    "admit" => (STATE, 1),
+                                    "content" => (content, 0),
+                                    "cap" | "compact_history" => ("history.json", 0),
+                                    "compact_holding" => (HOLD, 0),
+                                    "cleanup" => {
+                                        s.faults.push_back((content.into(), BeforeRename, 0));
+                                        (STATE, 0)
+                                    }
+                                    _ => unreachable!(),
+                                };
+                                s.faults.push_back((file.into(), boundary, skip));
+                            });
+                            assert!(
+                                matches!(p.accept_file("operation"), Err(Error::Io)),
+                                "{webkit}/{phase}/{boundary:?}/{cancel}/{relaunch}"
+                            );
+                            storage(&p.service, |s| {
+                                assert!(s.faults.is_empty(), "fault must hit the intended write")
+                            });
+                            let published = phase == "admit"
+                                || (phase == "content" && boundary != BeforeRename);
+                            let before = p.service.execute(Command::Snapshot).unwrap();
+                            assert_eq!(
+                                before.history.len(),
+                                usize::from(published),
+                                "{webkit}/{phase}/{boundary:?}"
+                            );
+                            assert_no_statistics(&before);
+                            if cancel {
+                                p.cancel_file("operation");
+                            }
+                            if relaunch {
+                                restart(&mut p, dir.path(), webkit);
+                            }
+                            for _ in 0..3 {
+                                p.accept_file("operation").unwrap();
+                                let snapshot = p.service.execute(Command::Snapshot).unwrap();
+                                assert_eq!(
+                                    snapshot.history.len(),
+                                    usize::from(!cancel || published),
+                                    "{webkit}/{phase}/{boundary:?}/{cancel}/{relaunch}"
+                                );
+                                assert_no_statistics(&snapshot);
+                            }
+                            p.service
+                                .execute(Command::Import(super::super::LegacyImport::default()))
+                                .unwrap();
+                            restart(&mut p, dir.path(), false);
+                            p.accept_file("operation").unwrap();
+                            let snapshot = p.service.execute(Command::Snapshot).unwrap();
+                            assert_eq!(snapshot.history.len(), usize::from(!cancel || published));
+                            assert_no_statistics(&snapshot);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cases, 180);
     }
 }

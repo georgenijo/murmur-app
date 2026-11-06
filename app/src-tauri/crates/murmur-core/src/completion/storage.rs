@@ -20,6 +20,9 @@ pub struct Storage {
     pub renamed: bool,
     #[cfg(test)]
     pub fail: Option<(String, Boundary)>,
+    // Ordered faults; skip matching boundaries to target later writes to STATE.
+    #[cfg(test)]
+    pub faults: std::collections::VecDeque<(String, Boundary, usize)>,
     #[cfg(test)]
     pub pause: Option<(
         String,
@@ -41,6 +44,8 @@ impl Storage {
             renamed: false,
             #[cfg(test)]
             fail: None,
+            #[cfg(test)]
+            faults: Default::default(),
             #[cfg(test)]
             pause: None,
             #[cfg(test)]
@@ -156,6 +161,16 @@ impl Storage {
         {
             self.fail = None;
             return Err(Error::Io);
+        }
+        #[cfg(test)]
+        if let Some((name, at, skip)) = self.faults.front_mut() {
+            if name == _name && *at == _at {
+                if *skip == 0 {
+                    self.faults.pop_front();
+                    return Err(Error::Io);
+                }
+                *skip -= 1;
+            }
         }
         Ok(())
     }
