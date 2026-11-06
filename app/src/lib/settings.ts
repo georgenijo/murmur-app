@@ -1,4 +1,4 @@
-import { persistSourceState, rebasePendingOwnedSettings, type OwnedEdits } from './webkitLifecycle';
+import { persistSourceState, type OwnedEdits } from './webkitLifecycle';
 import rustSettingsDefaults from '../../src-tauri/crates/murmur-core/src/state/settings-defaults.json';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
@@ -557,16 +557,14 @@ function writePersistedSettings(settings: Settings, ownedEdits?: OwnedEdits): vo
  * Native setup uses it on later launches. Capture still waits for configure.
  */
 export function persistOnboardingComplete(complete: boolean): void {
+  persistSourceState(ONBOARDING_KEY, JSON.stringify(complete));
   try {
     const cached = localStorage.getItem(STORAGE_KEY);
     if (cached === null) return;
     const value: unknown = JSON.parse(cached);
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-    if ((value as { launchOnboardingComplete?: unknown }).launchOnboardingComplete === complete) return;
-    const blob = JSON.stringify({ ...value, launchOnboardingComplete: complete });
-    mirrorToDisk(blob);
-    try { localStorage.setItem(STORAGE_KEY, blob); } catch { /* Rust intent remains queued. */ }
-  } catch { /* An unavailable mirror falls back to frontend-driven startup. */ }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...value, launchOnboardingComplete: complete }));
+  } catch { /* Cache cannot suppress the queued native patch. */ }
 }
 
 // Only the main window rewrites a migrated snapshot or seeds a fresh install.
@@ -638,7 +636,6 @@ export function loadSettings(): Settings {
 
 /** Refresh a webview cache after the host has already committed settings. */
 export function cacheSettings(settings: Settings): void {
-  rebasePendingOwnedSettings(settings);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...settings, settingsVersion: SETTINGS_VERSION }));
   } catch (e) {

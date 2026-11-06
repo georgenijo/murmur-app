@@ -52,16 +52,17 @@ with imports. Full settings saves and quick-control patches use that lock; a
 durable owned-field revision prevents delayed/retried full snapshots from undoing
 newer overlay Disable or Auto Paste commits. Every revision notification carries both owned values, so a missed event cannot
 stamp a stale Disable value with a newer revision. Native configuration is built from
-the merged committed document. Frontend retry intents retain their newest per-key
-generation and rebase native-owned fields; old acknowledgements cannot discard
-newer edits. Recording generation ownership is unchanged.
+the merged committed document. Frontend retry intents retain their newest per-key and per-owned-field
+generations. Main-save acknowledgements echo their originating generation; rebasing
+committed fields preserves deliberate edits newer than that acknowledgement.
+Configuration rollback supersedes the rejected owned-field patch. Recording generation ownership is unchanged.
 
 Every core publication uses exclusive mode-0600 temporary siblings, file sync
 plus macOS F_FULLFSYNC, rename and parent-directory fsync. An unknown rename
 outcome is reread only after directory sync. Settings/theme transports now use
 that publisher too. Source writes that fail retain retry intents and show a
 content-free notice. Startup import failures preserve the source and display a
-retry-on-relaunch error instead of seeding defaults.
+recovery screen with retry and explicit backup restore instead of seeding defaults.
 
 Malformed source JSON is distinct from a missing key: transports send raw
 strings, and storage read failures abort import. Malformed disk envelopes are
@@ -137,6 +138,8 @@ documents the host's exclusive directory and no-live-webview preconditions.
 | Store purged | Before directory removal or parent sync | Repeat API purge/verification and directory removal |
 | Directory absent | Before/after retirement marker rename | Repeat harmless removal; sync parent and commit marker |
 | Retired | Later startup | Host skips WebKit entirely; source state remains on disk |
+| First source save | After pending receipt or required marker, before destination publication | Replay the exact durable pending document before status/import/read/merge; finish marker and destination sync |
+| Required source genuinely missing/quarantined | No valid pending publication | Startup stays blocked visibly; restore a user-selected complete backup; keep quarantine, never seed defaults |
 | Source edit queued | Commit fails or a newer generation arrives | Keep newest intent; retry; never clear newer intent on old acknowledgement |
 
 Quarantine and diagnostics contain only local data files or content-free
@@ -174,9 +177,12 @@ Retirement and transcript removal require readable destination envelopes with
 install now creates explicit empty destination envelopes before committing v1.
 The v2 UI receipt records the settings/library destinations actually imported,
 including empty values. Later creations have separate durable `.required`
-receipts. Missing expected files and quarantine stay errors across repeated
-reads and relaunches; status, import replay and retirement all check them. Destination-receipt metadata is mandatory; a missing field fails visibly too. Failed
-first publication can conservatively require explicit recovery. No defaults are
+receipts and exact `.pending` publication documents. Missing expected files and quarantine stay errors across repeated
+reads and relaunches; status, import replay and retirement all check them. Destination-receipt metadata is mandatory; a missing field fails visibly too. An exact pending publication is fully synced before the required marker, replayed
+before reads/merges on restart, and removed only after destination directory sync.
+Missing or quarantined destinations without a pending document require an explicit
+user-selected complete current-version backup through the startup recovery screen
+and main-only `restore_source_backup`. Quarantines are preserved. No defaults are
 published to replace an expected missing destination.
 
 React queues Rust intents before attempting cache writes. This includes settings,
@@ -221,7 +227,7 @@ this release continues to run the React importer in production.
 | Literal defaults/consents/smart destination/malformed fuzzy | `literal_defaults_consents_smart_destination_and_correction_fuzzy`, expectations independent of defaults JSON |
 | Complete models/Core ML default | `complete_model_catalog_preserves_every_supported_model` |
 | Browser catalog and legacy host edge cases | `every_supported_browser_and_exact_legacy_host_contract` |
-| UTF-16 bounds | `unicode_bounds_count_utf16_for_modes_roots_vocabulary_and_theme_labels`; all ported Rust string limits audited (ASCII IDs/hex remain byte checks) |
+| Exact legacy string bounds | `unicode_bounds_preserve_each_fields_legacy_units` and `supplementary_boundaries_for_every_string_limit`: UTF-16 Modes/roots/theme labels/source metadata, code-point vocabulary (including odd surrogate boundaries), UTF-8 device IDs |
 | Idle catalog, seven built-in identities/names, stale companion migrations | React `literal catalogs and companion ownership` |
 | Obsolete offset key, with/without settings | React `removes obsolete calibration key after v2, settings-present=%s` |
 
@@ -232,3 +238,23 @@ All native fixtures remain nonpersistent stores and temporary synthetic paths.
 These injected faults establish state-machine recovery, not physical power-loss
 or production-default-store execution. Production identity is a runtime assertion
 against the actual wry view, deliberately not exercised against user data here.
+
+## Round-two implementation regressions
+
+| Finding/outcome | Executable coverage |
+|---|---|
+| DS1: crash after first required marker, restart, then save | `interrupted_first_source_publication_replays_exact_intent_before_merge` injects real before/after rename and directory-sync faults for both destinations, restarts via public CompletionService, checks exact synthetic values, saves again; native `settings_merge_resumes_first_save_after_marker_before_destination_crash` exercises the production read/merge |
+| DS1: genuine destination loss/quarantine | Native `explicit_backup_restore_requires_complete_supplied_data_and_preserves_quarantine`; React `SourceRecovery.test.tsx` drives backup selection and success/failure notice. No automatic reset or production data access |
+| DS2/F1: Auto Paste true→false; Disable→re-enable while first save is pending | React `older %s acknowledgement preserves the newer deliberate field intent` executes the real queue/rebase module with delayed native acknowledgement and checks final native patch for both fields |
+| F2: configuration rollback supersedes rejected Auto Paste | `configuration rollback supersedes the rejected Auto Paste native patch`, real hook and source queue, synthetic native persistence plus configure failure |
+| F3: exact pre-PR string units | `unicode_bounds_preserve_each_fields_legacy_units`, `supplementary_boundaries_for_every_string_limit`; audited against fa2be313 |
+| F4: theme quota failure then successful next operation | `successive library edits use the controller document after cache quota recovers`, real controller install/install/remove sequence |
+| F5: onboarding complete/reset with cache exceptions | `public onboarding complete and reset persist despite cache write and removal errors`; core `onboarding_patch_preserves_authoritative_settings_across_restart`. All source-persistence helper callers swept for cache-first suppression |
+| F7: independent defaults and disk migration expectations | 118-case fixture uses frozen `settings-expected-defaults.json`, separate from production defaults; `literal_fallbacks_do_not_depend_on_production_defaults`; `settings_migrations_publish_literal_unchanged_delay_smart_destination_and_shortcut_removal` |
+
+Restack receipt: before `8ba32dce8042bcb7f2ae6a91848d63bd491c54ec`,
+after `792123132eb178174909e9b1046b9c4d45c91809`, onto
+`8f976c342612b63014cd7f0067ed21f8a334d850`. No conflicts; all seven commits
+compare equal in `git range-diff fa2be313..8ba32dce 8f976c34..79212313`.
+Restack checks: TypeScript, core tests, 178 files / 1,787 Vitest tests passed
+(previous 176 files / 1,756 tests; +31 tests inherited from layer 1.4).

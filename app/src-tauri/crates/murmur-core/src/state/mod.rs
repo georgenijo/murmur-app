@@ -14,12 +14,19 @@ fn bounded(v: &Value, min: f64, max: f64, default: f64) -> Value {
     json!(v.as_f64().unwrap_or(default).clamp(min, max).trunc() as i64)
 }
 fn unique_strings(v: &Value, cap: usize) -> Value {
+    unique_strings_bounded(v, cap, false)
+}
+fn unique_strings_bounded(v: &Value, cap: usize, utf8_bytes: bool) -> Value {
     let mut out = vec![];
     for s in v.as_array().into_iter().flatten().filter_map(Value::as_str) {
         let s = s.trim();
         if !s.is_empty()
             && !s.contains('\0')
-            && s.encode_utf16().count() <= 4096
+            && (if utf8_bytes {
+                s.len()
+            } else {
+                s.encode_utf16().count()
+            }) <= 4096
             && !out.contains(&json!(s))
             && out.len() < cap
         {
@@ -113,8 +120,8 @@ pub fn settings(mut v: Value) -> Result<Value> {
     {
         p.insert("microphoneIdMigrationComplete".into(), json!(false));
     }
-    let approved = unique_strings(&p["smartAutoApprovedDeviceIds"], 32);
-    let preferred = unique_strings(&p["smartAutoPreferredDeviceIds"], 32);
+    let approved = unique_strings_bounded(&p["smartAutoApprovedDeviceIds"], 32, true);
+    let preferred = unique_strings_bounded(&p["smartAutoPreferredDeviceIds"], 32, true);
     p.insert(
         "smartAutoPreferredDeviceIds".into(),
         json!(preferred
@@ -280,7 +287,8 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .extend(case["input"].as_object().unwrap().clone());
-            let mut expected = settings_defaults();
+            let mut expected: Value =
+                serde_json::from_str(include_str!("settings-expected-defaults.json")).unwrap();
             expected
                 .as_object_mut()
                 .unwrap()
@@ -445,7 +453,7 @@ mod review_regressions {
         }
     }
     #[test]
-    fn unicode_bounds_count_utf16_for_modes_roots_vocabulary_and_theme_labels() {
+    fn unicode_bounds_preserve_each_fields_legacy_units() {
         for (name, accepted) in [
             ("日".repeat(60), true),
             ("日".repeat(128), true),
@@ -475,7 +483,7 @@ mod review_regressions {
                 .unwrap()
                 .encode_utf16()
                 .count(),
-            256
+            258
         );
         assert_eq!(
             v["vocabularyEntries"][0]["aliases"][0]
@@ -491,6 +499,104 @@ mod review_regressions {
             ("😀".repeat(33), false),
         ] {
             assert_eq!(normalize("murmur-theme-library", json!({"version":1,"themes":[{"version":1,"id":"fixture","label":label,"modes":["dark"],"theme":{"version":1},"source":{"kind":"local"}}]})).is_ok(), valid);
+        }
+    }
+}
+
+#[cfg(test)]
+mod round_two_contract_tests {
+    use super::*;
+    #[test]
+    fn literal_fallbacks_do_not_depend_on_production_defaults() {
+        for input in [
+            json!({}),
+            json!({"captureStandbyEnabled":"bad","captureStandbySeconds":301,"capturePreRollMs":451,"meetingDiarization":null,"smartFormattingEnabled":1,"hotkeyMissFeedback":"true","smartAutoStopEnabled":1,"siteModeLookupEnabled":"true","autoStopSilenceMs":13}),
+        ] {
+            let v = settings(input).unwrap();
+            for (key, expected) in [
+                ("captureStandbyEnabled", json!(false)),
+                ("captureStandbySeconds", json!(300)),
+                ("capturePreRollMs", json!(450)),
+                ("meetingDiarization", json!(false)),
+                ("smartFormattingEnabled", json!(false)),
+                ("hotkeyMissFeedback", json!(false)),
+                ("smartAutoStopEnabled", json!(false)),
+                ("siteModeLookupEnabled", json!(false)),
+                ("autoStopSilenceMs", json!(0)),
+                ("language", json!("auto")),
+                ("correctionEnabled", json!(true)),
+                ("codeVocabLastScan", Value::Null),
+            ] {
+                assert_eq!(v[key], expected, "{key}");
+            }
+        }
+    }
+    #[test]
+    fn supplementary_boundaries_for_every_string_limit() {
+        // Vocabulary slices code points, including an odd UTF-16 boundary.
+        for text in [
+            "😀".repeat(129),
+            "😀".repeat(256),
+            format!("{}a😀", "😀".repeat(255)),
+        ] {
+            let expected: String = text.chars().take(256).collect();
+            let v =
+                settings(json!({"vocabularyEntries":[{"written":text,"aliases":[text]}]})).unwrap();
+            assert_eq!(v["vocabularyEntries"][0]["written"], expected);
+            assert_eq!(v["vocabularyEntries"][0]["aliases"][0], expected);
+            assert!(!expected.contains('�'));
+        }
+        for (text, valid) in [
+            ("😀".repeat(64), true),
+            (format!("{}a", "😀".repeat(64)), false),
+        ] {
+            let v=settings(json!({"modes":[{"id":text,"name":"fixture"}],"browserSiteRules":[{"id":text,"host":"example.com","browserBundleId":"com.apple.Safari","modeId":"builtin.everyday"}]})).unwrap();
+            assert_eq!(v["modes"].as_array().unwrap().len(), usize::from(valid));
+            assert_eq!(
+                v["browserSiteRules"].as_array().unwrap().len(),
+                usize::from(valid)
+            );
+        }
+        for (text, valid) in [
+            ("😀".repeat(2048), true),
+            (format!("{}a", "😀".repeat(2048)), false),
+        ] {
+            let v =
+                settings(json!({"appProfiles":[{"bundleId":"fixture","ideProjectRoots":[text]}]}))
+                    .unwrap();
+            assert_eq!(
+                v["appProfiles"][0]["ideProjectRoots"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                usize::from(valid)
+            );
+        }
+        for (text, valid) in [
+            ("😀".repeat(1024), true),
+            (format!("{}a", "😀".repeat(1024)), false),
+            ("日".repeat(1365), true),
+            ("日".repeat(1366), false),
+        ] {
+            let v = settings(
+                json!({"smartAutoApprovedDeviceIds":[text],"smartAutoPreferredDeviceIds":[text]}),
+            )
+            .unwrap();
+            for key in ["smartAutoApprovedDeviceIds", "smartAutoPreferredDeviceIds"] {
+                assert_eq!(v[key].as_array().unwrap().len(), usize::from(valid));
+            }
+        }
+        for (text, valid) in [
+            ("😀".repeat(64), true),
+            (format!("{}a", "😀".repeat(64)), false),
+        ] {
+            assert_eq!(normalize("murmur-theme-library",json!({"version":1,"themes":[{"version":1,"id":"fixture","label":"Fixture","modes":["dark"],"theme":{"version":1},"source":{"kind":"open-vsx","extensionId":text,"version":"1","license":"MIT"}}]})).is_ok(), valid);
+        }
+        for (url, valid) in [
+            (format!("https://example.com/{}", "😀".repeat(1014)), true),
+            (format!("https://example.com/{}a", "😀".repeat(1014)), false),
+        ] {
+            assert_eq!(normalize("murmur-theme-library",json!({"version":1,"themes":[{"version":1,"id":"fixture","label":"Fixture","modes":["dark"],"theme":{"version":1},"source":{"kind":"local","sourceUrl":url}}]})).is_ok(), valid);
         }
     }
 }

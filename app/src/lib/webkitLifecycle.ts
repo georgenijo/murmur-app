@@ -14,12 +14,20 @@ export const SOURCE_STORAGE_SAVED = 'murmur-source-storage-saved';
 let writes: Promise<unknown> = Promise.resolve();
 let generation = 0;
 export type OwnedEdits = Partial<Record<'autoPaste' | 'disabled', boolean>>;
-const pending = new Map<string, { raw: string; generation: number; ownedEdits?: OwnedEdits }>();
+type OwnedField = keyof OwnedEdits;
+export type OwnedCommit = { autoPaste?: boolean; disabled?: boolean; ownedFieldsRevision?: number; intentGeneration?: number };
+const pending = new Map<string, { raw: string; generation: number; ownedEdits?: OwnedEdits; fieldGenerations?: Partial<Record<OwnedField, number>> }>();
 /** Ordered, retryable commits. A failed write retains the newest intent for
  * each key; an older async completion cannot discard a newer pending edit. */
 export function persistSourceState(key: string, raw: string, ownedEdits?: OwnedEdits): void {
   try { if (!isTauri()) return; } catch { return; }
-  pending.set(key, { raw, generation: ++generation, ...(ownedEdits || pending.get(key)?.ownedEdits ? { ownedEdits: { ...pending.get(key)?.ownedEdits, ...ownedEdits } } : {}) });
+  const previous = pending.get(key);
+  const nextGeneration = ++generation;
+  const fieldGenerations = { ...previous?.fieldGenerations };
+  for (const field of ['autoPaste', 'disabled'] as const) {
+    if (typeof ownedEdits?.[field] === 'boolean') fieldGenerations[field] = nextGeneration;
+  }
+  pending.set(key, { raw, generation: nextGeneration, ownedEdits: { ...previous?.ownedEdits, ...ownedEdits }, fieldGenerations });
   void flushSourceState().catch(() => {});
 }
 export function flushSourceState(): Promise<unknown> {
@@ -27,7 +35,7 @@ export function flushSourceState(): Promise<unknown> {
     try {
       for (const [key, intent] of pending) {
         if (key === 'dictation-settings' || key === 'murmur-theme-library') {
-          await invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(intent.ownedEdits ? { ownedEdits: intent.ownedEdits } : {}) });
+          await invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(intent.ownedEdits ? { ownedEdits: intent.ownedEdits } : {}), ...(key === 'dictation-settings' ? { intentGeneration: intent.generation } : {}) });
         } else {
           await invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown });
         }
@@ -42,11 +50,26 @@ export function flushSourceState(): Promise<unknown> {
   return writes;
 }
 /** Rebase a retained intent after a newer native quick-control commit. */
-export function rebasePendingOwnedSettings(settings: { autoPaste: boolean; disabled: boolean; ownedFieldsRevision?: number }): void {
+export function rebasePendingOwnedSettings(settings: OwnedCommit): OwnedCommit {
   const intent = pending.get('dictation-settings');
-  if (!intent) return;
+  if (!intent) return settings;
   const value = JSON.parse(intent.raw) as Record<string, unknown>;
-  pending.set('dictation-settings', { generation: ++generation, raw: JSON.stringify({ ...value, autoPaste: settings.autoPaste, disabled: settings.disabled, ownedFieldsRevision: settings.ownedFieldsRevision }) });
+  const rebased = { ...settings };
+  const ownedEdits = { ...intent.ownedEdits };
+  const fieldGenerations = { ...intent.fieldGenerations };
+  for (const field of ['autoPaste', 'disabled'] as const) {
+    if (settings.intentGeneration !== undefined && (fieldGenerations[field] ?? 0) > settings.intentGeneration) {
+      rebased[field] = ownedEdits[field];
+    } else if (typeof settings[field] === 'boolean') {
+      delete ownedEdits[field];
+      delete fieldGenerations[field];
+    }
+    if (typeof rebased[field] === 'boolean') value[field] = rebased[field];
+  }
+  value.ownedFieldsRevision = settings.ownedFieldsRevision;
+  // Rebase is not a new deliberate edit. Retain per-field intent ownership.
+  pending.set('dictation-settings', { ...intent, generation: ++generation, raw: JSON.stringify(value), ownedEdits, fieldGenerations });
+  return rebased;
 }
 export const sourceStorage = {
   getItem: (key: string) => localStorage.getItem(key),

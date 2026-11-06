@@ -1,3 +1,4 @@
+import { SourceRecovery } from './components/SourceRecovery';
 import { SourceStorageNotice } from './components/SourceStorageNotice';
 import { initializeWebkitState } from './lib/webkitLifecycle';
 import React from "react";
@@ -42,5 +43,5 @@ initializeWebkitState(true).then(() => Promise.all([
   );
 }).catch(() => {
   // Preserve the source and retry on relaunch; never initialize empty defaults.
-  root.render(<p role="alert">Your saved data could not be loaded. Restart Murmur to retry.</p>);
+  root.render(<SourceRecovery />);
 });

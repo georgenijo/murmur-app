@@ -1,3 +1,4 @@
+import { rebasePendingOwnedSettings, type OwnedCommit } from '../webkitLifecycle';
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, sendTo } from '../targetedEvents';
@@ -411,7 +412,7 @@ export function useSettings() {
             };
             settingsRef.current = reverted;
             setSettings(reverted);
-            persistSettings(reverted);
+            persistSettings(reverted, typeof updates.autoPaste === 'boolean' ? { autoPaste: reverted.autoPaste } : undefined);
             setConfigureError(
               'Settings could not be saved. Previous settings were restored. Check vocabulary aliases and Voice Commands for conflicts, then try again.',
             );
@@ -424,9 +425,9 @@ export function useSettings() {
   // Ingest a settings change made by another window (the overlay's quick controls).
   // Diffs against the current value so a window applying its own emitted change is a
   // no-op — this is what breaks the settings-changed echo loop.
-  const applyExternalSettings = useCallback((patch: Partial<Pick<Settings, 'autoPaste' | 'disabled' | 'ownedFieldsRevision'>>) => {
+  const applyExternalSettings = useCallback((patch: OwnedCommit) => {
     if ((patch.ownedFieldsRevision ?? 0) < (settingsRef.current.ownedFieldsRevision ?? 0)) return;
-    const fresh = { ...settingsRef.current, ...patch };
+    const fresh = { ...settingsRef.current, ...rebasePendingOwnedSettings(patch) };
     const prev = settingsRef.current;
     const disabledChanged = fresh.disabled !== prev.disabled;
     const autoPasteChanged = fresh.autoPaste !== prev.autoPaste;

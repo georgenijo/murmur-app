@@ -379,6 +379,7 @@ pub fn run() {
             completion::store_benchmark_report,
             commands::settings_store::load_settings_blob,
             commands::settings_store::save_settings_blob,
+            commands::settings_store::restore_source_backup,
             commands::settings_store::patch_overlay_setting,
             commands::settings_store::load_theme_library_blob,
             commands::settings_store::save_theme_library_blob,

@@ -141,8 +141,8 @@ describe('durable settings store', () => {
     persistOnboardingComplete(false);
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual({ ...original, launchOnboardingComplete: false });
     await flushSourceState();
-    expect(mocks.invoke).toHaveBeenLastCalledWith('save_settings_blob', {
-      blob: JSON.stringify({ ...original, launchOnboardingComplete: false }),
+    expect(mocks.invoke).toHaveBeenLastCalledWith('save_webkit_source', {
+      key: ONBOARDING_KEY, value: false,
     });
   });
 
@@ -223,7 +223,7 @@ describe('durable settings store', () => {
     expect(written).not.toBeNull();
     expect(JSON.parse(written ?? '{}')).toMatchObject({ language: 'ko', settingsVersion: 7 });
     await flushSourceState();
-    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: written });
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', expect.objectContaining({ blob: written, intentGeneration: expect.any(Number) }));
   });
 
   it('still persists to localStorage when the disk mirror fails', () => {

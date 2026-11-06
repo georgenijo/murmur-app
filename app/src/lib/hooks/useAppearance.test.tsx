@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/api/app', () => ({ setTheme: mocks.setTheme }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, isTauri: () => true }));
 vi.mock('@tauri-apps/api/event', () => ({
   emitTo: mocks.emitTo,
   listen: vi.fn(async (event: string, callback: (event: { payload: unknown }) => void) => {
@@ -78,6 +78,23 @@ describe('appearance runtime hooks', () => {
     return null;
   }
 
+
+  it('successive library edits use the controller document after cache quota recovers', async () => {
+    await act(async () => { root.render(<Provider><Consumer /></Provider>); });
+    const first = makeLocalThemeEntry('first-fixture', 'First', createAppearanceDocument().theme);
+    const second = makeLocalThemeEntry('second-fixture', 'Second', createAppearanceDocument().theme);
+    const original = localStorage.setItem.bind(localStorage);
+    const quota = vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => {
+      if (key === THEME_LIBRARY_STORAGE_KEY) throw new DOMException('synthetic quota', 'QuotaExceededError');
+      original(key, value);
+    });
+    await act(async () => { await controller!.library.install([first]); });
+    quota.mockRestore();
+    await act(async () => { await controller!.library.install([second]); });
+    expect(JSON.parse(localStorage.getItem(THEME_LIBRARY_STORAGE_KEY)!).themes.map((t: {id: string}) => t.id)).toEqual(['first-fixture', 'second-fixture']);
+    await act(async () => { await controller!.library.remove(['first-fixture']); });
+    expect(JSON.parse(localStorage.getItem(THEME_LIBRARY_STORAGE_KEY)!).themes.map((t: {id: string}) => t.id)).toEqual(['second-fixture']);
+  });
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.removeAttribute('data-appearance');

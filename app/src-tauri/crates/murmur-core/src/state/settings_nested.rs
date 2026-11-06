@@ -30,7 +30,7 @@ fn rows(v: &Value) -> impl Iterator<Item = &Value> {
     v.as_array().into_iter().flatten()
 }
 fn truncate(s: &str) -> String {
-    String::from_utf16_lossy(&s.encode_utf16().take(256).collect::<Vec<_>>())
+    s.chars().take(256).collect()
 }
 pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value) {
     let profiles: Vec<_> = rows(&p["appProfiles"]).filter(|v| !text(&v["bundleId"]).is_empty()).map(|v| {

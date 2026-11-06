@@ -112,3 +112,35 @@ it('retries interrupted individual transcript removals before acknowledgement', 
     expect(mock.invoke).toHaveBeenCalledWith('acknowledge_completion_keys', { destinations: ['history','statistics','reports'] });
   }
 });
+
+it.each(['autoPaste', 'disabled'] as const)('older %s acknowledgement preserves the newer deliberate field intent', async field => {
+  const { persistSourceState, flushSourceState, rebasePendingOwnedSettings } = await import('./webkitLifecycle');
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  mock.invoke.mockImplementationOnce(async (_command: string, args: { intentGeneration: number }) => {
+    entered(); await new Promise<void>(resolve => { release = resolve; });
+    const committed = rebasePendingOwnedSettings({ autoPaste: field === 'autoPaste', disabled: field === 'disabled', ownedFieldsRevision: 1, intentGeneration: args.intentGeneration });
+    expect(committed[field]).toBe(false);
+  }).mockResolvedValue(undefined);
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: false, disabled: false, [field]: true }), { [field]: true });
+  await started;
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: false, disabled: false }), { [field]: false });
+  release();
+  await flushSourceState();
+  const args = mock.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob').slice(-1)[0]![1];
+  expect(JSON.parse(args.blob)[field]).toBe(false);
+  expect(args.ownedEdits[field]).toBe(false);
+});
+it('public onboarding complete and reset persist despite cache write and removal errors', async () => {
+  const { markOnboardingComplete, resetOnboarding } = await import('./onboarding');
+  const { flushSourceState } = await import('./webkitLifecycle');
+  mock.invoke.mockResolvedValue(undefined);
+  const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('synthetic quota'); });
+  const remove = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('synthetic quota'); });
+  markOnboardingComplete(); await flushSourceState();
+  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'murmur_onboarding_complete', value: true });
+  resetOnboarding(); await flushSourceState();
+  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'murmur_onboarding_complete', value: false });
+  write.mockRestore(); remove.mockRestore();
+});

@@ -222,7 +222,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 183 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 184 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -452,9 +452,10 @@ does not reproduce the permission/model checks used to grandfather old installs.
 
 This change retains the main window's pre-render history/stats/theme hydration.
 The completion actor owns History/statistics/report mutations and v1 migration;
-React sends commands and keeps only presentation snapshots. Theme startup can
-still repair and persist a library and reconcile active selections, so deferring
-its reads needs a separate theme readiness boundary.
+React sends commands and keeps only presentation snapshots. Rust owns theme-library
+normalization and durable migrations. The renderer
+defensively parses its presentation snapshot and reconciles active selections;
+deferring those reads needs a separate theme readiness boundary.
 Native stores also remain synchronous: knowledge feeds the frozen recording
 context, while diagnostics and meeting recovery currently
 assume initialization before their commands run. No webview declarations change.
@@ -485,7 +486,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-183 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+184 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

@@ -23,9 +23,9 @@ export function isOnboardingComplete(): boolean {
 }
 
 export function markOnboardingComplete(): void {
+  persistOnboardingComplete(true);
   try {
     localStorage.setItem(ONBOARDING_KEY, 'true');
-    persistOnboardingComplete(true);
   } catch {
     // Non-fatal: the wizard will show again next launch.
   }
@@ -33,9 +33,9 @@ export function markOnboardingComplete(): void {
 
 /** Clear the flag so the setup assistant runs again (Settings → Setup Assistant). */
 export function resetOnboarding(): void {
+  persistOnboardingComplete(false);
   try {
     localStorage.removeItem(ONBOARDING_KEY);
-    persistOnboardingComplete(false);
   } catch {
     // Non-fatal.
   }

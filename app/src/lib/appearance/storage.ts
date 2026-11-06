@@ -139,8 +139,8 @@ export function loadAppearanceDocument(
   );
   return {
     document,
-    // The byte comparison is intentional: semantically equivalent documents
-    // with reordered or unknown keys get one repair write into canonical form.
+    // Compare source fields semantically; regenerated caches and JSON key
+    // order do not authorize a source repair write.
     needsRepair: (() => {
       const { cache: _cache, ...source } = document;
       const { cache: _oldCache, ...stored } = parsed as Record<string, unknown>;

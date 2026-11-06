@@ -1386,16 +1386,75 @@ pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<Stri
     )?;
     let value =
         crate::state::normalize(key, serde_json::from_str(blob).map_err(|_| Error::Invalid)?)?;
-    let file = crate::state::file(key).ok_or(Error::Invalid)?;
     let blob = serde_json::to_string(&value).map_err(|_| Error::Invalid)?;
-    Storage::new(root.into()).write(&format!("{file}.required"), &true)?;
-    Storage::new(root.into()).write_bytes(file, blob.as_bytes())?;
+    let mut storage = Storage::new(root.into());
+    recover_source(root, key)?;
+    publish_source(&mut storage, key, &value)?;
     Ok(blob)
+}
+
+/// A pending receipt holds the exact normalized publication, never defaults.
+/// Hosts serialize this with source reads, merges, and lifecycle operations.
+fn publish_source(storage: &mut Storage, key: &str, value: &Value) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    storage.write(
+        &format!("{file}.pending"),
+        &json!({"schema":1,"value":value}),
+    )?;
+    storage.write(&format!("{file}.required"), &true)?;
+    storage.write(file, value)?;
+    std::fs::remove_file(storage.root.join(format!("{file}.pending"))).map_err(|_| Error::Io)?;
+    storage.sync_directory()
+}
+
+/// Full normalized source documents only. The legacy microphone migration may
+/// advance its flag on the next normalization; that boolean is source metadata.
+pub fn complete_source_document(key: &str, value: &Value) -> bool {
+    crate::state::normalize(key, value.clone()).is_ok_and(|mut normalized| {
+        if key == "dictation-settings" && value["microphoneIdMigrationComplete"].is_boolean() {
+            normalized["microphoneIdMigrationComplete"] =
+                value["microphoneIdMigrationComplete"].clone();
+        }
+        normalized == *value
+    })
+}
+
+/// Resume an interrupted publication before any read/merge. A damaged receipt
+/// remains a visible error; it cannot authorize an empty replacement.
+pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    let pending = format!("{file}.pending");
+    std::fs::create_dir_all(root).map_err(|_| Error::Io)?;
+    let mut storage = Storage::new(root.into());
+    storage.sync_directory()?;
+    let existed = root.join(&pending).exists();
+    let receipt: Option<Value> = storage.read(&pending, |v: &Value| {
+        v["schema"] == 1 && complete_source_document(key, &v["value"])
+    })?;
+    if let Some(receipt) = receipt {
+        storage.reject_future(
+            file,
+            if key == "dictation-settings" {
+                "settingsVersion"
+            } else {
+                "version"
+            },
+            if key == "dictation-settings" { 7 } else { 1 },
+        )?;
+        storage.write(&format!("{file}.required"), &true)?;
+        storage.write(file, &receipt["value"])?;
+        std::fs::remove_file(root.join(&pending)).map_err(|_| Error::Io)?;
+        storage.sync_directory()?;
+    } else if existed || storage.quarantined(&pending)? {
+        return Err(Error::Invalid);
+    }
+    Ok(())
 }
 
 /// A previously published or quarantined source cannot become successful absence.
 pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
     let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    recover_source(root, key)?;
     let storage = Storage::new(root.into());
     if root.join(format!("{file}.required")).exists() || storage.quarantined(file)? {
         return Ok(true);

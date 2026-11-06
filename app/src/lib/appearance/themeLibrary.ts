@@ -270,9 +270,12 @@ export function writeThemeLibrary(
 }
 
 function requireCurrentLibrary(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   storage: ThemeLibraryStorageLike,
 ): ThemeLibraryDocumentV1 {
+  // The controller serializes operations against its authoritative in-memory
+  // snapshot. Its cache may lag after quota failure and cannot veto later edits.
+  if (typeof expectedRevision !== 'number') return expectedRevision;
   const loaded = loadThemeLibrary(storage);
   if (loaded.status === 'unavailable') throw new Error(loaded.error);
   if (loaded.document.revision !== expectedRevision) {
@@ -296,7 +299,7 @@ function publishMutation(
 }
 
 export function installThemeLibraryEntries(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   entries: readonly ThemeLibraryEntryV1[],
   storage: ThemeLibraryStorageLike = localStorage,
 ): ThemeLibraryDocumentV1 {
@@ -314,7 +317,7 @@ export function installThemeLibraryEntries(
 }
 
 export function replaceThemeLibraryCollection(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   collectionId: string,
   entries: readonly ThemeLibraryEntryV1[],
   expectedCollection: readonly ThemeLibraryEntryV1[],
@@ -348,7 +351,7 @@ export function replaceThemeLibraryCollection(
 }
 
 export function removeThemeLibraryEntries(
-  expectedRevision: number,
+  expectedRevision: number | ThemeLibraryDocumentV1,
   themeIds: readonly string[],
   storage: ThemeLibraryStorageLike = localStorage,
 ): ThemeLibraryDocumentV1 {

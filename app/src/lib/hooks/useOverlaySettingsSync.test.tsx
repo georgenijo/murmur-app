@@ -45,3 +45,14 @@ it('a later revision repairs a missed Disable event before retrying the full sav
   expect(JSON.parse(calls[calls.length - 1][1].blob)).toMatchObject({ disabled: true, autoPaste: true, ownedFieldsRevision: 2, language: 'es' });
   await act(async () => root.unmount());
 });
+
+it('preserves the origin generation in main-save acknowledgements', async () => {
+  const apply = vi.fn(); const host = document.createElement('div'); const root = createRoot(host);
+  function Harness() { useOverlaySettingsSync(apply); return null; }
+  await act(async () => root.render(<Harness />));
+  mocks.handler!({ payload: { field: 'autoPaste', value: true, autoPaste: true, disabled: false, ownedFieldsRevision: 2, intentGeneration: 17 } });
+  expect(apply).toHaveBeenCalledWith({ autoPaste: true, disabled: false, ownedFieldsRevision: 2, intentGeneration: 17 });
+  mocks.handler!({ payload: { field: 'autoPaste', value: true, autoPaste: true, disabled: false, ownedFieldsRevision: 2, intentGeneration: -1 } });
+  expect(apply).toHaveBeenCalledTimes(1);
+  await act(async () => root.unmount());
+});

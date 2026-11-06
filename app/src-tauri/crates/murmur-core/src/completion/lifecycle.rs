@@ -116,6 +116,7 @@ impl Engine {
         Ok(values)
     }
     fn state_file(&self, key: &str) -> Result<Option<Value>> {
+        recover_source(&self.storage.root, key)?;
         let file = crate::state::file(key).ok_or(Error::Invalid)?;
         self.storage.reject_future(
             file,
@@ -165,9 +166,17 @@ impl Engine {
             }
             Operation::Save { key, value } => {
                 let value = crate::state::normalize(&key, value)?;
-                if let Some(file) = crate::state::file(&key) {
-                    self.storage.write(&format!("{file}.required"), &true)?;
-                    self.storage.write(file, &value)?;
+                if key == "murmur_onboarding_complete" {
+                    // Patch the authoritative settings, never a cache snapshot.
+                    // No settings yet: keep the gate in UI state until creation.
+                    if let Some(mut settings) = self.state_file("dictation-settings")? {
+                        settings["launchOnboardingComplete"] = value.clone();
+                        publish_source(&mut self.storage, "dictation-settings", &settings)?;
+                    }
+                }
+                if crate::state::file(&key).is_some() {
+                    recover_source(&self.storage.root, &key)?;
+                    publish_source(&mut self.storage, &key, &value)?;
                 } else {
                     state.values.insert(key, value);
                     self.storage.write(UI_STATE, &state)?;
@@ -512,6 +521,7 @@ mod review_safety {
     use super::super::tests::{engine, restart};
     use super::tests::source;
     use super::*;
+    use crate::completion::storage::Boundary;
     #[test]
     fn missing_or_quarantined_v1_destinations_never_authorize_removal_or_retirement() {
         for file in ["history.json", "stats.json", "benchmark-reports.json"] {
@@ -722,5 +732,144 @@ mod review_safety {
             json!(["sin thetic"])
         );
         assert_eq!(disk["vocabularyEntries"][0]["scope"]["root"], "/synthetic");
+    }
+    #[test]
+    fn interrupted_first_source_publication_replays_exact_intent_before_merge() {
+        for key in ["dictation-settings", "murmur-theme-library"] {
+            for boundary in [
+                Boundary::BeforeRename,
+                Boundary::AfterRename,
+                Boundary::DirectorySync,
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut e = engine(dir.path(), true);
+                e.lifecycle(Operation::Import(source())).unwrap();
+                let value = if key == "dictation-settings" {
+                    json!({"language":"es","autoPasteDelayMs":23,"microphone":"system_default"})
+                } else {
+                    json!({"version":1,"revision":17,"themes":[]})
+                };
+                let expected = crate::state::normalize(key, value.clone()).unwrap();
+                let file = crate::state::file(key).unwrap();
+                e.storage.fail = Some((file.into(), boundary));
+                assert!(e
+                    .lifecycle(Operation::Save {
+                        key: key.into(),
+                        value
+                    })
+                    .is_err());
+                assert!(dir.path().join(format!("{file}.required")).exists());
+                if boundary == Boundary::BeforeRename {
+                    assert!(!dir.path().join(file).exists());
+                }
+                // Relaunch through public service, exercising status and save_source.
+                drop(e);
+                let service = CompletionService::start(dir.path().into(), true).unwrap();
+                let state = service.lifecycle(Operation::Status).unwrap();
+                assert_eq!(state.values[key], expected);
+                assert!(!dir.path().join(format!("{file}.pending")).exists());
+                save_source(dir.path(), key, &expected.to_string()).unwrap();
+                assert_eq!(
+                    service.lifecycle(Operation::Status).unwrap().values[key],
+                    expected
+                );
+            }
+        }
+    }
+    #[test]
+    fn onboarding_patch_preserves_authoritative_settings_across_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine(dir.path(), true);
+        e.lifecycle(Operation::Import(source())).unwrap();
+        save_source(
+            dir.path(),
+            "dictation-settings",
+            r#"{"language":"ja","autoPasteDelayMs":23}"#,
+        )
+        .unwrap();
+        for complete in [true, false] {
+            e.lifecycle(Operation::Save {
+                key: "murmur_onboarding_complete".into(),
+                value: json!(complete),
+            })
+            .unwrap();
+            e = restart(&e);
+            let r = e.lifecycle(Operation::Status).unwrap();
+            assert_eq!(
+                r.values["dictation-settings"]["launchOnboardingComplete"],
+                complete
+            );
+            assert_eq!(r.values["dictation-settings"]["language"], "ja");
+            assert_eq!(r.values["dictation-settings"]["autoPasteDelayMs"], 23);
+        }
+    }
+    #[test]
+    fn settings_migrations_publish_literal_unchanged_delay_smart_destination_and_shortcut_removal()
+    {
+        for (input, delay, smart) in [
+            (
+                json!({"settingsVersion":6,"autoPasteDelayMs":23}),
+                23,
+                false,
+            ),
+            (
+                json!({"settingsVersion":6,"autoPasteDelayMs":23,"smartDestinationEnabled":"true"}),
+                23,
+                false,
+            ),
+            (
+                json!({"settingsVersion":7,"autoPasteDelayMs":23,"pasteLastShortcutEnabled":true}),
+                23,
+                false,
+            ),
+            (
+                json!({"settingsVersion":6,"autoPasteDelayMs":23,"smartDestinationEnabled":true,"pasteLastShortcutEnabled":false}),
+                23,
+                true,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut e = engine(dir.path(), true);
+            let mut raw = source();
+            raw.insert("dictation-settings".into(), Some(input.to_string()));
+            e.lifecycle(Operation::Import(raw)).unwrap();
+            let disk: Value =
+                serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap())
+                    .unwrap();
+            assert_eq!(disk["autoPasteDelayMs"], delay);
+            assert_eq!(disk["smartDestinationEnabled"], smart);
+            assert!(disk.get("pasteLastShortcutEnabled").is_none());
+            e = restart(&e);
+            let restarted = e.lifecycle(Operation::Status).unwrap();
+            assert_eq!(
+                restarted.values["dictation-settings"]["autoPasteDelayMs"],
+                23
+            );
+            assert_eq!(
+                restarted.values["dictation-settings"]["smartDestinationEnabled"],
+                smart
+            );
+            assert!(restarted.values["dictation-settings"]
+                .get("pasteLastShortcutEnabled")
+                .is_none());
+        }
+    }
+    #[test]
+    fn malformed_pending_publication_never_seeds_defaults_on_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine(dir.path(), true);
+        e.lifecycle(Operation::Import(source())).unwrap();
+        std::fs::write(
+            dir.path().join("settings.json.pending"),
+            r#"{"schema":1,"value":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("settings.json.required"), b"true").unwrap();
+        for _ in 0..3 {
+            e = restart(&e);
+            assert!(e.lifecycle(Operation::Status).is_err());
+            assert!(e.lifecycle(Operation::Import(source())).is_err());
+            assert!(!dir.path().join("settings.json").exists());
+        }
     }
 }

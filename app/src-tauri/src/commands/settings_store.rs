@@ -222,6 +222,7 @@ pub fn save_settings_blob(
     window: tauri::WebviewWindow,
     blob: String,
     owned_edits: Option<OwnedEdits>,
+    intent_generation: Option<u64>,
 ) -> Result<String, String> {
     require_settings_owner(window.label())?;
     let value =
@@ -255,11 +256,15 @@ pub fn save_settings_blob(
         let _ = app.events().send_to(
             murmur_core::events::Consumer::Main,
             "overlay-owned-setting-committed",
-            owned_fields_notification(
-                OverlaySettingField::Disabled,
-                serde_json::from_str::<serde_json::Value>(&blob).unwrap()["disabled"] == true,
-                &blob,
-            ),
+            {
+                let mut notice = owned_fields_notification(
+                    OverlaySettingField::Disabled,
+                    serde_json::from_str::<serde_json::Value>(&blob).unwrap()["disabled"] == true,
+                    &blob,
+                );
+                notice["intentGeneration"] = serde_json::json!(intent_generation);
+                notice
+            },
         );
     }
     Ok(blob)
@@ -421,6 +426,7 @@ pub fn load_theme_library_blob(
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
     require_main_window(window.label())?;
+    let _guard = WRITE_LOCK.lock_or_recover();
     read_blob(&data_dir(&app)?, THEME_LIBRARY)
 }
 
@@ -445,6 +451,41 @@ pub fn clear_theme_library_blob(
         THEME_LIBRARY,
         r#"{"version":1,"revision":0,"themes":[]}"#,
     )
+}
+
+/// Explicit restore from a user-selected backup; never synthesize defaults or
+/// replace a readable destination. Quarantines remain untouched for recovery.
+#[tauri::command]
+pub fn restore_source_backup(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+    blob: String,
+) -> Result<(), String> {
+    require_settings_owner(window.label())?;
+    restore_source_backup_in(&data_dir(&app)?, &key, &blob)
+}
+
+fn restore_source_backup_in(dir: &Path, key: &str, blob: &str) -> Result<(), String> {
+    let spec = match key {
+        "dictation-settings" => SETTINGS,
+        "murmur-theme-library" => THEME_LIBRARY,
+        _ => return Err("Unsupported recovery destination".into()),
+    };
+    validate_blob(spec, blob)?;
+    let value: serde_json::Value = serde_json::from_str(blob).map_err(|_| "Invalid backup")?;
+    // Full exported source only: a partial object must not silently seed defaults.
+    if !murmur_core::completion::complete_source_document(key, &value) {
+        return Err("Select a complete current-version source backup".into());
+    }
+    let _guard = WRITE_LOCK.lock_or_recover();
+    if read_blob(dir, spec).is_ok_and(|v| v.is_some()) {
+        return Err("Destination is readable; restore is unnecessary".into());
+    }
+    if blob_path(dir, spec).exists() {
+        return Err("Destination must be missing or quarantined before recovery".into());
+    }
+    write_blob_locked(dir, spec, blob)
 }
 
 #[cfg(test)]
@@ -802,5 +843,64 @@ mod explicit_owned_edit_tests {
             serde_json::from_str(&read_blob(dir.path(), SETTINGS).unwrap().unwrap()).unwrap();
         assert_eq!(value["disabled"], false);
         assert_eq!(value["ownedFieldsRevision"], 2);
+    }
+    #[test]
+    fn explicit_backup_restore_requires_complete_supplied_data_and_preserves_quarantine() {
+        for key in ["dictation-settings", "murmur-theme-library"] {
+            let spec = if key == "dictation-settings" {
+                SETTINGS
+            } else {
+                THEME_LIBRARY
+            };
+            for corrupt in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let value = if key == "dictation-settings" {
+                    serde_json::json!({"language":"es","autoPasteDelayMs":23,"microphone":"system_default"})
+                } else {
+                    serde_json::json!({"version":1,"revision":3,"themes":[]})
+                };
+                let backup =
+                    murmur_core::completion::save_source(dir.path(), key, &value.to_string())
+                        .unwrap();
+                assert!(restore_source_backup_in(dir.path(), key, &backup).is_err());
+                if corrupt {
+                    std::fs::write(blob_path(dir.path(), spec), b"{bad").unwrap();
+                } else {
+                    std::fs::remove_file(blob_path(dir.path(), spec)).unwrap();
+                }
+                assert!(read_blob(dir.path(), spec).is_err());
+                assert!(restore_source_backup_in(dir.path(), key, "{}").is_err());
+                restore_source_backup_in(dir.path(), key, &backup).unwrap();
+                assert_eq!(read_blob(dir.path(), spec).unwrap().unwrap(), backup);
+                if corrupt {
+                    assert!(std::fs::read_dir(dir.path()).unwrap().any(|entry| entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("corrupt-")));
+                }
+            }
+        }
+    }
+    #[test]
+    fn settings_merge_resumes_first_save_after_marker_before_destination_crash() {
+        let dir = tempfile::tempdir().unwrap();
+        let exact = murmur_core::state::settings(
+            serde_json::json!({"language":"es","autoPasteDelayMs":23,"microphone":"system_default"}),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("settings.json.pending"),
+            serde_json::json!({"schema":1,"value":exact}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("settings.json.required"), b"true").unwrap();
+        // Production read/merge on the next launch must replay before reading.
+        let committed = merge_owned_fields(dir.path(), &exact.to_string()).unwrap();
+        write_blob(dir.path(), SETTINGS, &committed).unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_str(&read_blob(dir.path(), SETTINGS).unwrap().unwrap()).unwrap();
+        assert_eq!(disk["language"], "es");
+        assert_eq!(disk["autoPasteDelayMs"], 23);
     }
 }

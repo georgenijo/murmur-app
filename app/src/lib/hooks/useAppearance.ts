@@ -373,7 +373,7 @@ function useMainAppearanceController(): AppearanceController {
 
   const installLibraryEntries = useCallback((entries: readonly ThemeLibraryEntryV1[]) =>
     runLibraryMutation((current) => ({
-      document: installThemeLibraryEntries(current.revision, entries),
+      document: installThemeLibraryEntries(current, entries),
       value: undefined,
     })),
   [runLibraryMutation]);
@@ -387,7 +387,7 @@ function useMainAppearanceController(): AppearanceController {
         documentRef.current.theme,
       );
       return {
-        document: installThemeLibraryEntries(current.revision, [entry]),
+        document: installThemeLibraryEntries(current, [entry]),
         value: entry,
       };
     }),
@@ -403,7 +403,7 @@ function useMainAppearanceController(): AppearanceController {
         preview.modes ?? ['light', 'dark'],
       );
       return {
-        document: installThemeLibraryEntries(current.revision, [entry]),
+        document: installThemeLibraryEntries(current, [entry]),
         value: entry,
       };
     }),
@@ -415,7 +415,7 @@ function useMainAppearanceController(): AppearanceController {
     expectedCollection: readonly ThemeLibraryEntryV1[],
   ) => runLibraryMutation((current) => ({
     document: replaceThemeLibraryCollection(
-      current.revision,
+      current,
       collectionId,
       entries,
       expectedCollection,
@@ -451,7 +451,7 @@ function useMainAppearanceController(): AppearanceController {
       dark: removed.has(selection.dark) ? 'sonic' : selection.dark,
     };
     await runLibraryMutation((library) => ({
-      document: removeThemeLibraryEntries(library.revision, themeIds),
+      document: removeThemeLibraryEntries(library, themeIds),
       value: undefined,
     }));
     if (nextSelection.light !== selection.light || nextSelection.dark !== selection.dark) {
