@@ -69,11 +69,14 @@ or teardown. Native capture threads and rdev retain their current owners.
 
 `AppContext` contains explicit shared adapters for paths, read-only microphone
 permission status, background async/blocking work, and main-thread dispatch.
-Dispatch always queues, never runs inline (including main-thread callers), and
-executes tasks in FIFO enqueue order across callers. A single host FIFO drains
+Dispatch always queues, never invokes the task inline or waits for it to complete,
+and executes tasks in FIFO enqueue order across callers. A single host FIFO drains
 on macOS's main `NSOperationQueue`, serviced by tao/Tauri's AppKit run loop.
-Callers may dispatch while holding state locks; tasks run after returning to
-the main run loop. Other hosts currently report scheduling failure.
+Main-thread callers return before their task runs; a background caller's task
+may run before dispatch returns. `Ok(())` means the task was accepted, not that
+it ran. Completion is not guaranteed after the host stops servicing the main
+queue during shutdown; services own their shutdown drain. Other hosts currently
+report scheduling failure.
 There is no type-erased managed-state lookup: future services own typed state
 and receive it alongside the context. Only the Tauri boundary retrieves the
 context from managed state. The VAD installer resolves its unchanged legacy

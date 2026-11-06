@@ -12,9 +12,9 @@ fn main() {
     use main_thread_queue::MainThreadQueue;
     use murmur_core::context::MainThread;
     use objc2::MainThreadMarker;
-    use objc2_foundation::{NSDate, NSRunLoop};
+    use objc2_foundation::{NSDate, NSOperationQueue, NSRunLoop};
     use std::{
-        sync::{Arc, Mutex},
+        sync::{mpsc, Arc, Mutex},
         time::{Duration, Instant},
     };
 
@@ -96,5 +96,46 @@ fn main() {
         NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
     }
     assert_eq!(state.lock().unwrap().last(), Some(&(4, true)));
-    println!("main-thread queue: deferred, FIFO, main-thread affinity, nested dispatch, panic containment, rescheduling passed");
+
+    // Start with an empty, unscheduled adapter. Release the background caller
+    // from a native main-queue callback, proving the main run loop is already
+    // servicing work. Do not join the caller until its task has run.
+    let empty_queue = MainThreadQueue::default();
+    let executions = Arc::new(Mutex::new(Vec::new()));
+    let output = executions.clone();
+    let (start, started) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        empty_queue
+            .dispatch(Box::new(move || {
+                output
+                    .lock()
+                    .unwrap()
+                    .push(MainThreadMarker::new().is_some());
+            }))
+            .unwrap();
+    });
+    let start_worker = block2::RcBlock::new(move || {
+        let _ = start.send(());
+    });
+    // SAFETY: Foundation copies the block, which owns its channel sender.
+    unsafe { NSOperationQueue::mainQueue().addOperationWithBlock(&start_worker) };
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while executions.lock().unwrap().is_empty() && Instant::now() < deadline {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
+    }
+    assert_eq!(
+        *executions.lock().unwrap(),
+        [true],
+        "background dispatch into an empty queue must run once on main within five seconds"
+    );
+    worker.join().unwrap();
+    // Continue servicing the loop to detect an accidental duplicate callback.
+    let deadline = Instant::now() + Duration::from_millis(100);
+    while Instant::now() < deadline {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
+    }
+    assert_eq!(*executions.lock().unwrap(), [true]);
+    println!("main-thread queue: deferred main callers, FIFO, main-thread affinity, nested dispatch, panic containment, rescheduling, active-run-loop background dispatch passed");
 }

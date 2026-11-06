@@ -50,11 +50,14 @@ pub trait BackgroundWork: Send + Sync {
 }
 
 pub trait MainThread: Send + Sync {
-    /// Always queue work for the main thread, never execute it inline, even
-    /// when called on the main thread. Dispatch returns before its task runs
-    /// on that thread; callers need not release state locks before dispatch.
+    /// Queue work for the main thread. Never invoke the task inline or wait
+    /// for it to complete. Main-thread callers return before their task runs;
+    /// a background caller's task may run before dispatch returns.
     /// Tasks run in FIFO enqueue order across all callers (simultaneous calls
     /// are ordered by the host queue). NSWindow mutations belong here.
+    /// `Ok(())` means accepted, not executed. Completion is not guaranteed after
+    /// the host stops servicing its main queue during shutdown; services own
+    /// their shutdown drain.
     fn dispatch(&self, task: Task) -> Result<(), ContextError>;
 }
 
