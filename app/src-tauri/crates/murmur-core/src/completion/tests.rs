@@ -1101,3 +1101,76 @@ fn review_deleted_edited_original_must_not_return_from_legacy() {
         "deleted original returned with its pre-edit text"
     );
 }
+
+#[test]
+fn pending_content_replays_once_at_every_publication_boundary() {
+    for boundary in [
+        Boundary::BeforeRename,
+        Boundary::AfterRename,
+        Boundary::DirectorySync,
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        e.storage.fail = Some(("history.json".into(), boundary));
+        complete(&mut e, "pending", true);
+        assert!(dir.path().join(PENDING).exists());
+        let mut next = restart(&e);
+        assert_eq!(next.execute(Command::Snapshot).unwrap().history.len(), 1);
+        assert!(!dir.path().join(PENDING).exists());
+        assert_eq!(restart(&next).snapshot().unwrap().history.len(), 1);
+        let row = next.snapshot().unwrap().history[0].clone();
+        next.execute(Command::History(HistoryMutation::Delete {
+            targets: vec![row],
+        }))
+        .unwrap();
+        assert!(restart(&next).snapshot().unwrap().history.is_empty());
+    }
+}
+#[test]
+fn pending_retention_off_clear_and_capacity() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    complete(&mut e, "private", false);
+    assert!(!dir.path().join(PENDING).exists());
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    complete(&mut e, "pending", true);
+    let pending = std::fs::read(dir.path().join(PENDING)).unwrap();
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    assert!(e
+        .execute(Command::Complete {
+            source: "rejected".into(),
+            entry: Some(entry("rejected", "synthetic")),
+            event: None
+        })
+        .is_err());
+    assert_eq!(std::fs::read(dir.path().join(PENDING)).unwrap(), pending);
+    e.execute(Command::Clear {
+        destination: Destination::History,
+        at: 10,
+    })
+    .unwrap();
+    assert!(restart(&e).snapshot().unwrap().history.is_empty());
+}
+#[test]
+fn explicit_barriers_seal_and_snapshot_replay() {
+    let dir = TempDir::new().unwrap();
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    futures_executor::block_on(service.flush()).unwrap();
+    futures_executor::block_on(service.seal_and_flush()).unwrap();
+    assert!(matches!(
+        service.execute(Command::Snapshot),
+        Err(Error::Stopped)
+    ));
+    let path = dir.path().join("synthetic-window.json");
+    std::fs::write(
+        path.with_extension("json.pending"),
+        br#"{"schema":1,"value":{"visible":false}}"#,
+    )
+    .unwrap();
+    recover_snapshot(&path).unwrap();
+    recover_snapshot(&path).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["visible"],
+        false
+    );
+}

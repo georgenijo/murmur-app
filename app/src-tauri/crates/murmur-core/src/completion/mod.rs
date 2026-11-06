@@ -41,6 +41,7 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 const STATE: &str = "completion-state.json";
+const PENDING: &str = "completion-pending.json";
 const HOLD: &str = "completion-holding.json";
 const MIGRATION: &str = "migrations.json";
 
@@ -516,6 +517,7 @@ impl Engine {
         // Re-establish directory durability before using any published watermark
         // to compact a journal or drain a consumed holding generation.
         self.storage.sync_directory()?;
+        self.replay_content()?;
         let mut h = self.holding()?;
         self.observe_file_receipts(&h)?;
         let previous = h.clone();
@@ -857,6 +859,36 @@ impl Engine {
         }
         result
     }
+    // At most one pending publication. Recovery runs before the next command;
+    // a blocked destination rejects admission rather than evicting accepted work.
+    fn replay_content(&mut self) -> Result<()> {
+        let pending: Option<Value> = self.storage.read(PENDING, |v: &Value| {
+            v["schema"] == 1
+                && v["file"].as_str().is_some_and(|f| match f {
+                    HOLD => serde_json::from_value::<Holding>(v["value"].clone()).is_ok(),
+                    "history.json" => valid_document(Destination::History, &v["value"]),
+                    "benchmark-reports.json" => valid_document(Destination::Reports, &v["value"]),
+                    _ => false,
+                })
+        })?;
+        if let Some(pending) = pending {
+            self.storage.write(
+                pending["file"].as_str().ok_or(Error::Invalid)?,
+                &pending["value"],
+            )?;
+            std::fs::remove_file(self.storage.root.join(PENDING)).map_err(|_| Error::Io)?;
+            self.storage.sync_directory()?;
+        }
+        Ok(())
+    }
+    fn publish_content<T: Serialize>(&mut self, file: &str, value: &T) -> Result<()> {
+        if self.storage.root.join(PENDING).exists() {
+            return Err(Error::TooManyFiles);
+        }
+        self.storage
+            .write(PENDING, &json!({"schema":1,"file":file,"value":value}))?;
+        self.replay_content()
+    }
     fn add_content(&mut self, d: Destination, mut value: Value) -> Result<()> {
         if d == Destination::Reports && value.get("completionUuid").is_none() {
             value["completionUuid"] = json!(uuid());
@@ -870,7 +902,7 @@ impl Engine {
                 _ => trim_reports(entries),
             };
             doc.v1_imported = true;
-            self.storage.write(d.file(), &doc)
+            self.publish_content(d.file(), &doc)
         } else {
             let mut h = self.holding()?;
             match d {
@@ -878,7 +910,7 @@ impl Engine {
                 _ => h.reports.entries.push(value),
             }
             self.cap_held(&mut h, d, &mut doc)?;
-            self.storage.write(HOLD, &h)
+            self.publish_content(HOLD, &h)
         }
     }
     fn cap_held(&mut self, h: &mut Holding, d: Destination, doc: &mut Document) -> Result<()> {

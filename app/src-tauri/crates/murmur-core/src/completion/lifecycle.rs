@@ -143,6 +143,7 @@ impl Engine {
             .transpose()
     }
     pub(super) fn lifecycle(&mut self, op: Operation) -> Result<Receipt> {
+        super::recover_snapshot(&self.storage.root.join(UI_STATE))?;
         self.storage.sync_directory()?;
         let mut m = self.migration()?;
         let mut state = self.ui_state()?;
@@ -179,7 +180,7 @@ impl Engine {
                     publish_source(&mut self.storage, &key, &value)?;
                 } else {
                     state.values.insert(key, value);
-                    self.storage.write(UI_STATE, &state)?;
+                    super::publish_snapshot(&self.storage.root.join(UI_STATE), &state)?;
                 }
             }
             Operation::Import(raw) => {
@@ -259,7 +260,7 @@ impl Engine {
                         }
                         state.values = all;
                         state.v2_imported = true;
-                        self.storage.write(UI_STATE, &state)?;
+                        super::publish_snapshot(&self.storage.root.join(UI_STATE), &state)?;
                     }
                     m.lifecycle.v2 = true;
                     m.schema = 1;
