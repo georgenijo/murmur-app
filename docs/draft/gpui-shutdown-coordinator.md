@@ -904,8 +904,7 @@ Settings producers invalidate the warning after success or failure.
 query responses. Both hydrated main and startup `SourceRecovery` mount it,
 using the existing `MainErrorBanner` and content-free fixed messages. Its
 window-level placement stays below native chrome and separate from the ordinary
-workspace recording/delivery error banner. A tray
-failure before hydration therefore survives either startup outcome. Recording
+workspace recording/delivery error banner. A tray failure before hydration therefore survives either startup outcome. Recording
 status transitions cannot erase this separate notice. No GUI or app launches
 were used; all verification uses synthetic data.
 
@@ -913,3 +912,14 @@ The two pre-hydration regressions fail on `9676fc4b` and pass with this change;
 six frontend cases also cover recovery-time changes and late initial reads.
 The Rust lifecycle case covers retention, failed retry, failed supersession,
 merged successful publication, saved tray supersession, and native retry.
+
+Verification after rebasing onto isolation/startup/guard work through `58b44b39`:
+TypeScript and all 185 Vitest files / 1,903 tests pass; all 209 core tests pass.
+On the Mac mini with Rust 1.98.1, settings-store (34), shutdown (16), and
+dictation-control (7) tests pass single-threaded in both default and
+`shutdown-test-support` configurations. Workspace/all-target strict Clippy passes
+in both with only the two requested command-line allowances. All 345 native
+input files matched this checkout. Reference/command-count, targeted-event,
+core-dependency, capture-boundary, restart-policy and formatting checks pass.
+Regenerated schemas were restored; `gpui-stack-27`, its external target and
+synthetic temp data were removed. Independent Sol recheck remains with the parent.
