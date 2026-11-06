@@ -2429,7 +2429,8 @@ pub(crate) fn shutdown_flush(
     let logs = shutdown_receipt();
     // This runs only on the shutdown blocking worker. Even a stalled stderr
     // consumer cannot hold main or the independent terminal deadline driver.
-    eprintln!(
+    let _ = writeln!(
+        std::io::stderr(),
         "shutdown telemetry: flushed={flushed} pending_records={} failed_records={} rejected_records={}",
         logs.pending_records, logs.failed_records, logs.rejected_records
     );
@@ -2448,6 +2449,20 @@ impl Write for QueuedPrettyWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+fn queued_pretty_layer<S>(sender: QueuedLogSender) -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::layer()
+        .event_format(key_identity::PrettyFormat)
+        .with_writer(move || QueuedPrettyWriter(sender.clone()))
+        // Queue failures/rejections are counted by the owner. The fmt
+        // layer's internal fallback uses eprintln! on the calling thread, which
+        // can panic (or block) on stderr during the terminal runtime event.
+        .log_internal_errors(false)
+        .with_ansi(false)
 }
 
 /// Install callers before starting disk work. Startup events queue while the
@@ -2539,11 +2554,7 @@ pub fn init(app_handle: tauri::AppHandle) {
         sender: sender.clone(),
         _worker: worker,
     });
-    let pretty_sender = QueuedPrettyWriter(sender.clone());
-    let pretty_layer = tracing_subscriber::fmt::layer()
-        .event_format(key_identity::PrettyFormat)
-        .with_writer(move || pretty_sender.clone())
-        .with_ansi(false);
+    let pretty_layer = queued_pretty_layer(sender.clone());
 
     // Layer 2: Tauri event emitter (also writes JSONL)
     let emitter_layer = TauriEmitterLayer {
@@ -5199,6 +5210,52 @@ mod tests {
 mod startup_io_tests {
     use super::*;
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+    #[cfg(unix)]
+    #[test]
+    fn failed_terminal_trace_and_shutdown_diagnostic_tolerate_broken_stderr() {
+        const CHILD: &str = "MURMUR_TERMINAL_TRACE_BROKEN_STDERR_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::{
+                os::{fd::OwnedFd, unix::net::UnixStream},
+                process::{Command, Stdio},
+            };
+            let (reader, writer) = UnixStream::pair().unwrap();
+            drop(reader);
+            let fd: OwnedFd = writer.into();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "telemetry::startup_io_tests::failed_terminal_trace_and_shutdown_diagnostic_tolerate_broken_stderr", "--nocapture"])
+                .env(CHILD, "1")
+                .stderr(Stdio::from(fd))
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "child failed: {:?}", output.status);
+            assert!(String::from_utf8_lossy(&output.stdout).contains("terminal-count=1"));
+            return;
+        }
+        use tracing_subscriber::prelude::*;
+        assert!(std::io::stderr()
+            .write_all(b"synthetic stderr probe\n")
+            .is_err());
+        let (_, writers_done) = mpsc::channel();
+        assert!(shutdown_flush(writers_done, std::time::Instant::now()));
+        let (send, receive) = mpsc::channel();
+        drop(receive); // Real disconnected writer, not a simulated Write error.
+        let state = Arc::new(LogQueueState::default());
+        let subscriber =
+            tracing_subscriber::registry().with(queued_pretty_layer(QueuedLogSender {
+                sender: send,
+                state: state.clone(),
+            }));
+        let mut terminal_count = 0;
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "shutdown", permitted = true, "synthetic terminal receipt");
+            terminal_count += 1;
+        });
+        assert_eq!(state.failed.load(Ordering::SeqCst), 1);
+        assert_eq!(terminal_count, 1);
+        println!("terminal-count={terminal_count}");
+    }
+
     #[test]
     #[cfg(feature = "shutdown-test-support")]
     fn terminal_evidence_survives_both_sealed_and_delayed_writer_paths() {

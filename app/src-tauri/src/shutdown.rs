@@ -512,6 +512,7 @@ pub(crate) mod test_support {
     use std::sync::OnceLock;
     static EVIDENCE: OnceLock<Mutex<Option<qa_evidence::Evidence>>> = OnceLock::new();
     static COUNTS: OnceLock<Arc<qa_evidence::DispatcherCounts>> = OnceLock::new();
+    static TERMINAL_ATTEMPT: qa_evidence::TerminalAttempt = qa_evidence::TerminalAttempt::new();
 
     pub(super) fn evidence_enabled() -> bool {
         EVIDENCE
@@ -541,22 +542,31 @@ pub(crate) mod test_support {
         }
     }
     pub(super) fn write_terminal_evidence(app: &tauri::AppHandle, action: Action) {
-        if !isolated(app) {
-            return;
-        }
-        if let Some(evidence) = EVIDENCE.get() {
-            if let Some(evidence) = evidence.lock_or_recover().as_mut() {
-                let counts = COUNTS
-                    .get()
-                    .map(|counts| counts.snapshot())
-                    .unwrap_or_default();
-                if evidence.write_terminal(action, counts).is_err() {
-                    // Do not route evidence failures through the sealed logger or
-                    // include paths / I/O error messages in the diagnostic.
-                    eprintln!("shutdown QA evidence: receipt_io_failure");
+        qa_evidence::with_terminal_evidence(
+            || {
+                if !isolated(app) {
+                    return;
                 }
-            }
-        }
+                TERMINAL_ATTEMPT.run(move || {
+                    if let Some(evidence) = EVIDENCE.get() {
+                        // Take ownership before I/O: reducer observers and a
+                        // repeated terminal event never wait on this disk write.
+                        let evidence = evidence.lock_or_recover().take();
+                        let Some(mut evidence) = evidence else {
+                            return Err(std::io::ErrorKind::NotFound.into());
+                        };
+                        let counts = COUNTS
+                            .get()
+                            .map(|counts| counts.snapshot())
+                            .unwrap_or_default();
+                        evidence.write_terminal(action, counts)?;
+                        return Ok(());
+                    }
+                    Err(std::io::ErrorKind::NotFound.into())
+                });
+            },
+            || (),
+        );
     }
     fn isolated(app: &tauri::AppHandle) -> bool {
         app.config().identifier == "com.localdictation.shutdown-test"
