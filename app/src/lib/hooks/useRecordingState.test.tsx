@@ -125,6 +125,7 @@ describe('useRecordingState transition ordering', () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'recording_starting',
       state: 'starting',
+      recordingId: 8,
     });
     mocks.cancelRecording.mockResolvedValueOnce(undefined);
 
@@ -134,7 +135,7 @@ describe('useRecordingState transition ordering', () => {
 
     expect(mocks.startRecording).toHaveBeenCalledOnce();
     expect(mocks.stopRecording).not.toHaveBeenCalled();
-    expect(mocks.cancelRecording).toHaveBeenCalledOnce();
+    expect(mocks.cancelRecording).toHaveBeenCalledExactlyOnceWith(8);
     await act(async () => {
       mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
       mocks.listeners.get('recording-status-changed')?.({ payload: 'idle' });
@@ -262,6 +263,7 @@ describe('useRecordingState transition ordering', () => {
       return {
         type: 'recording_starting',
         state: 'starting',
+        recordingId: 1,
       };
     });
 
@@ -292,6 +294,7 @@ describe('useRecordingState transition ordering', () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'recording_starting',
       state: 'starting',
+      recordingId: 1,
     });
 
     await act(async () => current.handleStart());
@@ -328,6 +331,7 @@ describe('useRecordingState transition ordering', () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'recording_starting',
       state: 'starting',
+      recordingId: 7,
     });
     mocks.stopRecording.mockImplementationOnce(async () => {
       mocks.listeners.get('transcription-complete')?.({
