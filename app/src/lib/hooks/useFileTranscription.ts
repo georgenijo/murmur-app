@@ -209,6 +209,8 @@ export function useFileTranscription(_props: UseFileTranscriptionProps = {}) {
         void cancelFileTranscription(operationId).catch(() => {});
       }
       operationsRef.current.clear();
+      // Stop the drain from starting another queued file after this owner leaves.
+      queueRef.current = [];
       unlisten?.();
     };
   }, [enqueue]);

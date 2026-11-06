@@ -146,6 +146,18 @@ describe('useFileTranscription', () => {
     expect(current.queue[0].error).toBe('Canceled');
   });
 
+  it('cancels the active operation and stops the remaining queue on unmount', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.transcribeFile.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    await act(async () => root.render(<Harness />));
+    await act(async () => current.enqueue(['/tmp/active.wav', '/tmp/queued.wav']));
+    await act(async () => root.render(null));
+    await act(async () => finish({ type: 'success', text: 'synthetic abandoned result' }));
+    expect(mocks.cancelFileTranscription).toHaveBeenCalledWith(mocks.transcribeFile.mock.calls[0][1]);
+    expect(mocks.acceptFileTranscription).not.toHaveBeenCalled();
+    expect(mocks.transcribeFile).toHaveBeenCalledOnce();
+  });
+
   it('gives repeated imports of the same path distinct native operation identities', async () => {
     await act(async () => root.render(<Harness />));
     await act(async () => current.enqueue(['/tmp/repeated.wav']));
