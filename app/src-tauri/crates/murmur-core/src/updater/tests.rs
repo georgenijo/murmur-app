@@ -3,6 +3,26 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use std::fs;
 const ID: &str = "com.localdictation.shutdown-test";
+// macOS CI's temporary directory is commonly reached through /var ->
+// /private/var. Model a canonical installed bundle without weakening the
+// production refusal of symlinked installation locations.
+struct Scratch {
+    _directory: tempfile::TempDir,
+    canonical: PathBuf,
+}
+impl Scratch {
+    fn path(&self) -> &Path {
+        &self.canonical
+    }
+}
+fn scratch() -> Scratch {
+    let directory = tempfile::tempdir().unwrap();
+    let canonical = fs::canonicalize(directory.path()).unwrap();
+    Scratch {
+        _directory: directory,
+        canonical,
+    }
+}
 fn signed(bytes: &[u8]) -> (String, String) {
     let rng = ring::rand::SystemRandom::new();
     let pair =
@@ -165,7 +185,7 @@ fn offer(signature: String) -> Offer {
 }
 #[test]
 fn install_keeps_launch_path_and_recovers_post_exchange_without_double_install() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let root = temp.path().join("data");
     let target = temp.path().join("Murmur.app");
     make_bundle(&target, "1.0.0");
@@ -190,7 +210,7 @@ fn install_keeps_launch_path_and_recovers_post_exchange_without_double_install()
 #[test]
 fn interrupted_pre_exchange_and_uncertain_exchange_recover_from_durable_receipt() {
     for swapped in [false, true] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = scratch();
         let root = temp.path().join("data");
         let target = temp.path().join("Murmur.app");
         make_bundle(&target, "1.0.0");
@@ -212,7 +232,7 @@ fn interrupted_pre_exchange_and_uncertain_exchange_recover_from_durable_receipt(
 }
 #[test]
 fn failed_verification_bad_archive_and_wrong_bundle_never_change_installed_app() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let root = temp.path().join("data");
     let target = temp.path().join("Murmur.app");
     make_bundle(&target, "1.0.0");
@@ -232,7 +252,7 @@ fn failed_verification_bad_archive_and_wrong_bundle_never_change_installed_app()
 }
 #[test]
 fn corrupt_future_or_foreign_install_receipts_are_preserved() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let target = temp.path().join("Murmur.app");
     make_bundle(&target, "1.0.0");
     let root = temp.path().join("data");
@@ -269,7 +289,7 @@ fn interrupted_download_cannot_become_ready() {
 }
 #[test]
 fn rust_owner_retains_ready_bytes_and_serializes_install_retry_and_relaunch() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let root = temp.path().join("data");
     let target = temp.path().join("Murmur.app");
     make_bundle(&target, "1.0.0");
@@ -305,7 +325,7 @@ fn rust_owner_retains_ready_bytes_and_serializes_install_retry_and_relaunch() {
 }
 #[test]
 fn rust_owner_requires_v3_before_network_and_generic_sources_cannot_seed_invalid_updater_values() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let store = CompletionService::start(temp.path().into(), true).unwrap();
     let updater = Updater::production(
         temp.path().into(),
@@ -432,7 +452,7 @@ fn network_owner(
 }
 #[test]
 fn real_http_owner_checks_downloads_retries_installs_and_confirms_notes_on_new_launch() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let server = Server::new();
     let (updater, store, target) = network_owner(temp.path(), &server, false);
     updater.act(Action::Configure { automatic: false }).unwrap();
@@ -504,7 +524,7 @@ fn real_http_owner_checks_downloads_retries_installs_and_confirms_notes_on_new_l
 }
 #[test]
 fn rust_schedule_gates_setup_six_hours_ready_and_forced_dismissal() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let server = Server::new();
     let (updater, store, _) = network_owner(temp.path(), &server, true);
     updater.act(Action::Configure { automatic: false }).unwrap();
@@ -533,7 +553,7 @@ fn rust_schedule_gates_setup_six_hours_ready_and_forced_dismissal() {
 }
 #[test]
 fn freshness_failure_keeps_prior_signed_offer_and_shutdown_fences_continuations() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let server = Server::new();
     let (updater, _, target) = network_owner(temp.path(), &server, false);
     updater.act(Action::Check { background: false }).unwrap();
@@ -561,7 +581,7 @@ fn freshness_failure_keeps_prior_signed_offer_and_shutdown_fences_continuations(
 }
 #[test]
 fn uncertain_install_adopts_new_bundle_and_pre_exchange_failure_retries_without_swapback() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let server = Server::new();
     let (updater, _, target) = network_owner(temp.path(), &server, false);
     updater.act(Action::Check { background: false }).unwrap();
@@ -588,7 +608,7 @@ fn uncertain_install_adopts_new_bundle_and_pre_exchange_failure_retries_without_
 #[test]
 fn canary_dry_run_preserves_pending_stages_and_actual_flow_marks_only_new_version_passed() {
     for dry in [true, false] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = scratch();
         let server = Server::new();
         let (mut updater, store, target) = network_owner(temp.path(), &server, false);
         let path = temp.path().join("canary/result.json");
@@ -638,7 +658,7 @@ fn canary_dry_run_preserves_pending_stages_and_actual_flow_marks_only_new_versio
 
 #[test]
 fn canary_reports_signature_failure_after_download_and_never_installs() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let server = Server::new();
     let (mut updater, _, target) = network_owner(temp.path(), &server, false);
     updater.canary = Some(temp.path().join("result.json"));
@@ -656,7 +676,7 @@ fn canary_reports_signature_failure_after_download_and_never_installs() {
 }
 #[test]
 fn signed_archive_escaping_symlinks_and_foreign_identity_cannot_modify_outside_stage() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let target = temp.path().join("Murmur.app");
     make_bundle(&target, "1.0.0");
     let root = temp.path().join("data");
@@ -682,7 +702,7 @@ fn signed_archive_escaping_symlinks_and_foreign_identity_cannot_modify_outside_s
 #[cfg(feature = "updater-test-support")]
 #[test]
 fn compiled_qa_seam_rejects_production_identity_and_nonloopback_endpoints() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = scratch();
     let store = CompletionService::start(temp.path().into(), false).unwrap();
     let owner = |id: &str| {
         Updater::production(
