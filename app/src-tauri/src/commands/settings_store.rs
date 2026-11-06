@@ -562,9 +562,11 @@ mod tests {
     #[test]
     fn failed_write_leaves_no_temp_file_behind() {
         let dir = temp_dir("write_failure");
-        std::fs::create_dir_all(temp_path_for(&blob_path(&dir, SETTINGS))).unwrap();
+        // The shared publisher uses exclusive random temp siblings. Force the
+        // actual rename to fail while still exercising temp-file cleanup.
+        std::fs::create_dir_all(blob_path(&dir, SETTINGS)).unwrap();
         assert!(write_blob(&dir, SETTINGS, "{}").is_err());
-        assert!(!blob_path(&dir, SETTINGS).exists());
+        assert!(!blob_path(&dir, SETTINGS).is_file());
         assert_eq!(entries(&dir).len(), 1, "unexpected leftovers");
         std::fs::remove_dir_all(&dir).unwrap();
     }
