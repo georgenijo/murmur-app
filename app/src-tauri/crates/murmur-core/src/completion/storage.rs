@@ -50,12 +50,15 @@ impl Storage {
     pub fn recover_snapshot(&mut self, file: &str) -> Result<()> {
         let pending = format!("{file}.pending");
         self.sync_directory()?;
+        let existed = self.root.join(&pending).exists();
         if let Some(receipt) = self
             .read::<serde_json::Value>(&pending, |v| v["schema"] == 1 && v.get("value").is_some())?
         {
             self.write(file, &receipt["value"])?;
-            fs::remove_file(self.root.join(pending)).map_err(|_| Error::Io)?;
+            fs::remove_file(self.root.join(&pending)).map_err(|_| Error::Io)?;
             self.sync_directory()?;
+        } else if existed || self.quarantined(&pending)? {
+            return Err(Error::Invalid);
         }
         Ok(())
     }

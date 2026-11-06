@@ -1792,7 +1792,6 @@ static CAPTURE_MEMO_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Orders concurrent background writers: each snapshot takes a ticket, and a
 /// writer whose ticket is older than what already reached disk drops it rather
 /// than rewinding the file.
-
 const CAPTURE_MEMO_FILE_NAME: &str = "capture-memo.json";
 const CAPTURE_MEMO_SCHEMA_VERSION: u32 = 1;
 /// Bounds the file: only the most recently updated keys survive a save. A

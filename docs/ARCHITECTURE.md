@@ -646,3 +646,21 @@ or repair event. Full settings writes accept optional deliberate owned-field
 edits and return their committed snapshot; the writer lock merges these edits
 against current disk state. The status command takes the same lock because a
 no-WebKit status request can complete an import.
+
+## Coordinated shutdown
+
+`murmur-core::shutdown` owns a Tauri-free reducer with tagged effects and absolute
+capture/helper/writer deadlines of +5/+7/+10 seconds. `src/shutdown.rs` closes
+process admission immediately, drains original generations and accepted native
+writer operations off main, and commits one terminal action. Unconfirmed helper
+groups or unpreserved writes suppress restart. An owned tao 0.35.3 patch holds
+native AppKit termination without replacing the delegate; common-mode CF dispatch
+continues during the wait. The process compatibility plugin routes relaunch into
+this coordinator. RunEvent::Exit only records a content-free terminal receipt.
+
+History/report publication can leave private completion-pending.json for replay;
+Clear/Delete, retention and caps cover it. Source/UI/window snapshots retain
+synced pending publications; window events never hold their state lock over disk
+I/O. Capture memo saves have a tracked writer barrier. Unfinished dictation audio
+remains in memory only. See [shutdown contract](draft/gpui-shutdown-coordinator.md)
+and [decision](decisions/2026-11-06-gpui-shutdown-coordinator.md).

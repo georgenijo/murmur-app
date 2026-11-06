@@ -1193,3 +1193,13 @@ fn shutdown_receipt_never_hides_unpreserved_content() {
     assert_eq!(e.write_receipt(), WriteOutcome::PreservedForReplay);
     assert_eq!(e.write_receipt(), WriteOutcome::Committed);
 }
+
+#[test]
+fn malformed_snapshot_pending_stays_a_recovery_error() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("synthetic-window.json");
+    std::fs::write(path.with_extension("json.pending"), b"{invalid").unwrap();
+    assert!(recover_snapshot(&path).is_err());
+    assert!(recover_snapshot(&path).is_err());
+    assert!(!path.exists());
+}

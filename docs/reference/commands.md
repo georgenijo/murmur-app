@@ -420,3 +420,17 @@ All successful mutations return the latest `Snapshot` and publish read-only
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `set_waveform_subscription` | `consumer: WaveformConsumer`, `active: bool` | `Result<(), String>` | Registers main-recording, corpus, or overlay waveform interest. The caller window must own the named consumer; native visibility and minimization also gate delivery. |
+
+## Shutdown transport behavior
+
+Settings/theme and WebKit lifecycle command names and result shapes remain
+unchanged; their wrappers are asynchronous and publish off main. Accepted source
+operations enter a native FIFO before waiting for disk. New source/file/correction
+or Paste Last work is refused during shutdown. The temporary app-owned process
+plugin preserves plugin:process|exit and plugin:process|restart for authorized
+Main callers, routing both through shutdown. process:allow-restart remains until
+#990. Exit code arguments are accepted; coordinated quit uses the common exit
+code zero. No public restart command is added to the 184-command app surface.
+
+The explicitly enabled shutdown-test-support feature exposes only the isolated
+QA plugin described in [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).

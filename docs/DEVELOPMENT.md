@@ -222,3 +222,31 @@ with a custom nonpersistent WKWebsiteDataStore and a temporary Rust data root.
 It never obtains the default store or opens an application window. Do not point
 fixtures at real WebKit/app-data directories. Native GUI verification remains a
 separate check against an isolated bundle and synthetic state.
+
+## Shutdown coordinator native QA
+
+Use a dedicated checkout and target directory, synthetic fixtures, and the
+`tauri.shutdown-test.conf.json` identity. Build with Rust 1.98.1 and
+`--features shutdown-test-support`; never use the production bundle/profile.
+This feature adds a six-and-a-half-second final hold after real owner work and
+per-phase delay variables documented in the [shutdown contract](draft/gpui-shutdown-coordinator.md).
+During that hold require 195 callbacks across AppContext, Tauri and a native
+common-mode heartbeat. It accepts mixed requests before terminal commit.
+
+From the isolated Main context, invoke
+`plugin:shutdown-test|shutdown_test_action` with action quit, relaunch, exit, or
+destroy-last. The plugin rejects other bundle identities and windows. Quit-path
+fixtures must verify the executable revision, synthetic profile and exact PID.
+For simulated system reasons use:
+
+```sh
+python3 scripts/send_shutdown_test_quit.py --bundle /path/to/isolated/Murmur-Shutdown-Test.app --pid 12345 --reason logout
+```
+
+Reasons are quit/logout/restart/shutdown. The sender checks CFBundleIdentifier
+and proc_pidpath twice, then sends a PID-targeted aevt/quit with a bounded reason,
+no reply, no user interaction, and a ten-second sender timeout. It never sends
+to loginwindow or performs real system logout/restart/shutdown. Never reuse a
+PID without revalidation. The full three-fixture matrix is in the shutdown doc.
+The implementation worker runs windowless tests only; GUI interaction belongs
+to the separately assigned native worker.

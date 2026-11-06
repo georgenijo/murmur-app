@@ -705,49 +705,29 @@ installed clients cannot read.
 module so the remaining React code has a single, enumerated host surface.
 Remove plugin calls from React where the logic now lives in the core.
 
-**1.8 Shutdown coordinator.** One asynchronous coordinator for menu Quit,
-⌘Q, Dock Quit, the tray's Quit Murmur (`lib.rs:679`), logout or restart, the
-updater's relaunch, and `tauri-plugin-process` restarts. It holds
-termination, then in order:
+**1.8 Shutdown coordinator.** One Tauri-free reducer and asynchronous host adapter
+coordinate menu Quit, Cmd-Q, Dock/tray Quit, system termination, ordinary runtime
+exit, actual final-window destruction, catchable signals and compatible process
+relaunch. Admission closes permanently; original capture generations drain by
++5 s, helper receipts by +7 s, writer barriers by +10 s, then one terminal action
+is committed. Unconfirmed helper groups or unpreserved writes suppress restart.
+RunEvent::Exit records only the terminal receipt.
 
-1. Rejects new recordings and meeting starts.
-2. Stops capture and drains the meeting capture (up to the current 5 s),
-   keeping recoverable meeting chunks.
-3. Confirms helper and worker termination.
-4. Flushes History, statistics, settings, and window state.
-5. Allows termination.
+The owned licensed tao 0.35.3 patch retains its delegate and adds typed
+applicationShouldTerminate plus a common-mode CF terminate relay. AppContext
+main dispatch continues during the wait. A private pending completion publication
+supports replay once under retention/Clear/Delete/cap rules; no persistent
+dictation audio is introduced. Settings/theme/UI/window writers preserve their
+native merge and pending-document contracts. A process compatibility plugin
+retains process:allow-restart until native updater ownership in #990. The sole
+request_restart call follows the drained permit, guarded by CI source policy.
 
-The main thread never blocks while it waits. It replaces the work in today's
-`RunEvent::Exit` handler (`lib.rs:732-744`).
-
-Holding termination in the Tauri app (see the Quit fact above):
-
-- Replace the default app menu's Quit with a custom item routed to the
-  coordinator.
-- Add `applicationShouldTerminate:` to tao's delegate class at runtime,
-  returning `NSTerminateLater` and later calling
-  `replyToApplicationShouldTerminate:`, or patch tao. This catches Dock Quit
-  and logout.
-- Restarts cannot be held: `prevent_exit` is ignored for the restart exit
-  code (`tauri-2.11.2/src/app.rs:85-93`), and the process plugin's `relaunch`
-  (used by `useAutoUpdater.ts:5`) calls `request_restart` directly. So the
-  coordinator drains first and only then calls `request_restart`, with a
-  "drained" flag that lets that exit pass. Remove the `process:allow-restart`
-  capability once 1.6 lands, and forbid main-thread `AppHandle::restart()`,
-  which skips both exit events. `request_restart` still delivers
-  `RunEvent::Exit`, so the existing exit teardown (`lib.rs:732-744`) runs
-  again after the drain; the coordinator and every teardown step must be
-  safe to run twice.
-- `app.exit()` and `request_exit` (the tray's Quit Murmur, `lib.rs:680`)
-  still arrive as `RunEvent::ExitRequested`; the coordinator calls
-  `prevent_exit` there.
-- In the GPUI host, use the path proven in 0e.
-
-Tests: the 0e interception check run against the Tauri app; each quit path
-during active dictation, an active meeting, and pending writes, with
-artificially delayed teardown; main-thread dispatch keeps running while
-AppKit waits for the reply; drain, restart, then quit, with each teardown
-step running at most once in effect.
+See [implementation, deviations and native matrix](gpui-shutdown-coordinator.md).
+Each native quit path still requires verification against the actual Tauri app
+with synthetic active dictation, meeting and pending-write fixtures, including a
+six-second delayed release, continued dispatch, mixed requests, and independent
+shutdown of the replacement process. Headless reducer/AppKit tests supplement
+that matrix; they do not establish its pass.
 
 **1.9 Lazy diagnostics window.** Create the diagnostics window on first open
 instead of at launch. This is a small, immediate memory win.

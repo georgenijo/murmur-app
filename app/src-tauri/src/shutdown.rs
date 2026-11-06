@@ -446,3 +446,31 @@ pub(crate) mod test_support {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_source_fifo_keeps_queued_intent_while_first_writer_is_blocked() {
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, resume) = mpsc::channel();
+        let order = Arc::new(Mutex::new(vec![]));
+        let first_order = order.clone();
+        let first = tokio::spawn(source_call(move || {
+            assert!(objc2::MainThreadMarker::new().is_none());
+            let _ = started.send(());
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            first_order.lock().unwrap().push(1);
+        }));
+        entered.await.unwrap();
+        let second_order = order.clone();
+        let second = tokio::spawn(source_call(move || {
+            second_order.lock().unwrap().push(2);
+        }));
+        assert!(order.lock().unwrap().is_empty());
+        release.send(()).unwrap();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        assert_eq!(*order.lock().unwrap(), [1, 2]);
+    }
+}
