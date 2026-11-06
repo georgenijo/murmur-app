@@ -174,6 +174,13 @@ describe('App setup capture safety', () => {
     expect(container.textContent).toContain('Writing it out');
   });
 
+  it('sends live control-only edits without restoring an older confirmed backend snapshot', async () => {
+    await mount();
+    await emit('app-disabled-changed', true);
+    const requests = native.invoke.mock.calls.filter(([command]) => command === 'configure_dictation_control');
+    expect(requests[requests.length - 1]?.[1]).toMatchObject({ settings: { disabled: true, settingsVersion: 7 } });
+  });
+
   it.each(['hold_down', 'double_tap', 'both'])('does not arm %s capture behind the missing-model screen', async (recordingMode) => {
     await mount({ modelInstalled: false, recordingMode });
     expect(container.querySelector('.main-app-shell')).toBeNull();

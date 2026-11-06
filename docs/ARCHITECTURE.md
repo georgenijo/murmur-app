@@ -40,14 +40,14 @@ Built with **Tauri 2** (Rust backend + React frontend). Transcription backends:
 ```text
 Hotkey event (rdev listener thread)
     |
-Frontend hook (useHoldDownToggle / useDoubleTapToggle / useCombinedToggle)
+murmur-core gesture detectors → dictation Controller (native AppContext adapter)
     |
-invoke('start_native_recording')
+start_native_recording (native control or a presentation command)
     |-- CPAL 0.18 capture starts; first retained nonempty callback establishes readiness
     |-- immutable DictationContextSnapshot resolved (global settings + per-app profile)
     +-- spawn_model_preparation() warms the model *concurrently with speech*
     |
-invoke('stop_native_recording') --> trigger-selected tail, drain, samples resampled to 16kHz mono
+generation-bound stop_native_recording --> trigger-selected tail, drain, samples resampled to 16kHz mono
     |-- cold teardown: checked native stop + drained seal may deliver before helper exit/join
     |-- standby: retain 50 ms before live-buffer snapshot; capture ownership stays with the worker
     |
@@ -264,7 +264,8 @@ stay local and never reach logs or telemetry. See
 | `hang_diagnostics.rs` | Server-armed, consent-bound capture-hang bundle collection with bounded native probes and upload |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
-| `keyboard.rs` | Dictation and Paste Last detectors on one shared rdev thread |
+| `keyboard.rs` | Single rdev input adapter to core gesture detectors and dictation control |
+| `dictation_control.rs` | AppContext host adapter for core launch, generation, lock, cancellation and auto-stop policy |
 | `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
 | `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
@@ -367,7 +368,7 @@ All backends take one authoritative final-after-stop pass; delivery happens exac
 
 ### `keyboard.rs` — Keyboard Detection
 
-One persistent rdev background thread feeds dictation hold-down and double-tap detectors plus Paste Last.
+One persistent rdev background thread feeds the Tauri-free core hold-down and double-tap detectors plus Paste Last. Native signals reach the core controller directly; no main webview listener is required.
 
 - **Hold-down** — 2 states; press emits `hold-down-start`, release emits `hold-down-stop`. Combos (trigger+letter) cancel.
 - **Double-tap** — 4 states; each tap under 200ms, gap under 400ms. Rejects holds, combos, slow taps, triple-tap spam. Emits `hotkey-tap-rejected` when an idle first tap expires (opt-in overlay feedback).
