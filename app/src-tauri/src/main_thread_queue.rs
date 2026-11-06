@@ -1,4 +1,4 @@
-//! Always-deferred macOS host adapter, also exercised by the native run-loop test.
+//! Queued macOS host adapter, also exercised by the native run-loop test.
 use murmur_core::context::{ContextError, MainThread, Task};
 use std::{
     collections::VecDeque,
@@ -35,6 +35,7 @@ impl MainThread for MainThreadQueue {
             // Unlike Tauri's run_on_main_thread, this always queues. The main
             // NSOperationQueue is serviced by the AppKit main run loop that
             // tao/Tauri drives; it needs no extra runtime or caller-thread path.
+            // Background callers may have their task drained before returning.
             // SAFETY: Foundation copies the block; it owns all captured state.
             unsafe {
                 objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&block)
