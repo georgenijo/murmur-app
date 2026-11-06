@@ -5199,6 +5199,121 @@ mod tests {
 mod startup_io_tests {
     use super::*;
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+    #[test]
+    #[cfg(feature = "shutdown-test-support")]
+    fn terminal_evidence_survives_both_sealed_and_delayed_writer_paths() {
+        use crate::shutdown::qa_evidence::{Counts, Evidence};
+        use murmur_core::shutdown::{Coordinator, Event, Outcome, Request, WriteOutcome};
+        let _test = TEST_LOCK.lock().unwrap();
+        for delayed_writers in [false, true] {
+            let fixture = tempfile::tempdir().unwrap();
+            let output = fixture.path().join("events.jsonl");
+            let worker_output = output.clone();
+            let pretty = fixture.path().join("app.log");
+            let (sender, worker) = start_log_worker(move || {
+                (
+                    SizeRotatingFile::open(worker_output, 4096, 1).unwrap(),
+                    SizeRotatingFile::open(pretty, 4096, 1).unwrap(),
+                )
+            });
+            let mut evidence = Evidence::new(
+                "com.localdictation.shutdown-test",
+                Some("com.localdictation.shutdown-test"),
+                || Some(fixture.path().to_owned()),
+            )
+            .unwrap();
+            let mut core = Coordinator::default();
+            let before = core.state;
+            let mut effect = core.request(Request::Restart, 0)[0];
+            evidence.observe(before, &core, None, Some(Request::Restart), 0);
+            for outcome in [
+                Outcome::Admission(true),
+                Outcome::Capture(true),
+                Outcome::Helpers(true),
+            ] {
+                let before = core.state;
+                let event = Event { effect, outcome };
+                effect = core.advance(event, 1)[0];
+                evidence.observe(before, &core, Some(event), None, 1);
+            }
+            let before = core.state;
+            if delayed_writers {
+                // The fixture delays run_owner itself, so telemetry has not
+                // even begun waiting/sealing when the deadline commits Quit.
+                core.tick(10_000);
+                evidence.observe(before, &core, None, None, 10_000);
+            } else {
+                let (done, drained) = mpsc::channel();
+                done.send(()).unwrap();
+                assert!(sender.flush_after(
+                    drained,
+                    std::time::Instant::now() + std::time::Duration::from_secs(2)
+                ));
+                let event = Event {
+                    effect,
+                    outcome: Outcome::Writers(WriteOutcome::Committed),
+                };
+                core.advance(event, 2);
+                evidence.observe(before, &core, Some(event), None, 2);
+            }
+            let action = core.issue().unwrap();
+            sender
+                .send(LogWrite::Event(b"synthetic terminal receipt\n".to_vec()))
+                .unwrap();
+            assert_eq!(
+                sender.state.rejected.load(Ordering::SeqCst),
+                u64::from(!delayed_writers)
+            );
+            let counts = Counts {
+                app_context: 65,
+                tauri_dispatch: 65,
+                cf_heartbeat: 65,
+            };
+            assert!(evidence.write_terminal(action, counts).unwrap());
+            assert!(!evidence.write_terminal(action, counts).unwrap());
+            let entries: Vec<_> = std::fs::read_dir(fixture.path().join("shutdown-evidence"))
+                .unwrap()
+                .collect();
+            assert_eq!(entries.len(), 1);
+            let receipt: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(entries[0].as_ref().unwrap().path()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["dispatcher_callbacks_total"], 195);
+            assert_eq!(receipt["terminal_action_count"], 1);
+            assert_eq!(receipt["replacement_requested"], true);
+            assert_eq!(
+                receipt["terminal_action"],
+                if delayed_writers { "quit" } else { "restart" }
+            );
+            let phases = receipt["phases"].as_array().unwrap();
+            assert_eq!(
+                phases
+                    .iter()
+                    .map(|p| p["phase"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["admission", "capture", "helpers", "writers", "terminate"]
+            );
+            assert_eq!(
+                phases[3]["failure_code"],
+                if delayed_writers {
+                    "deadline_expired"
+                } else {
+                    "none"
+                }
+            );
+            assert!(
+                sender.flush_until(std::time::Instant::now() + std::time::Duration::from_secs(2))
+            );
+            let logged = std::fs::read_to_string(output).unwrap();
+            assert_eq!(
+                logged.contains("synthetic terminal receipt"),
+                delayed_writers
+            );
+            drop(sender);
+            worker.join().unwrap();
+        }
+    }
     fn assert_failed_drain_suppresses_restart(flushed: bool) {
         use murmur_core::shutdown::{Action, Coordinator, Event, Outcome, Request, WriteOutcome};
         let mut core = Coordinator::default();

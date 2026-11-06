@@ -219,6 +219,104 @@ reasons; it verifies the isolated bundle ID and actual process executable twice,
 never addresses loginwindow, and sends no-reply events with a 10 s sender timeout.
 See [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).
 
+### Round-eight QA terminal evidence
+
+Round seven at `5370689c` exposed a **harness-only ordering gap**, not a
+capture teardown or terminal ordering defect. `test_support::delay` runs before
+`run_owner`. In the active-capture cells, real Writers starts its telemetry
+waiter, finishes the content owners, and seals/drains telemetry before returning
+its outcome. Only afterward does the coordinator enter the 6.5 s final hold.
+Both the 195-callback tracing event and the later terminal tracing receipt are
+therefore rejected by the already sealed queue. The dictation Cmd-Q evidence
+has successful telemetry-flush receipts and zero exported terminal receipts.
+
+The pending-writes fixture delays the entire Writers owner, including creation
+of that telemetry waiter. The independent +10 s deadline advances to Terminate
+while the delayed owner has not sealed telemetry; the final hold and terminal
+events can still be exported. Its Cmd-Q evidence has 195 callbacks, one terminal
+receipt, **`timed_out=true`, `writes=UnpreservedFailure`**, and no telemetry-flush
+receipt. Thus those 16 cells did not demonstrate a successful writer drain.
+Startup/deadline injections can similarly change which event reaches telemetry;
+capture activity itself is not the loss condition. No product phase ordering,
+deadline, or telemetry-seal policy is changed for round eight.
+
+The independent feature/identity-gated sink records ordered phase outcomes and
+failure codes under the reducer mutex, including transitions caused by requests
+or deadline ticks. Late completions cannot replace a deadline code. After the
+hold, the committed terminal callback publishes one immutable, fsynced JSON
+receipt per process. It contains only PID/start UUID, fixed phase/action codes,
+callback counts by source, and a replacement-requested boolean. No owner error
+strings, settings values, transcript, clipboard, or audio enter the schema.
+Location, publication contract, fields, and collection checks are documented in
+[Development](../DEVELOPMENT.md#shutdown-coordinator-native-qa). The sink is absent
+without `shutdown-test-support` and refuses every identity except the initialized
+QA identity, even if a feature build uses production configuration. There is no
+webview capability for reading receipts. Synthetic integration coverage runs the
+real telemetry queue and coordinator in both seal orderings and checks that the
+independent receipt survives each, with the Writers deadline code preserved.
+
+For each of the 51 grid cells and each startup/deadline extra, the native harness
+must execute this procedure. Use the existing preflight and replay launches;
+batch metadata checks in a single Main evaluation instead of adding capture
+runs or opening every Settings pane. Use native UI automation to establish the
+app behavior, with IPC/disk metadata as supplementary evidence.
+
+1. With the prior exact QA PID stopped, restore only a known synthetic fixture
+   in this identity's data directory. Inventory old terminal receipt filenames
+   separately; never restore old evidence into a new cell. The fixture must have
+   a nonempty owner-produced completion snapshot and a matching nonempty pending
+   publication, with known synthetic IDs. Empty pending snapshots do not establish
+   non-resurrection. Validate the built revision, bundle identity and new PID.
+2. In Main, call `recover_completion_pending` and `completion_snapshot`. Check
+   fixture IDs are present once. Perform History Clear through its native flow
+   (`clear_completion_destination` for the history destination is the owner
+   boundary), then read the snapshot and require those IDs absent. Keep only
+   counts/ID comparisons in the cell ledger. For the pending-writes condition,
+   also retain that cell's owner-produced settings pending receipt and delay
+   injection; the completion fixture is a separate assertion, not a substitute
+   for pending settings durability.
+3. Disable transcript retention through the native Settings owner before starting
+   the cell's active capture. Verify the runtime acknowledgement. Complete one
+   short synthetic file transcription in preflight when the cell has no dictation
+   producer (meeting/pending/startup/deadline), so retention refusal is observable
+   even if its main capture produces no text. Require no new retained history IDs.
+   Keep retention disabled across the target quit and replay. This establishes
+   both Clear and retention per cell instead of borrowing a supplementary result.
+4. Submit a small, distinct synthetic source edit and theme-library revision
+   through the existing Main owners (`save_settings_blob` and
+   `save_theme_library_blob`, with that renderer's source session and increasing
+   intent generations). Record acknowledgements and expected revision/digests
+   locally; export only equality booleans. Move/resize the native Main window to
+   one of two valid on-screen rectangles and change chrome appearance through
+   the native flow. Record logical bounds/scale, maximized state and appearance
+   code. Use Rust window-state publication, never renderer-written geometry.
+5. Run the cell's specified termination request(s) while its dictation, meeting,
+   or pending-write condition is established. Collect the new terminal JSON
+   directly from the exact QA directory after process completion. Require 65/65/65
+   callbacks, one terminal receipt, expected phase failures/action/replacement
+   flag, no owned helper survivors, and the expected replacement-process count.
+   Do not infer success from a telemetry receipt, nor expect a sealed logger to
+   export later receipts. A forced process death intentionally has no terminal
+   callback; record that exception explicitly rather than fabricating a receipt.
+6. On the already-required replacement/replay launch, read `completion_snapshot`
+   and `webkit_state_snapshot`, plus source owners and native window state.
+   Require cleared IDs still absent, zero retained additions while retention was
+   off, and settings/theme revisions/digests and geometry/appearance equal to
+   the acknowledged expectations. Exercise recovery once more and require stable
+   IDs, no duplicate completion, and no superseded pending publication. Reuse the
+   next cell's preflight launch for the second-launch comparison **before** its
+   fixture reset; the last cell needs an explicit second replay launch. Export
+   per-cell pass/fail booleans and counts, not source documents or transcript text.
+
+Startup extras with intentionally blocked source reads must prepare the accepted
+fixture before installing the FIFO and compare after releasing it on replay;
+do not wait on blocked IPC before sending Quit. Deadline extras must record which
+source submissions were actually acknowledged/preserved and compare only those;
+unaccepted edits are not a durability claim. If a necessary owner receipt or
+native comparison cannot be obtained, keep that cell PARTIAL with the exact
+missing assertion. Restore retention and remove only harness-owned synthetic
+fixtures after collecting evidence; never touch production profiles.
+
 Every row is pending parent native verification. Also verify early renderer-ready/
 chrome intents, explicit hide during delayed startup restoration, and quit during
 a delayed startup snapshot read. Run each row with active

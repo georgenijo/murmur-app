@@ -28,6 +28,8 @@ use tauri::Manager;
 pub(crate) mod adapter;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(feature = "shutdown-test-support")]
+pub(crate) mod qa_evidence;
 use adapter::Message;
 pub(crate) struct Shutdown {
     clock: Instant,
@@ -35,6 +37,8 @@ pub(crate) struct Shutdown {
     send: mpsc::Sender<Message>,
 }
 pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(feature = "shutdown-test-support")]
+    test_support::initialize_evidence(app);
     let clock = Instant::now();
     let core = Arc::new(Mutex::new(Coordinator::default()));
     let (send, receive) = mpsc::channel();
@@ -52,7 +56,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
         .spawn(move || loop {
             let now = || clock.elapsed().as_millis() as u64;
             let message = receive.recv_timeout(Duration::from_millis(10));
-            let Some(effects) = adapter::reduce(&core, message, now()) else {
+            let Some(effects) = reduce(&core, message, now()) else {
                 break;
             };
             for effect in effects {
@@ -83,17 +87,39 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
     signals(app.clone())?;
     Ok(())
 }
+fn reduce(
+    core: &Mutex<Coordinator>,
+    message: Result<Message, mpsc::RecvTimeoutError>,
+    now: u64,
+) -> Option<Vec<Effect>> {
+    #[cfg(feature = "shutdown-test-support")]
+    if test_support::evidence_enabled() {
+        return adapter::reduce_observed(core, message, now, |before, core, event| {
+            test_support::transition(before, core, event, None, now);
+        });
+    }
+    adapter::reduce(core, message, now)
+}
 pub(crate) fn request(app: &tauri::AppHandle, request: Request) {
     close_admission(); // synchronous even if the reducer/owner thread is delayed
     if let Some(shutdown) = app.try_state::<Shutdown>() {
         // Acceptance and issue share the reducer mutex. A queued notification
         // cannot hide an accepted Quit/System request from terminal commitment.
-        adapter::accept(
-            &shutdown.core,
-            &shutdown.send,
-            request,
-            shutdown.clock.elapsed().as_millis() as u64,
-        );
+        let now = shutdown.clock.elapsed().as_millis() as u64;
+        #[cfg(feature = "shutdown-test-support")]
+        if test_support::evidence_enabled() {
+            adapter::accept_observed(
+                &shutdown.core,
+                &shutdown.send,
+                request,
+                now,
+                |before, core| {
+                    test_support::transition(before, core, None, Some(request), now);
+                },
+            );
+            return;
+        }
+        adapter::accept(&shutdown.core, &shutdown.send, request, now);
     }
 }
 pub(crate) fn forbidden_restart_exit(code: Option<i32>, permitted: bool) -> bool {
@@ -107,6 +133,13 @@ pub(crate) fn receipt(app: &tauri::AppHandle) {
     let logs = crate::telemetry::shutdown_receipt();
     if let Some(shutdown) = app.try_state::<Shutdown>() {
         let mut core = shutdown.core.lock_or_recover();
+        #[cfg(feature = "shutdown-test-support")]
+        if core.termination_permitted() {
+            // A fresh native termination request can observe the committed
+            // permit before the queued terminal callback runs. Cover that
+            // runtime terminal path too; the sink publishes at most once.
+            test_support::write_terminal_evidence(app, core.action());
+        }
         tracing::info!(target:"shutdown", permitted=core.termination_permitted(), receipt=?core.receipt, telemetry=?logs, "terminal shutdown receipt");
         core.exited();
     }
@@ -245,6 +278,8 @@ fn terminal(app: &tauri::AppHandle, action: Action) {
     if !permitted(app) {
         return;
     }
+    #[cfg(feature = "shutdown-test-support")]
+    test_support::write_terminal_evidence(app, action);
     #[cfg(target_os = "macos")]
     if macos::reply_if_pending() {
         return;
@@ -472,6 +507,55 @@ pub(crate) fn register_test_source(owner: &str, session: &str) {
 #[cfg(feature = "shutdown-test-support")]
 pub(crate) mod test_support {
     use super::*;
+    use std::sync::OnceLock;
+    static EVIDENCE: OnceLock<Mutex<Option<qa_evidence::Evidence>>> = OnceLock::new();
+    static COUNTS: OnceLock<Arc<qa_evidence::DispatcherCounts>> = OnceLock::new();
+
+    pub(super) fn evidence_enabled() -> bool {
+        EVIDENCE
+            .get()
+            .is_some_and(|evidence| evidence.lock_or_recover().is_some())
+    }
+
+    pub(super) fn initialize_evidence(app: &tauri::AppHandle) {
+        let evidence = qa_evidence::Evidence::new(
+            &app.config().identifier,
+            crate::identity::initialized_identifier(),
+            || app.path().app_data_dir().ok(),
+        );
+        let _ = EVIDENCE.set(Mutex::new(evidence));
+    }
+    pub(super) fn transition(
+        before: murmur_core::shutdown::State,
+        core: &Coordinator,
+        event: Option<Event>,
+        request: Option<Request>,
+        now: u64,
+    ) {
+        if let Some(evidence) = EVIDENCE.get() {
+            if let Some(evidence) = evidence.lock_or_recover().as_mut() {
+                evidence.observe(before, core, event, request, now);
+            }
+        }
+    }
+    pub(super) fn write_terminal_evidence(app: &tauri::AppHandle, action: Action) {
+        if !isolated(app) {
+            return;
+        }
+        if let Some(evidence) = EVIDENCE.get() {
+            if let Some(evidence) = evidence.lock_or_recover().as_mut() {
+                let counts = COUNTS
+                    .get()
+                    .map(|counts| counts.snapshot())
+                    .unwrap_or_default();
+                if evidence.write_terminal(action, counts).is_err() {
+                    // Do not route evidence failures through the sealed logger or
+                    // include paths / I/O error messages in the diagnostic.
+                    eprintln!("shutdown QA evidence: receipt_io_failure");
+                }
+            }
+        }
+    }
     fn isolated(app: &tauri::AppHandle) -> bool {
         app.config().identifier == "com.localdictation.shutdown-test"
     }
@@ -504,25 +588,26 @@ pub(crate) mod test_support {
         if !isolated(app) {
             return;
         }
-        let counts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counts = Arc::new(qa_evidence::DispatcherCounts::default());
+        let _ = COUNTS.set(counts.clone());
         for _ in 0..65 {
             for message in receive.try_iter() {
-                let _ = adapter::reduce(core, Ok(message), 0);
+                let _ = super::reduce(core, Ok(message), 0);
             }
             let count = counts.clone();
             let _ = context.main_thread.dispatch(Box::new(move || {
                 assert!(objc2::MainThreadMarker::new().is_some());
-                count.fetch_add(1, Ordering::AcqRel);
+                count.app_context.fetch_add(1, Ordering::AcqRel);
             }));
             let count = counts.clone();
             let _ = app.run_on_main_thread(move || {
                 assert!(objc2::MainThreadMarker::new().is_some());
-                count.fetch_add(1, Ordering::AcqRel);
+                count.tauri_dispatch.fetch_add(1, Ordering::AcqRel);
             });
             let count = counts.clone();
             let block = block2::RcBlock::new(move || {
                 assert!(objc2::MainThreadMarker::new().is_some());
-                count.fetch_add(1, Ordering::AcqRel);
+                count.cf_heartbeat.fetch_add(1, Ordering::AcqRel);
             });
             let run_loop = objc2_core_foundation::CFRunLoop::main().unwrap();
             unsafe {
@@ -538,7 +623,7 @@ pub(crate) mod test_support {
             run_loop.wake_up();
             std::thread::sleep(Duration::from_millis(100));
         }
-        tracing::info!(target:"shutdown", callbacks=counts.load(Ordering::Acquire), expected=195, "synthetic shutdown dispatcher receipt");
+        tracing::info!(target:"shutdown", callbacks=counts.snapshot().total(), expected=195, "synthetic shutdown dispatcher receipt");
     }
     pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         tauri::plugin::Builder::new("shutdown-test")
@@ -575,6 +660,34 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generated_shutdown_acl_is_feature_gated_and_main_only() {
+        let mut context = crate::generated_context();
+        let authority = context.runtime_authority_mut();
+        for window in ["main", "diagnostics", "overlay", "dictation-preview"] {
+            assert_eq!(
+                authority
+                    .resolve_access(
+                        "plugin:shutdown-test|shutdown_test_action",
+                        window,
+                        window,
+                        &tauri::ipc::Origin::Local,
+                    )
+                    .is_some(),
+                cfg!(feature = "shutdown-test-support") && window == "main",
+                "{window}",
+            );
+            // Evidence is native file output, never a webview command.
+            assert!(authority
+                .resolve_access(
+                    "plugin:shutdown-test|read_terminal_evidence",
+                    window,
+                    window,
+                    &tauri::ipc::Origin::Local,
+                )
+                .is_none());
+        }
+    }
     #[test]
     fn telemetry_success_preserves_content_writer_outcome() {
         for content in [
