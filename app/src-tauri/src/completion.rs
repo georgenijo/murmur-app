@@ -393,8 +393,7 @@ mod dispatch_tests {
     }
 }
 
-#[tauri::command]
-pub(crate) fn webkit_state_snapshot(
+fn webkit_state_snapshot_worker(
     app: tauri::AppHandle,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
     source_status(&app.state::<Completion>().service)
@@ -408,8 +407,7 @@ fn source_status(
         .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
         .map_err(|e| e.to_string())
 }
-#[tauri::command]
-pub(crate) fn import_webkit_state(
+fn import_webkit_state_worker(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     source: std::collections::BTreeMap<String, Option<String>>,
@@ -424,8 +422,7 @@ pub(crate) fn import_webkit_state(
         ))
         .map_err(|e| e.to_string())
 }
-#[tauri::command]
-pub(crate) fn save_webkit_source(
+fn save_webkit_source_worker(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     key: String,
@@ -482,4 +479,57 @@ mod source_ordering_tests {
                 .unwrap();
         assert_eq!(disk["language"], "fr");
     }
+}
+
+/// Worker-only final barrier. The service stays retained in managed state even
+/// if the coordinator stops waiting, so no joining destructor reaches main.
+pub(crate) fn shutdown_flush(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<Completion>() else {
+        return false;
+    };
+    tauri::async_runtime::block_on(state.service.seal_and_flush()).is_ok()
+}
+
+#[tauri::command]
+pub(crate) async fn webkit_state_snapshot(
+    app: tauri::AppHandle,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        webkit_state_snapshot_worker(app)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub(crate) async fn import_webkit_state(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    source: std::collections::BTreeMap<String, Option<String>>,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        import_webkit_state_worker(window, app, source)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub(crate) async fn save_webkit_source(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        save_webkit_source_worker(window, app, key, value)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
 }

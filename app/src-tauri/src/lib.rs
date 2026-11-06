@@ -215,6 +215,25 @@ pub(crate) struct State {
 pub fn run() {
     launch::process_start();
     let builder = tauri::Builder::default()
+        .menu(|app| {
+            let menu = tauri::menu::Menu::default(app)?;
+            #[cfg(target_os = "macos")]
+            if let Some(tauri::menu::MenuItemKind::Submenu(application)) = menu.items()?.first() {
+                let count = application.items()?.len();
+                application.remove_at(count - 1)?;
+                application.append(
+                    &tauri::menu::MenuItemBuilder::with_id("shutdown-quit", "Quit Murmur")
+                        .accelerator("CmdOrCtrl+Q")
+                        .build(app)?,
+                )?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "shutdown-quit" {
+                shutdown::request(app, murmur_core::shutdown::Request::Quit);
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
@@ -474,6 +493,7 @@ pub fn run() {
         .setup(|app| {
             events::initialize(app.handle());
             app.manage(app_context::new(app.handle().clone()));
+            shutdown::initialize(app.handle())?;
             #[cfg(target_os = "macos")]
             if let Some(main) = app.get_webview_window("main") {
                 main.with_webview(|view| {
@@ -721,7 +741,7 @@ pub fn run() {
                             let _ = app_handle.events().publish(EventKind::CheckForUpdatesRequested, ());
                         }
                         "quit" => {
-                            app_handle.exit(0);
+                            shutdown::request(app_handle, murmur_core::shutdown::Request::Quit);
                         }
                         id if id.starts_with("next_mode:") => {
                             let mode_id = id.strip_prefix("next_mode:").filter(|id| !id.is_empty());
@@ -774,22 +794,14 @@ pub fn run() {
             }
         }
 
-        if let RunEvent::Exit = &_event {
-            audio_lifecycle::retire_standby();
-            window_state::flush(_app_handle);
-            smart_destination::set_enabled(false);
-            audio_inventory::shutdown();
-            // App-exit teardown: stop resident native helpers so none outlive
-            // the app (all no-op when no child is running).
-            #[cfg(target_os = "macos")]
-            if let Some(state) = _app_handle.try_state::<State>() {
-                let _ = meeting_diarization::cancel_all();
-                let _ = state.meetings.shutdown(
-                    _app_handle,
-                    std::time::Instant::now() + std::time::Duration::from_secs(5),
-                );
-                state.meeting_suggestions.shutdown();
+        if let RunEvent::ExitRequested { api, .. } = &_event {
+            if !shutdown::permitted(_app_handle) {
+                api.prevent_exit();
+                shutdown::request(_app_handle, murmur_core::shutdown::Request::Quit);
             }
+        }
+        if let RunEvent::Exit = &_event {
+            shutdown::receipt(_app_handle);
         }
     });
 }

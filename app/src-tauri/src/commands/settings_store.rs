@@ -192,8 +192,7 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-#[tauri::command]
-pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub(crate) fn load_settings_blob_worker(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let dir = data_dir(&app)?;
     let _guard = WRITE_LOCK.lock_or_recover();
     let blob = read_blob(&dir, SETTINGS)?;
@@ -212,8 +211,7 @@ fn require_settings_owner(label: &str) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub fn save_settings_blob(
+pub(crate) fn save_settings_blob_worker(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     blob: String,
@@ -403,8 +401,7 @@ fn merge_owned_fields_with_edits(
 
 /// Never accept a retained full snapshot from a quick control. Merge its one
 /// owned field into the latest document under the same lock as full writers.
-#[tauri::command]
-pub fn patch_overlay_setting(
+pub(crate) fn patch_overlay_setting_worker(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     field: OverlaySettingField,
@@ -421,8 +418,7 @@ pub fn patch_overlay_setting(
     Ok(committed)
 }
 
-#[tauri::command]
-pub fn load_theme_library_blob(
+pub(crate) fn load_theme_library_blob_worker(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
@@ -431,8 +427,7 @@ pub fn load_theme_library_blob(
     read_blob(&data_dir(&app)?, THEME_LIBRARY)
 }
 
-#[tauri::command]
-pub fn save_theme_library_blob(
+pub(crate) fn save_theme_library_blob_worker(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     blob: String,
@@ -441,8 +436,7 @@ pub fn save_theme_library_blob(
     write_blob(&data_dir(&app)?, THEME_LIBRARY, &blob)
 }
 
-#[tauri::command]
-pub fn clear_theme_library_blob(
+pub(crate) fn clear_theme_library_blob_worker(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -456,8 +450,7 @@ pub fn clear_theme_library_blob(
 
 /// Explicit restore from a user-selected backup; never synthesize defaults or
 /// replace a readable destination. Quarantines remain untouched for recovery.
-#[tauri::command]
-pub fn restore_source_backup(
+pub(crate) fn restore_source_backup_worker(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     key: String,
@@ -964,4 +957,119 @@ mod explicit_owned_edit_tests {
         assert_eq!(disk["launchOnboardingComplete"], false);
         assert_eq!(disk["language"], "es");
     }
+}
+
+/// Worker-only source fence, serialized with accepted source publications and
+/// quick-control merges. Recovery preserves their owned-field revision rules.
+pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let Ok(root) = data_dir(app) else {
+        return false;
+    };
+    ["dictation-settings", "murmur-theme-library"]
+        .iter()
+        .all(|key| murmur_core::completion::recover_source(&root, key).is_ok())
+}
+
+#[tauri::command]
+pub async fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        load_settings_blob_worker(app)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub async fn save_settings_blob(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    blob: String,
+    owned_edits: Option<OwnedEdits>,
+    intent_generation: Option<u64>,
+) -> Result<String, String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        save_settings_blob_worker(app, window, blob, owned_edits, intent_generation)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub async fn patch_overlay_setting(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    field: OverlaySettingField,
+    value: bool,
+) -> Result<String, String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        patch_overlay_setting_worker(app, window, field, value)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub async fn load_theme_library_blob(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        load_theme_library_blob_worker(window, app)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub async fn save_theme_library_blob(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    blob: String,
+) -> Result<(), String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        save_theme_library_blob_worker(window, app, blob)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub async fn clear_theme_library_blob(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        clear_theme_library_blob_worker(window, app)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub async fn restore_source_backup(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    key: String,
+    blob: String,
+) -> Result<(), String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _admission = admission;
+        restore_source_backup_worker(app, window, key, blob)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
 }

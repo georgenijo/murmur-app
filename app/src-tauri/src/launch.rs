@@ -136,7 +136,8 @@ fn preparation(blob: &str, _accessibility: bool) -> Option<Preparation> {
 }
 
 pub(crate) fn prepare(app: &tauri::AppHandle) {
-    let Ok(Some(blob)) = crate::commands::settings_store::load_settings_blob(app.clone()) else {
+    let Ok(Some(blob)) = crate::commands::settings_store::load_settings_blob_worker(app.clone())
+    else {
         return;
     };
     let Some(plan) = preparation(&blob, crate::injector::is_accessibility_enabled()) else {
