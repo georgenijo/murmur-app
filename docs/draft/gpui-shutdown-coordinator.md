@@ -167,9 +167,10 @@ Rust source/inclusion inventory, and Clippy's resolved `disallowed_methods`:
   `_Exit`, `abort`, `quick_exit`, `exit_group`, `pthread_exit`, `kill` and `raise`;
   terminating linker attributes and unprovable linker aliases. Foreign function
   names or ABIs supplied by macro metavariables fail closed. Conservatively,
-  all extern declarations inside `macro_rules!` definitions are rejected, so forwarding
-  names through invocation arguments cannot evade the check. Ordinary macros
-  without extern blocks remain accepted.
+  every `extern` token inside a `macro_rules!` definition is rejected, including
+  benign `extern "C" fn` callback definitions, so forwarding names through
+  invocation arguments cannot evade the check. Macros that never mention
+  `extern` remain accepted.
 - Exact termination-symbol string, byte-string and C-string literals, including
   raw forms and an optional trailing NUL, anywhere in scanned repository Rust
   sources. This covers literal `dlsym` and `libloading::get` lookups regardless
