@@ -278,7 +278,7 @@ Initialization precedes CLI worker dispatch as well as Tauri setup.
 | Pending files | Completion, UI/source, window and memo pending documents are siblings of isolated destinations. Startup removes abandoned completion/destination temps. Transcript pending evidence is pinned until explicit recovery, then bounded; Clear/Delete/caps remove superseded pending evidence. |
 | Update caches | Updater plugin is not registered for any non-production identity; no update cache/installation is started by the QA bundle. |
 | Launch agents | Autostart plugin is not registered for any non-production identity. Capture-agent service registration and all other CLI operations are refused for non-production or unproven identities. |
-| User-selected imports/exports | Explicit paths are user-controlled; QA supplies synthetic fixtures only. Explicit QA paths must contain synthetic fixtures only; implicit exports use the isolated default above. |
+| User-selected imports/exports | Explicit paths are user-controlled; QA supplies synthetic fixtures only. Implicit exports use the isolated default above. |
 
 Tests cover bench, refactor-test, shutdown-test, future/empty/path-like IDs,
 ensuring namespace separation and injectivity, plus the actual telemetry resolver.

@@ -312,54 +312,25 @@ independent review is claimed.
   Fixtures cover renames in every table, inherited workspace dependencies,
   decimal/hex/octal/binary/MAX/alias exit bypasses, and malformed manifests.
 
-Verification results are appended after the requested Linux and windowless Mac
-checks. No GUI, production capture-agent contact, app launch or merge is part of
-this implementation worker's scope.
+Verification at `06a03c31` (combined with the other worker's source-order fixes):
 
-## Round-two completion data-safety corrections
+- Linux: all 185 murmur-core unit/integration tests pass; workspace formatting,
+  core dependency boundary, targeted-event scanner and restart scanner pass.
+  Both policy fixture suites pass (24 tests; nine restart fixture groups).
+  The old guard accepts the reviewed dependency alias, `i32::MAX`, decimal MAX
+  and const-alias examples; the corrected guard rejects all four.
+- Mac mini, Rust 1.98.1: `cargo test -- --test-threads=1` passes both without and
+  with `--features shutdown-test-support`: each has 1,533 passing library tests,
+  14 pre-existing ignored library tests, passing integration suites and the
+  windowless main-dispatch/shutdown executables. Both `cargo clippy --all-targets`
+  runs pass with `-D warnings -A clippy::chunks_exact_to_as_chunks
+  -A clippy::byte_char_slices` supplied only on the command line.
+- An initial native run hit the existing Unix-socket fixture's `SUN_LEN` limit
+  with a long temporary root. Shortening TMPDIR to the disposable checkout's
+  `t` directory resolves it; the complete matrix above was rerun at the exact
+  pushed code revision. No tests were skipped to obtain these passes.
 
-Completion changes stay in `murmur-core/src/completion/`; no frontend or host
-callers change. The stack remains draft and must not be merged. Independent Sol
-re-checks remain with the parent task; this implementation worker claims no
-independent review or native GUI verification.
-
-- **Published completion retried after pending unlink:** content reconciliation
-  checks its stable `completionUuid` in both History/Reports and Holding before
-  appending. A published-but-unsynced outcome is synced again without duplication.
-  `round_two_unlinked_pending_sync_failure_retries_completion_exactly_once` faults
-  the directory-sync boundary after pending deletion, covering both migrated
-  History and pre-migration Holding, then verifies one row after restart.
-- **Malformed legacy pending shape:** replay requires the current versioned
-  destination envelope and its committed import marker. Legacy arrays remain
-  import inputs only. A current receipt also cannot downgrade a future destination
-  schema. `round_two_legacy_pending_shape_preserves_destination_and_evidence_bytes`
-  checks History and Reports byte preservation and exact quarantined evidence for
-  legacy arrays, future shapes, and uncommitted envelopes.
-- **Complete History mutation:** Holding and History snapshots are both retained
-  before the first publication. Recovery finishes those exact documents before
-  accepting later relative mutations.
-  `round_two_holding_failure_retains_all_history_mutation_targets` covers all nine
-  Pin/Edit/Delete × BeforeRename/AfterRename/DirectorySync combinations, including
-  another failed retry, final Committed, and restart verification.
-- **Next intent behind a failed retry:** the owner retains completion commands and
-  lifecycle saves in a shared submission-order FIFO before initialization or
-  reconciliation can return early. Exact failed snapshots are reconciled before
-  taking the next intent; relative History operations are not reapplied as
-  toggles. `round_two_retry_failure_keeps_next_report_in_submission_order` retains
-  both reports, and `round_two_retry_failure_keeps_last_ui_value` retains the
-  true-then-false UI sequence through shutdown and restart. The existing unreadable
-  Holding test now also verifies that its accepted completion publishes exactly
-  once after the temporary read error clears.
-
-Before the fixes, all five new regression tests failed against the existing
-implementation (using only the added unlink-sync fault seam). After the fixes,
-Linux `cargo test` passes all 155 unit and 35 integration tests on the combined
-round-two branch, including the
-round-one D2 Clear/temp, D4 replay-before-migration, and D5 explicit-recovery tests.
-Strict all-target clippy passes with `-D warnings -A clippy::byte_char_slices`.
-The requested additional `clippy::chunks_exact_to_as_chunks` exemption is unknown
-to this host's Rust/clippy 1.93.1; the literal requested invocation rejects that
-unknown lint, and the supported strict invocation above passes without it.
-`git diff --check` passes. No public API, frontend, or app host caller changed, so
-no frontend checks or Mac host-caller test run is required for this worker's delta.
-All fixtures and injected failures are synthetic; no user stores were opened.
+Native checks used only the new `~/Builds/gpui-stack-19` checkout and
+`~/Builds/gpui-stack-19-target`; Linux scratch was under the task cache.
+No GUI, production capture-agent contact, app launch or merge was performed.
+Independent Sol rechecks and native GUI verification remain with the parent.

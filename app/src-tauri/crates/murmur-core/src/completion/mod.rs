@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 pub use stats::{Scope, StatisticsEvent, Stats};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     path::PathBuf,
     sync::{mpsc, Arc, Mutex},
 };
@@ -249,7 +249,7 @@ impl CompletionService {
                 let _lock = lock;
                 let mut engine = Engine {
                     unpreserved_content: false,
-                    accepted: VecDeque::new(),
+                    failed_source: None,
                     failed_content: None,
                     storage: Storage::new(root),
                     webkit_exists,
@@ -339,7 +339,9 @@ impl CompletionService {
             .as_ref()
             .ok_or(Error::Stopped)?
             .send(Box::new(move |engine| {
-                let result = engine.lifecycle(command);
+                let result = engine
+                    .execute(Command::Snapshot)
+                    .and_then(|_| engine.lifecycle(command));
                 let _ = send.send(result);
             }))
             .map_err(|_| Error::Stopped)?;
@@ -370,16 +372,9 @@ fn uuid() -> String {
 fn diagnostic(code: &'static str) {
     tracing::warn!(target:"completion",code,"completion service diagnostic");
 }
-#[derive(Clone)]
-enum AcceptedIntent {
-    Command(Command),
-    Source(lifecycle::Operation),
-}
 struct Engine {
     unpreserved_content: bool,
-    // Retain each accepted submission before recovery can fail. The shared FIFO
-    // orders completion commands and lifecycle saves under the same owner.
-    accepted: VecDeque<AcceptedIntent>,
+    failed_source: Option<lifecycle::Operation>,
     failed_content: Option<(Destination, Value)>,
     initialized: bool,
     revision: u64,
@@ -394,17 +389,9 @@ impl Engine {
             return WriteOutcome::UnpreservedFailure;
         }
         let reconciled = self.execute(Command::Snapshot).is_ok();
-        // If reconciliation is blocked by the sole durable pending snapshot,
-        // inspect source health without retrying that publication again. This
-        // keeps PreservedForReplay distinct from an unpreserved queued intent.
-        let sources = if reconciled {
-            self.lifecycle(lifecycle::Operation::Status)
-        } else {
-            self.lifecycle_inner(lifecycle::Operation::Status)
-        }
-        .is_ok();
+        let sources = self.lifecycle(lifecycle::Operation::Status).is_ok();
         if self.unpreserved_content
-            || !self.accepted.is_empty()
+            || self.failed_source.is_some()
             || self.failed_content.is_some()
             || self.storage.has_intents()
             || !sources
@@ -699,63 +686,23 @@ impl Engine {
         })
     }
     fn execute(&mut self, command: Command) -> Result<Snapshot> {
-        match command {
-            Command::RecoverPending => self.resolve_pending()?,
-            Command::Snapshot => {}
-            command => self.accepted.push_back(AcceptedIntent::Command(command)),
+        let content = matches!(&command, Command::Complete { entry: Some(_), .. });
+        let result = self.execute_inner(command);
+        self.storage.capture_failures = false;
+        if content
+            && result.is_err()
+            && !self.storage.has_intents()
+            && self.failed_content.is_none()
+            && !self.storage.root.join(PENDING).exists()
+        {
+            self.unpreserved_content = true;
         }
-        self.drain_accepted()?;
-        self.snapshot()
+        result
     }
-    fn drain_accepted(&mut self) -> Result<()> {
-        loop {
-            // Do not take the next intent until every older publication has
-            // reconciled. Even initialization/read failures leave it in the FIFO.
-            self.prepare()?;
-            let Some(intent) = self.accepted.pop_front() else {
-                return Ok(());
-            };
-            let result = match &intent {
-                AcceptedIntent::Command(command) => self.apply_command(command.clone()),
-                AcceptedIntent::Source(op) => self.lifecycle_inner(op.clone()).map(|_| ()),
-            };
-            self.storage.capture_failures = false;
-            if matches!(
-                &intent,
-                AcceptedIntent::Command(Command::Complete { entry: Some(_), .. })
-            ) && result.is_err()
-                && !self.storage.has_intents()
-                && self.failed_content.is_none()
-                && !self.storage.root.join(PENDING).exists()
-            {
-                self.unpreserved_content = true;
-            }
-            if let Err(error) = result {
-                // Source saves are idempotent. Direct commands with captured
-                // snapshots/content resume from those exact values, not by
-                // repeating a toggle or another relative mutation.
-                let retry = match &intent {
-                    AcceptedIntent::Source(_) => true,
-                    AcceptedIntent::Command(
-                        Command::Complete { .. } | Command::AcceptFile { .. },
-                    ) => false,
-                    AcceptedIntent::Command(_) => {
-                        error != Error::Invalid
-                            && !self.storage.has_intents()
-                            && self.failed_content.is_none()
-                    }
-                };
-                if retry {
-                    self.accepted.push_front(intent);
-                }
-                return Err(error);
-            }
-            if self.accepted.is_empty() {
-                return Ok(());
-            }
+    fn execute_inner(&mut self, command: Command) -> Result<Snapshot> {
+        if matches!(command, Command::RecoverPending) {
+            self.resolve_pending()?;
         }
-    }
-    fn prepare(&mut self) -> Result<()> {
         self.revision += 1;
         // Initialization retry must not inflate launch counts on every command.
         if !self.initialized
@@ -769,13 +716,9 @@ impl Engine {
         self.state()?;
         self.holding()?;
         self.recover()?;
-        // Lifecycle commands need the same destination-health gate as Snapshot.
-        self.snapshot()?;
-        Ok(())
-    }
-    fn apply_command(&mut self, command: Command) -> Result<()> {
         if matches!(&command, Command::Complete { entry: None, .. }) {
-            // Non-retaining producers do not prolong resolved private evidence.
+            // A non-retaining producer must not prolong transcript-bearing
+            // rejected publication evidence after its recovery has resolved.
             self.storage.remove_evidence(PENDING)?;
         }
         // Capture exact mutation snapshots only after recovery admits this job.
@@ -914,7 +857,7 @@ impl Engine {
                 }
             }
         }
-        Ok(())
+        self.snapshot()
     }
     fn observe_file_receipts(&mut self, h: &Holding) -> Result<()> {
         let doc = self.document(Destination::History)?;
@@ -1073,13 +1016,11 @@ impl Engine {
         }
         let pending: Option<Value> = self.storage.read(PENDING, valid_pending)?;
         if let Some(pending) = pending {
-            let file = pending["file"].as_str().ok_or(Error::Invalid)?;
-            // A current receipt cannot downgrade a destination from a newer app.
-            self.storage.reject_future(file, "schema", 1)?;
-            self.storage.write(file, &pending["value"])?;
+            self.storage.write(
+                pending["file"].as_str().ok_or(Error::Invalid)?,
+                &pending["value"],
+            )?;
             std::fs::remove_file(self.storage.root.join(PENDING)).map_err(|_| Error::Io)?;
-            self.storage
-                .boundary(PENDING, storage::Boundary::DirectorySync)?;
             self.storage.sync_directory()?;
         } else if existed
             || (self.storage.quarantined(PENDING)? && !self.storage.pending_recovery_resolved()?)
@@ -1117,25 +1058,6 @@ impl Engine {
     fn add_content_inner(&mut self, d: Destination, value: Value) -> Result<()> {
         self.storage.remove_evidence(PENDING)?;
         let mut doc = self.document(d)?.unwrap_or_else(|| Document::new(d));
-        let h = self.holding()?;
-        let held = match d {
-            Destination::History => &h.history.entries,
-            _ => &h.reports.entries,
-        };
-        if let Some(id) = value["completionUuid"].as_str() {
-            if doc
-                .data
-                .as_array()
-                .ok_or(Error::Invalid)?
-                .iter()
-                .chain(held)
-                .any(|entry| entry["completionUuid"].as_str() == Some(id))
-            {
-                // Publication may have completed before pending-unlink sync
-                // failed. Re-establish durability without appending it again.
-                return self.storage.sync_directory();
-            }
-        }
         if self.ready(d, &doc)? {
             let entries = doc.data.as_array_mut().ok_or(Error::Invalid)?;
             entries.push(value);
@@ -1288,14 +1210,12 @@ impl Engine {
                 }
             }
         }
-        // Capture every target before the first write. Holding must publish
-        // first so deletion evidence precedes changing originals; a failure
-        // there must not prevent retaining the intended History snapshot.
-        let mut snapshots = vec![(HOLD.to_owned(), json!(h))];
+        // Persist deletion records before changing originals, so losing the
+        // original file later cannot resurrect a deleted legacy entry.
+        self.storage.write(HOLD, &h)?;
         if self.document(Destination::History)?.is_some() {
-            snapshots.push((Destination::History.file().to_owned(), json!(doc)));
+            self.storage.write(Destination::History.file(), &doc)?;
         }
-        self.storage.publish_batch(snapshots)?;
         Ok(())
     }
     fn import(&mut self, source: LegacyImport) -> Result<()> {
@@ -1449,10 +1369,6 @@ fn valid_receipts(ids: &[String]) -> bool {
     ids.len() <= producers::MAX_PENDING_FILES
         && ids.iter().all(|id| uuid::Uuid::parse_str(id).is_ok())
         && ids.iter().collect::<HashSet<_>>().len() == ids.len()
-}
-fn valid_current_document(d: Destination, v: &Value) -> bool {
-    // Legacy shapes are source-import input only, never replayable snapshots.
-    v["schema"] == 1 && v["v1_imported"] == true && valid_document(d, v)
 }
 fn valid_document(d: Destination, v: &Value) -> bool {
     if v.get("schema").is_some() {
@@ -2010,10 +1926,8 @@ fn valid_pending(v: &Value) -> bool {
         && match v["file"].as_str() {
             Some(HOLD) => serde_json::from_value::<Holding>(v["value"].clone())
                 .is_ok_and(|h| valid_holding(&h)),
-            Some("history.json") => valid_current_document(Destination::History, &v["value"]),
-            Some("benchmark-reports.json") => {
-                valid_current_document(Destination::Reports, &v["value"])
-            }
+            Some("history.json") => valid_document(Destination::History, &v["value"]),
+            Some("benchmark-reports.json") => valid_document(Destination::Reports, &v["value"]),
             _ => false,
         }
 }
