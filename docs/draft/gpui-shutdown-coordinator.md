@@ -984,3 +984,75 @@ test thread, plus workspace/all-target strict Clippy, in both default and
 All 427 tracked native inputs match this checkout. Schemas were restored and
 `gpui-stack-29`, its target and synthetic temp data were removed. No GUI or app
 launches were used. Independent Sol recheck remains with the parent.
+
+### Round-seven lifecycle publication ordering
+
+The completion owner now acquires a Tauri-free core `SOURCE_WRITE_LOCK` for the
+entire lifecycle recovery/read/merge/publication critical section. The host's
+`settings_store::WRITE_LOCK` is an alias to that same mutex. This includes
+onboarding saves retried by unrelated completion commands, native producers,
+barriers and shutdown recovery. Observing publication afterward still reconciles
+round-six ownership and warning state, but publication itself is now serialized.
+A tray or Settings writer cannot commit between a lifecycle read and its receipt
+publication. Hydration, restore, source recovery and host settings/theme writers
+continue using the same lock and full-sync publisher.
+
+File-backed settings/theme snapshots are rejected by lifecycle `Save` before
+FIFO acceptance, matching the host command's existing restriction. They must use
+the host's source-ordered merge API. The obsolete raw `save_settings` API had no
+production callers and is removed; its sole test uses the shared publisher.
+This closes a second way to retain a stale
+full snapshot outside P1-A/P1-B ownership fences. Import remains fill-only against
+current durable sources; the onboarding operation patches current settings under
+the lock and preserves the onboarding gate. The existing source-recovery safety
+fixtures use the host publisher for file creation and interrupted publication.
+
+Lock order is explicit: source FIFO/order mutex (host writers only) -> shared
+source write mutex -> retained owned-field mutex. The completion actor takes the
+shared source write mutex inside `lifecycle_inner`; it never acquires the host
+source FIFO/order mutex or retained-field mutex. Admission enqueues and releases
+its mutex before waiting. Host status/import/save and final shutdown drain wait
+for the actor **without** the shared source write mutex; afterward they reacquire
+it only for reconciliation, including on errors. No host path waits for or joins
+the actor while holding that mutex, so there is no write-lock-to-actor edge to
+complete a cycle. Absent-WebKit initialization uses a locked recursive helper
+rather than acquiring the same mutex twice. Shutdown first drains accepted host
+writers, recovers their sources, then seals/drains completion without the lock;
+the retained actor may finish safely if the coordinator deadline stops waiting.
+
+Synthetic deterministic regressions retain an actual interrupted re-enable
+receipt, retain an onboarding save behind a failed UI-state read, then pause its
+retry at the existing test-only receipt `BeforeRename` hook after settings
+recovery/read. A competing host writer probes the same mutex: with the defect it
+publishes revision two before the retry resumes and is overwritten by revision
+one; with the fix it waits and publishes the final revision two. Variants cover
+tray Disable, Auto Paste, a Settings language edit, native dictation production
+(including duplicate submission), and shutdown recovery. The existing warning,
+source-order, tray and completion durability coverage remains. A native adapter
+test checks both lifecycle and shutdown reconciliation finish within a bounded
+wait, catching reintroduced lock inversion. No GUI, app launch, or production
+data is used.
+
+Before/after: the four requested interleavings all fail on actual `b0ffc7ba`
+source with `disabled=false` after the newer host success. The only baseline
+additions are the regression module and its test-only host mutex declaration;
+no baseline publication behavior is changed. All four and the producer variant
+pass after the fix. Verification results follow below.
+
+Verification: TypeScript and all 1,903 frontend tests pass. All 215 core unit
+and integration tests pass, including round-four numeric identity, the 36-case
+process-exit matrix and retained FIFO bounds. All six new core regressions pass
+on both Linux and Mac mini; the five race variants fail on `b0ffc7ba`, and the
+sixth confirms that baseline still accepts bypassing file snapshots. On Mac
+mini / Rust 1.98.1, single-threaded native settings-store (39), shutdown (18),
+completion (11) and dictation-control (7) selections pass in both default and
+`shutdown-test-support` configurations. Workspace/all-target strict Clippy passes
+in both, with only the two requested command-line allowances. The final removal
+of the unused raw writer also passes its replacement test and both Clippy
+configurations. All 11 resolved restart-Clippy fixtures and 18 foreign-source
+fixtures pass. Core-dependency, restart, targeted-event, reference/link,
+formatting and diff checks pass. Regenerated schemas were restored; all seven
+changed inputs matched the Mac checkout before cleanup. Synthetic logs were
+preserved, and `gpui-stack-30`, its target and synthetic scratch were removed.
+No GUI or app was launched. Independent Sol recheck remains with the parent;
+PR #1025 remains draft, stacked on its original base, unmerged and unretargeted.

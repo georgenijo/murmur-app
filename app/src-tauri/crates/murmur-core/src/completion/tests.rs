@@ -364,7 +364,17 @@ fn stale_settings_save_does_not_touch_journal_or_migration() {
     complete(&mut e, "a", true);
     let journal = std::fs::read(dir.path().join(STATE)).unwrap();
     let migration = std::fs::read(dir.path().join(MIGRATION)).ok();
-    save_settings(dir.path(), r#"{"retainHistory":true}"#).unwrap();
+    {
+        let _guard = lifecycle::SOURCE_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        save_source(
+            dir.path(),
+            "dictation-settings",
+            r#"{"retainHistory":true}"#,
+        )
+        .unwrap();
+    }
     assert_eq!(std::fs::read(dir.path().join(STATE)).unwrap(), journal);
     assert_eq!(std::fs::read(dir.path().join(MIGRATION)).ok(), migration);
     e = reopen(&e);

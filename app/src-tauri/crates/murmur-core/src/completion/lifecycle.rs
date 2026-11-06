@@ -23,6 +23,13 @@ pub const TRANSCRIPT_KEYS: &[&str] = &[
 ];
 pub const DROP_KEYS: &[&str] = &["murmur-overlay-vertical-offset", "murmur-ui-latency-v1"];
 const UI_STATE: &str = "ui-state.json";
+
+/// Shared with host source writers. Hold across recovery, read/merge and durable
+/// publication, including retained lifecycle retries from completion producers.
+/// Lock order: completion owner -> SOURCE_WRITE_LOCK. A host must never wait
+/// for the completion owner (or drop its last service handle) while holding it.
+/// Admission only queues jobs and releases its mutex before waiting for results.
+pub static SOURCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Progress {
@@ -56,6 +63,8 @@ pub enum Operation {
     /// Complete observed key set, not a partial snapshot. Missing values must
     /// be represented by null. Storage read errors must abort the transport.
     Import(BTreeMap<String, Option<String>>),
+    /// UI-state keys only. File-backed settings/themes use the host's ordered
+    /// source API; full snapshots cannot bypass that owner's intent fences.
     Save {
         key: String,
         value: Value,
@@ -152,6 +161,11 @@ impl Engine {
         if queued {
             // Reject malformed input before accepting it into the ordered FIFO.
             if let Operation::Save { key, value } = &op {
+                // File-backed sources belong to the host's ordered merge API.
+                // Retaining a full snapshot here would bypass its intent fences.
+                if crate::state::file(key).is_some() {
+                    return Err(Error::Invalid);
+                }
                 crate::state::normalize(key, value.clone())?;
             }
             self.retain_intent(AcceptedIntent::Source(op.clone()))?;
@@ -160,6 +174,10 @@ impl Engine {
         self.lifecycle_inner(if queued { Operation::Status } else { op })
     }
     pub(super) fn lifecycle_inner(&mut self, op: Operation) -> Result<Receipt> {
+        let _guard = SOURCE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        self.lifecycle_locked(op)
+    }
+    fn lifecycle_locked(&mut self, op: Operation) -> Result<Receipt> {
         self.storage.retry_intents()?;
         self.storage.recover_snapshot(UI_STATE, valid_snapshot)?;
         self.storage.sync_directory()?;
@@ -173,7 +191,7 @@ impl Engine {
                         .chain(V2_KEYS)
                         .map(|k| ((*k).into(), None))
                         .collect();
-                    self.lifecycle_inner(Operation::Import(source))?;
+                    self.lifecycle_locked(Operation::Import(source))?;
                     m = self.migration()?;
                     m.keys_removed = vec![
                         Destination::History,
@@ -193,13 +211,8 @@ impl Engine {
                         publish_source(&mut self.storage, "dictation-settings", &settings)?;
                     }
                 }
-                if crate::state::file(&key).is_some() {
-                    recover_source(&self.storage.root, &key)?;
-                    publish_source(&mut self.storage, &key, &value)?;
-                } else {
-                    state.values.insert(key, value);
-                    self.storage.publish_snapshot(UI_STATE, &state)?;
-                }
+                state.values.insert(key, value);
+                self.storage.publish_snapshot(UI_STATE, &state)?;
             }
             Operation::Import(raw) => {
                 if !m.v1 {
@@ -588,7 +601,7 @@ mod review_safety {
     #[test]
     fn imported_and_created_separate_destinations_remain_required_after_loss_or_quarantine() {
         for key in ["dictation-settings", "murmur-theme-library"] {
-            for created in 0..3 {
+            for created in [false, true] {
                 for corrupt in [false, true] {
                     let dir = tempfile::tempdir().unwrap();
                     let mut e = engine(dir.path(), true);
@@ -598,19 +611,13 @@ mod review_safety {
                         json!({"version":1,"themes":[]})
                     };
                     let mut raw = source();
-                    if created == 0 {
+                    if !created {
                         raw.insert(key.into(), Some(value.to_string()));
                     }
                     e.lifecycle(Operation::Import(raw)).unwrap();
-                    if created == 1 {
-                        e.lifecycle(Operation::Save {
-                            key: key.into(),
-                            value: value.clone(),
-                        })
-                        .unwrap();
-                    }
-                    if created == 2 {
-                        super::super::save_source(dir.path(), key, &value.to_string()).unwrap();
+                    if created {
+                        let _guard = SOURCE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+                        save_source(dir.path(), key, &value.to_string()).unwrap();
                     }
                     let mut m = e.migration().unwrap();
                     m.lifecycle.v3 = true;
@@ -771,12 +778,12 @@ mod review_safety {
                 let expected = crate::state::normalize(key, value.clone()).unwrap();
                 let file = crate::state::file(key).unwrap();
                 e.storage.fail = Some((file.into(), boundary));
-                assert!(e
-                    .lifecycle(Operation::Save {
-                        key: key.into(),
-                        value
-                    })
-                    .is_err());
+                // File sources now reject lifecycle Save, matching the host.
+                // Inject the same I/O boundary in its shared source publisher.
+                {
+                    let _guard = SOURCE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+                    assert!(publish_source(&mut e.storage, key, &expected).is_err());
+                }
                 assert!(dir.path().join(format!("{file}.required")).exists());
                 if boundary == Boundary::BeforeRename {
                     assert!(!dir.path().join(file).exists());

@@ -1733,18 +1733,9 @@ impl MigrationGate {
 #[cfg(test)]
 mod tests;
 
-/// Shared whole-settings publication path. Migration and journal files are never
-/// part of a settings snapshot, even when that snapshot predates an import.
-pub fn save_settings(root: &std::path::Path, blob: &str) -> Result<()> {
-    let value: Value = serde_json::from_str(blob).map_err(|_| Error::Invalid)?;
-    if !value.is_object() || blob.len() > 1024 * 1024 {
-        return Err(Error::Invalid);
-    }
-    Storage::new(root.into()).write_bytes("settings.json", blob.as_bytes())
-}
-
-/// Settings/theme commands share the host's writer lock with lifecycle imports.
-/// Publication uses the same full-sync discipline as completion destinations.
+/// Host settings/theme commands hold `lifecycle::SOURCE_WRITE_LOCK` across
+/// recovery, read/merge and this call, sharing serialization with core lifecycle
+/// publication. Uses the same full-sync discipline as completion destinations.
 pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<String> {
     if blob.len() > crate::state::source_size_limit(key) {
         return Err(Error::Invalid);
@@ -1909,6 +1900,7 @@ pub fn prune_source_artifacts(root: &std::path::Path, key: &str) -> Result<()> {
 
 /// Resume only a proven interrupted transition. Corrupt receipts never veto a
 /// readable destination; conflicting receipts surface once and preserve data.
+/// Caller holds `lifecycle::SOURCE_WRITE_LOCK`, including any following merge.
 pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
     let file = crate::state::file(key).ok_or(Error::Invalid)?;
     let pending = format!("{file}.pending");
@@ -2061,3 +2053,6 @@ fn valid_pending(v: &Value) -> bool {
             _ => false,
         }
 }
+
+#[cfg(test)]
+mod lifecycle_publication_tests;

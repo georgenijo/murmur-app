@@ -10,7 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
 /// Every core command can retry a retained lifecycle save while draining its
-/// FIFO, including native completion producers and file acceptance.
+/// FIFO, including native completion producers and file acceptance. Core fences
+/// publication with the shared source mutex; this observer retires host ownership
+/// and invalidates the warning after that publication.
 struct SourcePublicationObserver<'a, R: tauri::Runtime>(&'a tauri::AppHandle<R>);
 impl<R: tauri::Runtime> Drop for SourcePublicationObserver<'_, R> {
     fn drop(&mut self) {
@@ -495,9 +497,7 @@ fn source_status(
     service: &CompletionService,
     root: &std::path::Path,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
-    use crate::MutexExt;
-    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    crate::commands::settings_store::reconcile_settings_after(root, || {
+    crate::commands::settings_store::reconcile_lifecycle_after(root, || {
         service
             .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
             .map_err(|e| e.to_string())
@@ -509,11 +509,9 @@ fn import_webkit_state_worker(
     source: std::collections::BTreeMap<String, Option<String>>,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
     main_only(&window)?;
-    use crate::MutexExt;
     let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
     let root = crate::commands::settings_store::data_dir(&app)?;
-    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    crate::commands::settings_store::reconcile_settings_after(&root, || {
+    crate::commands::settings_store::reconcile_lifecycle_after(&root, || {
         ready(&app)?
             .service
             .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
@@ -532,11 +530,9 @@ fn save_webkit_source_worker(
     if matches!(key.as_str(), "dictation-settings" | "murmur-theme-library") {
         return Err("Use the source owner's command".into());
     }
-    use crate::MutexExt;
     let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
     let root = crate::commands::settings_store::data_dir(&app)?;
-    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    crate::commands::settings_store::reconcile_settings_after(&root, || {
+    crate::commands::settings_store::reconcile_lifecycle_after(&root, || {
         ready(&app)?
             .service
             .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
@@ -549,6 +545,41 @@ fn save_webkit_source_worker(
 mod source_ordering_tests {
     use super::*;
     use crate::MutexExt;
+    #[test]
+    fn lifecycle_and_shutdown_reconciliation_do_not_hold_lock_while_waiting() {
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        service.execute(Command::Snapshot).unwrap();
+        for shutdown in [false, true] {
+            // Block the core's lifecycle critical section. The adapter must not
+            // acquire this mutex around the wait, nor retain it for reconciliation.
+            let guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+            let owner = service.clone();
+            let path = root.path().to_path_buf();
+            let (started, start) = std::sync::mpsc::channel();
+            let (finished, finish) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                if shutdown {
+                    let receipt =
+                        crate::commands::settings_store::reconcile_lifecycle_after(&path, || {
+                            tauri::async_runtime::block_on(owner.shutdown_receipt())
+                        });
+                    assert_eq!(receipt, murmur_core::shutdown::WriteOutcome::Committed);
+                } else {
+                    source_status(&owner, &path).unwrap();
+                }
+                finished.send(()).unwrap();
+            });
+            start.recv().unwrap();
+            drop(guard);
+            finish
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            worker.join().unwrap();
+        }
+    }
+
     #[test]
     fn absent_webkit_status_serializes_with_source_writer() {
         let root = tempfile::tempdir().unwrap();
@@ -593,13 +624,13 @@ pub(crate) fn shutdown_flush(app: &tauri::AppHandle) -> murmur_core::shutdown::W
         return murmur_core::shutdown::WriteOutcome::UnpreservedFailure;
     };
     let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(app);
-    use crate::MutexExt;
-    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    let result = tauri::async_runtime::block_on(state.service.shutdown_receipt());
-    if let Ok(root) = crate::commands::settings_store::data_dir(app) {
-        crate::commands::settings_store::reconcile_settings_after(&root, || ());
+    // Seal/drain without WRITE_LOCK: queued lifecycle retries acquire it inside
+    // the core owner. Reconcile only after that owner has returned its receipt.
+    let drain = || tauri::async_runtime::block_on(state.service.shutdown_receipt());
+    match crate::commands::settings_store::data_dir(app) {
+        Ok(root) => crate::commands::settings_store::reconcile_lifecycle_after(&root, drain),
+        Err(_) => drain(),
     }
-    result
 }
 
 #[tauri::command]

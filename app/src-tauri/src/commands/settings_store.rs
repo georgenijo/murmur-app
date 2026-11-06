@@ -48,9 +48,10 @@ fn require_main_window(label: &str) -> Result<(), String> {
     }
 }
 
-/// Serializes writers across every window and blob. Each file has its own temp
-/// sibling, while one lock keeps publish/delete ordering deterministic.
-pub(crate) static WRITE_LOCK: Mutex<()> = Mutex::new(());
+/// The core lifecycle owner and every host source writer use the same mutex.
+/// Hold across recovery/read/merge/publication; never await the completion owner
+/// under this lock. Core takes it inside its worker, including FIFO retries.
+pub(crate) use murmur_core::completion::lifecycle::SOURCE_WRITE_LOCK as WRITE_LOCK;
 // Native owns accepted patches even when reading/merging the current snapshot
 // fails before the durable publisher can retain an exact merged document.
 fn pending_owned() -> &'static Mutex<HashMap<PathBuf, RetainedOwned>> {
@@ -113,6 +114,14 @@ pub(crate) fn reconcile_settings_after<T>(dir: &Path, operation: impl FnOnce() -
     let result = operation();
     let _ = read_blob(dir, SETTINGS);
     result
+}
+
+/// Wait for core without WRITE_LOCK, then reconcile under it on success or error.
+/// The core itself holds that same lock across the publication, not the caller.
+pub(crate) fn reconcile_lifecycle_after<T>(dir: &Path, operation: impl FnOnce() -> T) -> T {
+    let result = operation();
+    let _guard = WRITE_LOCK.lock_or_recover();
+    reconcile_settings_after(dir, || result)
 }
 
 /// Completion's retained lifecycle saves can also replay while an unrelated
@@ -2477,7 +2486,6 @@ mod warning_reconciliation_tests {
         for fails in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             failed_tray_publication(dir.path(), false);
-            let _guard = WRITE_LOCK.lock_or_recover();
             let service =
                 murmur_core::completion::CompletionService::start(dir.path().into(), true).unwrap();
             // A future theme source fails after the settings receipt replays.
@@ -2485,10 +2493,11 @@ mod warning_reconciliation_tests {
                 std::fs::write(dir.path().join("theme-library.json"), r#"{"version":999}"#)
                     .unwrap();
             }
-            let result = reconcile_settings_after(dir.path(), || {
+            let result = reconcile_lifecycle_after(dir.path(), || {
                 service.lifecycle(murmur_core::completion::lifecycle::Operation::Status)
             });
             assert_eq!(result.is_err(), fails);
+            let _guard = WRITE_LOCK.lock_or_recover();
             assert!(!dir.path().join("settings.json.pending").exists());
             assert!(!dictation_settings_unsaved(dir.path()));
             assert!(!pending_owned().lock_or_recover().contains_key(dir.path()));
