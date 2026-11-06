@@ -451,9 +451,8 @@ cover the registration barrier, fresh registration on reload, handshake failure,
 and separate exact-field receipts on superseded snapshots. Existing per-field
 acknowledgement, flush, identical retry and authoritative-cache tests remain.
 
-Verification results will be appended after Linux and Mac mini checks. This
-implementation worker performs no GUI action, merge or independent review; the
-parent retains the independent Sol recheck gate.
+This implementation worker performs no GUI action, merge or independent review;
+the parent retains the independent Sol recheck gate.
 
 The native field owner also retains patches that fail during the read/merge,
 before a complete document can reach the durable publisher. A later source
@@ -470,3 +469,30 @@ Linux verification: `npm ci`, TypeScript, all 183 Vitest files / 1,892 tests,
 and all 192 core unit/integration tests pass. Every local command in the CI
 `policy` job passes, including reference/link validators, 435 Python unittest
 cases, 25 canary tests, restart guard suites and 42 frontend event-guard tests.
+
+Mac mini verification at executable revision `2c69fcaf`, Rust 1.98.1, the
+specified build mirror and shared target directory: both full native test runs
+(default and `shutdown-test-support`) pass, each with 1,538 passing library tests
+and 14 existing ignored tests, plus the integration suites. Both configurations
+also pass `cargo clippy --all-targets` with `-D warnings` and only the two
+requested command-line allowances. No GUI/app launch or permission grant occurs.
+
+Before/after evidence: the new frontend superseded-field receipt test fails
+against the actual `9d69cec8` lifecycle module (it re-sends the already native-owned
+Auto Paste field) and all 27 lifecycle tests pass after restoration. Native
+defect-restoration checks keep the actual FIFO, regression and publisher intact:
+restoring independent-session acceptance makes the exact old-100/new-1 test fail
+with `Applied` instead of `Superseded`; restoring snapshot-coupled patch selection
+makes the exact shutdown-recovery test fail with `autoPaste=false`. Restoring the
+fixes passes both, all four round-three settings regressions, and the round-two
+same-session reordered-task regression. These native comparisons restore the
+specific old fence/patch defects in the build mirror, rather than claiming that
+new registration APIs were present in an older binary. The maintained source is
+restored byte-for-byte after each comparison.
+
+The concurrent-window regression also fails when field retries are treated as
+fresh patches (the previous behavior without original field IDs): a main retry
+undoes the newer overlay Auto Paste value. It passes again with the field fence
+restored, including different-field preservation and overlay reload retirement.
+The complete CI `policy` shell blocks were rerun locally after the final docs and
+regression adjustment; no policy step was omitted.

@@ -303,7 +303,7 @@ it('a superseded document acknowledges only the exact patches owned by native', 
   persistSourceState('dictation-settings', '{"autoPaste":true,"disabled":false,"language":"es"}', {});
   const first = mock.invoke.mock.calls[0][1];
   await new Promise(resolve => setTimeout(resolve, 0));
-  a({ status: 'superseded', ownedPatchGenerations: { autoPaste: first.ownedEditGenerations.autoPaste } });
+  a({ status: 'superseded', ownedPatchGenerations: { autoPaste: first.intentGeneration } });
   await flushSourceState();
   const saves = mock.invoke.mock.calls.filter(([name]) => name === 'save_settings_blob');
   expect(saves[saves.length - 1][1].ownedEdits).toEqual({});
