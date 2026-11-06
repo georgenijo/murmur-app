@@ -1351,27 +1351,27 @@ fn start_cpal(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
     failed: Arc<AtomicBool>,
-    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
+    publish: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Entered,
     ))?;
     let (device, evidence) = cpal_device(requested);
-    emit(MicrophoneSetupObservation::InputResolution(evidence))?;
+    publish(MicrophoneSetupObservation::InputResolution(evidence))?;
     let device = device?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Completed,
     ))?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DefaultConfig,
         SetupTransition::Entered,
     ))?;
     let supported = device
         .default_input_config()
         .map_err(|_| FailureCode::ConfigurationFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DefaultConfig,
         SetupTransition::Completed,
     ))?;
@@ -1389,7 +1389,7 @@ fn start_cpal(
             )
         };
     }
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::StreamBuild,
         SetupTransition::Entered,
     ))?;
@@ -1408,16 +1408,16 @@ fn start_cpal(
         SampleFormat::F64 => build!(f64),
         _ => return Err(FailureCode::ConfigurationFailed),
     }?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::StreamBuild,
         SetupTransition::Completed,
     ))?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::StreamStart,
         SetupTransition::Entered,
     ))?;
     stream.play().map_err(|_| FailureCode::StreamStartFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::StreamStart,
         SetupTransition::Completed,
     ))?;
@@ -1558,28 +1558,28 @@ pub(super) fn start_auhal(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
     callback_clock: Option<Arc<CallbackClock>>,
-    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
+    publish: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
-    start_auhal_resolved(requested, ring, callback_clock, emit, None)
+    start_auhal_resolved(requested, ring, callback_clock, publish, None)
 }
 
 fn start_auhal_resolved(
     requested: Option<&str>,
     ring: Arc<SpscRing>,
     callback_clock: Option<Arc<CallbackClock>>,
-    emit: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
+    publish: &mut impl FnMut(MicrophoneSetupObservation) -> Result<(), FailureCode>,
     prepared: Option<&PassiveInput>,
 ) -> Result<(CaptureStream, u32), FailureCode> {
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Entered,
     ))?;
     let (device, evidence) = prepared
         .and_then(|p| p.resolve(requested))
         .unwrap_or_else(|| resolve_auhal_input(requested));
-    emit(MicrophoneSetupObservation::InputResolution(evidence))?;
+    publish(MicrophoneSetupObservation::InputResolution(evidence))?;
     let device = device?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DeviceResolution,
         SetupTransition::Completed,
     ))?;
@@ -1587,7 +1587,7 @@ fn start_auhal_resolved(
     // Inlined from coreaudio-rs audio_unit_from_device_id so every native
     // Core Audio call gets its own Entered/Completed bracket; a hang is then
     // attributable to one named operation instead of the whole creation span.
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitNew,
         SetupTransition::Entered,
     ))?;
@@ -1597,21 +1597,21 @@ fn start_auhal_resolved(
     // format. This runs only after confirmed Start, never in PrepareInput.
     let mut unit = AudioUnit::new_uninitialized(IOType::HalOutput)
         .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitNew,
         SetupTransition::Completed,
     ))?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitInit,
         SetupTransition::Entered,
     ))?;
     unit.initialize()
         .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::AudioUnitInit,
         SetupTransition::Completed,
     ))?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::EnableInputIo,
         SetupTransition::Entered,
     ))?;
@@ -1622,11 +1622,11 @@ fn start_auhal_resolved(
         Some(&1_u32),
     )
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::EnableInputIo,
         SetupTransition::Completed,
     ))?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DisableOutputIo,
         SetupTransition::Entered,
     ))?;
@@ -1637,11 +1637,11 @@ fn start_auhal_resolved(
         Some(&0_u32),
     )
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::DisableOutputIo,
         SetupTransition::Completed,
     ))?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::SetCurrentDevice,
         SetupTransition::Entered,
     ))?;
@@ -1652,7 +1652,7 @@ fn start_auhal_resolved(
         Some(&device),
     )
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::SetCurrentDevice,
         SetupTransition::Completed,
     ))?;
@@ -1665,7 +1665,7 @@ fn start_auhal_resolved(
         channels: 1,
     };
     let asbd = format.to_asbd();
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::FormatConfiguration,
         SetupTransition::Entered,
     ))?;
@@ -1676,12 +1676,12 @@ fn start_auhal_resolved(
         Some(&asbd),
     )
     .map_err(|_| FailureCode::ConfigurationFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::FormatConfiguration,
         SetupTransition::Completed,
     ))?;
     type Args = render_callback::Args<data::NonInterleaved<f32>>;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::CallbackInstallation,
         SetupTransition::Entered,
     ))?;
@@ -1707,16 +1707,16 @@ fn start_auhal_resolved(
         Ok(())
     })
     .map_err(|_| FailureCode::StreamOpenFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::CallbackInstallation,
         SetupTransition::Completed,
     ))?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::StreamStart,
         SetupTransition::Entered,
     ))?;
     unit.start().map_err(|_| FailureCode::StreamStartFailed)?;
-    emit(MicrophoneSetupObservation::Step(
+    publish(MicrophoneSetupObservation::Step(
         CaptureSetupStep::StreamStart,
         SetupTransition::Completed,
     ))?;
@@ -1796,7 +1796,7 @@ fn probe_system_audio(
 ) -> Result<(), ()> {
     let ring = Arc::new(SpscRing::new());
     let started = {
-        let mut emit_setup = |step: CaptureSetupStep, transition: SetupTransition| {
+        let mut publish_setup = |step: CaptureSetupStep, transition: SetupTransition| {
             let _ = write_production_control(
                 stdout,
                 capture_id,
@@ -1808,7 +1808,10 @@ fn probe_system_audio(
                 },
             );
         };
-        crate::system_audio::SystemAudioStream::start_observed(Arc::clone(&ring), &mut emit_setup)
+        crate::system_audio::SystemAudioStream::start_observed(
+            Arc::clone(&ring),
+            &mut publish_setup,
+        )
     };
     let outcome = match started {
         Ok(mut stream) => {
@@ -1915,7 +1918,7 @@ fn run_meeting(
     )
     .map_err(|_| ())?;
     let system_started = {
-        let mut emit_system_setup = |step: CaptureSetupStep, transition: SetupTransition| {
+        let mut publish_system_setup = |step: CaptureSetupStep, transition: SetupTransition| {
             let _ = write_production_control(
                 stdout,
                 capture_id,
@@ -1930,7 +1933,7 @@ fn run_meeting(
         crate::system_audio::SystemAudioStream::start_observed_with_clock(
             Arc::clone(&system_ring),
             system_clock.as_ref().map(Arc::clone),
-            &mut emit_system_setup,
+            &mut publish_system_setup,
         )
     };
     let mut system_stream = match system_started {
@@ -1963,7 +1966,7 @@ fn run_meeting(
     )
     .map_err(|_| ())?;
     let microphone_started = {
-        let mut emit_microphone_setup = |observation: MicrophoneSetupObservation| {
+        let mut publish_microphone_setup = |observation: MicrophoneSetupObservation| {
             let message = match observation {
                 MicrophoneSetupObservation::Step(step, transition) => {
                     ProductionHelperMessage::MeetingSetupStep {
@@ -1991,13 +1994,13 @@ fn run_meeting(
                 device_id.as_deref(),
                 Arc::clone(&microphone_ring),
                 Arc::clone(&microphone_failed),
-                &mut emit_microphone_setup,
+                &mut publish_microphone_setup,
             ),
             CaptureBackend::Auhal => start_auhal(
                 device_id.as_deref(),
                 Arc::clone(&microphone_ring),
                 microphone_clock.as_ref().map(Arc::clone),
-                &mut emit_microphone_setup,
+                &mut publish_microphone_setup,
             ),
         }
     };
@@ -3563,7 +3566,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let ring = Arc::new(SpscRing::new());
             let failed = Arc::new(AtomicBool::new(false));
             let started = {
-                let mut emit_setup = |observation: MicrophoneSetupObservation| {
+                let mut publish_setup = |observation: MicrophoneSetupObservation| {
                     check_automatic_probe(automatic_deadline)?;
                     let message = match observation {
                         MicrophoneSetupObservation::Step(step, transition) => {
@@ -3592,13 +3595,13 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                         device_id.as_deref(),
                         Arc::clone(&ring),
                         Arc::clone(&failed),
-                        &mut emit_setup,
+                        &mut publish_setup,
                     ),
                     CaptureBackend::Auhal => start_auhal_resolved(
                         device_id.as_deref(),
                         Arc::clone(&ring),
                         None,
-                        &mut emit_setup,
+                        &mut publish_setup,
                         prepared_input.as_ref(),
                     ),
                 }

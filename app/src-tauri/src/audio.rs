@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -25,11 +25,52 @@ use std::time::{Duration, Instant};
 use tauri::Manager;
 use uuid::Uuid;
 
+/// The supervisor's capture-active state, with an epoch for each activation.
+/// Warm standby reuses the worker and this allocation, but never an epoch.
+#[derive(Default)]
+pub(crate) struct CaptureActivity(AtomicU64);
+
+impl CaptureActivity {
+    pub(crate) fn set_active(&self, active: bool) {
+        // One atomic value owns both activity and generation: odd is active.
+        self.0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |epoch| {
+                Some(((epoch + 2) & !1) | u64::from(active))
+            })
+            .expect("capture epoch update is unconditional");
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.0.load(Ordering::Acquire) & 1 != 0
+    }
+
+    pub(crate) fn generation(self: &Arc<Self>) -> Option<CaptureGeneration> {
+        let epoch = self.0.load(Ordering::Acquire);
+        (epoch & 1 != 0).then(|| CaptureGeneration {
+            activity: self.clone(),
+            epoch,
+        })
+    }
+}
+
+/// Ownership travels with the queued numeric sample, never in its wire payload.
+pub(crate) struct CaptureGeneration {
+    activity: Arc<CaptureActivity>,
+    epoch: u64,
+}
+
+impl CaptureGeneration {
+    pub(crate) fn is_current(&self) -> bool {
+        self.activity.0.load(Ordering::Acquire) == self.epoch
+    }
+}
+
 pub(crate) fn publish_waveform<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    generation: CaptureGeneration,
     level: f32,
 ) -> Result<(), String> {
-    app.events().publish(EventKind::AudioLevel, level)
+    app.events().publish_level(generation, level)
 }
 
 #[path = "audio_prepare.rs"]
@@ -514,7 +555,7 @@ pub(crate) struct AudioWorkerSpec {
     pub owner: crate::audio_lifecycle::AudioOwner,
     pub command_receiver: Receiver<AudioCommand>,
     pub shared: Arc<Mutex<CaptureSamples>>,
-    pub active: Arc<AtomicBool>,
+    pub active: Arc<CaptureActivity>,
     pub app_handle: Option<tauri::AppHandle>,
     pub device_id: Option<String>,
 }
@@ -2182,7 +2223,7 @@ fn run_backend(
     ctx: AttemptContext,
     command_receiver: &Receiver<AudioCommand>,
     shared: &Arc<Mutex<CaptureSamples>>,
-    active: &Arc<AtomicBool>,
+    active: &Arc<CaptureActivity>,
     app_handle: &Option<tauri::AppHandle>,
     event_sender: &AudioWorkerEventSender,
     probe_permit: Option<&crate::smart_auto_probe::ProbePermit>,
@@ -2923,7 +2964,7 @@ fn run_backend(
                     }
                 }
                 if probe_permit.is_none()
-                    && active.load(Ordering::Acquire)
+                    && active.is_active()
                     && last_level_emit.elapsed() >= Duration::from_millis(AUDIO_LEVEL_THROTTLE_MS)
                 {
                     if let Some(handle) = app_handle {
@@ -2952,11 +2993,14 @@ fn run_backend(
                                 },
                             );
                         } else {
+                            let Some(waveform_generation) = active.generation() else {
+                                continue;
+                            };
                             let level = compute_rms(&pcm.samples);
                             if let Some(generation) = owner.dictation_id() {
                                 crate::dictation_control::level(handle, generation, level);
                             }
-                            let _ = publish_waveform(handle, level);
+                            let _ = publish_waveform(handle, waveform_generation, level);
                         }
                     }
                     last_level_emit = Instant::now();
@@ -3562,9 +3606,11 @@ pub(crate) fn spawn_capture_worker(
         .name(format!("murmur-audio-{}", spec.owner.telemetry_id()))
         .spawn(move || {
             let owner = spec.owner;
+            let activity = spec.active.clone();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_audio_capture(spec, &event_sender)
             }));
+            activity.set_active(false);
             if result.is_err() {
                 let _ = event_sender.send(AudioWorkerEvent::InitFailed {
                     owner,
@@ -3749,7 +3795,7 @@ mod tests {
     fn topology_wait_wakes_on_shutdown_frames_and_eof_without_polling() {
         use std::sync::Arc;
         for shutdown_first in [true, false] {
-            let shutdown = Arc::new(AtomicBool::new(false));
+            let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let worker_shutdown = shutdown.clone();
             let (tx, rx) = mpsc::channel::<Option<u8>>();
             let (thread_tx, thread_rx) = mpsc::channel();
@@ -4268,7 +4314,7 @@ mod tests {
         let events =
             AudioWorkerEventSender::new(|_| panic!("revoked probe must not enter another backend"));
         let shared = Arc::new(Mutex::new(CaptureSamples::default()));
-        let active = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(CaptureActivity::default());
         let mut attempted = 0;
         let result = run_capture_backend_pass(
             crate::audio_lifecycle::AudioOwner::Preview(525),

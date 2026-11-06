@@ -747,7 +747,7 @@ fn post_paste_native_guarded(
             }
         }
     };
-    crate::frontmost::emit_pending_focus_proof();
+    crate::frontmost::publish_pending_focus_proof();
     if !posted.is_posted() {
         return Ok(posted);
     }

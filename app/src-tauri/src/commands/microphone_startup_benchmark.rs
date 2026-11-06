@@ -708,7 +708,7 @@ fn report_is_cancelled(
 // Keep the event's correlation, bounded counters, phase, and exact accumulator
 // explicit at call sites; bundling them would hide stale-run mistakes.
 #[allow(clippy::too_many_arguments)]
-fn emit_progress(
+fn publish_progress(
     app: &tauri::AppHandle,
     run_id: &str,
     benchmark_run_id: u64,
@@ -807,7 +807,7 @@ fn run_cycles(
             break;
         };
         let mut accumulator = CycleAccumulator::with_plan(cycle_number, backend_plan);
-        emit_progress(
+        publish_progress(
             &app,
             &run_id,
             benchmark_run_id,
@@ -846,7 +846,7 @@ fn run_cycles(
                             AudioCancelReason::RuntimeFailure,
                         );
                     }
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -859,7 +859,7 @@ fn run_cycles(
                 }
                 Ok(CycleEvent::Ready) => {
                     ready = true;
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -879,7 +879,7 @@ fn run_cycles(
                             AudioCancelReason::User,
                         );
                     } else {
-                        emit_progress(
+                        publish_progress(
                             &app,
                             &run_id,
                             benchmark_run_id,
@@ -894,7 +894,7 @@ fn run_cycles(
                 }
                 Ok(CycleEvent::Failed { kind }) => {
                     accumulator.failure_kind = Some(kind);
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -906,7 +906,7 @@ fn run_cycles(
                     );
                 }
                 Ok(CycleEvent::Recovering) => {
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -935,7 +935,7 @@ fn run_cycles(
                     if !cancelled {
                         accumulator.failure_kind = Some(StartupFailureKind::InitializationTimeout);
                     }
-                    emit_progress(
+                    publish_progress(
                         &app,
                         &run_id,
                         benchmark_run_id,
@@ -999,7 +999,7 @@ fn run_cycles(
         cycles.last().map(|cycle| cycle.outcome),
     );
     let empty = CycleAccumulator::new(cycles.len().max(1) as u8);
-    emit_progress(
+    publish_progress(
         &app,
         &run_id,
         benchmark_run_id,

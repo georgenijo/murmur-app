@@ -743,7 +743,7 @@ fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
 // module goes through AppHandle (models_dir uses `dirs::` directly), so the
 // only thing that needs a real runtime is `Emitter::emit` below, which is
 // implemented for `AppHandle<R>` for any `R: Runtime`.
-fn emit_progress<R: tauri::Runtime>(
+fn publish_progress<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     completed: usize,
     total: usize,
@@ -1347,7 +1347,7 @@ pub fn run<R: tauri::Runtime>(
             .iter()
             .find(|candidate| candidate.model_name == *target)
         {
-            emit_progress(app, completed, total_steps, model, None, "priming");
+            publish_progress(app, completed, total_steps, model, None, "priming");
         }
         if let Ok(mut backend) = backend_for(target) {
             let warmup_started = Instant::now();
@@ -1364,13 +1364,13 @@ pub fn run<R: tauri::Runtime>(
         if coordinator.is_cancelled() {
             return Err("Benchmark cancelled".to_string());
         }
-        emit_progress(app, completed, total_steps, &model, None, "loading");
+        publish_progress(app, completed, total_steps, &model, None, "loading");
         let mut backend = match backend_for(&model.model_name) {
             Ok(backend) => backend,
             Err(error) => {
                 results.push(error_result(&model, error));
                 completed = model_start + steps_per_model;
-                emit_progress(app, completed, total_steps, &model, None, "complete");
+                publish_progress(app, completed, total_steps, &model, None, "complete");
                 continue;
             }
         };
@@ -1379,7 +1379,7 @@ pub fn run<R: tauri::Runtime>(
         if let Err(error) = backend.load_model(&model.model_name) {
             results.push(error_result(&model, error));
             completed = model_start + steps_per_model;
-            emit_progress(app, completed, total_steps, &model, None, "complete");
+            publish_progress(app, completed, total_steps, &model, None, "complete");
             continue;
         }
         let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
@@ -1411,7 +1411,7 @@ pub fn run<R: tauri::Runtime>(
             }
             let samples = &prepared.samples;
             let audio_seconds = prepared.audio_seconds;
-            emit_progress(
+            publish_progress(
                 app,
                 completed,
                 total_steps,
@@ -1440,7 +1440,7 @@ pub fn run<R: tauri::Runtime>(
                     backend.reset();
                     return Err("Benchmark cancelled".to_string());
                 }
-                emit_progress(
+                publish_progress(
                     app,
                     completed,
                     total_steps,
@@ -1551,7 +1551,7 @@ pub fn run<R: tauri::Runtime>(
         if let Some(error) = failed {
             results.push(error_result(&model, error));
             completed = model_start + steps_per_model;
-            emit_progress(app, completed, total_steps, &model, None, "complete");
+            publish_progress(app, completed, total_steps, &model, None, "complete");
             continue;
         }
         results.push(ModelResult {
@@ -1581,7 +1581,7 @@ pub fn run<R: tauri::Runtime>(
         });
     }
 
-    emit_progress(
+    publish_progress(
         app,
         total_steps,
         total_steps,

@@ -606,7 +606,7 @@ fn samples_for_duration(sample_rate: u32, duration: Duration) -> usize {
     (u64::from(sample_rate) * duration.as_millis() as u64 / 1_000) as usize
 }
 
-fn emit_vad_decision(
+fn publish_vad_decision(
     app_handle: &tauri::AppHandle,
     preview_id: u64,
     sensitivity: u32,
@@ -678,7 +678,7 @@ pub(crate) fn schedule_vad_analysis(
                 decision = ?decision,
                 "microphone preview VAD decision changed"
             );
-            emit_vad_decision(&app_handle, preview_id, sensitivity, decision);
+            publish_vad_decision(&app_handle, preview_id, sensitivity, decision);
         }
     }));
 }

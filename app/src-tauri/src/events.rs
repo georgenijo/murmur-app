@@ -29,15 +29,20 @@ struct Events {
 /// main-thread work is performed while this mutex is held.
 #[derive(Default)]
 struct PendingLevel {
-    latest: Option<String>,
+    latest: Option<QueuedLevel>,
     scheduled: bool,
 }
+struct QueuedLevel {
+    payload: String,
+    generation: crate::audio::CaptureGeneration,
+}
+
 impl PendingLevel {
-    fn replace(&mut self, payload: String) -> bool {
+    fn replace(&mut self, payload: QueuedLevel) -> bool {
         self.latest = Some(payload);
         !std::mem::replace(&mut self.scheduled, true)
     }
-    fn take(&mut self) -> Option<String> {
+    fn take(&mut self) -> Option<QueuedLevel> {
         self.scheduled = false;
         self.latest.take()
     }
@@ -93,7 +98,16 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
             .emit_to(tauri::EventTarget::webview_window(label), event, payload)
     }
 
-    fn queue_level(&self, payload: String) -> Result<(), String> {
+    pub(crate) fn publish_level(
+        &self,
+        generation: crate::audio::CaptureGeneration,
+        level: f32,
+    ) -> Result<(), String> {
+        let payload = QueuedLevel {
+            payload: serde_json::to_string(&level)
+                .map_err(|_| "Event serialization failed".to_string())?,
+            generation,
+        };
         #[cfg(test)]
         if let Some(dispatch) = self.0.state::<Events>().dispatch.lock_or_recover().clone() {
             return self.queue_level_with(payload, |task| dispatch(task));
@@ -105,10 +119,13 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
 
     fn queue_level_with(
         &self,
-        payload: String,
+        payload: QueuedLevel,
         schedule: impl FnOnce(MainTask) -> Result<(), String>,
     ) -> Result<(), String> {
         let app = self.0;
+        if !payload.generation.is_current() {
+            return Ok(());
+        }
         if !app
             .state::<Events>()
             .levels
@@ -120,10 +137,14 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         let handle = app.clone();
         if let Err(error) = schedule(Box::new(move || {
             let payload = handle.state::<Events>().levels.lock_or_recover().take();
-            if let Some(payload) = payload {
+            if let Some(sample) = payload {
                 // This callback runs on the main thread, with no mailbox/router
                 // lock held. Visibility is fresh even after show/hide/restore.
-                let _ = handle.events().deliver(EventKind::AudioLevel, &payload);
+                let _ = handle.events().deliver(
+                    EventKind::AudioLevel,
+                    &sample.payload,
+                    Some(&sample.generation),
+                );
             }
         })) {
             app.state::<Events>().levels.lock_or_recover().take();
@@ -146,7 +167,12 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true)
     }
 
-    fn deliver(&self, event: EventKind, payload: &str) -> Result<(), String> {
+    fn deliver(
+        &self,
+        event: EventKind,
+        payload: &str,
+        generation: Option<&crate::audio::CaptureGeneration>,
+    ) -> Result<(), String> {
         let app = self.0;
         let events = app.state::<Events>();
         let routing = events.router.lock_or_recover().clone();
@@ -156,6 +182,12 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
                     .is_some_and(|window| !waveform || self.waveform_visible(&window))
             })
         });
+        // Recheck on main after window queries, immediately before delivery.
+        // Stop/cancel/end revoke the capture epoch; standby/new capture cannot
+        // make a queued sample current again. No ownership lock crosses a callback.
+        if generation.is_some_and(|generation| !generation.is_current()) {
+            return Ok(());
+        }
         // No registry/router lock is held across callbacks: a consumer may
         // publish another event. Native delivery works without any webview.
         let callbacks: Vec<_> = events
@@ -180,6 +212,9 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         };
         if !callbacks.is_empty() {
             for callback in callbacks {
+                if generation.is_some_and(|generation| !generation.is_current()) {
+                    return Ok(());
+                }
                 callback(payload);
             }
         }
@@ -189,6 +224,9 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
                 // The window can disappear after the availability check. An
                 // absent/recreated companion is a normal, silent no-op.
                 if app.get_webview_window(label).is_some() {
+                    if generation.is_some_and(|generation| !generation.is_current()) {
+                        return Ok(());
+                    }
                     if let Err(error) = app.emit_str_to(
                         tauri::EventTarget::webview_window(label),
                         event.name(),
@@ -208,9 +246,9 @@ impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
         let payload = serde_json::to_string(&payload)
             .map_err(|_| "Event serialization failed".to_string())?;
         if event == EventKind::AudioLevel {
-            self.queue_level(payload)
+            Err("Audio levels require capture generation ownership".into())
         } else {
-            self.deliver(event, &payload)
+            self.deliver(event, &payload, None)
         }
     }
 }
@@ -266,10 +304,66 @@ pub(crate) fn observe_for_test<R: tauri::Runtime>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tauri::Listener;
+
+    pub(crate) struct DeferredLevels {
+        pub(crate) app: tauri::App<tauri::test::MockRuntime>,
+        tasks: Arc<Mutex<Vec<MainTask>>>,
+        pub(crate) received: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl DeferredLevels {
+        pub(crate) fn new() -> Self {
+            let app = mock_app();
+            let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
+                .build()
+                .unwrap();
+            set_waveform_subscription(
+                app.handle().clone(),
+                overlay.clone(),
+                WaveformConsumer::Overlay,
+                true,
+            )
+            .unwrap();
+            let tasks = Arc::new(Mutex::new(Vec::<MainTask>::new()));
+            let pending = tasks.clone();
+            *app.state::<Events>().dispatch.lock_or_recover() = Some(Arc::new(move |task| {
+                pending.lock_or_recover().push(task);
+                Ok(())
+            }));
+            *app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(|_| true));
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let receipts = received.clone();
+            overlay.listen("audio-level", move |event| {
+                receipts.lock_or_recover().push(event.payload().to_owned())
+            });
+            Self {
+                app,
+                tasks,
+                received,
+            }
+        }
+
+        pub(crate) fn publish(&self, activity: &Arc<crate::audio::CaptureActivity>, level: f32) {
+            crate::audio::publish_waveform(
+                self.app.handle(),
+                activity.generation().unwrap(),
+                level,
+            )
+            .unwrap();
+        }
+
+        pub(crate) fn drain(&self) {
+            let tasks = std::mem::take(&mut *self.tasks.lock_or_recover());
+            assert_eq!(tasks.len(), 1, "expected one deferred capture task");
+            for task in tasks {
+                task();
+            }
+        }
+    }
 
     #[test]
     fn adapter_delivers_only_to_named_windows_and_native_consumers_without_main() {
@@ -328,6 +422,8 @@ mod tests {
     #[test]
     fn capture_publication_never_queries_windows_and_coalesces_a_busy_main_thread() {
         let app = mock_app();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
         let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
             .build()
             .unwrap();
@@ -353,7 +449,12 @@ mod tests {
         });
         for sample in 0..5000 {
             // The exact helper used by capture, through the real EventSink.
-            crate::audio::publish_waveform(app.handle(), sample as f32).unwrap();
+            crate::audio::publish_waveform(
+                app.handle(),
+                activity.generation().unwrap(),
+                sample as f32,
+            )
+            .unwrap();
         }
         assert_eq!(tasks.lock_or_recover().len(), 1);
         assert!(received.lock_or_recover().is_empty());
@@ -366,7 +467,8 @@ mod tests {
         // on the next sample, without changing interest or restarting capture.
         for visible in [false, true, false, true] {
             *app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(move |_| visible));
-            crate::audio::publish_waveform(app.handle(), 0.25).unwrap();
+            crate::audio::publish_waveform(app.handle(), activity.generation().unwrap(), 0.25)
+                .unwrap();
             let task = tasks.lock_or_recover().pop().unwrap();
             task();
         }
@@ -375,8 +477,40 @@ mod tests {
     }
 
     #[test]
+    fn standby_reactivation_cannot_revive_a_queued_waveform() {
+        let levels = DeferredLevels::new();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
+        levels.publish(&activity, 0.25);
+        activity.set_active(false);
+        activity.set_active(true);
+        levels.drain();
+        assert!(levels.received.lock_or_recover().is_empty());
+        levels.publish(&activity, 0.75);
+        levels.drain();
+        assert_eq!(*levels.received.lock_or_recover(), vec!["0.75"]);
+    }
+
+    #[test]
+    fn capture_revoked_during_visibility_query_is_dropped_before_delivery() {
+        let levels = DeferredLevels::new();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
+        let revoked = activity.clone();
+        *levels.app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(move |_| {
+            revoked.set_active(false);
+            true
+        }));
+        levels.publish(&activity, 0.25);
+        levels.drain();
+        assert!(levels.received.lock_or_recover().is_empty());
+    }
+
+    #[test]
     fn failed_dispatch_can_retry_and_failed_reload_still_clears_only_crashed_interest() {
         let app = mock_app();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
         let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .unwrap();
@@ -393,16 +527,28 @@ mod tests {
         assert!(app
             .handle()
             .events()
-            .queue_level_with("0.1".into(), |_| Err("closed".into()))
+            .queue_level_with(
+                QueuedLevel {
+                    payload: "0.1".into(),
+                    generation: activity.generation().unwrap()
+                },
+                |_| Err("closed".into())
+            )
             .is_err());
         assert!(!app.state::<Events>().levels.lock_or_recover().scheduled);
         let callbacks = AtomicUsize::new(0);
         app.handle()
             .events()
-            .queue_level_with("0.2".into(), |_| {
-                callbacks.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
+            .queue_level_with(
+                QueuedLevel {
+                    payload: "0.2".into(),
+                    generation: activity.generation().unwrap(),
+                },
+                |_| {
+                    callbacks.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
             .unwrap();
         assert_eq!(callbacks.load(Ordering::SeqCst), 1);
         clear_before_reload(app.handle(), "main", || {
@@ -445,6 +591,8 @@ mod tests {
         use murmur_core::completion::{Command, CompletionService};
         use murmur_core::dictation::{Controller, Effect, Input, LaunchGate, Origin, Status};
         let app = mock_app();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
         let root = tempfile::tempdir().unwrap();
         let service = CompletionService::start(root.path().into(), false).unwrap();
         crate::completion::initialize_with_service(app.handle(), service.clone());
@@ -511,7 +659,7 @@ mod tests {
         ));
         controller.observe(1, Status::Recording, Origin::Toggle);
         crate::commands::recording::publish_status(app.handle(), "recording").unwrap();
-        crate::audio::publish_waveform(app.handle(), 0.25).unwrap();
+        crate::audio::publish_waveform(app.handle(), activity.generation().unwrap(), 0.25).unwrap();
         assert_eq!(*levels.lock_or_recover(), vec!["0.25"]);
         assert!(matches!(
             controller.input(Input::Toggle(None)),

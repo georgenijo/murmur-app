@@ -231,16 +231,16 @@ impl DictationTelemetry {
     }
 
     #[cfg(test)]
-    pub(crate) fn emit_terminal(
+    pub(crate) fn publish_terminal(
         &self,
         recording_id: u64,
         outcome: DictationTerminalOutcome,
         error_code: DictationErrorCode,
     ) -> bool {
-        self.emit_terminal_with_output(recording_id, outcome, error_code, 0)
+        self.publish_terminal_with_output(recording_id, outcome, error_code, 0)
     }
 
-    pub(crate) fn emit_terminal_with_output(
+    pub(crate) fn publish_terminal_with_output(
         &self,
         recording_id: u64,
         outcome: DictationTerminalOutcome,
@@ -392,12 +392,12 @@ mod tests {
         for (index, (outcome, error_code)) in paths.into_iter().enumerate() {
             let recording_id = index as u64 + 1;
             telemetry.accepted(recording_id);
-            assert!(telemetry.emit_terminal(recording_id, outcome, error_code));
+            assert!(telemetry.publish_terminal(recording_id, outcome, error_code));
             assert_eq!(
                 telemetry.terminal_for_test(recording_id),
                 Some((outcome, error_code))
             );
-            assert!(!telemetry.emit_terminal(
+            assert!(!telemetry.publish_terminal(
                 recording_id,
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::RuntimeFailure,

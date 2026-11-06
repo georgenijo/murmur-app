@@ -196,7 +196,7 @@ fn install_kind_code(kind: InstallKind) -> &'static str {
     }
 }
 
-fn emit_download_progress(
+fn publish_download_progress(
     app_handle: &tauri::AppHandle,
     context: DownloadProgressContext<'_>,
     received: u64,
@@ -518,7 +518,7 @@ pub async fn download_model(
                         crate::coreml_installer::configured_install_timeout(),
                         &worker_cancel,
                         |phase, repeated_repair| {
-                            emit_download_progress(
+                            publish_download_progress(
                                 &progress_app,
                                 DownloadProgressContext {
                                     model_name: &worker_model,
@@ -1034,7 +1034,7 @@ async fn download_parakeet_model(
     // v0.16.0 could leave a complete `.tmp` archive when Murmur exited during
     // extraction. Try that expensive local data before downloading it again.
     if legacy_temp_path.is_file() {
-        emit_installing(app_handle, progress_context);
+        publish_installing(app_handle, progress_context);
         let archive = legacy_temp_path.clone();
         let root = models_dir.to_path_buf();
         let model = model_name.to_string();
@@ -1082,7 +1082,7 @@ async fn download_parakeet_model(
             tracing::info!(target: "system", "Parakeet archive downloaded: {} ({} bytes)", dir_name, received);
         }
 
-        emit_installing(app_handle, progress_context);
+        publish_installing(app_handle, progress_context);
         let result = extract_parakeet_archive_on_worker(
             archive_path.clone(),
             models_dir.to_path_buf(),
@@ -1152,8 +1152,11 @@ async fn extract_parakeet_archive_on_worker(
     })?
 }
 
-fn emit_installing(app_handle: &tauri::AppHandle, progress_context: DownloadProgressContext<'_>) {
-    emit_download_progress(app_handle, progress_context, 0, 0, "installing", false);
+fn publish_installing(
+    app_handle: &tauri::AppHandle,
+    progress_context: DownloadProgressContext<'_>,
+) {
+    publish_download_progress(app_handle, progress_context, 0, 0, "installing", false);
 }
 
 #[cfg(test)]
@@ -1395,7 +1398,7 @@ async fn stream_download(
         |received, total| {
             if let Some(context) = progress_context {
                 if !cancel.is_cancelled() {
-                    emit_download_progress(
+                    publish_download_progress(
                         app_handle,
                         context,
                         received,

@@ -18,7 +18,7 @@ fn require_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     }
 }
 
-fn emit_status(app_handle: &tauri::AppHandle) {
+fn publish_status(app_handle: &tauri::AppHandle) {
     let status = app_handle
         .state::<State>()
         .app_state
@@ -74,7 +74,7 @@ pub(crate) fn handle_audio_lifecycle(
         AudioLifecycleEvent::Idle => preview.clear_if(preview_id),
     };
     if changed {
-        emit_status(&app_handle);
+        publish_status(&app_handle);
         crate::smart_auto_probe::wake();
     }
 }
@@ -183,7 +183,7 @@ pub async fn start_microphone_preview(
         device_selection = if device_id.is_some() { "explicit" } else { "system_default" },
         "microphone preview requested"
     );
-    emit_status(&app_handle);
+    publish_status(&app_handle);
 
     // The preview claim blocks competing starts. Do not hold the transition
     // mutex while waiting for the supervisor's acceptance channel.
@@ -198,7 +198,7 @@ pub async fn start_microphone_preview(
         let transition = state.app_state.recording_transition.lock().await;
         if !state.app_state.microphone_preview.is_connecting(preview_id) {
             if state.app_state.microphone_preview.clear_if(preview_id) {
-                emit_status(&task_app_handle);
+                publish_status(&task_app_handle);
             }
             return;
         }
@@ -221,7 +221,7 @@ pub async fn start_microphone_preview(
                 "start_failed",
                 message,
             ) {
-                emit_status(&task_app_handle);
+                publish_status(&task_app_handle);
             }
         }
     });
@@ -266,7 +266,7 @@ pub(crate) async fn stop_exact_preview(
         .app_state
         .microphone_preview
         .set_phase_if(preview_id, PreviewPhase::Stopping);
-    emit_status(app_handle);
+    publish_status(app_handle);
 
     // Like dictation stop, release the short transition lock before any
     // supervisor wait. The active preview claim keeps racing starts blocked.
@@ -280,7 +280,7 @@ pub(crate) async fn stop_exact_preview(
             "stop_failed",
             format!("Microphone test stop task failed: {error}"),
         );
-        emit_status(app_handle);
+        publish_status(app_handle);
         return Err("The microphone test could not be stopped safely".to_string());
     }
 
@@ -298,7 +298,7 @@ pub(crate) async fn stop_exact_preview(
             "stop_timeout",
             "Microphone cleanup is taking longer than expected. Wait for it to finish before trying again.",
         );
-        emit_status(app_handle);
+        publish_status(app_handle);
         return Err(
             "Microphone cleanup is still in progress; a new input was not opened".to_string(),
         );
@@ -372,7 +372,7 @@ async fn cancel_exact_preview(
         .app_state
         .microphone_preview
         .set_phase_if(preview_id, PreviewPhase::Stopping);
-    emit_status(&app_handle);
+    publish_status(&app_handle);
     drop(transition);
     tokio::task::spawn_blocking(move || {
         audio_lifecycle::cancel_preview_capture(preview_id, AudioCancelReason::User)

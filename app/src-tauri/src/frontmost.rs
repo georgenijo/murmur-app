@@ -547,7 +547,7 @@ thread_local! {
 
 /// Emit the final focus proof recorded on this thread, if any.
 #[cfg(target_os = "macos")]
-pub(crate) fn emit_pending_focus_proof() {
+pub(crate) fn publish_pending_focus_proof() {
     let Some(record) = PENDING_FOCUS_PROOF.take() else {
         return;
     };

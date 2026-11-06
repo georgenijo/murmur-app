@@ -82,7 +82,7 @@ impl RenderFramer {
         })
     }
 
-    fn emit_sample(&mut self, sample: f32, processor: &mut dyn EchoProcessor) -> Result<(), ()> {
+    fn publish_sample(&mut self, sample: f32, processor: &mut dyn EchoProcessor) -> Result<(), ()> {
         self.frame[self.frame_len] = sample;
         self.frame_len += 1;
         if self.frame_len == FRAME_SAMPLES {
@@ -97,7 +97,7 @@ impl RenderFramer {
         for &sample in samples {
             let input_index = self.input_samples_seen;
             if input_index == 0 {
-                self.emit_sample(sample, processor)?;
+                self.publish_sample(sample, processor)?;
                 self.next_output_numerator = u64::from(self.input_rate);
             } else if let Some(previous) = self.previous_sample {
                 let interval_start = (input_index - 1).saturating_mul(output_rate);
@@ -105,7 +105,10 @@ impl RenderFramer {
                 while self.next_output_numerator <= interval_end {
                     let fraction =
                         (self.next_output_numerator - interval_start) as f32 / output_rate as f32;
-                    self.emit_sample(previous * (1.0 - fraction) + sample * fraction, processor)?;
+                    self.publish_sample(
+                        previous * (1.0 - fraction) + sample * fraction,
+                        processor,
+                    )?;
                     self.next_output_numerator = self
                         .next_output_numerator
                         .saturating_add(u64::from(self.input_rate));
@@ -300,12 +303,12 @@ impl MeetingMicrophonePath {
     pub(super) fn push_capture<E>(
         &mut self,
         samples: &[f32],
-        mut emit: impl FnMut(&[f32]) -> Result<(), E>,
+        mut publish: impl FnMut(&[f32]) -> Result<(), E>,
     ) -> Result<Option<EchoCancellationStatus>, E> {
         let state = std::mem::replace(&mut self.state, PathState::Disabled);
         match state {
             PathState::Disabled => {
-                emit(samples)?;
+                publish(samples)?;
                 self.state = PathState::Disabled;
                 Ok(None)
             }
@@ -314,10 +317,10 @@ impl MeetingMicrophonePath {
                 mut pending,
             } => {
                 if pending.len > 0 {
-                    emit(&pending.samples[..pending.len])?;
+                    publish(&pending.samples[..pending.len])?;
                     pending.len = 0;
                 }
-                emit(samples)?;
+                publish(samples)?;
                 self.state = PathState::Bypassed { reason, pending };
                 Ok(None)
             }
@@ -335,9 +338,9 @@ impl MeetingMicrophonePath {
                     let raw = active.capture.samples;
                     let mut processed = raw;
                     if active.processor.process_capture(&mut processed).is_err() {
-                        emit(&raw)?;
+                        publish(&raw)?;
                         if consumed < samples.len() {
-                            emit(&samples[consumed..])?;
+                            publish(&samples[consumed..])?;
                         }
                         self.state = PathState::Bypassed {
                             reason: EchoCancellationBypassReason::ProcessorFailed,
@@ -345,7 +348,7 @@ impl MeetingMicrophonePath {
                         };
                         return Ok(Some(self.status()));
                     }
-                    emit(&processed)?;
+                    publish(&processed)?;
                     active.capture.len = 0;
                 }
                 self.state = PathState::Active(active);
@@ -354,16 +357,19 @@ impl MeetingMicrophonePath {
         }
     }
 
-    pub(super) fn finish<E>(self, mut emit: impl FnMut(&[f32]) -> Result<(), E>) -> Result<(), E> {
+    pub(super) fn finish<E>(
+        self,
+        mut publish: impl FnMut(&[f32]) -> Result<(), E>,
+    ) -> Result<(), E> {
         match self.state {
             PathState::Active(active) => {
                 if active.capture.len > 0 {
-                    emit(&active.capture.samples[..active.capture.len])?;
+                    publish(&active.capture.samples[..active.capture.len])?;
                 }
             }
             PathState::Bypassed { pending, .. } => {
                 if pending.len > 0 {
-                    emit(&pending.samples[..pending.len])?;
+                    publish(&pending.samples[..pending.len])?;
                 }
             }
             PathState::Disabled => {}

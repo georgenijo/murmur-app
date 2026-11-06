@@ -36,17 +36,35 @@ was 93 emit sites. After conversion: **0 broadcast calls**, **92 converted
 sink calls**, plus two previously targeted microphone-preview status and microphone-startup
 progress calls moved to the sink to preserve native subscriptions.
 No `emit_all`, qualified `AppHandle::emit` or `Emitter::emit` calls were present.
-Capture-sidecar `emit(observation)` callbacks and the gesture-correlation helper
-are not Tauri broadcasts. The CI guard scans all Rust files under
-`app/src-tauri`, including tests and sidecars, and confines Tauri's `Emitter` trait and every `emit_to`/`emit_str_to` call to
-`src/events.rs`. Existing targeted producers use its named-consumer `send_to`
-transport, preserving their labels and DTOs. Inside the adapter, every transport
-must use the literal `EventTarget::webview_window(label)` constructor; arbitrary
-target variables, string targets (Tauri converts these to `AnyLabel`), `Any`,
-`AnyLabel`, `any()`, `labeled()` and other target kinds are rejected. The guard
-normalizes raw identifiers (`r#emit`), rejects broadcast/filtered/string methods,
-trait aliases and method-ident macro forwarding. The same guard/tests remain in
-CI alongside the core dependency guard.
+The CI guard scans **every repository Rust source**, including crates, tests,
+sidecars and spikes; it excludes only `target/`, Git metadata and third-party
+source directories (`vendor`, `vendored`, `third_party`, `third-party`,
+`node_modules`, `.venv`, `venv`). Outside the one sanctioned adapter
+`app/src-tauri/src/events.rs`, **any identifier token named `emit` or `emit_*`**
+(including raw identifiers and macro arguments) is forbidden after masking
+comments, string/byte/raw/C literals and character literals. Local non-Tauri
+helpers and capture-sidecar callbacks were renamed to `publish*`; there is no
+symbol allowlist. Payload strings and event names were not renamed.
+
+The pinned Tauri 2.11.2 `Emitter` source defines `emit`, `emit_str`, `emit_to`,
+`emit_str_to`, `emit_filter` and `emit_str_filter`; the reserved prefix also
+covers future `emit_*` names. `Emitter` identifier tokens are forbidden outside
+the adapter, including aliased imports and UFCS. Tauri glob imports (including
+nested groups), crate aliases and Tauri re-exports are forbidden there, preventing
+repository facades from hiding a glob import. Inside the adapter, only `emit_to`
+and `emit_str_to` with the literal `tauri::EventTarget::webview_window(label)`
+target are permitted. Broadcast methods, `Any`, `AnyLabel`, other target kinds,
+target variables, string targets/conversions and macro metavariables are rejected.
+Existing targeted producers use its named-consumer `send_to` transport.
+
+Literal `#[path]`, `include!`, and Rust-file `include_str!`/`include_bytes!`
+destinations must resolve to scanned files. Nonliteral inclusion paths,
+conditional path attributes, inline-module path attributes with ambiguous bases,
+and escaping source/directory symlinks fail closed. Ordinary non-Rust fixture
+inclusions are allowed. This is a **source-level guard**, not a compiler or a
+sandbox: arbitrary procedural-macro/build-script code synthesis is not proved
+safe by it. The guard and its regression fixtures remain wired into CI alongside
+the core dependency guard.
 
 Audit commands: `rg -n '\.emit|emit_all|Emitter::emit|AppHandle::emit' app/src-tauri`,
 `rg -n 'listen|once|listen_any|once_any' app/src`, plus Rust listener searches. Generic listeners,
@@ -164,16 +182,27 @@ and unregisters on cleanup. Its three named interests are:
   Its interest is separate from main recording; disabling either cannot disable
   the other, and both still result in at most one event per window per sample.
 
-Capture serializes the existing numeric level payload and replaces a single
-pending sample under a brief mailbox lock. At most one main-thread delivery task
-is queued (plus a task already executing); further samples overwrite the pending
-value. Capture never queries windows or waits for a main-thread reply. The task
-takes the latest sample and releases the mailbox lock before querying native
-visibility/minimization and routing. It uses the current interests and window
-state, so hiding/minimizing main prevents the next delivery even if React is
-throttled, and showing/restoring a subscribed consumer receives the next sample
-without restarting capture. A blocked main thread retains one latest sample,
-not an unbounded queue. Dispatch failure resets the mailbox for the next sample.
+Capture snapshots the supervisor's active capture generation **before** computing
+the numeric level. The existing capture-active flag is now a single atomic epoch:
+activation (including warm standby reuse) advances it to an active epoch;
+stop, cancel/recovery, cleanup and worker exit revoke it. This extends the existing
+capture ownership state rather than creating a second lifecycle registry. It
+also covers corpus capture, whose identity is independent of dictation IDs.
+Each queued sample carries that immutable ownership token internally; the wire
+payload is still the same numeric level with no generation or content added.
+The generic sink refuses unowned `AudioLevel` publication.
+
+Capture replaces one pending sample under a brief mailbox lock. At most one
+main-thread task is queued (plus a task already executing); further samples
+coalesce into the latest value. Capture never queries windows or waits for a
+main-thread reply. The task takes the sample and releases the mailbox lock,
+then reads current interests and visibility/minimization. It rechecks the capture
+epoch on main after those queries and immediately before each callback/window
+send, dropping stale samples even if subscriptions now belong to a replacement
+recording. No ownership/registry lock is held across callbacks. Hide/minimize
+suppresses delivery; show/restore resumes on the next sample without restarting.
+A blocked main thread retains only one pending sample; dispatch failure resets
+the mailbox for retry.
 
 Main stays free of level-driven renders while hidden. Navigation/reload and
 destruction clear interests for that label. WebContent termination clears the
@@ -204,18 +233,25 @@ state with a temporary synthetic service, and the authorized waveform command.
 It invokes the recording/capture publication helpers used by production and
 `completion::produce`, then asserts actual native callbacks and window listeners
 without creating main. Completion notifications are generated by the production
-adapter rather than by the fake host. A wiring contract also checks that native
-startup and capture/recording still call these shared adapters.
+adapter rather than by the fake host. The former source-text wiring assertion was
+removed: adapter/lifecycle behavior is asserted by executable tests, not by
+searching for call text.
 
 The busy-main regression drives the actual capture publisher and sink with a
 deferred dispatcher and a window-query function that panics: 5,000 publications
 queue exactly one task without querying windows; draining delivers only the
-latest unchanged numeric payload. Hide/show, dispatch-failure recovery and
+latest unchanged numeric payload. Deferred-drain tests use real supervisor
+stop, cancel and replacement transitions, asserting that old samples disappear
+and the replacement's sample arrives. Additional tests cover warm reactivation
+of the same activity allocation and revocation during the visibility query.
+Ownership-check mutation testing must fail these regressions. Hide/show,
+dispatch-failure recovery and
 cleanup before a failing reload are covered. Existing completion/gesture
-regressions run with no retired assertions. Guard regression fixtures include
-`Any`, `AnyLabel`, string conversions, raw identifiers, method macros, aliases,
-filtered/string methods and constrained-adapter targets, plus nested-comment and
-raw-string false positives.
+regressions run with no retired assertions. Guard regression fixtures include macro repetition, glob/aliased imports, both
+UFCS forms, `AnyLabel`, filtered/string broadcasts, cfg-gated code, source outside
+the former app scan root, external/excluded `#[path]`/include escapes, symlinks,
+raw identifiers, re-export facades and constrained-adapter targets, plus literal
+and nested-comment false positives.
 
 The command reference now contains **180 commands**, including
 `set_waveform_subscription`; all maintained counts are updated. Exact Linux,

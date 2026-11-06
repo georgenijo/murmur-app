@@ -33,7 +33,7 @@ fn should_surface_hotkey_rejection(reason: RejectionReason, mode: DetectorMode) 
         && matches!(mode, DetectorMode::DoubleTap | DetectorMode::Both)
 }
 
-fn emit_hotkey_rejection(
+fn publish_hotkey_rejection(
     app_handle: &tauri::AppHandle,
     reason: RejectionReason,
     mode: DetectorMode,
@@ -57,8 +57,8 @@ fn current_gesture() -> Option<Candidate> {
         .as_ref()
         .and_then(|d| d.candidate)
 }
-fn emit_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
-    let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, true));
+fn publish_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
+    let token = candidate.map(|c| crate::audio_lifecycle::gesture::publish(c, true));
     crate::dictation_control::send(
         handle,
         murmur_core::dictation::Input::HoldStart(token.clone()),
@@ -68,12 +68,12 @@ fn emit_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
         serde_json::json!({ "gestureToken": token }),
     );
 }
-fn emit_dictation_toggle(handle: &tauri::AppHandle) {
+fn publish_dictation_toggle(handle: &tauri::AppHandle) {
     let candidate = DOUBLE_TAP_DETECTOR
         .lock_or_recover()
         .as_mut()
         .and_then(|d| d.fired_candidate.take());
-    let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, false));
+    let token = candidate.map(|c| crate::audio_lifecycle::gesture::publish(c, false));
     crate::dictation_control::send(handle, murmur_core::dictation::Input::Toggle(token.clone()));
     let _ = handle.events().publish(
         EventKind::DoubleTapToggle,
@@ -205,7 +205,7 @@ fn schedule_second_tap_expiry(
                 mode = mode.as_str(),
                 "keyboard detector rejected sequence"
             );
-            emit_hotkey_rejection(&app_handle, RejectionReason::SecondTapExpired, mode);
+            publish_hotkey_rejection(&app_handle, RejectionReason::SecondTapExpired, mode);
         }
     });
 }
@@ -710,7 +710,7 @@ fn schedule_hold_promotion(
                         mode = mode.as_str(),
                         "hold timer promoted to hold-down-start"
                     );
-                    emit_hold_start(&app_handle, candidate);
+                    publish_hold_start(&app_handle, candidate);
                 }
             },
         );
@@ -1162,7 +1162,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         };
                         apply_prepare_signal(&handle, prepare, mode, listener_generation);
                         if let Some(reason) = rejection {
-                            emit_hotkey_rejection(&handle, reason, mode);
+                            publish_hotkey_rejection(&handle, reason, mode);
                         }
                         if let Some(started_at) = wait_started_at {
                             schedule_second_tap_expiry(
@@ -1173,7 +1173,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             );
                         }
                         if fired {
-                            emit_dictation_toggle(&handle);
+                            publish_dictation_toggle(&handle);
                         }
                     }
                     DetectorMode::HoldDown => {
@@ -1198,7 +1198,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             &event.event_type,
                             |signal| match signal {
                                 HoldDownSignal::Start => {
-                                    emit_hold_start(&handle, Some(Candidate::new()));
+                                    publish_hold_start(&handle, Some(Candidate::new()));
                                 }
                                 HoldDownSignal::Stop => {
                                     stamp_hold_release(&handle, &event.event_type);
@@ -1311,7 +1311,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         };
                         apply_prepare_signal(&handle, prepare, mode, listener_generation);
                         if let Some(reason) = rejection {
-                            emit_hotkey_rejection(&handle, reason, mode);
+                            publish_hotkey_rejection(&handle, reason, mode);
                         }
                         if let Some(started_at) = wait_started_at {
                             schedule_second_tap_expiry(
@@ -1351,7 +1351,7 @@ let _ = handle.events().publish(EventKind::HoldDownStop, ());
                                         true
                                     } else if dtap_fired {
                                         tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle");
-                                        emit_dictation_toggle(&handle);
+                                        publish_dictation_toggle(&handle);
                                         true
                                     } else {
                                         false
@@ -1370,7 +1370,7 @@ let _ = handle.events().publish(EventKind::HoldDownStop, ());
                             HoldDownEvent::None => {
                                 if dtap_fired {
                                     tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle (hold=None)");
-                                    emit_dictation_toggle(&handle);
+                                    publish_dictation_toggle(&handle);
                                 }
                             }
                         }

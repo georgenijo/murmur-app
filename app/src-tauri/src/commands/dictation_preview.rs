@@ -116,7 +116,7 @@ impl PresentationOutcome {
     }
 }
 
-fn emit_presentation(recording_id: u64, outcome: PresentationOutcome) {
+fn publish_presentation(recording_id: u64, outcome: PresentationOutcome) {
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.dictation_preview_presentation",
@@ -158,7 +158,7 @@ pub async fn show_dictation_preview(
         } else {
             Err("dictation preview recording is no longer current".to_string())
         };
-        emit_presentation(
+        publish_presentation(
             recording_id,
             if result.is_ok() {
                 PresentationOutcome::Shown
@@ -182,7 +182,7 @@ pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
             return;
         }
         let result = POPOVER.hide(&dispatch_app);
-        emit_presentation(
+        publish_presentation(
             recording_id,
             if result.is_ok() {
                 PresentationOutcome::Hidden

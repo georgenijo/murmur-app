@@ -356,7 +356,7 @@ fn refresh_threads() -> &'static Mutex<Vec<JoinHandle<()>>> {
     THREADS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
+fn publish_inventory(snapshot: &AudioInputInventorySnapshot) {
     crate::smart_auto_probe::inventory_changed();
     let app_handle = app_handle_slot().lock_or_recover().clone();
     if let Some(app_handle) = app_handle {
@@ -376,7 +376,7 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     }
 }
 
-pub(crate) fn emit_routing_changed() {
+pub(crate) fn publish_routing_changed() {
     crate::smart_auto_probe::wake();
     if let Some(app_handle) = app_handle_slot().lock_or_recover().clone() {
         let _ = app_handle
@@ -400,7 +400,7 @@ pub(crate) fn helper_entered_detached_reap() {
     };
     crate::smart_auto_probe::inventory_changed();
     if changed {
-        emit_inventory(&snapshot);
+        publish_inventory(&snapshot);
     }
 }
 
@@ -452,7 +452,7 @@ fn spawn_pending_refresh(reason: &'static str, after_idle: bool) {
             let (snapshot, changed) = coordinator().finish_refresh(result);
             log_refresh(&snapshot, changed, reason);
             if changed {
-                emit_inventory(&snapshot);
+                publish_inventory(&snapshot);
             }
             // If a topology callback arrived during enumeration, its epoch
             // remains pending and the just-finished result stayed stale.
@@ -478,7 +478,7 @@ pub(crate) fn topology_changed() {
     };
     crate::smart_auto_probe::inventory_changed();
     if changed {
-        emit_inventory(&snapshot);
+        publish_inventory(&snapshot);
     }
     spawn_pending_refresh("topologyChanged", false);
 }
@@ -602,7 +602,7 @@ pub(crate) fn initialize(app_handle: tauri::AppHandle) {
             ));
             log_refresh(&snapshot, changed, "reaperServiceUnavailable");
             if changed {
-                emit_inventory(&snapshot);
+                publish_inventory(&snapshot);
             }
         }
         return;
@@ -715,7 +715,7 @@ pub(crate) fn resolve_smart_auto(request: &SmartAutoRequest) -> Result<SmartAuto
     })?;
     state.routing.commit(&selection, now);
     drop(state);
-    emit_routing_changed();
+    publish_routing_changed();
     tracing::info!(target: "audio", event_code = "audio.auto_input_selected", reason = selection.reason.as_str(), "microphone selected for next capture");
     Ok(selection)
 }
@@ -831,7 +831,7 @@ pub(crate) fn record_signal_evidence_at(
     let mut state = coordinator().state.lock_or_recover();
     if apply_signal_evidence(&mut state, key, result, verified_at) {
         drop(state);
-        emit_routing_changed();
+        publish_routing_changed();
         tracing::info!(target: "audio", event_code = "audio.auto_signal_evidence", verified = result == SignalVerificationResult::Verified, "bounded microphone signal evidence updated");
         return true;
     }
@@ -872,7 +872,7 @@ pub(crate) fn invalidate_signal_evidence(device_id: Option<&str>) {
         .routing
         .fail(device_id);
     crate::smart_auto_probe::inventory_changed();
-    emit_routing_changed();
+    publish_routing_changed();
 }
 
 pub(crate) fn production_device_kind(

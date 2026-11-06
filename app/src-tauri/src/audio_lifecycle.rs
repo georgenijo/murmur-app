@@ -494,7 +494,7 @@ struct Attempt {
     command_sender: Sender<AudioCommand>,
     thread_handle: Option<JoinHandle<()>>,
     shared: Arc<Mutex<audio::CaptureSamples>>,
-    active: Arc<std::sync::atomic::AtomicBool>,
+    active: Arc<audio::CaptureActivity>,
     sample_rate: u32,
     start_response: Option<Sender<Result<(), AudioStartError>>>,
     stop_response: Option<Sender<Result<Vec<f32>, String>>>,
@@ -786,7 +786,7 @@ fn run_supervisor(
                             current.ready_at = Some(Instant::now());
                             current.standby_deadline = None;
                             current.phase = AttemptPhase::Recording;
-                            current.active.store(true, Ordering::SeqCst);
+                            current.active.set_active(true);
                             public.set_owner(current.owner);
                             public.set_phase(PublicPhase::Recording);
                             publish_gesture_ready(current, sink.as_ref(), Instant::now());
@@ -933,7 +933,7 @@ fn handle_message(
                     if let Some(permit) = &current.probe_permit {
                         permit.revoke();
                     }
-                    current.active.store(false, Ordering::SeqCst);
+                    current.active.set_active(false);
                     let tail =
                         trigger.release_tail(current.owner, current.standby_policy.seconds > 0);
                     tracing::info!(target: "audio",
@@ -1080,7 +1080,7 @@ fn handle_start(
     let input_topology_generation = INPUT_TOPOLOGY_GENERATION.load(Ordering::Acquire);
     let shared = Arc::new(Mutex::new(audio::CaptureSamples::default()));
     // Fail closed until readiness is accepted for this exact owner.
-    let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let active = Arc::new(audio::CaptureActivity::default());
     let (command_sender, command_receiver) = mpsc::channel();
     let spec = AudioWorkerSpec {
         gesture: request.gesture.timing,
@@ -1457,7 +1457,7 @@ fn handle_worker_event(
                 current.sample_rate = sample_rate;
                 let ready_at = Instant::now();
                 current.ready_at = Some(ready_at);
-                current.active.store(true, Ordering::SeqCst);
+                current.active.set_active(true);
                 public.still_connecting.store(false, Ordering::SeqCst);
                 current.phase = AttemptPhase::Recording;
                 public.set_phase(PublicPhase::Recording);
@@ -1716,7 +1716,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             }
         }
     }
-    finished.active.store(false, Ordering::SeqCst);
+    finished.active.set_active(false);
     public.still_connecting.store(false, Ordering::SeqCst);
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
@@ -1850,7 +1850,7 @@ fn begin_recovery(
             .unwrap_or_else(|p| p.into_inner())
             .clear();
     }
-    current.active.store(false, Ordering::SeqCst);
+    current.active.set_active(false);
     if let Some(permit) = &current.probe_permit {
         permit.revoke();
     }
@@ -3026,7 +3026,7 @@ mod tests {
         gate: Gate,
         retry_gate: Option<Gate>,
         spawn_count: Arc<AtomicUsize>,
-        active_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
+        active_flags: Arc<Mutex<Vec<Arc<audio::CaptureActivity>>>>,
         phase: AudioInitPhase,
         phase_entered: Option<Sender<()>>,
     }
@@ -4033,7 +4033,7 @@ mod tests {
         }
     }
 
-    type ActiveFlags = Arc<Mutex<Vec<Arc<AtomicBool>>>>;
+    type ActiveFlags = Arc<Mutex<Vec<Arc<audio::CaptureActivity>>>>;
     type Harness = (
         AudioSupervisor,
         Gate,
@@ -4221,7 +4221,7 @@ mod tests {
             let owner = AudioOwner::Dictation(3);
             assert_eq!(start(&supervisor, owner).recv().unwrap(), Ok(()));
             let active = Arc::clone(&active_flags.lock().unwrap()[0]);
-            assert!(!active.load(Ordering::SeqCst));
+            assert!(!active.is_active());
             assert_eq!(cancel(&supervisor, owner).recv().unwrap(), Ok(true));
             assert!(
                 supervisor.public.is_active(),
@@ -4232,7 +4232,7 @@ mod tests {
                 !supervisor.public.is_active()
             });
             assert!(
-                !active.load(Ordering::SeqCst),
+                !active.is_active(),
                 "recovering attempts must never publish levels"
             );
             let events = sink.events.lock().unwrap().clone();
@@ -4597,6 +4597,128 @@ mod tests {
             .any(
                 |(event_owner, event)| *event_owner == owner && *event == AudioLifecycleEvent::Idle
             ));
+        shutdown(&supervisor);
+    }
+
+    struct WaveformFactory(Sender<Arc<audio::CaptureActivity>>);
+
+    impl WorkerFactory for WaveformFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            events: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            self.0.send(spec.active.clone()).unwrap();
+            Ok(std::thread::spawn(move || {
+                let owner = spec.owner;
+                spec.shared.lock().unwrap().push(0.25);
+                let _ = events.send(AudioWorkerEvent::FirstBuffer {
+                    owner,
+                    sample_rate: WHISPER_SAMPLE_RATE,
+                    sent_at: Instant::now(),
+                });
+                let _ = spec.command_receiver.recv();
+                let _ = events.send(AudioWorkerEvent::StreamStopped { owner });
+                let _ = events.send(AudioWorkerEvent::ThreadExited { owner });
+            }))
+        }
+    }
+
+    fn waveform_supervisor() -> (AudioSupervisor, Receiver<Arc<audio::CaptureActivity>>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            spawn_supervisor(
+                Arc::new(WaveformFactory(sender)),
+                Arc::new(RecordingSink::default()),
+                SupervisorConfig::default(),
+            ),
+            receiver,
+        )
+    }
+
+    fn start_waveform(
+        supervisor: &AudioSupervisor,
+        activities: &Receiver<Arc<audio::CaptureActivity>>,
+        generation: u64,
+    ) -> Arc<audio::CaptureActivity> {
+        let owner = AudioOwner::Dictation(generation);
+        assert_eq!(
+            start(supervisor, owner)
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            Ok(())
+        );
+        let activity = activities.recv_timeout(Duration::from_secs(1)).unwrap();
+        wait_until("capture never became recording", || {
+            supervisor.public.is_recording_for(owner)
+        });
+        assert!(activity.is_active());
+        activity
+    }
+
+    fn stop_waveform(supervisor: &AudioSupervisor, generation: u64) {
+        let (sender, receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Toggle,
+                owner: Some(AudioOwner::Dictation(generation)),
+                response: sender,
+            })
+            .unwrap();
+        assert!(receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_ok());
+        wait_until("capture did not stop", || !supervisor.public.is_active());
+    }
+
+    #[test]
+    fn stop_before_main_drain_drops_queued_waveform() {
+        let levels = crate::events::tests::DeferredLevels::new();
+        let (supervisor, activities) = waveform_supervisor();
+        let activity = start_waveform(&supervisor, &activities, 101);
+        levels.publish(&activity, 0.25);
+        stop_waveform(&supervisor, 101);
+        assert!(!activity.is_active());
+        levels.drain();
+        assert!(levels.received.lock().unwrap().is_empty());
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn cancel_before_main_drain_drops_queued_waveform() {
+        let levels = crate::events::tests::DeferredLevels::new();
+        let (supervisor, activities) = waveform_supervisor();
+        let activity = start_waveform(&supervisor, &activities, 101);
+        levels.publish(&activity, 0.25);
+        assert_eq!(
+            cancel_any_phase(&supervisor, AudioOwner::Dictation(101))
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            Ok(true)
+        );
+        wait_until("cancel did not finish", || !supervisor.public.is_active());
+        assert!(!activity.is_active());
+        levels.drain();
+        assert!(levels.received.lock().unwrap().is_empty());
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn replacement_before_main_drain_drops_old_waveform_and_delivers_new_generation() {
+        let levels = crate::events::tests::DeferredLevels::new();
+        let (supervisor, activities) = waveform_supervisor();
+        let old = start_waveform(&supervisor, &activities, 101);
+        levels.publish(&old, 0.25);
+        stop_waveform(&supervisor, 101);
+        let new = start_waveform(&supervisor, &activities, 102);
+        levels.drain();
+        assert!(levels.received.lock().unwrap().is_empty());
+        levels.publish(&new, 0.75);
+        levels.drain();
+        assert_eq!(*levels.received.lock().unwrap(), vec!["0.75"]);
+        stop_waveform(&supervisor, 102);
         shutdown(&supervisor);
     }
 

@@ -62,16 +62,16 @@ struct SuccessfulPrivateCapture<'a> {
     total_ms: u64,
 }
 
-fn emit_dictation_terminal(
+fn publish_dictation_terminal(
     state: &State,
     recording_id: u64,
     outcome: DictationTerminalOutcome,
     error_code: DictationErrorCode,
 ) -> bool {
-    emit_dictation_terminal_with_capture(state, recording_id, outcome, error_code, 0, None)
+    publish_dictation_terminal_with_capture(state, recording_id, outcome, error_code, 0, None)
 }
 
-fn emit_dictation_terminal_with_capture(
+fn publish_dictation_terminal_with_capture(
     state: &State,
     recording_id: u64,
     outcome: DictationTerminalOutcome,
@@ -82,7 +82,7 @@ fn emit_dictation_terminal_with_capture(
     let telemetry_emitted = state
         .app_state
         .dictation_telemetry
-        .emit_terminal_with_output(recording_id, outcome, error_code, char_count);
+        .publish_terminal_with_output(recording_id, outcome, error_code, char_count);
     let completion = match (outcome, success) {
         (DictationTerminalOutcome::Success, Some(success)) => DictationCaptureCompletion::Success {
             raw_text: success.raw_text,
@@ -143,7 +143,7 @@ fn note_nonempty_dictation_preview(app_state: &AppState, recording_id: u64) {
     }
 }
 
-fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample_count: usize) {
+fn publish_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample_count: usize) {
     if recording_id > 0
         && app_state
             .dictation_nonempty_preview_id
@@ -209,7 +209,7 @@ fn dictation_partial_window(samples: &[f32]) -> &[f32] {
     }
 }
 
-fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_count: usize) {
+fn publish_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_count: usize) {
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.dictation_partial_tick",
@@ -227,7 +227,7 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
     let model = &context.transcription.model_name;
     let whisper = transcriber::whisper::supports_live_preview(model);
     if !whisper && !transcriber::is_coreml_model(model) {
-        emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
+        publish_dictation_partial_tick(recording_id, "unsupported_model", 0);
         return;
     }
     #[cfg(feature = "preview-decode-reuse")]
@@ -273,7 +273,7 @@ async fn decode_one_dictation_partial(
             return false;
         }
         if !try_begin_dictation_partial(&state.app_state, recording_id) {
-            emit_dictation_partial_tick(recording_id, "in_flight", 0);
+            publish_dictation_partial_tick(recording_id, "in_flight", 0);
             return true;
         }
         let lease = DictationPartialLease {
@@ -282,7 +282,7 @@ async fn decode_one_dictation_partial(
         };
         let retained_preview = preview;
         let Some(context) = state.app_state.active_context(recording_id) else {
-            emit_dictation_partial_tick(recording_id, "no_context", 0);
+            publish_dictation_partial_tick(recording_id, "no_context", 0);
             return false;
         };
         (context.transcription.clone(), lease, retained_preview)
@@ -303,7 +303,7 @@ async fn decode_one_dictation_partial(
         audio_lifecycle::peek_dictation_samples(recording_id, window_limit).unwrap_or_default();
     let sample_count = samples.len();
     if sample_count < PARTIAL_MIN_SAMPLES {
-        emit_dictation_partial_tick(recording_id, "too_short", sample_count);
+        publish_dictation_partial_tick(recording_id, "too_short", sample_count);
         return true;
     }
     let window = dictation_partial_window(&samples).to_vec();
@@ -444,12 +444,12 @@ async fn decode_one_dictation_partial(
                 Ok(()) => "emitted",
                 Err(_) => "emit_failed",
             };
-            emit_dictation_partial_tick(recording_id, outcome, sample_count);
+            publish_dictation_partial_tick(recording_id, outcome, sample_count);
         } else {
-            emit_dictation_partial_tick(recording_id, "stale", sample_count);
+            publish_dictation_partial_tick(recording_id, "stale", sample_count);
         }
     } else {
-        emit_dictation_partial_tick(recording_id, no_text_outcome, sample_count);
+        publish_dictation_partial_tick(recording_id, no_text_outcome, sample_count);
     }
     dictation_partial_is_current(&state.app_state, recording_id)
 }
@@ -464,7 +464,7 @@ fn dictation_status_code(status: DictationStatus) -> &'static str {
     }
 }
 
-fn emit_dictation_state_changed(recording_id: u64, from: DictationStatus, to: DictationStatus) {
+fn publish_dictation_state_changed(recording_id: u64, from: DictationStatus, to: DictationStatus) {
     if recording_id == 0 || from == to {
         return;
     }
@@ -488,7 +488,7 @@ fn transition_dictation_status(
 ) -> DictationStatus {
     let from = dictation.status;
     dictation.status = to;
-    emit_dictation_state_changed(recording_id, from, to);
+    publish_dictation_state_changed(recording_id, from, to);
     from
 }
 
@@ -499,10 +499,10 @@ fn transition_dictation_status(
 fn accept_live_dictation_request(
     recording_id: u64,
     dictation: &mut crate::state::DictationState,
-    emit_requested: impl FnOnce(DictationStatus),
+    publish_requested: impl FnOnce(DictationStatus),
 ) -> i64 {
     let performance_started_at_ms = chrono::Utc::now().timestamp_millis();
-    emit_requested(dictation.status);
+    publish_requested(dictation.status);
     transition_dictation_status(recording_id, dictation, DictationStatus::Starting);
     performance_started_at_ms
 }
@@ -538,7 +538,7 @@ impl DictationPresentation {
     }
 }
 
-fn emit_dictation_presentation(recording_id: u64, presentation: DictationPresentation) {
+fn publish_dictation_presentation(recording_id: u64, presentation: DictationPresentation) {
     if recording_id == 0 {
         return;
     }
@@ -1420,7 +1420,7 @@ fn smart_destination_status(
 
 /// Presentation uses only the accepted delivery policy and an application name,
 /// never a document title, input value, or selected text.
-fn emit_smart_destination(
+fn publish_smart_destination(
     app: &tauri::AppHandle,
     app_state: &AppState,
     rid: u64,
@@ -1527,7 +1527,7 @@ fn with_current_recording_generation<T>(
     Some(operation())
 }
 
-fn emit_auto_paste_failure_if_current(
+fn publish_auto_paste_failure_if_current(
     app_handle: &tauri::AppHandle,
     app_state: &AppState,
     recording_id: u64,
@@ -1566,7 +1566,7 @@ fn smart_prepare_fallback(
     (route, anchored_target.clone())
 }
 
-fn emit_delivery_target_verification(
+fn publish_delivery_target_verification(
     recording_id: u64,
     anchor: crate::frontmost::DeliveryAnchor,
     stop_sample: crate::frontmost::StopSampleStatus,
@@ -1820,7 +1820,7 @@ fn runtime_identity(model_name: &str, warm_state: ModelWarmStateV1) -> Vec<Runti
     runtime_identity_for_role(model_name, warm_state, RuntimeRoleV1::Transcription)
 }
 
-fn emit_performance_store_begin_failure(recording_id: u64, error: &PerformanceStoreError) {
+fn publish_performance_store_begin_failure(recording_id: u64, error: &PerformanceStoreError) {
     tracing::warn!(
         target: "system",
         event_code = "performance.store_operation_failed",
@@ -2122,7 +2122,7 @@ fn spawn_native_dictation_performance_begin(
             performance.begin_dictation_diagnosed_at(recording_id, runtimes, started_at_ms);
         let succeeded = result.is_ok();
         if let Err(error) = &result {
-            emit_performance_store_begin_failure(recording_id, error);
+            publish_performance_store_begin_failure(recording_id, error);
         }
         if let Some(resolution) = coordinator.resolve_begin(recording_id, succeeded) {
             flush_dictation_performance_begin(coordinator, &performance, recording_id, resolution);
@@ -2377,7 +2377,7 @@ struct NativeDictationMetrics<'a> {
     backend_name: &'a str,
 }
 
-fn emit_native_dictation_metrics(metrics: NativeDictationMetrics<'_>) {
+fn publish_native_dictation_metrics(metrics: NativeDictationMetrics<'_>) {
     let event_code = match metrics.outcome {
         DictationTerminalOutcome::Success => "pipeline.dictation_completed",
         _ => "pipeline.dictation_metrics",
@@ -2589,7 +2589,7 @@ async fn run_transcription_pipeline(
 
                 match vad_result {
                     Ok(vad::VadResult::NoSpeech) => {
-                        emit_preview_vad_disagreement(app_state, recording_id, samples.len());
+                        publish_preview_vad_disagreement(app_state, recording_id, samples.len());
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
                         return Ok(PipelineResult {
@@ -2940,7 +2940,7 @@ async fn run_transcription_pipeline(
                 match &attempt {
                     Some(Ok(result)) => {
                         if let Some(evidence) = result.verification {
-                            emit_delivery_target_verification(
+                            publish_delivery_target_verification(
                                 recording_id,
                                 delivery_anchor,
                                 stop_sample,
@@ -2948,7 +2948,7 @@ async fn run_transcription_pipeline(
                             );
                         }
                     }
-                    None => emit_delivery_target_verification(
+                    None => publish_delivery_target_verification(
                         recording_id,
                         delivery_anchor,
                         stop_sample,
@@ -2999,7 +2999,7 @@ async fn run_transcription_pipeline(
                         | injector::ClipboardOnlyReason::AccessibilityDenied => None,
                     };
                     if let Some(message) = failure_message {
-                        emit_auto_paste_failure_if_current(
+                        publish_auto_paste_failure_if_current(
                             app_handle,
                             app_state,
                             recording_id,
@@ -3013,7 +3013,7 @@ async fn run_transcription_pipeline(
                         .delivery_recovery
                         .forget_through(recording_id);
                     tracing::info!(target: "pipeline", reason_code = reason.code(), "Text delivery stopped before completion");
-                    emit_auto_paste_failure_if_current(app_handle, app_state, recording_id,
+                    publish_auto_paste_failure_if_current(app_handle, app_state, recording_id,
                         "Text delivery stopped before completion. Check the destination and clipboard before pasting.");
                 }
                 confirmed_delivery_outcome(result.outcome)
@@ -3021,7 +3021,7 @@ async fn run_transcription_pipeline(
             Ok(Ok(Some(Err(e)))) => {
                 tracing::error!(target: "pipeline", "Text injection failed before clipboard delivery: {}", e);
                 injection_outcome_code = "clipboard_write_failed";
-                emit_auto_paste_failure_if_current(
+                publish_auto_paste_failure_if_current(
                     app_handle,
                     app_state,
                     recording_id,
@@ -3053,7 +3053,7 @@ async fn run_transcription_pipeline(
                     .delivery_recovery
                     .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
-                emit_auto_paste_failure_if_current(
+                publish_auto_paste_failure_if_current(
                     app_handle,
                     app_state,
                     recording_id,
@@ -3067,7 +3067,7 @@ async fn run_transcription_pipeline(
                     .delivery_recovery
                     .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection timed out");
-                emit_auto_paste_failure_if_current(
+                publish_auto_paste_failure_if_current(
                     app_handle,
                     app_state,
                     recording_id,
@@ -3258,7 +3258,7 @@ pub async fn process_audio(
         SessionOverrides::default(),
     );
     if smart_enabled {
-        emit_smart_destination(
+        publish_smart_destination(
             &app_handle,
             &state.app_state,
             rid,
@@ -3270,7 +3270,7 @@ pub async fn process_audio(
         rid,
         runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),
     ) {
-        emit_performance_store_begin_failure(rid, &error);
+        publish_performance_store_begin_failure(rid, &error);
     }
     let mut performance_guard = state.performance.guard(
         RunCorrelationV1::Dictation { recording_id: rid },
@@ -4289,7 +4289,7 @@ pub fn cancel_code_vocab_scan(state: tauri::State<'_, State>, scan_id: String) -
 /// `*last_emit` when it fires. A free fn (not a closure) so both walk callbacks
 /// can call it without one capturing the other and tripping the borrow checker.
 #[allow(clippy::too_many_arguments)]
-fn emit_scan_progress(
+fn publish_scan_progress(
     handle: &tauri::AppHandle,
     scan_id: &str,
     last_emit: &mut std::time::Instant,
@@ -4357,8 +4357,8 @@ pub async fn scan_code_vocab(
 
     // Walk + prompt build are blocking (filesystem + CPU). Run them off the async
     // runtime; the closure emits throttled progress as files are read.
-    let emit_handle = app_handle.clone();
-    let emit_scan_id = scan_id.clone();
+    let publish_handle = app_handle.clone();
+    let publish_scan_id = scan_id.clone();
     let scan_folder = folder_trimmed.clone();
     let t_start = std::time::Instant::now();
     let (prompt, summary) = tokio::task::spawn_blocking(move || {
@@ -4380,11 +4380,11 @@ pub async fn scan_code_vocab(
         let walk_start = std::time::Instant::now();
 
         // Throttled emit reading the shared counters; `force` bypasses the throttle.
-        let emit = |current_path: String, force: bool| {
+        let publish = |current_path: String, force: bool| {
             let mut le = last_emit.get();
-            emit_scan_progress(
-                &emit_handle,
-                &emit_scan_id,
+            publish_scan_progress(
+                &publish_handle,
+                &publish_scan_id,
                 &mut le,
                 current_path,
                 files_read.get(),
@@ -4408,14 +4408,14 @@ pub async fn scan_code_vocab(
                 // ranked term count still comes from the summary.
                 terms_so_far.set(distinct_terms.min(CORRECTION_TERMS));
                 // Throttle: emit on a time window OR every N files, never per-file.
-                emit(file_path.to_string_lossy().to_string(), false);
+                publish(file_path.to_string_lossy().to_string(), false);
             },
             |skip_path| {
                 dirs_skipped.set(dirs_skipped.get() + 1);
                 // Force-emit skip rows so the struck-through dependency/build dirs
                 // (node_modules, target, .git) always render live, even between
                 // file reads — that live skip stream is the point of the feature.
-                emit(skip_path.to_string_lossy().to_string(), true);
+                publish(skip_path.to_string_lossy().to_string(), true);
             },
         );
 
@@ -4726,7 +4726,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             state.app_state.dictation_telemetry.accepted(recording_id);
             state.dictation_diagnostics.claim(recording_id);
             if !is_current() {
-                emit_dictation_terminal(
+                publish_dictation_terminal(
                     &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
@@ -4744,7 +4744,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     status = ?dictation.status,
                     "stale audio readiness ignored by dictation lifecycle"
                 );
-                emit_dictation_terminal(
+                publish_dictation_terminal(
                     &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
@@ -4798,7 +4798,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                         DictationStatus::Starting | DictationStatus::Recording
                     )
                 {
-                    emit_dictation_terminal(
+                    publish_dictation_terminal(
                         &state,
                         recording_id,
                         DictationTerminalOutcome::Superseded,
@@ -4816,7 +4816,10 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 state.app_state.clear_active_context(recording_id);
             }
             if publish_status(&app_handle, "recovering").is_ok() {
-                emit_dictation_presentation(recording_id, DictationPresentation::CleanupInProgress);
+                publish_dictation_presentation(
+                    recording_id,
+                    DictationPresentation::CleanupInProgress,
+                );
             }
             let _ = app_handle.events().publish(
                 EventKind::AudioRecoveryStarted,
@@ -4852,7 +4855,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     ),
                     _ => unreachable!("recovery only begins from starting or recording"),
                 };
-                emit_dictation_terminal(&state, recording_id, outcome, error_code);
+                publish_dictation_terminal(&state, recording_id, outcome, error_code);
                 let _ = app_handle.events().publish(
                     EventKind::RecordingCancelled,
                     serde_json::json!({ "recordingId": recording_id }),
@@ -4866,7 +4869,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     AudioCancelReason::SystemWake => DictationErrorCode::SystemWake,
                     _ => DictationErrorCode::RuntimeFailure,
                 };
-                emit_dictation_terminal(
+                publish_dictation_terminal(
                     &state,
                     recording_id,
                     DictationTerminalOutcome::RuntimeInterruption,
@@ -4880,7 +4883,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             recovery_reason,
         } => {
             if !is_current() {
-                emit_dictation_terminal(
+                publish_dictation_terminal(
                     &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
@@ -4893,7 +4896,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
             } else {
                 DictationTerminalOutcome::CaptureInitFailure
             };
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 recording_id,
                 outcome,
@@ -4926,7 +4929,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 })
                 .is_ok()
             {
-                emit_dictation_presentation(
+                publish_dictation_presentation(
                     recording_id,
                     DictationPresentation::InitializationFailed(kind),
                 );
@@ -4958,7 +4961,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     })
                     .is_ok()
             {
-                emit_dictation_presentation(recording_id, DictationPresentation::CleanupStalled);
+                publish_dictation_presentation(recording_id, DictationPresentation::CleanupStalled);
             }
         }
         AudioLifecycleEvent::Interrupted {
@@ -4968,7 +4971,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
         } => {
             if !is_current() {
                 let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
-                emit_dictation_terminal(
+                publish_dictation_terminal(
                     &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
@@ -5007,7 +5010,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 })
                 .is_ok()
             {
-                emit_dictation_presentation(
+                publish_dictation_presentation(
                     recording_id,
                     DictationPresentation::Interrupted {
                         partial_transcription: auto_transcribe,
@@ -5018,7 +5021,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 transcribe_interruption(app_handle.clone(), recording_id);
             } else {
                 let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
-                emit_dictation_terminal(
+                publish_dictation_terminal(
                     &state,
                     recording_id,
                     DictationTerminalOutcome::RuntimeInterruption,
@@ -5054,7 +5057,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                         | DictationStatus::Recovering
                 )
             {
-                emit_dictation_terminal(
+                publish_dictation_terminal(
                     &state,
                     recording_id,
                     DictationTerminalOutcome::Superseded,
@@ -5062,7 +5065,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 );
                 return;
             }
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 recording_id,
                 DictationTerminalOutcome::PipelineFailure,
@@ -5389,7 +5392,7 @@ pub async fn start_native_recording(
             transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
         }
         let _ = publish_status(&app_handle, "idle");
-        emit_dictation_terminal(
+        publish_dictation_terminal(
             &state,
             rid,
             DictationTerminalOutcome::CaptureInitFailure,
@@ -5460,7 +5463,7 @@ pub async fn start_native_recording(
             Some(crate::homophone_context::system_engine());
     }
     if smart_enabled && capture_is_current {
-        emit_smart_destination(
+        publish_smart_destination(
             &app_handle,
             &state.app_state,
             rid,
@@ -5517,7 +5520,7 @@ pub async fn start_native_recording(
         }
         (NativeStartContextAction::Superseded, status) => {
             dictation_performance_begins().abort(rid);
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 rid,
                 DictationTerminalOutcome::Superseded,
@@ -5617,7 +5620,7 @@ pub(crate) async fn stop_native_recording_for(
     if !stop_owner_matches(current_recording_id, expected_recording_id) {
         let stale_recording_id = expected_recording_id.expect("mismatch requires an expectation");
         let _ = audio_lifecycle::take_interrupted_dictation(stale_recording_id);
-        emit_dictation_terminal(
+        publish_dictation_terminal(
             &state,
             stale_recording_id,
             DictationTerminalOutcome::Superseded,
@@ -5695,7 +5698,7 @@ pub(crate) async fn stop_native_recording_for(
         // leaves a newly live stream running.
         if let Err(error) = audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)
         {
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 rid,
                 DictationTerminalOutcome::PipelineFailure,
@@ -5711,7 +5714,7 @@ pub(crate) async fn stop_native_recording_for(
     let context = match state.app_state.active_context(rid) {
         Some(context) => context,
         None => {
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 rid,
                 DictationTerminalOutcome::PipelineFailure,
@@ -5765,7 +5768,7 @@ pub(crate) async fn stop_native_recording_for(
         capture.samples
     } else {
         audio_lifecycle::stop_dictation_recording(rid, stop_trigger).map_err(|e| {
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 rid,
                 DictationTerminalOutcome::StopFailure,
@@ -5815,7 +5818,7 @@ pub(crate) async fn stop_native_recording_for(
     ));
 
     if samples.is_empty() {
-        emit_dictation_terminal(
+        publish_dictation_terminal(
             &state,
             rid,
             interruption_error
@@ -5848,7 +5851,7 @@ pub(crate) async fn stop_native_recording_for(
     const MIN_RECORDING_SAMPLES: usize = 4_800; // 0.3s at 16kHz
 
     if samples.len() < MIN_RECORDING_SAMPLES {
-        emit_dictation_terminal(
+        publish_dictation_terminal(
             &state,
             rid,
             interruption_error
@@ -5904,7 +5907,7 @@ pub(crate) async fn stop_native_recording_for(
     let pipeline = match pipeline_result {
         Ok(result) => result,
         Err(error) => {
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 rid,
                 interruption_error
@@ -5961,7 +5964,7 @@ pub(crate) async fn stop_native_recording_for(
         model_id: &model_name,
         total_ms,
     });
-    emit_dictation_terminal_with_capture(
+    publish_dictation_terminal_with_capture(
         &state,
         rid,
         terminal_outcome,
@@ -5970,7 +5973,7 @@ pub(crate) async fn stop_native_recording_for(
         successful_capture,
     );
 
-    emit_native_dictation_metrics(NativeDictationMetrics {
+    publish_native_dictation_metrics(NativeDictationMetrics {
         recording_id: rid,
         outcome: terminal_outcome,
         timings: &timings,
@@ -6126,7 +6129,7 @@ pub async fn cancel_native_recording(
         drop(transition);
         if let Err(error) = audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)
         {
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 rid,
                 DictationTerminalOutcome::PipelineFailure,
@@ -6140,7 +6143,7 @@ pub async fn cancel_native_recording(
 
     match prev_status {
         DictationStatus::Processing => {
-            emit_dictation_terminal(
+            publish_dictation_terminal(
                 &state,
                 rid,
                 DictationTerminalOutcome::UserCancelledProcessing,
@@ -6586,7 +6589,7 @@ pub(crate) mod tests {
         };
 
         tracing::subscriber::with_default(subscriber, || {
-            emit_native_dictation_metrics(NativeDictationMetrics {
+            publish_native_dictation_metrics(NativeDictationMetrics {
                 recording_id: 41,
                 outcome,
                 timings: &timings,

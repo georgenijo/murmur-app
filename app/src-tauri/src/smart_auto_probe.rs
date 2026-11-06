@@ -226,7 +226,7 @@ pub(crate) async fn notified_for_test() {
     controller().changed.notified().await;
 }
 
-fn emit() {
+fn publish() {
     if let Some(app) = controller().app.get() {
         let _ = app
             .events()
@@ -282,7 +282,7 @@ pub(crate) fn configure_host_policy(policy: serde_json::Value) -> Result<u64, St
     let result = apply_policy(&mut inner, policy);
     drop(inner);
     wake();
-    emit();
+    publish();
     result.map_err(str::to_string)
 }
 
@@ -344,7 +344,7 @@ pub(crate) fn retry_smart_auto_probe(window: tauri::WebviewWindow) -> Result<u64
     let generation = inner.generation;
     drop(inner);
     wake();
-    emit();
+    publish();
     Ok(generation)
 }
 
@@ -521,7 +521,7 @@ async fn run(app: tauri::AppHandle) {
         };
         let Next::Probe(device_id) = next else {
             drop(transition);
-            emit();
+            publish();
             wait(next).await;
             continue;
         };
@@ -566,7 +566,7 @@ async fn run(app: tauri::AppHandle) {
         if current_epoch != epoch || !current_candidates.contains(&device_id) {
             permit.revoke();
         }
-        emit();
+        publish();
         let start_app = app.clone();
         let start_permit = permit.clone();
         let start = tokio::task::spawn_blocking(move || {
@@ -650,7 +650,7 @@ async fn run(app: tauri::AppHandle) {
                 }
             }
         }
-        emit();
+        publish();
         // Failed teardown leaves the Preview and supervisor claims untouched.
         // The next loop parks on authoritative busy state until actual Idle.
     }
@@ -666,7 +666,7 @@ fn set_phase(preview_id: u64, phase: &'static str) {
     {
         active.phase = phase;
     }
-    emit();
+    publish();
 }
 
 #[cfg(test)]
