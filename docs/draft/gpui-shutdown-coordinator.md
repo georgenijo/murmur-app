@@ -664,12 +664,11 @@ caller changes, Mac checkout, GUI action or app launch were needed.
   share those primitives. A QA-only WebKit plugin routes application Copy/read
   APIs through the same native primitives before frontend startup, in every
   frame (`plugin:qa-clipboard|read_text` / `write_text`), and never falls back
-  to the general clipboard. Its native dispatch
-  also refuses production/unproven identities; unsupported clipboard item types
-  and missing IPC fail closed. Synthetic Vitest tests prove Copy/read routing
+  to the general clipboard. Its native dispatch also refuses production or
+  unproven identities; unsupported item types and missing IPC fail closed. Synthetic Vitest tests prove Copy/read routing
   and refusal without an OS clipboard. QA cannot auto-paste, activate a Smart
-  destination or
-  post keys to another app. There is no unproven target exemption. Production
+  destination or post keys to another app. There is no unproven target exemption.
+  Production
   retains its existing arboard/general-pasteboard route and delivery policy.
   Pure routing tests cover production, absent/empty, shutdown-test, bench,
   refactor-test, future and path-like IDs, without touching any OS clipboard.
@@ -679,8 +678,8 @@ caller changes, Mac checkout, GUI action or app launch were needed.
   numeric runtime exit codes, the sole request_restart adapter and plugin/Cargo
   aliases. It now enforces function-scoped Clippy allowances at an explicit
   CLI/helper/watchdog/adapter and pre-runtime generated-context allowlist,
-  rejects broader lint suppressions and
-  nested config overrides, and permits unrelated bare functions named exit.
+  rejects broader lint suppressions and nested config overrides, and permits
+  unrelated bare functions named exit.
   Compile-only fixtures exercise grouped std/libc aliases, macro-forwarded exit,
   direct zero exit outside CLI, abort, Tauri methods and the unrelated-function
   positive control. They never execute termination code.
@@ -714,16 +713,20 @@ No base-branch change, GUI launch, permission grant, production clipboard access
 or merge is part of this worker's scope. Independent Sol rechecks remain with
 the parent implementation task.
 
-Verification (combined with the other workers through `b2155379`):
+Verification at implementation head `f34f8ff2` (including the concurrent
+tray-ownership and numeric-integrity corrections through `b87a9c93`):
 
-- Linux: all **201 core tests** pass (166 unit and 35 integration). TypeScript
-  and all **184 Vitest files / 1,894 tests** pass, including the two private
-  WebKit clipboard regressions. All 14 restart policy fixture groups pass.
+- Linux: all **209 core tests** pass (174 unit and 35 integration). TypeScript
+  and all **184 Vitest files / 1,896 tests** pass, including the two private
+  WebKit clipboard regressions. Two unchanged presentation failure-storm tests
+  timed out under the initial concurrent load; their 13-test file passes in
+  isolation and the complete suite passes with `--maxWorkers=4`, without
+  changing timeouts or skipping cases. All 14 restart policy fixture groups pass.
   Core dependency, targeted Rust-event, capture-boundary, reference/link and
   workspace formatting checks pass; the reference count remains 186 because
   the QA-only bridge is a separate plugin and does not change the app handler.
 - Mac mini, Rust 1.98.1: full `cargo test -- --test-threads=1` passes both without
-  and with `shutdown-test-support`: each has **1,547 passing library tests**, 14
+  and with `shutdown-test-support`: each has **1,552 passing library tests**, 14
   existing ignored library tests, passing integration suites and the windowless
   main-dispatch/AppKit shutdown executables. Existing hardware integration
   ignores remain unchanged. Both `cargo clippy --workspace --all-targets` runs
@@ -734,7 +737,7 @@ Verification (combined with the other workers through `b2155379`):
   function named `exit` compiles. This includes grouped std/libc aliases,
   macro-forwarded exit, direct zero exit outside CLI, abort, AppHandle methods
   and the original process-plugin init alias. No fixture is executed.
-- SHA-256 comparison confirms **349 native build input files** match this
+- SHA-256 comparison confirms **350 native build input files** match this
   worktree. Regenerated schema outputs also confirm the QA bridge exposes only
   its two text commands to local app windows. The routing tests use mocks and
   pure identity selectors; no OS pasteboard is read or written by those tests.
@@ -745,3 +748,7 @@ script's default-output assumption was accommodated inside that disposable
 checkout; application checks retained the requested external Cargo target.
 No GUI, app launch, OS permission grant, production data access or merge was
 performed. Independent Sol review and CI integration remain with the parent.
+
+Cleanup verified: the disposable Mac checkout, external target and synthetic
+runtime/cache scratch were removed after all checks; no task process remained.
+Shared models, production data, other checkouts and shared caches were preserved.
