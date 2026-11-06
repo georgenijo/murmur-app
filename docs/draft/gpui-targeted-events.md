@@ -369,9 +369,17 @@ The PR body records the exact final revision and check outcomes.
 
 Linux: core tests **111 passed**, strict core Clippy, TypeScript and all Vitest
 **175 files / 1,812 tests** passed. Both transport guards pass, with **11 Rust
-fixture groups** and **3 frontend fixture groups**. Reference/Markdown/workflow
+fixture groups** and **4 frontend fixture groups**. Reference/Markdown/workflow
 validator tests **74 passed**; reference, Markdown, workflow and capture-boundary
-validators passed. Command count stays **180**. macOS results, mutation evidence,
-final CI state and independent review status are recorded in the draft PR body.
+validators passed. Command count stays **180**. macOS `cargo check`, plain app-package `cargo test -- --test-threads=1`
+(**1,532 passed / 16 ignored**, including **1,515 / 14** ui_lib tests), and
+`cargo clippy --all-targets -- -D warnings -A clippy::chunks_exact_to_as_chunks
+-A clippy::byte_char_slices` passed with Rust 1.98.1 in the isolated
+`~/Builds/gpui-stack-fix` checkout and its own target directory. The two Clippy
+allowances are command-line-only. Removing delivery permits before the transport
+hook made the race regression fail; removing retirement before teardown made
+the teardown regression fail. Exact source bytes were restored and all three
+Mac checks rerun successfully, with source hashes matching this branch.
+Final CI state and independent review status are recorded in the draft PR body.
 Native GUI verification belongs to the separate worker; this implementation
 worker sends no GUI input and makes no native UI pass claim.
