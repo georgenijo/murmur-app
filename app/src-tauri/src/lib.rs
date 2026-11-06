@@ -66,6 +66,7 @@ mod meeting_suggestions;
 mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
+mod process_plugin;
 mod shutdown;
 use murmur_core::{model_artifact, model_digest};
 mod model_download;
@@ -236,7 +237,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
+        .plugin(process_plugin::init())
         .plugin(tauri_plugin_dialog::init());
 
     #[cfg(not(feature = "internal-benchmark"))]

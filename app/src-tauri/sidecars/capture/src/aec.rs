@@ -278,7 +278,7 @@ impl MeetingMicrophonePath {
     /// Start a fresh processor after a transient timing failure. The caller
     /// must keep emitting raw microphone audio until the saved partial frame
     /// has drained, so recovery never consumes that frame twice.
-    pub(super) fn restart(&mut self, system_rate: u32) -> Option<EchoCancellationStatus> {
+    pub(super) fn reset_stream(&mut self, system_rate: u32) -> Option<EchoCancellationStatus> {
         let state = std::mem::replace(&mut self.state, PathState::Disabled);
         match state {
             PathState::Bypassed { reason: _, pending } if pending.len == 0 => {
@@ -527,7 +527,7 @@ mod tests {
                 reason: EchoCancellationBypassReason::RenderDiscontinuity,
             })
         );
-        assert_eq!(path.restart(SAMPLE_RATE), None);
+        assert_eq!(path.reset_stream(SAMPLE_RATE), None);
 
         path.push_capture(&[0.25; 3], |samples| {
             output.extend_from_slice(samples);
@@ -536,7 +536,7 @@ mod tests {
         .unwrap();
         assert_eq!(output, [vec![0.5; 17], vec![0.25; 3]].concat());
         assert_eq!(
-            path.restart(SAMPLE_RATE),
+            path.reset_stream(SAMPLE_RATE),
             Some(EchoCancellationStatus::Active)
         );
 

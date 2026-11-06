@@ -308,7 +308,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{engine, restart};
+    use super::super::tests::{engine, reopen};
     use super::*;
     pub(super) fn source() -> BTreeMap<String, Option<String>> {
         TRANSCRIPT_KEYS
@@ -374,7 +374,7 @@ mod tests {
                 );
                 e.storage.fail = Some((file.into(), boundary));
                 assert!(e.lifecycle(Operation::Import(raw.clone())).is_err());
-                e = restart(&e);
+                e = reopen(&e);
                 let r = e.lifecycle(Operation::Import(raw.clone())).unwrap();
                 assert!(r.v2);
                 assert_eq!(r.values["dictation-settings"]["autoPaste"], true);
@@ -427,7 +427,7 @@ mod tests {
                 let mut e = engine(dir.path(), true);
                 if sequential {
                     e.import(LegacyImport::default()).unwrap();
-                    e = restart(&e);
+                    e = reopen(&e);
                 }
                 e.lifecycle(Operation::Import(source())).unwrap();
                 assert!(e.lifecycle(Operation::BeginRetirement).is_err());
@@ -443,11 +443,11 @@ mod tests {
                 .unwrap();
                 e.storage.fail = Some((MIGRATION.into(), boundary));
                 assert!(e.lifecycle(Operation::BeginRetirement).is_err());
-                e = restart(&e);
+                e = reopen(&e);
                 e.lifecycle(Operation::BeginRetirement).unwrap();
                 e.storage.fail = Some((MIGRATION.into(), boundary));
                 assert!(e.lifecycle(Operation::Retired).is_err());
-                e = restart(&e);
+                e = reopen(&e);
                 assert!(e.lifecycle(Operation::Retired).unwrap().retired);
             }
         }
@@ -475,7 +475,7 @@ mod removal_tests {
             assert!(e
                 .execute(Command::KeysRemoved(destinations.clone()))
                 .is_err());
-            e = super::super::tests::restart(&e);
+            e = super::super::tests::reopen(&e);
             e.execute(Command::KeysRemoved(destinations)).unwrap();
             assert!(
                 e.lifecycle(Operation::Status)
@@ -519,7 +519,7 @@ mod removal_tests {
 
 #[cfg(test)]
 mod review_safety {
-    use super::super::tests::{engine, restart};
+    use super::super::tests::{engine, reopen};
     use super::tests::source;
     use super::*;
     use crate::completion::storage::Boundary;
@@ -610,7 +610,7 @@ mod review_safety {
                         std::fs::remove_file(&path).unwrap();
                     }
                     for _ in 0..3 {
-                        e = restart(&e);
+                        e = reopen(&e);
                         assert!(e.lifecycle(Operation::Status).is_err());
                         assert!(e.lifecycle(Operation::Import(source())).is_err());
                         assert!(e.lifecycle(Operation::BeginRetirement).is_err());
@@ -634,7 +634,7 @@ mod review_safety {
                 std::fs::write(dir.path().join(UI_STATE), b"{bad").unwrap();
             }
             for _ in 0..3 {
-                e = restart(&e);
+                e = reopen(&e);
                 assert!(e.lifecycle(Operation::Status).is_err());
                 assert!(e.lifecycle(Operation::Import(source())).is_err());
             }
@@ -657,7 +657,7 @@ mod review_safety {
                 e.storage.fail = Some((file.into(), boundary));
                 assert!(e.lifecycle(Operation::Import(raw.clone())).is_err());
                 assert!(e.storage.fail.is_none());
-                e = restart(&e);
+                e = reopen(&e);
                 let receipt = e.lifecycle(Operation::Import(raw)).unwrap();
                 let id = &receipt.values["murmur-theme-library"]["themes"][0]["id"];
                 assert_eq!(
@@ -722,7 +722,7 @@ mod review_safety {
         assert_eq!(disk["settingsVersion"], 7);
         assert_eq!(disk["overlayVerticalOffset"], 0);
         assert_eq!(disk["idleTimeoutMinutes"], -1);
-        e = restart(&e);
+        e = reopen(&e);
         let r = e.lifecycle(Operation::Status).unwrap();
         assert_eq!(
             r.values["dictation-settings"]["vocabularyEntries"],
@@ -794,7 +794,7 @@ mod review_safety {
                 value: json!(complete),
             })
             .unwrap();
-            e = restart(&e);
+            e = reopen(&e);
             let r = e.lifecycle(Operation::Status).unwrap();
             assert_eq!(
                 r.values["dictation-settings"]["launchOnboardingComplete"],
@@ -840,7 +840,7 @@ mod review_safety {
             assert_eq!(disk["autoPasteDelayMs"], delay);
             assert_eq!(disk["smartDestinationEnabled"], smart);
             assert!(disk.get("pasteLastShortcutEnabled").is_none());
-            e = restart(&e);
+            e = reopen(&e);
             let restarted = e.lifecycle(Operation::Status).unwrap();
             assert_eq!(
                 restarted.values["dictation-settings"]["autoPasteDelayMs"],
@@ -867,7 +867,7 @@ mod review_safety {
         .unwrap();
         std::fs::write(dir.path().join("settings.json.required"), b"true").unwrap();
         for _ in 0..3 {
-            e = restart(&e);
+            e = reopen(&e);
             assert!(e.lifecycle(Operation::Status).is_err());
             assert!(e.lifecycle(Operation::Import(source())).is_err());
             assert!(!dir.path().join("settings.json").exists());

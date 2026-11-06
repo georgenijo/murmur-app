@@ -60,7 +60,7 @@ fn legacy() -> LegacyImport {
         reports: Some(json!([report(0)])),
     }
 }
-pub(super) fn restart(e: &Engine) -> Engine {
+pub(super) fn reopen(e: &Engine) -> Engine {
     engine(&e.storage.root, e.webkit_exists)
 }
 #[test]
@@ -75,7 +75,7 @@ fn crash_after_journal_before_history_replays_statistics_only() {
             event: Some(dictation())
         })
         .is_err());
-    let s = restart(&e).snapshot().unwrap();
+    let s = reopen(&e).snapshot().unwrap();
     assert!(s.history.is_empty());
     assert_eq!(s.statistics.total_recordings, 1);
 }
@@ -91,7 +91,7 @@ fn crash_after_history_before_statistics_has_no_duplicate_history() {
             event: Some(dictation())
         })
         .is_err());
-    let s = restart(&e).snapshot().unwrap();
+    let s = reopen(&e).snapshot().unwrap();
     assert_eq!(s.history.len(), 1);
     assert_eq!(s.statistics.total_recordings, 1);
 }
@@ -103,7 +103,7 @@ fn crash_after_statistics_before_compaction_does_not_reapply() {
     e.storage.fail = Some((STATE.into(), Boundary::BeforeRename));
     assert!(e.apply_statistics().is_err());
     assert_eq!(e.state().unwrap().journal.len(), 1);
-    let mut e = restart(&e);
+    let mut e = reopen(&e);
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 1);
     e.recover().unwrap();
     assert!(e.state().unwrap().journal.is_empty());
@@ -131,9 +131,9 @@ fn activity_events_crash_before_statistics_match_uninterrupted_run() {
                 event: Some(event)
             })
             .is_err());
-        e = restart(&e);
+        e = reopen(&e);
     }
-    let s = restart(&e).snapshot().unwrap().statistics;
+    let s = reopen(&e).snapshot().unwrap().statistics;
     assert_eq!(s.total_recordings, 0);
     assert_eq!(s.activity.meetings.count, 1);
     assert_eq!(s.activity.meetings.total_minutes, 1.5);
@@ -157,7 +157,7 @@ fn clock_backwards_and_equal_timestamps_do_not_change_counters() {
         })
         .unwrap();
     }
-    let s = restart(&e).snapshot().unwrap();
+    let s = reopen(&e).snapshot().unwrap();
     assert_eq!(s.statistics.total_words, 9);
     assert_eq!(s.history.len(), 3);
     assert_eq!(s.statistics.daily_buckets["2026-11-05"].recordings, 3);
@@ -229,7 +229,7 @@ fn power_loss_after_unknown_statistics_write_replays_once() {
         } else {
             std::fs::write(&stats_path, &old_stats).unwrap();
         }
-        let s = restart(&e).snapshot().unwrap();
+        let s = reopen(&e).snapshot().unwrap();
         assert_eq!(s.statistics.total_recordings, 1);
         // Restore the pre-compaction state for the other disk outcome.
         let mut st = e.state().unwrap();
@@ -253,7 +253,7 @@ fn reset_with_pending_records_advances_watermark_in_one_write() {
     assert_eq!(d.reset_at, Some(42));
     e.import(legacy()).unwrap();
     assert_eq!(
-        restart(&e).snapshot().unwrap().statistics.total_recordings,
+        reopen(&e).snapshot().unwrap().statistics.total_recordings,
         0
     );
 }
@@ -323,7 +323,7 @@ fn state_deleted_corrupt_or_future_before_and_after_v1_recovers_sequence() {
             } else {
                 std::fs::remove_file(dir.path().join(STATE)).unwrap();
             }
-            e = restart(&e);
+            e = reopen(&e);
             let s = complete(&mut e, "b", true);
             assert_eq!(s.statistics.total_recordings, if committed { 2 } else { 1 });
             assert_eq!(s.v1_committed, committed);
@@ -341,7 +341,7 @@ fn holding_deleted_corrupt_or_future_does_not_change_import_decision() {
         } else {
             std::fs::remove_file(dir.path().join(HOLD)).unwrap();
         }
-        e = restart(&e);
+        e = reopen(&e);
         e.import(legacy()).unwrap();
         let s = e.snapshot().unwrap();
         assert_eq!(s.history.len(), 1);
@@ -358,7 +358,7 @@ fn stale_settings_save_does_not_touch_journal_or_migration() {
     save_settings(dir.path(), r#"{"retainHistory":true}"#).unwrap();
     assert_eq!(std::fs::read(dir.path().join(STATE)).unwrap(), journal);
     assert_eq!(std::fs::read(dir.path().join(MIGRATION)).ok(), migration);
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 3);
 }
@@ -442,7 +442,7 @@ fn valid_disk_statistics_corrupt_after_timeout_preserves_all_journal_events() {
     let mut e = engine(dir.path(), true);
     complete(&mut e, "a", true);
     std::fs::write(dir.path().join("stats.json"), "broken").unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     complete(&mut e, "b", true);
     append(
         &mut e,
@@ -468,7 +468,7 @@ fn original_history_corrupt_after_timeout_recovers_legacy_below_held() {
     let mut e = engine(dir.path(), true);
     complete(&mut e, "a", true);
     std::fs::write(dir.path().join("history.json"), "broken").unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     complete(&mut e, "b", true);
     e.import(legacy()).unwrap();
     let s = e.snapshot().unwrap();
@@ -485,7 +485,7 @@ fn timeout_then_quit_then_next_launch_import_keeps_webkit_and_held() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), true);
     complete(&mut e, "a", true);
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().history.len(), 2);
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 3);
@@ -503,7 +503,7 @@ fn clear_before_late_import_skips_each_destination_and_removes_its_keys() {
         e.add_content(Destination::Reports, report(2)).unwrap();
         e.clear(d, 1).unwrap();
         e.import(legacy()).unwrap();
-        let s = restart(&e).snapshot().unwrap();
+        let s = reopen(&e).snapshot().unwrap();
         match d {
             Destination::History => assert!(s.history.is_empty()),
             Destination::Statistics => assert_eq!(s.statistics.total_recordings, 0),
@@ -519,7 +519,7 @@ fn crash_after_clear_destination_before_holding_drops_old_keeps_later() {
     complete(&mut e, "old", true);
     e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
     assert!(e.clear(Destination::History, 1).is_err());
-    e = restart(&e);
+    e = reopen(&e);
     complete(&mut e, "later", true);
     e.import(legacy()).unwrap();
     let s = e.snapshot().unwrap();
@@ -532,7 +532,7 @@ fn clear_before_v1_then_migration_file_lost_stays_cleared() {
     let mut e = engine(dir.path(), true);
     e.clear(Destination::History, 1).unwrap();
     std::fs::write(dir.path().join(MIGRATION), "broken").unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert!(e.snapshot().unwrap().history.is_empty());
 }
@@ -563,7 +563,7 @@ fn crash_after_import_destination_before_drain_adds_content_once() {
         e.add_content(Destination::Reports, report(2)).unwrap();
         e.storage.fail = Some((file.into(), Boundary::AfterRename));
         assert!(e.import(legacy()).is_err());
-        e = restart(&e);
+        e = reopen(&e);
         e.import(legacy()).unwrap();
         let s = e.snapshot().unwrap();
         assert_eq!(s.history.len(), 2);
@@ -584,7 +584,7 @@ fn failed_import_drain_then_user_delete_and_relaunch_does_not_resurrect() {
         targets: vec![target],
     })
     .unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().history.len(), 1);
 }
@@ -638,9 +638,9 @@ fn repeated_timeouts_cap_combined_history_pins_reports_and_show_retry_on_third_l
         e.add_content(Destination::Reports, report(i)).unwrap();
     }
     assert!(!e.snapshot().unwrap().retry_notice);
-    e = restart(&e);
+    e = reopen(&e);
     assert!(!e.snapshot().unwrap().retry_notice);
-    e = restart(&e);
+    e = reopen(&e);
     let s = e.snapshot().unwrap();
     assert!(s.retry_notice);
     assert_eq!(s.history.len(), 200);
@@ -673,7 +673,7 @@ fn fresh_install_without_webkit_commits_immediately_and_never_holds() {
     assert!(e.snapshot().unwrap().v1_committed);
     complete(&mut e, "a", true);
     assert!(e.holding().unwrap().history.entries.is_empty());
-    assert_eq!(restart(&e).snapshot().unwrap().history.len(), 1);
+    assert_eq!(reopen(&e).snapshot().unwrap().history.len(), 1);
 }
 #[test]
 fn retired_store_migration_file_lost_recommits_without_changing_destinations() {
@@ -682,7 +682,7 @@ fn retired_store_migration_file_lost_recommits_without_changing_destinations() {
     complete(&mut e, "a", true);
     let before = std::fs::read(dir.path().join("history.json")).unwrap();
     std::fs::remove_file(dir.path().join(MIGRATION)).unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     assert!(e.snapshot().unwrap().v1_committed);
     assert_eq!(
         before,
@@ -696,7 +696,7 @@ fn crash_after_destination_import_before_v1_commit_skips_marked_destinations() {
     e.storage.fail = Some((MIGRATION.into(), Boundary::BeforeRename));
     assert!(e.import(legacy()).is_err());
     let before = e.snapshot().unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().statistics, before.statistics);
     assert_eq!(e.snapshot().unwrap().history, before.history);
@@ -721,7 +721,7 @@ fn migration_file_lost_before_or_after_commit_never_imports_twice() {
         assert_eq!(e.import(legacy()).is_ok(), committed);
         for _ in 0..3 {
             std::fs::remove_file(dir.path().join(MIGRATION)).unwrap();
-            e = restart(&e);
+            e = reopen(&e);
             e.import(legacy()).unwrap();
             let s = e.snapshot().unwrap();
             assert_eq!(s.history.len(), 1);
@@ -793,7 +793,7 @@ fn unknown_journal_append_outcome_does_not_append_again() {
     state.next = 2;
     e.storage.fail = Some((STATE.into(), Boundary::AfterRename));
     assert!(e.storage.write(STATE, &state).is_err());
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 1);
 }
 #[test]
@@ -849,7 +849,7 @@ fn headless_completions_retention_file_activity_reopen_and_relaunch() {
     for _ in 0..3 {
         assert_eq!(e.snapshot().unwrap().statistics, before.statistics);
     }
-    let after = restart(&e).snapshot().unwrap();
+    let after = reopen(&e).snapshot().unwrap();
     assert_eq!(after.history.len(), 2);
     assert_eq!(after.statistics.total_recordings, 2);
     assert_eq!(after.statistics.activity.meetings.count, 1);
@@ -924,7 +924,7 @@ fn upgrade_keeps_legacy_transforms_and_wpm_order_with_private_prototype_labels()
     assert_eq!(s.activity.recordings_by_mode["constructor"], 3);
     assert_eq!(s.wpm_samples.len(), 100);
     assert_eq!(&s.wpm_samples[97..], &[60.0, 120.0, 180.0]);
-    assert_eq!(s, restart(&e).snapshot().unwrap().statistics);
+    assert_eq!(s, reopen(&e).snapshot().unwrap().statistics);
 }
 #[test]
 fn durable_key_removal_acknowledgements_survive_partial_import_and_relaunch() {
@@ -936,7 +936,7 @@ fn durable_key_removal_acknowledgements_survive_partial_import_and_relaunch() {
     e.clear(Destination::History, 1).unwrap();
     e.execute(Command::KeysRemoved(vec![Destination::History]))
         .unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(
         e.migration().unwrap().keys_removed,
         vec![Destination::History]
@@ -947,7 +947,7 @@ fn durable_key_removal_acknowledgements_survive_partial_import_and_relaunch() {
         Destination::Reports,
     ]))
     .unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(e.migration().unwrap().keys_removed.len(), 3);
     assert!(e.snapshot().unwrap().history.is_empty());
 }
@@ -963,7 +963,7 @@ fn report_uuid_does_not_prevent_creation_time_and_content_deduplication() {
     other["sharedInitMs"] = json!(10);
     e.execute(Command::Report(other)).unwrap();
     assert_eq!(e.snapshot().unwrap().reports.len(), 2);
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(e.snapshot().unwrap().reports.len(), 2);
 }
 #[test]
@@ -1087,7 +1087,7 @@ fn review_deleted_edited_original_must_not_return_from_legacy() {
         text: "edited synthetic".into(),
     }))
     .unwrap();
-    e = restart(&e); // Original legacy identity survives relaunch and further edits.
+    e = reopen(&e); // Original legacy identity survives relaunch and further edits.
     let target = e.execute(Command::Snapshot).unwrap().history[0].clone();
     e.execute(Command::History(HistoryMutation::Delete {
         targets: vec![target],
@@ -1114,16 +1114,16 @@ fn pending_content_replays_once_at_every_publication_boundary() {
         e.storage.fail = Some(("history.json".into(), boundary));
         complete(&mut e, "pending", true);
         assert!(dir.path().join(PENDING).exists());
-        let mut next = restart(&e);
+        let mut next = reopen(&e);
         assert_eq!(next.execute(Command::Snapshot).unwrap().history.len(), 1);
         assert!(!dir.path().join(PENDING).exists());
-        assert_eq!(restart(&next).snapshot().unwrap().history.len(), 1);
+        assert_eq!(reopen(&next).snapshot().unwrap().history.len(), 1);
         let row = next.snapshot().unwrap().history[0].clone();
         next.execute(Command::History(HistoryMutation::Delete {
             targets: vec![row],
         }))
         .unwrap();
-        assert!(restart(&next).snapshot().unwrap().history.is_empty());
+        assert!(reopen(&next).snapshot().unwrap().history.is_empty());
     }
 }
 #[test]
@@ -1149,7 +1149,7 @@ fn pending_retention_off_clear_and_capacity() {
         at: 10,
     })
     .unwrap();
-    assert!(restart(&e).snapshot().unwrap().history.is_empty());
+    assert!(reopen(&e).snapshot().unwrap().history.is_empty());
 }
 #[test]
 fn explicit_barriers_seal_and_snapshot_replay() {

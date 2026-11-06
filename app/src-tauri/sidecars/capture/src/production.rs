@@ -2222,7 +2222,7 @@ fn run_meeting(
                     .then_some(timeline)
                 });
                 if let Some(timeline) = timeline {
-                    match microphone_path.restart(system_rate) {
+                    match microphone_path.reset_stream(system_rate) {
                         Some(EchoCancellationStatus::Active) => {
                             aec_recovery_budget.mark_active(now);
                             recovered_timeline = Some(timeline);
