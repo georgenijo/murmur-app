@@ -1,9 +1,7 @@
 name: Release Murmur
-run-name: Release Murmur (${{ inputs.bump || 'patch' }})
+run-name: Release Murmur (${{ inputs.bump }})
 
 on:
-  schedule:
-    - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
       bump:
@@ -51,10 +49,5 @@ jobs:
       - name: Prepare and start the release
         env:
           GH_TOKEN: ${{ github.token }}
-          BUMP: ${{ inputs.bump || 'patch' }}
-        run: |
-          args=(--bump "$BUMP" --expected-sha "$GITHUB_SHA")
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-            args+=(--scheduled)
-          fi
-          python3 scripts/release_start.py "${args[@]}"
+          BUMP: ${{ inputs.bump }}
+        run: python3 scripts/release_start.py --bump "$BUMP" --expected-sha "$GITHUB_SHA"

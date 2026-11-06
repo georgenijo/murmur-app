@@ -5,15 +5,6 @@ promotes those exact artifacts after the version-bump build succeeds. Promotion
 creates the matching version tag; neither automatic nor recovery tag runs compile
 the application or save Cargo caches.
 
-## Automatic patch releases
-
-Every two hours, Release Murmur checks main and starts a patch release when
-new commits are ready. It skips with a notice when the latest release tag
-already points to HEAD, or a warning when the current version is not yet the
-latest public release or main HEAD lacks a successful `ci-pass` check. The next
-scheduled run retries. Minor releases remain manual. To pause automatic releases,
-disable the workflow schedule or remove the cron from `release-start.yml`.
-
 ## Release without an agent
 
 Open [Actions → Release Murmur](https://github.com/georgenijo/murmur-app/actions/workflows/release-start.yml),
