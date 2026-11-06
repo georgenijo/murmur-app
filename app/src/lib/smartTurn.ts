@@ -50,4 +50,3 @@ export function removeSmartTurnModel(): Promise<void> {
 export function checkSmartTurn(): Promise<SmartTurnCheckResult> {
   return invoke('check_smart_turn');
 }
-
