@@ -1357,7 +1357,7 @@ fn ratio(numerator: usize, denominator: usize) -> Option<f64> {
 }
 
 fn current_memory_mb() -> Option<u64> {
-    memory_stats::memory_stats().map(|stats| stats.physical_mem as u64 / 1_048_576)
+    murmur_core::memory::get_process_rss_bytes().map(|bytes| bytes / 1_048_576)
 }
 
 fn summarize(cases: &[CaseReport]) -> ReportSummary {

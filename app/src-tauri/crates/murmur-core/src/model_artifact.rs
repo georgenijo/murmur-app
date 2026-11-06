@@ -44,6 +44,27 @@ pub fn binary_model_is_valid(path: &Path, minimum_bytes: u64) -> bool {
     validate_binary_model(path, minimum_bytes, "Model file").is_ok()
 }
 
+/// Resolve the existing VAD model location through an explicit host context.
+pub fn vad_model_path(
+    context: &crate::context::AppContext,
+    filename: &str,
+) -> Option<std::path::PathBuf> {
+    context.paths.models_dir().map(|root| root.join(filename))
+}
+
+/// Run filesystem inspection off the async/main thread using the host pool.
+pub async fn validate_binary_model_on_worker(
+    context: &crate::context::AppContext,
+    path: std::path::PathBuf,
+    minimum_bytes: u64,
+    label: &'static str,
+) -> Result<(), String> {
+    context
+        .blocking(move || validate_binary_model(&path, minimum_bytes, label))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 fn response_document_prefix(prefix: &[u8]) -> bool {
     let text = String::from_utf8_lossy(prefix);
     let normalized = text.trim_start_matches(|character: char| {

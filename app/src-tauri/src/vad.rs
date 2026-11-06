@@ -191,7 +191,7 @@ mod tests {
                 serde_json::json!({
                     "fixture": if gain == 0.0 { "synthetic_silence" } else { "synthetic_short" },
                     "gain_db": gain_db, "input_samples": samples.len(), "kept_samples": kept_samples,
-                    "rms": crate::audio::compute_rms(&samples), "peak": crate::audio::compute_peak(&samples),
+                    "rms": murmur_core::audio_level::compute_rms(&samples), "peak": murmur_core::audio_level::compute_peak(&samples),
                     "nonempty_previews": nonempty_previews, "vad_speech": vad_speech,
                     "final_nonempty": final_nonempty, "disagreement": nonempty_previews > 0 && !vad_speech,
                 })

@@ -2836,6 +2836,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "murmur-core"
+version = "0.1.0"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "memory-stats",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "ndarray"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6199,8 +6210,8 @@ dependencies = [
  "futures-util",
  "hound",
  "libc",
- "memory-stats",
  "murmur-capture-helper-protocol",
+ "murmur-core",
  "objc2",
  "objc2-app-kit",
  "objc2-core-audio",

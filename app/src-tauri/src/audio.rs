@@ -26,19 +26,7 @@ use uuid::Uuid;
 #[path = "audio_prepare.rs"]
 pub(crate) mod prepare;
 
-pub fn compute_rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
-}
-
-pub fn compute_peak(samples: &[f32]) -> f32 {
-    samples
-        .iter()
-        .map(|sample| sample.abs())
-        .fold(0.0_f32, f32::max)
-}
+pub use murmur_core::audio_level::{compute_peak, compute_rms};
 
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
 // Keep key-release-to-helper-stop latency below one display frame. The worker

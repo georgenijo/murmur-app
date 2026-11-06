@@ -149,7 +149,7 @@ impl TranscriptionBackend for ParakeetBackend {
     fn load_model(&mut self, model_name: &str) -> Result<(), String> {
         if let Some(ref loaded) = self.loaded_model_name {
             if loaded == model_name {
-                let rss = crate::resource_monitor::get_process_rss_mb();
+                let rss = murmur_core::memory::get_process_rss_mb();
                 tracing::info!(target: "pipeline", rss_mb = rss, "parakeet_cache_hit");
                 return Ok(());
             }
@@ -192,7 +192,7 @@ impl TranscriptionBackend for ParakeetBackend {
 
         self.recognizer = Some(recognizer);
         self.loaded_model_name = Some(model_name.to_string());
-        let rss = crate::resource_monitor::get_process_rss_mb();
+        let rss = murmur_core::memory::get_process_rss_mb();
         tracing::info!(
             target: "pipeline",
             rss_mb = rss,

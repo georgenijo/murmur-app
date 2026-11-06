@@ -2,6 +2,7 @@
 mod accuracy_corpus;
 #[cfg(target_os = "macos")]
 mod alloc;
+mod app_context;
 mod audio;
 mod audio_decode;
 mod audio_graph_snapshot;
@@ -59,8 +60,7 @@ mod meeting_suggestions;
 mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
-mod model_artifact;
-mod model_digest;
+use murmur_core::{model_artifact, model_digest};
 mod model_download;
 mod model_hardware_guidance;
 mod model_runtime;
@@ -442,6 +442,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            app.manage(app_context::new(app.handle().clone()));
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
             launch::milestone("system.launch_process_start");

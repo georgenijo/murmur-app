@@ -277,6 +277,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
+      - name: Enforce Tauri-free core
+        run: python3 scripts/check_core_dependencies.py
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -322,6 +325,9 @@ jobs:
             cargo build -p murmur-capture-helper
           cp target/capture-worker-build/debug/murmur-capture-helper \
             binaries/murmur-capture-worker-aarch64-apple-darwin
+
+      - name: Test core foundation
+        run: cd app/src-tauri && cargo test --locked -p murmur-core
 
       - name: Build test binaries
         # Build examples first, then every test target in one invocation.

@@ -17,15 +17,6 @@ struct MallocZone {
     _opaque: [u8; 0],
 }
 
-#[repr(C)]
-#[derive(Debug, Default)]
-pub struct MallocStatistics {
-    pub blocks_in_use: c_uint,
-    pub size_in_use: usize,
-    pub max_size_in_use: usize,
-    pub size_allocated: usize,
-}
-
 unsafe extern "C" {
     fn malloc_create_zone(start_size: usize, flags: c_uint) -> *mut MallocZone;
     fn malloc_set_zone_name(zone: *mut MallocZone, name: *const c_char);
@@ -33,7 +24,6 @@ unsafe extern "C" {
     fn malloc_zone_memalign(zone: *mut MallocZone, align: usize, size: usize) -> *mut c_void;
     fn malloc_zone_realloc(zone: *mut MallocZone, ptr: *mut c_void, size: usize) -> *mut c_void;
     fn malloc_zone_free(zone: *mut MallocZone, ptr: *mut c_void);
-    fn malloc_zone_statistics(zone: *mut MallocZone, stats: *mut MallocStatistics);
 }
 
 // --- Zone singleton ---
@@ -97,40 +87,30 @@ unsafe impl GlobalAlloc for RustZoneAllocator {
 
 // --- Public query API ---
 
-/// Memory breakdown: (rust_heap_bytes, total_heap_bytes).
+/// Memory breakdown from the executable's Rust zone and all process zones.
 ///
 /// - `rust_heap_bytes`: bytes currently allocated in the Rust zone
 /// - `total_heap_bytes`: bytes across ALL malloc zones (Rust + C/FFI + system)
 ///
 /// C/FFI heap ≈ total - rust.
-pub fn memory_breakdown() -> (usize, usize) {
-    let mut rust = MallocStatistics::default();
-    let mut total = MallocStatistics::default();
-    unsafe {
-        malloc_zone_statistics(rust_zone(), &mut rust);
-        malloc_zone_statistics(std::ptr::null_mut(), &mut total); // NULL = all zones
-    }
-    (rust.size_in_use, total.size_in_use)
+fn memory_breakdown() -> murmur_core::memory::HeapUsage {
+    // SAFETY: rust_zone initializes a process-lifetime malloc zone, also used by
+    // the global allocator above. The core only reads its statistics.
+    unsafe { murmur_core::memory::read_heap_usage(rust_zone().cast()) }
 }
 
-/// Rust heap usage in megabytes (from the RustHeapZone).
 pub fn rust_heap_mb() -> u64 {
     rust_heap_bytes() / 1_048_576
 }
 
-/// C/C++ FFI heap usage in megabytes (total zones minus Rust zone).
 pub fn ffi_heap_mb() -> u64 {
     ffi_heap_bytes() / 1_048_576
 }
 
-/// Rust heap usage in bytes (from the RustHeapZone).
 pub fn rust_heap_bytes() -> u64 {
-    let (rust_bytes, _) = memory_breakdown();
-    rust_bytes as u64
+    memory_breakdown().rust_bytes
 }
 
-/// C/C++ FFI heap usage in bytes (all malloc zones minus the Rust zone).
 pub fn ffi_heap_bytes() -> u64 {
-    let (rust_bytes, total_bytes) = memory_breakdown();
-    total_bytes.saturating_sub(rust_bytes) as u64
+    memory_breakdown().ffi_bytes()
 }

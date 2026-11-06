@@ -272,7 +272,7 @@ impl TranscriptionBackend for CoreMlBackend {
         if self.is_model_loaded(model_name) {
             tracing::info!(
                 target: "pipeline",
-                rss_mb = crate::resource_monitor::get_process_rss_mb(),
+                rss_mb = murmur_core::memory::get_process_rss_mb(),
                 "coreml_cache_hit"
             );
             return Ok(());
@@ -299,7 +299,7 @@ impl TranscriptionBackend for CoreMlBackend {
         self.loaded_model_name = Some(model_name.to_string());
         tracing::info!(
             target: "pipeline",
-            rss_mb = crate::resource_monitor::get_process_rss_mb(),
+            rss_mb = murmur_core::memory::get_process_rss_mb(),
             model = model_name,
             "coreml_cache_miss"
         );
