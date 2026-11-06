@@ -1,6 +1,6 @@
 use crate::{injector, keyboard, MutexExt};
 use std::sync::Mutex;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 #[derive(Default)]
 struct ListenerRegistration(Option<(String, String)>);
@@ -109,7 +109,7 @@ pub(crate) fn apply_app_disabled(
     }
     keyboard::set_app_disabled(disabled);
     tracing::info!(target: "keyboard", "set_app_disabled: {}", disabled);
-    sync_tray_disabled_item(disabled);
+    sync_tray_disabled_item(&app_handle);
     app_handle
         .emit("app-disabled-changed", disabled)
         .map_err(|e| e.to_string())
@@ -124,9 +124,18 @@ pub(crate) fn register_tray_disabled_item(item: tauri::menu::CheckMenuItem<tauri
     let _ = DISABLED_MENU_ITEM.set(item);
 }
 
-fn sync_tray_disabled_item(disabled: bool) {
-    if let Some(check) = DISABLED_MENU_ITEM.get() {
-        let _ = check.set_checked(disabled);
+fn sync_tray_disabled_item(app: &tauri::AppHandle) {
+    if DISABLED_MENU_ITEM.get().is_none() {
+        return;
+    }
+    if let Some(context) = app.try_state::<murmur_core::context::AppContext>() {
+        // Never synchronously wait for AppKit while holding configuration
+        // ownership: a main-thread tray callback may need that same fence.
+        let _ = context.main_thread.dispatch(Box::new(|| {
+            if let Some(check) = DISABLED_MENU_ITEM.get() {
+                let _ = check.set_checked(keyboard::is_app_disabled());
+            }
+        }));
     }
 }
 
