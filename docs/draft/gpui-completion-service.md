@@ -219,7 +219,8 @@ durable receipt together; no attempted in-memory write is treated as durability.
 **Staged** has a ready result; **accepting** is queued or publishing;
 **published-unknown** is a returned error whose publication may have renamed;
 **admitted** has a synced receipt; **cancelled** has intent and no new publication;
-**failed-retryable** has no receipt after successful recovery. Running capture
+**failed-retryable** has a proven pre-rename failure; **uncertain** has an unknown
+publication without a surviving receipt or admitted evidence. Running capture
 precedes staged and is covered by the existing cancellation/cap tests.
 
 Admission uses a UUID-only write-ahead record in `completion-state.json`, with
@@ -394,9 +395,10 @@ cancel remains a short synchronous command with no owner/files wait.
 
 N uses `tauri::test::MockRuntime`, the actual registered command wrappers and
 `Webview::on_message`, dispatching accept then cancel on one thread. A FIFO in
-a synthetic temporary data root blocks the real core owner during initialization;
+a synthetic temporary data root blocks the real core owner while it processes acceptance;
 a watchdog releases it after five seconds so a synchronous regression fails
-instead of hanging. Cancellation must return successfully before that release,
+instead of hanging. The FIFO handshake proves acceptance holds staging and awaits its owner.
+Cancellation must return successfully before that release,
 and acceptance must eventually leave History empty. This proves production
 Tauri wrapper dispatch and cancellation independence from the blocked owner. It
 does not run WKWebView's Objective-C callback or establish native GUI behavior;

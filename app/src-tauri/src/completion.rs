@@ -281,7 +281,6 @@ mod dispatch_tests {
         let root = tempfile::tempdir().unwrap();
         let service = CompletionService::start(root.path().into(), false).unwrap();
         service.execute(Command::Snapshot).unwrap();
-        drop(service);
         let path = root.path().join("completion-holding.json");
         let holding = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
@@ -293,7 +292,11 @@ mod dispatch_tests {
         let released = Arc::new(AtomicBool::new(false));
         let writer_released = released.clone();
         let writer = std::thread::spawn(move || {
-            let mut fifo = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            let mut fifo = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            // The in-flight read owns the FIFO; later reads use this regular file.
+            let replacement = path.with_extension("synthetic-replacement");
+            std::fs::write(&replacement, &holding).unwrap();
+            std::fs::rename(replacement, &path).unwrap();
             blocked.send(()).unwrap();
             // Watchdog releases even if the old synchronous handler deadlocks
             // this test's dispatcher, making the regression fail without hanging.
@@ -301,8 +304,6 @@ mod dispatch_tests {
             writer_released.store(true, Ordering::SeqCst);
             fifo.write_all(&holding).unwrap();
         });
-        let service = CompletionService::start(root.path().into(), false).unwrap();
-        observed.recv_timeout(Duration::from_secs(5)).unwrap();
         let producers = Producers::new(service.clone(), "synthetic-ipc".into());
         producers.begin_file("synthetic-operation").unwrap();
         producers.finish_file(
@@ -343,6 +344,9 @@ mod dispatch_tests {
                 accepted.send(response).unwrap();
             }),
         );
+        // The owner opened the FIFO while processing this acceptance, so the
+        // production adapter now holds files and is waiting for the owner.
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
         let (cancelled, cancellation) = mpsc::channel();
         window.as_ref().clone().on_message(
             request("cancel_file_transcription"),

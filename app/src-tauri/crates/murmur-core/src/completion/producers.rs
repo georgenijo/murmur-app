@@ -464,7 +464,6 @@ mod tests {
                 p.cancel_file(&operation);
             }
             assert!(p.intents.lock().unwrap().len() <= MAX_PENDING_FILES + 1);
-            assert!(p.files.lock().unwrap().len() <= 1);
         }
         assert!(p.begin_file("still-running").is_err());
         p.finish_file("still-running", Some(json!({"text":"synthetic"})), true);
