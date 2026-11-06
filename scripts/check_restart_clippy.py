@@ -27,7 +27,10 @@ def main():
             with target.open('x') as output:
                 created = True
                 output.write(fixture.read_text())
+            # Newer toolchains add lints that pre-existing code trips; older ones
+            # (CI) don't know them, so allow unknown lint names too.
             command = ['cargo', 'clippy', '--example', name, '--', '-D', 'warnings',
+                       '-A', 'unknown-lints',
                        '-A', 'clippy::chunks_exact_to_as_chunks', '-A', 'clippy::byte_char_slices']
             result = subprocess.run(command, cwd=ROOT / 'app/src-tauri', text=True,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
