@@ -1,6 +1,7 @@
 //! Serialized durable completions. No window, runtime, clock or host dependency.
 //! Only the owner task touches these files; IPC clients never replace snapshots.
 pub mod lifecycle;
+mod numeric;
 pub mod producers;
 mod stats;
 mod storage;
@@ -1163,7 +1164,14 @@ impl Engine {
                 .chain(held)
                 .filter(|entry| entry["completionUuid"].as_str() == Some(id))
                 .collect();
-            if matches.iter().any(|entry| **entry != value) {
+            // Lossless storage reads make this canonical JSON stable for every
+            // finite f64, including signed zero. Compare full content, never a
+            // rounded approximation or UUID alone.
+            let identity = serde_json::to_vec(&value).map_err(|_| Error::Invalid)?;
+            if matches
+                .iter()
+                .any(|entry| serde_json::to_vec(entry).map_or(true, |stored| stored != identity))
+            {
                 // Identity is proof only for an exact replay. Never acknowledge
                 // different content or retain a rejected conflict for retry.
                 return Err(Error::IdentityConflict);

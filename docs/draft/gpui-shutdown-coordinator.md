@@ -596,3 +596,61 @@ missing tray owned patch makes the native recovery regression fail with
 `disabled=false`; restoring the patch passes. Command/link, workflow, capture,
 core-dependency, restart and event policies pass. The isolated Mac checkout and
 target are removed after verification.
+
+## Round-four completion numeric stability corrections
+
+This completion-only correction addresses P2-1/P2-2 from the round-three Sol
+re-check. The draft stack keeps its existing base and must not be merged.
+Independent Sol re-check remains with the parent task; this implementation
+worker does not claim that review.
+
+- **Integrity binds stored bytes:** the existing schema-1 batch envelope and
+  SHA-256 format are preserved. Publication hashes the serialized `snapshots`
+  bytes embedded in the envelope. Recovery and live retries locate that exact
+  JSON member in the file and hash its original bytes, without reserializing
+  parsed values. Whole-batch shape, target ordering, future-schema guards and
+  quarantine rules still apply. Duplicate envelope keys are rejected. Even a
+  valid-JSON numeric alteration that rounds to the same binary float is detected;
+  damaged evidence is preserved and blocks recovery without changing readable
+  History.
+- **Float-stable storage and identity:** completion storage reads and captured
+  failed writes use a local JSON decoder that retains serde's syntax, type and
+  duplicate-struct-field checks, restores floats with Rust's correctly rounded
+  decimal parser, and preserves integer types, strings and signed zero. Full
+  canonical serialized content determines UUID replay equality. Exact replays
+  deduplicate; changed content, including adjacent float values and opposite
+  signed zero, returns `IdentityConflict` without acquiring retry ownership.
+  Independent identical History completions still receive different UUIDs.
+  No dependency feature is enabled: neither Cargo manifest nor serde_json feature
+  unification across the app/workspace changes. No public command or caller
+  signature changes.
+
+Before the fix, all four initial round-four tests failed on `b2155379`: the
+reviewer's `1.5287289387243241e-9` History metadata/Pin probe returned `Invalid`,
+the `sharedInitMs = 1.0000226757369615` exact report replay returned
+`IdentityConflict`, fractional-duration completion reconciliation after a
+post-unlink directory-sync failure returned `UnpreservedFailure`, and the
+property-style storage/mutation sweep failed to commit.
+
+The corrected sweep exercises **80 finite f64 values in both migrated and
+Holding modes** (160 scenarios): subnormals, the smallest normal and its
+predecessor, 1e-9-scale numbers, values around 2^53, both signed zeros, many-digit
+fractions, finite extremes and 64 deterministic generated bit patterns. Each
+scenario submits and replays reports, rejects changed-content collisions,
+submits identical independent History completions, pins through a live batch
+retry, edits through disk-only batch recovery, deletes and restarts, checking
+exact float bits and terminal receipts. A separate 4,096-pattern decoder sweep
+checks serialized bytes and binary bits, with integer boundaries, escaped
+strings, malformed JSON and duplicate envelope/struct fields. A live/restart
+damage probe changes a numeric spelling without changing its f64 and verifies
+quarantine bytes and fail-closed recovery.
+
+Linux validation passes all **174 unit tests and 35 integration tests**, including
+both reviewer probes, fractional post-unlink reconciliation, the numeric sweeps,
+the unchanged 36-case exit matrix, both FIFO bounds and D2/D4/D5. All-target
+clippy passes with `-D warnings -A clippy::byte_char_slices` on rustc/clippy
+1.93.1. The exact requested command first failed because this toolchain does not
+recognize `clippy::chunks_exact_to_as_chunks`; only that unsupported exemption
+was omitted for the passing run. Rustfmt checks and `git diff --check` pass.
+All test data is synthetic and temporary test roots use `~/.cache/`. No app
+caller changes, Mac checkout, GUI action or app launch were needed.

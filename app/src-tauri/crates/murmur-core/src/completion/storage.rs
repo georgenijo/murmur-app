@@ -70,7 +70,7 @@ impl Storage {
             // in-memory copy, even when the original admission was uncertain.
             if file == super::BATCH {
                 let existed = self.root.join(super::BATCH).exists();
-                let durable = self.read::<serde_json::Value>(super::BATCH, valid_batch)?;
+                let durable = self.read_batch()?;
                 if let Some(durable) = durable {
                     if durable != value {
                         return Err(Error::Invalid);
@@ -96,7 +96,10 @@ impl Storage {
             return Err(Error::TooManyFiles);
         }
         let snapshots = serde_json::json!(snapshots);
-        let payload = serde_json::json!({"schema":1,"digest":super::source_digest(&snapshots),"snapshots":snapshots});
+        // Hash the exact JSON slice embedded in the envelope. Validation reads
+        // that slice back from disk, without serializing parsed numbers.
+        let snapshot_bytes = serde_json::to_vec(&snapshots).map_err(|_| Error::Invalid)?;
+        let payload = serde_json::json!({"schema":1,"digest":bytes_digest(&snapshot_bytes),"snapshots":snapshots});
         if !valid_batch(&payload) {
             return Err(Error::Invalid);
         }
@@ -112,9 +115,16 @@ impl Storage {
         self.resolve_intent(super::BATCH);
         Ok(())
     }
+    fn read_batch(&self) -> Result<Option<serde_json::Value>> {
+        self.read_validated(super::BATCH, |value, bytes| {
+            valid_batch(value)
+                && super::numeric::member_bytes(bytes, "snapshots")
+                    .is_some_and(|raw| value["digest"] == bytes_digest(raw))
+        })
+    }
     pub fn recover_batch(&mut self) -> Result<()> {
         let existed = self.root.join(super::BATCH).exists();
-        let batch = self.read::<serde_json::Value>(super::BATCH, valid_batch)?;
+        let batch = self.read_batch()?;
         if let Some(batch) = batch {
             // Also resolves an unknown intent-rename outcome before publishing.
             self.sync_directory()?;
@@ -225,6 +235,13 @@ impl Storage {
         name: &str,
         validate: impl FnOnce(&T) -> bool,
     ) -> Result<Option<T>> {
+        self.read_validated(name, |value, _| validate(value))
+    }
+    fn read_validated<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        validate: impl FnOnce(&T, &[u8]) -> bool,
+    ) -> Result<Option<T>> {
         #[cfg(test)]
         if self.fail_read.as_deref() == Some(name) {
             return Err(Error::Io);
@@ -241,8 +258,8 @@ impl Storage {
             .read_to_end(&mut bytes)
             .map_err(|_| Error::Io)?;
         if bytes.len() <= limit {
-            if let Ok(value) = serde_json::from_slice::<T>(&bytes) {
-                if validate(&value) {
+            if let Ok(value) = super::numeric::from_slice::<T>(&bytes) {
+                if validate(&value, &bytes) {
                     return Ok(Some(value));
                 }
             }
@@ -412,7 +429,7 @@ impl Storage {
         if self.capture_failures && result.is_err() && name != super::STATE {
             self.intents
                 .entry(name.to_owned())
-                .or_insert(serde_json::from_slice(&bytes).map_err(|_| Error::Invalid)?);
+                .or_insert(super::numeric::from_slice(&bytes)?);
         }
         result
     }
@@ -501,12 +518,16 @@ fn size_limit(name: &str) -> usize {
     }
 }
 
+fn bytes_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 // Only the ordered History mutation targets are admissible. Validate the
 // entire envelope before touching any target, including pre-import documents.
 fn valid_batch(v: &serde_json::Value) -> bool {
     v.as_object().is_some_and(|o| o.len() == 3)
         && v["schema"] == 1
-        && v["digest"] == super::source_digest(&v["snapshots"])
         && v["snapshots"].as_array().is_some_and(|snapshots| {
             (1..=2).contains(&snapshots.len())
                 && snapshots.iter().enumerate().all(|(i, snapshot)| {

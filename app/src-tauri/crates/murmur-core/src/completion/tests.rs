@@ -2020,3 +2020,269 @@ fn round_three_batch_digest_detects_valid_json_damage_after_process_exit() {
             && std::fs::read(path).unwrap() == damaged
     }));
 }
+
+#[test]
+fn round_four_undamaged_numeric_history_batch_survives_pin_and_restart() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        let mut row = entry("numeric", "synthetic");
+        row["metadata"] = json!(1.5287289387243241e-9);
+        let target = e
+            .execute(Command::Complete {
+                source: "numeric".into(),
+                entry: Some(row),
+                event: None,
+            })
+            .unwrap()
+            .history[0]
+            .clone();
+        e.execute(Command::History(HistoryMutation::Pin { target }))
+            .unwrap();
+        let s = reopen(&e).execute(Command::Snapshot).unwrap();
+        assert_eq!(s.history[0]["pinned"], true);
+        assert_eq!(
+            s.history[0]["metadata"].as_f64().unwrap().to_bits(),
+            1.5287289387243241e-9_f64.to_bits()
+        );
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        assert!(!e.storage.quarantined(BATCH).unwrap());
+    }
+}
+
+#[test]
+fn round_four_exact_numeric_report_replay_is_not_an_identity_conflict() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        let mut value = report(1);
+        value["completionUuid"] = json!(uuid());
+        value["sharedInitMs"] = json!(1.0000226757369615);
+        e.execute(Command::Report(value.clone())).unwrap();
+        for _ in 0..3 {
+            e = reopen(&e);
+            assert_eq!(
+                e.execute(Command::Report(value.clone()))
+                    .unwrap()
+                    .reports
+                    .len(),
+                1
+            );
+        }
+        let mut changed = value;
+        changed["sharedInitMs"] = json!(1.0000226757369617);
+        assert!(matches!(
+            e.execute(Command::Report(changed)),
+            Err(Error::IdentityConflict)
+        ));
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    }
+}
+
+#[test]
+fn round_four_fractional_duration_reconciles_after_pending_unlink_sync_failure() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        let mut row = entry("fractional", "synthetic");
+        row["duration"] = json!(1.0000226757369615);
+        e.storage
+            .faults
+            .push_back((PENDING.into(), Boundary::DirectorySync, 1));
+        e.execute(Command::Complete {
+            source: "fractional".into(),
+            entry: Some(row),
+            event: None,
+        })
+        .unwrap();
+        assert!(e.storage.faults.is_empty());
+        assert!(!dir.path().join(PENDING).exists());
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        let s = reopen(&e).execute(Command::Snapshot).unwrap();
+        assert_eq!(s.history.len(), 1);
+        assert_eq!(
+            s.history[0]["duration"].as_f64().unwrap().to_bits(),
+            1.0000226757369615_f64.to_bits()
+        );
+    }
+}
+
+#[test]
+fn round_four_awkward_f64_sweep_preserves_replay_and_history_mutations() {
+    let mut values = vec![
+        f64::from_bits(1),
+        f64::from_bits(2),
+        f64::MIN_POSITIVE,
+        f64::from_bits(f64::MIN_POSITIVE.to_bits() - 1),
+        1.5287289387243241e-9,
+        1e-9,
+        1.0000226757369615,
+        9007199254740991.0,
+        9007199254740992.0,
+        9007199254740994.0,
+        -0.0,
+        0.0,
+        0.12345678901234568,
+        -1.2345678901234567,
+        f64::MAX,
+        f64::MIN,
+    ];
+    // Deterministic bit-pattern coverage, without a new test dependency.
+    let mut bits = 0x123456789abcdef0_u64;
+    for _ in 0..64 {
+        bits = bits.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let value = f64::from_bits(bits);
+        if value.is_finite() {
+            values.push(value);
+        }
+    }
+    for webkit in [false, true] {
+        for value in &values {
+            let dir = TempDir::new().unwrap();
+            let mut e = engine(dir.path(), webkit);
+            let mut r = report(1);
+            r["completionUuid"] = json!(uuid());
+            // Metadata accepts signed finite values; durations stay nonnegative.
+            r["numericMetadata"] = json!(value);
+            r["sharedInitMs"] = json!(value.abs());
+            e.execute(Command::Report(r.clone())).unwrap();
+            e = reopen(&e);
+            let s = e.execute(Command::Report(r.clone())).unwrap();
+            assert_eq!(s.reports.len(), 1, "{value:?}");
+            assert_eq!(
+                s.reports[0]["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            let mut changed = r.clone();
+            // A one-bit change must conflict even at the subnormal boundary.
+            changed["numericMetadata"] = json!(f64::from_bits(value.to_bits() ^ 1));
+            assert!(
+                matches!(
+                    e.execute(Command::Report(changed)),
+                    Err(Error::IdentityConflict)
+                ),
+                "{value:?}"
+            );
+            if *value == 0.0 {
+                let mut changed = r;
+                changed["numericMetadata"] = json!(-value);
+                assert!(matches!(
+                    e.execute(Command::Report(changed)),
+                    Err(Error::IdentityConflict)
+                ));
+            }
+            let mut row = entry("same", "synthetic");
+            row["numericMetadata"] = json!(value);
+            row["duration"] = json!(value.abs());
+            for source in ["first", "second"] {
+                e.execute(Command::Complete {
+                    source: source.into(),
+                    entry: Some(row.clone()),
+                    event: None,
+                })
+                .unwrap();
+            }
+            e = reopen(&e);
+            assert_eq!(e.snapshot().unwrap().history.len(), 2);
+            // Exercise both live batch retry and disk-only recovery with floats.
+            let target = e.snapshot().unwrap().history[0].clone();
+            e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+            assert!(e
+                .execute(Command::History(HistoryMutation::Pin { target }))
+                .is_err());
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            e = reopen(&e);
+            let target = e.snapshot().unwrap().history[0].clone();
+            assert_eq!(target["pinned"], true);
+            assert_eq!(
+                target["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+            assert!(e
+                .execute(Command::History(HistoryMutation::Edit {
+                    target,
+                    text: "synthetic edited".into()
+                }))
+                .is_err());
+            e = reopen(&e);
+            let target = e.snapshot().unwrap().history[0].clone();
+            assert_eq!(target["text"], "synthetic edited");
+            assert_eq!(
+                target["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            e.execute(Command::History(HistoryMutation::Delete {
+                targets: vec![target],
+            }))
+            .unwrap();
+            e = reopen(&e);
+            let s = e.execute(Command::Snapshot).unwrap();
+            assert_eq!(s.history.len(), 1);
+            assert_eq!(
+                s.history[0]["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            assert!(!e.storage.quarantined(BATCH).unwrap());
+        }
+    }
+}
+
+#[test]
+fn round_four_digest_checks_original_numeric_bytes_not_reserialized_values() {
+    for live in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        let mut row = entry("numeric-damage", "synthetic");
+        row["metadata"] = json!(1.0000226757369615);
+        let target = e
+            .execute(Command::Complete {
+                source: "numeric-damage".into(),
+                entry: Some(row),
+                event: None,
+            })
+            .unwrap()
+            .history[0]
+            .clone();
+        let history = std::fs::read(dir.path().join("history.json")).unwrap();
+        e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+        assert!(e
+            .execute(Command::History(HistoryMutation::Pin { target }))
+            .is_err());
+        let original = std::fs::read_to_string(dir.path().join(BATCH)).unwrap();
+        // Both decimal spellings round to the same f64. Only hashing original
+        // stored bytes detects this valid-JSON alteration.
+        let damaged = original.replace("1.0000226757369615", "1.00002267573696151");
+        assert_ne!(original, damaged);
+        assert_eq!(
+            "1.0000226757369615".parse::<f64>().unwrap().to_bits(),
+            "1.00002267573696151".parse::<f64>().unwrap().to_bits()
+        );
+        std::fs::write(dir.path().join(BATCH), &damaged).unwrap();
+        if !live {
+            drop(e);
+            e = uninitialized_engine(dir.path(), false);
+            assert!(e.initialize().is_err());
+        }
+        for _ in 0..2 {
+            assert!(e.execute(Command::Snapshot).is_err());
+            assert_eq!(
+                e.write_receipt(),
+                crate::shutdown::WriteOutcome::UnpreservedFailure
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("history.json")).unwrap(),
+                history
+            );
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+            let path = item.unwrap().path();
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("completion-batch.json.quarantine-seq-")
+                && std::fs::read(path).unwrap() == damaged.as_bytes()
+        }));
+    }
+}
