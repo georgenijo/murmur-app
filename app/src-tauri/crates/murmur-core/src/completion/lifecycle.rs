@@ -38,6 +38,8 @@ struct UiState {
     schema: u32,
     v2_imported: bool,
     values: BTreeMap<String, Value>,
+    #[serde(default)]
+    destinations: Vec<String>,
 }
 impl Default for UiState {
     fn default() -> Self {
@@ -45,6 +47,7 @@ impl Default for UiState {
             schema: 1,
             v2_imported: false,
             values: BTreeMap::new(),
+            destinations: vec![],
         }
     }
 }
@@ -94,7 +97,9 @@ impl Engine {
                     .iter()
                     .all(|(k, v)| crate::state::normalize(k, v.clone()).is_ok())
         })?;
-        if state.is_none() && (existed || self.migration()?.lifecycle.v2) {
+        if state.is_none()
+            && (existed || self.migration()?.lifecycle.v2 || self.storage.quarantined(UI_STATE)?)
+        {
             return Err(Error::Invalid);
         }
         Ok(state.unwrap_or_default())
@@ -123,7 +128,11 @@ impl Engine {
         let value: Option<Value> = self.storage.read(file, |v: &Value| {
             crate::state::normalize(key, v.clone()).is_ok()
         })?;
-        if existed && value.is_none() {
+        if value.is_none()
+            && (existed
+                || self.ui_state()?.destinations.iter().any(|k| k == key)
+                || source_required(&self.storage.root, key)?)
+        {
             return Err(Error::Invalid);
         }
         value
@@ -155,6 +164,7 @@ impl Engine {
             Operation::Save { key, value } => {
                 let value = crate::state::normalize(&key, value)?;
                 if let Some(file) = crate::state::file(&key) {
+                    self.storage.write(&format!("{file}.required"), &true)?;
                     self.storage.write(file, &value)?;
                 } else {
                     state.values.insert(key, value);
@@ -233,6 +243,7 @@ impl Engine {
                             if let Some(value) = all.remove(key) {
                                 self.storage
                                     .write(crate::state::file(key).unwrap(), &value)?;
+                                state.destinations.push(key.into());
                             }
                         }
                         state.values = all;
@@ -245,6 +256,17 @@ impl Engine {
                 }
             }
             Operation::BeginRetirement | Operation::Retired => {
+                // Flags never replace destination evidence, including explicit empties.
+                self.state_values()?;
+                for d in [
+                    Destination::History,
+                    Destination::Statistics,
+                    Destination::Reports,
+                ] {
+                    if !self.document(d)?.is_some_and(|d| d.v1_imported) {
+                        return Err(Error::Missing);
+                    }
+                }
                 if !(m.v1 && m.lifecycle.v2 && m.lifecycle.v3 && m.keys_removed.len() == 3) {
                     return Err(Error::Invalid);
                 }
@@ -276,7 +298,7 @@ impl Engine {
 mod tests {
     use super::super::tests::{engine, restart};
     use super::*;
-    fn source() -> BTreeMap<String, Option<String>> {
+    pub(super) fn source() -> BTreeMap<String, Option<String>> {
         TRANSCRIPT_KEYS
             .iter()
             .chain(V2_KEYS)
@@ -480,5 +502,214 @@ mod removal_tests {
                 .unwrap()
                 .is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod review_safety {
+    use super::super::tests::{engine, restart};
+    use super::tests::source;
+    use super::*;
+    #[test]
+    fn missing_or_quarantined_v1_destinations_never_authorize_removal_or_retirement() {
+        for file in ["history.json", "stats.json", "benchmark-reports.json"] {
+            for loss in 0..3 {
+                let dir = tempfile::tempdir().unwrap();
+                let service = CompletionService::start(dir.path().into(), true).unwrap();
+                service.lifecycle(Operation::Import(source())).unwrap();
+                service
+                    .execute(Command::KeysRemoved(vec![
+                        Destination::History,
+                        Destination::Statistics,
+                        Destination::Reports,
+                    ]))
+                    .unwrap();
+                let migration = dir.path().join(MIGRATION);
+                let mut m: Value =
+                    serde_json::from_slice(&std::fs::read(&migration).unwrap()).unwrap();
+                m["lifecycle"]["v3"] = json!(true);
+                std::fs::write(&migration, serde_json::to_vec(&m).unwrap()).unwrap();
+                assert!(service.lifecycle(Operation::BeginRetirement).is_ok());
+                let path = dir.path().join(file);
+                if loss == 2 {
+                    let mut doc: Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    doc["v1_imported"] = json!(false);
+                    std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+                } else if loss == 1 {
+                    std::fs::write(&path, b"{bad").unwrap();
+                } else {
+                    std::fs::remove_file(&path).unwrap();
+                }
+                for _ in 0..3 {
+                    assert!(service.execute(Command::Snapshot).is_err());
+                    assert!(service.lifecycle(Operation::Status).is_err());
+                    assert!(service.lifecycle(Operation::Import(source())).is_err());
+                    assert!(service.lifecycle(Operation::BeginRetirement).is_err());
+                    assert!(service.lifecycle(Operation::Retired).is_err());
+                }
+                drop(service);
+                let service = CompletionService::start(dir.path().into(), true).unwrap();
+                assert!(service.execute(Command::Snapshot).is_err());
+            }
+        }
+    }
+    #[test]
+    fn imported_and_created_separate_destinations_remain_required_after_loss_or_quarantine() {
+        for key in ["dictation-settings", "murmur-theme-library"] {
+            for created in 0..3 {
+                for corrupt in [false, true] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let mut e = engine(dir.path(), true);
+                    let value = if key == "dictation-settings" {
+                        json!({})
+                    } else {
+                        json!({"version":1,"themes":[]})
+                    };
+                    let mut raw = source();
+                    if created == 0 {
+                        raw.insert(key.into(), Some(value.to_string()));
+                    }
+                    e.lifecycle(Operation::Import(raw)).unwrap();
+                    if created == 1 {
+                        e.lifecycle(Operation::Save {
+                            key: key.into(),
+                            value: value.clone(),
+                        })
+                        .unwrap();
+                    }
+                    if created == 2 {
+                        super::super::save_source(dir.path(), key, &value.to_string()).unwrap();
+                    }
+                    let mut m = e.migration().unwrap();
+                    m.lifecycle.v3 = true;
+                    m.keys_removed = vec![
+                        Destination::History,
+                        Destination::Statistics,
+                        Destination::Reports,
+                    ];
+                    e.storage.write(MIGRATION, &m).unwrap();
+                    assert!(e.lifecycle(Operation::BeginRetirement).is_ok());
+                    let path = dir.path().join(crate::state::file(key).unwrap());
+                    if corrupt {
+                        std::fs::write(&path, b"{bad").unwrap();
+                    } else {
+                        std::fs::remove_file(&path).unwrap();
+                    }
+                    for _ in 0..3 {
+                        e = restart(&e);
+                        assert!(e.lifecycle(Operation::Status).is_err());
+                        assert!(e.lifecycle(Operation::Import(source())).is_err());
+                        assert!(e.lifecycle(Operation::BeginRetirement).is_err());
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn repeated_corrupt_ui_recovery_with_committed_v2_is_never_empty_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine(dir.path(), true);
+        e.lifecycle(Operation::Import(source())).unwrap();
+        std::fs::write(dir.path().join(UI_STATE), b"{bad").unwrap();
+        for _ in 0..3 {
+            e = restart(&e);
+            assert!(e.lifecycle(Operation::Status).is_err());
+            assert!(e.lifecycle(Operation::Import(source())).is_err());
+        }
+    }
+    #[test]
+    fn library_rename_and_appearance_publication_failure_matrix() {
+        for file in ["theme-library.json", UI_STATE] {
+            for boundary in [
+                storage::Boundary::BeforeRename,
+                storage::Boundary::AfterRename,
+                storage::Boundary::DirectorySync,
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut e = engine(dir.path(), true);
+                e.import(LegacyImport::default()).unwrap();
+                let mut raw = source();
+                raw.insert("murmur-theme-library".into(),Some(json!({"version":1,"themes":[{"version":1,"id":"opencode","label":"Synthetic","modes":["dark"],"theme":{"version":1},"source":{"kind":"local"}}]}).to_string()));
+                raw.insert("murmur-appearance".into(),Some(json!({"version":1,"theme":{"version":1},"selection":{"light":"sonic","dark":"opencode"}}).to_string()));
+                e.storage.fail = Some((file.into(), boundary));
+                assert!(e.lifecycle(Operation::Import(raw.clone())).is_err());
+                assert!(e.storage.fail.is_none());
+                e = restart(&e);
+                let receipt = e.lifecycle(Operation::Import(raw)).unwrap();
+                let id = &receipt.values["murmur-theme-library"]["themes"][0]["id"];
+                assert_eq!(
+                    receipt.values["murmur-appearance"]["selection"]["dark"],
+                    *id
+                );
+            }
+        }
+    }
+    #[test]
+    fn corrupt_source_matrix_rejects_every_source_form_without_v2_receipt() {
+        for key in V2_KEYS {
+            for bad in [
+                "{truncated".to_string(),
+                "42".into(),
+                "[null]".into(),
+                "x".repeat(32 * 1024 * 1024 + 1),
+                json!({"version":999,"settingsVersion":999}).to_string(),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut e = engine(dir.path(), true);
+                let mut raw = source();
+                raw.insert((*key).into(), Some(bad));
+                assert!(e.lifecycle(Operation::Import(raw)).is_err(), "{key}");
+                assert!(!e.migration().unwrap().lifecycle.v2);
+                assert!(e.lifecycle(Operation::BeginRetirement).is_err());
+            }
+        }
+    }
+    #[test]
+    fn corrupt_transcript_source_matrix_preserves_all_four_keys() {
+        for key in TRANSCRIPT_KEYS {
+            for bad in [
+                "{truncated".to_string(),
+                "42".into(),
+                "[null]".into(),
+                "x".repeat(32 * 1024 * 1024 + 1),
+                json!({"schema":999}).to_string(),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut e = engine(dir.path(), true);
+                let mut raw = source();
+                raw.insert((*key).into(), Some(bad));
+                // The plural reports key must be absent when testing its old single form.
+                assert!(e.lifecycle(Operation::Import(raw)).is_err(), "{key}");
+                assert!(!e.snapshot().unwrap().remove_keys.iter().any(|k| k == key));
+                assert!(!e.migration().unwrap().v1);
+            }
+        }
+    }
+    #[test]
+    fn settings_migrations_publish_version_and_alias_scope_round_trip_on_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = engine(dir.path(), true);
+        let mut raw = source();
+        raw.insert("dictation-settings".into(),Some(json!({"autoPasteDelayMs":50,"overlayVerticalOffset":48,"idleTimeoutMinutes":-1,"vocabularyEntries":[{"id":"v","written":"Synthetic","aliases":["sin thetic"],"scope":{"kind":"project","bundleId":"synthetic.app","root":"/synthetic"}}]}).to_string()));
+        e.lifecycle(Operation::Import(raw)).unwrap();
+        let disk: Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(disk["autoPasteDelayMs"], 0);
+        assert_eq!(disk["settingsVersion"], 7);
+        assert_eq!(disk["overlayVerticalOffset"], 0);
+        assert_eq!(disk["idleTimeoutMinutes"], -1);
+        e = restart(&e);
+        let r = e.lifecycle(Operation::Status).unwrap();
+        assert_eq!(
+            r.values["dictation-settings"]["vocabularyEntries"],
+            disk["vocabularyEntries"]
+        );
+        assert_eq!(
+            disk["vocabularyEntries"][0]["aliases"],
+            json!(["sin thetic"])
+        );
+        assert_eq!(disk["vocabularyEntries"][0]["scope"]["root"], "/synthetic");
     }
 }

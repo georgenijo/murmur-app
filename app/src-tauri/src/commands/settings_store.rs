@@ -83,11 +83,11 @@ fn validate_blob(spec: BlobSpec, blob: &str) -> Result<(), String> {
 /// Preserve rejected content as local evidence rather than deleting it. Log
 /// only the file kind and rejection reason, never any user content.
 fn quarantine(path: &Path, spec: BlobSpec, reason: &str) {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0);
-    let target = path.with_file_name(format!("{}.corrupt-{seconds}", spec.file_name));
+    let target = path.with_file_name(format!(
+        "{}.corrupt-{}",
+        spec.file_name,
+        uuid::Uuid::new_v4()
+    ));
     match std::fs::rename(path, &target) {
         Ok(()) => tracing::warn!(
             target: "system",
@@ -104,35 +104,53 @@ fn quarantine(path: &Path, spec: BlobSpec, reason: &str) {
     }
 }
 
-/// `Ok(None)` means no usable durable copy exists, so the frontend may migrate
-/// its localStorage cache. `Err` is reserved for filesystem failures.
+/// Only never-created sources return None. Missing required or quarantined
+/// destinations are persistent failures; hydration cannot silently seed defaults.
 fn read_blob(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
     let path = blob_path(dir, spec);
+    let key = if spec.file_name == SETTINGS.file_name {
+        "dictation-settings"
+    } else {
+        "murmur-theme-library"
+    };
+    let required = murmur_core::completion::source_required(dir, key).map_err(|e| e.to_string())?;
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return if required {
+                Err("Expected source destination missing".into())
+            } else {
+                Ok(None)
+            }
+        }
         Err(e) => return Err(format!("Failed to read {}: {e}", spec.label)),
     };
     if metadata.len() > spec.max_bytes as u64 {
         quarantine(&path, spec, "over the size ceiling");
-        return Ok(None);
+        return Err("Source destination quarantined".into());
     }
 
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return if required {
+                Err("Expected source destination missing".into())
+            } else {
+                Ok(None)
+            }
+        }
         Err(e) => return Err(format!("Failed to read {}: {e}", spec.label)),
     };
     let contents = match String::from_utf8(bytes) {
         Ok(contents) => contents,
         Err(_) => {
             quarantine(&path, spec, "not valid UTF-8");
-            return Ok(None);
+            return Err("Source destination quarantined".into());
         }
     };
     if let Err(reason) = validate_blob(spec, &contents) {
         quarantine(&path, spec, &reason);
-        return Ok(None);
+        return Err("Source destination quarantined".into());
     }
     Ok(Some(contents))
 }
@@ -203,7 +221,8 @@ pub fn save_settings_blob(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     blob: String,
-) -> Result<(), String> {
+    owned_edits: Option<OwnedEdits>,
+) -> Result<String, String> {
     require_settings_owner(window.label())?;
     let value =
         murmur_core::state::settings(serde_json::from_str(&blob).map_err(|_| "Invalid settings")?)
@@ -217,7 +236,7 @@ pub fn save_settings_blob(
         // Assign revisions in durable commit order across concurrent saves.
         // Native overrides can still supersede this intent during disk I/O.
         let _guard = WRITE_LOCK.lock_or_recover();
-        let blob = merge_owned_fields(&dir, &blob)?;
+        let blob = merge_owned_fields_with_edits(&dir, &blob, owned_edits.as_ref())?;
         let revision = crate::dictation_control::accept_configuration(&app);
         write_blob_locked(&dir, SETTINGS, &blob)?;
         (revision, blob)
@@ -229,7 +248,21 @@ pub fn save_settings_blob(
             let _ = crate::dictation_control::configure_accepted(&handle, settings, revision);
         });
     }
-    Ok(())
+    if owned_edits
+        .as_ref()
+        .is_some_and(|e| e.auto_paste.is_some() || e.disabled.is_some())
+    {
+        let _ = app.events().send_to(
+            murmur_core::events::Consumer::Main,
+            "overlay-owned-setting-committed",
+            owned_fields_notification(
+                OverlaySettingField::Disabled,
+                serde_json::from_str::<serde_json::Value>(&blob).unwrap()["disabled"] == true,
+                &blob,
+            ),
+        );
+    }
+    Ok(blob)
 }
 
 fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
@@ -315,7 +348,21 @@ fn owned_fields_notification(
 
 /// Older full snapshots cannot undo an overlay commit accepted since their
 /// capture. The epoch is durable and advances with each owned-field patch.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OwnedEdits {
+    auto_paste: Option<bool>,
+    disabled: Option<bool>,
+}
+#[cfg(test)]
 fn merge_owned_fields(dir: &Path, blob: &str) -> Result<String, String> {
+    merge_owned_fields_with_edits(dir, blob, None)
+}
+fn merge_owned_fields_with_edits(
+    dir: &Path,
+    blob: &str,
+    edits: Option<&OwnedEdits>,
+) -> Result<String, String> {
     let mut incoming: serde_json::Value =
         serde_json::from_str(blob).map_err(|_| "Invalid settings")?;
     if let Some(current) = read_blob(dir, SETTINGS)? {
@@ -326,6 +373,23 @@ fn merge_owned_fields(dir: &Path, blob: &str) -> Result<String, String> {
             for field in ["autoPaste", "disabled", "ownedFieldsRevision"] {
                 incoming[field] = current[field].clone();
             }
+        }
+    }
+    if let Some(edits) = edits {
+        if edits.auto_paste.is_some() || edits.disabled.is_some() {
+            if let Some(v) = edits.auto_paste {
+                incoming["autoPaste"] = serde_json::json!(v);
+            }
+            if let Some(v) = edits.disabled {
+                incoming["disabled"] = serde_json::json!(v);
+            }
+            let epoch = incoming["ownedFieldsRevision"]
+                .as_u64()
+                .unwrap_or(0)
+                .checked_add(1)
+                .filter(|v| *v <= 9_007_199_254_740_991)
+                .ok_or("Settings revision exhausted")?;
+            incoming["ownedFieldsRevision"] = serde_json::json!(epoch);
         }
     }
     serde_json::to_string(&incoming).map_err(|_| "Invalid settings".into())
@@ -463,7 +527,15 @@ mod tests {
                 expected
             );
         }
-        assert_eq!(entries(&dir), vec!["settings.json", "theme-library.json"]);
+        assert_eq!(
+            entries(&dir),
+            vec![
+                "settings.json",
+                "settings.json.required",
+                "theme-library.json",
+                "theme-library.json.required"
+            ]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -508,7 +580,13 @@ mod tests {
                 .as_str()
             )
         );
-        assert_eq!(entries(&dir), vec![SETTINGS.file_name.to_string()]);
+        assert_eq!(
+            entries(&dir),
+            vec![
+                SETTINGS.file_name.to_string(),
+                "settings.json.required".into()
+            ]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -537,7 +615,7 @@ mod tests {
     fn quarantines_invalid_json_without_logging_content() {
         let dir = temp_dir("not_json");
         std::fs::write(blob_path(&dir, THEME_LIBRARY), "private transcript{{{").unwrap();
-        assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
+        assert!(read_blob(&dir, THEME_LIBRARY).is_err());
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
         assert!(
@@ -551,7 +629,7 @@ mod tests {
     fn quarantines_invalid_utf8() {
         let dir = temp_dir("invalid_utf8");
         std::fs::write(blob_path(&dir, SETTINGS), [0xff, 0xfe]).unwrap();
-        assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
+        assert!(read_blob(&dir, SETTINGS).is_err());
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
         assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
@@ -577,7 +655,7 @@ mod tests {
             format!(r#"{{"pad":"{padding}"}}"#),
         )
         .unwrap();
-        assert_eq!(read_blob(&dir, SETTINGS).unwrap(), None);
+        assert!(read_blob(&dir, SETTINGS).is_err());
         let names = entries(&dir);
         assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
         assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
@@ -608,7 +686,13 @@ mod tests {
             read_blob(&dir, THEME_LIBRARY).unwrap().as_deref(),
             Some(r#"{"revision":0,"themes":[],"version":1}"#)
         );
-        assert_eq!(entries(&dir), vec![THEME_LIBRARY.file_name.to_string()]);
+        assert_eq!(
+            entries(&dir),
+            vec![
+                THEME_LIBRARY.file_name.to_string(),
+                "theme-library.json.required".into()
+            ]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -624,7 +708,7 @@ mod tests {
         write_blob(&dir, SETTINGS, "{}").unwrap();
         delete_blob(&dir, THEME_LIBRARY).unwrap();
         delete_blob(&dir, THEME_LIBRARY).unwrap();
-        assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
+        assert!(read_blob(&dir, THEME_LIBRARY).is_err());
         assert!(read_blob(&dir, SETTINGS).unwrap().is_some());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -637,7 +721,11 @@ mod tests {
         std::fs::create_dir_all(blob_path(&dir, SETTINGS)).unwrap();
         assert!(write_blob(&dir, SETTINGS, "{}").is_err());
         assert!(!blob_path(&dir, SETTINGS).is_file());
-        assert_eq!(entries(&dir).len(), 1, "unexpected leftovers");
+        assert_eq!(
+            entries(&dir).len(),
+            1,
+            "future-schema read refuses a destination directory before publishing a receipt"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -684,6 +772,35 @@ mod lifecycle_ordering_tests {
         assert_eq!(value["disabled"], true);
         assert_eq!(value["autoPaste"], true);
         assert_eq!(value["language"], "es");
+        assert_eq!(value["ownedFieldsRevision"], 2);
+    }
+}
+
+#[cfg(test)]
+mod explicit_owned_edit_tests {
+    use super::*;
+    #[test]
+    fn missed_revision_event_does_not_undo_explicit_main_reenable() {
+        let dir = tempfile::tempdir().unwrap();
+        let stale=serde_json::json!({"settingsVersion":7,"disabled":false,"autoPaste":false,"ownedFieldsRevision":0}).to_string();
+        write_blob(dir.path(), SETTINGS, &stale).unwrap();
+        patch_owned_setting(dir.path(), OverlaySettingField::Disabled, true).unwrap();
+        // Main saw app-disabled-changed but missed the revision event. Its
+        // deliberate re-enable is still revision zero, and must patch rev one.
+        let _guard = WRITE_LOCK.lock_or_recover();
+        let committed = merge_owned_fields_with_edits(
+            dir.path(),
+            &stale,
+            Some(&OwnedEdits {
+                disabled: Some(false),
+                auto_paste: None,
+            }),
+        )
+        .unwrap();
+        write_blob_locked(dir.path(), SETTINGS, &committed).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&read_blob(dir.path(), SETTINGS).unwrap().unwrap()).unwrap();
+        assert_eq!(value["disabled"], false);
         assert_eq!(value["ownedFieldsRevision"], 2);
     }
 }

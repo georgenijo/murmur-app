@@ -58,3 +58,57 @@ it('snapshot failure still removes already-receipted transcript data', async () 
   await expect(initializeWebkitState(true)).rejects.toThrow('future schema');
   expect(localStorage.getItem('dictation-history')).toBeNull();
 });
+
+it('quota errors cannot suppress Rust writes for UI settings or themes', async () => {
+  const { sourceStorage, flushSourceState } = await import('./webkitLifecycle');
+  const { saveSettings, DEFAULT_SETTINGS } = await import('./settings');
+  const { writeThemeLibrary } = await import('./appearance/themeLibrary');
+  mock.invoke.mockResolvedValue(undefined);
+  const quota = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new DOMException('synthetic quota', 'QuotaExceededError'); });
+  sourceStorage.setItem('usage-dashboard-collapsed', 'true');
+  saveSettings({ ...DEFAULT_SETTINGS, language: 'ja' });
+  writeThemeLibrary({ version: 1, revision: 1, themes: [] });
+  await flushSourceState();
+  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: true });
+  expect(mock.invoke.mock.calls.some(([c,a]) => c === 'save_settings_blob' && JSON.parse(a.blob).language === 'ja')).toBe(true);
+  expect(mock.invoke.mock.calls.some(([c]) => c === 'save_theme_library_blob')).toBe(true);
+  quota.mockRestore();
+});
+it.each([false, true])('in-flight generation cannot discard the newer edit on failure=%s', async fail => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  mock.invoke.mockImplementationOnce(async () => {
+    entered(); await new Promise<void>(resolve => { release = resolve; });
+    if (fail) throw new Error('synthetic storage failure');
+  }).mockResolvedValue(undefined);
+  persistSourceState('usage-dashboard-collapsed', 'true');
+  await started;
+  persistSourceState('usage-dashboard-collapsed', 'false');
+  release();
+  await flushSourceState();
+  expect(mock.invoke).toHaveBeenLastCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: false });
+});
+it.each([false, true])('removes obsolete calibration key after v2, settings-present=%s', async present => {
+  localStorage.setItem('murmur-overlay-vertical-offset', '48');
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, values: present ? { 'dictation-settings': { settingsVersion: 7, overlayVerticalOffset: 0 } } : {} });
+  await initializeWebkitState();
+  expect(localStorage.getItem('murmur-overlay-vertical-offset')).toBeNull();
+});
+it('retries interrupted individual transcript removals before acknowledgement', async () => {
+  const { removeImportedKeys } = await import('./completionData');
+  const keys = ['dictation-history','dictation-stats','murmur-benchmark-report','murmur-benchmark-reports'];
+  for (const failing of keys) {
+    keys.forEach(k => localStorage.setItem(k,'[]')); mock.invoke.mockClear();
+    const original = localStorage.removeItem.bind(localStorage);
+    const failure = vi.spyOn(localStorage,'removeItem').mockImplementation(k => { if(k===failing) throw new Error('synthetic interruption'); original(k); });
+    const snapshot = { revision: 1001, v1Committed: true, history: [], reports: [], statistics: {} as never, removeKeys: keys, retryNotice: false };
+    try { await removeImportedKeys(snapshot); } catch { /* preserved for retry */ }
+    expect(localStorage.getItem(failing)).not.toBeNull();
+    failure.mockRestore();
+    await removeImportedKeys(snapshot);
+    keys.forEach(k => expect(localStorage.getItem(k)).toBeNull());
+    expect(mock.invoke).toHaveBeenCalledWith('acknowledge_completion_keys', { destinations: ['history','statistics','reports'] });
+  }
+});

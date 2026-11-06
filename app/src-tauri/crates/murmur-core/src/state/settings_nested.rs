@@ -30,11 +30,11 @@ fn rows(v: &Value) -> impl Iterator<Item = &Value> {
     v.as_array().into_iter().flatten()
 }
 fn truncate(s: &str) -> String {
-    s.chars().take(256).collect()
+    String::from_utf16_lossy(&s.encode_utf16().take(256).collect::<Vec<_>>())
 }
 pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value) {
     let profiles: Vec<_> = rows(&p["appProfiles"]).filter(|v| !text(&v["bundleId"]).is_empty()).map(|v| {
-        let mut out=json!({"bundleId":text(&v["bundleId"]),"label":v["label"].as_str().unwrap_or(""),"writingStyle":style(&v["writingStyle"]),"ideContextEnabled":v["ideContextEnabled"]==true,"ideProjectRoots":rows(&unique_strings(&v["ideProjectRoots"],usize::MAX)).filter(|v| v.as_str().unwrap().len()<=4096).take(4).cloned().collect::<Vec<_>>()});
+        let mut out=json!({"bundleId":text(&v["bundleId"]),"label":v["label"].as_str().unwrap_or(""),"writingStyle":style(&v["writingStyle"]),"ideContextEnabled":v["ideContextEnabled"]==true,"ideProjectRoots":rows(&unique_strings(&v["ideProjectRoots"],usize::MAX)).filter(|v| v.as_str().unwrap().encode_utf16().count()<=4096).take(4).cloned().collect::<Vec<_>>()});
         for k in ["autoPasteOverride","cleanupOverride","smartFormattingOverride","cliFormattingOverride"] { out[k]=nullable(&v[k]); }
         if !text(&v["modeId"]).is_empty() { out["modeId"]=json!(text(&v["modeId"])); }
         out
@@ -46,9 +46,9 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
         let id = text(&v["id"]);
         let name = text(&v["name"]);
         if id.is_empty()
-            || id.len() > 128
+            || id.encode_utf16().count() > 128
             || name.is_empty()
-            || name.len() > 128
+            || name.encode_utf16().count() > 128
             || ids.contains(&json!(id))
             || v["builtIn"] == true
         {
@@ -111,7 +111,7 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
         "com.google.Chrome",
         "com.brave.Browser",
         "com.microsoft.edgemac",
-        "org.mozilla.firefox",
+        "org.chromium.Chromium",
         "company.thebrowser.Browser",
     ];
     let mut rules = vec![];
@@ -119,14 +119,14 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
     let mut sites = vec![];
     for v in rows(&p["browserSiteRules"]).take(128) {
         let id = text(&v["id"]);
-        let host = text(&v["host"]).trim_end_matches('.').to_ascii_lowercase();
+        let host = text(&v["host"]).to_lowercase();
+        let host = host.strip_suffix('.').unwrap_or(&host).to_string();
         let site = (text(&v["browserBundleId"]), host.clone());
         if id.is_empty()
-            || id.len() > 128
+            || id.encode_utf16().count() > 128
             || rule_ids.contains(&id)
             || sites.contains(&site)
-            || host.is_empty()
-            || host.contains(['/', ':', ' ', '@', '*'])
+            || !valid_host(&host)
             || !allowed(&v["browserBundleId"], &browsers)
             || !ids.contains(&v["modeId"])
         {
@@ -177,4 +177,23 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
         Value::Null
     };
     p.insert("codeVocabLastScan".into(), scan);
+}
+
+fn valid_host(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 || host.contains(':') {
+        return false;
+    }
+    if host == "localhost" {
+        return true;
+    }
+    let labels: Vec<_> = host.split('.').collect();
+    labels.len() > 1
+        && labels.iter().all(|s| {
+            !s.is_empty()
+                && s.len() <= 63
+                && s.as_bytes()[0].is_ascii_alphanumeric()
+                && s.as_bytes()[s.len() - 1].is_ascii_alphanumeric()
+                && s.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }

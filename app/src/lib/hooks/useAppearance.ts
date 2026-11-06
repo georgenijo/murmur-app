@@ -37,7 +37,6 @@ import {
   sanitizeTheme,
   writeAppearanceDocument,
   writeAppearanceExport,
-  writeThemeLibrary,
   type AppearanceChangeReason,
   type AppearanceChangedEvent,
   type AppearanceController,
@@ -144,7 +143,6 @@ function useMainAppearanceController(): AppearanceController {
     initialLibraryRef.current.status === 'unavailable' ? initialLibraryRef.current.error : null,
   );
   const initializedRef = useRef(false);
-  const libraryInitializedRef = useRef(false);
   const selectionReconciledRef = useRef(false);
   const operationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const libraryOperationQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -185,24 +183,6 @@ function useMainAppearanceController(): AppearanceController {
     void applyNativeTheme(current.mode)
       .catch((cause) => setError(`Failed to apply native appearance: ${String(cause)}`));
   }, [reflect]);
-
-  useEffect(() => {
-    if (libraryInitializedRef.current) return;
-    libraryInitializedRef.current = true;
-    const initial = initialLibraryRef.current!;
-    if (initial.status !== 'ready' || !initial.needsRepair) return;
-    const repaired: ThemeLibraryDocumentV1 = {
-      ...initial.document,
-      revision: nextAppearanceRevision(initial.document.revision),
-    };
-    try {
-      writeThemeLibrary(repaired);
-      libraryDocumentRef.current = repaired;
-      setLibraryDocument(repaired);
-    } catch (cause) {
-      setLibraryError(`Failed to repair the theme library: ${String(cause)}`);
-    }
-  }, []);
 
   useSystemAppearance(document, (appearance, nextAdjustments) => {
     setResolvedAppearance(appearance);

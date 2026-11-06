@@ -115,6 +115,22 @@ impl Storage {
         tracing::warn!(target:"completion", store=name, "unusable completion file quarantined");
         Ok(None)
     }
+    pub fn quarantined(&self, name: &str) -> Result<bool> {
+        let stem = std::path::Path::new(name)
+            .file_stem()
+            .ok_or(Error::Invalid)?
+            .to_string_lossy();
+        Ok(fs::read_dir(&self.root)
+            .map_err(|_| Error::Io)?
+            .any(|entry| {
+                entry.is_ok_and(|e| {
+                    let n = e.file_name();
+                    let n = n.to_string_lossy();
+                    n.starts_with(&format!("{stem}.quarantine-"))
+                        || n.starts_with(&format!("{name}.corrupt-"))
+                })
+            }))
+    }
     pub fn sync_directory(&self) -> Result<()> {
         #[cfg(test)]
         {

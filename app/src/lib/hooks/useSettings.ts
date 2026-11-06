@@ -45,11 +45,11 @@ export function useSettings() {
   );
   const audioInventory = useAudioInputInventory(microphoneMigrationPending);
 
-  const persistSettings = useCallback((next: Settings) => {
+  const persistSettings = useCallback((next: Settings, ownedEdits?: Partial<Pick<Settings, 'autoPaste' | 'disabled'>>) => {
     saveSettings({
       ...next,
       meetingSuggestionsEnabled: confirmedMeetingSuggestionsEnabledRef.current,
-    });
+    }, ownedEdits);
   }, []);
 
   const scheduleProbePolicyWrite = useCallback(() => {
@@ -318,7 +318,10 @@ export function useSettings() {
       setProbeConfigureError(null);
     }
     setSettings(newSettings);
-    persistSettings(newSettings);
+    persistSettings(newSettings, {
+      ...(typeof updates.autoPaste === 'boolean' ? { autoPaste: updates.autoPaste } : {}),
+      ...(typeof updates.disabled === 'boolean' ? { disabled: updates.disabled } : {}),
+    });
 
     if (meetingSuggestionsChanged && meetingSuggestionVersion !== null) {
       enqueueMeetingSuggestionChange(newSettings.meetingSuggestionsEnabled, meetingSuggestionVersion);

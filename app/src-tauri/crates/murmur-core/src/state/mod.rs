@@ -19,7 +19,7 @@ fn unique_strings(v: &Value, cap: usize) -> Value {
         let s = s.trim();
         if !s.is_empty()
             && !s.contains('\0')
-            && s.len() <= 4096
+            && s.encode_utf16().count() <= 4096
             && !out.contains(&json!(s))
             && out.len() < cap
         {
@@ -285,12 +285,11 @@ mod tests {
                 .as_object_mut()
                 .unwrap()
                 .extend(case["output"].as_object().unwrap().clone());
-            let mut result = settings(input).unwrap();
-            result.as_object_mut().unwrap().remove("settingsVersion");
-            result
-                .as_object_mut()
-                .unwrap()
-                .remove("launchOnboardingComplete");
+            expected["settingsVersion"] = json!(7);
+            if let Some(gate) = input.get("launchOnboardingComplete") {
+                expected["launchOnboardingComplete"] = gate.clone();
+            }
+            let result = settings(input).unwrap();
             if result != expected {
                 let differences: Vec<_> = expected
                     .as_object()
@@ -337,6 +336,161 @@ mod source_tests {
                 crate::completion::save_source(root.path(), "dictation-settings", "{}").is_err()
             );
             assert_eq!(std::fs::read(&path).unwrap(), future);
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    #[test]
+    fn literal_defaults_consents_smart_destination_and_correction_fuzzy() {
+        let v = settings(json!({})).unwrap();
+        assert_eq!(v["model"], "parakeet-tdt-0.6b-v3-coreml");
+        assert_eq!(v["idleTimeoutMinutes"], 5);
+        for key in [
+            "autoPaste",
+            "smartDestinationEnabled",
+            "meetingRetainAudio",
+            "meetingSuggestionsEnabled",
+            "smartAutoProbeEnabled",
+            "smartAutoAllowContinuity",
+            "saveAudio",
+            "saveTranscript",
+        ] {
+            assert_eq!(v[key], false, "{key}");
+        }
+        assert_eq!(v["retainHistory"], true);
+        assert_eq!(v["overlayLiveWords"], true);
+        assert_eq!(v["correctionFuzzy"], true);
+        assert_eq!(
+            settings(json!({"smartDestinationEnabled":true})).unwrap()["smartDestinationEnabled"],
+            true
+        );
+        for bad in [json!("true"), json!(1), json!({}), Value::Null] {
+            let v = settings(json!({"smartDestinationEnabled":bad,"correctionFuzzy":bad})).unwrap();
+            assert_eq!(v["smartDestinationEnabled"], false);
+            assert_eq!(v["correctionFuzzy"], true);
+        }
+        assert_eq!(
+            settings(json!({"idleTimeoutMinutes":-1})).unwrap()["idleTimeoutMinutes"],
+            -1
+        );
+    }
+    #[test]
+    fn complete_model_catalog_preserves_every_supported_model() {
+        let models = [
+            "parakeet-tdt-0.6b-v3-coreml",
+            "tiny.en",
+            "base.en",
+            "small.en",
+            "medium.en",
+            "large-v3-turbo",
+            "parakeet-tdt-0.6b-v2-fp16",
+        ];
+        let catalog: Value = serde_json::from_str(include_str!("settings-catalog.json")).unwrap();
+        assert_eq!(catalog["models"], json!(models));
+        for model in models {
+            assert_eq!(settings(json!({"model":model})).unwrap()["model"], model);
+        }
+    }
+    #[test]
+    fn every_supported_browser_and_exact_legacy_host_contract() {
+        let browsers = [
+            "com.apple.Safari",
+            "com.google.Chrome",
+            "com.microsoft.edgemac",
+            "com.brave.Browser",
+            "company.thebrowser.Browser",
+            "org.chromium.Chromium",
+        ];
+        for browser in browsers {
+            for (host, expected) in [
+                (" Foo.COM. ", Some("foo.com")),
+                ("localhost", Some("localhost")),
+                ("a-b.example", Some("a-b.example")),
+                ("-foo.com", None),
+                ("foo-.com", None),
+                ("foo..com", None),
+                ("foo.com..", None),
+                ("foo", None),
+                ("https://foo.com", None),
+                ("f_o.com", None),
+                ("foo.com:80", None),
+                ("*.com", None),
+                ("foo bar.com", None),
+                ("日本.com", None),
+            ] {
+                let v = settings(json!({"browserSiteRules":[{"id":"rule","browserBundleId":browser,"host":host,"modeId":"builtin.everyday"}]})).unwrap();
+                assert_eq!(
+                    v["browserSiteRules"].as_array().unwrap().len(),
+                    usize::from(expected.is_some()),
+                    "{browser}/{host}"
+                );
+                if let Some(host) = expected {
+                    assert_eq!(v["browserSiteRules"][0]["host"], host);
+                }
+            }
+        }
+        for host in [
+            format!("{}.com", "a".repeat(64)),
+            format!(
+                "{}.{}.{}.com",
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63)
+            ) + &"d".repeat(64),
+        ] {
+            assert!(settings(json!({"browserSiteRules":[{"id":"r","browserBundleId":"com.apple.Safari","host":host,"modeId":"builtin.everyday"}]})).unwrap()["browserSiteRules"].as_array().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn unicode_bounds_count_utf16_for_modes_roots_vocabulary_and_theme_labels() {
+        for (name, accepted) in [
+            ("日".repeat(60), true),
+            ("日".repeat(128), true),
+            ("日".repeat(129), false),
+            ("😀".repeat(64), true),
+            ("😀".repeat(65), false),
+        ] {
+            let v = settings(json!({"modes":[{"id":"mode","name":name}],"activeModeId":"mode"}))
+                .unwrap();
+            assert_eq!(v["modes"].as_array().unwrap().len(), usize::from(accepted));
+            assert_eq!(
+                v["activeModeId"],
+                if accepted { "mode" } else { "builtin.everyday" }
+            );
+        }
+        let v=settings(json!({"appProfiles":[{"bundleId":"synthetic","ideProjectRoots":["日".repeat(4096), "😀".repeat(2049)]}], "vocabularyEntries":[{"written":"😀".repeat(129),"aliases":["日".repeat(300)]}]})).unwrap();
+        assert_eq!(
+            v["appProfiles"][0]["ideProjectRoots"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            v["vocabularyEntries"][0]["written"]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .count(),
+            256
+        );
+        assert_eq!(
+            v["vocabularyEntries"][0]["aliases"][0]
+                .as_str()
+                .unwrap()
+                .encode_utf16()
+                .count(),
+            256
+        );
+        for (label, valid) in [
+            ("日".repeat(64), true),
+            ("😀".repeat(32), true),
+            ("😀".repeat(33), false),
+        ] {
+            assert_eq!(normalize("murmur-theme-library", json!({"version":1,"themes":[{"version":1,"id":"fixture","label":label,"modes":["dark"],"theme":{"version":1},"source":{"kind":"local"}}]})).is_ok(), valid);
         }
     }
 }

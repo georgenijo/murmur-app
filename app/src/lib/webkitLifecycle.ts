@@ -13,12 +13,13 @@ export const SOURCE_STORAGE_FAILED = 'murmur-source-storage-error';
 export const SOURCE_STORAGE_SAVED = 'murmur-source-storage-saved';
 let writes: Promise<unknown> = Promise.resolve();
 let generation = 0;
-const pending = new Map<string, { raw: string; generation: number }>();
+export type OwnedEdits = Partial<Record<'autoPaste' | 'disabled', boolean>>;
+const pending = new Map<string, { raw: string; generation: number; ownedEdits?: OwnedEdits }>();
 /** Ordered, retryable commits. A failed write retains the newest intent for
  * each key; an older async completion cannot discard a newer pending edit. */
-export function persistSourceState(key: string, raw: string): void {
+export function persistSourceState(key: string, raw: string, ownedEdits?: OwnedEdits): void {
   try { if (!isTauri()) return; } catch { return; }
-  pending.set(key, { raw, generation: ++generation });
+  pending.set(key, { raw, generation: ++generation, ...(ownedEdits || pending.get(key)?.ownedEdits ? { ownedEdits: { ...pending.get(key)?.ownedEdits, ...ownedEdits } } : {}) });
   void flushSourceState().catch(() => {});
 }
 export function flushSourceState(): Promise<unknown> {
@@ -26,7 +27,7 @@ export function flushSourceState(): Promise<unknown> {
     try {
       for (const [key, intent] of pending) {
         if (key === 'dictation-settings' || key === 'murmur-theme-library') {
-          await invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw });
+          await invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(intent.ownedEdits ? { ownedEdits: intent.ownedEdits } : {}) });
         } else {
           await invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown });
         }
@@ -50,8 +51,8 @@ export function rebasePendingOwnedSettings(settings: { autoPaste: boolean; disab
 export const sourceStorage = {
   getItem: (key: string) => localStorage.getItem(key),
   setItem(key: string, value: string) {
-    localStorage.setItem(key, value);
     persistSourceState(key, value);
+    try { localStorage.setItem(key, value); } catch { /* Rust intent remains queued. */ }
   },
 };
 export async function initializeWebkitState(importLegacy = false): Promise<void> {

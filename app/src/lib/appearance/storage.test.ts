@@ -58,7 +58,7 @@ describe('appearance storage', () => {
     expect(loaded.error).not.toBeNull();
   });
 
-  it('preserves authoritative configuration and repairs a partial cache', () => {
+  it('regenerates a partial derived cache without repairing source', () => {
     const source = createAppearanceDocument('dark', {
       version: 1,
       presetId: 'custom',
@@ -74,7 +74,7 @@ describe('appearance storage', () => {
       mode: 'dark',
       theme: { presetId: 'custom', accent: '#abcdef' },
     });
-    expect(loaded.needsRepair).toBe(true);
+    expect(loaded.needsRepair).toBe(false);
     expect(loaded.document.cache.dark).toBeDefined();
   });
 
@@ -143,7 +143,7 @@ describe('appearance storage', () => {
     });
   });
 
-  it('repairs semantically equivalent documents into canonical key order once', () => {
+  it('accepts source key reordering without a durable repair', () => {
     const document = createAppearanceDocument('dark', {
       version: 1,
       presetId: 'custom',
@@ -161,7 +161,7 @@ describe('appearance storage', () => {
     const loaded = loadAppearanceDocument(storage);
     expect(loaded).toEqual({
       document,
-      needsRepair: true,
+      needsRepair: false,
       error: null,
     });
 

@@ -637,3 +637,11 @@ WKWebsiteDataStore, verifies no records, releases the store, removes the bundle
 store directory and syncs its parent before writing the retirement receipt.
 This release cannot retire: it never writes v3. See the
 [design and failure matrix](draft/gpui-webkit-lifecycle.md).
+
+The renderer retains defensive theme-library decoding for presentation and import
+previews. It never publishes library repairs on load; Rust publishes reserved-ID
+migrations. Derived appearance caches are regenerated without a source revision
+or repair event. Full settings writes accept optional deliberate owned-field
+edits and return their committed snapshot; the writer lock merges these edits
+against current disk state. The status command takes the same lock because a
+no-WebKit status request can complete an import.

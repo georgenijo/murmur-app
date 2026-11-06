@@ -1,3 +1,32 @@
+/// Capability obtained from the actual host webview, never a guessed directory.
+#[derive(Clone)]
+pub struct StoreIdentity {
+    store: Retained<WKWebsiteDataStore>,
+}
+impl StoreIdentity {
+    /// # Safety
+    /// `view` must be a live WKWebView on this main thread (Tauri with_webview.inner()).
+    /// Refuse custom/incognito stores: the legacy app uses the default store.
+    pub unsafe fn from_app_webview(
+        view: *mut std::ffi::c_void,
+        mtm: MainThreadMarker,
+    ) -> Result<Self, &'static str> {
+        let view = unsafe { (view as *mut WKWebView).as_ref() }.ok_or("missing_webview")?;
+        let store = unsafe { view.configuration().websiteDataStore() };
+        let expected = unsafe { WKWebsiteDataStore::defaultDataStore(mtm) };
+        if !std::ptr::eq(&*store, &*expected) {
+            return Err("unproven_store_identity");
+        }
+        Ok(Self { store })
+    }
+    /// Synthetic roots only. Never obtains the default store.
+    pub fn synthetic(store: &WKWebsiteDataStore) -> Self {
+        assert!(!unsafe { store.isPersistent() });
+        Self {
+            store: unsafe { Retained::retain(store as *const _ as *mut _).unwrap() },
+        }
+    }
+}
 use murmur_core::completion::{
     lifecycle::{Operation, TRANSCRIPT_KEYS, V2_KEYS},
     Command, CompletionService, Destination,
@@ -7,15 +36,23 @@ use objc2::{
     MainThreadMarker, MainThreadOnly,
 };
 use objc2_foundation::{
-    NSData, NSObject, NSObjectProtocol, NSRect, NSString, NSURLRequest, NSURLResponse, NSURL,
+    NSData, NSError, NSObject, NSObjectProtocol, NSRect, NSString, NSURLRequest, NSURLResponse,
+    NSURL,
 };
 use objc2_web_kit::*;
-use std::{cell::RefCell, collections::BTreeMap, sync::mpsc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 
 #[derive(Default)]
 struct Ivars {
     messages: RefCell<Option<mpsc::Sender<String>>>,
     page: RefCell<String>,
+    failed: Rc<Cell<bool>>,
 }
 define_class!(
     #[unsafe(super(NSObject))]
@@ -53,6 +90,30 @@ define_class!(
         #[unsafe(method(webView:stopURLSchemeTask:))]
         unsafe fn stop(&self, _view: &WKWebView, _task: &ProtocolObject<dyn WKURLSchemeTask>) {}
     }
+    unsafe impl WKNavigationDelegate for Handler {
+        #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
+        unsafe fn provisional_failed(
+            &self,
+            _view: &WKWebView,
+            _navigation: Option<&WKNavigation>,
+            _error: &NSError,
+        ) {
+            self.ivars().failed.set(true);
+        }
+        #[unsafe(method(webView:didFailNavigation:withError:))]
+        unsafe fn navigation_failed(
+            &self,
+            _view: &WKWebView,
+            _navigation: Option<&WKNavigation>,
+            _error: &NSError,
+        ) {
+            self.ivars().failed.set(true);
+        }
+        #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+        unsafe fn process_failed(&self, _view: &WKWebView) {
+            self.ivars().failed.set(true);
+        }
+    }
     unsafe impl WKScriptMessageHandler for Handler {
         #[unsafe(method(userContentController:didReceiveScriptMessage:))]
         unsafe fn message(&self, _controller: &WKUserContentController, message: &WKScriptMessage) {
@@ -66,8 +127,23 @@ define_class!(
     }
 );
 /// An invisible, standalone importer. The owning native host retains it and
-/// calls poll from its main loop until Done, before presenting user data.
+/// calls poll until a terminal status. Both Done and PreservedForRetry unblock
+/// presentation of Rust-owned data; failures retry on a later launch.
 /// Drop it before store retirement. React hosts use their main startup instead.
+#[derive(Clone, Copy)]
+pub enum SyntheticFailure {
+    Navigation,
+    ProcessTermination,
+    Javascript,
+    Deadline,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RetirementFailure {
+    Purge,
+    Verification,
+    DirectoryRemoval,
+    ParentSync,
+}
 type WorkResult = Result<(Vec<String>, bool), ()>;
 pub struct Importer {
     view: Retained<WKWebView>,
@@ -78,6 +154,9 @@ pub struct Importer {
     removing: bool,
     done: bool,
     committed: bool,
+    failed: bool,
+    synthetic_failure: Option<SyntheticFailure>,
+    deadline: Instant,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum ImportStatus {
@@ -89,12 +168,39 @@ impl Importer {
     /// `store` is selected by the host. Production's native host passes the
     /// default store; tests always pass a custom nonpersistent store. This
     /// constructor itself never opens a default store or production directory.
-    pub fn new(
+    /// Native startup gates creation before touching WebKit. A failed importer
+    /// is terminal for this launch; the host presents Rust data and retries later.
+    pub fn start(
         mtm: MainThreadMarker,
-        store: &WKWebsiteDataStore,
+        identity: impl FnOnce() -> Result<StoreIdentity, &'static str>,
         service: CompletionService,
-    ) -> Self {
-        Self::with_seed(mtm, store, service, None)
+    ) -> Result<Option<Self>, &'static str> {
+        if service
+            .lifecycle(Operation::Status)
+            .map_err(|_| "source_storage_failed")?
+            .retired
+        {
+            return Ok(None);
+        }
+        let identity = identity()?;
+        Ok(Some(Self::new(mtm, &identity, service)))
+    }
+    /// Production adapter receives the actual Tauri/wry WKWebView pointer.
+    /// # Safety
+    /// Same pointer/main-thread preconditions as StoreIdentity::from_app_webview.
+    pub unsafe fn start_from_app_webview(
+        mtm: MainThreadMarker,
+        view: *mut std::ffi::c_void,
+        service: CompletionService,
+    ) -> Result<Option<Self>, &'static str> {
+        Self::start(
+            mtm,
+            || unsafe { StoreIdentity::from_app_webview(view, mtm) },
+            service,
+        )
+    }
+    fn new(mtm: MainThreadMarker, identity: &StoreIdentity, service: CompletionService) -> Self {
+        Self::with_seed(mtm, &identity.store, service, None)
     }
     /// Synthetic fixture support; seeds only a caller-supplied custom store.
     /// Refuses persistent stores, so fixture code cannot touch production data.
@@ -135,7 +241,8 @@ impl Importer {
             msg_send![
                 super(Handler::alloc(mtm).set_ivars(Ivars {
                     messages: RefCell::new(Some(send)),
-                    page: RefCell::new(page)
+                    page: RefCell::new(page),
+                    failed: Rc::new(Cell::new(false))
                 })),
                 init
             ]
@@ -163,6 +270,11 @@ impl Importer {
         };
         let url = NSURL::URLWithString(&NSString::from_str("tauri://localhost/")).unwrap();
         unsafe {
+            view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*handler)));
+            assert!(
+                std::ptr::eq(&*view.configuration().websiteDataStore(), store),
+                "importer store identity mismatch"
+            );
             view.loadRequest(&NSURLRequest::requestWithURL(&url));
         }
         Self {
@@ -174,7 +286,38 @@ impl Importer {
             removing: false,
             done: false,
             committed: false,
+            failed: false,
+            synthetic_failure: None,
+            deadline: Instant::now() + Duration::from_secs(30),
         }
+    }
+    /// Callback/deadline fault seams, restricted to caller-owned synthetic stores.
+    pub fn fail_after_import(&mut self, failure: SyntheticFailure) {
+        assert!(!unsafe { self.view.configuration().websiteDataStore().isPersistent() });
+        self.synthetic_failure = Some(failure);
+    }
+    /// Inspect the four exact keys independently of Rust receipts (synthetic only).
+    pub fn inspect_transcript_keys(&self) -> mpsc::Receiver<bool> {
+        assert!(!unsafe { self.view.configuration().websiteDataStore().isPersistent() });
+        let (send, receive) = mpsc::channel();
+        let js = format!(
+            "JSON.stringify({}.map(k=>localStorage.getItem(k)))",
+            serde_json::to_string(TRANSCRIPT_KEYS).unwrap()
+        );
+        let done = block2::RcBlock::new(
+            move |value: *mut objc2::runtime::AnyObject, error: *mut NSError| {
+                let absent = error.is_null()
+                    && unsafe { value.as_ref() }
+                        .and_then(|v| v.downcast_ref::<NSString>())
+                        .is_some_and(|s| s.to_string() == "[null,null,null,null]");
+                let _ = send.send(absent);
+            },
+        );
+        unsafe {
+            self.view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(&js), Some(&done));
+        }
+        receive
     }
     /// The main thread only handles bounded messages and JavaScript transport;
     /// all durable I/O stays on a worker and the completion actor.
@@ -182,12 +325,17 @@ impl Importer {
         if self.done {
             return ImportStatus::Done;
         }
+        if self.failed || self.handler.ivars().failed.get() || Instant::now() >= self.deadline {
+            self.failed = true;
+            return ImportStatus::PreservedForRetry;
+        }
         if let Some(pending) = &self.pending {
             match pending.try_recv() {
                 Ok(Ok((keys, committed))) => {
                     self.pending = None;
                     if self.removing {
                         self.done = committed;
+                        self.failed = !committed;
                         return if committed {
                             ImportStatus::Done
                         } else {
@@ -195,15 +343,54 @@ impl Importer {
                         };
                     }
                     self.committed = committed;
-                    let js = format!("removeImported({})", serde_json::to_string(&keys).unwrap());
+                    let mut js =
+                        format!("removeImported({})", serde_json::to_string(&keys).unwrap());
+                    if let Some(failure) = self.synthetic_failure.take() {
+                        match failure {
+                            SyntheticFailure::Javascript => {
+                                js = "throw new Error('synthetic')".into()
+                            }
+                            SyntheticFailure::Navigation => {
+                                let error = NSError::new(1, &NSString::from_str("synthetic"));
+                                unsafe {
+                                    let _: () = msg_send![&*self.handler, webView: &*self.view, didFailNavigation: Option::<&WKNavigation>::None, withError: &*error];
+                                }
+                                self.failed = true;
+                                return ImportStatus::PreservedForRetry;
+                            }
+                            SyntheticFailure::ProcessTermination => {
+                                unsafe {
+                                    let _: () = msg_send![&*self.handler, webViewWebContentProcessDidTerminate: &*self.view];
+                                }
+                                self.failed = true;
+                                return ImportStatus::PreservedForRetry;
+                            }
+                            SyntheticFailure::Deadline => {
+                                self.deadline = Instant::now();
+                                self.failed = true;
+                                return ImportStatus::PreservedForRetry;
+                            }
+                        }
+                    }
+                    let failed = self.handler.ivars().failed.clone();
+                    let completion = block2::RcBlock::new(
+                        move |_value: *mut objc2::runtime::AnyObject, error: *mut NSError| {
+                            if !error.is_null() {
+                                failed.set(true);
+                            }
+                        },
+                    );
                     unsafe {
-                        self.view
-                            .evaluateJavaScript_completionHandler(&NSString::from_str(&js), None);
+                        self.view.evaluateJavaScript_completionHandler(
+                            &NSString::from_str(&js),
+                            Some(&completion),
+                        );
                     }
                     self.removing = true;
                 }
                 Ok(Err(())) | Err(mpsc::TryRecvError::Disconnected) => {
                     self.pending = None;
+                    self.failed = true;
                     return ImportStatus::PreservedForRetry;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -212,9 +399,11 @@ impl Importer {
         if self.pending.is_none() {
             if let Ok(raw) = self.receive.try_recv() {
                 if raw.len() > 32 * 1024 * 1024 {
+                    self.failed = true;
                     return ImportStatus::PreservedForRetry;
                 }
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                    self.failed = true;
                     return ImportStatus::PreservedForRetry;
                 };
 
@@ -272,6 +461,7 @@ impl Importer {
 impl Drop for Importer {
     fn drop(&mut self) {
         unsafe {
+            self.view.setNavigationDelegate(None);
             self.view.stopLoading();
             self.view
                 .configuration()
@@ -290,6 +480,9 @@ pub struct Retirement {
     service: CompletionService,
     result: mpsc::Receiver<bool>,
     phase: u8,
+    synthetic_failure: Option<RetirementFailure>,
+    deadline: Instant,
+    failed: bool,
 }
 impl Retirement {
     /// # Safety
@@ -298,7 +491,7 @@ impl Retirement {
     /// Never pass production paths in a test. The v3 receipt is mandatory; 1.5
     /// cannot retire a store because #990 has not shipped that receipt yet.
     pub unsafe fn new(
-        store: Retained<WKWebsiteDataStore>,
+        identity: StoreIdentity,
         directory: std::path::PathBuf,
         service: CompletionService,
     ) -> Self {
@@ -308,21 +501,35 @@ impl Retirement {
             let _ = send.send(worker.lifecycle(Operation::BeginRetirement).is_ok());
         });
         Self {
-            store: Some(store),
+            store: Some(identity.store),
             directory,
             service,
             result,
             phase: 0,
+            synthetic_failure: None,
+            deadline: Instant::now() + Duration::from_secs(30),
+            failed: false,
         }
+    }
+    pub fn inject_failure(&mut self, failure: RetirementFailure) {
+        assert!(!unsafe { self.store.as_ref().unwrap().isPersistent() });
+        self.synthetic_failure = Some(failure);
     }
     pub fn poll(&mut self, mtm: MainThreadMarker) -> ImportStatus {
         if self.phase == 3 {
             return ImportStatus::Done;
         }
+        if self.failed || Instant::now() >= self.deadline {
+            self.failed = true;
+            return ImportStatus::PreservedForRetry;
+        }
         match self.result.try_recv() {
             Err(mpsc::TryRecvError::Empty) => return ImportStatus::Pending,
             Ok(true) => {}
-            _ => return ImportStatus::PreservedForRetry,
+            _ => {
+                self.failed = true;
+                return ImportStatus::PreservedForRetry;
+            }
         }
         if self.phase == 4 {
             self.phase = 3;
@@ -332,6 +539,10 @@ impl Retirement {
         self.result = result;
         match self.phase {
             0 => {
+                if self.synthetic_failure == Some(RetirementFailure::Purge) {
+                    self.failed = true;
+                    return ImportStatus::PreservedForRetry;
+                }
                 let done = block2::RcBlock::new(move || {
                     let _ = send.send(true);
                 });
@@ -347,11 +558,13 @@ impl Retirement {
                 }
             }
             1 => {
+                let fail_verification =
+                    self.synthetic_failure == Some(RetirementFailure::Verification);
                 let done = block2::RcBlock::new(
                     move |records: std::ptr::NonNull<
                         objc2_foundation::NSArray<WKWebsiteDataRecord>,
                     >| {
-                        let empty = unsafe { records.as_ref() }.count() == 0;
+                        let empty = unsafe { records.as_ref() }.count() == 0 && !fail_verification;
                         let _ = send.send(empty);
                     },
                 );
@@ -368,15 +581,28 @@ impl Retirement {
             2 => {
                 self.store.take();
                 let directory = self.directory.clone();
+                let failure = self.synthetic_failure;
                 let service = self.service.clone();
                 std::thread::spawn(move || {
                     let done = (|| {
                         match std::fs::symlink_metadata(&directory) {
                             Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {
+                                if failure == Some(RetirementFailure::DirectoryRemoval) {
+                                    if let Some(entry) =
+                                        std::fs::read_dir(&directory).map_err(|_| ())?.next()
+                                    {
+                                        std::fs::remove_file(entry.map_err(|_| ())?.path())
+                                            .map_err(|_| ())?;
+                                    }
+                                    return Err(());
+                                }
                                 std::fs::remove_dir_all(&directory).map_err(|_| ())?
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                             _ => return Err(()),
+                        }
+                        if failure == Some(RetirementFailure::ParentSync) {
+                            return Err(());
                         }
                         std::fs::File::open(directory.parent().ok_or(())?)
                             .and_then(|f| f.sync_all())

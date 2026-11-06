@@ -263,10 +263,10 @@ export function writeThemeLibrary(
   if (byteLength(serialized) > MAX_THEME_LIBRARY_BYTES) {
     throw new Error('Theme library exceeds the 1 MiB limit.');
   }
-  storage.setItem(THEME_LIBRARY_STORAGE_KEY, serialized);
   if (typeof localStorage !== 'undefined' && storage === localStorage) {
     mirrorDurableBlob(THEME_LIBRARY_STORE, serialized);
-  }
+    try { storage.setItem(THEME_LIBRARY_STORAGE_KEY, serialized); } catch { /* Rust intent remains queued. */ }
+  } else storage.setItem(THEME_LIBRARY_STORAGE_KEY, serialized);
 }
 
 function requireCurrentLibrary(

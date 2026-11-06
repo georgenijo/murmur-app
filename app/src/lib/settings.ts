@@ -1,4 +1,4 @@
-import { persistSourceState, rebasePendingOwnedSettings } from './webkitLifecycle';
+import { persistSourceState, rebasePendingOwnedSettings, type OwnedEdits } from './webkitLifecycle';
 import rustSettingsDefaults from '../../src-tauri/crates/murmur-core/src/state/settings-defaults.json';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
@@ -539,18 +539,18 @@ export function clampOverlayVerticalOffset(value: unknown): number {
  * the durable copy read back at the next window boot — a failed or unavailable
  * bridge (plain browser, tests) must never surface as a settings-save failure.
  */
-function mirrorToDisk(blob: string): void {
-  persistSourceState(STORAGE_KEY, blob);
+function mirrorToDisk(blob: string, ownedEdits?: OwnedEdits): void {
+  persistSourceState(STORAGE_KEY, blob, ownedEdits);
 }
 
-function writePersistedSettings(settings: Settings): void {
+function writePersistedSettings(settings: Settings, ownedEdits?: OwnedEdits): void {
   const blob = JSON.stringify({
     ...settings,
     settingsVersion: SETTINGS_VERSION,
     launchOnboardingComplete: localStorage.getItem(ONBOARDING_KEY) === 'true',
   });
-  localStorage.setItem(STORAGE_KEY, blob);
-  mirrorToDisk(blob);
+  mirrorToDisk(blob, ownedEdits);
+  try { localStorage.setItem(STORAGE_KEY, blob); } catch { /* Rust intent remains queued. */ }
 }
 
 /** Mirror only the onboarding gate; preserve the exact current settings blob.
@@ -564,8 +564,8 @@ export function persistOnboardingComplete(complete: boolean): void {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
     if ((value as { launchOnboardingComplete?: unknown }).launchOnboardingComplete === complete) return;
     const blob = JSON.stringify({ ...value, launchOnboardingComplete: complete });
-    localStorage.setItem(STORAGE_KEY, blob);
     mirrorToDisk(blob);
+    try { localStorage.setItem(STORAGE_KEY, blob); } catch { /* Rust intent remains queued. */ }
   } catch { /* An unavailable mirror falls back to frontend-driven startup. */ }
 }
 
@@ -646,9 +646,9 @@ export function cacheSettings(settings: Settings): void {
   }
 }
 
-export function saveSettings(settings: Settings): void {
+export function saveSettings(settings: Settings, ownedEdits?: OwnedEdits): void {
   try {
-    writePersistedSettings(settings);
+    writePersistedSettings(settings, ownedEdits);
   } catch (e) {
     console.error('Failed to save settings:', e);
   }

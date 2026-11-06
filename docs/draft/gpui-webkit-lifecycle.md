@@ -65,7 +65,7 @@ retry-on-relaunch error instead of seeding defaults.
 
 Malformed source JSON is distinct from a missing key: transports send raw
 strings, and storage read failures abort import. Malformed disk envelopes are
-quarantined, with no content in diagnostics. A missing/quarantined UI document
+quarantined, with no content in diagnostics. A missing/quarantined required destination
 with a committed v2 receipt blocks default publication. Future source schemas
 stay in place and reject older launches repeatedly. Unknown keys are rejected
 at the native source-write boundary. React has no retirement command.
@@ -100,8 +100,9 @@ in use; no native broadcast is introduced.
 
 `murmur-webkit` is a separate objc2 library with no Tauri/wry dependency. A future
 native host reads the lifecycle receipt before opening WebKit; when the store is
-already retired it must not create any WebKit object. Otherwise it passes the
-default store to an invisible WKWebView with a fixed `tauri://localhost/` scheme
+already retired it must not create any WebKit object. Otherwise the production adapter obtains a store capability from the actual
+Tauri/wry WKWebView configuration, checks pointer identity against the default
+store, and passes that exact store to an invisible WKWebView with a fixed `tauri://localhost/` scheme
 handler. Its fixed page reads the original origin via WebKit APIs. It sends
 bounded raw messages, performs durable operations off the main thread and polls
 results on the main loop. Partial imports still remove individually receipted
@@ -165,3 +166,69 @@ worker sends no keyboard/mouse input and opens no app window on the shared Mac.
 All WebKit tests use a custom nonpersistent data store; Rust fixtures and the
 retirement directory are in temporary roots. No real app installation, data,
 WebKit store, logs, transcripts or performance harness are accessed.
+
+## Review regressions and proof boundaries
+
+Retirement and transcript removal require readable destination envelopes with
+`v1_imported`; the global flag cannot authorize either operation. A no-WebKit
+install now creates explicit empty destination envelopes before committing v1.
+The v2 UI receipt records the settings/library destinations actually imported,
+including empty values. Later creations have separate durable `.required`
+receipts. Missing expected files and quarantine stay errors across repeated
+reads and relaunches; status, import replay and retirement all check them. Failed
+first publication can conservatively require explicit recovery. No defaults are
+published to replace an expected missing destination.
+
+React queues Rust intents before attempting cache writes. This includes settings,
+theme-library and small UI writers. Deliberate main-window Disable and Auto Paste
+edits accompany full settings writes as field patches; incidental snapshots still
+respect the durable owned-field revision. `save_settings_blob` returns the merged
+committed document. The renderer retains defensive library parsing for presentation
+and import previews, but does not publish library repairs on load. Rust publishes
+reserved-ID migrations. Appearance cache regeneration and JSON key order do not
+advance revisions or emit repair events.
+
+The standalone importer has a 30-second terminal deadline, navigation failure and
+WebContent termination delegates, and JavaScript completion error inspection.
+`PreservedForRetry` is terminal for that launch; hosts must present Rust-owned
+data and retry WebKit later. No removal acknowledgement is sent without the
+exact-key reply. `Importer::start` checks retirement before invoking the store
+factory. `start_from_app_webview` derives the capability from the actual host
+view; the unrestricted constructor is private. Tauri setup checks the actual
+wry view against the default store. Retirement requires that capability and the
+host's exclusive-directory/no-live-view safety preconditions. Synthetic capability
+construction refuses persistent stores. The native-main host flip is future work;
+this release continues to run the React importer in production.
+
+| Failure/outcome | Executable test and scope |
+|---|---|
+| v1 destination missing/quarantined, repeated read and restart | `missing_or_quarantined_v1_destinations_never_authorize_removal_or_retirement`, public CompletionService API |
+| Imported/created settings or empty library lost or corrupt | `imported_and_created_separate_destinations_remain_required_after_loss_or_quarantine` |
+| Repeated corrupt UI with committed v2 | `repeated_corrupt_ui_recovery_with_committed_v2_is_never_empty_success` |
+| Library before/after rename and directory-sync boundaries; library written before appearance | `library_rename_and_appearance_publication_failure_matrix`, six injected actual publication faults |
+| Individual key-removal interruptions | React `retries interrupted individual transcript removals before acknowledgement`, injected Storage exceptions at each exact key |
+| Every source form: wrong container/type, truncated, oversized, future schema | `corrupt_source_matrix_rejects_every_source_form_without_v2_receipt` (all eight v2 forms); `corrupt_transcript_source_matrix_preserves_all_four_keys` (four v1 forms) |
+| WebKit fails after durable import | Native `synthetic_store`: actual JS evaluation error; injected navigation/termination delegate callbacks and expired deadline; terminal failure, no acknowledgement, Rust Snapshot remains available. Does not kill an OS WebContent process |
+| Purge/verification failure and relaunch | Native `synthetic_store`: synthetic phase failure before purge and injected nonempty-verification result, followed by real API purge/empty-record verification on retry. Partial proof; does not force WebKit itself to fail its purge API |
+| Interrupted directory removal/parent sync; absent-directory recovery | Native `synthetic_store`: actual partial synthetic-directory deletion or removal followed by injected sync failure, service relaunch and successful retry |
+| Interrupted retirement marker | `sequential_versions_and_jump_to_future_v3_contract_retirement_recovery`, synthetic future-v3 receipt and real marker publication faults |
+| Retired later startup creates no WebKit | Native `synthetic_store`, store factory panics if invoked after retirement |
+| In-flight source acknowledgement vs failure/new generation | React `in-flight generation cannot discard the newer edit on failure=%s`, both completion outcomes |
+| Quota failure still queues authoritative saves | React `quota errors cannot suppress Rust writes for UI settings or themes` |
+| Missed revision then explicit re-enable | Native `missed_revision_event_does_not_undo_explicit_main_reenable` |
+| No-WebKit status versus source writer | Native `absent_webkit_status_serializes_with_source_writer` |
+| Settings migration disk publication/version and alias/scope restart | `settings_migrations_publish_version_and_alias_scope_round_trip_on_restart` |
+| Literal defaults/consents/smart destination/malformed fuzzy | `literal_defaults_consents_smart_destination_and_correction_fuzzy`, expectations independent of defaults JSON |
+| Complete models/Core ML default | `complete_model_catalog_preserves_every_supported_model` |
+| Browser catalog and legacy host edge cases | `every_supported_browser_and_exact_legacy_host_contract` |
+| UTF-16 bounds | `unicode_bounds_count_utf16_for_modes_roots_vocabulary_and_theme_labels`; all ported Rust string limits audited (ASCII IDs/hex remain byte checks) |
+| Idle catalog, seven built-in identities/names, stale companion migrations | React `literal catalogs and companion ownership` |
+| Obsolete offset key, with/without settings | React `removes obsolete calibration key after v2, settings-present=%s` |
+
+The legacy 118-case contract now compares `settingsVersion` and onboarding
+metadata instead of stripping them. Native readback independently evaluates all
+four transcript keys after relaunch, rather than inferring absence from receipts.
+All native fixtures remain nonpersistent stores and temporary synthetic paths.
+These injected faults establish state-machine recovery, not physical power-loss
+or production-default-store execution. Production identity is a runtime assertion
+against the actual wry view, deliberately not exercised against user data here.

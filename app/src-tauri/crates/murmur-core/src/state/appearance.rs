@@ -111,7 +111,7 @@ pub(super) fn library(v: Value) -> Result<Value> {
         if t["version"] != 1
             || !id(&t["id"])
             || label.is_empty()
-            || label.chars().count() > 64
+            || label.encode_utf16().count() > 64
             || !t["modes"].is_array()
             || !t["theme"].is_object()
             || t["theme"]["version"] != 1
@@ -131,7 +131,7 @@ pub(super) fn library(v: Value) -> Result<Value> {
                 || ["extensionId", "version", "license"].iter().any(|k| {
                     !source[k]
                         .as_str()
-                        .is_some_and(|s| !s.is_empty() && s.len() <= 128)
+                        .is_some_and(|s| !s.is_empty() && s.encode_utf16().count() <= 128)
                 }))
         {
             return Err(Error::Invalid);
@@ -139,7 +139,7 @@ pub(super) fn library(v: Value) -> Result<Value> {
         if source.get("sourceUrl").is_some_and(|v| {
             !v.as_str().is_some_and(|s| {
                 s.starts_with("https://")
-                    && s.len() <= 2048
+                    && s.encode_utf16().count() <= 2048
                     && !s[8..].split('/').next().unwrap_or("").contains('@')
             })
         }) {

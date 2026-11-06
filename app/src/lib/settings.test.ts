@@ -273,3 +273,36 @@ describe('read-only durable settings snapshots', () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 });
+
+
+describe('literal catalogs and companion ownership', () => {
+  it('keeps idle and adapter literals and complete option catalog', async () => {
+    const { IDLE_TIMEOUT_OPTIONS, IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER } = await import('./settings');
+    expect(DEFAULT_SETTINGS.idleTimeoutMinutes).toBe(5);
+    expect(IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER).toBe(-1);
+    saveSettings({ ...DEFAULT_SETTINGS, idleTimeoutMinutes: -1 });
+    expect(loadSettings().idleTimeoutMinutes).toBe(-1);
+    expect(IDLE_TIMEOUT_OPTIONS).toEqual([{value:5,label:'5 minutes'},{value:15,label:'15 minutes'},{value:-1,label:'Never on power adapter'},{value:0,label:'Never'}]);
+  });
+  it('preserves seven immutable built-in identities and names', async () => {
+    const { BUILTIN_MODES } = await import('./settings');
+    expect(BUILTIN_MODES.map(m => [m.id,m.name,m.builtIn])).toEqual([
+      ['builtin.everyday','Everyday',true],['builtin.messages','Messages',true],['builtin.email','Email',true],['builtin.notes','Notes',true],['builtin.technical','Technical',true],['builtin.terminal','Terminal',true],['builtin.verbatim','Verbatim',true],
+    ]);
+  });
+  it('companion stale settings cannot publish migrations on a missing destination', async () => {
+    mocks.isTauri.mockReturnValue(true); ownSettingsMigrations(false);
+    const old = JSON.stringify({ settingsVersion: 0, autoPasteDelayMs: 50, language: 'es' });
+    localStorage.setItem(STORAGE_KEY, old); mocks.invoke.mockResolvedValue(null);
+    await hydrateSettingsFromDisk(); loadSettings();
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(old);
+    expect(mocks.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob')).toHaveLength(0);
+  });
+});
+
+it('frontend exposes the complete model catalog including Core ML', async () => {
+  const { MODEL_OPTIONS, AVAILABLE_MODEL_OPTIONS } = await import('./settings');
+  expect(AVAILABLE_MODEL_OPTIONS).toBe(MODEL_OPTIONS);
+  expect(AVAILABLE_MODEL_OPTIONS.some(m => m.backend === 'coreml')).toBe(true);
+  expect(DEFAULT_SETTINGS.model).toBe('parakeet-tdt-0.6b-v3-coreml');
+});

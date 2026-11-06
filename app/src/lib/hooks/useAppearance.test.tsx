@@ -217,7 +217,7 @@ describe('appearance runtime hooks', () => {
     expect(JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY) ?? 'null')).toBeNull();
   });
 
-  it('does not duplicate repair writes or media listeners in Strict Mode', async () => {
+  it('regenerates caches without source writes or duplicate media listeners in Strict Mode', async () => {
     const partial = createAppearanceDocument('system');
     delete (partial.cache.dark as Partial<typeof partial.cache.dark>).warning;
     localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(partial));
@@ -226,13 +226,13 @@ describe('appearance runtime hooks', () => {
     });
     expect(mocks.emitTo.mock.calls.filter((call) =>
       (call[2] as AppearanceChangedEvent)?.reason === 'repair',
-    )).toHaveLength(1);
+    )).toHaveLength(0);
     expect(media.listeners.size).toBe(1);
     expect(media.addEventListener).toHaveBeenCalledTimes(2);
     expect(media.removeEventListener).toHaveBeenCalledTimes(1);
     const stored = JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY)!);
-    expect(stored.revision).toBe(1);
-    expect(Object.keys(stored.cache.dark)).toEqual([...MURMUR_TOKEN_NAMES]);
+    expect(stored.revision).toBe(0);
+    expect(Object.keys(controller!.document.cache.dark)).toEqual([...MURMUR_TOKEN_NAMES]);
   });
 
   it('repairs the reserved maximum revision and keeps every write path monotonic', async () => {
@@ -333,7 +333,7 @@ describe('appearance runtime hooks', () => {
     expect(await navigator.clipboard.readText()).toBe('keep me');
   });
 
-  it('rejects a failed commit so callers retain import preview state', async () => {
+  it('accepts a source edit even if its presentation cache write fails', async () => {
     await act(async () => root.render(<Provider><Consumer /></Provider>));
     const preview = controller!.previewImport(exportAppearanceText(
       createAppearanceDocument('dark', {
@@ -345,11 +345,11 @@ describe('appearance runtime hooks', () => {
     const setItem = vi.spyOn(window.localStorage, 'setItem')
       .mockImplementationOnce(() => { throw new Error('disk full'); });
     await act(async () => {
-      await expect(controller!.commitImport(preview)).rejects.toThrow('disk full');
+      await expect(controller!.commitImport(preview)).resolves.toBeUndefined();
     });
-    expect(controller!.document.mode).toBe('system');
+    expect(controller!.document.mode).toBe('dark');
     expect(preview.mode).toBe('dark');
-    expect(controller!.error).toContain('disk full');
+    expect(controller!.error).toBeNull();
     setItem.mockRestore();
   });
 

@@ -311,6 +311,12 @@ impl Engine {
         let raw = self
             .storage
             .read::<Value>(d.file(), |v| valid_document(d, v))?;
+        if raw.is_none() && self.migration()?.v1 {
+            return Err(Error::Missing);
+        }
+        if self.migration()?.v1 && raw.as_ref().is_some_and(|v| v["v1_imported"] != true) {
+            return Err(Error::Invalid);
+        }
         raw.map(|value| {
             if value.get("schema").is_some() {
                 serde_json::from_value(value).map_err(|_| Error::Invalid)
@@ -434,6 +440,7 @@ impl Engine {
         }
         self.storage.write(HOLD, &holding)?;
         if !self.webkit_exists && !self.migration()?.v1 {
+            self.import(LegacyImport::default())?;
             self.storage.write(
                 MIGRATION,
                 &Migration {
@@ -548,7 +555,7 @@ impl Engine {
                 &["murmur-benchmark-report", "murmur-benchmark-reports"][..],
             ),
         ] {
-            if v1_committed || doc.v1_imported {
+            if doc.v1_imported {
                 remove_keys.extend(keys.iter().map(|s| s.to_string()));
             }
         }
@@ -1381,6 +1388,22 @@ pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<Stri
         crate::state::normalize(key, serde_json::from_str(blob).map_err(|_| Error::Invalid)?)?;
     let file = crate::state::file(key).ok_or(Error::Invalid)?;
     let blob = serde_json::to_string(&value).map_err(|_| Error::Invalid)?;
+    Storage::new(root.into()).write(&format!("{file}.required"), &true)?;
     Storage::new(root.into()).write_bytes(file, blob.as_bytes())?;
     Ok(blob)
+}
+
+/// A previously published or quarantined source cannot become successful absence.
+pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    let storage = Storage::new(root.into());
+    if root.join(format!("{file}.required")).exists() || storage.quarantined(file)? {
+        return Ok(true);
+    }
+    let ui: Option<serde_json::Value> = storage.read("ui-state.json", |v: &Value| v.is_object())?;
+    Ok(ui.is_some_and(|v| {
+        v["destinations"]
+            .as_array()
+            .is_some_and(|a| a.contains(&json!(key)))
+    }))
 }
