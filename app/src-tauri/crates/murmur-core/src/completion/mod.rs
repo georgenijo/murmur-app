@@ -379,11 +379,10 @@ struct Engine {
 impl Engine {
     fn write_receipt(&mut self) -> crate::shutdown::WriteOutcome {
         use crate::shutdown::WriteOutcome;
-        let reconciled = self
-            .execute(Command::Snapshot)
-            .and_then(|_| self.lifecycle(lifecycle::Operation::Status))
-            .is_ok();
-        if self.unpreserved_content {
+        let reconciled = self.execute(Command::Snapshot).is_ok();
+        let sources = self.lifecycle(lifecycle::Operation::Status).is_ok();
+        if self.unpreserved_content || !sources || self.state().is_err() || self.holding().is_err()
+        {
             return WriteOutcome::UnpreservedFailure;
         }
         if reconciled {
@@ -936,6 +935,7 @@ impl Engine {
     // At most one pending publication. Recovery runs before the next command;
     // a blocked destination rejects admission rather than evicting accepted work.
     fn replay_content(&mut self) -> Result<()> {
+        let existed = self.storage.root.join(PENDING).exists();
         let pending: Option<Value> = self.storage.read(PENDING, |v: &Value| {
             v["schema"] == 1
                 && v["file"].as_str().is_some_and(|f| match f {
@@ -952,6 +952,8 @@ impl Engine {
             )?;
             std::fs::remove_file(self.storage.root.join(PENDING)).map_err(|_| Error::Io)?;
             self.storage.sync_directory()?;
+        } else if existed || self.storage.quarantined(PENDING)? {
+            return Err(Error::Invalid);
         }
         Ok(())
     }

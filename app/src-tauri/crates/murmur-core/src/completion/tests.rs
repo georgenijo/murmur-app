@@ -1203,3 +1203,24 @@ fn malformed_snapshot_pending_stays_a_recovery_error() {
     assert!(recover_snapshot(&path).is_err());
     assert!(!path.exists());
 }
+
+#[test]
+fn malformed_pending_content_blocks_admission_and_never_claims_a_drain() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    std::fs::write(dir.path().join(PENDING), b"{invalid").unwrap();
+    for _ in 0..2 {
+        assert!(e
+            .execute(Command::Complete {
+                source: "refused".into(),
+                entry: Some(entry("refused", "synthetic")),
+                event: None
+            })
+            .is_err());
+    }
+    assert_eq!(
+        e.write_receipt(),
+        crate::shutdown::WriteOutcome::UnpreservedFailure
+    );
+    assert!(e.snapshot().unwrap().history.is_empty());
+}
