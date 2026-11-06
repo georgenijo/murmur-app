@@ -11,9 +11,7 @@
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
-    "updater:default",
     "notification:default",
-    "process:allow-restart",
     "process:allow-exit",
     "dialog:allow-open",
     "dialog:allow-save"

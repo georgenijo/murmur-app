@@ -18,6 +18,10 @@ fn main() {
                 tauri_build::InlinedPlugin::new().commands(&["shutdown_test_action"]),
             )
             .plugin(
+                "updater-test",
+                tauri_build::InlinedPlugin::new().commands(&["updater_test_run"]),
+            )
+            .plugin(
                 "qa-clipboard",
                 tauri_build::InlinedPlugin::new().commands(&["read_text", "write_text"]),
             )

@@ -28,7 +28,7 @@ impl StoreIdentity {
     }
 }
 use murmur_core::completion::{
-    lifecycle::{Operation, TRANSCRIPT_KEYS, V2_KEYS},
+    lifecycle::{Operation, TRANSCRIPT_KEYS, UPDATER_V3_KEYS, V2_KEYS},
     Command, CompletionService, Destination,
 };
 use objc2::{
@@ -220,7 +220,12 @@ impl Importer {
         seed: Option<BTreeMap<String, String>>,
     ) -> Self {
         let (send, receive) = mpsc::channel();
-        let keys: Vec<_> = TRANSCRIPT_KEYS.iter().chain(V2_KEYS).copied().collect();
+        let keys: Vec<_> = TRANSCRIPT_KEYS
+            .iter()
+            .chain(V2_KEYS)
+            .chain(UPDATER_V3_KEYS)
+            .copied()
+            .collect();
         let seed = seed
             .map(|seed| {
                 format!(
@@ -446,10 +451,13 @@ impl Importer {
                             let imported = source.is_some_and(|source| {
                                 service.lifecycle(Operation::Import(source)).is_ok()
                             });
-                            let keys = service
+                            let mut keys = service
                                 .execute(Command::Snapshot)
                                 .map_err(|_| ())?
                                 .remove_keys;
+                            if service.lifecycle(Operation::Status).is_ok_and(|r| r.v3) {
+                                keys.extend(UPDATER_V3_KEYS.iter().map(|k| (*k).to_owned()));
+                            }
                             Ok((keys, imported))
                         }
                     })();

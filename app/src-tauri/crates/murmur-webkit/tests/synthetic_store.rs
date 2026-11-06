@@ -42,7 +42,7 @@ fn main() {
     drop(importer);
     let receipt = service.lifecycle(Operation::Status).unwrap();
     assert!(receipt.v1 && receipt.v2 && receipt.transcript_keys_removed);
-    assert!(!receipt.v3 && !receipt.retired);
+    assert!(receipt.v3 && !receipt.retired);
     assert_eq!(
         receipt.values["murmur-appearance"]["theme"]["accent"],
         "#abcdef"

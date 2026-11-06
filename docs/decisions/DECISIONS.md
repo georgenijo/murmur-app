@@ -1,5 +1,29 @@
 # Decisions Log
 
+## 2026-11-06: Own the updater on minisign-verify 0.3 (#990)
+
+**Decision:** Use a Tauri-free in-house Rust updater on `minisign-verify`
+0.3.0, preserving the existing latest-v2.json endpoint and public key. Own
+static platform lookup, minimum policy, durable state and atomic macOS bundle
+exchange; only the shutdown coordinator authorizes compatible relaunch.
+
+**Why:** Published cargo-packager-updater 0.2.3 uses minisign-verify 0.2,
+`macos` platform names and an install fallback that removes the installed app
+before replacement. Adapting it would still require our policy, translocation,
+recovery and shutdown layers. The selected verifier has no dependencies and
+rejects noncanonical Ed25519 signatures; the remaining dependencies already
+exist in our lockfile. This works with Phase 2's non-Tauri packager if it keeps
+the signed .app.tar.gz, ui executable and bundle metadata contract. No product
+or cost trade-off needs lead approval.
+
+**Status:** active (stack implementation; native QA and two authorized real OTA
+canaries remain acceptance gates before Phase 2).
+
+**References:** #990, #1009, [updater design](../draft/gpui-host-neutral-updater.md),
+[verifier](https://github.com/jedisct1/rust-minisign-verify),
+[cargo-packager-updater 0.2.3 source](https://docs.rs/crate/cargo-packager-updater/0.2.3/source/src/lib.rs),
+[dependency manifest](https://docs.rs/crate/cargo-packager-updater/0.2.3/source/Cargo.toml)
+
 ## 2026-11-05: GPUI, native parity first, on one stacked branch (#983)
 
 **Decision:** Murmur's UI moves to GPUI (Zed rev `654efae4`, Rust 1.98.1)

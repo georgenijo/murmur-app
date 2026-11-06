@@ -281,7 +281,7 @@ and safe error class.
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
 | `check-for-updates-requested` | `()` | Native tray menu | The user selects `Check for Updates…` or the versioned update action. The main window is shown and focused first. | Main `App` → manual `checkForUpdate` or reopen the pending update dialog. |
-| `updater-background-check-requested` | `()` | `commands/tray.rs` | `NSWorkspaceDidWakeNotification` fires after macOS wakes. | `useAutoUpdater`; a local six-hour gate decides whether any network request is due. |
+| `updater-background-check-requested` | `()` | `commands/tray.rs` | `NSWorkspaceDidWakeNotification` fires after macOS wakes. | `useAutoUpdater` forwards intent to Rust, whose durable six-hour gate decides whether a request is due. |
 
 ## Frontend-emitted (window to window)
 
@@ -339,3 +339,7 @@ only opaque local installation identity, bounded OS/configuration/device
 classes and capture measurements. It never contains raw device IDs, paths,
 transcripts, prompts, or vocabulary. Older records omit the field. See
 [production comparisons](../features/performance-diagnostics.md#production-app-version-comparisons).
+
+The app exposes 189 registered commands. The host-neutral updater publishes
+`updater-state-changed` (`UpdaterSnapshot`, revision, status, dialog, completed
+notes) to Main only; React rejects stale revisions and renders this state.

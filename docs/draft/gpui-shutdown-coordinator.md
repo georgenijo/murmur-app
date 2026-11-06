@@ -144,10 +144,11 @@ calls run in the raw handler. SIGKILL, Force Quit, abort/crashes and OS forced
 termination cannot be coordinated; durable state and helper parent-watchdogs
 provide recovery/containment, not a successful drain receipt.
 
-Until #990, the existing updater installs before requesting the compatibility
-plugin's restart. The core exposes a process-local RestartTicket handoff. Installation transaction ownership, v3 migration and removal
-of process:allow-restart remain #990 work. This layer closes its relaunch bypass;
-it does not claim installation has moved to the native updater.
+Stack 08 (#990) moves installation transaction ownership and migration v3 into
+murmur-core::updater. Its adapter requests this compatible relaunch path only
+after verified installation. The writer phase fences and joins the updater;
+process:allow-restart and the compatibility plugin restart command are removed.
+See [updater design](gpui-host-neutral-updater.md).
 
 ### Termination guard threat model
 

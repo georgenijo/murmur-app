@@ -45,7 +45,7 @@ async function setup(cacheFails = false) {
     'murmur-theme-library': { version: 1, revision: 17, themes: [] },
   };
   mock.invoke.mockReset().mockImplementation(async (command: string, args?: { blob: string; key: string; value: unknown }) => {
-    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, values: structuredClone(disk) };
+    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, v3: true, values: structuredClone(disk) };
     if (command === 'load_settings_blob') return JSON.stringify(disk['dictation-settings']);
     if (command === 'save_settings_blob' || command === 'save_theme_library_blob') {
       const key = command === 'save_settings_blob' ? 'dictation-settings' : 'murmur-theme-library';
@@ -155,14 +155,14 @@ it.each(['dictation-settings', 'murmur-appearance', 'murmur-theme-library'])('a 
   storageEvent(key, old[key]);
   expect(held).toHaveLength(0);
   await act(async () => {
-    for (const resolve of older.reverse()) resolve({ v1: true, v2: true, values: old });
+    for (const resolve of older.reverse()) resolve({ v1: true, v2: true, v3: true, values: old });
   });
   // The old response was invalidated by the later hint, and the next native
   // read starts only after it settles.
   expect(held).toHaveLength(3);
   for (const session of sessions) expect(JSON.parse(session.storage.presentationStorage.getItem(key)!)).toEqual(old[key]);
   await act(async () => {
-    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: latest });
+    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, v3: true, values: latest });
   });
   for (const session of sessions) expect(JSON.parse(session.storage.presentationStorage.getItem(key)!)).toEqual(latest[key]);
 });
@@ -177,7 +177,7 @@ it('an async snapshot cannot overwrite a newer local intent or native notificati
   sessions[0].lifecycle.sourceStorage.setItem('dictation-settings', newer);
   await expect(sessions[0].lifecycle.flushSourceState()).rejects.toThrow('Source storage unavailable');
   sessions[1].storage.presentationStorage.rememberItem('dictation-settings', newer);
-  await act(async () => { for (const resolve of held) resolve({ v1: true, v2: true, values: old }); });
+  await act(async () => { for (const resolve of held) resolve({ v1: true, v2: true, v3: true, values: old }); });
   expect(sessions[0].storage.presentationStorage.getItem('dictation-settings')).toBe(newer);
   expect(sessions[1].storage.presentationStorage.getItem('dictation-settings')).toBe(newer);
 });
@@ -215,12 +215,12 @@ it.each(['storage', 'native'] as const)('1,000 %s hints per renderer use one act
   expect(mock.invoke).toHaveBeenCalledTimes(3);
   disk['usage-dashboard-collapsed'] = false;
   await act(async () => {
-    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: {} });
+    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, v3: true, values: {} });
   });
   expect(held).toHaveLength(3);
   expect(mock.invoke).toHaveBeenCalledTimes(6);
   await act(async () => {
-    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: structuredClone(disk) });
+    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, v3: true, values: structuredClone(disk) });
   });
   expect(held).toHaveLength(0);
   expect(mock.invoke).toHaveBeenCalledTimes(6);
@@ -268,7 +268,7 @@ it('a failed active reload still drains the change queued while it was in flight
     expect(JSON.parse(session.storage.presentationStorage.getItem('dictation-settings')!)).toEqual(old['dictation-settings']);
   }
   await act(async () => {
-    for (const request of held.splice(0)) request.resolve({ v1: true, v2: true, values: structuredClone(disk) });
+    for (const request of held.splice(0)) request.resolve({ v1: true, v2: true, v3: true, values: structuredClone(disk) });
   });
   for (const session of sessions) expect(session.storage.presentationStorage.getItem('usage-dashboard-collapsed')).toBe('false');
 });
@@ -287,7 +287,7 @@ it('a queued follow-up cannot overwrite a later session write or pending intent'
   for (let batch = 0; batch < 2; batch++) {
     expect(held).toHaveLength(3);
     await act(async () => {
-      for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: old });
+      for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, v3: true, values: old });
     });
     expect(sessions[0].storage.presentationStorage.getItem('dictation-settings')).toBe(newer);
     expect(sessions[1].storage.presentationStorage.getItem('dictation-settings')).toBe(newer);

@@ -102,6 +102,7 @@ jobs:
           python3 scripts/check_restart_policy.py
           python3 -m unittest discover -s scripts -p 'test_check_restart_policy.py'
           python3 -m unittest discover -s scripts -p 'test_send_shutdown_test_quit.py'
+          python3 -m unittest discover -s scripts -p 'test_updater_fixture_policy.py'
 
       - uses: actions/setup-node@v4
         with:

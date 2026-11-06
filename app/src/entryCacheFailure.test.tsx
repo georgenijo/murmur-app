@@ -23,7 +23,7 @@ it.each(['main', 'overlay', 'diagnostics'].flatMap(entry =>
   vi.resetModules(); mock.render.mockClear(); mock.invoke.mockReset();
   document.body.innerHTML = '<div id="root"></div>';
   mock.invoke.mockImplementation(async (command: string) => {
-    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, values: {
+    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, v3: true, values: {
       'dictation-settings': { settingsVersion: 7, language: 'ja', autoPaste: true, microphoneIdMigrationComplete: true },
       'murmur-appearance': { version: 1, mode: 'dark', theme: { version: 1, presetId: 'custom' } },
       'murmur-theme-library': { version: 1, revision: 17, themes: [] },

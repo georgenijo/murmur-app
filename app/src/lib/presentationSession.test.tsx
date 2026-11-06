@@ -46,7 +46,7 @@ async function hydrate(failure: 'reads' | 'all') {
   let disk = { ...DEFAULT_SETTINGS, settingsVersion: 7, language: 'ja', autoPaste: true, hotkeyMissFeedback: true,
     microphoneIdMigrationComplete: true, launchOnboardingComplete: true };
   mock.invoke.mockReset().mockImplementation(async (command: string, args?: { blob: string }) => {
-    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, values: {
+    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, v3: true, values: {
       'dictation-settings': disk,
       'murmur-appearance': { version: 1, mode: 'dark', theme: { version: 1, presetId: 'custom' } },
       'murmur-theme-library': { version: 1, revision: 17, themes: [] },
@@ -190,7 +190,7 @@ it('a newer storage-triggered read owns the session before an older overlay read
   session.setDisk({ autoPaste: false, hotkeyMissFeedback: false, overlayPlacement: 'floating_pill' });
   window.dispatchEvent(new StorageEvent('storage', { key: 'dictation-settings', newValue: old }));
   await act(async () => finishOverlay(old));
-  await act(async () => finishStorage?.({ v1: true, v2: true, values: { 'dictation-settings': session.disk() } }));
+  await act(async () => finishStorage?.({ v1: true, v2: true, v3: true, values: { 'dictation-settings': session.disk() } }));
   expect(loadSettings()).toMatchObject({ autoPaste: false, hotkeyMissFeedback: false, overlayPlacement: 'floating_pill' });
   expect(mirror.autoPaste).toBe(false);
   expect(mirror.overlayPlacement).toBe('floating_pill');

@@ -51,7 +51,6 @@ import {
 import { UpdateModal } from './components/UpdateModal';
 import { WhatsNewModal } from './components/WhatsNewModal';
 import { UpdateIndicator } from './components/UpdateIndicator';
-import { setTrayUpdateAvailable } from './lib/updater';
 import { loadStats, resetStats } from './lib/stats';
 import { ModelDownloader } from './components/ModelDownloader';
 import { OnboardingFlow } from './components/onboarding/OnboardingFlow';
@@ -330,16 +329,6 @@ function App() {
       unlistenCheck?.();
     };
   }, [checkForUpdate, showAvailableUpdate, updateStatus]);
-
-  // Keep the native menu label in sync with the passive in-app indicator.
-  useEffect(() => {
-    const version = 'version' in updateStatus ? updateStatus.version : null;
-    setTrayUpdateAvailable(version).catch((err: unknown) => {
-      flog.warn('updater', 'could not update menu-bar update item', {
-        error: String(err),
-      });
-    });
-  }, [updateStatus]);
 
   const [settingsPageRequest, setSettingsPageRequest] = useState<SettingsPageRequest | null>(null);
   const settingsViewRef = useRef('settings.general');

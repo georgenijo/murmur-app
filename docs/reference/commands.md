@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 187 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 189 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -322,7 +322,7 @@ is per window/session/key, checked inside the source FIFO before disk access.
 |---------|-----------|---------|-------------|
 | `webkit_state_snapshot` | — | `Result<Receipt, String>` | Rust-owned source-state snapshot and independent v1/v2/v3, removal and retirement receipts. No WebKit data directory commits current versions without opening WebKit. |
 | `import_webkit_state` | `source: BTreeMap<String, Option<String>>` | `Result<Receipt, String>` | Main-only versioned importer. Raw JSON strings distinguish corrupt values from missing keys; disk values win. Shares the settings writer lock. |
-| `save_webkit_source` | `key: String`, `value: Value`, `sourceSession: String`, `intentGeneration: u64` | `Result<SourceWrite<()>, String>` | Main-only allow-listed source-state write to the completion actor. Settings/theme retain their dedicated commands. No updater v3 implementation or retirement permission is exposed to React. |
+| `save_webkit_source` | `key: String`, `value: Value`, `sourceSession: String`, `intentGeneration: u64` | `Result<SourceWrite<()>, String>` | Main-only allow-listed source-state write to the completion actor. Settings/theme retain their dedicated commands. Updater keys are owned by the Rust updater and rejected by this command; retirement is not exposed to React. |
 | `restore_source_backup` | `key: String`, `blob: String` | `Result<(), String>` | Main-only explicit restore of complete current-version settings or theme-library JSON into a missing/quarantined destination. Refuses partial documents and readable destinations; preserves quarantines. No default reset. |
 | `get_dictation_settings_unsaved` | — | `Result<bool, String>` | Main-only read of the retained native enabled/disabled patch, available before hydration and during source recovery. True until that choice is durably published or replaced and published; no private content or disk writes. Subscribe to `dictation-settings-warning-changed` before querying and requery on each notification. |
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Replays any exact pending publication before reading and normalizing settings.json. None means never created. Required missing, quarantined, and future-schema destinations fail visibly across relaunch; quarantines use content-free UUID names and are preserved. |
@@ -389,6 +389,8 @@ is per window/session/key, checked inside the source FIFO before disk access.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `get_update_install_environment` | — | `Result<{ appTranslocated: bool }, String>` | Reports whether Gatekeeper launched the current executable through its read-only `AppTranslocation` mount. Does not expose the executable path and fails closed if the current executable cannot be resolved. |
+| `updater_snapshot` | — | `Result<UpdaterSnapshot, String>` | Main-only revisioned Rust updater status, dialog and completed notes. |
+| `updater_action` | `action: {kind: "configure", automatic: bool} \| {kind: "check", background: bool} \| {kind: "download" \| "install" \| "show" \| "dismiss" \| "dismissCompleted"}` | `Result<UpdaterSnapshot, String>` | Main-only intent transport. Rust owns scheduling, discovery, policy, signed download, installation and recovery. Install requests coordinated compatible relaunch; no process-plugin restart permission remains. |
 | `updater_canary` | `request: { action: "read" | "write", result?: JSON }` | `Result<{ path: string | null, result: JSON | null }, String>` | Reads the opt-in `MURMUR_UPDATER_CANARY` result path or atomically writes the app's canary result. With no environment marker, returns an inert state. |
 
 ## Telemetry (`telemetry.rs`)
@@ -444,7 +446,7 @@ or Paste Last work is refused during shutdown. The temporary app-owned process
 plugin preserves plugin:process|exit and plugin:process|restart for authorized
 Main callers, routing both through shutdown. process:allow-restart remains until
 #990. Exit code arguments are accepted; coordinated quit uses the common exit
-code zero. No public restart command is added to the 187-command app surface.
+code zero. The Rust updater requests the same compatible relaunch path through `updater_action`; the process plugin exposes Quit only.
 
 The explicitly enabled shutdown-test-support feature exposes only the isolated
 QA plugin described in [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).

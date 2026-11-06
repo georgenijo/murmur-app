@@ -42,7 +42,7 @@ it('sends unmigrated raw strings and hydrates only after the Rust commit', async
 });
 it('already imported state never sends a second source snapshot and disk wins', async () => {
   localStorage.setItem('usage-dashboard-collapsed', 'true');
-  mock.invoke.mockResolvedValue({ v1: true, v2: true, values: { 'usage-dashboard-collapsed': false } });
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values: { 'usage-dashboard-collapsed': false } });
   await initializeWebkitState(true);
   expect(mock.invoke.mock.calls.filter(([command]) => command === 'import_webkit_state')).toHaveLength(0);
   expect(localStorage.getItem('usage-dashboard-collapsed')).toBe('false');
@@ -118,7 +118,7 @@ it.each([false, true])('in-flight generation cannot discard the newer edit on fa
 });
 it.each([false, true])('removes obsolete calibration key after v2, settings-present=%s', async present => {
   localStorage.setItem('murmur-overlay-vertical-offset', '48');
-  mock.invoke.mockResolvedValue({ v1: true, v2: true, values: present ? { 'dictation-settings': { settingsVersion: 7, overlayVerticalOffset: 0 } } : {} });
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values: present ? { 'dictation-settings': { settingsVersion: 7, overlayVerticalOffset: 0 } } : {} });
   await initializeWebkitState();
   expect(localStorage.getItem('murmur-overlay-vertical-offset')).toBeNull();
 });

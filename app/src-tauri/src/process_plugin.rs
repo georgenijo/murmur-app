@@ -1,5 +1,5 @@
-//! Temporary IPC compatibility for the existing updater. Permission definitions
-//! stay supplied by tauri-plugin-process until native updater ownership (#990).
+//! Main-only coordinated Quit compatibility. Permission definitions remain
+//! supplied by tauri-plugin-process; updater relaunch has no webview permission.
 fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
         Ok(())
@@ -14,14 +14,8 @@ fn exit(app: tauri::AppHandle, window: tauri::WebviewWindow, code: i32) -> Resul
     crate::shutdown::request(&app, murmur_core::shutdown::Request::Quit);
     Ok(())
 }
-#[tauri::command]
-fn restart(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
-    main_only(&window)?;
-    crate::shutdown::request(&app, murmur_core::shutdown::Request::Restart);
-    Ok(())
-}
 pub(crate) fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     tauri::plugin::Builder::new("process")
-        .invoke_handler(tauri::generate_handler![exit, restart])
+        .invoke_handler(tauri::generate_handler![exit])
         .build()
 }

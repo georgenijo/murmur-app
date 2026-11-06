@@ -34,7 +34,6 @@ pub static SOURCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 #[serde(deny_unknown_fields)]
 pub(super) struct Progress {
     pub v2: bool,
-    /// Reserved for #990. This release never commits v3.
     pub v3: bool,
     pub retirement_started: bool,
     pub retired: bool,
@@ -44,6 +43,8 @@ pub(super) struct Progress {
 struct UiState {
     schema: u32,
     v2_imported: bool,
+    #[serde(default)]
+    v3_imported: bool,
     values: BTreeMap<String, Value>,
     destinations: Vec<String>,
 }
@@ -52,6 +53,7 @@ impl Default for UiState {
         Self {
             schema: 1,
             v2_imported: false,
+            v3_imported: false,
             values: BTreeMap::new(),
             destinations: vec![],
         }
@@ -116,6 +118,9 @@ impl Engine {
         if state.is_none()
             && (existed || self.migration()?.lifecycle.v2 || self.storage.quarantined(UI_STATE)?)
         {
+            return Err(Error::Invalid);
+        }
+        if self.migration()?.lifecycle.v3 && state.as_ref().is_none_or(|s| !s.v3_imported) {
             return Err(Error::Invalid);
         }
         Ok(state.unwrap_or_default())
@@ -185,10 +190,11 @@ impl Engine {
         let mut state = self.ui_state()?;
         match op {
             Operation::Status => {
-                if !self.webkit_exists && !m.lifecycle.v2 {
+                if !self.webkit_exists && !m.lifecycle.v3 {
                     let source = TRANSCRIPT_KEYS
                         .iter()
                         .chain(V2_KEYS)
+                        .chain(UPDATER_V3_KEYS)
                         .map(|k| ((*k).into(), None))
                         .collect();
                     self.lifecycle_locked(Operation::Import(source))?;
@@ -297,6 +303,23 @@ impl Engine {
                     m.schema = 1;
                     self.storage.write(MIGRATION, &m)?;
                 }
+                if !m.lifecycle.v3 {
+                    if !state.v3_imported {
+                        let mut values = state.values.clone();
+                        for key in UPDATER_V3_KEYS {
+                            if !values.contains_key(*key) {
+                                if let Some(v) = decode(&raw, key)? {
+                                    values.insert((*key).into(), crate::state::normalize(key, v)?);
+                                }
+                            }
+                        }
+                        state.values = values;
+                        state.v3_imported = true;
+                        self.storage.publish_snapshot(UI_STATE, &state)?;
+                    }
+                    m.lifecycle.v3 = true;
+                    self.storage.write(MIGRATION, &m)?;
+                }
             }
             Operation::BeginRetirement | Operation::Retired => {
                 // Flags never replace destination evidence, including explicit empties.
@@ -345,8 +368,8 @@ mod tests {
         TRANSCRIPT_KEYS
             .iter()
             .chain(V2_KEYS)
-            .chain(DROP_KEYS)
             .chain(UPDATER_V3_KEYS)
+            .chain(DROP_KEYS)
             .map(|k| ((*k).into(), None))
             .collect()
     }
@@ -367,7 +390,7 @@ mod tests {
             ),
         );
         let r = e.lifecycle(Operation::Import(raw)).unwrap();
-        assert!(r.v1 && r.v2 && !r.v3);
+        assert!(r.v1 && r.v2 && r.v3);
         assert_eq!(
             r.values["murmur-appearance"]["theme"],
             appearance()["theme"]
@@ -462,10 +485,6 @@ mod tests {
                 }
                 e.lifecycle(Operation::Import(source())).unwrap();
                 assert!(e.lifecycle(Operation::BeginRetirement).is_err());
-                // Model #990's durable updater receipt; production has no v3 writer.
-                let mut m = e.migration().unwrap();
-                m.lifecycle.v3 = true;
-                e.storage.write(MIGRATION, &m).unwrap();
                 e.execute(Command::KeysRemoved(vec![
                     Destination::History,
                     Destination::Statistics,
@@ -528,6 +547,7 @@ mod removal_tests {
             let mut raw: BTreeMap<String, Option<String>> = TRANSCRIPT_KEYS
                 .iter()
                 .chain(V2_KEYS)
+                .chain(UPDATER_V3_KEYS)
                 .map(|k| ((*k).into(), None))
                 .collect();
             raw.insert("murmur-appearance".into(), Some(a.to_string()));
@@ -927,6 +947,7 @@ mod round_three_limits {
                 let mut sources = TRANSCRIPT_KEYS
                     .iter()
                     .chain(V2_KEYS)
+                    .chain(UPDATER_V3_KEYS)
                     .map(|k| ((*k).into(), None))
                     .collect::<BTreeMap<_, _>>();
                 sources.insert(key.into(), Some(raw.clone()));
@@ -941,6 +962,96 @@ mod round_three_limits {
                     assert!(save_source(dir.path(), key, &raw).is_err());
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod updater_v3_tests {
+    use super::*;
+    use std::fs;
+    #[test]
+    fn v3_jump_sequential_interruption_corruption_fill_only_and_removal_receipts() {
+        use crate::completion::{
+            lifecycle::{TRANSCRIPT_KEYS, UPDATER_V3_KEYS, V2_KEYS},
+            storage::Boundary,
+        };
+        for sequential in [false, true] {
+            for file in ["ui-state.json", "migrations.json"] {
+                for boundary in [
+                    Boundary::BeforeRename,
+                    Boundary::AfterRename,
+                    Boundary::DirectorySync,
+                ] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut engine = crate::completion::tests::engine(temp.path(), true);
+                    let mut source: BTreeMap<String, Option<String>> = TRANSCRIPT_KEYS
+                        .iter()
+                        .chain(V2_KEYS)
+                        .chain(UPDATER_V3_KEYS)
+                        .map(|k| ((*k).into(), None))
+                        .collect();
+                    if sequential {
+                        engine
+                            .import(crate::completion::LegacyImport::default())
+                            .unwrap();
+                        // Model an installed 1.5 UI destination and v2 receipt.
+                        engine.lifecycle(Operation::Import(source.clone())).unwrap();
+                        let p = temp.path().join("migrations.json");
+                        let mut m: Value = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
+                        m["lifecycle"]["v3"] = json!(false);
+                        fs::write(p, m.to_string()).unwrap();
+                        let p = temp.path().join("ui-state.json");
+                        let mut u: Value = serde_json::from_slice(&fs::read(&p).unwrap()).unwrap();
+                        u.as_object_mut().unwrap().remove("v3_imported");
+                        fs::write(p, u.to_string()).unwrap();
+                    }
+                    source.insert("updater-last-check".into(), Some("1234".into()));
+                    source.insert(
+                        "pending-update-release-notes".into(),
+                        Some(json!({"version":"1.2.0","notes":"Synthetic notes"}).to_string()),
+                    );
+                    engine.storage.fail = Some((file.into(), boundary));
+                    assert!(engine.lifecycle(Operation::Import(source.clone())).is_err());
+                    engine = crate::completion::tests::reopen(&engine);
+                    let r = engine.lifecycle(Operation::Import(source.clone())).unwrap();
+                    assert!(r.v1 && r.v2 && r.v3);
+                    assert_eq!(r.values["updater-last-check"], 1234);
+                    engine
+                        .lifecycle(Operation::Save {
+                            key: "pending-update-release-notes".into(),
+                            value: Value::Null,
+                        })
+                        .unwrap();
+                    // Lost global migration state cannot resurrect dismissed notes.
+                    fs::remove_file(temp.path().join("migrations.json")).unwrap();
+                    engine = crate::completion::tests::reopen(&engine);
+                    assert!(engine.lifecycle(Operation::Import(source)).unwrap().values
+                        ["pending-update-release-notes"]
+                        .is_null());
+                }
+            }
+        }
+    }
+    #[test]
+    fn v3_corrupt_source_preserves_keys_and_committed_destination_loss_is_visible() {
+        use crate::completion::lifecycle::{TRANSCRIPT_KEYS, UPDATER_V3_KEYS, V2_KEYS};
+        for key in UPDATER_V3_KEYS {
+            let temp = tempfile::tempdir().unwrap();
+            let mut engine = crate::completion::tests::engine(temp.path(), true);
+            let mut source: BTreeMap<String, Option<String>> = TRANSCRIPT_KEYS
+                .iter()
+                .chain(V2_KEYS)
+                .chain(UPDATER_V3_KEYS)
+                .map(|k| ((*k).into(), None))
+                .collect();
+            source.insert((*key).into(), Some("{bad".into()));
+            assert!(engine.lifecycle(Operation::Import(source.clone())).is_err());
+            assert!(!engine.lifecycle(Operation::Status).unwrap().v3);
+            source.insert((*key).into(), None);
+            assert!(engine.lifecycle(Operation::Import(source)).unwrap().v3);
+            fs::write(temp.path().join("ui-state.json"), "{bad").unwrap();
+            assert!(engine.lifecycle(Operation::Status).is_err());
         }
     }
 }
