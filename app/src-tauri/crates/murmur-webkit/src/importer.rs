@@ -355,20 +355,17 @@ impl Importer {
                                 unsafe {
                                     let _: () = msg_send![&*self.handler, webView: &*self.view, didFailNavigation: Option::<&WKNavigation>::None, withError: &*error];
                                 }
-                                self.failed = true;
-                                return ImportStatus::PreservedForRetry;
+                                return self.poll();
                             }
                             SyntheticFailure::ProcessTermination => {
                                 unsafe {
                                     let _: () = msg_send![&*self.handler, webViewWebContentProcessDidTerminate: &*self.view];
                                 }
-                                self.failed = true;
-                                return ImportStatus::PreservedForRetry;
+                                return self.poll();
                             }
                             SyntheticFailure::Deadline => {
                                 self.deadline = Instant::now();
-                                self.failed = true;
-                                return ImportStatus::PreservedForRetry;
+                                return self.poll();
                             }
                         }
                     }

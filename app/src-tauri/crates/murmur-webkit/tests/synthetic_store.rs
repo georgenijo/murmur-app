@@ -96,13 +96,17 @@ fn main() {
         let store = unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) };
         let mut importer = Importer::synthetic(mtm, &store, service.clone(), Default::default());
         importer.fail_after_import(failure);
+        let failure_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let status = importer.poll();
             if status == ImportStatus::PreservedForRetry {
                 break;
             }
             assert_ne!(status, ImportStatus::Done);
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < failure_deadline,
+                "transport failure must be observed promptly"
+            );
             NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.01));
         }
         assert_eq!(importer.poll(), ImportStatus::PreservedForRetry);
