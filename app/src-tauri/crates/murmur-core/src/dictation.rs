@@ -236,7 +236,9 @@ impl Controller {
             }
             _ => {}
         }
-        if !self.gate.can_start() {
+        // Admission gates apply only to inputs that would start capture.
+        // Existing owners must still be stoppable/cancellable after Disable.
+        if self.status == Status::Idle && !self.gate.can_start() {
             return None;
         }
         match input {
