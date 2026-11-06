@@ -12,20 +12,8 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
     ] {
         let handle = app.clone();
         app.listen(event, move |event| {
-            let cue = match cue {
-                "stop" if event.payload() != "\"processing\"" => return,
-                "delivery" => {
-                    let Ok(value) = serde_json::from_str::<serde_json::Value>(event.payload())
-                    else {
-                        return;
-                    };
-                    match value["outcome"].as_str() {
-                        Some("autoPastePosted" | "clipboardOnly") => "success",
-                        Some("unconfirmed" | "clipboardWriteFailed") => "failure",
-                        _ => return,
-                    }
-                }
-                cue => cue,
+            let Some(cue) = cue_for(cue, event.payload()) else {
+                return;
             };
             let control = handle.state::<Control>();
             let settings = control.settings.lock_or_recover();
@@ -49,6 +37,23 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
         });
     }
 }
+fn cue_for(event: &str, payload: &str) -> Option<&'static str> {
+    match event {
+        "start" => Some("start"),
+        "stop" => (payload == "\"processing\"").then_some("stop"),
+        "failure" => Some("failure"),
+        "delivery" => {
+            let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+            match value["outcome"].as_str() {
+                Some("autoPastePosted" | "clipboardOnly") => Some("success"),
+                Some("unconfirmed" | "clipboardWriteFailed") => Some("failure"),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn play(cue: &str, volume: f64) {
     let tones: &[(f64, usize, usize)] = match cue {
         "start" => &[(660.0, 0, 70)],
@@ -95,4 +100,39 @@ fn play(cue: &str, volume: f64) {
         }
     }
     let _ = std::fs::remove_file(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_cues_preserve_start_stop_and_failure_event_mapping() {
+        assert_eq!(cue_for("start", "{}"), Some("start"));
+        assert_eq!(cue_for("stop", "\"processing\""), Some("stop"));
+        for status in ["idle", "starting", "recording", "recovering"] {
+            assert_eq!(cue_for("stop", &format!("\"{status}\"")), None);
+        }
+        assert_eq!(cue_for("failure", "{}"), Some("failure"));
+    }
+    #[test]
+    fn native_cues_map_every_camel_case_delivery_outcome_and_ignore_unknown_payloads() {
+        for (outcome, expected) in [
+            ("autoPastePosted", Some("success")),
+            ("clipboardOnly", Some("success")),
+            ("clipboardWriteFailed", Some("failure")),
+            ("unconfirmed", Some("failure")),
+            ("bogus", None),
+            ("auto_pasted", None),
+        ] {
+            assert_eq!(
+                cue_for(
+                    "delivery",
+                    &serde_json::json!({"outcome":outcome}).to_string()
+                ),
+                expected
+            );
+        }
+        assert_eq!(cue_for("delivery", "null"), None);
+        assert_eq!(cue_for("delivery", "invalid"), None);
+    }
 }
