@@ -1,5 +1,19 @@
 # Decisions Log
 
+## 2026-11-05: GPUI, native parity first, on one stacked branch (#983)
+
+**Decision:** Murmur's UI moves to GPUI (Zed rev `654efae4`, Rust 1.98.1)
+through the native-parity route. Every plan issue is one stacked PR, and
+nothing merges to `main` until the top of the stack works fully on George's
+MacBook.
+
+**Why:** No Stage A prototype hit a fundamental blocker (see the record).
+Because nothing ships part-way, the hybrid work (0c, 0d, 1.7, 1.9, 2.2) is
+dropped.
+
+**References:** [Phase 0 exit](2026-11-05-gpui-phase-0-exit.md),
+[GPUI rewrite plan](../draft/gpui-rewrite-plan.md)
+
 ## 2026-11-04: Keep strict branch protection; skip verified pushes and use merge trains (#924)
 
 **Decision:** `main` keeps `strict` up-to-date protection with `ci-pass` as the
