@@ -87,7 +87,7 @@ unsafe impl GlobalAlloc for RustZoneAllocator {
 
 // --- Public query API ---
 
-/// Memory breakdown: (rust_heap_bytes, total_heap_bytes).
+/// Memory breakdown from the executable's Rust zone and all process zones.
 ///
 /// - `rust_heap_bytes`: bytes currently allocated in the Rust zone
 /// - `total_heap_bytes`: bytes across ALL malloc zones (Rust + C/FFI + system)
