@@ -9,6 +9,7 @@ default-run = "ui"
 [workspace]
 members = [
     "crates/capture-helper-protocol",
+    "crates/murmur-core",
     "sidecars/capture",
 ]
 default-members = ["."]
@@ -55,7 +56,7 @@ symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm
 dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 rdev = { git = "https://github.com/georgenijo/rdev", rev = "9f510e406327b797eaf2acdc30adcda3dc1e1bb3", features = ["macos_keyboard_only", "macos_no_modifier_event_name", "macos_test_force_tap_timeout"] }
-memory-stats = "1"
+murmur-core = { path = "crates/murmur-core" }
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 tracing = "0.1"

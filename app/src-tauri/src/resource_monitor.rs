@@ -1,15 +1,7 @@
 use crate::model_runtime::UnloadReason;
 use std::sync::Mutex;
 
-/// Get process RSS in bytes via `memory-stats` (task_info on macOS).
-pub fn get_process_rss_bytes() -> Option<u64> {
-    memory_stats::memory_stats().map(|statistics| statistics.physical_mem as u64)
-}
-
-/// Legacy internal helper retained for existing model/benchmark logs.
-pub fn get_process_rss_mb() -> u64 {
-    get_process_rss_bytes().unwrap_or(0) / 1_048_576
-}
+pub use murmur_core::memory::{get_process_rss_bytes, get_process_rss_mb};
 
 struct ProcessCpuSampler {
     system: sysinfo::System,

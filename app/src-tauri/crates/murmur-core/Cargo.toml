@@ -1,0 +1,14 @@
+[package]
+name = "murmur-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+futures-channel = "0.3"
+memory-stats = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
+futures-executor = "0.3"
