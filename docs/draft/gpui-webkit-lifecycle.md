@@ -244,7 +244,7 @@ against the actual wry view, deliberately not exercised against user data here.
 | Finding/outcome | Executable coverage |
 |---|---|
 | DS1: crash after first required marker, restart, then save | `interrupted_first_source_publication_replays_exact_intent_before_merge` injects real before/after rename and directory-sync faults for both destinations, restarts via public CompletionService, checks exact synthetic values, saves again; native `settings_merge_resumes_first_save_after_marker_before_destination_crash` exercises the production read/merge |
-| DS1: genuine destination loss/quarantine | Native `explicit_backup_restore_requires_complete_supplied_data_and_preserves_quarantine`; React `SourceRecovery.test.tsx` drives backup selection and success/failure notice. No automatic reset or production data access |
+| DS1: genuine destination loss/quarantine | Native `explicit_backup_restore_requires_complete_supplied_data_and_preserves_quarantine`; React `SourceRecovery.test.tsx` drives backup selection and success/failure notice. No automatic reset or production data access; `malformed_pending_publication_never_seeds_defaults_on_restart` covers repeated damaged-receipt failures |
 | DS2/F1: Auto Paste true→false; Disable→re-enable while first save is pending | React `older %s acknowledgement preserves the newer deliberate field intent` executes the real queue/rebase module with delayed native acknowledgement and checks final native patch for both fields |
 | F2: configuration rollback supersedes rejected Auto Paste | `configuration rollback supersedes the rejected Auto Paste native patch`, real hook and source queue, synthetic native persistence plus configure failure |
 | F3: exact pre-PR string units | `unicode_bounds_preserve_each_fields_legacy_units`, `supplementary_boundaries_for_every_string_limit`; audited against fa2be313 |
@@ -258,3 +258,11 @@ after `792123132eb178174909e9b1046b9c4d45c91809`, onto
 compare equal in `git range-diff fa2be313..8ba32dce 8f976c34..79212313`.
 Restack checks: TypeScript, core tests, 178 files / 1,787 Vitest tests passed
 (previous 176 files / 1,756 tests; +31 tests inherited from layer 1.4).
+
+Round-two Linux verification: TypeScript, 179 files / 1,795 Vitest tests
+(+8 regressions after restack, no removals), 139 core tests (111 unit + 28
+integration), strict core Clippy, Tauri-free dependency guard, both event guards
+and their CI-invoked suites (15 Python / 42 Node), and reference/Markdown
+validators passed. Native validation evidence and final-head CI status are
+recorded in the PR body. Independent re-check and GUI verification remain with
+the parent and dedicated verifier.
