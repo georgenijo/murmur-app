@@ -4,7 +4,7 @@ use tempfile::TempDir;
 pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
     let mut e = Engine {
         unpreserved_content: false,
-        failed_source: None,
+        accepted: VecDeque::new(),
         failed_content: None,
         storage: Storage {
             root: root.into(),
@@ -292,7 +292,7 @@ fn state_first_creation_failure_blocks_all_writes_and_arming() {
     let dir = TempDir::new().unwrap();
     let mut e = Engine {
         unpreserved_content: false,
-        failed_source: None,
+        accepted: VecDeque::new(),
         failed_content: None,
         storage: Storage {
             root: dir.path().into(),
@@ -1065,7 +1065,12 @@ fn review_unreadable_holding_blocks_writes_and_arming_without_replacement() {
         .any(|v| v.contains("Rename")));
     assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before);
     e.storage.fail_read = None;
-    assert_eq!(e.execute(Command::Snapshot).unwrap().history.len(), 1);
+    // The accepted command was retained before the read failure. It publishes
+    // once the owner can prove the older stores are readable again.
+    let recovered = e.execute(Command::Snapshot).unwrap();
+    assert_eq!(recovered.history.len(), 2);
+    assert_eq!(recovered.statistics.total_recordings, 2);
+    assert_eq!(e.execute(Command::Snapshot).unwrap().history.len(), 2);
 }
 
 #[test]
@@ -1497,4 +1502,140 @@ fn direct_mutation_failures_cannot_receive_committed_until_exact_snapshot_is_ret
             }
         }
     }
+}
+
+#[test]
+fn round_two_unlinked_pending_sync_failure_retries_completion_exactly_once() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        // First matching sync publishes pending; second follows its unlink.
+        e.storage
+            .faults
+            .push_back((PENDING.into(), Boundary::DirectorySync, 1));
+        complete(&mut e, "synthetic-once", true);
+        assert!(e.storage.faults.is_empty());
+        assert!(!dir.path().join(PENDING).exists());
+        assert_eq!(e.snapshot().unwrap().history.len(), 1);
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        assert_eq!(reopen(&e).snapshot().unwrap().history.len(), 1);
+    }
+}
+
+#[test]
+fn round_two_legacy_pending_shape_preserves_destination_and_evidence_bytes() {
+    for d in [Destination::History, Destination::Reports] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        complete(&mut e, "synthetic-readable", true);
+        e.execute(Command::Report(report(1))).unwrap();
+        let before = std::fs::read(dir.path().join(d.file())).unwrap();
+        for value in [
+            json!([]),
+            json!({"schema":2,"data":[]}),
+            json!(Document::new(d)),
+        ] {
+            let pending =
+                serde_json::to_vec(&json!({"schema":1,"file":d.file(),"value":value})).unwrap();
+            std::fs::write(dir.path().join(PENDING), &pending).unwrap();
+            assert!(e.execute(Command::Snapshot).is_err());
+            assert!(
+                std::fs::read(dir.path().join(d.file())).unwrap() == before,
+                "pending replay changed destination bytes"
+            );
+            assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+                let path = item.unwrap().path();
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("completion-pending.json.quarantine-seq-")
+                    && std::fs::read(path).unwrap() == pending
+            }));
+        }
+    }
+}
+
+#[test]
+fn round_two_holding_failure_retains_all_history_mutation_targets() {
+    for kind in 0..3 {
+        for boundary in [
+            Boundary::BeforeRename,
+            Boundary::AfterRename,
+            Boundary::DirectorySync,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let mut e = engine(dir.path(), false);
+            let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+            let mutation = match kind {
+                0 => HistoryMutation::Pin { target },
+                1 => HistoryMutation::Edit {
+                    target,
+                    text: "synthetic-edited".into(),
+                },
+                _ => HistoryMutation::Delete {
+                    targets: vec![target],
+                },
+            };
+            e.storage.fail = Some((HOLD.into(), boundary));
+            assert!(e.execute(Command::History(mutation)).is_err());
+            assert!(e.storage.fail.is_none());
+            e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+            assert_eq!(
+                e.write_receipt(),
+                crate::shutdown::WriteOutcome::UnpreservedFailure
+            );
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            let history = reopen(&e).snapshot().unwrap().history;
+            match kind {
+                0 => {
+                    assert_eq!(history.len(), 1);
+                    assert_eq!(history[0]["pinned"], true);
+                }
+                1 => {
+                    assert_eq!(history.len(), 1);
+                    assert_eq!(history[0]["text"], "synthetic-edited");
+                }
+                _ => assert!(history.is_empty()),
+            }
+        }
+    }
+}
+
+#[test]
+fn round_two_retry_failure_keeps_next_report_in_submission_order() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
+    assert!(e.execute(Command::Report(report(1))).is_err());
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
+    assert!(e.execute(Command::Report(report(2))).is_err());
+    assert!(e.storage.fail.is_none());
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    let reports = reopen(&e).snapshot().unwrap().reports;
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["createdAt"], report(1)["createdAt"]);
+    assert_eq!(reports[1]["createdAt"], report(2)["createdAt"]);
+}
+
+#[test]
+fn round_two_retry_failure_keeps_last_ui_value() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.lifecycle(lifecycle::Operation::Status).unwrap();
+    for value in [true, false] {
+        e.storage.fail = Some(("ui-state.json.pending".into(), Boundary::BeforeRename));
+        assert!(e
+            .lifecycle(lifecycle::Operation::Save {
+                key: "usage-dashboard-collapsed".into(),
+                value: json!(value),
+            })
+            .is_err());
+        assert!(e.storage.fail.is_none());
+    }
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    let mut next = reopen(&e);
+    assert_eq!(
+        next.lifecycle(lifecycle::Operation::Status).unwrap().values["usage-dashboard-collapsed"],
+        false
+    );
 }
