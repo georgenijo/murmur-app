@@ -9,9 +9,14 @@ export function useOverlaySettingsSync(apply: (fresh: Partial<Pick<Settings, 'au
     let unlisten: (() => void) | undefined;
     void listen<unknown>('overlay-owned-setting-committed', ({ payload }) => {
       if (cancelled || !payload || typeof payload !== 'object') return;
-      const { field, value, ownedFieldsRevision } = payload as { field?: unknown; value?: unknown; ownedFieldsRevision?: unknown };
+      const { field, value, ownedFieldsRevision, autoPaste, disabled } = payload as Record<string, unknown>;
       if ((field === 'autoPaste' || field === 'disabled') && typeof value === 'boolean') {
-        apply({ [field]: value, ...(typeof ownedFieldsRevision === 'number' ? { ownedFieldsRevision } : {}) });
+        if (typeof ownedFieldsRevision === 'number') {
+          if (!Number.isSafeInteger(ownedFieldsRevision) || ownedFieldsRevision < 0 || typeof autoPaste !== 'boolean' || typeof disabled !== 'boolean') return;
+          // A revision describes both owned fields. Carry the complete committed
+          // pair so a missed earlier event cannot stamp a stale value as current.
+          apply({ autoPaste, disabled, ownedFieldsRevision });
+        } else apply({ [field]: value });
       }
     }).then(fn => { if (cancelled) fn(); else unlisten = fn; });
     return () => { cancelled = true; unlisten?.(); };

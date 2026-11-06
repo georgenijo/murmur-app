@@ -301,6 +301,18 @@ fn patch_owned_setting(
     Ok(committed)
 }
 
+fn owned_fields_notification(
+    field: OverlaySettingField,
+    value: bool,
+    committed: &str,
+) -> serde_json::Value {
+    let settings: serde_json::Value =
+        serde_json::from_str(committed).expect("committed settings are valid JSON");
+    serde_json::json!({ "field": field.key(), "value": value,
+        "ownedFieldsRevision": settings["ownedFieldsRevision"],
+        "autoPaste": settings["autoPaste"], "disabled": settings["disabled"] })
+}
+
 /// Older full snapshots cannot undo an overlay commit accepted since their
 /// capture. The epoch is durable and advances with each owned-field patch.
 fn merge_owned_fields(dir: &Path, blob: &str) -> Result<String, String> {
@@ -334,7 +346,7 @@ pub fn patch_overlay_setting(
     let _ = app.events().send_to(
         murmur_core::events::Consumer::Main,
         "overlay-owned-setting-committed",
-        serde_json::json!({ "field": field.key(), "value": value, "ownedFieldsRevision": serde_json::from_str::<serde_json::Value>(&committed).ok().and_then(|v| v["ownedFieldsRevision"].as_u64()).unwrap_or(0) }),
+        owned_fields_notification(field, value, &committed),
     );
     Ok(committed)
 }
@@ -657,6 +669,13 @@ mod lifecycle_ordering_tests {
         write_blob(dir.path(), SETTINGS, &original).unwrap();
         patch_owned_setting(dir.path(), OverlaySettingField::Disabled, true).unwrap();
         patch_owned_setting(dir.path(), OverlaySettingField::AutoPaste, true).unwrap();
+        let latest = read_blob(dir.path(), SETTINGS).unwrap().unwrap();
+        let notification = owned_fields_notification(OverlaySettingField::AutoPaste, true, &latest);
+        // Even if the earlier Disable event was missed, this next event carries
+        // the complete pair represented by revision 2.
+        assert_eq!(notification["disabled"], true);
+        assert_eq!(notification["autoPaste"], true);
+        assert_eq!(notification["ownedFieldsRevision"], 2);
         let _guard = WRITE_LOCK.lock_or_recover();
         let committed = merge_owned_fields(dir.path(), &original).unwrap();
         write_blob_locked(dir.path(), SETTINGS, &committed).unwrap();

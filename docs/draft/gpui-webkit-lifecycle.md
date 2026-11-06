@@ -50,7 +50,8 @@ The existing completion owner and advisory root lock serialize v1 destinations,
 v2 state and migration receipts. Tauri source transports share `WRITE_LOCK`
 with imports. Full settings saves and quick-control patches use that lock; a
 durable owned-field revision prevents delayed/retried full snapshots from undoing
-newer overlay Disable or Auto Paste commits. Native configuration is built from
+newer overlay Disable or Auto Paste commits. Every revision notification carries both owned values, so a missed event cannot
+stamp a stale Disable value with a newer revision. Native configuration is built from
 the merged committed document. Frontend retry intents retain their newest per-key
 generation and rebase native-owned fields; old acknowledgements cannot discard
 newer edits. Recording generation ownership is unchanged.
