@@ -1102,6 +1102,17 @@ textarea {
   box-shadow: var(--ui-card-shadow);
 }
 
+/* Startup/recovery notices share the error surface but stay clear of the
+   workspace's recording and delivery error banner and native title bar. */
+.main-error-banner[data-placement="window"] {
+  position: fixed;
+  top: calc(var(--ui-window-header-height) + var(--ui-space-3));
+  right: var(--ui-dashboard-inset);
+  bottom: auto;
+  left: auto;
+  max-width: min(30rem, calc(100% - var(--ui-dashboard-inset) - var(--ui-dashboard-inset)));
+}
+
 .home-dashboard,
 .insights-view,
 .main-secondary-view {

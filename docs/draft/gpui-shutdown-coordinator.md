@@ -890,3 +890,26 @@ The task's Mac checkout, external target, synthetic home/temp/cache and generate
 helpers were removed after preserving check receipts. No task process remained.
 No product app was launched, no production data or general pasteboard was accessed,
 and no merge, retargeting or independent-review pass is claimed.
+
+### Round-five tray durability warning
+
+The native pending disabled patch is now queryable through the main-only,
+read-only `get_dictation_settings_unsaved` command. Its lifetime follows the
+existing native ownership: failed writes retain the latest choice, a failed
+superseding choice still warns, and successful publication (including native
+retry or an unrelated settings write that merges the patch) clears it.
+Settings producers invalidate the warning after success or failure.
+
+`DictationSettingsNotice` subscribes before querying on mount and ignores older
+query responses. Both hydrated main and startup `SourceRecovery` mount it,
+using the existing `MainErrorBanner` and content-free fixed messages. Its
+window-level placement stays below native chrome and separate from the ordinary
+workspace recording/delivery error banner. A tray
+failure before hydration therefore survives either startup outcome. Recording
+status transitions cannot erase this separate notice. No GUI or app launches
+were used; all verification uses synthetic data.
+
+The two pre-hydration regressions fail on `9676fc4b` and pass with this change;
+six frontend cases also cover recovery-time changes and late initial reads.
+The Rust lifecycle case covers retention, failed retry, failed supersession,
+merged successful publication, saved tray supersession, and native retry.

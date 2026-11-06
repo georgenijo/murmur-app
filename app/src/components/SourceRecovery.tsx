@@ -1,3 +1,4 @@
+import { DictationSettingsNotice } from './DictationSettingsNotice';
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -8,6 +9,7 @@ export function SourceRecovery() {
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   return <main>
+    <DictationSettingsNotice />
     <h1>Saved data needs recovery</h1>
     <p role="alert">Your saved data could not be loaded. Restart to retry an interrupted save. If a destination is missing or quarantined, restore its complete current-version JSON backup below. Existing quarantines are preserved. No defaults will be published.</p>
     <section aria-label="Completion recovery">

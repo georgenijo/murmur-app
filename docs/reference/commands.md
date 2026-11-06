@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 186 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 187 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -324,6 +324,7 @@ is per window/session/key, checked inside the source FIFO before disk access.
 | `import_webkit_state` | `source: BTreeMap<String, Option<String>>` | `Result<Receipt, String>` | Main-only versioned importer. Raw JSON strings distinguish corrupt values from missing keys; disk values win. Shares the settings writer lock. |
 | `save_webkit_source` | `key: String`, `value: Value`, `sourceSession: String`, `intentGeneration: u64` | `Result<SourceWrite<()>, String>` | Main-only allow-listed source-state write to the completion actor. Settings/theme retain their dedicated commands. No updater v3 implementation or retirement permission is exposed to React. |
 | `restore_source_backup` | `key: String`, `blob: String` | `Result<(), String>` | Main-only explicit restore of complete current-version settings or theme-library JSON into a missing/quarantined destination. Refuses partial documents and readable destinations; preserves quarantines. No default reset. |
+| `get_dictation_settings_unsaved` | — | `Result<bool, String>` | Main-only read of the retained native enabled/disabled patch, available before hydration and during source recovery. True until that choice is durably published or replaced and published; no private content or disk writes. Subscribe to `dictation-settings-warning-changed` before querying and requery on each notification. |
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Replays any exact pending publication before reading and normalizing settings.json. None means never created. Required missing, quarantined, and future-schema destinations fail visibly across relaunch; quarantines use content-free UUID names and are preserved. |
 | `save_settings_blob` | `blob: String, ownedEdits?: { autoPaste?: bool, disabled?: bool }, ownedEditGenerations?: { autoPaste?: u64, disabled?: u64 }, sourceSession: String, intentGeneration: u64` | `Result<SettingsWrite, String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Returns an applied snapshot receipt or superseded snapshot receipt, plus separate ownedPatchGenerations acknowledging only exact native-owned field IDs. A superseded document still applies fresh owned patches against the current native document. The main-window acknowledgement echoes intentSession, intentGeneration and acknowledgedFields so newer per-field edits survive. Explicit owned-field edits patch the latest revision; incidental full snapshots always preserve native owned fields. Field IDs survive retries so they cannot replay behind a later quick control. Full writes require the main window; overlay quick controls use the field-limited patch command. Concurrent writers are serialized; failed publications retain an exact pending receipt and resume before the next read/merge. |
 | `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool, sourceSession: String` | `Result<String, String>` | Requires the current registered overlay session. Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
@@ -443,7 +444,7 @@ or Paste Last work is refused during shutdown. The temporary app-owned process
 plugin preserves plugin:process|exit and plugin:process|restart for authorized
 Main callers, routing both through shutdown. process:allow-restart remains until
 #990. Exit code arguments are accepted; coordinated quit uses the common exit
-code zero. No public restart command is added to the 186-command app surface.
+code zero. No public restart command is added to the 187-command app surface.
 
 The explicitly enabled shutdown-test-support feature exposes only the isolated
 QA plugin described in [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).

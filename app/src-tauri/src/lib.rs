@@ -430,6 +430,7 @@ pub fn run() {
             completion::clear_completion_destination,
             completion::store_benchmark_report,
             commands::settings_store::load_settings_blob,
+            commands::settings_store::get_dictation_settings_unsaved,
             shutdown::register_source_session,
             commands::settings_store::save_settings_blob,
             commands::settings_store::restore_source_backup,

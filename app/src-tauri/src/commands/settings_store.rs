@@ -3,7 +3,6 @@
 //! A host writer lock orders these commands with WebKit lifecycle imports.
 
 use crate::events::EventsExt;
-use murmur_core::events::EventSink;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -58,6 +57,46 @@ fn pending_owned() -> &'static Mutex<HashMap<PathBuf, OwnedEdits>> {
     static PENDING: std::sync::OnceLock<Mutex<HashMap<PathBuf, OwnedEdits>>> =
         std::sync::OnceLock::new();
     PENDING.get_or_init(Default::default)
+}
+
+/// The retained disabled patch is the warning's source of truth. Successful
+/// publication removes it; a newer choice replaces it in the same writer FIFO.
+/// Caller holds WRITE_LOCK so an in-flight publication is never reported failed.
+fn dictation_settings_unsaved(dir: &Path) -> bool {
+    pending_owned()
+        .lock_or_recover()
+        .get(dir)
+        .is_some_and(|edits| edits.disabled.is_some())
+}
+
+/// Notify on success and early error alike, after local writer guards release.
+/// Payload-free invalidation makes the query authoritative even across mounts.
+struct SettingsWarningNotification<'a>(&'a tauri::AppHandle);
+impl Drop for SettingsWarningNotification<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.events().send_to(
+            murmur_core::events::Consumer::Main,
+            "dictation-settings-warning-changed",
+            (),
+        );
+    }
+}
+
+#[tauri::command]
+pub async fn get_dictation_settings_unsaved(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<bool, String> {
+    require_settings_owner(window.label())?;
+    // Read-only and available during startup recovery; no source admission,
+    // hydration, filesystem mutation or healthy settings document is required.
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = source_dir(&app)?;
+        let _guard = WRITE_LOCK.lock_or_recover();
+        Ok(dictation_settings_unsaved(&dir))
+    })
+    .await
+    .map_err(|_| "Settings warning state unavailable".to_owned())?
 }
 
 fn blob_path(dir: &Path, spec: BlobSpec) -> PathBuf {
@@ -235,6 +274,7 @@ pub(crate) fn save_settings_blob_worker(
     snapshot_current: bool,
 ) -> Result<String, String> {
     require_settings_owner(window.label())?;
+    let _warning_notification = SettingsWarningNotification(&app);
     let value =
         murmur_core::state::settings(serde_json::from_str(&blob).map_err(|_| "Invalid settings")?)
             .map_err(|_| "Invalid settings")?;
@@ -414,7 +454,8 @@ fn patch_owned_setting_with<T>(
 pub(crate) fn toggle_tray_disabled(app: tauri::AppHandle) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
     tauri::async_runtime::spawn(async move {
-        let failure_app = app.clone();
+        let notification_app = app.clone();
+        let _warning_notification = SettingsWarningNotification(&notification_app);
         let result = crate::shutdown::source_call(move || {
             let _admission = admission;
             let dir = source_dir(&app)?;
@@ -433,10 +474,6 @@ pub(crate) fn toggle_tray_disabled(app: tauri::AppHandle) -> Result<(), String> 
         .await;
         if !matches!(result, Ok(Ok(()))) {
             tracing::warn!(target: "keyboard", "tray disabled-state update was not fully committed; durability is not guaranteed");
-            let _ = failure_app.events().publish(
-                murmur_core::events::EventKind::DictationControlError,
-                "Murmur could not save the enabled/disabled setting. The tray checkmark shows the current runtime state. Restore settings storage before quitting to keep your choice.",
-            );
         }
     });
     Ok(())
@@ -603,6 +640,7 @@ pub(crate) fn patch_overlay_setting_worker(
     value: bool,
 ) -> Result<String, String> {
     require_overlay_owner(window.label())?;
+    let _warning_notification = SettingsWarningNotification(&app);
     let (committed, runtime) =
         patch_owned_setting_with(&source_dir(&app)?, field, value, || match field {
             OverlaySettingField::Disabled => crate::dictation_control::set_disabled(&app, value),
@@ -1213,6 +1251,7 @@ mod explicit_owned_edit_tests {
 /// Worker-only source fence, serialized with accepted source publications and
 /// quick-control merges. Recovery preserves their owned-field revision rules.
 pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
+    let _warning_notification = SettingsWarningNotification(app);
     let _guard = WRITE_LOCK.lock_or_recover();
     let Ok(root) = data_dir(app) else {
         return false;
@@ -1642,6 +1681,60 @@ mod round_three_ordering_tests {
             assert_eq!(disk["ownedFieldsRevision"], 1);
             assert_eq!(runtime.load(Ordering::SeqCst), clicks == 1);
         }
+    }
+
+    #[test]
+    fn retained_dictation_settings_warning_tracks_failed_and_saved_choices() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        let warning = || {
+            let _guard = WRITE_LOCK.lock_or_recover();
+            dictation_settings_unsaved(path)
+        };
+        write_blob(path, SETTINGS, r#"{"settingsVersion":7,"disabled":false}"#).unwrap();
+        assert!(!warning());
+        let destination = path.join("settings.json");
+        let held = path.join("held-synthetic-settings");
+        std::fs::rename(&destination, &held).unwrap();
+        assert!(commit_tray_disabled(path, false, |_| Ok(())).is_err());
+        assert!(warning(), "failure before frontend mount remains queryable");
+        assert_eq!(pending_owned().lock_or_recover()[path].disabled, Some(true));
+        assert!(commit_tray_disabled(path, true, |_| Ok(())).is_err());
+        assert!(
+            warning(),
+            "an unsaved superseding choice still needs a warning"
+        );
+        assert_eq!(
+            pending_owned().lock_or_recover()[path].disabled,
+            Some(false)
+        );
+        {
+            let _guard = WRITE_LOCK.lock_or_recover();
+            assert!(!flush_owned(path));
+        }
+        assert!(warning(), "failed retries cannot clear the warning");
+        std::fs::rename(&held, &destination).unwrap();
+        // An unrelated successful patch also publishes the retained choice.
+        patch_owned_setting(path, OverlaySettingField::AutoPaste, true).unwrap();
+        assert!(!warning());
+        assert_eq!(recovered(path)["disabled"], false);
+        std::fs::rename(&destination, &held).unwrap();
+        assert!(commit_tray_disabled(path, false, |_| Ok(())).is_err());
+        assert!(warning());
+        std::fs::rename(&held, &destination).unwrap();
+        commit_tray_disabled(path, true, |_| Ok(())).unwrap();
+        assert!(
+            !warning(),
+            "a durably saved superseding tray choice clears it"
+        );
+        std::fs::rename(&destination, &held).unwrap();
+        assert!(commit_tray_disabled(path, false, |_| Ok(())).is_err());
+        std::fs::rename(&held, &destination).unwrap();
+        {
+            let _guard = WRITE_LOCK.lock_or_recover();
+            assert!(flush_owned(path));
+        }
+        assert!(!warning(), "a successful native retry clears it too");
     }
 
     #[test]

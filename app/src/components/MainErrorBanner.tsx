@@ -1,5 +1,6 @@
 interface MainErrorBannerProps {
   message: string;
+  placement?: 'workspace' | 'window';
   onDismiss: () => void;
   actionLabel?: string;
   actionBusy?: boolean;
@@ -8,6 +9,7 @@ interface MainErrorBannerProps {
 
 export function MainErrorBanner({
   message,
+  placement = 'workspace',
   onDismiss,
   actionLabel,
   actionBusy = false,
@@ -19,6 +21,7 @@ export function MainErrorBanner({
       aria-atomic="true"
       data-testid="main-error-banner"
       className="main-error-banner"
+      data-placement={placement}
     >
       <p className="min-w-0 flex-1 break-words text-xs leading-5 text-error">
         {message}
