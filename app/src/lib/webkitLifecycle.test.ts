@@ -144,3 +144,14 @@ it('public onboarding complete and reset persist despite cache write and removal
   expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'murmur_onboarding_complete', value: false });
   write.mockRestore(); remove.mockRestore();
 });
+
+it('submits a new native intent while an earlier publication is still blocked', async () => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  let release!: () => void;
+  mock.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; })).mockResolvedValue(undefined);
+  persistSourceState('usage-dashboard-collapsed', 'true');
+  persistSourceState('usage-dashboard-collapsed', 'false');
+  expect(mock.invoke).toHaveBeenCalledTimes(2);
+  expect(mock.invoke).toHaveBeenLastCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: false });
+  release(); await flushSourceState();
+});

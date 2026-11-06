@@ -64,6 +64,8 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
                 };
                 for effect in effects {
                     if effect.step == Step::Terminate {
+                        #[cfg(feature = "shutdown-test-support")]
+                        test_support::hold(&handle, &context, &receive, &core, &clock);
                         let action = core.lock_or_recover().issue();
                         if let Some(action) = action {
                             let app = handle.clone();
@@ -364,12 +366,24 @@ pub(crate) mod test_support {
     }
     /// After real owner work, hold final release for >=6 s. Each dispatcher
     /// must execute repeatedly while an actual AppKit termination wait is active.
-    pub(super) fn hold(app: &tauri::AppHandle, context: &AppContext) {
+    pub(super) fn hold(
+        app: &tauri::AppHandle,
+        context: &AppContext,
+        receive: &mpsc::Receiver<Message>,
+        core: &Mutex<Coordinator>,
+        clock: &Instant,
+    ) {
         if !isolated(app) {
             return;
         }
         let counts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         for _ in 0..65 {
+            for message in receive.try_iter() {
+                if let Message::Request(request) = message {
+                    core.lock_or_recover()
+                        .request(request, clock.elapsed().as_millis() as u64);
+                }
+            }
             let count = counts.clone();
             let _ = context.main_thread.dispatch(Box::new(move || {
                 assert!(objc2::MainThreadMarker::new().is_some());
@@ -380,6 +394,23 @@ pub(crate) mod test_support {
                 assert!(objc2::MainThreadMarker::new().is_some());
                 count.fetch_add(1, Ordering::AcqRel);
             });
+            let count = counts.clone();
+            let block = block2::RcBlock::new(move || {
+                assert!(objc2::MainThreadMarker::new().is_some());
+                count.fetch_add(1, Ordering::AcqRel);
+            });
+            let run_loop = objc2_core_foundation::CFRunLoop::main().unwrap();
+            unsafe {
+                run_loop.perform_block(
+                    Some(
+                        objc2_core_foundation::kCFRunLoopCommonModes
+                            .unwrap()
+                            .as_ref(),
+                    ),
+                    Some(&block),
+                );
+            }
+            run_loop.wake_up();
             std::thread::sleep(Duration::from_millis(100));
         }
         tracing::info!(target:"shutdown", callbacks=counts.load(Ordering::Acquire), expected=130, "synthetic shutdown dispatcher receipt");

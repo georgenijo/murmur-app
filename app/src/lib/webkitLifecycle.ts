@@ -76,6 +76,7 @@ async function notifySourceCommitted(key: string): Promise<void> {
 export function persistSourceState(key: string, raw: string, ownedEdits?: OwnedEdits): void {
   try { if (!isTauri()) return; } catch { return; }
   const previous = pending.get(key);
+  if (previous?.raw === raw && JSON.stringify(previous.ownedEdits ?? {}) === JSON.stringify({ ...previous.ownedEdits, ...ownedEdits })) return;
   const nextGeneration = ++generation;
   const fieldGenerations = { ...previous?.fieldGenerations };
   for (const field of ['autoPaste', 'disabled'] as const) {
@@ -95,7 +96,7 @@ function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending
       ? invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(intent.ownedEdits ? { ownedEdits: intent.ownedEdits } : {}), ...(key === 'dictation-settings' ? { intentGeneration: intent.generation } : {}) })
       : invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown });
   } catch { request = Promise.reject(new Error('Source storage unavailable')); }
-  const promise = request.then(async () => {
+  const promise = Promise.resolve(request).then(async () => {
     if (pending.get(key)?.generation === intent.generation) pending.delete(key);
     if (synchronization) await notifySourceCommitted(key);
     window.dispatchEvent(new Event(SOURCE_STORAGE_SAVED));
@@ -107,6 +108,7 @@ function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending
   return promise;
 }
 export async function flushSourceState(): Promise<void> {
+  await Promise.allSettled([...inFlight.values()]);
   // One explicit retry pass. A newer rebase/edit discovered during that pass
   // also reaches native ownership before returning.
   const attempted = new Set<number>();
