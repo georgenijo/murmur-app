@@ -22,7 +22,7 @@ struct Queued {
     at: Instant,
 }
 #[derive(Default)]
-struct ConfigurationFence(Mutex<u64>);
+pub(crate) struct ConfigurationFence(Mutex<u64>);
 impl ConfigurationFence {
     fn run<T>(&self, action: impl FnOnce() -> T) -> T {
         let _guard = self.0.lock_or_recover();
@@ -30,18 +30,18 @@ impl ConfigurationFence {
     }
 
     // Allocate intent before scheduling work, not when the snapshot is applied.
-    fn accept(&self) -> u64 {
+    pub(crate) fn accept(&self) -> u64 {
         let mut revision = self.0.lock_or_recover();
         *revision += 1;
         *revision
     }
 
-    fn apply<T>(&self, revision: u64, action: impl FnOnce() -> T) -> Option<T> {
+    pub(crate) fn apply<T>(&self, revision: u64, action: impl FnOnce() -> T) -> Option<T> {
         let current = self.0.lock_or_recover();
         (*current == revision).then(action)
     }
 
-    fn override_current<T>(&self, action: impl FnOnce() -> T) -> T {
+    pub(crate) fn override_current<T>(&self, action: impl FnOnce() -> T) -> T {
         let mut revision = self.0.lock_or_recover();
         *revision += 1;
         action()
@@ -577,8 +577,33 @@ pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) -> Result<(),
         if policy != previous {
             let _ = crate::smart_auto_probe::configure_host_policy(policy);
         }
-        crate::commands::keyboard::apply_app_disabled(app.clone(), disabled)
+        let result = crate::commands::keyboard::apply_app_disabled(app.clone(), disabled);
+        if disabled {
+            if let Some(generation) = active_capture_generation(&app.state::<State>().app_state) {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    // A re-enable/new start may win before this continuation.
+                    // Cancellation must remain owned by the captured generation.
+                    let _ = crate::commands::recording::cancel_native_recording(
+                        handle.clone(),
+                        handle.state::<State>(),
+                        Some(generation),
+                    )
+                    .await;
+                });
+            }
+        }
+        result
     })
+}
+
+fn active_capture_generation(state: &crate::state::AppState) -> Option<u64> {
+    let dictation = state.dictation.lock_or_recover();
+    matches!(
+        dictation.status,
+        crate::state::DictationStatus::Starting | crate::state::DictationStatus::Recording
+    )
+    .then(|| state.recording_id.load(Ordering::SeqCst))
 }
 pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
     if crate::shutdown::closing() {
@@ -655,6 +680,35 @@ pub(crate) fn get_dictation_lock(app: tauri::AppHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delayed_disable_cancellation_cannot_cancel_a_new_recording() {
+        use crate::state::DictationStatus;
+        let state = crate::state::AppState::default();
+        for status in [DictationStatus::Starting, DictationStatus::Recording] {
+            state.recording_id.store(12, Ordering::SeqCst);
+            state.dictation.lock_or_recover().status = status;
+            let generation = active_capture_generation(&state).unwrap();
+            // A re-enable/new recording wins before the cancellation runs.
+            state.recording_id.store(13, Ordering::SeqCst);
+            assert!(crate::commands::recording::cancel_recording_transition(
+                &state,
+                Some(generation),
+                || panic!("old Disable cancelled the new recording"),
+            )
+            .is_none());
+            assert_eq!(state.dictation.lock_or_recover().status, status);
+            assert!(!state.is_cancelled(13));
+        }
+        for status in [
+            DictationStatus::Idle,
+            DictationStatus::Processing,
+            DictationStatus::Recovering,
+        ] {
+            state.dictation.lock_or_recover().status = status;
+            assert!(active_capture_generation(&state).is_none());
+        }
+    }
+
     #[test]
     fn in_flight_refresh_cannot_overwrite_a_later_native_disable() {
         use std::sync::{

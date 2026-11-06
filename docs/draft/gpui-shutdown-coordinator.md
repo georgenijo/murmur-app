@@ -597,6 +597,58 @@ missing tray owned patch makes the native recovery regression fail with
 core-dependency, restart and event policies pass. The isolated Mac checkout and
 target are removed after verification.
 
+## Round-four tray ownership without readable settings
+
+Tray Disable/Enable resolves against the current runtime value (or a retained
+native patch) inside the source FIFO. Acceptance retains the owned `disabled`
+patch and applies the configuration-fenced runtime override **before** reading,
+merging or publishing settings. This also applies to deliberate Settings and
+overlay disabled edits. An absent initial document, unreadable destination or
+quarantine cannot prevent the runtime action. The native adapter updates the
+tray checkmark and emits the existing app-state event even if publication fails.
+Disabling an active starting/recording dictation schedules cancellation with its
+captured recording generation; a delayed continuation cannot cancel a newer
+recording after re-enable. Processing is allowed to finish.
+
+A tray failure publishes the existing user-visible dictation-control error. Its
+log says that the update was not fully committed and durability is not
+guaranteed; it no longer promises that source recovery retained an edit before
+acceptance. Runtime truth and durable success are separate: an unsavable choice
+remains owned in memory and shutdown reports an uncommitted source fence.
+Subsequent legitimate first hydration, return of the original destination, or
+explicit complete-backup restore lets the normal merge/publisher persist that
+patch. No initial settings document is invented by a tray patch, and damaged
+or quarantined evidence is never overwritten or repaired by a toggle.
+
+Tray ownership is an **orderly-shutdown guarantee**, conditional on the source
+being readable/publishable by the final source fence. A forced process death
+after runtime acceptance but before the publisher retains its durable receipt
+can recover the previous value. Closing that window would require a separate
+crash-durable patch journal, including replay/identity and quarantine rules;
+that is broader than this correction and would add another settings writer.
+The existing full-sync publisher and recovery protocol remain unchanged.
+
+Synthetic regressions exercise the actual source FIFO, per-session selection,
+owned-field merge, full-sync publisher, source recovery, completion shutdown
+receipt and configuration fence. They cover first-launch hydration after one
+or two tray clicks; missing, unreadable and quarantined destinations; symmetric
+tray and Settings re-enable; unchanged evidence bytes; and generation-bound
+recording cancellation. No commands were added or removed (186 total). The draft
+PR stays stacked and is neither merged nor retargeted.
+
+Verification: TypeScript and all 184 Vitest files / 1,896 tests pass; all 209
+core unit/integration tests pass. Mac mini (Rust 1.98.1) passes 159 selected
+settings-store/shutdown/keyboard/dictation-control tests with one test thread,
+both default and `shutdown-test-support`; all-target clippy passes in both
+configurations with the two requested allowances. All 11 restart-clippy
+fixtures, restart/event/frontend/core-dependency policies, rustfmt and diff
+checks pass. Reinstating the `f0b53497` tray/commit function bodies (with only an
+unused runtime argument for test-call compatibility) makes each new storage
+regression fail because runtime remains enabled; restoring the fix passes both.
+Only synthetic fixtures were used; no GUI or app was launched. The isolated
+Mac checkout/target are removed after verification. Independent Sol re-review
+remains with the parent task.
+
 ## Round-four completion numeric stability corrections
 
 This completion-only correction addresses P2-1/P2-2 from the round-three Sol

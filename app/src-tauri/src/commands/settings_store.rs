@@ -3,6 +3,7 @@
 //! A host writer lock orders these commands with WebKit lifecycle imports.
 
 use crate::events::EventsExt;
+use murmur_core::events::EventSink;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -248,9 +249,14 @@ pub(crate) fn save_settings_blob_worker(
         let _guard = WRITE_LOCK.lock_or_recover();
         let (blob, revision) =
             commit_settings_intent(&dir, &blob, owned_edits.as_ref(), snapshot_current, || {
-                crate::dictation_control::accept_configuration(&app)
+                // A deliberate disabled edit is a runtime action even when
+                // the durable document cannot be read or published.
+                if let Some(disabled) = owned_edits.as_ref().and_then(|edits| edits.disabled) {
+                    crate::dictation_control::set_disabled(&app, disabled)?;
+                }
+                Ok::<_, String>(crate::dictation_control::accept_configuration(&app))
             })?;
-        (revision, blob)
+        (revision?, blob)
     };
     notify_settings_committed(&app, &blob);
     if let Ok(settings) = serde_json::from_str(&blob) {
@@ -301,7 +307,7 @@ fn commit_settings_intent<T>(
     blob: &str,
     edits: Option<&OwnedEdits>,
     snapshot: bool,
-    before_publish: impl FnOnce() -> T,
+    on_acceptance: impl FnOnce() -> T,
 ) -> Result<(String, T), String> {
     let edits = {
         let mut pending = pending_owned().lock_or_recover();
@@ -316,13 +322,15 @@ fn commit_settings_intent<T>(
         }
         *retained
     };
+    // Retain ownership and fence/apply runtime before any fallible source I/O.
+    // Missing/quarantined sources still reject publication without repair.
+    let revision = on_acceptance();
     let base = if snapshot {
         blob.to_owned()
     } else {
         read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?
     };
     let committed = merge_owned_fields_with_edits(dir, &base, Some(&edits))?;
-    let revision = before_publish();
     write_blob_locked(dir, SETTINGS, &committed)?;
     pending_owned().lock_or_recover().remove(dir);
     Ok((committed, revision))
@@ -406,12 +414,14 @@ fn patch_owned_setting_with<T>(
 pub(crate) fn toggle_tray_disabled(app: tauri::AppHandle) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
     tauri::async_runtime::spawn(async move {
+        let failure_app = app.clone();
         let result = crate::shutdown::source_call(move || {
             let _admission = admission;
             let dir = source_dir(&app)?;
-            let (blob, disabled) = commit_tray_disabled(&dir, |disabled| {
-                crate::dictation_control::set_disabled(&app, disabled)
-            })?;
+            let (blob, disabled) =
+                commit_tray_disabled(&dir, crate::keyboard::is_app_disabled(), |disabled| {
+                    crate::dictation_control::set_disabled(&app, disabled)
+                })?;
             notify_settings_committed(&app, &blob);
             let _ = app.events().send_to(
                 murmur_core::events::Consumer::Main,
@@ -422,7 +432,11 @@ pub(crate) fn toggle_tray_disabled(app: tauri::AppHandle) -> Result<(), String> 
         })
         .await;
         if !matches!(result, Ok(Ok(()))) {
-            tracing::warn!(target: "keyboard", "tray disable publication failed; native source recovery retains accepted edits");
+            tracing::warn!(target: "keyboard", "tray disabled-state update was not fully committed; durability is not guaranteed");
+            let _ = failure_app.events().publish(
+                murmur_core::events::EventKind::DictationControlError,
+                "Murmur could not save the enabled/disabled setting. The tray checkmark shows the current runtime state. Restore settings storage before quitting to keep your choice.",
+            );
         }
     });
     Ok(())
@@ -430,19 +444,19 @@ pub(crate) fn toggle_tray_disabled(app: tauri::AppHandle) -> Result<(), String> 
 
 fn commit_tray_disabled(
     dir: &Path,
+    current_disabled: bool,
     apply_runtime: impl FnOnce(bool) -> Result<(), String>,
 ) -> Result<(String, bool), String> {
     let _guard = WRITE_LOCK.lock_or_recover();
     // Resolve the toggle inside the FIFO, so two rapid tray clicks are two
     // transitions even when neither callback has yet updated runtime state.
-    let current = read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?;
-    let current: serde_json::Value =
-        serde_json::from_str(&current).map_err(|_| "Invalid settings")?;
+    // Runtime is authoritative even before hydration or after source damage.
+    // Do not require (or attempt to repair) a settings document to stop input.
     let disabled = !pending_owned()
         .lock_or_recover()
         .get(dir)
         .and_then(|edits| edits.disabled)
-        .unwrap_or_else(|| current["disabled"].as_bool().unwrap_or(true));
+        .unwrap_or(current_disabled);
     let edits = OwnedEdits {
         disabled: Some(disabled),
         auto_paste: None,
@@ -1550,7 +1564,7 @@ mod round_three_ordering_tests {
         let (root, _, _) = setup();
         let path = root.path().to_path_buf();
         tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
-            let (_, disabled) = commit_tray_disabled(&path, |value| {
+            let (_, disabled) = commit_tray_disabled(&path, false, |value| {
                 assert!(value);
                 Ok(())
             })
@@ -1563,6 +1577,228 @@ mod round_three_ordering_tests {
         assert_eq!(disk["autoPaste"], false);
         assert_eq!(disk["language"], "en");
         assert_eq!(disk["ownedFieldsRevision"], 1);
+    }
+
+    #[test]
+    fn tray_ownership_without_settings_survives_hydration_and_configuration_fence() {
+        use crate::dictation_control::ConfigurationFence;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        for clicks in [1, 2] {
+            let root = tempfile::tempdir().unwrap();
+            let runtime = Arc::new(AtomicBool::new(false));
+            let fence = Arc::new(ConfigurationFence::default());
+            for click in 0..clicks {
+                let path = root.path().to_path_buf();
+                let runtime = runtime.clone();
+                let fence = fence.clone();
+                tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+                    let stale = fence.accept();
+                    let current = runtime.load(Ordering::SeqCst);
+                    let result = commit_tray_disabled(&path, current, |value| {
+                        fence.override_current(|| runtime.store(value, Ordering::SeqCst));
+                        Ok(())
+                    });
+                    assert!(result.is_err(), "a patch cannot invent an initial document");
+                    let expected = click % 2 == 0;
+                    assert_eq!(runtime.load(Ordering::SeqCst), expected);
+                    assert_eq!(
+                        pending_owned().lock_or_recover()[&path].disabled,
+                        Some(expected)
+                    );
+                    assert!(fence
+                        .apply(stale, || panic!("stale configuration applied"))
+                        .is_none());
+                    let _guard = WRITE_LOCK.lock_or_recover();
+                    assert!(
+                        !flush_owned(&path),
+                        "shutdown must expose missing durability"
+                    );
+                    assert!(std::fs::read_dir(&path).unwrap().next().is_none());
+                    let rebased =
+                        rebase_runtime_owned_fields(&path, serde_json::json!({"disabled":false}))
+                            .unwrap();
+                    assert_eq!(rebased["disabled"], expected);
+                }))
+                .unwrap();
+            }
+            // Real renderer admission/selection and merge seed the initial
+            // document. The retained native field wins over hydrated false.
+            let session = uuid::Uuid::new_v4().to_string();
+            crate::shutdown::register_test_source("main", &session);
+            tauri::async_runtime::block_on(save(
+                root.path().into(),
+                session,
+                1,
+                "es",
+                OwnedEdits::default(),
+                OwnedEditGenerations::default(),
+            ));
+            let disk = recovered(root.path());
+            assert_eq!(disk["disabled"], clicks == 1);
+            assert_eq!(disk["language"], "es");
+            assert_eq!(disk["ownedFieldsRevision"], 1);
+            assert_eq!(runtime.load(Ordering::SeqCst), clicks == 1);
+        }
+    }
+
+    #[test]
+    fn tray_ownership_without_readable_destination_survives_return_and_reenable() {
+        use crate::dictation_control::ConfigurationFence;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        for damage in ["missing", "unreadable", "quarantined"] {
+            for reenable in ["none", "tray", "settings"] {
+                let (root, session, _) = setup();
+                let path = root.path().to_path_buf();
+                let runtime = Arc::new(AtomicBool::new(false));
+                let fence = Arc::new(ConfigurationFence::default());
+                let state = runtime.clone();
+                let configuration = fence.clone();
+                tauri::async_runtime::block_on(crate::shutdown::ordered_source_call(
+                    "main".into(),
+                    session,
+                    move |order, owner, session| {
+                        let destination = path.join("settings.json");
+                        let backup = read_blob(&path, SETTINGS).unwrap().unwrap();
+                        let held = path.join("held-synthetic-settings");
+                        std::fs::rename(&destination, &held).unwrap();
+                        match damage {
+                            "unreadable" => std::fs::create_dir(&destination).unwrap(),
+                            "quarantined" => {
+                                std::fs::write(&destination, b"synthetic damaged settings{{{")
+                                    .unwrap()
+                            }
+                            _ => {}
+                        }
+                        let stale = configuration.accept();
+                        let result = commit_tray_disabled(&path, false, |disabled| {
+                            configuration
+                                .override_current(|| state.store(disabled, Ordering::SeqCst));
+                            Ok(())
+                        });
+                        assert!(result.is_err());
+                        assert!(
+                            state.load(Ordering::SeqCst),
+                            "Disable must reach runtime before source failure"
+                        );
+                        assert_eq!(
+                            pending_owned().lock_or_recover()[&path].disabled,
+                            Some(true)
+                        );
+                        assert!(configuration
+                            .apply(stale, || panic!("stale configuration applied"))
+                            .is_none());
+                        let evidence: Vec<_> = std::fs::read_dir(&path)
+                            .unwrap()
+                            .map(|entry| {
+                                let entry = entry.unwrap();
+                                let bytes = if entry.path().is_file() {
+                                    Some(std::fs::read(entry.path()).unwrap())
+                                } else {
+                                    None
+                                };
+                                (entry.file_name(), bytes)
+                            })
+                            .collect();
+                        if reenable == "tray" {
+                            assert!(commit_tray_disabled(&path, true, |disabled| {
+                                configuration
+                                    .override_current(|| state.store(disabled, Ordering::SeqCst));
+                                Ok(())
+                            })
+                            .is_err());
+                            assert!(!state.load(Ordering::SeqCst));
+                        } else if reenable == "settings" {
+                            // Same per-session field selection used by Settings;
+                            // the accepted edit applies before a failed merge.
+                            let (snapshot, edits, _) = select_settings_intent(
+                                order,
+                                owner,
+                                session,
+                                1,
+                                OwnedEdits {
+                                    disabled: Some(false),
+                                    auto_paste: None,
+                                },
+                                OwnedEditGenerations {
+                                    disabled: Some(1),
+                                    auto_paste: None,
+                                },
+                            )
+                            .unwrap();
+                            let _guard = WRITE_LOCK.lock_or_recover();
+                            assert!(commit_settings_intent(
+                                &path,
+                                &backup,
+                                Some(&edits),
+                                snapshot,
+                                || {
+                                    configuration.override_current(|| {
+                                        state.store(edits.disabled.unwrap(), Ordering::SeqCst)
+                                    });
+                                }
+                            )
+                            .is_err());
+                            assert!(!state.load(Ordering::SeqCst));
+                        }
+                        let _guard = WRITE_LOCK.lock_or_recover();
+                        assert!(!flush_owned(&path));
+                        // No publication or repair touched evidence/marker bytes.
+                        for (name, bytes) in evidence {
+                            let entry = path.join(name);
+                            if let Some(bytes) = bytes {
+                                assert_eq!(std::fs::read(entry).unwrap(), bytes);
+                            } else {
+                                assert!(entry.is_dir());
+                            }
+                        }
+                        if damage == "quarantined" {
+                            let quarantines: Vec<_> = std::fs::read_dir(&path)
+                                .unwrap()
+                                .filter_map(|entry| {
+                                    let entry = entry.unwrap();
+                                    entry
+                                        .file_name()
+                                        .to_string_lossy()
+                                        .starts_with("settings.json.quarantine-")
+                                        .then_some(entry.path())
+                                })
+                                .collect();
+                            assert_eq!(quarantines.len(), 1);
+                            assert_eq!(
+                                std::fs::read(&quarantines[0]).unwrap(),
+                                b"synthetic damaged settings{{{"
+                            );
+                            drop(_guard);
+                            // Only an explicit complete backup may restore a quarantined destination.
+                            restore_source_backup_in(&path, "dictation-settings", &backup).unwrap();
+                            assert_eq!(
+                                std::fs::read(&quarantines[0]).unwrap(),
+                                b"synthetic damaged settings{{{"
+                            );
+                        } else {
+                            if damage == "unreadable" {
+                                std::fs::remove_dir(&destination).unwrap();
+                            }
+                            std::fs::rename(held, destination).unwrap();
+                        }
+                        Ok::<_, String>(())
+                    },
+                ))
+                .unwrap();
+                let disk = recovered(root.path());
+                assert_eq!(disk["disabled"], reenable == "none");
+                assert_eq!(disk["autoPaste"], false);
+                assert_eq!(disk["language"], "en");
+                assert_eq!(disk["ownedFieldsRevision"], 1);
+                assert_eq!(runtime.load(Ordering::SeqCst), reenable == "none");
+            }
+        }
     }
 
     #[test]
@@ -1585,7 +1821,7 @@ mod round_three_ordering_tests {
         ));
         let path = root.path().to_path_buf();
         tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
-            commit_tray_disabled(&path, |_| Ok(())).unwrap();
+            commit_tray_disabled(&path, false, |_| Ok(())).unwrap();
             // Both runtime adapters use this rebase under WRITE_LOCK before
             // accepting a configuration. Even a later-arriving false snapshot
             // cannot re-enable the native tray-owned disable.
@@ -1646,7 +1882,7 @@ mod round_three_ordering_tests {
         for expected in [true, false] {
             let path = root.path().to_path_buf();
             tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
-                commit_tray_disabled(&path, |value| {
+                commit_tray_disabled(&path, !expected, |value| {
                     assert_eq!(value, expected);
                     Ok(())
                 })
@@ -1666,7 +1902,7 @@ mod round_three_ordering_tests {
         tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
             let path = dir.join("settings.json");
             let held = dir.join("synthetic-settings-held");
-            let result = commit_tray_disabled(&dir, |disabled| {
+            let result = commit_tray_disabled(&dir, false, |disabled| {
                 assert!(disabled);
                 // Fail the real publisher after merge/runtime acceptance.
                 std::fs::rename(&path, &held).unwrap();
