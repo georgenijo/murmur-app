@@ -578,7 +578,11 @@ impl ModelRuntimeManager {
         self.install_states
             .lock_or_recover()
             .insert(model_name.to_string(), state);
-        self.publish(app, model_name, "installStateChanged")
+        let result = self.publish(app, model_name, "installStateChanged");
+        if let Some(app) = app {
+            crate::dictation_control::model_installation_changed(app);
+        }
+        result
     }
 
     fn publish(

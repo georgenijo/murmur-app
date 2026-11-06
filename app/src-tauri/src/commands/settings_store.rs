@@ -246,12 +246,13 @@ pub fn save_settings_blob(
     // Conservatively revoke passive input resolution for every persisted
     // settings update, including device/Smart Auto edits that do not change HAL topology.
     crate::audio::prepare::configuration_changed();
+    let revision = crate::dictation_control::accept_configuration(&app);
     write_blob(&data_dir(&app)?, SETTINGS, &blob)?;
     notify_settings_committed(&app, &blob);
     if let Ok(settings) = serde_json::from_str(&blob) {
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = crate::dictation_control::configure(&handle, settings).await;
+            let _ = crate::dictation_control::configure_accepted(&handle, settings, revision);
         });
     }
     Ok(())

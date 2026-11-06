@@ -91,6 +91,7 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
         return;
     };
     crate::keyboard::set_app_disabled(plan.disabled);
+    let revision = crate::dictation_control::accept_configuration(app);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let Ok(settings) = serde_json::from_str::<serde_json::Value>(&blob) else {
@@ -106,38 +107,41 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
         .await
         .is_ok()
         {
-            let _ = crate::dictation_control::configure(&handle, settings).await;
-            if crate::model_runtime::model_definition(&plan.model)
-                .is_ok_and(|model| model.warm_on_startup)
+            if crate::dictation_control::configure_accepted(&handle, settings, revision) != Ok(true)
             {
-                let model = plan.model;
+                return;
+            }
+            plan.schedule_warmup(|model| {
+                let model = model.to_owned();
                 let configuration = crate::audio::prepare::configuration_generation();
                 let warm_handle = handle.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let state = warm_handle.state::<crate::State>();
+                    if crate::keyboard::is_app_disabled() {
+                        return;
+                    }
                     *state.app_state.last_transcription_at.lock_or_recover() = Some(Instant::now());
                     let _ = state.app_state.model_runtime.prepare_startup_if(
                         Some(&warm_handle),
                         &model,
-                        || crate::audio::prepare::configuration_generation() == configuration,
+                        || {
+                            !crate::keyboard::is_app_disabled()
+                                && crate::audio::prepare::configuration_generation()
+                                    == configuration
+                        },
                     );
                 });
-            }
+            });
         }
     });
 }
 
-#[cfg(test)]
 impl Preparation {
-    fn start_resources(&self, listener: impl FnOnce(), warm: impl FnOnce(&str)) {
-        if self.disabled {
-            return;
-        }
-        // Detectors stay disarmed until the frontend applies authoritative
-        // capture settings and subscribes. No early gesture uses defaults.
-        listener();
-        if crate::model_runtime::model_definition(&self.model)
-            .is_ok_and(|definition| definition.warm_on_startup)
+    // Production and tests use the same startup decision with injected effects.
+    fn schedule_warmup(&self, warm: impl FnOnce(&str)) {
+        if !self.disabled
+            && crate::model_runtime::model_definition(&self.model)
+                .is_ok_and(|definition| definition.warm_on_startup)
         {
             warm(&self.model);
         }
@@ -175,33 +179,23 @@ mod tests {
     #[test]
     fn rust_start_obeys_disabled_and_catalog_warm_policy() {
         use std::cell::Cell;
-        let listeners = Cell::new(0);
         let models = Cell::new(0);
         let mut settings = settings();
         settings["model"] = serde_json::json!("parakeet-tdt-0.6b-v3-coreml");
         settings["disabled"] = serde_json::json!(true);
         let disabled = preparation(&settings.to_string(), true).unwrap();
         assert!(disabled.disabled);
-        disabled.start_resources(
-            || listeners.set(listeners.get() + 1),
-            |_| models.set(models.get() + 1),
-        );
-        assert_eq!((listeners.get(), models.get()), (0, 0));
+        disabled.schedule_warmup(|_| models.set(models.get() + 1));
+        assert_eq!(models.get(), 0);
         settings["disabled"] = serde_json::json!(false);
         preparation(&settings.to_string(), true)
             .unwrap()
-            .start_resources(
-                || listeners.set(listeners.get() + 1),
-                |_| models.set(models.get() + 1),
-            );
-        assert_eq!((listeners.get(), models.get()), (1, 1));
+            .schedule_warmup(|_| models.set(models.get() + 1));
+        assert_eq!(models.get(), 1);
         settings["model"] = serde_json::json!("base.en");
         preparation(&settings.to_string(), true)
             .unwrap()
-            .start_resources(
-                || listeners.set(listeners.get() + 1),
-                |_| models.set(models.get() + 1),
-            );
-        assert_eq!((listeners.get(), models.get()), (2, 1));
+            .schedule_warmup(|_| models.set(models.get() + 1));
+        assert_eq!(models.get(), 1);
     }
 }

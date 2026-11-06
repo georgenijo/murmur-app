@@ -20,10 +20,28 @@ struct Queued {
     at: Instant,
 }
 #[derive(Default)]
-struct ConfigurationFence(Mutex<()>);
+struct ConfigurationFence(Mutex<u64>);
 impl ConfigurationFence {
     fn run<T>(&self, action: impl FnOnce() -> T) -> T {
         let _guard = self.0.lock_or_recover();
+        action()
+    }
+
+    // Allocate intent before scheduling work, not when the snapshot is applied.
+    fn accept(&self) -> u64 {
+        let mut revision = self.0.lock_or_recover();
+        *revision += 1;
+        *revision
+    }
+
+    fn apply<T>(&self, revision: u64, action: impl FnOnce() -> T) -> Option<T> {
+        let current = self.0.lock_or_recover();
+        (*current == revision).then(action)
+    }
+
+    fn override_current<T>(&self, action: impl FnOnce() -> T) -> T {
+        let mut revision = self.0.lock_or_recover();
+        *revision += 1;
         action()
     }
 }
@@ -34,6 +52,53 @@ pub(crate) struct Control {
     epoch: Instant,
     setup_suspended: AtomicBool,
     pub(crate) settings: Mutex<serde_json::Value>,
+}
+
+impl Control {
+    fn refresh_model_admission(
+        &self,
+        installed: impl FnOnce(&str) -> bool,
+        listener: impl FnOnce(bool, &str, &str),
+    ) {
+        self.configuration.run(|| {
+            let settings = self.settings.lock_or_recover();
+            let Some(model) = settings["model"].as_str() else {
+                return;
+            };
+            let mut controller = self.controller.lock_or_recover();
+            controller.gate.model_installed = installed(model);
+            listener(
+                controller.gate.armed(),
+                settings["doubleTapKey"].as_str().unwrap_or_default(),
+                settings["recordingMode"].as_str().unwrap_or_default(),
+            );
+        });
+    }
+}
+
+// Called synchronously by model installation/removal publication, before the
+// command returns. Re-read runtime state under the configuration fence so an
+// older event cannot restore admission after a newer removal or selection.
+pub(crate) fn model_installation_changed(app: &tauri::AppHandle) {
+    let Some(control) = app.try_state::<Control>() else {
+        return;
+    };
+    control.refresh_model_admission(
+        |model| {
+            crate::commands::models::check_specific_model_exists(app.state::<State>(), model.into())
+        },
+        |armed, key, mode| {
+            if armed {
+                let _ = crate::commands::keyboard::start_keyboard_listener(
+                    app.clone(),
+                    key.into(),
+                    mode.into(),
+                );
+            } else {
+                crate::commands::keyboard::stop_keyboard_listener();
+            }
+        },
+    );
 }
 
 pub(crate) fn initialize(app: &tauri::AppHandle) {
@@ -259,13 +324,21 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                 } else {
                     crate::audio_lifecycle::DictationStopTrigger::Toggle
                 };
-                let _ = recording::stop_native_recording_for(
+                let result = recording::stop_native_recording_for(
                     handle.clone(),
                     handle.state::<State>(),
                     Some(generation),
                     trigger,
                 )
                 .await;
+                present_stop_failure(
+                    &handle.state::<State>().app_state,
+                    generation,
+                    &result,
+                    |failure| {
+                        let _ = handle.emit("dictation-stop-failed", failure);
+                    },
+                );
             }));
         }
         Effect::Score { generation, pause } => {
@@ -297,15 +370,60 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
     None
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StopFailure {
+    recording_id: u64,
+    error: &'static str,
+}
+
+fn present_stop_failure(
+    state: &crate::state::AppState,
+    generation: u64,
+    result: &Result<serde_json::Value, String>,
+    present: impl FnOnce(StopFailure),
+) {
+    if !match result {
+        Err(_) => true,
+        Ok(response) => response["type"] == "error",
+    } {
+        return;
+    }
+    // Stop can finish in Idle. Fence check+publication against both a cancel
+    // and a new start, rather than requiring the old Processing status.
+    let _dictation = state.dictation.lock_or_recover();
+    if state.recording_id.load(Ordering::SeqCst) == generation && !state.is_cancelled(generation) {
+        present(StopFailure {
+            recording_id: generation,
+            // Backend errors may contain private content. Publish fixed wording.
+            error: "Transcription failed. Please try again.",
+        });
+    }
+}
+
 /// Settings migration remains 1.5. Accept only a complete v7 native-confirmed
 /// snapshot; older/unknown versions wait for the existing frontend migration.
 pub(crate) async fn configure(
     app: &tauri::AppHandle,
     settings: serde_json::Value,
 ) -> Result<(), String> {
+    configure_accepted(app, settings, accept_configuration(app)).map(|_| ())
+}
+
+pub(crate) fn accept_configuration(app: &tauri::AppHandle) -> u64 {
+    app.state::<Control>().configuration.accept()
+}
+
+pub(crate) fn configure_accepted(
+    app: &tauri::AppHandle,
+    settings: serde_json::Value,
+    revision: u64,
+) -> Result<bool, String> {
     app.state::<Control>()
         .configuration
-        .run(|| configure_locked(app, settings))
+        .apply(revision, || configure_locked(app, settings))
+        .transpose()
+        .map(|applied| applied.is_some())
 }
 fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Result<(), String> {
     if settings["settingsVersion"] != 7 || !settings.is_object() {
@@ -398,7 +516,7 @@ pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) -> Result<(),
     let Some(control) = app.try_state::<Control>() else {
         return crate::commands::keyboard::apply_app_disabled(app.clone(), disabled);
     };
-    control.configuration.run(|| {
+    control.configuration.override_current(|| {
         control.controller.lock_or_recover().gate.disabled = disabled;
         let (previous, policy) = {
             let mut settings = control.settings.lock_or_recover();
@@ -517,6 +635,109 @@ mod tests {
         disable.join().unwrap();
         assert!(disabled.load(Ordering::SeqCst));
     }
+    #[test]
+    fn paused_settings_save_cannot_undo_native_disable_or_probe_revocation() {
+        let fence = ConfigurationFence::default();
+        let settings = Mutex::new(
+            serde_json::json!({"disabled":false,"microphone":"system_default",
+            "smartAutoMicrophoneEnabled":true,"smartAutoProbeEnabled":true}),
+        );
+        // The snapshot is captured and accepted before its task starts running.
+        let snapshot = settings.lock_or_recover().clone();
+        let revision = fence.accept();
+        fence.override_current(|| settings.lock_or_recover()["disabled"] = true.into());
+        let applied = fence.apply(revision, || *settings.lock_or_recover() = snapshot);
+        assert!(applied.is_none());
+        let current = settings.lock_or_recover();
+        assert_eq!(current["disabled"], true);
+        assert_eq!(probe_policy(&current)["enabled"], false);
+        drop(current);
+        let old = fence.accept();
+        let new = fence.accept();
+        assert!(fence.apply(new, || ()).is_some());
+        assert!(fence
+            .apply(old, || panic!("superseded save applied"))
+            .is_none());
+    }
+
+    #[test]
+    fn selected_model_install_arms_immediately_without_a_settings_write() {
+        use std::cell::Cell;
+        let (send, _receive) = tokio::sync::mpsc::unbounded_channel();
+        let mut controller = Controller::default();
+        controller.gate = murmur_core::dictation::LaunchGate {
+            configured: true,
+            onboarding_complete: true,
+            accessibility: true,
+            ..Default::default()
+        };
+        let control = Control {
+            controller: Mutex::new(controller),
+            configuration: ConfigurationFence::default(),
+            send,
+            epoch: Instant::now(),
+            setup_suspended: AtomicBool::new(false),
+            settings: Mutex::new(
+                serde_json::json!({"model":"tiny.en", "doubleTapKey":"shift_l", "recordingMode":"both"}),
+            ),
+        };
+        let original_settings = control.settings.lock_or_recover().clone();
+        let listener_armed = Cell::new(false);
+        for installed in [false, true, false] {
+            control.refresh_model_admission(
+                |model| {
+                    assert_eq!(model, "tiny.en");
+                    installed
+                },
+                |armed, key, mode| {
+                    assert_eq!((key, mode), ("shift_l", "both"));
+                    listener_armed.set(armed);
+                },
+            );
+            assert_eq!(listener_armed.get(), installed);
+            let mut controller = control.controller.lock_or_recover();
+            assert_eq!(controller.gate.can_start(), installed);
+            assert_eq!(controller.input(Input::Toggle(None)).is_some(), installed);
+            assert_eq!(*control.settings.lock_or_recover(), original_settings);
+        }
+    }
+
+    #[test]
+    fn native_stop_failure_is_content_free_and_rejects_cancelled_or_newer_owners() {
+        let state = crate::state::AppState::default();
+        state.recording_id.store(12, Ordering::SeqCst);
+        let failure = Err("private backend content".to_owned());
+        let mut presented = Vec::new();
+        present_stop_failure(&state, 12, &failure, |value| {
+            presented.push(serde_json::to_value(value).unwrap())
+        });
+        assert_eq!(
+            presented,
+            vec![serde_json::json!({
+                "recordingId":12, "error":"Transcription failed. Please try again."
+            })]
+        );
+        state.cancel_recording(12);
+        present_stop_failure(&state, 12, &failure, |_| panic!("cancelled failure"));
+        state.recording_id.store(13, Ordering::SeqCst);
+        present_stop_failure(&state, 12, &failure, |_| panic!("stale failure"));
+        present_stop_failure(
+            &state,
+            13,
+            &Ok(serde_json::json!({"type":"transcription"})),
+            |_| panic!("successful stop"),
+        );
+        present_stop_failure(
+            &state,
+            13,
+            &Ok(serde_json::json!({"type":"error", "error":"private"})),
+            |value| {
+                assert_eq!(value.recording_id, 13);
+                assert_eq!(value.error, "Transcription failed. Please try again.");
+            },
+        );
+    }
+
     #[test]
     fn native_probe_policy_preserves_consent_and_input_gates() {
         let settings = serde_json::json!({"disabled":false,"microphone":"system_default",
