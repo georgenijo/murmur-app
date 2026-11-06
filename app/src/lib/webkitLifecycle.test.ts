@@ -9,6 +9,26 @@ const mock = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke, isTauri: () => true }));
 import { initializeWebkitState, V2_KEYS } from './webkitLifecycle';
 beforeEach(() => { localStorage.clear(); mock.invoke.mockReset(); });
+it('a native tray commit retires a retained disable patch while preserving Auto Paste ownership', async () => {
+  const { persistSourceState, flushSourceState, rebasePendingOwnedSettings } = await import('./webkitLifecycle');
+  mock.invoke.mockRejectedValue(new Error('synthetic unavailable source'));
+  persistSourceState('dictation-settings', JSON.stringify({
+    disabled: false, autoPaste: true, language: 'es', ownedFieldsRevision: 0,
+  }), { disabled: false, autoPaste: true });
+  await expect(flushSourceState()).rejects.toThrow();
+  const rebased = rebasePendingOwnedSettings({
+    field: 'disabled', disabled: true, autoPaste: false, ownedFieldsRevision: 1,
+  });
+  expect(rebased).toMatchObject({ disabled: true, autoPaste: true });
+  mock.invoke.mockResolvedValue(undefined);
+  await flushSourceState();
+  const saves = mock.invoke.mock.calls.filter(([command]) => command === 'save_settings_blob');
+  const last = saves[saves.length - 1][1];
+  expect(last.ownedEdits).toEqual({ autoPaste: true });
+  expect(last.ownedEditGenerations).not.toHaveProperty('disabled');
+  expect(JSON.parse(last.blob)).toMatchObject({ disabled: true, autoPaste: true, language: 'es', ownedFieldsRevision: 1 });
+});
+
 it('sends unmigrated raw strings and hydrates only after the Rust commit', async () => {
   localStorage.setItem('murmur-appearance', '{bad');
   mock.invoke.mockImplementation(async (command: string, args?: { source: Record<string, unknown> }) => {

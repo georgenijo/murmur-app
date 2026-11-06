@@ -97,8 +97,14 @@ pub fn set_keyboard_recording(recording: bool) {
 }
 
 #[tauri::command]
-pub fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
-    crate::dictation_control::set_disabled(&app_handle, disabled)
+pub async fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::source_call(move || {
+        let _admission = admission;
+        super::settings_store::sync_app_disabled_worker(app_handle, disabled)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
 pub(crate) fn apply_app_disabled(

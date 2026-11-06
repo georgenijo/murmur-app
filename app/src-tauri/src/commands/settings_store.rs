@@ -371,11 +371,21 @@ fn require_overlay_owner(label: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn patch_owned_setting(
     dir: &Path,
     field: OverlaySettingField,
     value: bool,
 ) -> Result<String, String> {
+    patch_owned_setting_with(dir, field, value, || ()).map(|(blob, ())| blob)
+}
+
+fn patch_owned_setting_with<T>(
+    dir: &Path,
+    field: OverlaySettingField,
+    value: bool,
+    before_publish: impl FnOnce() -> T,
+) -> Result<(String, T), String> {
     let _guard = WRITE_LOCK.lock_or_recover();
     let edits = match field {
         OverlaySettingField::AutoPaste => OwnedEdits {
@@ -387,7 +397,63 @@ fn patch_owned_setting(
             disabled: Some(value),
         },
     };
-    commit_settings_intent(dir, "{}", Some(&edits), false, || ()).map(|(blob, ())| blob)
+    commit_settings_intent(dir, "{}", Some(&edits), false, before_publish)
+}
+
+/// A tray action is a native producer, not a renderer snapshot. Keep admission,
+/// publication and the runtime override in the same FIFO as renderer patches.
+/// Acquire the permit synchronously in the tray callback, before spawning.
+pub(crate) fn toggle_tray_disabled(app: tauri::AppHandle) -> Result<(), String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    tauri::async_runtime::spawn(async move {
+        let result = crate::shutdown::source_call(move || {
+            let _admission = admission;
+            let dir = source_dir(&app)?;
+            let (blob, disabled) = commit_tray_disabled(&dir, |disabled| {
+                crate::dictation_control::set_disabled(&app, disabled)
+            })?;
+            notify_settings_committed(&app, &blob);
+            let _ = app.events().send_to(
+                murmur_core::events::Consumer::Main,
+                "overlay-owned-setting-committed",
+                owned_fields_notification(OverlaySettingField::Disabled, disabled, &blob),
+            );
+            Ok::<_, String>(())
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            tracing::warn!(target: "keyboard", "tray disable publication failed; native source recovery retains accepted edits");
+        }
+    });
+    Ok(())
+}
+
+fn commit_tray_disabled(
+    dir: &Path,
+    apply_runtime: impl FnOnce(bool) -> Result<(), String>,
+) -> Result<(String, bool), String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    // Resolve the toggle inside the FIFO, so two rapid tray clicks are two
+    // transitions even when neither callback has yet updated runtime state.
+    let current = read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?;
+    let current: serde_json::Value =
+        serde_json::from_str(&current).map_err(|_| "Invalid settings")?;
+    let disabled = !pending_owned()
+        .lock_or_recover()
+        .get(dir)
+        .and_then(|edits| edits.disabled)
+        .unwrap_or_else(|| current["disabled"].as_bool().unwrap_or(true));
+    let edits = OwnedEdits {
+        disabled: Some(disabled),
+        auto_paste: None,
+    };
+    let (blob, runtime) = commit_settings_intent(dir, "{}", Some(&edits), false, || {
+        // Reserve the native override before publication, as other settings
+        // commits do, fencing configurations already waiting to apply.
+        apply_runtime(disabled)
+    })?;
+    runtime?;
+    Ok((blob, disabled))
 }
 
 fn owned_fields_notification(
@@ -457,6 +523,63 @@ fn merge_owned_fields_with_edits(
     serde_json::to_string(&incoming).map_err(|_| "Invalid settings".into())
 }
 
+/// Runtime synchronization is not a deliberate edit. Resolve owned fields
+/// under the source writer lock before reserving/applying a configuration.
+fn rebase_runtime_owned_fields(
+    dir: &Path,
+    mut settings: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if !settings.is_object() {
+        return Err("Invalid control settings".into());
+    }
+    if let Some(blob) = read_blob(dir, SETTINGS)? {
+        let current: serde_json::Value =
+            serde_json::from_str(&blob).map_err(|_| "Invalid settings")?;
+        for field in ["disabled", "autoPaste", "ownedFieldsRevision"] {
+            if let Some(value) = current.get(field) {
+                settings[field] = value.clone();
+            }
+        }
+    }
+    // Publication failure does not surrender an already accepted native patch
+    // to an older, still-readable disk value. Shutdown owns its retry.
+    if let Some(edits) = pending_owned().lock_or_recover().get(dir) {
+        if let Some(disabled) = edits.disabled {
+            settings["disabled"] = serde_json::json!(disabled);
+        }
+        if let Some(auto_paste) = edits.auto_paste {
+            settings["autoPaste"] = serde_json::json!(auto_paste);
+        }
+    }
+    Ok(settings)
+}
+
+pub(crate) fn sync_app_disabled_worker(
+    app: tauri::AppHandle,
+    disabled: bool,
+) -> Result<(), String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let settings = rebase_runtime_owned_fields(
+        &source_dir(&app)?,
+        serde_json::json!({"disabled": disabled}),
+    )?;
+    crate::dictation_control::set_disabled(&app, settings["disabled"].as_bool().unwrap_or(true))
+}
+
+pub(crate) fn configure_renderer_control_worker(
+    app: tauri::AppHandle,
+    settings: serde_json::Value,
+) -> Result<(), String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let settings = rebase_runtime_owned_fields(&source_dir(&app)?, settings)?;
+    crate::dictation_control::configure_accepted(
+        &app,
+        settings,
+        crate::dictation_control::accept_configuration(&app),
+    )
+    .map(|_| ())
+}
+
 /// Never accept a retained full snapshot from a quick control. Merge its one
 /// owned field into the latest document under the same lock as full writers.
 pub(crate) fn patch_overlay_setting_worker(
@@ -466,7 +589,12 @@ pub(crate) fn patch_overlay_setting_worker(
     value: bool,
 ) -> Result<String, String> {
     require_overlay_owner(window.label())?;
-    let committed = patch_owned_setting(&source_dir(&app)?, field, value)?;
+    let (committed, runtime) =
+        patch_owned_setting_with(&source_dir(&app)?, field, value, || match field {
+            OverlaySettingField::Disabled => crate::dictation_control::set_disabled(&app, value),
+            OverlaySettingField::AutoPaste => Ok(()),
+        })?;
+    runtime?;
     notify_settings_committed(&app, &committed);
     let _ = app.events().send_to(
         murmur_core::events::Consumer::Main,
@@ -1417,6 +1545,165 @@ mod round_three_ordering_tests {
         murmur_core::completion::recover_source(root, "dictation-settings").unwrap();
         serde_json::from_str(&read_blob(root, SETTINGS).unwrap().unwrap()).unwrap()
     }
+    #[test]
+    fn tray_disable_survives_shutdown_without_renderer_echo() {
+        let (root, _, _) = setup();
+        let path = root.path().to_path_buf();
+        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+            let (_, disabled) = commit_tray_disabled(&path, |value| {
+                assert!(value);
+                Ok(())
+            })
+            .unwrap();
+            assert!(disabled);
+        }))
+        .unwrap();
+        let disk = recovered(root.path());
+        assert_eq!(disk["disabled"], true);
+        assert_eq!(disk["autoPaste"], false);
+        assert_eq!(disk["language"], "en");
+        assert_eq!(disk["ownedFieldsRevision"], 1);
+    }
+
+    #[test]
+    fn tray_disable_survives_renderer_echo_stale_snapshot_and_owned_patch_retry() {
+        let (root, main, _) = setup();
+        // A real main-owned enable accepted before the native tray disable.
+        tauri::async_runtime::block_on(save(
+            root.path().into(),
+            main.clone(),
+            1,
+            "en",
+            OwnedEdits {
+                disabled: Some(false),
+                auto_paste: None,
+            },
+            OwnedEditGenerations {
+                disabled: Some(1),
+                auto_paste: None,
+            },
+        ));
+        let path = root.path().to_path_buf();
+        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+            commit_tray_disabled(&path, |_| Ok(())).unwrap();
+            // Both runtime adapters use this rebase under WRITE_LOCK before
+            // accepting a configuration. Even a later-arriving false snapshot
+            // cannot re-enable the native tray-owned disable.
+            let _guard = WRITE_LOCK.lock_or_recover();
+            let rebased = rebase_runtime_owned_fields(
+                &path,
+                serde_json::json!({
+                    "disabled":false, "autoPaste":true, "ownedFieldsRevision":0, "language":"es",
+                }),
+            )
+            .unwrap();
+            assert_eq!(rebased["disabled"], true);
+            assert_eq!(rebased["autoPaste"], false);
+            assert_eq!(rebased["ownedFieldsRevision"], 2);
+            assert_eq!(rebased["language"], "es");
+        }))
+        .unwrap();
+        // The old hook echoed disabled=true with no owned patch. Exercise the
+        // actual merge, not a notification mock, then send disabled=false in a
+        // stale document with a fresh snapshot generation and the old field ID.
+        let path = root.path().to_path_buf();
+        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+            let _guard = WRITE_LOCK.lock_or_recover();
+            commit_settings_intent(
+                &path,
+                r#"{"disabled":true,"autoPaste":false,"language":"en"}"#,
+                None,
+                true,
+                || (),
+            )
+            .unwrap();
+        }))
+        .unwrap();
+        tauri::async_runtime::block_on(save(
+            root.path().into(),
+            main,
+            2,
+            "es",
+            OwnedEdits {
+                disabled: Some(false),
+                auto_paste: None,
+            },
+            OwnedEditGenerations {
+                disabled: Some(1),
+                auto_paste: None,
+            },
+        ));
+        let disk = recovered(root.path());
+        assert_eq!(disk["disabled"], true);
+        assert_eq!(disk["autoPaste"], false);
+        assert_eq!(disk["language"], "es");
+        assert_eq!(disk["ownedFieldsRevision"], 2);
+    }
+
+    #[test]
+    fn rapid_tray_toggles_resolve_inside_native_fifo() {
+        let (root, _, _) = setup();
+        for expected in [true, false] {
+            let path = root.path().to_path_buf();
+            tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+                commit_tray_disabled(&path, |value| {
+                    assert_eq!(value, expected);
+                    Ok(())
+                })
+                .unwrap();
+            }))
+            .unwrap();
+        }
+        let disk = recovered(root.path());
+        assert_eq!(disk["disabled"], false);
+        assert_eq!(disk["ownedFieldsRevision"], 2);
+    }
+
+    #[test]
+    fn tray_disable_retains_ownership_after_publication_failure() {
+        let (root, _, _) = setup();
+        let dir = root.path().to_path_buf();
+        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+            let path = dir.join("settings.json");
+            let held = dir.join("synthetic-settings-held");
+            let result = commit_tray_disabled(&dir, |disabled| {
+                assert!(disabled);
+                // Fail the real publisher after merge/runtime acceptance.
+                std::fs::rename(&path, &held).unwrap();
+                std::fs::create_dir(&path).unwrap();
+                Ok(())
+            });
+            assert!(result.is_err());
+            std::fs::remove_dir(&path).unwrap();
+            std::fs::rename(&held, &path).unwrap();
+            let _guard = WRITE_LOCK.lock_or_recover();
+            let rebased =
+                rebase_runtime_owned_fields(&dir, serde_json::json!({"disabled":false})).unwrap();
+            assert_eq!(rebased["disabled"], true);
+        }))
+        .unwrap();
+        let disk = recovered(root.path());
+        assert_eq!(disk["disabled"], true);
+        assert_eq!(disk["autoPaste"], false);
+    }
+
+    #[test]
+    fn runtime_owned_rebase_rejects_malformed_snapshots_and_preserves_initialization() {
+        let root = tempfile::tempdir().unwrap();
+        let initial = serde_json::json!({"disabled":true,"autoPaste":false});
+        assert_eq!(
+            rebase_runtime_owned_fields(root.path(), initial.clone()).unwrap(),
+            initial
+        );
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(false),
+        ] {
+            assert!(rebase_runtime_owned_fields(root.path(), invalid).is_err());
+        }
+    }
+
     #[test]
     fn superseded_auto_paste_patch_survives_native_shutdown_without_renderer_flush() {
         let (root, main, overlay) = setup();

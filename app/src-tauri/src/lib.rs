@@ -745,8 +745,7 @@ pub fn run() {
                             }
                         }
                         "toggle_disabled" => {
-                            let new_disabled = !keyboard::is_app_disabled();
-                            if let Err(e) = commands::keyboard::set_app_disabled(app_handle.clone(), new_disabled) {
+                            if let Err(e) = commands::settings_store::toggle_tray_disabled(app_handle.clone()) {
                                 tracing::warn!(target: "keyboard", "tray disable toggle failed: {}", e);
                             }
                         }

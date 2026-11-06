@@ -553,3 +553,46 @@ regression and D2/D4/D5. All-target clippy passes with
 also confirmed red against the pre-digest implementation, then green here.
 No app host caller or frontend changes, Mac checkout, GUI action, user data, or
 user logs are involved in this completion-only delta.
+
+## Round-three tray ownership correction
+
+Disable Murmur now owns a native `disabled` patch. The tray callback acquires a
+shutdown writer permit before spawning; the source FIFO resolves each toggle,
+commits through `commit_settings_intent`, advances `ownedFieldsRevision`, and
+sends the existing owned-field notice. Runtime override reservation remains
+before publication. Failed publication retains native ownership for recovery.
+Neither correctness nor shutdown recovery needs a renderer echo/flush.
+
+The hook caches `app-disabled-changed` without persisting another intent. The
+owned-field notice uses `rebasePendingOwnedSettings` to retire a replaced disable
+patch while preserving independently pending Auto Paste edits. Stale snapshots
+and duplicate field IDs cannot undo the native value. Runtime synchronization
+via `set_app_disabled`, `configure_dictation_control` and setup resume joins the
+source FIFO and resolves owned values under the writer lock, including retained patches.
+Overlay disable applies runtime state at its native patch boundary. No commands
+were added/removed; the count remains 186.
+
+Audited paths: tray; native disabled/control/configure commands; main Settings
+and rollback; command palette/hotkeys through `updateSettings`; overlay dropdown,
+quick controls and reconciliation; initialization/external mirrors; onboarding;
+legacy import and hydration/migration; generic source writes; backup restore;
+per-app/mode delivery overrides. Main/overlay edits already carry deliberate
+patches. Import fills absent sources, generic writes reject settings, and restore
+requires a missing/quarantined destination and a complete supplied backup.
+
+Synthetic regressions use the actual FIFO, merge, publisher, source recovery and
+completion shutdown receipt. They cover no-renderer recovery, echo/stale/retried
+snapshots, runtime rebasing, publication failure and rapid toggles. Vitest covers
+the cache-only hook and retained-field rebasing. The hook regression fails with
+the exact `b2155379` hook and passes after restoration. P1-A/P1-B, round-two and
+completion durability coverage remains. No GUI, merge or retargeting is performed;
+the parent retains the independent Sol recheck.
+
+Verification: TypeScript and all 183 Vitest files / 1,894 tests pass; all 201
+core unit/integration tests pass. On Mac mini with Rust 1.98.1, 31 settings-store
+and 12 shutdown library tests plus the windowless integration executables pass;
+all-target clippy passes with only the two requested allowances. Restoring the
+missing tray owned patch makes the native recovery regression fail with
+`disabled=false`; restoring the patch passes. Command/link, workflow, capture,
+core-dependency, restart and event policies pass. The isolated Mac checkout and
+target are removed after verification.

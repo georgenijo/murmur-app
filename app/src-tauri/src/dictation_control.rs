@@ -435,7 +435,14 @@ pub(crate) async fn configure(
     app: &tauri::AppHandle,
     settings: serde_json::Value,
 ) -> Result<(), String> {
-    configure_accepted(app, settings, accept_configuration(app)).map(|_| ())
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    let app = app.clone();
+    crate::shutdown::source_call(move || {
+        let _admission = admission;
+        crate::commands::settings_store::configure_renderer_control_worker(app, settings)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
 pub(crate) fn configuration_current(app: &tauri::AppHandle, revision: u64) -> bool {

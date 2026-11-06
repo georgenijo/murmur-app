@@ -185,6 +185,25 @@ describe('useSettings configure rollback privacy', () => {
     expect(current.settings.smartAutoPreferredDeviceIds).toEqual(['new-approved']);
   });
 
+  it('mirrors a native-owned tray disable without echoing a settings write', async () => {
+    await mountHarness();
+    const listener = mocks.listen.mock.calls.find(([event]) => event === 'app-disabled-changed')?.[1] as
+      ((event: { payload: boolean }) => void);
+    expect(listener).toBeTypeOf('function');
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockClear();
+    await act(async () => listener({ payload: true }));
+    expect(current.settings.disabled).toBe(true);
+    expect(JSON.parse(localStorage.getItem('dictation-settings')!).disabled).toBe(true);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'save_settings_blob')).toHaveLength(0);
+    await act(async () => current.applyExternalSettings({
+      field: 'disabled', disabled: true, autoPaste: false, ownedFieldsRevision: 1,
+    }));
+    await act(async () => listener({ payload: true }));
+    expect(current.settings.ownedFieldsRevision).toBe(1);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === 'save_settings_blob')).toHaveLength(0);
+  });
+
   it('applies one host-owned field using cache only without overwriting newer main preferences', async () => {
     await mountHarness();
     await act(async () => current.updateSettings({ overlayLiveWords: false, overlayPlacement: 'floating_pill', autoPaste: true }));

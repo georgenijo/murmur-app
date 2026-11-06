@@ -169,7 +169,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `configure_dictation_control` | `settings: JSON` | `Result<(), String>` | Main-window validated control settings; native startup uses the internal host adapter without a webview. |
+| `configure_dictation_control` | `settings: JSON` | `Result<(), String>` | Main-window control synchronization through the native source FIFO; rebases `disabled`/`autoPaste` from the durable owner before applying. Native startup uses the internal host adapter without a webview. |
 | `suspend_dictation_for_setup` | — | `Result<bool, String>` | Main-only; closes admission under the recording transition fence if no capture owner won the race. |
 | `resume_dictation_after_setup` | `settings: JSON` | `Result<(), String>` | Main-only explicit rearm after successful setup; stale settings updates cannot clear suspension. |
 | `toggle_dictation_lock` | — | `()` | Routes an overlay lock intent to the core controller. |
@@ -183,7 +183,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `stop_keyboard_listener` | — | `()` | Stops processing key events; the thread stays alive. |
 | `update_keyboard_key` | `hotkey: String` | `Result<(), String>` | Validates and changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
 | `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
-| `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
+| `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Runtime synchronization through the native source FIFO, using durable `disabled` when present (argument is only the pre-hydration fallback). Deliberate renderer edits use settings/overlay owned-field publishers; the native tray commits its own durable patch. Mirrors the tray check item and emits `app-disabled-changed`; listeners cache the echo without persisting it. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |
 | `set_paste_last_shortcut` | `enabled: bool` | `Result<(), String>` | Arms or disarms global ⌘⇧V on the shared rdev listener. Enabling requires Accessibility permission. |
 
