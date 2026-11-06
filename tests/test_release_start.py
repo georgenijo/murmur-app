@@ -1,4 +1,8 @@
 from pathlib import Path
+from contextlib import redirect_stdout
+from io import StringIO
+import os
+import sys
 import json
 import subprocess
 import tempfile
@@ -63,6 +67,14 @@ class ReleaseStartTests(unittest.TestCase):
         self.assertIn("A user-visible fix.", (self.root / "CHANGELOG.md").read_text())
         self.assertEqual(git(self.root, "status", "--porcelain"), "")
 
+    def test_scheduled_ready_main_starts_one_patch_release(self):
+        with patch.object(release_start, "api", side_effect=self.api):
+            version, sha = release_start.start_release(
+                "patch", self.sha, "owner/repo", root=self.root, scheduled=True
+            )
+        self.assertEqual(version, "1.2.4")
+        self.assertEqual(git(self.root, "rev-parse", "origin/main"), sha)
+
     def test_empty_notes_are_generated_from_merged_prs(self):
         path = self.root / "CHANGELOG.md"
         path.write_text(path.read_text().replace("### Fixed\n\n- A user-visible fix.\n\n", ""))
@@ -91,6 +103,64 @@ class ReleaseStartTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseVersionError, "finish or recover"):
                 release_start.start_release("patch", self.sha, "owner/repo", root=self.root)
         self.assertEqual(git(self.root, "rev-parse", "origin/main"), self.sha)
+
+    def test_scheduled_skip_conditions_and_manual_errors(self):
+        good_api = self.api
+        for condition, level, message, manual_error in (
+            ("nothing", "notice", "nothing to release", "there are no new commits to release"),
+            ("in_flight", "warning", "latest public release", "finish or recover"),
+            ("missing_ci", "warning", "successful ci-pass", "successful ci-pass"),
+            ("pending_ci", "warning", "successful ci-pass", "successful ci-pass"),
+            ("failed_ci", "warning", "successful ci-pass", "successful ci-pass"),
+        ):
+            with self.subTest(condition=condition):
+                if condition == "nothing":
+                    git(self.root, "tag", "-f", "v1.2.3", self.sha)
+                    git(self.root, "push", "origin", "refs/tags/v1.2.3", "--force")
+                def response(repository, path, root, *args):
+                    if condition == "in_flight" and path == "releases/latest":
+                        return {"tag_name": "v1.2.2"}
+                    if condition.endswith("_ci") and path.startswith("commits/"):
+                        if condition == "missing_ci":
+                            return {"check_runs": []}
+                        return {"check_runs": [{"name": "ci-pass", "head_sha": self.sha,
+                                "app": {"slug": "github-actions"},
+                                "conclusion": None if condition == "pending_ci" else "failure"}]}
+                    return good_api(repository, path, root, *args)
+
+                summary = Path(self.directory.name) / "summary"
+                summary.write_text("")
+                original = release_start.start_release
+                def run_in_fixture(bump, sha, repository, **kwargs):
+                    return original(bump, sha, repository, root=self.root, **kwargs)
+                stdout = StringIO()
+                with patch.object(release_start, "api", side_effect=response), \
+                     patch.object(release_start, "start_release", side_effect=run_in_fixture), \
+                     patch.object(sys, "argv", ["release_start.py", "--bump", "patch", "--expected-sha", self.sha, "--scheduled"]), \
+                     patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_STEP_SUMMARY": str(summary)}), \
+                     redirect_stdout(stdout):
+                    self.assertEqual(release_start.main(), 0)
+                self.assertIn(f"::{level}::", stdout.getvalue())
+                self.assertIn(message, stdout.getvalue())
+                self.assertIn(message, summary.read_text())
+                with patch.object(release_start, "api", side_effect=response):
+                    with self.assertRaisesRegex(ReleaseVersionError, manual_error):
+                        original("patch", self.sha, "owner/repo", root=self.root)
+                self.assertEqual(git(self.root, "rev-parse", "HEAD"), self.sha)
+                self.assertEqual(git(self.root, "status", "--porcelain"), "")
+                if condition == "nothing":
+                    previous = git(self.root, "rev-parse", "HEAD^")
+                    git(self.root, "tag", "-f", "v1.2.3", previous)
+                    git(self.root, "push", "origin", "refs/tags/v1.2.3", "--force")
+
+    def test_scheduled_real_errors_still_fail(self):
+        with patch.object(release_start, "api", side_effect=subprocess.CalledProcessError(1, "gh")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                release_start.start_release("patch", self.sha, "owner/repo", root=self.root, scheduled=True)
+        with self.assertRaisesRegex(ReleaseVersionError, "main moved"):
+            release_start.start_release("patch", "0" * 40, "owner/repo", root=self.root, scheduled=True)
+        with self.assertRaisesRegex(ReleaseVersionError, "must use patch"):
+            release_start.start_release("minor", self.sha, "owner/repo", root=self.root, scheduled=True)
 
     def test_push_race_never_overwrites_new_main(self):
         original_api = self.api

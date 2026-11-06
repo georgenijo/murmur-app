@@ -456,7 +456,8 @@ def validate_release_start(workflow: str) -> None:
         '[ "$GITHUB_REF" != "refs/heads/main" ]',
         '[ -z "$RELEASE_TOKEN" ]',
         "token: ${{ secrets.RELEASE_TOKEN }}",
-        "run: python3 scripts/release_start.py --bump \"$BUMP\" --expected-sha \"$GITHUB_SHA\"",
+        'python3 scripts/release_start.py "${args[@]}"',
+        'args=(--bump "$BUMP" --expected-sha "$GITHUB_SHA")',
         "timeout-minutes: 5",
     ):
         assert marker in workflow
