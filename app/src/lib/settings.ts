@@ -544,10 +544,13 @@ function mirrorToDisk(blob: string, ownedEdits?: OwnedEdits): void {
 }
 
 function writePersistedSettings(settings: Settings, ownedEdits?: OwnedEdits): void {
+  let launchOnboardingComplete: boolean | undefined;
+  try { launchOnboardingComplete = localStorage.getItem(ONBOARDING_KEY) === 'true'; }
+  catch { /* Rust preserves the existing gate when this optional cache is unreadable. */ }
   const blob = JSON.stringify({
     ...settings,
     settingsVersion: SETTINGS_VERSION,
-    launchOnboardingComplete: localStorage.getItem(ONBOARDING_KEY) === 'true',
+    ...(launchOnboardingComplete !== undefined ? { launchOnboardingComplete } : {}),
   });
   mirrorToDisk(blob, ownedEdits);
   try { localStorage.setItem(STORAGE_KEY, blob); } catch { /* Rust intent remains queued. */ }
@@ -610,8 +613,8 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
       // A fresh install. Commit the defaults so companions that fail closed
       // on a missing document (the live-words preview) see default-on.
       const defaults = JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: SETTINGS_VERSION });
-      localStorage.setItem(STORAGE_KEY, defaults);
       await invoke('save_settings_blob', { blob: defaults });
+      try { localStorage.setItem(STORAGE_KEY, defaults); } catch { /* Native creation succeeded. */ }
     }
   } catch (e) {
     // Boot must never block on the settings store; localStorage stays the

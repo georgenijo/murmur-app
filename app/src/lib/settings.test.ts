@@ -216,6 +216,23 @@ describe('durable settings store', () => {
     expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull();
   });
 
+
+  it('an unreadable onboarding cache cannot suppress a full settings save', async () => {
+    const get = vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('synthetic read failure'); });
+    saveSettings({ ...DEFAULT_SETTINGS, language: 'ja' });
+    await flushSourceState();
+    const call = mocks.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob').slice(-1)[0];
+    expect(JSON.parse((call[1] as {blob: string}).blob)).toMatchObject({ language: 'ja' });
+    expect(JSON.parse((call[1] as {blob: string}).blob)).not.toHaveProperty('launchOnboardingComplete');
+    get.mockRestore();
+  });
+  it('fresh native settings creation does not depend on a cache write', async () => {
+    ownSettingsMigrations(); mocks.invoke.mockResolvedValue(null);
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('synthetic quota'); });
+    await hydrateSettingsFromDisk();
+    expect(mocks.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob')).toHaveLength(1);
+    write.mockRestore();
+  });
   it('writes localStorage synchronously and mirrors the same blob to disk', async () => {
     saveSettings({ ...DEFAULT_SETTINGS, language: 'ko' });
 

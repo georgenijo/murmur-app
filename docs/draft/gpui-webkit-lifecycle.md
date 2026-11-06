@@ -249,7 +249,7 @@ against the actual wry view, deliberately not exercised against user data here.
 | F2: configuration rollback supersedes rejected Auto Paste | `configuration rollback supersedes the rejected Auto Paste native patch`, real hook and source queue, synthetic native persistence plus configure failure |
 | F3: exact pre-PR string units | `unicode_bounds_preserve_each_fields_legacy_units`, `supplementary_boundaries_for_every_string_limit`; audited against fa2be313 |
 | F4: theme quota failure then successful next operation | `successive library edits use the controller document after cache quota recovers`, real controller install/install/remove sequence |
-| F5: onboarding complete/reset with cache exceptions | `public onboarding complete and reset persist despite cache write and removal errors`; core `onboarding_patch_preserves_authoritative_settings_across_restart`. All source-persistence helper callers swept for cache-first suppression |
+| F5: onboarding complete/reset with cache exceptions | `public onboarding complete and reset persist despite cache write and removal errors`; core `onboarding_patch_preserves_authoritative_settings_across_restart`. Native `incidental_settings_snapshot_cannot_undo_onboarding_reset`; frontend settings regressions cover unreadable onboarding cache and fresh-install cache quota. All source-persistence helper callers swept for cache-first suppression |
 | F7: independent defaults and disk migration expectations | 118-case fixture uses frozen `settings-expected-defaults.json`, separate from production defaults; `literal_fallbacks_do_not_depend_on_production_defaults`; `settings_migrations_publish_literal_unchanged_delay_smart_destination_and_shortcut_removal` |
 
 Restack receipt: before `8ba32dce8042bcb7f2ae6a91848d63bd491c54ec`,
@@ -259,8 +259,8 @@ compare equal in `git range-diff fa2be313..8ba32dce 8f976c34..79212313`.
 Restack checks: TypeScript, core tests, 178 files / 1,787 Vitest tests passed
 (previous 176 files / 1,756 tests; +31 tests inherited from layer 1.4).
 
-Round-two Linux verification: TypeScript, 179 files / 1,795 Vitest tests
-(+8 regressions after restack, no removals), 139 core tests (111 unit + 28
+Round-two Linux verification: TypeScript, 179 files / 1,797 Vitest tests
+(+10 regressions after restack, no removals), 139 core tests (111 unit + 28
 integration), strict core Clippy, Tauri-free dependency guard, both event guards
 and their CI-invoked suites (15 Python / 42 Node), and reference/Markdown
 validators passed. Native validation evidence and final-head CI status are

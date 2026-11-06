@@ -373,6 +373,11 @@ fn merge_owned_fields_with_edits(
     if let Some(current) = read_blob(dir, SETTINGS)? {
         let current: serde_json::Value =
             serde_json::from_str(&current).map_err(|_| "Invalid settings")?;
+        // Onboarding has its own deliberate source-patch owner. A stale or
+        // unreadable cache in an incidental full snapshot cannot undo its gate.
+        if current["launchOnboardingComplete"].is_boolean() {
+            incoming["launchOnboardingComplete"] = current["launchOnboardingComplete"].clone();
+        }
         let epoch = current["ownedFieldsRevision"].as_u64().unwrap_or(0);
         if incoming["ownedFieldsRevision"].as_u64().unwrap_or(0) < epoch {
             for field in ["autoPaste", "disabled", "ownedFieldsRevision"] {
@@ -902,5 +907,25 @@ mod explicit_owned_edit_tests {
             serde_json::from_str(&read_blob(dir.path(), SETTINGS).unwrap().unwrap()).unwrap();
         assert_eq!(disk["language"], "es");
         assert_eq!(disk["autoPasteDelayMs"], 23);
+    }
+    #[test]
+    fn incidental_settings_snapshot_cannot_undo_onboarding_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        write_blob(
+            dir.path(),
+            SETTINGS,
+            r#"{"launchOnboardingComplete":false,"language":"ja"}"#,
+        )
+        .unwrap();
+        let merged = merge_owned_fields(
+            dir.path(),
+            r#"{"launchOnboardingComplete":true,"language":"es"}"#,
+        )
+        .unwrap();
+        write_blob(dir.path(), SETTINGS, &merged).unwrap();
+        let disk: serde_json::Value =
+            serde_json::from_str(&read_blob(dir.path(), SETTINGS).unwrap().unwrap()).unwrap();
+        assert_eq!(disk["launchOnboardingComplete"], false);
+        assert_eq!(disk["language"], "es");
     }
 }
