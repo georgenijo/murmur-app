@@ -1141,6 +1141,54 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
     }));
 }
 
+// Capture ownership before queueing. The injected effect is only the backend
+// operation; production and regressions share both worker revalidation points.
+struct IdleModelPreparation {
+    model_name: String,
+    configuration: u64,
+    generation: u64,
+}
+
+impl IdleModelPreparation {
+    fn new(state: &State, model_name: String) -> Self {
+        Self {
+            model_name,
+            configuration: crate::audio::prepare::configuration_generation(),
+            generation: state.app_state.recording_id.load(Ordering::SeqCst),
+        }
+    }
+
+    fn is_current(&self, state: &State) -> bool {
+        !keyboard::is_app_disabled()
+            && crate::audio::prepare::configuration_generation() == self.configuration
+            && state.app_state.recording_id.load(Ordering::SeqCst) == self.generation
+    }
+
+    fn run<T>(
+        &self,
+        state: &State,
+        prepare: impl FnOnce(&dyn Fn() -> bool) -> Result<Option<T>, String>,
+    ) -> Result<Option<T>, String> {
+        if !crate::launch::warmup_allowed(keyboard::is_app_disabled(), &self.model_name) {
+            return Ok(None);
+        }
+        {
+            let dictation = state.app_state.dictation.lock_or_recover();
+            if dictation.status != DictationStatus::Idle
+                || dictation.model_name != self.model_name
+                || !self.is_current(state)
+            {
+                return Ok(None);
+            }
+            // Check ownership before mutating activity. Do not take dictation
+            // from the execution-time callback under the backend load fence.
+            *state.app_state.last_transcription_at.lock_or_recover() =
+                Some(std::time::Instant::now());
+        }
+        prepare(&|| self.is_current(state))
+    }
+}
+
 /// Warm an installed Core ML model after startup configuration. A newly linked
 /// application binary can trigger one-time ANE specialization even when the
 /// compiled model cache already exists. Starting it while the app is idle keeps
@@ -1152,44 +1200,17 @@ fn spawn_idle_model_preparation(
     change_guard: SharedBackendChangeGuard,
 ) {
     let queued_at = std::time::Instant::now();
-    let configuration = crate::audio::prepare::configuration_generation();
-    let generation = app_handle
-        .state::<State>()
-        .app_state
-        .recording_id
-        .load(Ordering::SeqCst);
+    let preparation = IdleModelPreparation::new(&app_handle.state::<State>(), model_name.clone());
     drop(tauri::async_runtime::spawn_blocking(move || {
         let _change_guard = change_guard;
         let state = app_handle.state::<State>();
-        if !crate::launch::warmup_allowed(keyboard::is_app_disabled(), &model_name) {
-            return;
-        }
-        let is_current = {
-            let dictation = state.app_state.dictation.lock_or_recover();
-            dictation.status == DictationStatus::Idle
-                && dictation.model_name == model_name
-                && state.app_state.recording_id.load(Ordering::SeqCst) == generation
-                && crate::audio::prepare::configuration_generation() == configuration
-        };
-        if !is_current {
-            return;
-        }
-
-        // Count admitted preparation as activity before the load so the idle
-        // timer cannot immediately release the newly prepared model.
-        *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
-        // Disable/configuration/start can change while this worker is queued
-        // on the backend. Revalidate atomics under that backend's load fence;
-        // never acquire dictation while holding the backend lock.
-        let result = state.app_state.model_runtime.prepare_startup_if(
-            Some(&app_handle),
-            &model_name,
-            || {
-                !keyboard::is_app_disabled()
-                    && crate::audio::prepare::configuration_generation() == configuration
-                    && state.app_state.recording_id.load(Ordering::SeqCst) == generation
-            },
-        );
+        let result = preparation.run(&state, |is_current| {
+            state.app_state.model_runtime.prepare_startup_if(
+                Some(&app_handle),
+                &model_name,
+                is_current,
+            )
+        });
 
         let total_ms = queued_at.elapsed().as_millis() as u64;
         match result {
@@ -6571,9 +6592,8 @@ pub(crate) mod tests {
         assert!(!try_begin_dictation_partial(&app_state, recording_id));
     }
 
-    #[test]
-    fn persisted_coreml_disabled_configuration_does_not_queue_warmup() {
-        let state = State {
+    fn warmup_test_state() -> State {
+        State {
                 app_state: AppState::default(),
                 benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
                 microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
@@ -6598,7 +6618,57 @@ pub(crate) mod tests {
                 overlay_frame: std::sync::Mutex::new(None),
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
 
-            };
+            }
+    }
+
+    #[test]
+    fn queued_coreml_warmup_survives_same_model_configuration() {
+        use std::cell::Cell;
+        let state = warmup_test_state();
+        let options = serde_json::json!({
+            "disabled": false, "model": "parakeet-tdt-0.6b-v3-coreml"
+        });
+        let mut queued = None;
+        configure_dictation_with_effects(options.clone(), &state, None, |model, guard| {
+            queued = Some((IdleModelPreparation::new(&state, model), guard));
+        })
+        .unwrap();
+        // The accepted worker remains paused while frontend confirmation and
+        // an unrelated settings update advance the capture configuration.
+        configure_dictation_with_effects(options, &state, None, |_, _| {
+            panic!("same-model confirmation must reuse the queued worker");
+        })
+        .unwrap();
+        configure_dictation_with_effects(
+            serde_json::json!({"autoPaste": false}),
+            &state,
+            None,
+            |_, _| {
+                panic!("unrelated settings must reuse the queued worker");
+            },
+        )
+        .unwrap();
+        let prepared = Cell::new(0);
+        let (worker, _guard) = queued.unwrap();
+        worker
+            .run(&state, |is_current| {
+                if !is_current() {
+                    return Ok(None);
+                }
+                prepared.set(prepared.get() + 1);
+                Ok(Some(()))
+            })
+            .unwrap();
+        assert_eq!(
+            prepared.get(),
+            1,
+            "eligible queued preparation was discarded"
+        );
+    }
+
+    #[test]
+    fn persisted_coreml_disabled_configuration_does_not_queue_warmup() {
+        let state = warmup_test_state();
         let mut options = serde_json::json!({
             "settingsVersion": 7, "launchOnboardingComplete": true,
             "disabled": true, "model": "parakeet-tdt-0.6b-v3-coreml",
