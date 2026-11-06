@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+import { subscribeRecordingStatus } from '../recordingStatus';
 import { useAudioLevel } from './useAudioLevel';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '../targetedEvents';
@@ -154,69 +156,83 @@ export function useRecordingState({ microphone, smartAuto = null, canStart, wave
 
   // Sync status from Rust events — keeps main window in sync when overlay controls recording
   useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<string>('recording-status-changed', (event) => {
-      if (isDictationStatus(event.payload)) {
-        const previousStatus = statusRef.current;
-        flog.info('recording', 'status event: ' + event.payload, {
-          prevStatus: previousStatus,
-          recordingStartTime: recordingStartTimeRef.current,
-          isStopping: isStoppingRef.current,
-        });
-        // Update the ref synchronously. Hotkey events can arrive before React
-        // commits the state update, and transition decisions read this ref.
-        statusRef.current = event.payload;
-        setStatus(event.payload);
-        if (
-          event.payload === 'recovering'
-          || event.payload === 'idle'
-          || event.payload === 'processing'
-        ) {
-          endedRecordingGenerationRef.current = Math.max(
-            endedRecordingGenerationRef.current,
-            latestRecordingGenerationRef.current,
-          );
-        }
-        // When recording starts from the overlay, handleStart doesn't run in this window.
-        // Seed recordingStartTime so the duration timer ticks.
-        if (event.payload === 'recording' && !recordingStartTimeRef.current) {
-          const now = Date.now();
-          recordingStartTimeRef.current = now;
-          setRecordingStartTime(now);
-        }
-        // When recording stops, clear recordingStartTime.
-        if (
-          event.payload === 'idle'
-          || event.payload === 'starting'
-          || event.payload === 'recovering'
-          || event.payload === 'processing'
-        ) {
-          recordingStartTimeRef.current = null;
-          setRecordingStartTime(null);
-        }
-        // If idle arrived externally (e.g. Escape cancel), unblock handleStop
-        // so the next recording cycle can stop normally.
-        if (event.payload === 'idle') {
-          isStoppingRef.current = false;
-          setSmartDestinationSelection(null);
-          if (previousStatus === 'recovering') {
-            // Recovery reaching Idle is authoritative. Invalidate any invoke
-            // response that was produced before this transition and clear only
-            // the cleanup notice associated with that lifecycle. A distinct,
-            // newer error remains visible.
-            errorProducerEpochRef.current += 1;
-            if (currentErrorRef.current?.kind === 'cleanup') {
-              currentErrorRef.current = null;
-              setErrorPresentation(null);
-            }
+    return subscribeRecordingStatus((next) => {
+      const previousStatus = statusRef.current;
+      flog.info('recording', 'status event: ' + next, {
+        prevStatus: previousStatus,
+        recordingStartTime: recordingStartTimeRef.current,
+        isStopping: isStoppingRef.current,
+      });
+      // Update the ref synchronously. Hotkey events can arrive before React
+      // commits the state update, and transition decisions read this ref.
+      statusRef.current = next;
+      setStatus(next);
+      if (
+        next === 'recovering'
+        || next === 'idle'
+        || next === 'processing'
+      ) {
+        endedRecordingGenerationRef.current = Math.max(
+          endedRecordingGenerationRef.current,
+          latestRecordingGenerationRef.current,
+        );
+      }
+      // When recording starts from the overlay, handleStart doesn't run in this window.
+      // Seed recordingStartTime so the duration timer ticks.
+      if (next === 'recording' && !recordingStartTimeRef.current) {
+        const now = Date.now();
+        recordingStartTimeRef.current = now;
+        setRecordingStartTime(now);
+      }
+      // When recording stops, clear recordingStartTime.
+      if (
+        next === 'idle'
+        || next === 'starting'
+        || next === 'recovering'
+        || next === 'processing'
+      ) {
+        recordingStartTimeRef.current = null;
+        setRecordingStartTime(null);
+      }
+      // If idle arrived externally (e.g. Escape cancel), unblock handleStop
+      // so the next recording cycle can stop normally.
+      if (next === 'idle') {
+        isStoppingRef.current = false;
+        setSmartDestinationSelection(null);
+        if (previousStatus === 'recovering') {
+          // Recovery reaching Idle is authoritative. Invalidate any invoke
+          // response that was produced before this transition and clear only
+          // the cleanup notice associated with that lifecycle. A distinct,
+          // newer error remains visible.
+          errorProducerEpochRef.current += 1;
+          if (currentErrorRef.current?.kind === 'cleanup') {
+            currentErrorRef.current = null;
+            setErrorPresentation(null);
           }
         }
       }
-    }).then((fn) => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
+    }, (snapshot) => {
+      const id = snapshot.recordingId;
+      if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < latestRecordingGenerationRef.current) return;
+      if ((snapshot.state === 'recording' || snapshot.state === 'starting')
+        && id <= endedRecordingGenerationRef.current) return;
+      latestRecordingGenerationRef.current = id;
+      statusRef.current = snapshot.state;
+      setStatus(snapshot.state);
+      const startedAt = snapshot.state === 'recording' ? snapshot.recordingStartedAtMs ?? null : null;
+      recordingStartTimeRef.current = startedAt;
+      setRecordingStartTime(startedAt);
+      if (typeof snapshot.locked === 'boolean') setLockedMode(snapshot.locked);
+    }, {
+      generation: (recordingId) => {
+        if (recordingId <= latestRecordingGenerationRef.current) return;
+        latestRecordingGenerationRef.current = recordingId;
+        dismissedErrorRef.current = null;
+        clearError();
+        setSmartDestinationSelection(null);
+      },
+      locked: setLockedMode,
     });
-    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   // Audio initialization failures are terminal for the attempt. Cancellation
@@ -237,23 +253,6 @@ export function useRecordingState({ microphone, smartAuto = null, canStart, wave
     listen<string>('dictation-control-error', ({ payload }) => {
       if (!cancelled) presentError(payload);
     }).then((fn) => { if (cancelled) fn(); else unlistens.push(fn); });
-    listen<unknown>('dictation-generation-started', (event) => {
-      if (cancelled) return;
-      const payload = event.payload as Record<string, unknown> | null;
-      const recordingId = payload?.recordingId;
-      if (
-        typeof recordingId === 'number'
-        && Number.isSafeInteger(recordingId)
-        && recordingId > latestRecordingGenerationRef.current
-      ) {
-        latestRecordingGenerationRef.current = recordingId;
-        dismissedErrorRef.current = null;
-        clearError();
-        setSmartDestinationSelection(null);
-      }
-    }).then((fn) => {
-      if (cancelled) fn(); else unlistens.push(fn);
-    });
     listen<unknown>('smart-destination-selected', (event) => {
       if (cancelled) return;
       const selection = smartDestinationSelectionFromPayload(event.payload);
@@ -556,7 +555,7 @@ export function useRecordingState({ microphone, smartAuto = null, canStart, wave
     try {
       if (statusRef.current === 'starting') {
         flog.info('recording', 'handleStop cancelling audio initialization');
-        await cancelRecording();
+        await cancelRecording(latestRecordingGenerationRef.current || undefined);
         return;
       }
       if (statusRef.current === 'recovering') {
@@ -577,7 +576,7 @@ export function useRecordingState({ microphone, smartAuto = null, canStart, wave
       flog.info('recording', 'computed duration', { duration });
       statusRef.current = 'processing';
       setStatus('processing');
-      const res = await stopRecording(stopTrigger);
+      const res = await stopRecording(stopTrigger, latestRecordingGenerationRef.current || undefined);
       if (res.text) {
         setTranscription(res.text);
         // Rust has already committed History/statistics; this result is presentation only.
@@ -614,16 +613,10 @@ export function useRecordingState({ microphone, smartAuto = null, canStart, wave
     }
   }, [beginRecording, handleStop]);
 
-  // Side effects must live outside the setLockedMode updater to avoid double-firing in StrictMode
+  // Locked mode belongs to the native controller in every window.
   const toggleLockedMode = useCallback(async () => {
-    const next = !lockedMode;
-    setLockedMode(next);
-    if (next && statusRef.current !== 'recording') {
-      await handleStart();
-    } else if (!next && statusRef.current === 'recording') {
-      await handleStop();
-    }
-  }, [lockedMode, handleStart, handleStop]);
+    await invoke('toggle_dictation_lock');
+  }, []);
 
   return {
     status,

@@ -488,6 +488,13 @@ fn transition_dictation_status(
 ) -> DictationStatus {
     let from = dictation.status;
     dictation.status = to;
+    if to == DictationStatus::Recording {
+        if from != DictationStatus::Recording {
+            dictation.recording_started_at_ms = Some(chrono::Utc::now().timestamp_millis());
+        }
+    } else {
+        dictation.recording_started_at_ms = None;
+    }
     publish_dictation_state_changed(recording_id, from, to);
     from
 }
@@ -3386,14 +3393,28 @@ pub async fn process_audio(
     }))
 }
 
-#[tauri::command]
-pub async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
-    let dictation = state.app_state.dictation.lock_or_recover();
-    Ok(serde_json::json!({
+/// Read status and generation under the same dictation lock as accepted starts.
+fn status_snapshot(app_state: &AppState, locked: impl FnOnce() -> bool) -> serde_json::Value {
+    let dictation = app_state.dictation.lock_or_recover();
+    serde_json::json!({
         "type": "status",
         "state": dictation.status,
+        "recordingId": app_state.recording_id.load(Ordering::SeqCst),
+        "recordingStartedAtMs": dictation.recording_started_at_ms,
+        "locked": locked(),
         "model": dictation.model_name,
         "language": dictation.language
+    })
+}
+
+#[tauri::command]
+pub async fn get_status(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+) -> Result<serde_json::Value, String> {
+    // Lock order is dictation -> controller, as in native control dispatch.
+    Ok(status_snapshot(&state.app_state, || {
+        crate::dictation_control::get_dictation_lock(app_handle)
     }))
 }
 
@@ -5596,8 +5617,15 @@ pub async fn stop_native_recording(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     stop_trigger: Option<audio_lifecycle::DictationStopTrigger>,
+    expected_recording_id: Option<u64>,
 ) -> Result<serde_json::Value, String> {
-    stop_native_recording_for(app_handle, state, None, stop_trigger.unwrap_or_default()).await
+    stop_native_recording_for(
+        app_handle,
+        state,
+        expected_recording_id,
+        stop_trigger.unwrap_or_default(),
+    )
+    .await
 }
 
 fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u64>) -> bool {
@@ -6541,6 +6569,31 @@ pub async fn transcribe_file(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn renderer_status_snapshot_tracks_generation_timestamp_and_terminal_state() {
+        let state = AppState::default();
+        {
+            let mut dictation = state.dictation.lock_or_recover();
+            let id = state.next_recording_id();
+            transition_dictation_status(id, &mut dictation, DictationStatus::Starting);
+            transition_dictation_status(id, &mut dictation, DictationStatus::Recording);
+        }
+        let snapshot = status_snapshot(&state, || true);
+        assert_eq!(snapshot["state"], "recording");
+        assert_eq!(snapshot["recordingId"], 1);
+        assert!(snapshot["recordingStartedAtMs"].as_i64().unwrap() > 0);
+        assert_eq!(snapshot["locked"], true);
+        {
+            let mut dictation = state.dictation.lock_or_recover();
+            transition_dictation_status(1, &mut dictation, DictationStatus::Idle);
+        }
+        let ended = status_snapshot(&state, || false);
+        assert_eq!(ended["state"], "idle");
+        assert_eq!(ended["recordingId"], 1);
+        assert!(ended["recordingStartedAtMs"].is_null());
+        assert_eq!(ended["locked"], false);
+    }
+
     use super::*;
     use std::collections::VecDeque;
     use std::path::PathBuf;

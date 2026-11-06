@@ -422,3 +422,30 @@ and **7 frontend groups / 42 tests including subtests**. The original guards
 fail all **95** new negative Cargo assertions and **36** new negative frontend
 assertions (the Node runner reports **38** failures including two parent groups).
 Exact final-head CI is recorded in the draft PR body.
+
+## Native verification follow-ups: D1 / D2
+
+D1: main and overlay now share `subscribeRecordingStatus`: targeted lifecycle
+listeners are installed before `get_status` is read. Any accepted lifecycle,
+generation or lock event during subscription/read invalidates the initial
+snapshot by local event epoch; unmount invalidates queued callbacks and reads.
+Main also rejects snapshots older than its observed/ended generation. The
+existing command reads status and `recordingId` under the dictation lock and
+returns the live recording start timestamp and native controller lock (using the
+native dictation -> controller lock order). The timestamp is runtime-only and
+cleared outside Recording. A fresh main context restores status, generation,
+elapsed duration and lock, then its existing `useAudioLevel` consumer registers
+waveform interest. Stop/cancel carry the observed generation, so a delayed
+command cannot stop a newer owner. Main lock toggles use the native controller.
+`murmur-core` remains Tauri-free; no transport or payload broadcasts were added.
+
+D2: overlay mousedown diagnostics read bounded class names through
+`Element.getAttribute('class')`, including SVG targets whose `className` is an
+`SVGAnimatedString`. The diagnostic never reads target text.
+
+Synthetic Vitest coverage exercises mount hydration, event/snapshot ordering,
+terminal events before a delayed snapshot, subscription acknowledgement order,
+waveform activation/revocation, native elapsed duration, generation-bound
+stop/cancel, lock changes and SVG mousedown. A native Rust regression covers
+snapshot status/generation/timestamp/lock and timestamp clearing after completion.
+Native UI re-verification and independent Sol review belong to the parent.

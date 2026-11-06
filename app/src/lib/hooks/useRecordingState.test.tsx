@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(async () => ({ state: 'idle', recordingId: 0, locked: false })) }));
+
 vi.mock('../dictation', () => ({
   startRecording: mocks.startRecording,
   stopRecording: mocks.stopRecording,
@@ -314,12 +316,12 @@ describe('useRecordingState transition ordering', () => {
       mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
     });
     await act(async () => current.toggleRecording());
-    expect(mocks.stopRecording).toHaveBeenLastCalledWith('toggle');
+    expect(mocks.stopRecording).toHaveBeenLastCalledWith('toggle', undefined);
     await act(async () => {
       mocks.listeners.get('recording-status-changed')?.({ payload: 'recording' });
     });
     await act(async () => current.handleStop());
-    expect(mocks.stopRecording).toHaveBeenLastCalledWith('other');
+    expect(mocks.stopRecording).toHaveBeenLastCalledWith('other', undefined);
   });
 
   it('records history and stats exactly once from the final completion event', async () => {
