@@ -57,7 +57,14 @@ impl TerminalAttempt {
         }
     }
 
-    pub fn run(&self, write: impl FnOnce() -> io::Result<()> + Send + 'static) -> AttemptOutcome {
+    /// `process_start_id` is the receipt identity this attempt publishes; every
+    /// diagnostic carries it with the PID because a relaunch replacement
+    /// inherits the same stderr.
+    pub fn run(
+        &self,
+        process_start_id: Option<String>,
+        write: impl FnOnce() -> io::Result<()> + Send + 'static,
+    ) -> AttemptOutcome {
         if self.started.swap(true, Ordering::AcqRel) {
             return self.outcome();
         }
@@ -81,7 +88,7 @@ impl TerminalAttempt {
                     // termination. Never print paths, payloads or panic messages.
                     if let Ok(outcome) = reported.recv() {
                         let _ = contain(|| {
-                            diagnostic(&mut io::stderr(), outcome);
+                            diagnostic(&mut io::stderr(), outcome, process_start_id.as_deref());
                         });
                     }
                 });
@@ -116,26 +123,23 @@ impl TerminalAttempt {
     }
 }
 
-fn diagnostic(output: &mut impl Write, outcome: AttemptOutcome) {
-    let message: &[u8] = match outcome {
-        AttemptOutcome::CompletedWithinBound => {
-            b"shutdown QA evidence: completed_within_bound=true\n"
-        }
-        AttemptOutcome::TimedOut => {
-            b"shutdown QA evidence: completed_within_bound=false timed_out\n"
-        }
-        AttemptOutcome::IoFailure => {
-            b"shutdown QA evidence: completed_within_bound=false receipt_io_failure\n"
-        }
-        AttemptOutcome::Panicked => {
-            b"shutdown QA evidence: completed_within_bound=false evidence_panicked\n"
-        }
-        AttemptOutcome::Unavailable => {
-            b"shutdown QA evidence: completed_within_bound=false worker_unavailable\n"
-        }
+fn diagnostic(output: &mut impl Write, outcome: AttemptOutcome, process_start_id: Option<&str>) {
+    let result = match outcome {
+        AttemptOutcome::CompletedWithinBound => "completed_within_bound=true",
+        AttemptOutcome::TimedOut => "completed_within_bound=false timed_out",
+        AttemptOutcome::IoFailure => "completed_within_bound=false receipt_io_failure",
+        AttemptOutcome::Panicked => "completed_within_bound=false evidence_panicked",
+        AttemptOutcome::Unavailable => "completed_within_bound=false worker_unavailable",
         AttemptOutcome::InProgress => return,
     };
-    let _ = output.write_all(message);
+    // Collectors attribute a result only to the receipt with this exact
+    // `<pid>-<process_start_id>.json` identity; `unavailable` never matches.
+    let _ = writeln!(
+        output,
+        "shutdown QA evidence: pid={} process_start_id={} {result}",
+        std::process::id(),
+        process_start_id.unwrap_or("unavailable"),
+    );
 }
 
 /// The terminal continuation runs once even if evidence preparation panics.
@@ -252,6 +256,9 @@ impl Evidence {
             replacement_requested: false,
             written: false,
         })
+    }
+    pub fn process_start_id(&self) -> &str {
+        &self.process_start_id
     }
     pub fn observe(
         &mut self,
@@ -404,29 +411,38 @@ mod tests {
         let root = scratch();
         let mut evidence =
             Evidence::new(QA_ID, Some(QA_ID), || Some(root.path().to_owned())).unwrap();
+        let start = evidence.process_start_id().to_owned();
         let attempt = TerminalAttempt::new();
-        let outcome = attempt.run(move || {
+        let outcome = attempt.run(Some(start.clone()), move || {
             evidence
                 .write_terminal(Action::Quit, Counts::default())
                 .map(|_| ())
         });
         assert_eq!(outcome, AttemptOutcome::CompletedWithinBound);
         assert_eq!(
-            attempt.run(|| panic!("duplicate evidence attempt")),
+            attempt.run(None, || panic!("duplicate evidence attempt")),
             outcome
         );
         let mut output = Vec::new();
-        diagnostic(&mut output, outcome);
+        diagnostic(&mut output, outcome, Some(&start));
+        let pid = std::process::id();
         assert_eq!(
-            output,
-            b"shutdown QA evidence: completed_within_bound=true\n"
+            String::from_utf8(output).unwrap(),
+            format!(
+                "shutdown QA evidence: pid={pid} process_start_id={start} completed_within_bound=true\n"
+            )
         );
-        assert_eq!(
-            fs::read_dir(root.path().join("shutdown-evidence"))
-                .unwrap()
-                .count(),
-            1
-        );
+        // The diagnostic identity names exactly the one published receipt.
+        let receipts: Vec<_> = fs::read_dir(root.path().join("shutdown-evidence"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(receipts, [format!("{pid}-{start}.json")]);
+        let mut unattributed = Vec::new();
+        diagnostic(&mut unattributed, AttemptOutcome::TimedOut, None);
+        assert!(String::from_utf8(unattributed)
+            .unwrap()
+            .contains("process_start_id=unavailable completed_within_bound=false timed_out"));
     }
 
     #[test]
@@ -441,7 +457,7 @@ mod tests {
         with_terminal_evidence(
             || {
                 assert_eq!(
-                    attempt.run(move || {
+                    attempt.run(None, move || {
                         let mut sync_count = 0;
                         let result = evidence.write_terminal_with_sync(
                             Action::Quit,
@@ -466,7 +482,7 @@ mod tests {
         // A runtime event arriving after the queued callback consumes no second
         // budget and cannot try to lock or join the blocked evidence writer.
         assert_eq!(
-            attempt.run(|| panic!("duplicate evidence attempt")),
+            attempt.run(None, || panic!("duplicate evidence attempt")),
             AttemptOutcome::TimedOut
         );
         assert!(start.elapsed() <= Duration::from_millis(250));
@@ -487,7 +503,7 @@ mod tests {
                         panic!("synthetic evidence preparation panic");
                     }
                     assert_eq!(
-                        attempt.run(|| panic!("synthetic evidence worker panic")),
+                        attempt.run(None, || panic!("synthetic evidence worker panic")),
                         AttemptOutcome::Panicked
                     );
                 },
@@ -512,7 +528,7 @@ mod tests {
         with_terminal_evidence(|| std::panic::panic_any(Payload), || terminal_count += 1);
         assert_eq!(terminal_count, 1);
         assert_eq!(
-            TerminalAttempt::new().run(|| std::panic::panic_any(Payload)),
+            TerminalAttempt::new().run(None, || std::panic::panic_any(Payload)),
             AttemptOutcome::Panicked
         );
     }
@@ -551,7 +567,7 @@ mod tests {
         let mut terminal_count = 0;
         with_terminal_evidence(
             || {
-                let outcome = attempt.run(move || {
+                let outcome = attempt.run(None, move || {
                     evidence
                         .write_terminal(Action::Quit, Counts::default())
                         .map(|_| ())
@@ -559,13 +575,15 @@ mod tests {
                 assert_eq!(outcome, AttemptOutcome::IoFailure);
                 // Exercise the exact diagnostic against the child's real broken
                 // stderr, without changing the parent test runner's descriptors.
-                diagnostic(&mut io::stderr(), outcome);
+                diagnostic(&mut io::stderr(), outcome, None);
             },
             || terminal_count += 1,
         );
         assert_eq!(terminal_count, 1);
         assert_eq!(attempt.outcome(), AttemptOutcome::IoFailure);
-        assert!(catch_unwind(|| diagnostic(&mut io::stderr(), AttemptOutcome::IoFailure)).is_ok());
+        assert!(
+            catch_unwind(|| diagnostic(&mut io::stderr(), AttemptOutcome::IoFailure, None)).is_ok()
+        );
         println!("terminal-count={terminal_count}");
     }
     #[test]

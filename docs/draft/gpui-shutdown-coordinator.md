@@ -1205,6 +1205,14 @@ failure, never delay termination or treat a late receipt as in-budget success.
 The wait is 100 ms; regression tests allow 250 ms elapsed to accommodate thread
 scheduling. This is a bounded software wait, not a real-time OS guarantee.
 
+Every diagnostic line starts with `pid=<pid> process_start_id=<uuid>`. Tauri's
+relaunch replacement inherits the original stderr, so an unlabelled success line
+could be credited to the original process's complete-looking receipt after its
+own directory sync timed out. Collectors match the diagnostic identity exactly
+to the `<pid>-<process_start_id>.json` receipt; a complete receipt without its
+matching success line, or a line naming `process_start_id=unavailable`, is an
+evidence failure. The start identity is read lock-free on main.
+
 The per-cell procedure now separates successful pending-write drains from
 Writers deadline failures. Every cell requires successful nonempty synthetic
 file-transcription preflight, including active dictation; Idle/no-history alone

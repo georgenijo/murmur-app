@@ -260,9 +260,13 @@ covering native termination that observes the permit before the queued terminal
 callback runs. Both routes share the same once-per-process publication. It has
 no IPC read command and never uses the sealed logger.
 The bounded-wait outcome is recorded atomically; late completion cannot change
-it. Off-main diagnostics report `completed_within_bound=true` or
-`completed_within_bound=false` with a fixed code (`timed_out`,
-`receipt_io_failure`, `evidence_panicked`, `worker_unavailable`). All diagnostic
+it. Off-main diagnostics report `pid=<pid> process_start_id=<uuid>`, then
+`completed_within_bound=true` or `completed_within_bound=false` with a fixed
+code (`timed_out`, `receipt_io_failure`, `evidence_panicked`,
+`worker_unavailable`). A relaunch replacement inherits the same stderr, so
+attribute a diagnostic only to the receipt named exactly
+`<pid>-<process_start_id>.json`. A complete receipt without its matching
+`completed_within_bound=true` line is an evidence failure. All diagnostic
 writes ignore I/O errors; evidence preparation and worker panics are contained,
 including panic payloads with panicking destructors. The shutdown telemetry
 diagnostic also ignores write errors, and the pretty-log layer suppresses its
