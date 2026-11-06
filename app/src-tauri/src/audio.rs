@@ -701,7 +701,7 @@ fn spawn_helper_checked(
     ),
     AudioFailure,
 > {
-    if !valid() {
+    if crate::shutdown::closing() || !valid() {
         return Err(AudioFailure::new(
             AudioFailureKind::InitializationTimeout,
             AudioInitPhase::StreamBuild,
@@ -734,7 +734,7 @@ fn spawn_helper_checked(
     }
     // Signature validation may block; cancellation must be rechecked before
     // creating a process, not just when publishing its eventual hello.
-    if !valid() {
+    if crate::shutdown::closing() || !valid() {
         return Err(AudioFailure::new(
             AudioFailureKind::InitializationTimeout,
             AudioInitPhase::StreamBuild,
@@ -1792,8 +1792,6 @@ static CAPTURE_MEMO_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// Orders concurrent background writers: each snapshot takes a ticket, and a
 /// writer whose ticket is older than what already reached disk drops it rather
 /// than rewinding the file.
-static CAPTURE_MEMO_SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static CAPTURE_MEMO_PUBLISHED_SEQUENCE: Mutex<u64> = Mutex::new(0);
 
 const CAPTURE_MEMO_FILE_NAME: &str = "capture-memo.json";
 const CAPTURE_MEMO_SCHEMA_VERSION: u32 = 1;
@@ -1967,37 +1965,46 @@ fn install_restored_memo(memo: &mut CaptureMemoEntries, entries: CaptureMemoEntr
     }
 }
 
-/// Publishes on a detached thread so the durable write is fully off the
-/// capture thread: `note_first_pcm` runs after first-buffer publication,
-/// and an inline write on a stalled app-data volume would delay capture. Saves happen at most a few times per recording, so one
-/// short-lived thread per save is cheap. A failure is logged without any
-/// content and the in-memory memo keeps working for this session.
+enum MemoWrite {
+    Save(CaptureMemoEntries),
+    Flush(std::sync::mpsc::Sender<bool>),
+}
+static MEMO_WRITER: OnceLock<std::sync::mpsc::Sender<MemoWrite>> = OnceLock::new();
+fn memo_writer() -> &'static std::sync::mpsc::Sender<MemoWrite> {
+    MEMO_WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("capture-memo-writer".into())
+            .spawn(move || {
+                let mut committed = true;
+                while let Ok(job) = rx.recv() {
+                    match job {
+                        MemoWrite::Save(entries) => {
+                            if let Some(path) = CAPTURE_MEMO_PATH.get() {
+                                committed = write_capture_memo_file(path, &entries).is_ok();
+                            }
+                        }
+                        MemoWrite::Flush(reply) => {
+                            let _ = reply.send(committed);
+                        }
+                    }
+                }
+            })
+            .expect("capture memo writer");
+        tx
+    })
+}
 fn save_capture_memo(entries: CaptureMemoEntries) {
-    if CAPTURE_MEMO_PATH.get().is_none() {
-        // Persistence was never armed (unit tests, or an unavailable app-data
-        // directory): stay in memory and never spawn a writer.
-        return;
+    if CAPTURE_MEMO_PATH.get().is_some() {
+        let _ = memo_writer().send(MemoWrite::Save(entries));
     }
-    let sequence = CAPTURE_MEMO_SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
-    std::thread::spawn(move || {
-        let Some(path) = CAPTURE_MEMO_PATH.get() else {
-            return;
-        };
-        let mut published = CAPTURE_MEMO_PUBLISHED_SEQUENCE.lock_or_recover();
-        if *published >= sequence {
-            // A newer snapshot already reached disk; writing this older one
-            // would move the file backwards.
-            return;
-        }
-        match write_capture_memo_file(path, &entries) {
-            Ok(()) => *published = sequence,
-            Err(error) => tracing::warn!(
-                target: "audio",
-                error_kind = error.kind().to_string(),
-                "failed to persist the capture backend memo"
-            ),
-        }
-    });
+}
+pub(crate) fn flush_capture_memo() -> bool {
+    let Some(writer) = MEMO_WRITER.get() else {
+        return true;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    writer.send(MemoWrite::Flush(tx)).is_ok() && rx.recv().unwrap_or(false)
 }
 
 // Normal production owners update this memo from observed device behavior.

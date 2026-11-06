@@ -739,6 +739,7 @@ pub(crate) mod tests {
         });
         let mut controller = Controller::default();
         controller.gate = LaunchGate {
+            shutdown: false,
             configured: true,
             onboarding_complete: true,
             model_installed: true,

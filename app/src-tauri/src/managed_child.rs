@@ -13,6 +13,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
+static OWNED_GROUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SPAWN_FENCE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+/// Cross every previously admitted spawn before checking exact-owner receipts.
+pub(crate) fn shutdown_fence() {
+    drop(SPAWN_FENCE.write().unwrap_or_else(|p| p.into_inner()));
+}
+pub(crate) fn helpers_confirmed_empty() -> bool {
+    OWNED_GROUPS.load(std::sync::atomic::Ordering::Acquire) == 0
+}
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +42,7 @@ pub struct ManagedChild {
 impl ManagedChild {
     fn from_spawned_child(child: Child) -> Self {
         let pid = child.id();
+        OWNED_GROUPS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Self {
             child,
             pid,
@@ -73,6 +83,10 @@ impl ManagedChild {
     }
 
     fn spawn_command(mut command: Command) -> std::io::Result<(Self, ChildStdin, ChildStdout)> {
+        let _spawn = SPAWN_FENCE.read().unwrap_or_else(|p| p.into_inner());
+        if crate::shutdown::closing() {
+            return Err(std::io::Error::other("Murmur is shutting down"));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -128,6 +142,7 @@ impl ManagedChild {
                     let termination = self.confirmed(status);
                     if self.confirm_process_group_empty(deadline) {
                         self.termination_armed = false;
+                        OWNED_GROUPS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                         return Some(termination);
                     }
                     return None;

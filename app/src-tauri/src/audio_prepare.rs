@@ -312,7 +312,8 @@ fn request_with(
     spawn: impl FnOnce(u64, Arc<Cancellation>) -> std::io::Result<()>,
 ) -> bool {
     let mut state = PREPARATION.lock_or_recover();
-    if state.revocation_generation != revocation_generation
+    if crate::shutdown::closing()
+        || state.revocation_generation != revocation_generation
         || state.active.is_some()
         || identity.configuration_generation != configuration_generation()
         || identity.topology_generation != crate::audio_lifecycle::input_topology_generation()

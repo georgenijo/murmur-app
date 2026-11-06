@@ -130,6 +130,9 @@ pub fn schedule(
     capture_generation: u64,
     audio: RemoteAudio,
 ) {
+    if crate::shutdown::closing() {
+        return;
+    }
     let generation = {
         let mut control = CONTROL.lock_or_recover();
         if stop_owned(&mut control).is_err() {

@@ -114,6 +114,7 @@ pub async fn start_meeting(
     request: StartMeetingRequest,
     state: tauri::State<'_, State>,
 ) -> Result<MeetingSession, String> {
+    crate::shutdown::require_running()?;
     crate::audio_lifecycle::retire_standby();
     let _transition = if request.suggestion_token.is_some() {
         require_main_window(window.label())?;
@@ -122,6 +123,7 @@ pub async fn start_meeting(
         crate::commands::microphone_preview::transition_after_stopping_preview(&app, state.inner())
             .await?
     };
+    crate::shutdown::require_running()?;
     let suggestion = if let Some(token) = request.suggestion_token.as_deref() {
         if crate::calendar::permission_status()
             != crate::calendar::CalendarPermissionStatus::Granted

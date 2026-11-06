@@ -10,7 +10,6 @@ use std::{
 use tauri::{LogicalPosition, LogicalSize, Manager};
 
 const LABELS: [&str; 2] = ["main", "diagnostics"];
-const DEBOUNCE: Duration = Duration::from_millis(500);
 pub(crate) const TRAFFIC_LIGHT_X: f64 = 16.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -139,37 +138,38 @@ fn restore_geometry(saved: &SavedWindow, displays: &[Display]) -> Option<Restore
     })
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct SavedState {
     windows: BTreeMap<String, SavedWindow>,
     #[serde(default)]
     backgrounds: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
 struct Store {
     path: PathBuf,
     saved: SavedState,
 }
 impl Store {
-    fn write(&self) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let temp = self.path.with_extension("json.tmp");
-        std::fs::write(&temp, serde_json::to_vec_pretty(&self.saved)?)?;
-        std::fs::rename(temp, &self.path)
+    fn write(&self) -> Result<(), murmur_core::completion::Error> {
+        murmur_core::completion::publish_snapshot(&self.path, &self.saved)
     }
+}
+enum WindowWrite {
+    Changed,
+    Flush(mpsc::Sender<bool>),
 }
 
 pub(crate) struct WindowState {
     store: Arc<Mutex<Store>>,
-    changed: mpsc::Sender<()>,
+    changed: mpsc::Sender<WindowWrite>,
     chrome: Mutex<BTreeMap<String, (f64, f64)>>,
     painted: std::sync::atomic::AtomicBool,
 }
 
 pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
     let path = app.path().app_data_dir()?.join("window-state.json");
+    let _ = murmur_core::completion::recover_snapshot(&path);
     let mut saved: SavedState = std::fs::read(&path)
         .ok()
         .filter(|bytes| bytes.len() < 16 * 1024)
@@ -245,10 +245,14 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
     std::thread::Builder::new()
         .name("window-state".into())
         .spawn(move || {
-            while receiver.recv().is_ok() {
-                while receiver.recv_timeout(DEBOUNCE).is_ok() {}
-                if let Err(error) = worker_store.lock_or_recover().write() {
-                    tracing::warn!(target: "system", "window state save failed: {error}");
+            while let Ok(message) = receiver.recv() {
+                let snapshot = worker_store.lock_or_recover().clone();
+                let committed = snapshot.write().is_ok();
+                if let WindowWrite::Flush(reply) = message {
+                    let _ = reply.send(committed);
+                }
+                if !committed {
+                    tracing::warn!(target: "system", "window state publication failed");
                 }
             }
         })?;
@@ -330,15 +334,17 @@ pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             },
         );
     }
-    let _ = state.changed.send(());
+    let _ = state.changed.send(WindowWrite::Changed);
 }
 
-pub(crate) fn flush(app: &tauri::AppHandle) {
-    if let Some(state) = app.try_state::<WindowState>() {
-        if let Err(error) = state.store.lock_or_recover().write() {
-            tracing::warn!(target: "system", "window state flush failed: {error}");
-        }
-    }
+/// Called only by the shutdown worker. FIFO acknowledgement follows every
+/// previously accepted geometry snapshot; the UI mutex is never held over I/O.
+pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<WindowState>() else {
+        return true;
+    };
+    let (tx, rx) = mpsc::channel();
+    state.changed.send(WindowWrite::Flush(tx)).is_ok() && rx.recv().unwrap_or(false)
 }
 
 #[tauri::command]
@@ -379,7 +385,7 @@ pub(crate) fn sync_window_chrome(
                 .saved
                 .backgrounds
                 .insert(window.label().into(), background);
-            let _ = state.changed.send(());
+            let _ = state.changed.send(WindowWrite::Changed);
         }
     }
     crate::commands::native_window::position_traffic_lights(

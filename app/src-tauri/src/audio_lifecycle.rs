@@ -1044,7 +1044,7 @@ fn handle_start(
     sink: &dyn LifecycleSink,
     public: &PublicState,
 ) {
-    if !request.caller_alive.load(Ordering::Acquire) {
+    if crate::shutdown::closing() || !request.caller_alive.load(Ordering::Acquire) {
         let _ = request.response.send(Err(AudioStartError::Cancelled));
         return;
     }
@@ -1117,7 +1117,7 @@ fn handle_start(
             )));
         return;
     }
-    if !request.caller_alive.load(Ordering::Acquire) {
+    if crate::shutdown::closing() || !request.caller_alive.load(Ordering::Acquire) {
         let _ = request.response.send(Err(AudioStartError::Cancelled));
         return;
     }

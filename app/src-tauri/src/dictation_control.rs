@@ -482,6 +482,7 @@ fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Resu
     let accessibility = crate::injector::is_accessibility_enabled();
     let control = app.state::<Control>();
     let mut gate = murmur_core::dictation::LaunchGate {
+        shutdown: crate::shutdown::closing(),
         configured: configured && crate::completion::admitted(app),
         onboarding_complete: settings["launchOnboardingComplete"]
             .as_bool()
@@ -566,6 +567,9 @@ pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) -> Result<(),
     })
 }
 pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
+    if crate::shutdown::closing() {
+        return false;
+    }
     app.try_state::<Control>()
         .is_none_or(|control| control.controller.lock_or_recover().gate.can_start())
 }
@@ -699,6 +703,7 @@ mod tests {
         let (send, _receive) = tokio::sync::mpsc::unbounded_channel();
         let mut controller = Controller::default();
         controller.gate = murmur_core::dictation::LaunchGate {
+            shutdown: crate::shutdown::closing(),
             configured: true,
             onboarding_complete: true,
             accessibility: true,

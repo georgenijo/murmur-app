@@ -427,7 +427,9 @@ impl MeetingCoordinator {
             .map_err(|_| "The meeting capture supervisor is unavailable.".to_string())
     }
 
-    pub fn shutdown(&self, app: &tauri::AppHandle) {
+    /// A positive receipt requires the original generation's completion fence.
+    /// Timeout preserves ownership; it cannot clear meeting_active.
+    pub fn shutdown(&self, _app: &tauri::AppHandle, deadline: Instant) -> bool {
         let active = {
             let inner = self.inner.lock_or_recover();
             inner.active.as_ref().map(|active| {
@@ -439,13 +441,9 @@ impl MeetingCoordinator {
         };
         if let Some((sender, completion)) = active {
             let _ = sender.send(MeetingCommand::Stop);
-            let _ = completion.wait(Duration::from_secs(5));
+            return completion.wait(deadline.saturating_duration_since(Instant::now()));
         }
-        let state = app.state::<State>();
-        state
-            .app_state
-            .meeting_active
-            .store(false, Ordering::SeqCst);
+        true
     }
 
     pub fn request_permission(&self) -> Result<SystemAudioAccess, String> {
@@ -2093,7 +2091,10 @@ fn run_inference_worker(
 }
 
 fn drain_pending(app: &tauri::AppHandle, repository: &MeetingRepository) {
-    while let Ok(Some(segment)) = repository.next_pending_segment() {
+    while !crate::shutdown::closing() {
+        let Ok(Some(segment)) = repository.next_pending_segment() else {
+            break;
+        };
         process_pending_segment(app, repository, segment);
     }
 }

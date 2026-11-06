@@ -480,7 +480,7 @@ async fn run(app: tauri::AppHandle) {
             _ => None,
         };
         let transition = state.app_state.recording_transition.lock().await;
-        let allowed = idle(&state);
+        let allowed = !crate::shutdown::closing() && idle(&state);
         let granted =
             crate::commands::permissions::check_microphone_permission_status() == "granted";
         let admission_at = Instant::now();

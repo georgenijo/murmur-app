@@ -11,7 +11,7 @@ pub use stats::{Scope, StatisticsEvent, Stats};
 use std::{
     collections::HashSet,
     path::PathBuf,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, Mutex},
 };
 use storage::{RootLock, Storage};
 
@@ -220,6 +220,7 @@ pub enum Command {
 }
 type Job = Box<dyn FnOnce(&mut Engine) + Send>;
 struct Owner {
+    admission: Mutex<bool>,
     send: Option<mpsc::Sender<Job>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -260,13 +261,45 @@ impl CompletionService {
             .map_err(|_| Error::Stopped)?;
         Ok(Self {
             owner: Arc::new(Owner {
+                admission: Mutex::new(true),
                 send: Some(send),
                 worker: Some(worker),
             }),
         })
     }
+    /// Queue a sequence barrier without blocking the executor or main thread.
+    /// Seal is permanent and ordered with submission under the admission lock.
+    pub async fn flush(&self) -> Result<()> {
+        self.barrier(false).await
+    }
+    pub async fn seal_and_flush(&self) -> Result<()> {
+        self.barrier(true).await
+    }
+    async fn barrier(&self, seal: bool) -> Result<()> {
+        let (send, receive) = futures_channel::oneshot::channel();
+        {
+            let mut admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+            if seal {
+                *admission = false;
+            }
+            self.owner
+                .send
+                .as_ref()
+                .ok_or(Error::Stopped)?
+                .send(Box::new(move |engine| {
+                    let result = engine.execute(Command::Snapshot).map(|_| ());
+                    let _ = send.send(result);
+                }))
+                .map_err(|_| Error::Stopped)?;
+        }
+        receive.await.map_err(|_| Error::Stopped)?
+    }
     pub fn lifecycle(&self, command: lifecycle::Operation) -> Result<lifecycle::Receipt> {
         let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
         self.owner
             .send
             .as_ref()
@@ -278,10 +311,15 @@ impl CompletionService {
                 let _ = send.send(result);
             }))
             .map_err(|_| Error::Stopped)?;
+        drop(admission);
         receive.recv().map_err(|_| Error::Stopped)?
     }
     pub fn execute(&self, command: Command) -> Result<Snapshot> {
         let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
         self.owner
             .send
             .as_ref()
@@ -290,6 +328,7 @@ impl CompletionService {
                 let _ = send.send(engine.execute(command));
             }))
             .map_err(|_| Error::Stopped)?;
+        drop(admission);
         receive.recv().map_err(|_| Error::Stopped)?
     }
 }
@@ -1643,3 +1682,35 @@ pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod source_recovery_tests;
+/// Private single-owner snapshot publication. The immutable pending document is
+/// synced before the destination; replay runs before admitting another writer.
+pub fn publish_snapshot<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
+    let root = path.parent().ok_or(Error::Invalid)?;
+    std::fs::create_dir_all(root).map_err(|_| Error::Io)?;
+    let file = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or(Error::Invalid)?;
+    let pending = format!("{file}.pending");
+    let mut storage = Storage::new(root.into());
+    storage.write(&pending, &json!({"schema":1,"value":value}))?;
+    recover_snapshot(path)
+}
+pub fn recover_snapshot(path: &std::path::Path) -> Result<()> {
+    let root = path.parent().ok_or(Error::Invalid)?;
+    let file = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or(Error::Invalid)?;
+    let pending = format!("{file}.pending");
+    let mut storage = Storage::new(root.into());
+    storage.sync_directory()?;
+    if let Some(receipt) =
+        storage.read::<Value>(&pending, |v| v["schema"] == 1 && v.get("value").is_some())?
+    {
+        storage.write(file, &receipt["value"])?;
+        std::fs::remove_file(root.join(pending)).map_err(|_| Error::Io)?;
+        storage.sync_directory()?;
+    }
+    Ok(())
+}

@@ -4,6 +4,7 @@ use murmur_core::dictation::*;
 fn control() -> Controller {
     let mut c = Controller::default();
     c.gate = LaunchGate {
+        shutdown: false,
         configured: true,
         onboarding_complete: true,
         model_installed: true,

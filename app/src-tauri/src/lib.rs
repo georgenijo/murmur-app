@@ -66,6 +66,7 @@ mod meeting_suggestions;
 mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
+mod shutdown;
 use murmur_core::{model_artifact, model_digest};
 mod model_download;
 mod model_hardware_guidance;
@@ -783,7 +784,10 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if let Some(state) = _app_handle.try_state::<State>() {
                 let _ = meeting_diarization::cancel_all();
-                state.meetings.shutdown(_app_handle);
+                let _ = state.meetings.shutdown(
+                    _app_handle,
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
+                );
                 state.meeting_suggestions.shutdown();
             }
         }
