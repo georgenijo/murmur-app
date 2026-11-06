@@ -68,11 +68,14 @@ struct Document {
     reset_at: Option<u64>,
     applied_through: u64,
     data: Value,
+    #[serde(default)]
+    file_receipts: Vec<String>,
 }
 impl Document {
     fn new(d: Destination) -> Self {
         Self {
             schema: 1,
+            file_receipts: vec![],
             v1_imported: false,
             generation: None,
             cleared_at: None,
@@ -128,6 +131,8 @@ struct Holding {
     reports: List,
     deletions: Vec<Deletion>,
     launches: u64,
+    #[serde(default)]
+    file_receipts: Vec<String>,
 }
 impl Default for Holding {
     fn default() -> Self {
@@ -137,6 +142,7 @@ impl Default for Holding {
             reports: List::default(),
             deletions: vec![],
             launches: 0,
+            file_receipts: vec![],
         }
     }
 }
@@ -194,8 +200,9 @@ pub enum Command {
     /// File-only admission: the staged entry carries a stable completion UUID.
     /// Success acknowledges durable History/holding publication, without statistics.
     AcceptFile {
-        source: String,
         entry: Value,
+        intent: Arc<producers::FileIntent>,
+        active: Vec<String>,
     },
 }
 type Job = Box<dyn FnOnce(&mut Engine) + Send>;
@@ -314,6 +321,7 @@ impl Engine {
         self.storage
             .read(HOLD, |v: &Holding| {
                 v.schema == 1
+                    && valid_receipts(&v.file_receipts)
                     && v.history.entries.iter().all(valid_history)
                     && v.reports.entries.iter().all(valid_report)
             })?
@@ -513,35 +521,34 @@ impl Engine {
         self.recover()?;
         match command {
             Command::Snapshot => {}
-            Command::AcceptFile { source, entry } => {
+            Command::AcceptFile {
+                entry,
+                intent,
+                active,
+            } => {
                 let id = entry["completionUuid"].as_str().ok_or(Error::Invalid)?;
-                if !valid_history(&entry) || uuid::Uuid::parse_str(id).is_err() {
+                if !valid_history(&entry)
+                    || uuid::Uuid::parse_str(id).is_err()
+                    || !valid_receipts(&active)
+                    || !active.iter().any(|v| v == id)
+                {
                     return Err(Error::Invalid);
                 }
-                if !self.seen.contains(&source) {
-                    // recover() synced the directory before this reread. A previous
-                    // failed rename/fsync may already have published this UUID in
-                    // either store; acknowledge it without appending another entry.
-                    let holding = self.holding()?;
-                    let doc = self.document(Destination::History)?;
-                    let published = holding
-                        .history
-                        .entries
-                        .iter()
-                        .chain(
-                            doc.as_ref()
-                                .and_then(|d| d.data.as_array())
-                                .into_iter()
-                                .flatten(),
-                        )
-                        .any(|v| v["completionUuid"].as_str() == Some(id));
-                    if !published {
-                        self.add_content(Destination::History, entry)
-                            .inspect_err(|_| diagnostic("history_write_failed"))?;
-                    }
-                    // Unlike dictation's journal commit, History is the file
-                    // commit point. A failed publication leaves the source retryable.
-                    self.seen.insert(source);
+                // Only this app-lifetime producer owns staging. A receipt outlives
+                // its row and is retired only after its staged UUID is retired.
+                self.compact_file_receipts(&active)?;
+                let holding = self.holding()?;
+                let doc = self.document(Destination::History)?;
+                let published = holding
+                    .file_receipts
+                    .iter()
+                    .chain(doc.iter().flat_map(|d| &d.file_receipts))
+                    .any(|v| v == id);
+                if published {
+                    intent.admitted();
+                } else {
+                    self.add_file(entry, &intent)
+                        .inspect_err(|_| diagnostic("history_write_failed"))?;
                 }
             }
             Command::Import(source) => self.import(source)?,
@@ -615,6 +622,60 @@ impl Engine {
             }
         }
         self.snapshot()
+    }
+    fn compact_file_receipts(&mut self, active: &[String]) -> Result<()> {
+        let mut h = self.holding()?;
+        let before = h.file_receipts.len();
+        h.file_receipts.retain(|id| active.contains(id));
+        if before != h.file_receipts.len() {
+            self.storage.write(HOLD, &h)?;
+        }
+        if let Some(mut doc) = self.document(Destination::History)? {
+            let before = doc.file_receipts.len();
+            doc.file_receipts.retain(|id| active.contains(id));
+            if before != doc.file_receipts.len() {
+                self.storage.write(Destination::History.file(), &doc)?;
+            }
+        }
+        Ok(())
+    }
+    fn add_file(&mut self, entry: Value, intent: &producers::FileIntent) -> Result<()> {
+        let id = entry["completionUuid"]
+            .as_str()
+            .ok_or(Error::Invalid)?
+            .to_owned();
+        let mut doc = self
+            .document(Destination::History)?
+            .unwrap_or_else(|| Document::new(Destination::History));
+        if self.ready(Destination::History, &doc)? {
+            doc.file_receipts.push(id);
+            let entries = doc.data.as_array_mut().ok_or(Error::Invalid)?;
+            entries.push(entry);
+            trim_history(entries);
+            doc.v1_imported = true;
+            // Preparation is complete. This CAS begins publication; an earlier
+            // cancellation wins even while reads or receipt compaction were busy.
+            if !intent.begin_publication() {
+                return Ok(());
+            }
+            let result = self.storage.write(Destination::History.file(), &doc);
+            intent.end_publication(result.is_ok());
+            result
+        } else {
+            let mut h = self.holding()?;
+            h.file_receipts.push(id);
+            h.history.entries.push(entry);
+            // cap_held can publish original-row eviction, so gate before its
+            // first write as well as the final atomic holding publication.
+            if !intent.begin_publication() {
+                return Ok(());
+            }
+            let result = self
+                .cap_held(&mut h, Destination::History, &mut doc)
+                .and_then(|()| self.storage.write(HOLD, &h));
+            intent.end_publication(result.is_ok());
+            result
+        }
     }
     fn add_content(&mut self, d: Destination, mut value: Value) -> Result<()> {
         if d == Destination::Reports && value.get("completionUuid").is_none() {
@@ -690,6 +751,9 @@ impl Engine {
     }
     fn clear(&mut self, d: Destination, at: u64) -> Result<()> {
         let mut doc = Document::new(d);
+        if d == Destination::History {
+            doc.file_receipts = self.document(d)?.map_or_else(Vec::new, |d| d.file_receipts);
+        }
         doc.v1_imported = true;
         if d == Destination::Statistics {
             doc.reset_at = Some(at);
@@ -916,10 +980,16 @@ fn trim_reports(entries: &mut Vec<Value>) {
         entries.drain(..entries.len() - 10);
     }
 }
+fn valid_receipts(ids: &[String]) -> bool {
+    ids.len() <= producers::MAX_PENDING_FILES
+        && ids.iter().all(|id| uuid::Uuid::parse_str(id).is_ok())
+        && ids.iter().collect::<HashSet<_>>().len() == ids.len()
+}
 fn valid_document(d: Destination, v: &Value) -> bool {
     if v.get("schema").is_some() {
-        serde_json::from_value::<Document>(v.clone())
-            .is_ok_and(|doc| doc.schema == 1 && valid_data(d, &doc.data))
+        serde_json::from_value::<Document>(v.clone()).is_ok_and(|doc| {
+            doc.schema == 1 && valid_receipts(&doc.file_receipts) && valid_data(d, &doc.data)
+        })
     } else {
         valid_data(d, v)
     }

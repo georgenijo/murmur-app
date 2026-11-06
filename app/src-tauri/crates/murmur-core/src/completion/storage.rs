@@ -11,12 +11,20 @@ use std::{
 pub enum Boundary {
     BeforeRename,
     AfterRename,
+    DirectorySync,
 }
 #[derive(Default)]
 pub struct Storage {
     pub root: PathBuf,
     #[cfg(test)]
     pub fail: Option<(String, Boundary)>,
+    #[cfg(test)]
+    pub pause: Option<(
+        String,
+        Boundary,
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
     #[cfg(test)]
     pub fail_read: Option<String>,
     #[cfg(test)]
@@ -30,6 +38,8 @@ impl Storage {
             root,
             #[cfg(test)]
             fail: None,
+            #[cfg(test)]
+            pause: None,
             #[cfg(test)]
             fail_read: None,
             #[cfg(test)]
@@ -114,6 +124,7 @@ impl Storage {
             self.boundary(name, Boundary::BeforeRename)?;
             fs::rename(&temp, &path).map_err(|_| Error::Io)?;
             self.boundary(name, Boundary::AfterRename)?;
+            self.boundary(name, Boundary::DirectorySync)?;
             self.sync_directory()
         })();
         let _ = fs::remove_file(temp);
@@ -122,6 +133,16 @@ impl Storage {
     fn boundary(&mut self, _name: &str, _at: Boundary) -> Result<()> {
         #[cfg(test)]
         self.trace.borrow_mut().push(format!("{_name}:{_at:?}"));
+        #[cfg(test)]
+        if self
+            .pause
+            .as_ref()
+            .is_some_and(|(name, at, _, _)| name == _name && *at == _at)
+        {
+            let (_, _, reached, resume) = self.pause.take().unwrap();
+            reached.send(()).unwrap();
+            resume.recv().unwrap();
+        }
         #[cfg(test)]
         if self
             .fail

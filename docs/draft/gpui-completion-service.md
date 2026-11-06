@@ -177,14 +177,14 @@ claims the source only after the History or holding write is durable. Publicatio
 errors reach the existing host `completion_write_failed` diagnostic and
 `completion-storage-error` notice, without content. The producer keeps its staged
 result and the same UUID on failure. No actor-side deferred retry can admit a
-cancelled result; the files mutex still serializes cancellation and acceptance,
-including retries, before entering the owner queue. The owner never takes that
-mutex. The 200-operation staging cap is unchanged.
+cancelled result. The state machine below supersedes the shared-mutex
+cancellation protocol: intent now reaches the owner independently of staging.
+The 200-operation staging cap is unchanged.
 
-Every retry first re-establishes directory durability, then rereads History and
-holding data for the staged UUID. An unknown outcome already containing that UUID
-is acknowledged without another append; a failed directory sync still returns an
-error and retains staging. A pre-publication cancellation prevents later retries
+Every retry first re-establishes directory durability, then rereads the atomic
+UUID receipts in History and holding envelopes. An unknown outcome with a receipt
+is acknowledged without another append, even if its row was subsequently removed;
+a failed directory sync still returns an error and retains staging. A pre-publication cancellation prevents later retries
 and migration from admitting the result. Cancellation after successful publication
 keeps the already-admitted entry, as before.
 
@@ -209,3 +209,115 @@ pre-rename append leaves the source unclaimed; an unknown append claims it only
 if a reread finds its UUID. Recovery must sync before applying or compacting those
 records. These producers have no staged History-only result to discard. Their
 journal/source-claim behavior is unchanged.
+
+
+## File acceptance state machine and interleavings
+
+One file operation is identified by its staging UUID. The following states are
+logical states of that operation, derived from staging, cancellation intent and
+durable receipt together; no attempted in-memory write is treated as durability.
+**Staged** has a ready result; **accepting** is queued or publishing;
+**published-unknown** is a returned error whose publication may have renamed;
+**admitted** has a synced receipt; **cancelled** has intent and no new publication;
+**failed-retryable** has no receipt after successful recovery. Running capture
+precedes staged and is covered by the existing cancellation/cap tests.
+
+`file_receipts` holds UUIDs only, independently of live rows, atomically in the
+same History/holding envelope as admission. Delete, edit, clear, cap eviction,
+holding-generation drain and migration never discard these receipts. On every
+acceptance the sole app-lifetime producer supplies its complete ready staging UUID
+set (at most 200). The actor compacts only receipts absent from that set, before
+publication. Successful consumption, cancellation or abandonment retires staging;
+its receipt may then be removed on the next acceptance. This also retires orphan
+receipts on the first acceptance of a new app session. Without another acceptance
+there are at most 200 receipts in each envelope, with at most 200 distinct active
+UUIDs across them. Startup and Snapshot do not compact receipts. Relaunch retains
+receipts; production abandons in-memory staged content, so it never automatically
+retranscribes or accepts an old result. Tests additionally preserve a synthetic
+staged UUID across actor relaunch, proving even such a retry cannot resurrect it.
+
+Cancellation records an atomic intent before waiting for the files mutex. The
+actor's compare-and-exchange immediately before the first publication write is
+the linearization point. Intent recorded earlier prevents publication. Once that
+step starts, cancellation may discard staging but cannot undo a durable publish;
+a pre-rename failure still leaves no entry, while a post-rename failure requires
+a directory sync and disk reread. A cancel arriving after durable publication
+leaves the entry in History. Cancellation never deletes History implicitly.
+
+Lock order: `files` may briefly acquire the intent registry, then release the
+registry before enqueueing/waiting on the owner. Cancel/discard acquire and release
+the registry, mark the atomic intent, then acquire `files`. The actor accesses
+only atomics and never either producer mutex. No path waits for `files` while
+holding the registry. Concurrent accepts serialize on `files`; cancellation does
+not need that mutex to veto either queued accept. The root lock remains actor-owned.
+
+The table exhaustively partitions events by state. Test keys below apply to each
+cell carrying that key. **—** means impossible: a publication callback belongs
+only to an accepting operation. **=** means no file-state transition: History
+mutations cannot themselves submit an acceptance (tested by the adjacent key).
+For published-unknown, all commands first sync and reread; a failed sync changes
+nothing and permits no mutation.
+
+| Event | staged | accepting | published-unknown | admitted | cancelled | failed-retryable |
+|---|---|---|---|---|---|---|
+| accept | accepting (B) | serialized retry (Q) | recover, acknowledge or retry (U) | no append (B) | no append (C) | accepting (B) |
+| retry | accepting (B) | serialized retry (Q) | recover, acknowledge or retry (U) | no append (B) | no append (C) | accepting (B) |
+| cancel | cancelled (C) | intent wins before publication; otherwise finish write (Q/P) | discard staging, preserve any published row (L) | stays admitted (L) | stays cancelled (C) | cancelled (C) |
+| publish ok | — | admitted, retire staging (B/P) | — | — | — | — |
+| fail before rename | — | failed-retryable; retain staging unless cancelled (B/P) | — | — | — | — |
+| fail after rename | — | published-unknown (U/P) | — | — | — | — |
+| failed directory fsync | — | published-unknown (D) | stays unknown; no mutation (U) | — | — | — |
+| recovery / Snapshot | = (B) | ordered behind acceptance (Q/P) | synced receipt -> admitted; absent -> failed-retryable (U/D) | = (L) | no new row (C/P) | = (B) |
+| delete | = (D) | ordered before/after write (D/Q) | receipt survives, retry cannot resurrect (D) | =; row removed (D) | =; cannot admit (C/D) | =; still retryable (B/D) |
+| clear | = (H) | ordered before/after write (H/Q) | receipt survives (H) | =; row removed (H) | =; cannot admit (C/H) | =; still retryable (B/H) |
+| cap eviction | = (E) | ordered before/after write (E/Q) | receipt survives (E/K) | =; row may leave (E) | =; cannot admit (C/E) | =; still retryable (B/E) |
+| edit | = (T) | ordered before/after write (T/Q) | receipt survives, edited text retained (T) | = (T) | =; cannot admit (C/T) | = (B/T) |
+| relaunch | abandon memory (R) | drain accepted owner jobs before shutdown (R) | retain receipt, abandon memory; synthetic preserved retry is safe (R) | receipt/row retained (L/R) | never replay staging (C/R) | abandon memory (R) |
+| unmount | cancel via native IPC (W) | same publication boundary (W/Q/P) | discard staging; durable row retained (W/L) | no implicit delete (W/L) | no-op (W/C) | discard staging (W/C) |
+| WebContent loss | no automatic accept; bounded staging until process exit (K) | queued command finishes under native ownership (Q/P) | bounded staging/receipt; no automatic retry (K/U) | native receipt retained (R) | cannot admit (C) | bounded until cancel/exit (K/B) |
+
+Test keys:
+
+- B: `file_history_publication_failure_retains_result_and_retries_once` and
+  `file_acceptance_storage_failure_retains_result_for_retry_or_cancellation`.
+- U: `file_history_unknown_publication_rereads_before_retry_without_duplicates`.
+- C: `file_history_cancel_after_publication_failure_never_admits_on_retry` and
+  `file_cancellation_before_during_after_transcription_and_after_acceptance`.
+- D/H/E/T: `file_receipt_delete_then_retry_never_resurrects`,
+  `file_receipt_clear_then_retry_never_resurrects`,
+  `file_receipt_cap_evict_then_retry_never_resurrects`, and
+  `file_receipt_edit_then_retry_keeps_edit`. Each exercises History and pre-v1
+  holding, both after-rename and directory-fsync failure, Snapshot, mutation,
+  retry, migration and relaunch. They assert statistics stay unchanged.
+- R: `file_receipt_relaunch_then_retry_never_resurrects` plus the existing
+  owner-drain, fresh-install and migration relaunch coverage. Process exit drops
+  transcript-bearing producer memory by Rust ownership; no extra UI test needed.
+- Q: `file_queued_retries_cancel_before_publication_wins` blocks the actual owner,
+  starts two production acceptance retries after a pre-rename failure, waits for
+  cancellation intent, and only then releases the owner. Neither retry publishes.
+- P: `file_cancel_during_publication_preserves_only_published_outcomes` pauses
+  the actual write before rename, records cancellation, then releases success,
+  before-rename failure or after-rename failure. No retry resurrects content.
+- L: `file_cancel_after_durable_publish_keeps_history` covers lost response,
+  Snapshot establishing durability, cancel and relaunch, without deleting the row.
+- K: `file_receipts_compact_only_after_staging_retires` keeps an unknown staging
+  UUID through 205 later admissions/evictions, verifying bounded UUID-only
+  receipts and no resurrection. `file_staging_is_bounded_and_cancellation_releases_capacity`
+  checks the 200-operation cap even without a client. WebContent loss cannot
+  generate a native command by itself; no synthetic browser crash is needed for
+  this ownership invariant (the real migration reload remains a native check).
+- W: existing client rejection, dismissal, reset and unmount tests in
+  `useFileTranscription.test.tsx`; Q/P/L exercise their native cancellation target.
+
+Receipt-compaction failure is itself retryable: it changes no History rows and
+staging remains intact. If compaction renamed before failing, recovery rereads it;
+it removed only UUIDs whose staging had already retired. A power loss after a
+file publication has the same two directory-entry outcomes as U/D: old envelope
+means absent receipt and retryable result, new envelope means admitted receipt
+and no duplicate. None of these paths changes dictation's row-7 journal commit,
+the content-free storage-error notice, or activity producer semantics.
+
+The delete, clear, cap-eviction and relaunch regressions and the queued-retry
+cancellation regression all fail against `ffe2fcb2` with only the test pause/fault
+seams added. The edit and cancel-after-durable-publication cases are preservation
+controls: those outcomes already worked and must remain unchanged.
