@@ -119,16 +119,19 @@ fn storage_error<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 }
 /// A failed/cancelled native operation drops its pending content on every exit.
 pub(crate) struct FileOperation<'a> {
+    _permit: crate::shutdown::WriterPermit,
     producers: &'a Producers,
     operation: String,
     ready: bool,
 }
 impl<'a> FileOperation<'a> {
     pub(crate) fn begin(producers: &'a Producers, operation: String) -> Result<Self, String> {
+        let permit = crate::shutdown::WriterPermit::acquire()?;
         producers
             .begin_file(&operation)
             .map_err(|e| e.to_string())?;
         Ok(Self {
+            _permit: permit,
             producers,
             operation,
             ready: false,
@@ -165,8 +168,10 @@ pub(crate) async fn accept_file_transcription<R: tauri::Runtime>(
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
+    let permit = crate::shutdown::WriterPermit::acquire()?;
     let worker_app = app.clone();
     if tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         worker_app
             .state::<Completion>()
             .producers
@@ -495,7 +500,7 @@ pub(crate) async fn webkit_state_snapshot(
     app: tauri::AppHandle,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         webkit_state_snapshot_worker(app)
     })
@@ -510,7 +515,7 @@ pub(crate) async fn import_webkit_state(
     source: std::collections::BTreeMap<String, Option<String>>,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         import_webkit_state_worker(window, app, source)
     })
@@ -526,7 +531,7 @@ pub(crate) async fn save_webkit_source(
     value: serde_json::Value,
 ) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         save_webkit_source_worker(window, app, key, value)
     })

@@ -77,6 +77,8 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
                     let send = send.clone();
                     let deadline = clock + Duration::from_millis(effect.deadline_ms);
                     let _ = context.background.spawn(Box::pin(async move {
+                        #[cfg(feature = "shutdown-test-support")]
+                        test_support::delay(&app, effect.step).await;
                         let outcome = run_owner(&app, effect, deadline).await;
                         let _ = send.send(Message::Finished(Event { effect, outcome }));
                     }));
@@ -305,5 +307,105 @@ impl WriterPermit {
 impl Drop for WriterPermit {
     fn drop(&mut self) {
         WRITERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Accepted source intents enter one native FIFO before any disk wait. React's
+/// retry chain is never the sole owner of an edit awaiting an older publication.
+pub(crate) async fn source_call<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ()> {
+    type Job = Box<dyn FnOnce() + Send>;
+    static SOURCE: std::sync::OnceLock<mpsc::Sender<Job>> = std::sync::OnceLock::new();
+    let source = SOURCE.get_or_init(|| {
+        let (send, receive) = mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("native-source-intents".into())
+            .spawn(move || {
+                while let Ok(job) = receive.recv() {
+                    job();
+                }
+            })
+            .expect("native source owner");
+        send
+    });
+    let (send, receive) = tokio::sync::oneshot::channel();
+    source
+        .send(Box::new(move || {
+            let _ = send.send(work());
+        }))
+        .map_err(|_| ())?;
+    receive.await.map_err(|_| ())
+}
+
+#[cfg(feature = "shutdown-test-support")]
+pub(crate) mod test_support {
+    use super::*;
+    fn isolated(app: &tauri::AppHandle) -> bool {
+        app.config().identifier == "com.localdictation.shutdown-test"
+    }
+    pub(super) async fn delay(app: &tauri::AppHandle, step: Step) {
+        if !isolated(app) {
+            return;
+        }
+        let name = match step {
+            Step::Admission => "ADMISSION",
+            Step::Capture => "CAPTURE",
+            Step::Helpers => "HELPERS",
+            Step::Writers => "WRITERS",
+            Step::Terminate => return,
+        };
+        if let Some(ms) = std::env::var(format!("MURMUR_SHUTDOWN_DELAY_{name}_MS"))
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            tokio::time::sleep(Duration::from_millis(ms.min(20_000))).await;
+        }
+    }
+    /// After real owner work, hold final release for >=6 s. Each dispatcher
+    /// must execute repeatedly while an actual AppKit termination wait is active.
+    pub(super) fn hold(app: &tauri::AppHandle, context: &AppContext) {
+        if !isolated(app) {
+            return;
+        }
+        let counts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for _ in 0..65 {
+            let count = counts.clone();
+            let _ = context.main_thread.dispatch(Box::new(move || {
+                assert!(objc2::MainThreadMarker::new().is_some());
+                count.fetch_add(1, Ordering::AcqRel);
+            }));
+            let count = counts.clone();
+            let _ = app.run_on_main_thread(move || {
+                assert!(objc2::MainThreadMarker::new().is_some());
+                count.fetch_add(1, Ordering::AcqRel);
+            });
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        tracing::info!(target:"shutdown", callbacks=counts.load(Ordering::Acquire), expected=130, "synthetic shutdown dispatcher receipt");
+    }
+    #[tauri::command]
+    pub(crate) fn shutdown_test_action(
+        app: tauri::AppHandle,
+        window: tauri::WebviewWindow,
+        action: String,
+    ) -> Result<(), String> {
+        if !isolated(&app) || window.label() != "main" {
+            return Err("Isolated shutdown fixture required".into());
+        }
+        match action.as_str() {
+            "exit" => app.exit(0),
+            "destroy-last" => {
+                for (_, window) in app.webview_windows() {
+                    window
+                        .destroy()
+                        .map_err(|_| "Fixture window destruction failed")?;
+                }
+            }
+            "quit" => request(&app, Request::Quit),
+            "relaunch" => request(&app, Request::Restart),
+            _ => return Err("Unknown fixture action".into()),
+        }
+        Ok(())
     }
 }

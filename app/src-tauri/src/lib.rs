@@ -278,6 +278,8 @@ pub fn run() {
             overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(feature = "shutdown-test-support")]
+            shutdown::test_support::shutdown_test_action,
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
             commands::recording::process_audio,

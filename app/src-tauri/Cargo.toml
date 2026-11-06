@@ -29,6 +29,8 @@ harness = false
 [features]
 # Test-only capture helper executable injection.
 capture-test-support = []
+# Isolated synthetic shutdown fixture; never enabled in release workflows.
+shutdown-test-support = []
 # Private corpus capture/replay tools. Off by default: production builds do not
 # compile the corpus command module or register its IPC surface.
 internal-benchmark = []
@@ -129,3 +131,7 @@ strip = false
 
 [patch.crates-io]
 tao = { path = "patches/tao" }
+
+[[test]]
+name = "shutdown_appkit"
+harness = false

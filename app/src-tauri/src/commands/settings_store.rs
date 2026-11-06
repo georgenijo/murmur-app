@@ -974,7 +974,7 @@ pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
 #[tauri::command]
 pub async fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         load_settings_blob_worker(app)
     })
@@ -991,7 +991,7 @@ pub async fn save_settings_blob(
     intent_generation: Option<u64>,
 ) -> Result<String, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         save_settings_blob_worker(app, window, blob, owned_edits, intent_generation)
     })
@@ -1007,7 +1007,7 @@ pub async fn patch_overlay_setting(
     value: bool,
 ) -> Result<String, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         patch_overlay_setting_worker(app, window, field, value)
     })
@@ -1021,7 +1021,7 @@ pub async fn load_theme_library_blob(
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         load_theme_library_blob_worker(window, app)
     })
@@ -1036,7 +1036,7 @@ pub async fn save_theme_library_blob(
     blob: String,
 ) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         save_theme_library_blob_worker(window, app, blob)
     })
@@ -1050,7 +1050,7 @@ pub async fn clear_theme_library_blob(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         clear_theme_library_blob_worker(window, app)
     })
@@ -1066,7 +1066,7 @@ pub async fn restore_source_backup(
     blob: String,
 ) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::shutdown::source_call(move || {
         let _admission = admission;
         restore_source_backup_worker(app, window, key, blob)
     })

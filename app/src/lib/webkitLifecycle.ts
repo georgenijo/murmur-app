@@ -9,7 +9,7 @@ const LEGACY_KEYS = ['dictation-history', 'dictation-stats', 'murmur-benchmark-r
 interface StateReceipt { v1: boolean; v2: boolean; values: Record<string, unknown> }
 export const SOURCE_STORAGE_FAILED = 'murmur-source-storage-error';
 export const SOURCE_STORAGE_SAVED = 'murmur-source-storage-saved';
-let writes: Promise<unknown> = Promise.resolve();
+const inFlight = new Map<number, Promise<void>>();
 let generation = 0;
 export type OwnedEdits = Partial<Record<'autoPaste' | 'disabled', boolean>>;
 type OwnedField = keyof OwnedEdits;
@@ -81,29 +81,43 @@ export function persistSourceState(key: string, raw: string, ownedEdits?: OwnedE
   for (const field of ['autoPaste', 'disabled'] as const) {
     if (typeof ownedEdits?.[field] === 'boolean') fieldGenerations[field] = nextGeneration;
   }
-  pending.set(key, { raw, generation: nextGeneration, ownedEdits: { ...previous?.ownedEdits, ...ownedEdits }, fieldGenerations });
-  void flushSourceState().catch(() => {});
+  const intent = { raw, generation: nextGeneration, ownedEdits: { ...previous?.ownedEdits, ...ownedEdits }, fieldGenerations };
+  pending.set(key, intent);
+  void submitIntent(key, intent).catch(() => {});
 }
-export function flushSourceState(): Promise<unknown> {
-  writes = writes.catch(() => {}).then(async () => {
-    try {
-      for (const [key, intent] of pending) {
-        if (key === 'dictation-settings' || key === 'murmur-theme-library') {
-          await invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(intent.ownedEdits ? { ownedEdits: intent.ownedEdits } : {}), ...(key === 'dictation-settings' ? { intentGeneration: intent.generation } : {}) });
-        } else {
-          await invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown });
-        }
-        if (pending.get(key)?.generation === intent.generation) pending.delete(key);
-        if (synchronization) await notifySourceCommitted(key);
-      }
-      window.dispatchEvent(new Event(SOURCE_STORAGE_SAVED));
-    } catch {
-      window.dispatchEvent(new Event(SOURCE_STORAGE_FAILED));
-      throw new Error('Source storage unavailable');
-    }
-  });
-  return writes;
+function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending.get>>): Promise<void> {
+  const existing = inFlight.get(intent.generation);
+  if (existing) return existing;
+  // invoke occurs now, before awaiting any previous source publication.
+  let request: Promise<unknown>;
+  try {
+    request = key === 'dictation-settings' || key === 'murmur-theme-library'
+      ? invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(intent.ownedEdits ? { ownedEdits: intent.ownedEdits } : {}), ...(key === 'dictation-settings' ? { intentGeneration: intent.generation } : {}) })
+      : invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown });
+  } catch { request = Promise.reject(new Error('Source storage unavailable')); }
+  const promise = request.then(async () => {
+    if (pending.get(key)?.generation === intent.generation) pending.delete(key);
+    if (synchronization) await notifySourceCommitted(key);
+    window.dispatchEvent(new Event(SOURCE_STORAGE_SAVED));
+  }, () => {
+    window.dispatchEvent(new Event(SOURCE_STORAGE_FAILED));
+    throw new Error('Source storage unavailable');
+  }).finally(() => { inFlight.delete(intent.generation); });
+  inFlight.set(intent.generation, promise);
+  return promise;
 }
+export async function flushSourceState(): Promise<void> {
+  // One explicit retry pass. A newer rebase/edit discovered during that pass
+  // also reaches native ownership before returning.
+  const attempted = new Set<number>();
+  for (;;) {
+    const batch = [...pending].filter(([, intent]) => !attempted.has(intent.generation));
+    if (!batch.length) return;
+    await Promise.all(batch.map(([key, intent]) => {
+      attempted.add(intent.generation);
+      return submitIntent(key, intent);
+    }));
+  }}
 /** Rebase a retained intent after a newer native quick-control commit. */
 export function rebasePendingOwnedSettings(settings: OwnedCommit): OwnedCommit {
   const intent = pending.get('dictation-settings');
