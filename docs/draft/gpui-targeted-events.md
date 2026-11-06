@@ -21,7 +21,7 @@ Tauri `listen()` defaults to `Any`. In pinned Tauri 2.11.2,
 `emit_to` addressed elsewhere. Every production client therefore uses
 `targetedEvents.listen`, bound to `EventTarget::WebviewWindow` with its own
 label. Existing targeted producers also benefit from this binding. Rust control,
-sound cues and Smart Auto use named registry subscriptions; they do not depend
+sound cues, Smart Auto and meeting suggestions use named registry subscriptions; they do not depend
 on a main window or receive a second copy from a webview emit. Registry/router
 locks are released before invoking callbacks, preserving recursive publication.
 An absent window is skipped silently. Ordinary status events still reach hidden
@@ -33,8 +33,8 @@ At the pinned base `dbaa9e4cc7bdd740264f315c361f75d35b86b3d9`, grep of
 `app/src-tauri` found **92 broadcast call sites / 55 distinct event names**,
 including `Window::emit` (which also broadcasts). The plan's historical count
 was 93 emit sites. After conversion: **0 broadcast calls**, **92 converted
-sink calls**, plus one previously targeted microphone-preview status call moved
-to the sink so its existing Smart Auto native subscription is effective.
+sink calls**, plus two previously targeted microphone-preview status and microphone-startup
+progress calls moved to the sink to preserve native subscriptions.
 No `emit_all`, qualified `AppHandle::emit` or `Emitter::emit` calls were present.
 Capture-sidecar `emit(observation)` callbacks and the gesture-correlation helper
 are not Tauri broadcasts. The CI guard scans all Rust files under
@@ -42,10 +42,10 @@ are not Tauri broadcasts. The CI guard scans all Rust files under
 qualified calls, aliases, string emits and filtered-broadcast escape hatches.
 
 Audit commands: `rg -n '\.emit|emit_all|Emitter::emit|AppHandle::emit' app/src-tauri`,
-`rg -n 'listen|once' app/src`, plus Rust listener searches. Generic listeners,
+`rg -n 'listen|once|listen_any|once_any' app/src`, plus Rust listener searches. Generic listeners,
 constant event names and arrays of dynamic subscription names were checked
-alongside literal `listen(` / `listen<` / `once(` calls. There are no production
-Rust Tauri event listeners remaining; the three native consumers use the registry.
+alongside literal `listen(` / `listen<` / `once(` / `listen_any(` calls. There are no production
+Rust Tauri event listeners remaining; the four native consumers use the registry.
 
 ## Broadcast routing inventory
 
@@ -58,13 +58,13 @@ registry identities. Multiple listeners within a window receive one delivery.
 
 | Event | Producer sites | Consumers before | Consumers after |
 |---|---|---|---|
-| `app-disabled-changed` | `commands/keyboard.rs` | useOverlayRuntime; useSettings; smart_auto_probe (native) | Main Overlay SmartAuto |
+| `app-disabled-changed` | `commands/keyboard.rs` | useOverlayRuntime; useSettings; smart_auto_probe (native); meeting_suggestions (native listen_any) | Main Overlay SmartAuto MeetingSuggestions |
 | `app-event` | `telemetry.rs` | useEventStore | Main Diagnostics |
 | `audio-initialization-stalled` | `commands/recording.rs` | OverlayWidget | Overlay |
 | `audio-level` | `audio.rs` | CorpusRecorder (main Performance Lab); useRecordingState (main Home); useWaveform (overlay) | Visible, subscribed Overlay; visible main Home recording or corpus waveform (one delivery per window) |
 | `audio-recovery-started` | `commands/recording.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
 | `auto-paste-failed` | `commands/recording.rs` | useRecordingState | Main |
-| `benchmark-progress` | `benchmark.rs` | PerformanceLab | Main |
+| `benchmark-progress` | `benchmark.rs` | PerformanceLab; meeting_suggestions (native listen_any) | Main MeetingSuggestions |
 | `check-for-updates-requested` | `lib.rs` | App | Main |
 | `corpus-recording-status` | `commands/corpus.rs` | CorpusRecorder | Main |
 | `delivery-retry-feedback` | `delivery_recovery.rs` | useDeliveryRecoveryListeners | Main |
@@ -72,13 +72,13 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `dictation-control-error` | `dictation_control.rs` | useRecordingState | Main |
 | `dictation-delivery-outcome` | `commands/recording.rs` | useOverlayRuntime; useRecordingState; dictation_cues (native) | Main Overlay SoundCues |
 | `dictation-generation-started` | `commands/recording.rs` | useDictationPartial; useOverlayRuntime; useRecordingState; dictation_cues (native) | Main Overlay DictationPreview SoundCues |
-| `dictation-lock-changed` | `dictation_control.rs` | useRecordingControls | Main Overlay |
+| `dictation-lock-changed` | `dictation_control.rs` | useRecordingControls | Overlay |
 | `dictation-stop-failed` | `dictation_control.rs` | useRecordingState | Main |
 | `double-tap-toggle` | `keyboard.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
 | `download-progress` | `commands/models.rs`, `diarization_model.rs` | MeetingDiarizationSettings; ModelDownloader; PerformanceLab; SettingsPanel | Main |
 | `escape-cancel` | `keyboard.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
 | `file-output-failed` | `commands/recording.rs` | useRecordingState | Main |
-| `file-transcription-status-changed` | `commands/recording.rs` | PerformanceLab; smart_auto_probe (native) | Main SmartAuto |
+| `file-transcription-status-changed` | `commands/recording.rs` | PerformanceLab; smart_auto_probe (native); meeting_suggestions (native listen_any) | Main SmartAuto MeetingSuggestions |
 | `history-changed` | `completion.rs` | completionData | Main Diagnostics |
 | `hold-down-start` | `keyboard.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
 | `hold-down-stop` | `commands/keyboard.rs`, `keyboard.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
@@ -89,10 +89,10 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `meeting-segment-failed` | `meeting_capture.rs` | useMeetings (segment failure listener) | Main |
 | `meeting-segment-finalized` | `meeting_capture.rs` | useMeetings | Main |
 | `meeting-speakers-updated` | `meeting_diarization.rs` | useMeetings | Main |
-| `meeting-status-changed` | `meeting_capture.rs` | OverlayWidget; useMeetingAudio (dynamic events); useMeetings; smart_auto_probe (native) | Main Overlay SmartAuto |
+| `meeting-status-changed` | `meeting_capture.rs` | OverlayWidget; useMeetingAudio (dynamic events); useMeetings; smart_auto_probe (native); meeting_suggestions (native listen_any) | Main Overlay SmartAuto MeetingSuggestions |
 | `mode-manual-changed` | `commands/mode_runtime.rs` | useSettings | Main |
 | `mode-runtime-changed` | `commands/mode_runtime.rs` | useModeRuntime | Main Overlay |
-| `model-runtime-status-changed` | `model_runtime.rs` | modelRuntime; useModelRuntimeCatalog | Main |
+| `model-runtime-status-changed` | `model_runtime.rs` | modelRuntime; useModelRuntimeCatalog; meeting_suggestions (native listen_any) | Main MeetingSuggestions |
 | `overlay-geometry-changed` | `commands/overlay.rs` | useOverlayExpansion; useOverlayGeometry | Overlay |
 | `overlay-position-applied` | `commands/overlay.rs` | OverlayCalibrationControl | Main |
 | `overlay-surface-changed` | `commands/overlay.rs` | useOverlayGeometry | Overlay |
@@ -105,7 +105,7 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `recording-initialization-failed` | `commands/recording.rs` | useOverlayRuntime; useRecordingState; useSmartAutoMicrophoneStatus (REFRESH_EVENTS); dictation_cues (native) | Main Overlay SoundCues |
 | `recording-interrupted` | `commands/recording.rs` | useOverlayRuntime; useRecordingState; dictation_cues (native) | Main Overlay SoundCues |
 | `recording-recovery-stalled` | `commands/recording.rs` | useRecordingState | Main |
-| `recording-status-changed` | `commands/recording.rs` | useDictationPartial; useMeetingAudio (dynamic events); useOverlayRecordingStatus; useRecordingState; dictation_control (native); dictation_cues (native); smart_auto_probe (native) | Main Overlay DictationPreview DictationControl SoundCues SmartAuto |
+| `recording-status-changed` | `commands/recording.rs` | useDictationPartial; useMeetingAudio (dynamic events); useOverlayRecordingStatus; useRecordingState; dictation_control (native); dictation_cues (native); smart_auto_probe (native); meeting_suggestions (native listen_any) | Main Overlay DictationPreview DictationControl SoundCues SmartAuto MeetingSuggestions |
 | `smart-auto-microphone-changed` | `audio_inventory.rs`, `smart_auto_probe.rs` | useSmartAutoMicrophoneStatus (REFRESH_EVENTS) | Main Overlay |
 | `smart-destination-selected` | `commands/recording.rs` | useOverlayRuntime; useRecordingState | Main Overlay |
 | `statistics-changed` | `completion.rs` | completionData | Main Diagnostics |
@@ -128,8 +128,8 @@ client listener binding now enforces those targets as well.
 | `meeting-suggestion-changed` | `meeting_suggestions.rs` | Overlay / useMeetingSuggestion; Main is also addressed | Same labels |
 | `microphone-preview-level` | `audio.rs` | Main / MicrophoneInputTest | Main |
 | `microphone-preview-vad` | `microphone_preview.rs` | Main / MicrophoneInputTest | Main |
-| `microphone-preview-status` | `commands/microphone_preview.rs` | Main / MicrophoneInputTest, useMeetingAudio; Smart Auto app listener was excluded by the main target | Main and named SmartAuto via typed sink |
-| `microphone-startup-benchmark-progress` | `commands/microphone_startup_benchmark.rs` | Main / MicrophoneStartupBenchmark, useMeetingAudio | Main |
+| `microphone-preview-status` | `commands/microphone_preview.rs` | Main / MicrophoneInputTest, useMeetingAudio; Smart Auto app listener was excluded by the main target; meeting_suggestions listen_any | Main, SmartAuto and MeetingSuggestions via typed sink |
+| `microphone-startup-benchmark-progress` | `commands/microphone_startup_benchmark.rs` | Main / MicrophoneStartupBenchmark, useMeetingAudio; meeting_suggestions listen_any | Main and MeetingSuggestions via typed sink |
 | `live-words-consent-persisted` | `commands/settings_store.rs` | DictationPreview / DictationPreviewApp | DictationPreview |
 | `overlay-settings-persisted` | `commands/settings_store.rs` | Overlay / useOverlaySettingsMirror | Overlay |
 | `overlay-owned-setting-committed` | `commands/settings_store.rs` | Main / useOverlaySettingsSync | Main |
@@ -160,7 +160,8 @@ Hiding/minimizing main immediately prevents the next native delivery even if
 React is throttled or a cleanup IPC is pending. Showing it resumes the next
 sample when interest is still active. Main stays free of level-driven renders
 while hidden. Navigation/reload and destruction clear interests for that label.
-The subscription command authorizes the caller's window against the fixed
+Synthetic native regression listeners use a test-only typed observer registry;
+their ordering/terminal assertions are unchanged. The subscription command authorizes the caller's window against the fixed
 consumer identity; a companion cannot register main interest. No caller chooses
 arbitrary labels or native consumer identities. Native silence/Smart Turn control
 continues receiving levels directly from capture, independently of UI routing.

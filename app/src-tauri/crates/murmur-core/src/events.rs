@@ -12,6 +12,7 @@ pub enum Consumer {
     DictationControl,
     SoundCues,
     SmartAuto,
+    MeetingSuggestions,
 }
 impl Consumer {
     pub fn window_label(self) -> Option<&'static str> {
@@ -101,6 +102,7 @@ pub enum EventKind {
     MicrophonePreviewStatus,
     TransformStateChanged,
     QueryStateChanged,
+    MicrophoneStartupBenchmarkProgress,
 }
 impl EventKind {
     pub fn name(self) -> &'static str {
@@ -163,18 +165,19 @@ impl EventKind {
             Self::MicrophonePreviewStatus => "microphone-preview-status",
             Self::TransformStateChanged => "transform-state-changed",
             Self::QueryStateChanged => "query-state-changed",
+            Self::MicrophoneStartupBenchmarkProgress => "microphone-startup-benchmark-progress",
         }
     }
     pub fn consumers(self) -> &'static [Consumer] {
         use Consumer::*;
         match self {
-            Self::AppDisabledChanged => &[Main, Overlay, SmartAuto],
+            Self::AppDisabledChanged => &[Main, Overlay, SmartAuto, MeetingSuggestions],
             Self::AppEvent => &[Main, Diagnostics],
             Self::AudioInitializationStalled => &[Overlay],
             Self::AudioLevel => &[Main, Overlay],
             Self::AudioRecoveryStarted => &[],
             Self::AutoPasteFailed => &[Main],
-            Self::BenchmarkProgress => &[Main],
+            Self::BenchmarkProgress => &[Main, MeetingSuggestions],
             Self::CheckForUpdatesRequested => &[Main],
             Self::CorpusRecordingStatus => &[Main],
             Self::DeliveryRetryFeedback => &[Main],
@@ -182,13 +185,13 @@ impl EventKind {
             Self::DictationControlError => &[Main],
             Self::DictationDeliveryOutcome => &[Main, Overlay, SoundCues],
             Self::DictationGenerationStarted => &[Main, Overlay, DictationPreview, SoundCues],
-            Self::DictationLockChanged => &[Main, Overlay],
+            Self::DictationLockChanged => &[Overlay],
             Self::DictationStopFailed => &[Main],
             Self::DoubleTapToggle => &[],
             Self::DownloadProgress => &[Main],
             Self::EscapeCancel => &[],
             Self::FileOutputFailed => &[Main],
-            Self::FileTranscriptionStatusChanged => &[Main, SmartAuto],
+            Self::FileTranscriptionStatusChanged => &[Main, SmartAuto, MeetingSuggestions],
             Self::HistoryChanged => &[Main, Diagnostics],
             Self::HoldDownStart => &[],
             Self::HoldDownStop => &[],
@@ -199,10 +202,10 @@ impl EventKind {
             Self::MeetingSegmentFailed => &[Main],
             Self::MeetingSegmentFinalized => &[Main],
             Self::MeetingSpeakersUpdated => &[Main],
-            Self::MeetingStatusChanged => &[Main, Overlay, SmartAuto],
+            Self::MeetingStatusChanged => &[Main, Overlay, SmartAuto, MeetingSuggestions],
             Self::ModeManualChanged => &[Main],
             Self::ModeRuntimeChanged => &[Main, Overlay],
-            Self::ModelRuntimeStatusChanged => &[Main],
+            Self::ModelRuntimeStatusChanged => &[Main, MeetingSuggestions],
             Self::OverlayGeometryChanged => &[Overlay],
             Self::OverlayPositionApplied => &[Main],
             Self::OverlaySurfaceChanged => &[Overlay],
@@ -222,6 +225,7 @@ impl EventKind {
                 DictationControl,
                 SoundCues,
                 SmartAuto,
+                MeetingSuggestions,
             ],
             Self::SmartAutoMicrophoneChanged => &[Main, Overlay],
             Self::SmartDestinationSelected => &[Main, Overlay],
@@ -230,9 +234,10 @@ impl EventKind {
             Self::TranscriptionComplete => &[Main],
             Self::UpdaterBackgroundCheckRequested => &[Main],
             Self::VocabScanProgress => &[Main],
-            Self::MicrophonePreviewStatus => &[Main, SmartAuto],
+            Self::MicrophonePreviewStatus => &[Main, SmartAuto, MeetingSuggestions],
             Self::TransformStateChanged => &[SmartAuto],
             Self::QueryStateChanged => &[Main, SmartAuto],
+            Self::MicrophoneStartupBenchmarkProgress => &[Main, MeetingSuggestions],
         }
     }
 }
@@ -293,7 +298,8 @@ mod tests {
             vec![
                 Consumer::DictationControl,
                 Consumer::SoundCues,
-                Consumer::SmartAuto
+                Consumer::SmartAuto,
+                Consumer::MeetingSuggestions
             ]
         );
         assert_eq!(
@@ -352,7 +358,7 @@ mod tests {
         // Only waveform traffic is gated by interest/visibility.
         assert_eq!(
             router.recipients(EventKind::DictationLockChanged, |_, waveform| !waveform),
-            vec![Consumer::Main, Consumer::Overlay]
+            vec![Consumer::Overlay]
         );
     }
 }

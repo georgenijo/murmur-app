@@ -442,6 +442,10 @@ fn headless_fake_host_can_arm_start_stop_cancel_autostop_and_paste() {
         ),
         (Consumer::SoundCues, EventKind::RecordingStatusChanged),
         (Consumer::SmartAuto, EventKind::RecordingStatusChanged),
+        (
+            Consumer::MeetingSuggestions,
+            EventKind::RecordingStatusChanged,
+        ),
         (Consumer::Overlay, EventKind::AudioLevel),
         (Consumer::Diagnostics, EventKind::HistoryChanged),
         (Consumer::Diagnostics, EventKind::StatisticsChanged),

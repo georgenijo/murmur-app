@@ -6575,7 +6575,6 @@ pub(crate) mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use tauri::Listener;
     use tracing_subscriber::layer::{Context, SubscriberExt};
     use tracing_subscriber::{Layer, Registry};
 
@@ -7472,9 +7471,15 @@ pub(crate) mod tests {
         let app_handle = app.handle().clone();
 
         let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
-        for event_name in ["audio-recovery-started", "recording-initialization-failed"] {
+        for (event_kind, event_name) in [
+            (EventKind::AudioRecoveryStarted, "audio-recovery-started"),
+            (
+                EventKind::RecordingInitializationFailed,
+                "recording-initialization-failed",
+            ),
+        ] {
             let emitted = Arc::clone(&emitted);
-            app_handle.listen_any(event_name, move |_| {
+            crate::events::observe_for_test(&app_handle, event_kind, move |_| {
                 emitted
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -7600,11 +7605,15 @@ pub(crate) mod tests {
         let emitted_idle = Arc::new(std::sync::atomic::AtomicBool::new(false));
         {
             let emitted_idle = Arc::clone(&emitted_idle);
-            app_handle.listen_any("recording-status-changed", move |event| {
-                if event.payload() == "\"idle\"" {
-                    emitted_idle.store(true, Ordering::SeqCst);
-                }
-            });
+            crate::events::observe_for_test(
+                &app_handle,
+                EventKind::RecordingStatusChanged,
+                move |payload| {
+                    if payload == "\"idle\"" {
+                        emitted_idle.store(true, Ordering::SeqCst);
+                    }
+                },
+            );
         }
 
         handle_audio_lifecycle_with(

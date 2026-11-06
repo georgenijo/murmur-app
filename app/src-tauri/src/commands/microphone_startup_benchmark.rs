@@ -2,18 +2,20 @@ use crate::audio::{
     AudioBackendOrderSource, AudioFailureKind, AudioInitPhase, AudioStartupDiagnostic,
 };
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
+use crate::events::EventsExt;
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use murmur_capture_helper_protocol::{
     CaptureBackend, CaptureSetupStep, SetupTransition as ProtocolSetupTransition,
 };
+use murmur_core::events::{EventKind, EventSink};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 const REPORT_SCHEMA_VERSION: u8 = 1;
 const MAX_CYCLES: u8 = 10;
@@ -717,9 +719,8 @@ fn emit_progress(
     accumulator: &CycleAccumulator,
 ) {
     let last = accumulator.attempts.last();
-    let _ = app.emit_to(
-        "main",
-        "microphone-startup-benchmark-progress",
+    let _ = app.events().publish(
+        EventKind::MicrophoneStartupBenchmarkProgress,
         MicrophoneStartupBenchmarkProgress {
             schema_version: REPORT_SCHEMA_VERSION,
             run_id,

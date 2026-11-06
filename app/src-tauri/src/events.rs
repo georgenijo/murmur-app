@@ -11,6 +11,8 @@ type Callback = Arc<dyn Fn(&str) + Send + Sync>;
 struct Events {
     router: Mutex<Router>,
     native: Mutex<Vec<(Consumer, EventKind, Callback)>>,
+    #[cfg(test)]
+    observers: Mutex<Vec<(EventKind, Callback)>>,
 }
 
 pub(crate) fn initialize<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -41,6 +43,10 @@ pub(crate) trait EventsExt<R: tauri::Runtime> {
 }
 impl<R: tauri::Runtime> EventsExt<R> for tauri::AppHandle<R> {
     fn events(&self) -> TauriEventSink<'_, R> {
+        // Standalone synthetic mock hosts do not run the application's setup.
+        if self.try_state::<Events>().is_none() {
+            initialize(self);
+        }
         TauriEventSink(self)
     }
 }
@@ -71,6 +77,19 @@ impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
             .filter(|(consumer, kind, _)| *kind == event && recipients.contains(consumer))
             .map(|(_, _, callback)| callback.clone())
             .collect();
+        #[cfg(test)]
+        let callbacks = {
+            let mut callbacks = callbacks;
+            callbacks.extend(
+                events
+                    .observers
+                    .lock_or_recover()
+                    .iter()
+                    .filter(|(kind, _)| *kind == event)
+                    .map(|(_, callback)| callback.clone()),
+            );
+            callbacks
+        };
         if !callbacks.is_empty() {
             let serialized = serde_json::to_string(&payload)
                 .map_err(|_| "Event serialization failed".to_string())?;
@@ -113,6 +132,21 @@ pub(crate) fn set_waveform_subscription(
         .lock_or_recover()
         .set_waveform(consumer, active);
     Ok(())
+}
+
+/// Synthetic regression observers replace Tauri's former listen_any test hooks.
+/// They inspect the transport seam without creating a production broadcast route.
+#[cfg(test)]
+pub(crate) fn observe_for_test<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    event: EventKind,
+    callback: impl Fn(&str) + Send + Sync + 'static,
+) {
+    let _ = app.events();
+    app.state::<Events>()
+        .observers
+        .lock_or_recover()
+        .push((event, Arc::new(callback)));
 }
 
 #[cfg(test)]
