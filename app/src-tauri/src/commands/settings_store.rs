@@ -228,8 +228,21 @@ pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, Strin
     read_blob(&data_dir(&app)?, SETTINGS)
 }
 
+fn require_settings_owner(label: &str) -> Result<(), String> {
+    if label == "main" {
+        Ok(())
+    } else {
+        Err("Full settings writes are owned by the main window".into())
+    }
+}
+
 #[tauri::command]
-pub fn save_settings_blob(app: tauri::AppHandle, blob: String) -> Result<(), String> {
+pub fn save_settings_blob(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    blob: String,
+) -> Result<(), String> {
+    require_settings_owner(window.label())?;
     // Conservatively revoke passive input resolution for every persisted
     // settings update, including device/Smart Auto edits that do not change HAL topology.
     crate::audio::prepare::configuration_changed();
@@ -378,6 +391,13 @@ pub fn clear_theme_library_blob(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn full_settings_writes_cannot_bypass_probe_consent_from_companions() {
+        assert!(super::require_settings_owner("main").is_ok());
+        for label in ["overlay", "dictation-preview", "diagnostics", ""] {
+            assert!(super::require_settings_owner(label).is_err());
+        }
+    }
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {

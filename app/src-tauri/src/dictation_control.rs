@@ -379,14 +379,17 @@ pub(crate) async fn refresh(app: &tauri::AppHandle) {
 pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) {
     if let Some(control) = app.try_state::<Control>() {
         control.controller.lock_or_recover().gate.disabled = disabled;
-        let policy = {
+        let (previous, policy) = {
             let mut settings = control.settings.lock_or_recover();
+            let previous = probe_policy(&settings);
             if let Some(object) = settings.as_object_mut() {
                 object.insert("disabled".into(), serde_json::json!(disabled));
             }
-            probe_policy(&settings)
+            (previous, probe_policy(&settings))
         };
-        let _ = crate::smart_auto_probe::configure_host_policy(policy);
+        if policy != previous {
+            let _ = crate::smart_auto_probe::configure_host_policy(policy);
+        }
     }
 }
 pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {

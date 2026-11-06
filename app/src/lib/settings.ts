@@ -785,7 +785,7 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
     // No durable copy: either a first run, or an existing install whose
     // settings only ever lived in localStorage. Repair it once.
     const cached = localStorage.getItem(STORAGE_KEY);
-    if (cached !== null) {
+    if (cached !== null && ownsSettingsMigrations) {
       await invoke('save_settings_blob', { blob: cached });
     } else if (ownsSettingsMigrations) {
       // A fresh install. Commit the defaults so companions that fail closed
