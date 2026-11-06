@@ -136,15 +136,22 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
     });
 }
 
+pub(crate) fn warmup_allowed(disabled: bool, model: &str) -> bool {
+    !disabled
+        && crate::model_runtime::model_definition(model)
+            .is_ok_and(|definition| definition.warm_on_startup)
+}
+
+pub(crate) fn schedule_warmup(disabled: bool, model: &str, warm: impl FnOnce(&str)) {
+    if warmup_allowed(disabled, model) {
+        warm(model);
+    }
+}
+
 impl Preparation {
-    // Production and tests use the same startup decision with injected effects.
+    // Startup and backend configuration share the same guarded decision.
     fn schedule_warmup(&self, warm: impl FnOnce(&str)) {
-        if !self.disabled
-            && crate::model_runtime::model_definition(&self.model)
-                .is_ok_and(|definition| definition.warm_on_startup)
-        {
-            warm(&self.model);
-        }
+        schedule_warmup(self.disabled, &self.model, warm);
     }
 }
 

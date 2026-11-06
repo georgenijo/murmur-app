@@ -280,6 +280,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
           cancelledDestinationGenerationRef.current,
           recordingId,
         );
+        // A failure may have been dispatched just before native cancellation
+        // won ownership. Retract only this generation's error in that order.
+        const currentError = currentErrorRef.current;
+        if (currentError?.recordingId === recordingId) clearError(currentError.id);
       }
       setSmartDestinationSelection(null);
     }).then((fn) => {

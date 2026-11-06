@@ -1152,33 +1152,48 @@ fn spawn_idle_model_preparation(
     change_guard: SharedBackendChangeGuard,
 ) {
     let queued_at = std::time::Instant::now();
+    let configuration = crate::audio::prepare::configuration_generation();
+    let generation = app_handle
+        .state::<State>()
+        .app_state
+        .recording_id
+        .load(Ordering::SeqCst);
     drop(tauri::async_runtime::spawn_blocking(move || {
         let _change_guard = change_guard;
         let state = app_handle.state::<State>();
+        if !crate::launch::warmup_allowed(keyboard::is_app_disabled(), &model_name) {
+            return;
+        }
         let is_current = {
             let dictation = state.app_state.dictation.lock_or_recover();
-            dictation.status == DictationStatus::Idle && dictation.model_name == model_name
+            dictation.status == DictationStatus::Idle
+                && dictation.model_name == model_name
+                && state.app_state.recording_id.load(Ordering::SeqCst) == generation
+                && crate::audio::prepare::configuration_generation() == configuration
         };
         if !is_current {
             return;
         }
 
-        let is_still_current = {
-            let dictation = state.app_state.dictation.lock_or_recover();
-            dictation.status == DictationStatus::Idle && dictation.model_name == model_name
-        };
-        if !is_still_current {
-            return;
-        }
-
-        let result = state.app_state.model_runtime.prepare(
+        // Count admitted preparation as activity before the load so the idle
+        // timer cannot immediately release the newly prepared model.
+        *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
+        // Disable/configuration/start can change while this worker is queued
+        // on the backend. Revalidate atomics under that backend's load fence;
+        // never acquire dictation while holding the backend lock.
+        let result = state.app_state.model_runtime.prepare_startup_if(
             Some(&app_handle),
             &model_name,
-            PreparationReason::StartupWarm,
+            || {
+                !keyboard::is_app_disabled()
+                    && crate::audio::prepare::configuration_generation() == configuration
+                    && state.app_state.recording_id.load(Ordering::SeqCst) == generation
+            },
         );
+
         let total_ms = queued_at.elapsed().as_millis() as u64;
         match result {
-            Ok(report) => tracing::info!(
+            Ok(Some(report)) => tracing::info!(
                 target: "pipeline",
                 model = model_name.as_str(),
                 backend = model_runtime::model_definition(&model_name).map(|model| model.backend.as_str()).unwrap_or("unknown"),
@@ -1189,7 +1204,7 @@ fn spawn_idle_model_preparation(
                 reason = "startup_configuration",
                 "model_prepare_complete"
             ),
-            Err(_error) => tracing::info!(
+            Ok(None) | Err(_) => tracing::info!(
                 target: "pipeline",
                 model = model_name.as_str(),
                 total_ms,
@@ -3524,6 +3539,19 @@ pub async fn configure_dictation(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
+    configure_dictation_with_effects(options, &state, Some(&app_handle), |model, guard| {
+        spawn_idle_model_preparation(app_handle.clone(), model, guard);
+    })
+}
+
+// The command and regression tests execute the same configuration body. Tests
+// omit native notifications and inject only the queued preparation effect.
+fn configure_dictation_with_effects(
+    options: serde_json::Value,
+    state: &State,
+    app_handle: Option<&tauri::AppHandle>,
+    idle_prepare: impl FnOnce(String, SharedBackendChangeGuard),
+) -> Result<serde_json::Value, String> {
     crate::audio::prepare::configuration_changed();
     crate::launch::frontend_configuring();
     let log_metadata = ConfigurationLogMetadata::from_options(&options);
@@ -3616,10 +3644,12 @@ pub async fn configure_dictation(
                     .to_string(),
             );
         }
-        crate::meeting_suggestions::busy_changed(&app_handle);
+        if let Some(app) = app_handle {
+            crate::meeting_suggestions::busy_changed(app);
+        }
         Some(SharedBackendChangeGuard(
             state.benchmark.clone(),
-            Some(app_handle.clone()),
+            app_handle.cloned(),
         ))
     } else {
         None
@@ -3945,7 +3975,9 @@ pub async fn configure_dictation(
             .lock_or_recover()
             .reconcile_profiles(&effective_ide_profiles);
         for request in requests {
-            schedule_ide_scan(app_handle.clone(), request);
+            if let Some(app) = app_handle {
+                schedule_ide_scan(app.clone(), request);
+            }
         }
     }
 
@@ -4054,7 +4086,7 @@ pub async fn configure_dictation(
         state
             .app_state
             .model_runtime
-            .select_model(Some(&app_handle), &new_model)?;
+            .select_model(app_handle, &new_model)?;
     } else if model_changed {
         tracing::info!(
             target: "pipeline",
@@ -4063,15 +4095,19 @@ pub async fn configure_dictation(
     }
 
     if let Some(model_name) = idle_preparation {
-        // Treat warmup as activity so an already-expired idle timer cannot
-        // immediately release the model this preparation is about to load.
-        *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
-        spawn_idle_model_preparation(
-            app_handle,
-            model_name,
-            model_change_guard
-                .take()
-                .expect("model changes hold the shared backend lease"),
+        crate::launch::schedule_warmup(
+            options["disabled"]
+                .as_bool()
+                .unwrap_or_else(keyboard::is_app_disabled),
+            &model_name,
+            |model| {
+                idle_prepare(
+                    model.to_owned(),
+                    model_change_guard
+                        .take()
+                        .expect("model changes hold the shared backend lease"),
+                );
+            },
         );
     }
 
@@ -5945,6 +5981,40 @@ pub(crate) async fn stop_native_recording_for(
     }))
 }
 
+// Ownership and the Processing -> Idle transition share the dictation fence
+// with failure presentation. The hook runs after unlocking so tests can pause
+// exactly before the command continues to cancellation feedback.
+pub(crate) fn cancel_recording_transition(
+    state: &AppState,
+    expected_recording_id: Option<u64>,
+    after_transition: impl FnOnce(),
+) -> Option<(DictationStatus, u64)> {
+    let result = {
+        let mut dictation = state.dictation.lock_or_recover();
+        let prev = dictation.status;
+        let rid = state.recording_id.load(Ordering::SeqCst);
+        // A deferred hold release cancels only the recording its own start
+        // created, never a newer one.
+        if !stop_owner_matches(rid, expected_recording_id) {
+            return None;
+        }
+        match prev {
+            DictationStatus::Idle => return None,
+            DictationStatus::Starting | DictationStatus::Recording => {}
+            DictationStatus::Recovering => return None,
+            DictationStatus::Processing => {
+                // Publish cancellation before Idle becomes observable to stop's
+                // failure presenter. Both decisions use this dictation fence.
+                state.cancel_recording(rid);
+                transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
+            }
+        }
+        (prev, rid)
+    };
+    after_transition();
+    Some(result)
+}
+
 /// Cancel an in-progress recording or transcription.
 ///
 /// - **Starting**: requests cancellation and reports Recovering while retaining
@@ -5965,24 +6035,10 @@ pub async fn cancel_native_recording(
     expected_recording_id: Option<u64>,
 ) -> Result<(), String> {
     let transition = state.app_state.recording_transition.lock().await;
-    let (prev_status, rid) = {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        let prev = dictation.status;
-        let rid = state.app_state.recording_id.load(Ordering::SeqCst);
-        // A deferred hold release cancels only the recording its own start
-        // created, never a newer one.
-        if !stop_owner_matches(rid, expected_recording_id) {
-            return Ok(());
-        }
-        match prev {
-            DictationStatus::Idle => return Ok(()),
-            DictationStatus::Starting | DictationStatus::Recording => {}
-            DictationStatus::Recovering => return Ok(()),
-            DictationStatus::Processing => {
-                transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
-            }
-        }
-        (prev, rid)
+    let Some((prev_status, rid)) =
+        cancel_recording_transition(&state.app_state, expected_recording_id, || {})
+    else {
+        return Ok(());
     };
     if matches!(
         prev_status,
@@ -6005,8 +6061,6 @@ pub async fn cancel_native_recording(
 
     match prev_status {
         DictationStatus::Processing => {
-            // Mark current recording as cancelled — pipeline will check at next checkpoint.
-            state.app_state.cancel_recording(rid);
             emit_dictation_terminal(
                 &state,
                 rid,
@@ -6515,6 +6569,73 @@ pub(crate) mod tests {
             .store(recording_id + 1, Ordering::SeqCst);
         finish_dictation_partial(&app_state, recording_id);
         assert!(!try_begin_dictation_partial(&app_state, recording_id));
+    }
+
+    #[test]
+    fn persisted_coreml_disabled_configuration_does_not_queue_warmup() {
+        let state = State {
+                app_state: AppState::default(),
+                benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+                microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
+                #[cfg(feature = "internal-benchmark")]
+                corpus: crate::commands::corpus::CorpusRecorderState::default(),
+                knowledge: crate::knowledge_store::KnowledgeStore::default(),
+                meeting_store: crate::meeting_store::MeetingStore::default(),
+                meetings: crate::meeting_capture::MeetingCoordinator::default(),
+                meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
+                delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
+                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
+                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
+                performance: crate::performance_metrics::PerformanceMetrics::default(),
+
+                dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
+                ),
+                notch_info: std::sync::Mutex::new(None),
+                display_snapshot: std::sync::Mutex::new(None),
+                overlay_calibration: std::sync::Mutex::new(
+                    crate::commands::overlay::OverlayCalibrationState::default(),
+                ),
+                overlay_frame: std::sync::Mutex::new(None),
+                overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
+
+            };
+        let mut options = serde_json::json!({
+            "settingsVersion": 7, "launchOnboardingComplete": true,
+            "disabled": true, "model": "parakeet-tdt-0.6b-v3-coreml",
+            "doubleTapKey": "shift_l", "recordingMode": "hold_down"
+        });
+        assert_eq!(
+            state.app_state.dictation.lock_or_recover().model_name,
+            "base.en"
+        );
+        let mut warmups = Vec::new();
+        configure_dictation_with_effects(options.clone(), &state, None, |model, _guard| {
+            warmups.push(model);
+        })
+        .unwrap();
+        assert_eq!(
+            state.app_state.dictation.lock_or_recover().model_name,
+            "parakeet-tdt-0.6b-v3-coreml"
+        );
+        assert!(
+            warmups.is_empty(),
+            "disabled configuration queued model warmup: {warmups:?}"
+        );
+        assert!(state
+            .app_state
+            .last_transcription_at
+            .lock_or_recover()
+            .is_none());
+
+        // Positive control: the same configuration path still queues an
+        // enabled Core ML selection. No backend warm/load effect runs here.
+        state.app_state.dictation.lock_or_recover().model_name = "base.en".into();
+        options["disabled"] = serde_json::json!(false);
+        configure_dictation_with_effects(options, &state, None, |model, _guard| {
+            warmups.push(model);
+        })
+        .unwrap();
+        assert_eq!(warmups, ["parakeet-tdt-0.6b-v3-coreml"]);
     }
 
     pub(crate) fn partial_lease_fixture() -> (tauri::App<tauri::test::MockRuntime>, impl Send) {

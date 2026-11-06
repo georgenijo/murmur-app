@@ -389,15 +389,20 @@ fn present_stop_failure(
     } {
         return;
     }
-    // Stop can finish in Idle. Fence check+publication against both a cancel
-    // and a new start, rather than requiring the old Processing status.
-    let _dictation = state.dictation.lock_or_recover();
-    if state.recording_id.load(Ordering::SeqCst) == generation && !state.is_cancelled(generation) {
-        present(StopFailure {
-            recording_id: generation,
-            // Backend errors may contain private content. Publish fixed wording.
-            error: "Transcription failed. Please try again.",
-        });
+    // Snapshot under the same fence as cancellation/start. Dispatch after
+    // unlocking; client generation/cancellation checks also reject a payload
+    // if cancellation or a newer start wins after this snapshot.
+    let failure = {
+        let _dictation = state.dictation.lock_or_recover();
+        (state.recording_id.load(Ordering::SeqCst) == generation && !state.is_cancelled(generation))
+            .then_some(StopFailure {
+                recording_id: generation,
+                // Backend errors may contain private content. Publish fixed wording.
+                error: "Transcription failed. Please try again.",
+            })
+    };
+    if let Some(failure) = failure {
+        present(failure);
     }
 }
 
@@ -709,6 +714,10 @@ mod tests {
         let failure = Err("private backend content".to_owned());
         let mut presented = Vec::new();
         present_stop_failure(&state, 12, &failure, |value| {
+            assert!(
+                state.dictation.try_lock().is_ok(),
+                "dispatch held dictation"
+            );
             presented.push(serde_json::to_value(value).unwrap())
         });
         assert_eq!(
@@ -736,6 +745,32 @@ mod tests {
                 assert_eq!(value.error, "Transcription failed. Please try again.");
             },
         );
+    }
+
+    #[test]
+    fn processing_cancel_cannot_publish_failure_after_idle_transition() {
+        use crate::state::DictationStatus;
+        let state = crate::state::AppState::default();
+        state.recording_id.store(12, Ordering::SeqCst);
+        state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        let mut published = false;
+        let cancelled =
+            crate::commands::recording::cancel_recording_transition(&state, Some(12), || {
+                // Pause the real cancellation path after it releases dictation,
+                // before its remaining cancellation work can run. Finish stop
+                // in precisely the old Idle-to-cancellation-mark race window.
+                assert_eq!(
+                    state.dictation.lock_or_recover().status,
+                    DictationStatus::Idle
+                );
+                present_stop_failure(&state, 12, &Err("private".into()), |_| published = true);
+            });
+        assert_eq!(cancelled, Some((DictationStatus::Processing, 12)));
+        assert!(
+            !published,
+            "cancelled generation published a failure after Idle"
+        );
+        assert!(state.is_cancelled(12));
     }
 
     #[test]
