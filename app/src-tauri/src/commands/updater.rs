@@ -239,3 +239,33 @@ pub(crate) fn shutdown_flush(app: &tauri::AppHandle, deadline: std::time::Instan
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn generated_updater_fixture_acl_is_qa_only_and_main_only() {
+        let mut context = crate::generated_context();
+        let authority = context.runtime_authority_mut();
+        for window in ["main", "diagnostics", "overlay", "dictation-preview"] {
+            let allowed = authority
+                .resolve_access(
+                    "plugin:updater-test|updater_test_run",
+                    window,
+                    window,
+                    &tauri::ipc::Origin::Local,
+                )
+                .is_some();
+            assert_eq!(
+                allowed,
+                cfg!(feature = "shutdown-test-support") && window == "main"
+            );
+        }
+        // Neither the removed updater plugin nor a process relaunch capability
+        // can bypass the native owner in either generated configuration.
+        for command in ["plugin:updater|download", "plugin:process|restart"] {
+            assert!(authority
+                .resolve_access(command, "main", "main", &tauri::ipc::Origin::Local)
+                .is_none());
+        }
+    }
+}

@@ -85,7 +85,9 @@ The feature forwards `murmur-core/updater-test-support`. Its Main-only
 `updater-test:allow-updater-test-run` capability exists only in that QA config.
 The adapter accepts MURMUR_UPDATER_FIXTURE only for
 com.localdictation.shutdown-test; production identity ignores it even when a
-QA feature is compiled. Production builds compile no override path. Normal
+QA feature is compiled. Production builds compile no override path. A generated-context ACL test also
+checks the real production/QA authorities: fixture access is Main-only in QA,
+with no updater-plugin download or process-relaunch access in either config. Normal
 internal/dev identities cannot consume the production feed. Policy tests in
 `scripts/test_updater_fixture_policy.py` enforce these seams and exact trust
 parity with the existing configuration; CI runs them.
@@ -95,7 +97,9 @@ parity with the existing configuration; CI runs them.
 removes the private test key, and serves only feed/ on 127.0.0.1. fixture.json
 contains the local feed URL and throwaway public key. `--failure signature`
 tampers after signing; `--failure archive` signs a malformed archive. Neither
-can affect a production bundle. Requires the public minisign CLI on PATH.
+can affect a production bundle. Requires the public minisign CLI on PATH. Generator preparation was exercised
+with minisign 0.12 for normal, tampered-signature and signed-invalid-archive
+fixtures, and rejection of production identity; no app executable was run.
 
 ## Native procedure for the lead (not executed by this worker)
 
