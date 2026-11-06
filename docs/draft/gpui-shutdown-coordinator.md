@@ -960,20 +960,27 @@ core-dependency, capture-boundary, restart-policy and formatting checks pass.
 Regenerated schemas were restored; `gpui-stack-27`, its external target and
 synthetic temp data were removed. Independent Sol recheck remains with the parent.
 
-
 ### Round-six warning reconciliation
 
-Retained native owned fields now remember the publication revision of their
-current intent. A recovered or successfully published settings document retires
-only fields matching both that revision and value under the source writer lock.
-Accepting a newer edit invalidates its previous proof, including a repeated
-boolean value; unrelated fields can reconcile independently. The warning remains
-while the latest disabled choice is undurable.
+Retained owned fields now record their current intent's candidate publication
+revision. Recovery and publication retire only fields matching both that revision
+and value under the source writer lock. A newer edit invalidates the old proof,
+including repeated boolean values; unrelated fields reconcile independently.
+The warning remains while the latest disabled choice is undurable.
 
-Hydration, runtime rebasing, later saves, explicit backup recovery, WebKit
-status/import/onboarding writes and shutdown recovery reconcile publication and
-invalidate the warning after releasing the lock, including partial recovery
-before another source fails. Unrelated completion commands and native producers
-also reconcile lifecycle saves retried by the core FIFO. Shutdown avoids a redundant owned revision when
-receipt replay already committed the retained patch. Synthetic Rust fixtures use
-the real core publisher and exact receipt replay; no GUI or app launches are used.
+Reconciliation covers hydration, runtime rebasing, later saves, explicit backup
+recovery, WebKit status/import/onboarding writes, shutdown, and lifecycle retries
+during unrelated completion commands or native producers. Consumers receive
+warning invalidation after the lock releases, even when another source fails.
+Shutdown does not add a revision when replay already committed the choice.
+
+All five synthetic Rust regressions fail against the `25a573a4` behavior with
+transport/publisher test seams extracted, and pass with the fix. They use the
+real core publisher and exact receipt replay. TypeScript, 1,903 frontend tests
+and all 209 core tests pass. Mac mini / Rust 1.98.1 passes settings-store (39),
+shutdown (17), dictation-control (7) and completion adapter (2) tests with one
+test thread, plus workspace/all-target strict Clippy, in both default and
+`shutdown-test-support` configurations with only the two requested allowances.
+All 427 tracked native inputs match this checkout. Schemas were restored and
+`gpui-stack-29`, its target and synthetic temp data were removed. No GUI or app
+launches were used. Independent Sol recheck remains with the parent.
