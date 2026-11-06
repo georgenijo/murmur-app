@@ -1,0 +1,1 @@
+/* extern "C" { fn _exit(); } */ const NOTE: &str = r##"#[link_name="abort"]"##; extern "C" fn exit(code: i32) -> i32 { code }

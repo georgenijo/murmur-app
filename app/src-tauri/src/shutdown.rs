@@ -224,12 +224,20 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
             .await
             .unwrap_or(WriteOutcome::UnpreservedFailure);
             let _ = writers_done.send(());
-            let _ = telemetry.await;
-            Outcome::Writers(committed)
+            let telemetry_flushed = telemetry.await.unwrap_or(false);
+            Outcome::Writers(writer_outcome(committed, telemetry_flushed))
         }
         Step::Terminate => unreachable!(),
     }
 }
+pub(crate) fn writer_outcome(content: WriteOutcome, telemetry_flushed: bool) -> WriteOutcome {
+    if telemetry_flushed {
+        content
+    } else {
+        WriteOutcome::UnpreservedFailure
+    }
+}
+
 #[allow(clippy::disallowed_methods)]
 fn terminal(app: &tauri::AppHandle, action: Action) {
     // This is the sole application restart API call; the reducer committed its
@@ -567,6 +575,21 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn telemetry_success_preserves_content_writer_outcome() {
+        for content in [
+            WriteOutcome::Committed,
+            WriteOutcome::PreservedForReplay,
+            WriteOutcome::UnpreservedFailure,
+        ] {
+            assert_eq!(writer_outcome(content, true), content);
+            assert_eq!(
+                writer_outcome(content, false),
+                WriteOutcome::UnpreservedFailure
+            );
+        }
+    }
+
     #[test]
     fn source_task_polled_out_of_order_never_publishes_older_content() {
         use murmur_core::source_order::SourceWrite;

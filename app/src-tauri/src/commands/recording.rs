@@ -5173,6 +5173,13 @@ pub(crate) struct DictationStartBlocker {
     pub state: &'static str,
 }
 
+pub(crate) fn knowledge_start_blocker(app_state: &AppState) -> Option<DictationStartBlocker> {
+    (!app_state.knowledge_refresh.ready()).then_some(DictationStartBlocker {
+        kind: "knowledge_initializing",
+        state: "idle",
+    })
+}
+
 /// The admission guards shared by a confirmed dictation start and silent
 /// first-tap helper preparation. Callers hold the dictation lock, so
 /// `transcribe_file` cannot slip between the
@@ -5182,6 +5189,9 @@ pub(crate) fn dictation_start_blocker(
     status: DictationStatus,
 ) -> Option<DictationStartBlocker> {
     let blocked = |kind, state| Some(DictationStartBlocker { kind, state });
+    if let Some(blocker) = knowledge_start_blocker(&state.app_state) {
+        return Some(blocker);
+    }
     if state.app_state.meeting_blocks_asr() {
         return blocked("busy_meeting", "idle");
     }
@@ -7432,6 +7442,12 @@ pub(crate) mod tests {
             overlay_frame: Default::default(),
             overlay_layout: Default::default(),
         });
+        assert!(!dictation_prepare_admitted(&state));
+        let knowledge_root = tempfile::tempdir().unwrap();
+        state
+            .knowledge
+            .initialize(knowledge_root.path().to_path_buf());
+        crate::commands::knowledge::refresh_correction_rules(&state).unwrap();
         let transition = state.app_state.recording_transition.lock().await;
         assert!(dictation_prepare_admitted(&state));
         let preview = state.app_state.microphone_preview.claim(0).unwrap();

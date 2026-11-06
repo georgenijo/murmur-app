@@ -68,6 +68,7 @@ mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
 mod process_plugin;
+#[cfg(any(test, feature = "shutdown-test-support"))]
 mod qa_clipboard;
 mod shutdown;
 mod startup;
@@ -255,6 +256,7 @@ pub fn run() {
         .plugin(process_plugin::init())
         .plugin(tauri_plugin_dialog::init());
 
+    #[cfg(feature = "shutdown-test-support")]
     let builder = if crate::identity::internal() {
         builder.plugin(qa_clipboard::init())
     } else {

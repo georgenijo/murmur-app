@@ -280,7 +280,7 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn private_clipboard_read(name: &str) -> Result<String, String> {
+pub(crate) fn private_clipboard_read(name: &str) -> Result<String, String> {
     autoreleasepool(|_| {
         use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
         let board = NSPasteboard::pasteboardWithName(&objc2_foundation::NSString::from_str(name));
@@ -291,7 +291,7 @@ fn private_clipboard_read(name: &str) -> Result<String, String> {
     })
 }
 #[cfg(target_os = "macos")]
-fn private_clipboard_write(name: &str, text: &str) -> Result<(), String> {
+pub(crate) fn private_clipboard_write(name: &str, text: &str) -> Result<(), String> {
     autoreleasepool(|_| {
         use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
         use objc2_foundation::NSString;
@@ -305,11 +305,11 @@ fn private_clipboard_write(name: &str, text: &str) -> Result<(), String> {
     })
 }
 #[cfg(not(target_os = "macos"))]
-fn private_clipboard_read(_: &str) -> Result<String, String> {
+pub(crate) fn private_clipboard_read(_: &str) -> Result<String, String> {
     Err("Private clipboard is unavailable on this platform.".into())
 }
 #[cfg(not(target_os = "macos"))]
-fn private_clipboard_write(_: &str, _: &str) -> Result<(), String> {
+pub(crate) fn private_clipboard_write(_: &str, _: &str) -> Result<(), String> {
     Err("Private clipboard is unavailable on this platform.".into())
 }
 

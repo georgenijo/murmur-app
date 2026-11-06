@@ -273,11 +273,17 @@ jobs:
             chmod +x "binaries/murmur-$helper-aarch64-apple-darwin"
           done
 
+      - name: Guard direct foreign termination bindings
+        run: python3 scripts/check_restart_policy.py
+
       - name: Lint Rust
         # --workspace covers the capture worker and protocol crates; default-members
         # --all-targets ensures `tests/` and `examples/` are type-checked too. Clippy performs the
         # full compile check, so there is no separate `cargo check` pass.
         run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Check termination bypass fixtures (compile only)
+        run: python3 scripts/check_restart_clippy.py
 
   rust-macos:
     needs: changes

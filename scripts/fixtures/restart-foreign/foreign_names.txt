@@ -1,0 +1,1 @@
+unsafe extern "system" { fn exit(); fn _exit(); fn _Exit(); fn abort(); fn quick_exit(); fn kill(); fn raise(); fn pthread_exit(); fn exit_group(); }

@@ -502,6 +502,7 @@ export function useRecordingState({ microphone, smartAuto = null, canStart, wave
           else if (res.type === 'busy_benchmarking') presentError('Wait for the benchmark to finish.', { producerEpoch });
           else if (res.type === 'busy_transcribing_file') presentError('Wait for the file transcription to finish.', { producerEpoch });
           else if (res.type === 'busy_meeting') presentError('Stop the meeting capture before starting dictation.', { producerEpoch });
+          else if (res.type === 'knowledge_initializing') presentError('Wait for the local knowledge rules to finish loading, or retry the knowledge store in Settings.', { producerEpoch });
           // Without these three the press is a silent no-op: Rust refuses the
           // start but nothing tells the user why.
           else if (res.type === 'busy_transforming') presentError('Wait for the transform to finish.', { producerEpoch });

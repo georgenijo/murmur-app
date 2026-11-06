@@ -5,10 +5,19 @@ Run in a disposable Mac checkout. Clippy resolves real libc/Tauri definitions.
 from pathlib import Path
 import subprocess
 import sys
+from check_restart_policy import violations
 
 ROOT = Path(__file__).resolve().parents[1]
 
 def main():
+    # Foreign aliases have no libc definition for Clippy to resolve. The source
+    # guard must reject these before compiling the existing resolved fixtures.
+    for fixture in sorted((ROOT / 'scripts/fixtures/restart-foreign').glob('*.txt')):
+        allowed = not violations(fixture.read_text())
+        if allowed != fixture.stem.startswith('benign_'):
+            print(f'FAIL foreign restart policy fixture: {fixture.stem}')
+            return 1
+        print(f'PASS foreign restart policy fixture: {fixture.stem}', flush=True)
     directory = ROOT / 'app/src-tauri/examples'
     for fixture in sorted((ROOT / 'scripts/fixtures/restart-clippy').glob('*.txt')):
         name = '__murmur_restart_guard_' + fixture.stem

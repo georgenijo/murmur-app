@@ -1,0 +1,1 @@
+unsafe extern "C-unwind" { #[link_name = r##"abort"##] fn stop() -> !; }

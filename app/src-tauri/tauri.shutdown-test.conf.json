@@ -17,6 +17,20 @@
           "permissions": [
             "shutdown-test:allow-shutdown-test-action"
           ]
+        },
+        {
+          "identifier": "qa-clipboard",
+          "description": "Private text clipboard bridge; its plugin is registered only for isolated bundle identities and refuses production.",
+          "windows": [
+            "main",
+            "diagnostics",
+            "overlay",
+            "dictation-preview"
+          ],
+          "permissions": [
+            "qa-clipboard:allow-read-text",
+            "qa-clipboard:allow-write-text"
+          ]
         }
       ]
     }

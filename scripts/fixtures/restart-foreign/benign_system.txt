@@ -1,0 +1,1 @@
+#[link(name = "System")] unsafe extern "C-unwind" { #[link_name = "getpid"] fn pid() -> i32; }

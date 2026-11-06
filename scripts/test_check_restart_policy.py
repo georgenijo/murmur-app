@@ -1,5 +1,5 @@
 import unittest
-from check_restart_policy import violations, check_repository, method_allow_scopes, check_clippy_config, REQUIRED_METHODS
+from check_restart_policy import violations, check_repository, method_allow_scopes, check_clippy_config, REQUIRED_METHODS, TERMINATING_SYMBOLS
 from pathlib import Path
 import tempfile
 class RestartPolicy(unittest.TestCase):
@@ -105,3 +105,40 @@ class RestartPolicy(unittest.TestCase):
         fixtures = Path(__file__).parent / 'fixtures/restart-clippy'
         for name in ['grouped_std_alias', 'grouped_libc_alias', 'grouped_libc_exit_alias', 'macro_forwarded_exit', 'direct_zero_outside_cli', 'apphandle_exit', 'apphandle_restart', 'abort_alias', 'libc_abort', 'plugin_init_alias', 'unrelated_exit']:
             self.assertTrue((fixtures / (name + '.txt')).is_file())
+
+    def test_foreign_termination_declarations_and_link_attributes(self):
+        for symbol in sorted(TERMINATING_SYMBOLS):
+            for abi in ['', '"C"', '"C-unwind"', '"system"', '"stdcall"']:
+                for source in [
+                    f'unsafe extern {abi} {{ fn {symbol}(code: i32) -> !; }}',
+                    f'unsafe extern {abi} {{ #[link_name = "{symbol}"] fn stop(code: i32) -> !; }}',
+                    f'#[link(name = "{symbol}")] unsafe extern {abi} {{ fn stop(); }}',
+                    f'unsafe extern {abi} {{ #[cfg_attr(target_os="macos", link_name=r#"{symbol}"#)] fn stop(); }}',
+                ]:
+                    with self.subTest(source=source):
+                        self.assertTrue(violations(source))
+        self.assertTrue(violations('extern "C" { #[link_name="\\x5fexit"] fn stop(); }'))
+        self.assertTrue(violations('extern "C" { #[link_name=concat!("_e", "xit")] fn stop(); }'))
+        self.assertTrue(violations('extern "C" { #[link_name=SYMBOL] fn stop(); }'))
+
+    def test_benign_foreign_declarations_and_opaque_link_text(self):
+        for source in [
+            'unsafe extern "system" { fn puts(s: *const u8); fn getpid() -> i32; }',
+            '#[link(name="System")] extern "C-unwind" { #[link_name="getpid"] fn pid() -> i32; }',
+            'extern "C" { fn r#getpid(); }',
+            'extern "C" fn exit(code: i32) -> i32 { code }',
+            'let text = r##"extern "C" { fn _exit(); } #[link_name="abort"]"##;',
+            '/* #[link(name="kill")] extern "C" { fn abort(); } */',
+        ]:
+            with self.subTest(source=source):
+                self.assertFalse(violations(source))
+
+    def test_foreign_fixture_inventory(self):
+        fixtures = Path(__file__).parent / 'fixtures/restart-foreign'
+        self.assertEqual(len(list(fixtures.glob('*.txt'))), 8)
+        for fixture in fixtures.glob('*.txt'):
+            with self.subTest(fixture=fixture.name):
+                self.assertEqual(not violations(fixture.read_text()), fixture.stem.startswith('benign_'))
+
+if __name__ == '__main__':
+    unittest.main()

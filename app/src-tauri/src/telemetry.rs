@@ -5199,6 +5199,51 @@ mod tests {
 mod startup_io_tests {
     use super::*;
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+    fn assert_failed_drain_suppresses_restart(flushed: bool) {
+        use murmur_core::shutdown::{Action, Coordinator, Event, Outcome, Request, WriteOutcome};
+        let mut core = Coordinator::default();
+        let mut effect = core.request(Request::Restart, 0)[0];
+        for outcome in [
+            Outcome::Admission(true),
+            Outcome::Capture(true),
+            Outcome::Helpers(true),
+            Outcome::Writers(crate::shutdown::writer_outcome(
+                WriteOutcome::Committed,
+                flushed,
+            )),
+        ] {
+            effect = core.advance(Event { effect, outcome }, 1)[0];
+        }
+        assert_eq!(core.receipt.writes, WriteOutcome::UnpreservedFailure);
+        assert_eq!(core.issue(), Some(Action::Quit));
+    }
+
+    #[test]
+    fn failed_telemetry_write_degrades_committed_writers_and_suppresses_restart() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let fs = Arc::new(FailingFs::default());
+        let jsonl =
+            SizeRotatingFile::open_with(fs.clone(), fixture.path().join("events.jsonl"), 1, 1)
+                .unwrap();
+        // Rotate on the next event, then fail opening the replacement file.
+        jsonl.lock().size = 1;
+        fs.fail_create.store(true, Ordering::SeqCst);
+        let pretty = SizeRotatingFile::open(fixture.path().join("app.log"), 4096, 1).unwrap();
+        let (sender, worker) = start_log_worker(move || (jsonl, pretty));
+        sender
+            .send(LogWrite::Event(b"synthetic lost event\n".to_vec()))
+            .unwrap();
+        let flushed =
+            sender.flush_until(std::time::Instant::now() + std::time::Duration::from_secs(2));
+        assert!(!flushed);
+        assert_eq!(sender.state.pending.load(Ordering::SeqCst), 0);
+        assert_eq!(sender.state.failed.load(Ordering::SeqCst), 1);
+        assert_failed_drain_suppresses_restart(flushed);
+        drop(sender);
+        worker.join().unwrap();
+    }
+
     #[test]
     fn shutdown_accepts_final_owner_events_until_content_writers_finish() {
         let _test = TEST_LOCK.lock().unwrap();
@@ -5279,10 +5324,12 @@ mod startup_io_tests {
             .unwrap();
         let started = std::time::Instant::now();
         let (_stalled_content_owner, content_drained) = mpsc::channel();
-        assert!(!sender.flush_after(
+        let flushed = sender.flush_after(
             content_drained,
-            started + std::time::Duration::from_millis(30)
-        ));
+            started + std::time::Duration::from_millis(30),
+        );
+        assert!(!flushed);
+        assert_failed_drain_suppresses_restart(flushed);
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
         assert_eq!(sender.state.pending.load(Ordering::SeqCst), 1);
         sender.send(LogWrite::Event(b"late\n".to_vec())).unwrap();

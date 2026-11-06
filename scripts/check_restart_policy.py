@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import os
 import tomllib
-from check_targeted_events import ROOT, IDENTIFIER, mask_literals, rust_sources, excluded
+from check_targeted_events import ROOT, IDENTIFIER, mask_literals, rust_sources, excluded, opaque_spans, rust_string
 
 ADAPTER = Path('app/src-tauri/src/shutdown.rs')
 PLUGIN = Path('app/src-tauri/src/process_plugin.rs')
@@ -89,9 +89,55 @@ def check_clippy_config(root):
                 failures.append(f'{path.relative_to(root)}: nested clippy configuration can override the process guard')
     return failures
 
-def violations(source, *, adapter=False, plugin=False, process_aliases=(), cli_entry=False, method_scopes=()):
+TERMINATING_SYMBOLS = {'exit', '_exit', '_Exit', 'abort', 'quick_exit', 'kill',
+                       'raise', 'pthread_exit', 'exit_group'}
+
+def foreign_termination(source):
+    """Clippy cannot resolve a locally declared foreign alias to libc.
+
+    Inspect foreign names with *any* ABI (the lexer masks ABI strings), plus
+    linker attribute values before strings are masked. Comments and ordinary
+    string contents remain opaque. No function-scope exception permits this.
+    """
     code = re.sub(r'\br#(?=[^\W\d])', '  ', mask_literals(source))
     failures = []
+    for block in re.finditer(r'\bextern\s*\{', code):
+        opening = block.end() - 1
+        depth, end = 1, opening + 1
+        while end < len(code) and depth:
+            depth += (code[end] == '{') - (code[end] == '}')
+            end += 1
+        for declaration in re.finditer(r'\bfn\s+(\w+)\b', code[opening:end]):
+            if declaration[1] in TERMINATING_SYMBOLS:
+                failures.append(opening + declaration.start())
+    literals = [(start, end) for kind, start, end in opaque_spans(source) if kind == 'literal']
+    for attribute in re.finditer(r'#\s*\[[^\]]*\]', code):
+        body = attribute.group()
+        # Includes nested cfg_attr(..., link_name=...) and link(...).
+        if not re.search(r'\b(?:link_name\s*=|link\s*\()', body):
+            continue
+        for name in re.finditer(r'\blink_name\s*=', body):
+            value_start = attribute.start() + name.end()
+            literal = next(((start, end) for start, end in literals if start >= value_start), None)
+            if (literal is None or literal[0] >= attribute.end()
+                    or code[value_start:literal[0]].strip()
+                    or not re.match(r'\s*[,\])]', code[literal[1]:])):
+                failures.append(value_start)
+        if '!' in body or '$' in body:
+            failures.append(attribute.start())
+        for start, end in literals:
+            if attribute.start() <= start < attribute.end():
+                value = rust_string(source[start:end])
+                # Unparsed linker syntax fails closed rather than blessing a
+                # potentially escaped terminating symbol.
+                if value is None or '\\' in value or value in TERMINATING_SYMBOLS:
+                    failures.append(start)
+    return failures
+
+
+def violations(source, *, adapter=False, plugin=False, process_aliases=(), cli_entry=False, method_scopes=()):
+    code = re.sub(r'\br#(?=[^\W\d])', '  ', mask_literals(source))
+    failures = foreign_termination(source)
     for token in IDENTIFIER.finditer(code):
         name = token.group()
         if name == 'request_restart':

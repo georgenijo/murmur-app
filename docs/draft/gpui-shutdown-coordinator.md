@@ -804,3 +804,89 @@ performed. Independent Sol review and CI integration remain with the parent.
 Cleanup verified: the disposable Mac checkout, external target and synthetic
 runtime/cache scratch were removed after all checks; no task process remained.
 Shared models, production data, other checkouts and shared caches were preserved.
+
+## Round-four isolation, startup and guard corrections
+
+This delta addresses the four remaining isolation re-check P2s on the existing
+layer-07 draft. It keeps the stack base, tray corrections through `9676fc4b`,
+Clear/capture-agent refusal fixes and round-four completion behavior intact.
+Independent Sol re-check remains with the parent; no merge or retargeting is
+part of this implementation worker's work.
+
+- **QA clipboard ACL:** the private clipboard capability is inline only in
+  `tauri.shutdown-test.conf.json`, outside the production auto-loaded capability
+  directory. Both the native plugin and its build-time permission manifest are
+  compiled only with `shutdown-test-support`. Production generated schemas omit
+  the QA permissions. The generated-context regression resolves both commands
+  for all four actual window labels in each build: denied in production,
+  allowed with the QA feature/config. The native Copy seam writes a synthetic
+  string to a unique identity-named NSPasteboard, reads it back, then clears
+  that private board. It has no general-pasteboard path. Existing WebKit Copy/read
+  tests retain their fail-closed IPC routing assertions.
+- **Knowledge startup ordering:** refreshes reserve a process-local generation
+  before SQLite reads and compare it under the same publication lock afterward.
+  A stale read cannot replace entries, rebuild a matcher or bump the settings
+  revision after a newer refresh. Entries/matcher publication also shares the
+  dictation lock with settings rebuilds and recording snapshots. Recording and
+  silent first-tap preparation refuse admission until a matcher has actually
+  been published; startup work never blocks window setup. Failed initialization
+  stays refused until a successful retry. Native and toolbar controls report that rules
+  are still loading and points to the knowledge-store retry. Deterministic channel
+  regressions stall the startup read, publish a newer synthetic edit, release
+  the old read, and check matcher identity/output and revision. A separate case
+  proves admission remains closed during the stall and after a failed read,
+  opens only after publication, and retains an immutable recording matcher.
+- **Telemetry outcome:** the Writers adapter consumes the bounded telemetry
+  drain result; failure, join failure or timeout changes the receipt to
+  `UnpreservedFailure`, preserving successful content-owner classifications only
+  when telemetry drains. The existing independent deadline driver remains
+  unchanged. A real queued synthetic event is lost under an injected file-create
+  failure after rotation: `pending=0`, `failed=1`, drain=false. Feeding that result
+  through the actual writer-outcome combiner and coordinator suppresses restart.
+  The stalled-worker regression checks the same outcome and returns within its
+  short timeout before releasing the worker; success retains both Committed and
+  PreservedForReplay outcomes.
+- **Foreign termination guard:** the lexer-aware source policy rejects foreign
+  declarations for exit, `_exit`, `_Exit`, abort, quick_exit, kill, raise,
+  pthread_exit and exit_group with any ABI, plus terminating linker attribute
+  values (`link_name`, including conditional/raw/escaped forms, and `link`).
+  Unprovable macro/constant linker aliases fail closed. Ordinary externs,
+  comments/strings and unrelated Rust functions named exit remain accepted.
+  Eight static fixtures supplement the original eleven compile-only Clippy
+  fixtures and Python regressions. CI's `rust-lint` job now explicitly runs both
+  the textual guard and the fixture runner; none of the termination fixtures
+  are executed.
+
+Verification uses synthetic data only, no GUI/app launch and no production
+application/profile, WebKit directory or general pasteboard. The Mac checkout
+and target are the task-owned `~/Builds/gpui-stack-26` and
+`~/Builds/gpui-stack-26-target`; its home and temporary directory are isolated
+under `~/.cache/gpui-stack-26`. Direct Cargo QA checks require both the feature
+and `TAURI_CONFIG` populated from the QA config, as documented in DEVELOPMENT.
+
+Linux verification: TypeScript and all **184 Vitest files / 1,897 tests** pass;
+all **209 core unit/integration tests** pass. The restart policy passes **17
+Python tests**, preserving all fourteen previous cases. All five new terminating
+foreign fixtures are accepted by the actual pre-delta guard at `9676fc4b` and
+rejected by the corrected guard; all three benign extern fixtures pass. Reference
+(186 commands), Markdown links, workflow, core-dependency, formatting and diff
+checks pass. The actual default Mac build regenerated all four production schema
+files byte-identically to their tracked versions; none contains `qa-clipboard`.
+
+Mac mini verification, Rust **1.98.1**: full default and QA-feature/config
+`cargo test -- --test-threads=1` runs each pass **1,561 library tests** with the
+same fourteen existing ignored tests, plus their integration suites and windowless
+main-dispatch/AppKit executables. Both `cargo clippy --workspace --all-targets`
+runs pass with `-D warnings` and only the two requested allowances. All **11
+compile-only Clippy fixtures** and **8 foreign-source fixtures** pass. SHA-256
+comparison confirms **451 native/guard input files** match this worktree.
+The generated runtime ACL checks and native private-board Copy test pass in both
+configurations; production schema output excludes the QA plugin, while the QA
+permission manifest exposes it. The generated directory capability inventory
+naturally omits inline capabilities; the runtime ACL regression verifies the
+actual QA grants. The final frontend readiness-message regression also passes.
+
+The task's Mac checkout, external target, synthetic home/temp/cache and generated
+helpers were removed after preserving check receipts. No task process remained.
+No product app was launched, no production data or general pasteboard was accessed,
+and no merge, retargeting or independent-review pass is claimed.

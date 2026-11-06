@@ -228,6 +228,12 @@ separate check against an isolated bundle and synthetic state.
 Use a dedicated checkout and target directory, synthetic fixtures, and the
 `tauri.shutdown-test.conf.json` identity. Build with Rust 1.98.1 and
 `--features shutdown-test-support`; never use the production bundle/profile.
+Both the feature and QA configuration are required: the feature compiles the
+private clipboard plugin and its permission manifest, while only the QA config
+grants its read/write commands to Main, Diagnostics, Overlay and Dictation Preview.
+There is no clipboard capability file in the auto-loaded production directory.
+For direct Cargo checks, set `export TAURI_CONFIG="$(cat tauri.shutdown-test.conf.json)"`
+from `app/src-tauri` when enabling the feature. Default builds use neither.
 This feature adds a six-and-a-half-second final hold after real owner work and
 per-phase delay variables documented in the [shutdown contract](draft/gpui-shutdown-coordinator.md).
 During that hold require 195 callbacks across AppContext, Tauri and a native
@@ -269,7 +275,7 @@ Initialization precedes CLI worker dispatch as well as Tauri setup.
 | FluidAudio/shared model caches | Inspection, download destinations and repair markers are namespaced. The pinned FluidAudio SDK has no cache-path API: its ASR initializer is refused for internal bundles, and speaker diarization is unavailable there, preventing implicit SDK access to the shared production cache. Use isolated Whisper/Parakeet for QA. |
 | Corpus stores | Namespaced legacy roots; internal identities ignore global corpus directory overrides. Synthetic fixtures must be provisioned inside the isolated root. |
 | WebKit | Wry uses the configured bundle identity; lifecycle checks only the exact identity subdirectory. QA uses `com.localdictation.shutdown-test`, never the production store or a directory enumeration of the global WebKit root. |
-| Shared clipboard and pasteboard | Only an explicitly initialized `com.localdictation` process uses the general pasteboard. Every other identity, including absent/empty/future IDs, routes text reads, writes and change-count checks to its own injectively named `NSPasteboard`. Clipboard snippets and transform apply/undo use the same primitives. A QA-only plugin installs a text clipboard bridge before application scripts in every WebKit frame, so History/diagnostic/meeting Copy actions also use the private board; missing IPC and unsupported item types fail closed. The plugin is absent in production and its commands independently reject production/unproven identities. QA refuses all external key posts and Smart insertion before activation or mutation; no QA-only target exemption exists. Routing tests use strings only and never access any OS pasteboard. |
+| Shared clipboard and pasteboard | Only an explicitly initialized `com.localdictation` process uses the general pasteboard. Every other identity, including absent/empty/future IDs, routes text reads, writes and change-count checks to its own injectively named `NSPasteboard`. Clipboard snippets and transform apply/undo use the same primitives. The `shutdown-test-support` feature with its QA config installs a text clipboard bridge before application scripts in every WebKit frame, so History/diagnostic/meeting Copy actions also use the private board; missing IPC and unsupported item types fail closed. The plugin is absent in production and its commands independently reject production/unproven identities. QA refuses all external key posts and Smart insertion before activation or mutation; no QA-only target exemption exists. Routing tests use strings only and never access any OS pasteboard. |
 | OS-managed crash reports | macOS may create identity/process-attributed crash reports outside the application-owned roots. Murmur has no application-owned reader for those reports and does not enumerate, import, upload or delete them. These OS-managed files are not claimed to be application-namespaced stores. |
 | UserDefaults/preferences | App defaults use NSBundle identity. Explicit appearance/Dock reads access system appearance/layout preferences only; no app data is read or written in another app domain. |
 | Keychain | No application keychain store/API is used. Updater signature verification uses the bundled public key. |

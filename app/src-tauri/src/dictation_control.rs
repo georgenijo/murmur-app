@@ -303,6 +303,7 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                         Some("busy_benchmarking") => "Wait for the benchmark to finish.",
                         Some("busy_transcribing_file") => "Wait for the file transcription to finish.",
                         Some("busy_meeting") => "Stop the meeting capture before starting dictation.",
+                        Some("knowledge_initializing") => "Wait for the local knowledge rules to finish loading, or retry the knowledge store in Settings.",
                         Some("busy_transforming") => "Wait for the transform to finish.",
                         Some("busy_recording_corpus") => "Finish the corpus recording before starting dictation.",
                         Some("audio_recovering") => "Microphone cleanup is still in progress. Try again when Murmur is ready.",
