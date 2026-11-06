@@ -1,3 +1,4 @@
+import { sourceStorage } from '../webkitLifecycle';
 import { useCallback, useRef, useState } from 'react';
 
 /** UI-only state. Never put settings, paths, permissions or editor drafts here. */
@@ -31,7 +32,7 @@ export function useSettingsAdvanced(pane: string) {
     // Merge with disk so another pane/window cannot overwrite newer UI state.
     const panes = { ...stateRef.current, ...readSettingsAdvanced(), [pane]: next };
     stateRef.current = panes;
-    try { localStorage.setItem(SETTINGS_ADVANCED_KEY, JSON.stringify({ version: 1, panes })); } catch { /* Session state still works if storage is unavailable. */ }
+    try { sourceStorage.setItem(SETTINGS_ADVANCED_KEY, JSON.stringify({ version: 1, panes })); } catch { /* Session state still works if storage is unavailable. */ }
     setState(panes);
   }, [pane]);
   return [open, setOpen] as const;

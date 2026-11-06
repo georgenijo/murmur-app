@@ -265,7 +265,7 @@ export async function persistBenchmarkReport(report: BenchmarkReport): Promise<B
   return (await completionMutation('store_benchmark_report', { report })).reports;
 }
 
-export function loadBenchmarkReports(): BenchmarkReport[] {
+export function savedBenchmarkReports(): BenchmarkReport[] {
   return [...(completionSnapshot()?.reports ?? [])].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 

@@ -1,3 +1,4 @@
+import { sourceStorage } from '../webkitLifecycle';
 import { DEFAULT_THEME } from './palettes';
 import { parse, type ParseError } from 'jsonc-parser';
 import { resolveTheme } from './resolve';
@@ -92,7 +93,7 @@ function sameCache(left: ResolvedThemeCacheV1 | null, right: ResolvedThemeCacheV
 }
 
 export function loadAppearanceDocument(
-  storage: StorageLike = localStorage,
+  storage: StorageLike = sourceStorage,
 ): AppearanceLoadResult {
   let raw: string | null;
   try {
@@ -152,7 +153,7 @@ export function loadAppearanceDocument(
 
 export function writeAppearanceDocument(
   document: AppearanceDocumentV1,
-  storage: StorageLike = localStorage,
+  storage: StorageLike = sourceStorage,
 ): void {
   const canonical = createAppearanceDocument(
     document.mode,

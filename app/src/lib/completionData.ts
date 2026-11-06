@@ -24,8 +24,9 @@ export function acceptCompletionSnapshot(snapshot: CompletionSnapshot): Completi
   window.dispatchEvent(new Event(COMPLETION_CHANGED));
   return snapshot;
 }
-async function removeImportedKeys(snapshot: CompletionSnapshot): Promise<void> {
+export async function removeImportedKeys(snapshot: CompletionSnapshot): Promise<void> {
   for (const key of snapshot.removeKeys) localStorage.removeItem(key);
+  if (snapshot.removeKeys.some(key => localStorage.getItem(key) !== null)) throw new Error('Legacy removal incomplete');
   const destinations = [
     snapshot.removeKeys.includes('dictation-history') ? 'history' : null,
     snapshot.removeKeys.includes('dictation-stats') ? 'statistics' : null,
@@ -49,7 +50,7 @@ export async function completionMutation(command: string, args?: Record<string, 
 function legacy(key: string): unknown {
   const raw = localStorage.getItem(key);
   if (!raw) return null;
-  try { return JSON.parse(raw) as unknown; } catch { return null; }
+  return JSON.parse(raw) as unknown;
 }
 export async function importCompletionV1(): Promise<void> {
   try {

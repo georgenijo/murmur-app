@@ -16,7 +16,7 @@ import {
   clearBenchmarkReports,
   getBenchmarkActivity,
   getBenchmarkModels,
-  loadBenchmarkReports,
+  savedBenchmarkReports,
   openBenchmarkOutputFolder,
   runBenchmark,
   saveBenchmarkReport,
@@ -163,12 +163,12 @@ export function PerformanceLab({ active = true, status, settings, onUpdateSettin
     reports: BenchmarkReport[];
     selectedAt: string | null;
   }>(() => {
-    const reports = loadBenchmarkReports();
+    const reports = savedBenchmarkReports();
     return { reports, selectedAt: reports[0]?.createdAt ?? null };
   });
   useEffect(() => {
     const changed = () => setDashboard(current => {
-      const reports = loadBenchmarkReports();
+      const reports = savedBenchmarkReports();
       return { reports, selectedAt: reports.some(report => report.createdAt === current.selectedAt) ? current.selectedAt : reports[0]?.createdAt ?? null };
     });
     window.addEventListener(COMPLETION_CHANGED, changed);

@@ -558,7 +558,7 @@ depend on. Full source-of-truth migration was chosen over a backup/restore
 stopgap because the file format is identical either way and the flip cost
 was contained to entry-point gating.
 
-**Status:** active
+**Status:** superseded by [Rust-owned state and WebKit lifecycle](2026-11-06-rust-owned-webkit-lifecycle.md).
 
 **References:** `commands/settings_store.rs`, `lib/settings.ts`,
 `docs/reference/settings.md` ("Persistence and Migration")
@@ -948,7 +948,7 @@ contract without giving user-controlled colors an accessibility escape hatch.
 
 **Rationale:** TS and Rust were independent authors of overlay geometry (divergent no-notch fallbacks 185/140/200, hand-mirrored 44px drop height) and the expand choreography was un-acknowledged (CSS could animate into a window that had not grown). Two independent architecture reviews converged on the diagnosis; runtime Rust-owned geometry beats a shared-constants file because it shares the *derivation*, not just values, making formula drift structurally impossible rather than test-guarded.
 
-**Status:** active
+**Status:** items 1–4 remain active; item 5 is superseded by [Rust-owned state and WebKit lifecycle](2026-11-06-rust-owned-webkit-lifecycle.md).
 
 **References:** issue #280 (review memo + drift note), PR #290 (PR1 geometry contract), PR #299 (replacement PR2 expansion controller), PR #301 (replacement PR3 component split), `docs/features/overlay.md`.
 

@@ -222,7 +222,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 180 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 183 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -485,7 +485,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-180 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+183 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -610,3 +610,30 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | Main-only native appearance | Main owns application `setTheme`; transparent glass windows never join theme synchronization |
 | Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read up to 256 KiB of UTF-8, keep exports at 64 KiB, and publish exports atomically without touching the clipboard |
 | Data-only community themes | Open VSX is queried only from an explicit dialog; supported-license packages are checksum/ZIP/identity bounded and only declared workbench colors are converted—extension code and assets never execute |
+
+
+## Rust-owned source state and WebKit lifecycle (GPUI 1.5)
+
+`murmur-core::state` owns source-state validation and settings v7 migrations;
+React decodes committed snapshots and resolves derived appearance tokens only.
+The existing completion actor serializes `ui-state.json` and `migrations.json`.
+Settings and theme-library transports share their host writer lock with v2
+imports and use the completion publisher (0600 temp, full sync, rename, directory
+sync). Disk values, including explicit empty values, win over WebKit sources.
+
+The main React startup sends bounded raw strings to the core before hydrating
+presentation caches. Transcript removal runs independently after durable v1
+receipts, including when v2 fails. Failed source writes retain their newest
+per-key intent for retry and display a content-free notice. No completion data
+is cached in WebKit. Updater keys keep their existing owner until v3 in #990.
+
+The separate `murmur-webkit` crate ships a permanent standalone objc2 importer
+with no Tauri/wry dependency. A native host supplies its data store, retains the
+invisible importer, and polls it before showing data or creating React child
+views. Its fixed `tauri://localhost/` page reads the origin through WebKit APIs;
+all durable I/O stays off the main thread. Its retirement coordinator requires
+a no-webview barrier plus v1/v2/v3 and removal receipts. It purges via
+WKWebsiteDataStore, verifies no records, releases the store, removes the bundle
+store directory and syncs its parent before writing the retirement receipt.
+This release cannot retire: it never writes v3. See the
+[design and failure matrix](draft/gpui-webkit-lifecycle.md).

@@ -1,7 +1,7 @@
 use super::*;
 use storage::Boundary;
 use tempfile::TempDir;
-fn engine(root: &std::path::Path, webkit: bool) -> Engine {
+pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
     let mut e = Engine {
         storage: Storage {
             root: root.into(),
@@ -60,7 +60,7 @@ fn legacy() -> LegacyImport {
         reports: Some(json!([report(0)])),
     }
 }
-fn restart(e: &Engine) -> Engine {
+pub(super) fn restart(e: &Engine) -> Engine {
     engine(&e.storage.root, e.webkit_exists)
 }
 #[test]

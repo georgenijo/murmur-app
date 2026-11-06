@@ -1,11 +1,6 @@
-//! Durable, host-owned home for frontend persistence blobs.
-//!
-//! The frontend owns the settings and theme-library schemas and their
-//! migration rules. History, statistics and reports belong to murmur-core::completion.
-//! This module validates only each bounded settings/theme JSON container,
-//! then publishes it atomically in the per-bundle app data directory. The
-//! durable files survive WKWebView storage eviction and a manual reinstall;
-//! localStorage remains a synchronous frontend cache.
+//! Durable source-state transports. Rust schemas and migrations live in
+//! murmur-core; settings/theme publication shares its full-sync publisher.
+//! A host writer lock orders these commands with WebKit lifecycle imports.
 
 use crate::events::EventsExt;
 use std::path::{Path, PathBuf};
@@ -54,20 +49,10 @@ fn require_main_window(label: &str) -> Result<(), String> {
 
 /// Serializes writers across every window and blob. Each file has its own temp
 /// sibling, while one lock keeps publish/delete ordering deterministic.
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn blob_path(dir: &Path, spec: BlobSpec) -> PathBuf {
     dir.join(spec.file_name)
-}
-
-/// Temp sibling used for atomic publish. It stays in the destination directory
-/// so the rename cannot cross filesystems.
-fn temp_path_for(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("data.json");
-    path.with_file_name(format!(".{name}.murmur-tmp"))
 }
 
 fn validate_blob(spec: BlobSpec, blob: &str) -> Result<(), String> {
@@ -160,33 +145,17 @@ fn write_blob(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
 /// Caller holds WRITE_LOCK, including any read/merge preceding this publish.
 fn write_blob_locked(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
     validate_blob(spec, blob)?;
-    if spec.file_name == SETTINGS.file_name {
-        return murmur_core::completion::save_settings(dir, blob).map_err(|e| e.to_string());
-    }
-    std::fs::create_dir_all(dir)
-        .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
-
-    let path = blob_path(dir, spec);
-    let temp = temp_path_for(&path);
-    if let Err(e) = std::fs::write(&temp, blob) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("Failed to write {}: {e}", spec.label));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(format!("Failed to protect {}: {e}", spec.label));
-        }
-    }
-    if let Err(e) = std::fs::rename(&temp, &path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("Failed to publish {}: {e}", spec.label));
-    }
-    Ok(())
+    let key = if spec.file_name == SETTINGS.file_name {
+        "dictation-settings"
+    } else {
+        "murmur-theme-library"
+    };
+    murmur_core::completion::save_source(dir, key, blob)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
     let _guard = WRITE_LOCK.lock_or_recover();
     match std::fs::remove_file(blob_path(dir, spec)) {
@@ -211,7 +180,14 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, SETTINGS)
+    let dir = data_dir(&app)?;
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let blob = read_blob(&dir, SETTINGS)?;
+    blob.map(|blob| {
+        murmur_core::completion::save_source(&dir, "dictation-settings", &blob)
+            .map_err(|e| e.to_string())
+    })
+    .transpose()
 }
 
 fn require_settings_owner(label: &str) -> Result<(), String> {
@@ -229,17 +205,22 @@ pub fn save_settings_blob(
     blob: String,
 ) -> Result<(), String> {
     require_settings_owner(window.label())?;
+    let value =
+        murmur_core::state::settings(serde_json::from_str(&blob).map_err(|_| "Invalid settings")?)
+            .map_err(|_| "Invalid settings")?;
+    let blob = serde_json::to_string(&value).map_err(|_| "Invalid settings")?;
     // Conservatively revoke passive input resolution for every persisted
     // settings update, including device/Smart Auto edits that do not change HAL topology.
     crate::audio::prepare::configuration_changed();
     let dir = data_dir(&app)?;
-    let revision = {
+    let (revision, blob) = {
         // Assign revisions in durable commit order across concurrent saves.
         // Native overrides can still supersede this intent during disk I/O.
         let _guard = WRITE_LOCK.lock_or_recover();
+        let blob = merge_owned_fields(&dir, &blob)?;
         let revision = crate::dictation_control::accept_configuration(&app);
         write_blob_locked(&dir, SETTINGS, &blob)?;
-        revision
+        (revision, blob)
     };
     notify_settings_committed(&app, &blob);
     if let Ok(settings) = serde_json::from_str(&blob) {
@@ -303,6 +284,13 @@ fn patch_owned_setting(
     let blob = read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?;
     let mut settings: serde_json::Value =
         serde_json::from_str(&blob).map_err(|_| "Durable settings could not be decoded")?;
+    let epoch = settings["ownedFieldsRevision"]
+        .as_u64()
+        .unwrap_or(0)
+        .checked_add(1)
+        .filter(|n| *n <= 9_007_199_254_740_991)
+        .ok_or("Settings revision exhausted")?;
+    settings["ownedFieldsRevision"] = serde_json::json!(epoch);
     settings
         .as_object_mut()
         .ok_or("Durable settings must be an object")?
@@ -311,6 +299,24 @@ fn patch_owned_setting(
         serde_json::to_string(&settings).map_err(|_| "Settings could not be encoded")?;
     write_blob_locked(dir, SETTINGS, &committed)?;
     Ok(committed)
+}
+
+/// Older full snapshots cannot undo an overlay commit accepted since their
+/// capture. The epoch is durable and advances with each owned-field patch.
+fn merge_owned_fields(dir: &Path, blob: &str) -> Result<String, String> {
+    let mut incoming: serde_json::Value =
+        serde_json::from_str(blob).map_err(|_| "Invalid settings")?;
+    if let Some(current) = read_blob(dir, SETTINGS)? {
+        let current: serde_json::Value =
+            serde_json::from_str(&current).map_err(|_| "Invalid settings")?;
+        let epoch = current["ownedFieldsRevision"].as_u64().unwrap_or(0);
+        if incoming["ownedFieldsRevision"].as_u64().unwrap_or(0) < epoch {
+            for field in ["autoPaste", "disabled", "ownedFieldsRevision"] {
+                incoming[field] = current[field].clone();
+            }
+        }
+    }
+    serde_json::to_string(&incoming).map_err(|_| "Invalid settings".into())
 }
 
 /// Never accept a retained full snapshot from a quick control. Merge its one
@@ -328,7 +334,7 @@ pub fn patch_overlay_setting(
     let _ = app.events().send_to(
         murmur_core::events::Consumer::Main,
         "overlay-owned-setting-committed",
-        serde_json::json!({ "field": field.key(), "value": value }),
+        serde_json::json!({ "field": field.key(), "value": value, "ownedFieldsRevision": serde_json::from_str::<serde_json::Value>(&committed).ok().and_then(|v| v["ownedFieldsRevision"].as_u64()).unwrap_or(0) }),
     );
     Ok(committed)
 }
@@ -358,7 +364,11 @@ pub fn clear_theme_library_blob(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     require_main_window(window.label())?;
-    delete_blob(&data_dir(&app)?, THEME_LIBRARY)
+    write_blob(
+        &data_dir(&app)?,
+        THEME_LIBRARY,
+        r#"{"version":1,"revision":0,"themes":[]}"#,
+    )
 }
 
 #[cfg(test)]
@@ -396,7 +406,7 @@ mod tests {
     #[test]
     fn owned_patches_preserve_revoked_consent_and_concurrent_fields() {
         let dir = temp_dir("owned_patch");
-        write_blob(&dir, SETTINGS, r#"{"overlayLiveWords":false,"overlayProcessingStyle":"pulse","autoPaste":false,"disabled":false}"#).unwrap();
+        write_blob(&dir, SETTINGS, r#"{"settingsVersion":7,"overlayLiveWords":false,"overlayProcessingStyle":"pulse","autoPaste":false,"disabled":false}"#).unwrap();
         std::thread::scope(|scope| {
             scope
                 .spawn(|| patch_owned_setting(&dir, OverlaySettingField::AutoPaste, true).unwrap());
@@ -404,10 +414,10 @@ mod tests {
         });
         let value: serde_json::Value =
             serde_json::from_str(&read_blob(&dir, SETTINGS).unwrap().unwrap()).unwrap();
-        assert_eq!(
-            value,
-            serde_json::json!({"overlayLiveWords":false,"overlayProcessingStyle":"pulse","autoPaste":true,"disabled":true})
-        );
+        assert_eq!(value["overlayLiveWords"], false);
+        assert_eq!(value["autoPaste"], true);
+        assert_eq!(value["disabled"], true);
+        assert!(value.get("overlayProcessingStyle").is_none());
         assert!(require_overlay_owner("overlay").is_ok());
         for owner in ["main", "dictation-preview", "diagnostics", ""] {
             assert!(require_overlay_owner(owner).is_err());
@@ -428,7 +438,18 @@ mod tests {
             (THEME_LIBRARY, r#"{"version":1,"revision":1,"themes":[]}"#),
         ] {
             write_blob(&dir, spec, blob).unwrap();
-            assert_eq!(read_blob(&dir, spec).unwrap().as_deref(), Some(blob));
+            let key = if spec.file_name == SETTINGS.file_name {
+                "dictation-settings"
+            } else {
+                "murmur-theme-library"
+            };
+            let expected =
+                murmur_core::state::normalize(key, serde_json::from_str(blob).unwrap()).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&read_blob(&dir, spec).unwrap().unwrap())
+                    .unwrap(),
+                expected
+            );
         }
         assert_eq!(entries(&dir), vec!["settings.json", "theme-library.json"]);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -445,10 +466,15 @@ mod tests {
     #[test]
     fn creates_the_data_directory_on_first_write() {
         let dir = temp_dir("create_dir").join("nested");
-        write_blob(&dir, THEME_LIBRARY, "{}").unwrap();
+        write_blob(
+            &dir,
+            THEME_LIBRARY,
+            r#"{"version":1,"revision":0,"themes":[]}"#,
+        )
+        .unwrap();
         assert_eq!(
             read_blob(&dir, THEME_LIBRARY).unwrap().as_deref(),
-            Some("{}")
+            Some(r#"{"revision":0,"themes":[],"version":1}"#)
         );
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
@@ -460,7 +486,15 @@ mod tests {
         write_blob(&dir, SETTINGS, r#"{"totalWords":2}"#).unwrap();
         assert_eq!(
             read_blob(&dir, SETTINGS).unwrap().as_deref(),
-            Some(r#"{"totalWords":2}"#)
+            Some(
+                murmur_core::completion::save_source(
+                    &dir,
+                    "dictation-settings",
+                    r#"{"totalWords":2}"#
+                )
+                .unwrap()
+                .as_str()
+            )
         );
         assert_eq!(entries(&dir), vec![SETTINGS.file_name.to_string()]);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -472,7 +506,12 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = temp_dir("permissions");
-        write_blob(&dir, THEME_LIBRARY, r#"{"id":"private"}"#).unwrap();
+        write_blob(
+            &dir,
+            THEME_LIBRARY,
+            r#"{"version":1,"revision":0,"themes":[]}"#,
+        )
+        .unwrap();
         let mode = std::fs::metadata(blob_path(&dir, THEME_LIBRARY))
             .unwrap()
             .permissions()
@@ -546,11 +585,16 @@ mod tests {
     #[test]
     fn rejected_save_leaves_the_previous_blob_intact() {
         let dir = temp_dir("reject_keeps_previous");
-        write_blob(&dir, THEME_LIBRARY, r#"{"id":"kept"}"#).unwrap();
+        write_blob(
+            &dir,
+            THEME_LIBRARY,
+            r#"{"version":1,"revision":0,"themes":[]}"#,
+        )
+        .unwrap();
         assert!(write_blob(&dir, THEME_LIBRARY, "[]").is_err());
         assert_eq!(
             read_blob(&dir, THEME_LIBRARY).unwrap().as_deref(),
-            Some(r#"{"id":"kept"}"#)
+            Some(r#"{"revision":0,"themes":[],"version":1}"#)
         );
         assert_eq!(entries(&dir), vec![THEME_LIBRARY.file_name.to_string()]);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -559,12 +603,17 @@ mod tests {
     #[test]
     fn clear_is_idempotent_and_affects_only_the_selected_blob() {
         let dir = temp_dir("clear");
-        write_blob(&dir, THEME_LIBRARY, "{}").unwrap();
+        write_blob(
+            &dir,
+            THEME_LIBRARY,
+            r#"{"version":1,"revision":0,"themes":[]}"#,
+        )
+        .unwrap();
         write_blob(&dir, SETTINGS, "{}").unwrap();
         delete_blob(&dir, THEME_LIBRARY).unwrap();
         delete_blob(&dir, THEME_LIBRARY).unwrap();
         assert_eq!(read_blob(&dir, THEME_LIBRARY).unwrap(), None);
-        assert_eq!(read_blob(&dir, SETTINGS).unwrap().as_deref(), Some("{}"));
+        assert!(read_blob(&dir, SETTINGS).unwrap().is_some());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -578,14 +627,6 @@ mod tests {
         assert!(!blob_path(&dir, SETTINGS).is_file());
         assert_eq!(entries(&dir).len(), 1, "unexpected leftovers");
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn temp_path_stays_in_the_data_directory() {
-        let path = blob_path(Path::new("/tmp/murmur"), THEME_LIBRARY);
-        let temp = temp_path_for(&path);
-        assert_eq!(temp.parent(), path.parent());
-        assert_ne!(temp.file_name(), path.file_name());
     }
 
     #[test]
@@ -603,5 +644,27 @@ mod tests {
                 "unexpected access for {label:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_ordering_tests {
+    use super::*;
+    #[test]
+    fn delayed_or_retried_full_settings_cannot_undo_a_newer_overlay_disable() {
+        let dir = tempfile::tempdir().unwrap();
+        let original=serde_json::json!({"settingsVersion":7,"autoPaste":false,"disabled":false,"language":"es"}).to_string();
+        write_blob(dir.path(), SETTINGS, &original).unwrap();
+        patch_owned_setting(dir.path(), OverlaySettingField::Disabled, true).unwrap();
+        patch_owned_setting(dir.path(), OverlaySettingField::AutoPaste, true).unwrap();
+        let _guard = WRITE_LOCK.lock_or_recover();
+        let committed = merge_owned_fields(dir.path(), &original).unwrap();
+        write_blob_locked(dir.path(), SETTINGS, &committed).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&read_blob(dir.path(), SETTINGS).unwrap().unwrap()).unwrap();
+        assert_eq!(value["disabled"], true);
+        assert_eq!(value["autoPaste"], true);
+        assert_eq!(value["language"], "es");
+        assert_eq!(value["ownedFieldsRevision"], 2);
     }
 }

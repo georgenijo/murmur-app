@@ -1,3 +1,4 @@
+import { flushSourceState } from '../webkitLifecycle';
 import {
   createContext,
   createElement,
@@ -232,6 +233,7 @@ function useMainAppearanceController(): AppearanceController {
           configuration.selection,
         );
         writeAppearanceDocument(next);
+        await flushSourceState();
         reflect(next);
         await Promise.all([
           applyNativeTheme(next.mode),

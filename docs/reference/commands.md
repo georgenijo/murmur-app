@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 180 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 183 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -308,6 +308,9 @@ without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
+| `webkit_state_snapshot` | — | `Result<Receipt, String>` | Rust-owned source-state snapshot and independent v1/v2/v3, removal and retirement receipts. No WebKit data directory commits current versions without opening WebKit. |
+| `import_webkit_state` | `source: BTreeMap<String, Option<String>>` | `Result<Receipt, String>` | Main-only versioned importer. Raw JSON strings distinguish corrupt values from missing keys; disk values win. Shares the settings writer lock. |
+| `save_webkit_source` | `key: String`, `value: Value` | `Result<(), String>` | Main-only allow-listed source-state write to the completion actor. Settings/theme retain their dedicated commands. No updater v3 implementation or retirement permission is exposed to React. |
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
 | `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Full writes require the main window; overlay quick controls use the field-limited patch command. Concurrent writers are serialized; a failed write removes the temp file and preserves the previous settings. |
 | `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool` | `Result<String, String>` | Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |

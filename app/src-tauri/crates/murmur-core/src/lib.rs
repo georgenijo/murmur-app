@@ -9,3 +9,5 @@ pub mod keyboard;
 pub mod memory;
 pub mod model_artifact;
 pub mod model_digest;
+
+pub mod state;

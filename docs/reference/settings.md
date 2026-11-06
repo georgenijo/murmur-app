@@ -297,7 +297,7 @@ model-selection side effects.
 | `mirrorToNotchPill` | `boolean` | `false` | `true` / `false` | When enabled, the final transcript of each dictation is mirrored to `~/Library/Application Support/local-dictation/latest-caption.json` as `{text, timestamp}`, so NotchPill can display what was just said. The toggle is shown only when macOS Launch Services finds NotchPill's `com.local.notchpill` bundle. If NotchPill is removed, mirroring becomes dormant and the caption file is deleted without overwriting the saved preference; reinstalling the app restores the prior choice. Off by default. The file is owner-only (`0600`), holds only the most recent caption — each write replaces the last — and is written after the clipboard, best-effort, so it can never delay or affect dictation output. Nothing leaves the device. Switching the setting off deletes the file. |
 | `outputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved transcript/audio files. Empty means the app default (`Documents/Murmur`, created on first write). Set via a folder picker (`dialog:allow-open`). |
 | `benchmarkOutputDir` | `string` | `''` | Any absolute folder path, or `''` for default | Destination for saved Performance Lab benchmark reports (`benchmark-<version>-<machine>-<createdAt>.json`). Empty means the app default (`Documents/Murmur`, created on first write). Kept separate from `outputDir` so benchmark JSON doesn't mix with dictation transcripts/audio. Set via a folder picker in the Performance Lab. |
-| `benchmarkAutoSave` | `boolean` | `false` | `true` / `false` | When enabled, each completed benchmark run is written to `benchmarkOutputDir` automatically (in addition to the 10-slot in-app history), so reports survive the localStorage cap. Best-effort: a write failure surfaces an error but does not fail the run. |
+| `benchmarkAutoSave` | `boolean` | `false` | `true` / `false` | When enabled, each completed benchmark run is written to `benchmarkOutputDir` automatically (in addition to the 10-slot in-app history), so reports survive the saved-report cap. Best-effort: a write failure surfaces an error but does not fail the run. |
 
 ### Smart destination privacy and limits
 
@@ -400,82 +400,22 @@ these retired fields still load; active dictation and meeting preferences surviv
 - **Cache:** `localStorage` under the key `dictation-settings`, written through on every save so `loadSettings()` stays synchronous — its callers (overlay hooks in particular) read settings during render.
 - **Format:** Full `Settings` object serialized as JSON, plus `settingsVersion`. The same string is written to both places.
 
-The blob is opaque to Rust. The host validates only the container — at most 1 MiB, and it must parse as a JSON object — so every schema, default, and migration rule stays in `lib/settings.ts` and a settings change never requires a Rust change.
+Rust now owns source schemas, settings v7 migration rules and publication in
+`murmur-core::state`. Defaults live beside that module and are consumed by the
+frontend. `loadSettings()` and `parseSettingsBlob()` decode committed presentation
+snapshots only; they neither migrate nor publish data.
 
-### Boot Hydration
+Main startup runs versioned WebKit import before hydration. It fills only absent
+disk values, preserves explicit empties and imports legacy onboarding metadata
+without overwriting a disk gate. Companion windows only read Rust snapshots.
+Source corruption preserves data and blocks startup; future schemas stay in
+place and repeatedly reject an older build. Settings saves use the completion
+publisher's 0600 temp → file sync/F_FULLFSYNC → rename → directory fsync discipline.
+Failed saves keep retry intents and display a notice. A durable owned-field
+revision prevents delayed full saves from reversing newer overlay quick controls.
 
-Each window entry (`main.tsx`, `overlay.tsx`, `diagnostics.tsx`) awaits `hydrateSettingsFromDisk()` before its first render:
-
-1. Outside Tauri (plain browser, tests) it is a no-op and `localStorage` remains the only store.
-2. `load_settings_blob` returns a blob → it is written into `localStorage` verbatim. Disk wins; the cache may be stale or evicted.
-3. `load_settings_blob` returns `null` → first run, or an existing install whose settings only ever lived in `localStorage`. A non-null cached blob is migrated to disk once via `save_settings_blob`.
-4. Any failure is logged and swallowed. Boot never blocks on the settings store, and `localStorage` stays the fallback for the session.
-
-On the first v2 load, Murmur resets any pre-v2 overlay calibration to zero and
-deletes the old standalone `murmur-overlay-vertical-offset` key. Subsequent v2
-offsets are integer-clamped to ±12 and remain inside the durable Settings blob.
-
-On the first v3 load, Murmur adds `microphoneIdMigrationComplete`. System
-Default is complete immediately. Every other pre-v3 microphone string remains
-pending until an available shared inventory proves exact ID membership or a
-unique legacy display-name match; stale/unavailable inventory never migrates it.
-
-On the first v6 load, Murmur adds the `smartDestinationEnabled` opt-in as
-`false`. Missing and malformed values also fail closed to `false`; only an
-explicit persisted boolean `true` enables the feature.
-
-Hydration is idempotent, so every window can run it regardless of creation order; concurrent first-run writes are serialized in Rust and write identical content.
-
-### Saving
-
-`saveSettings()` (and the migration re-persist inside `loadSettings()`) serializes once, writes `localStorage` synchronously, then fires `save_settings_blob` without awaiting it. A rejected or unavailable backend is logged and never fails the save — the cache is already written and the next boot repairs the durable copy.
-
-### Corruption
-
-A `settings.json` that is oversized, not UTF-8, not valid JSON, or not a JSON object is renamed to `settings.json.corrupt-<unix-seconds>` and reported as "no settings on disk", so the window falls back to its `localStorage` cache. Corrupt files are never deleted.
-
-### Loading Behavior
-
-`loadSettings()` performs the following:
-1. Reads from `localStorage` under `dictation-settings` (seeded from disk at boot).
-2. If found, parses as JSON and merges with `DEFAULT_SETTINGS` (stored values override defaults). Legacy comma/newline-separated `customVocabulary` values migrate to enabled global `vocabularyEntries` with no aliases.
-3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
-4. Strips the legacy `hotkey` field if present.
-5. Validates `model` against the macOS catalog allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to Core ML Parakeet v3. `language` is validated against `LANGUAGE_OPTIONS` the same way.
-6. Coerces `smartDestinationEnabled` to `false` unless it is a boolean, sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
-7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`).
-8. If not found or on parse error, returns `DEFAULT_SETTINGS`.
-
-### Backend Synchronization
-
-When settings change, `useSettings.updateSettings` pushes the following fields to the Rust backend via `configure_dictation`:
-
-| Frontend Field | Backend Field | Sent On Change |
-|----------------|--------------|----------------|
-| `model` | `model` | Yes |
-| `language` | `language` | Yes |
-| `autoPaste` | `autoPaste` | Yes |
-| `smartDestinationEnabled` | `smartDestinationEnabled` | Yes |
-| `autoPasteDelayMs` | `autoPasteDelayMs` | Yes |
-| `vadSensitivity` | `vadSensitivity` | Yes |
-| `saveTranscript` | `saveTranscript` | Yes |
-| `saveAudio` | `saveAudio` | Yes |
-| `mirrorToNotchPill` | `mirrorToNotchPill` | Yes |
-| `outputDir` | `outputDir` | Yes |
-| `doubleTapKey` | _(sent via `update_keyboard_key`)_ | Via keyboard hooks |
-| `recordingMode` | _(controls which hook is active)_ | Frontend only |
-| `hotkeyMissFeedback` | _(controls overlay rejection feedback)_ | Frontend only |
-| `autoStopSilenceMs` | _(drives the frontend silence detector)_ | Frontend only |
-| `smartAutoStopEnabled` | _(gates the frontend's `check_smart_turn` calls)_ | Frontend only |
-| `microphone` | _(sent as param to `start_native_recording`)_ | Per recording |
-| `launchAtLogin` | _(sent via autostart plugin)_ | Via OS API |
-| `overlayVerticalOffset` | _(sent via `set_overlay_vertical_offset`)_ | Frontend/native window only |
-| `benchmarkOutputDir` | _(sent as param to `save_benchmark_report` / `open_benchmark_output_folder`)_ | On save/reveal |
-| `benchmarkAutoSave` | _(read in the Performance Lab; drives auto-save after each run)_ | Frontend only |
-
-**Optimistic updates with rollback:** If `configure_dictation` fails, the affected settings (including model, language, autoPaste, smartDestinationEnabled, autoPasteDelayMs, and vadSensitivity) revert to their previous values. Similarly, if the autostart toggle fails, `launchAtLogin` reverts. A versioned configure ref prevents stale rollbacks from overwriting newer settings.
-
----
+See [the lifecycle design](../draft/gpui-webkit-lifecycle.md) for the complete key
+inventory, v1/v2/v3 contracts, source ownership, failure matrix, and test mapping.
 
 ## Related Durable User Data
 

@@ -56,6 +56,26 @@ impl Storage {
             trace: Default::default(),
         }
     }
+    /// Future source schemas stay in place and reject every older launch.
+    /// They are not corruption and must not turn into an absent/default file.
+    pub fn reject_future(&self, name: &str, field: &str, current: u64) -> Result<()> {
+        let path = self.root.join(name);
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(Error::Io),
+        };
+        let mut bytes = Vec::new();
+        file.take(32 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::Io)?;
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            if value[field].as_u64().is_some_and(|v| v > current) {
+                return Err(Error::Invalid);
+            }
+        }
+        Ok(())
+    }
     pub fn read<T: DeserializeOwned>(
         &self,
         name: &str,

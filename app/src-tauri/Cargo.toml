@@ -10,6 +10,7 @@ default-run = "ui"
 members = [
     "crates/capture-helper-protocol",
     "crates/murmur-core",
+    "crates/murmur-webkit",
     "sidecars/capture",
 ]
 default-members = ["."]
@@ -92,6 +93,7 @@ tauri = { version = "2", features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.15", features = ["metal"] }
+murmur-webkit = { path = "crates/murmur-webkit" }
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-event-kit = { version = "0.3.2", default-features = false, features = ["std", "EKCalendar", "EKCalendarItem", "EKEvent", "EKEventStore", "EKObject", "EKParticipant", "EKTypes", "block2"] }
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSGraphics", "NSApplication", "NSRunningApplication", "NSWorkspace", "NSPasteboard", "NSPasteboardItem"] }

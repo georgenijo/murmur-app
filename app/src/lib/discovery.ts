@@ -1,3 +1,4 @@
+import { sourceStorage, persistSourceState } from './webkitLifecycle';
 import type { DictationStats } from './stats';
 import type { Settings } from './settings';
 
@@ -145,7 +146,7 @@ export function loadDiscoveryState(): DiscoveryStateV1 | null {
 
 function saveState(state: DiscoveryStateV1): DiscoveryStateV1 {
   try {
-    localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
+    sourceStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
     window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {
     // Discovery never blocks the main app when storage is unavailable.
@@ -241,6 +242,7 @@ export function dismissDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV1 | nu
 
 export function resetDiscovery(): void {
   try {
+    persistSourceState(DISCOVERY_STORAGE_KEY, 'null');
     localStorage.removeItem(DISCOVERY_STORAGE_KEY);
     window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {

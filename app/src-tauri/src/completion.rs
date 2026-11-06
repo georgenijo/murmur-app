@@ -392,3 +392,48 @@ mod dispatch_tests {
             .is_empty());
     }
 }
+
+#[tauri::command]
+pub(crate) fn webkit_state_snapshot(
+    app: tauri::AppHandle,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    app.state::<Completion>()
+        .service
+        .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub(crate) fn import_webkit_state(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    source: std::collections::BTreeMap<String, Option<String>>,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    main_only(&window)?;
+    use crate::MutexExt;
+    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+    app.state::<Completion>()
+        .service
+        .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
+            source,
+        ))
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub(crate) fn save_webkit_source(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    main_only(&window)?;
+    if matches!(key.as_str(), "dictation-settings" | "murmur-theme-library") {
+        return Err("Use the source owner's command".into());
+    }
+    use crate::MutexExt;
+    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+    app.state::<Completion>()
+        .service
+        .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}

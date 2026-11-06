@@ -1,3 +1,5 @@
+import { SourceStorageNotice } from './components/SourceStorageNotice';
+import { initializeWebkitState } from './lib/webkitLifecycle';
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
@@ -21,20 +23,24 @@ const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement)
 // Finish the main-window v1 importer and hydrate presentation snapshots before
 // render. Settings/theme retain their existing ownership; completion data never
 // enters a localStorage cache.
-Promise.all([
+initializeWebkitState(true).then(() => Promise.all([
   hydrateSettingsFromDisk(),
   hydrateUserDataFromDisk(),
   hydrateThemeLibraryFromDisk(),
-]).finally(() => {
+])).then(() => {
   flog.info('main', 'Frontend hydrated', { event_code: 'system.launch_frontend_hydrated' });
   root.render(
     <React.StrictMode>
       <AppearanceProvider>
         <NativeWindowLifecycle>
           <CompletionNotice />
+          <SourceStorageNotice />
           <App />
         </NativeWindowLifecycle>
       </AppearanceProvider>
     </React.StrictMode>,
   );
+}).catch(() => {
+  // Preserve the source and retry on relaunch; never initialize empty defaults.
+  root.render(<p role="alert">Your saved data could not be loaded. Restart Murmur to retry.</p>);
 });

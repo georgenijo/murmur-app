@@ -1,3 +1,4 @@
+import { sourceStorage } from '../lib/webkitLifecycle';
 import { COMPLETION_CHANGED } from '../lib/completionData';
 import { useState, useEffect, useMemo } from 'react';
 import {
@@ -50,7 +51,7 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
   const toggle = () => {
     const next = !isCollapsed;
     setIsCollapsed(next);
-    try { localStorage.setItem(STORAGE_KEY, String(next)); } catch {}
+    try { sourceStorage.setItem(STORAGE_KEY, String(next)); } catch {}
   };
 
   return (

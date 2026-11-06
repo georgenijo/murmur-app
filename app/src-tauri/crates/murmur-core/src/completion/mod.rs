@@ -1,5 +1,6 @@
 //! Serialized durable completions. No window, runtime, clock or host dependency.
 //! Only the owner task touches these files; IPC clients never replace snapshots.
+pub mod lifecycle;
 pub mod producers;
 mod stats;
 mod storage;
@@ -158,11 +159,13 @@ impl Default for Holding {
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Migration {
+pub(super) struct Migration {
     schema: u32,
     v1: bool,
     #[serde(default)]
     keys_removed: Vec<Destination>,
+    #[serde(default)]
+    lifecycle: lifecycle::Progress,
 }
 #[derive(Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -262,6 +265,21 @@ impl CompletionService {
             }),
         })
     }
+    pub fn lifecycle(&self, command: lifecycle::Operation) -> Result<lifecycle::Receipt> {
+        let (send, receive) = mpsc::sync_channel(1);
+        self.owner
+            .send
+            .as_ref()
+            .ok_or(Error::Stopped)?
+            .send(Box::new(move |engine| {
+                let result = engine
+                    .execute(Command::Snapshot)
+                    .and_then(|_| engine.lifecycle(command));
+                let _ = send.send(result);
+            }))
+            .map_err(|_| Error::Stopped)?;
+        receive.recv().map_err(|_| Error::Stopped)?
+    }
     pub fn execute(&self, command: Command) -> Result<Snapshot> {
         let (send, receive) = mpsc::sync_channel(1);
         self.owner
@@ -346,7 +364,20 @@ impl Engine {
     fn migration(&self) -> Result<Migration> {
         Ok(self
             .storage
-            .read(MIGRATION, |v: &Migration| v.schema == 1)?
+            .read(MIGRATION, |v: &Migration| {
+                let unique = v
+                    .keys_removed
+                    .iter()
+                    .enumerate()
+                    .all(|(i, d)| !v.keys_removed[..i].contains(d));
+                v.schema == 1
+                    && unique
+                    && (!v.lifecycle.v2 || v.v1)
+                    && (!v.lifecycle.v3 || v.lifecycle.v2)
+                    && (!v.lifecycle.retired || v.lifecycle.retirement_started)
+                    && (!v.lifecycle.retirement_started
+                        || (v.lifecycle.v3 && v.keys_removed.len() == 3))
+            })?
             .unwrap_or_default())
     }
     fn ready(&self, _d: Destination, doc: &Document) -> Result<bool> {
@@ -409,6 +440,7 @@ impl Engine {
                     schema: 1,
                     v1: true,
                     keys_removed: vec![],
+                    lifecycle: Default::default(),
                 },
             )?;
         }
@@ -1026,6 +1058,7 @@ impl Engine {
                 schema: 1,
                 v1: true,
                 keys_removed: self.migration()?.keys_removed,
+                lifecycle: self.migration()?.lifecycle,
             },
         )
     }
@@ -1330,4 +1363,24 @@ pub fn save_settings(root: &std::path::Path, blob: &str) -> Result<()> {
         return Err(Error::Invalid);
     }
     Storage::new(root.into()).write_bytes("settings.json", blob.as_bytes())
+}
+
+/// Settings/theme commands share the host's writer lock with lifecycle imports.
+/// Publication uses the same full-sync discipline as completion destinations.
+pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<String> {
+    Storage::new(root.into()).reject_future(
+        crate::state::file(key).ok_or(Error::Invalid)?,
+        if key == "dictation-settings" {
+            "settingsVersion"
+        } else {
+            "version"
+        },
+        if key == "dictation-settings" { 7 } else { 1 },
+    )?;
+    let value =
+        crate::state::normalize(key, serde_json::from_str(blob).map_err(|_| Error::Invalid)?)?;
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    let blob = serde_json::to_string(&value).map_err(|_| Error::Invalid)?;
+    Storage::new(root.into()).write_bytes(file, blob.as_bytes())?;
+    Ok(blob)
 }

@@ -1,3 +1,4 @@
+import { sourceStorage } from './webkitLifecycle';
 import { invoke } from '@tauri-apps/api/core';
 import {
   isNonNegativeInteger as isNonNegativeSafeInteger,
@@ -565,7 +566,7 @@ export function saveMicrophoneStartupReports(
     .filter((report): report is MicrophoneStartupBenchmarkReport => report !== null)
     .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
     .slice(0, MAX_SAVED_MICROPHONE_STARTUP_REPORTS);
-  localStorage.setItem(REPORTS_KEY, JSON.stringify(normalized));
+  sourceStorage.setItem(REPORTS_KEY, JSON.stringify(normalized));
   return normalized;
 }
 
@@ -574,14 +575,14 @@ export function loadMicrophoneStartupReports(): MicrophoneStartupBenchmarkReport
     const saved = localStorage.getItem(REPORTS_KEY);
     if (!saved) return [];
     const parsed: unknown = JSON.parse(saved);
-    return Array.isArray(parsed) ? saveMicrophoneStartupReports(parsed) : [];
+    return Array.isArray(parsed) ? parsed.map(parseMicrophoneStartupBenchmarkReport).filter((r): r is MicrophoneStartupBenchmarkReport => r !== null).slice(0, MAX_SAVED_MICROPHONE_STARTUP_REPORTS) : [];
   } catch {
     return [];
   }
 }
 
 export function clearMicrophoneStartupReports(): void {
-  localStorage.removeItem(REPORTS_KEY);
+  sourceStorage.setItem(REPORTS_KEY, '[]');
 }
 
 export function saveMicrophoneStartupReport(

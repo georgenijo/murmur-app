@@ -184,8 +184,8 @@ describe('overlay settings write ownership', () => {
     mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { newer = resolve; }));
     await act(async () => mocks.listeners.get('overlay-settings-persisted')?.({ payload: null }));
     await act(async () => {
-      newer(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'below_menu_bar' }));
-      older(JSON.stringify({ ...stored, settingsVersion: 6, overlayPlacement: 'notch' }));
+      newer(JSON.stringify({ ...stored, settingsVersion: 7, overlayPlacement: 'floating_pill' }));
+      older(JSON.stringify({ ...stored, settingsVersion: 7, overlayPlacement: 'notch' }));
     });
     expect(container.querySelector('output')?.textContent).toBe('floating_pill');
   });

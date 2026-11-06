@@ -1,3 +1,4 @@
+import { persistSourceState } from './webkitLifecycle';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 export interface DurableBlobStore {
@@ -49,14 +50,7 @@ function reportStorageError(_store: DurableBlobStore, message: string, _error: u
  */
 export function mirrorDurableBlob(store: DurableBlobStore, blob: string): void {
   if (store.storageKey === HISTORY_STORE.storageKey || store.storageKey === STATS_STORE.storageKey) throw new Error('Completion data is Rust-owned');
-  try {
-    if (!tauriAvailable()) return;
-    void invoke(store.saveCommand, { blob }).catch((error) => {
-      reportStorageError(store, `Failed to persist ${store.label} to disk:`, error);
-    });
-  } catch (error) {
-    reportStorageError(store, `Failed to persist ${store.label} to disk:`, error);
-  }
+  persistSourceState(store.storageKey, blob);
 }
 
 export function saveDurableBlob(store: DurableBlobStore, blob: string): void {
