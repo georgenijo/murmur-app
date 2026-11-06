@@ -11,7 +11,9 @@ vi.mock('./lib/windowLifecycle', () => ({ NativeWindowLifecycle: ({ children }: 
 vi.mock('./lib/log', () => ({ flog: { info: vi.fn() } }));
 vi.mock('./lib/completionData', () => ({ refreshCompletion: vi.fn(), removeImportedKeys: vi.fn(), initializeCompletionReader: vi.fn() }));
 afterEach(() => { vi.restoreAllMocks(); localStorage.clear(); document.body.innerHTML = ''; });
-it.each(['main', 'overlay', 'diagnostics'])('%s mounts authoritative state despite a throwing presentation cache', async entry => {
+it.each(['main', 'overlay', 'diagnostics'].flatMap(entry =>
+  ['writes', 'reads', 'all'].map(failure => ({ entry, failure })),
+))('$entry mounts authoritative state despite $failure failing in the presentation cache', async ({ entry, failure }) => {
   vi.resetModules(); mock.render.mockClear();
   document.body.innerHTML = '<div id="root"></div>';
   mock.invoke.mockImplementation(async (command: string) => {
@@ -23,8 +25,11 @@ it.each(['main', 'overlay', 'diagnostics'])('%s mounts authoritative state despi
     if (command === 'load_settings_blob') return JSON.stringify({ settingsVersion: 7, language: 'ja', autoPaste: true });
     if (command === 'load_theme_library_blob') return JSON.stringify({ version: 1, revision: 17, themes: [] });
   });
-  vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new DOMException('synthetic', 'QuotaExceededError'); });
-  vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new DOMException('synthetic', 'SecurityError'); });
+  if (failure !== 'writes') vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new DOMException('synthetic', 'SecurityError'); });
+  if (failure !== 'reads') {
+    vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new DOMException('synthetic', 'QuotaExceededError'); });
+    vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new DOMException('synthetic', 'SecurityError'); });
+  }
   await act(async () => {
     if (entry === 'main') await import('./main');
     else if (entry === 'overlay') await import('./overlay');
@@ -37,10 +42,8 @@ it.each(['main', 'overlay', 'diagnostics'])('%s mounts authoritative state despi
   expect(loadSettings()).toMatchObject({ language: 'ja', autoPaste: true });
   const { loadAppearanceDocument } = await import('./lib/appearance/storage');
   expect(loadAppearanceDocument().document.mode).toBe('dark');
-  if (entry === 'main') {
-    const { loadThemeLibrary } = await import('./lib/appearance/themeLibrary');
-    expect(loadThemeLibrary().document.revision).toBe(17);
-  }
+  const { loadThemeLibrary } = await import('./lib/appearance/themeLibrary');
+  expect(loadThemeLibrary().document.revision).toBe(17);
 });
 it('unreadable legacy input remains fail closed', async () => {
   vi.resetModules();

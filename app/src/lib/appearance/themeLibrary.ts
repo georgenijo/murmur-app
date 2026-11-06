@@ -117,7 +117,9 @@ function parseSource(value: unknown): ThemeLibrarySourceV1 | null {
     try {
       const parsed = new URL(value.sourceUrl);
       if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
-      sourceUrl = parsed.toString();
+      // Parsing validates the URL; the persisted spelling must stay within the
+      // same UTF-16 limit when the publication is read and validated again.
+      sourceUrl = value.sourceUrl;
     } catch {
       return null;
     }

@@ -152,7 +152,9 @@ pub(super) fn library(v: Value) -> Result<Value> {
                 {
                     return Err(Error::Invalid);
                 }
-                out["sourceUrl"] = json!(url.as_str());
+                // Validate with the URL parser, but preserve the bounded source
+                // spelling. Percent encoding can exceed the limit on reread.
+                out["sourceUrl"] = json!(raw);
             }
             out
         };
