@@ -95,9 +95,27 @@ pub enum Action {
     Dismiss,
     DismissCompleted,
 }
+#[derive(Clone)]
+struct Download {
+    identity: (String, String, String),
+    bytes: Vec<u8>,
+}
+impl Download {
+    fn identity(offer: &Offer) -> (String, String, String) {
+        (
+            offer.version.clone(),
+            offer.url.clone(),
+            offer.signature.clone(),
+        )
+    }
+    fn matches(&self, offer: &Offer) -> bool {
+        self.identity == Self::identity(offer)
+    }
+}
 struct Engine {
+    last_action: Option<Action>,
     offer: Option<Offer>,
-    bytes: Option<Vec<u8>>,
+    bytes: Option<Download>,
     installed: bool,
     relaunch_requested: bool,
     startup: bool,
@@ -133,6 +151,7 @@ impl Updater {
     ) -> Self {
         Self {
             engine: Mutex::new(Engine {
+                last_action: None,
                 offer: None,
                 bytes: None,
                 installed: false,
@@ -262,7 +281,13 @@ impl Updater {
             })();
             match result {
                 Ok(offer) => return Ok(offer),
-                Err(e) => last = e,
+                Err(e) => {
+                    tracing::warn!(
+                        event_code = "updater.check_retry",
+                        "retrying failed update discovery"
+                    );
+                    last = e;
+                }
             }
         }
         Err(last)
@@ -278,13 +303,28 @@ impl Updater {
             .get("pending-update-release-notes")
             .unwrap_or(&Value::Null);
         let completed = pending_for(pending, &self.current);
-        if !pending.is_null() && completed.is_none() {
+        // A future pending update belongs to the old process until replacement.
+        // Only obsolete/malformed records are cleared; matching notes persist
+        // until DismissCompleted durably consumes them.
+        let obsolete = pending["version"]
+            .as_str()
+            .and_then(version)
+            .zip(version(&self.current))
+            .is_none_or(|(pending, current)| pending <= current);
+        if !pending.is_null() && completed.is_none() && obsolete {
             self.save("pending-update-release-notes", Value::Null)?;
         }
         self.update(|s| s.completed_update = completed);
         Ok(())
     }
     fn check(&self, engine: &mut Engine, background: bool) -> Result<()> {
+        if engine
+            .bytes
+            .as_ref()
+            .is_some_and(|cached| engine.offer.as_ref().is_none_or(|o| !cached.matches(o)))
+        {
+            engine.bytes = None;
+        }
         if engine.bytes.is_some() || engine.installed || engine.relaunch_requested {
             if !background {
                 self.update(|s| s.is_update_dialog_open = true);
@@ -310,6 +350,12 @@ impl Updater {
         self.save("updater-last-check", json!(now()))?;
         engine.offer = offer;
         if let Some(offer) = &engine.offer {
+            if !offer.policy_verified {
+                tracing::warn!(
+                    event_code = "updater.policy_unavailable",
+                    "update minimum policy unavailable"
+                );
+            }
             self.state(
                 Status::Available {
                     version: offer.version.clone(),
@@ -326,11 +372,31 @@ impl Updater {
                 engine.notified = Some(offer.version.clone());
             }
         } else {
-            self.state(Status::UpToDate, false);
+            tracing::info!(
+                event_code = "updater.check_current",
+                "already running the current version"
+            );
+            self.update(|s| {
+                s.update_status = if background {
+                    Status::Idle
+                } else {
+                    Status::UpToDate
+                };
+                if background {
+                    s.is_update_dialog_open = false;
+                }
+            });
         }
         Ok(())
     }
     fn download(&self, engine: &mut Engine) -> Result<()> {
+        if engine
+            .bytes
+            .as_ref()
+            .is_some_and(|cached| engine.offer.as_ref().is_none_or(|o| !cached.matches(o)))
+        {
+            engine.bytes = None;
+        }
         if engine.bytes.is_some() || engine.installed {
             return Ok(());
         }
@@ -344,13 +410,23 @@ impl Updater {
         // Verify environment before any large transfer, and recover old receipts.
         let bundle = install::bundle(&self.executable)?;
         install::recover(&self.root, &bundle, &self.current, &self.identifier)?;
+        let mut selection = "retained";
         if now().saturating_sub(offer.discovered) > FRESHNESS {
             if let Ok(Some(fresh)) = self.fetch() {
-                if compare(&fresh.version, &offer.version) == Some(std::cmp::Ordering::Greater) {
+                if compare(&fresh.version, &offer.version)
+                    .is_some_and(|c| c != std::cmp::Ordering::Less)
+                {
                     offer = fresh;
+                    selection = "fresh_check";
                 }
             }
         }
+        tracing::info!(
+            event_code = "updater.download_starting",
+            version = offer.version,
+            selection,
+            "starting download"
+        );
         validate_url(&offer.url, self.local_fixture)?;
         self.save(
             "pending-update-release-notes",
@@ -379,7 +455,15 @@ impl Updater {
             self.write_canary(&result)?;
         }
         verify(&bytes, &offer.signature, &self.key)?;
-        engine.bytes = Some(bytes);
+        engine.bytes = Some(Download {
+            identity: Download::identity(&offer),
+            bytes,
+        });
+        tracing::info!(
+            event_code = "updater.download_ready",
+            version = offer.version,
+            "download ready"
+        );
         self.state(
             Status::Ready {
                 version: offer.version,
@@ -395,7 +479,12 @@ impl Updater {
         }
         let offer = engine.offer.as_ref().ok_or("No downloaded update")?;
         if !engine.installed {
-            let bytes = engine.bytes.as_ref().ok_or("Download the update first")?;
+            let cached = engine.bytes.as_ref().ok_or("Download the update first")?;
+            if !cached.matches(offer) {
+                engine.bytes = None;
+                return Err("Update feed entry changed; download the update again".into());
+            }
+            let bytes = &cached.bytes;
             let bundle = install::bundle(&self.executable)?;
             self.state(
                 Status::Restarting {
@@ -405,7 +494,7 @@ impl Updater {
             );
             if !install::adopted(&self.root, &bundle, &offer.version, &self.identifier)? {
                 install::recover(&self.root, &bundle, &self.current, &self.identifier)?;
-                install::install(
+                let installation = install::install(
                     &self.root,
                     &bundle,
                     offer,
@@ -413,7 +502,14 @@ impl Updater {
                     &self.key,
                     &self.identifier,
                     || !self.stopping.load(Ordering::Acquire),
-                )?;
+                );
+                if installation.as_ref().is_err_and(|e| e.invalid_payload) {
+                    // Verify/extract/validate failures must never pin bad bytes.
+                    // The installer removes failed preparation staging; uncertain
+                    // exchange receipts remain recoverable independently of cache.
+                    engine.bytes = None;
+                }
+                installation.map_err(|e| e.message)?;
             }
             engine.installed = true;
             engine.bytes = None;
@@ -474,8 +570,34 @@ impl Updater {
             }
             return Ok(false);
         }
+        // Present an explicit download click even while it queues behind
+        // discovery. That background result must not hide the user's dialog.
+        if matches!(action, Action::Download) {
+            self.update(|s| s.is_update_dialog_open = true);
+        }
         // Repeated background requests collapse while an owner is active.
-        let mut engine = if matches!(action, Action::Check { background: true }) {
+        let mut joined_manual_check = false;
+        let mut engine = if matches!(action, Action::Check { background: false }) {
+            match self.engine.try_lock() {
+                Ok(v) => v,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if matches!(
+                        self.snapshot().update_status,
+                        Status::Preparing { .. }
+                            | Status::Downloading { .. }
+                            | Status::Ready { .. }
+                            | Status::Restarting { .. }
+                    ) {
+                        // Download/install owns the resource. A manual Check
+                        // is inert and must not wait for the transfer to finish.
+                        return Ok(false);
+                    }
+                    joined_manual_check = true;
+                    self.engine.lock().unwrap_or_else(|p| p.into_inner())
+                }
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            }
+        } else if matches!(action, Action::Check { background: true }) {
             match self.engine.try_lock() {
                 Ok(v) => v,
                 Err(std::sync::TryLockError::WouldBlock) => return Ok(false),
@@ -484,6 +606,25 @@ impl Updater {
         } else {
             self.engine.lock().unwrap_or_else(|p| p.into_inner())
         };
+        self.require_active()?;
+        if joined_manual_check
+            && matches!(
+                engine.last_action,
+                Some(Action::Check { .. } | Action::Download | Action::Install)
+            )
+        {
+            // The active owner already produced the authoritative result. A
+            // manual join presents it without a second network transaction.
+            self.update(|s| s.is_update_dialog_open = true);
+            return Ok(false);
+        }
+        engine.last_action = Some(action.clone());
+        let surface_error = matches!(
+            action,
+            Action::Check { background: false } | Action::Download | Action::Install
+        ) || matches!(action, Action::Configure { automatic: true })
+            && !engine.startup
+            && self.canary.is_some();
         let stage = match action {
             Action::Download => "install",
             Action::Install => "restart",
@@ -497,6 +638,7 @@ impl Updater {
                     self.refresh_completed()?;
                     if automatic && !engine.startup {
                         engine.startup = true;
+                        engine.last_action = Some(Action::Check { background: true });
                         if self.canary.is_some() {
                             return self.run_canary(&mut engine);
                         }
@@ -518,8 +660,15 @@ impl Updater {
                     is_forced: engine.offer.as_ref().is_some_and(|o| o.forced),
                     recovery: translocated(&self.executable).then(|| "reinstall".into()),
                 },
-                true,
+                surface_error,
             );
+            let event_code = match action {
+                Action::Download if translocated(&self.executable) => "updater.install_blocked",
+                Action::Download => "updater.install_failed",
+                Action::Install => "updater.restart_failed",
+                _ => "updater.check_failed",
+            };
+            tracing::warn!(event_code, stage, error, "updater action failed");
             self.canary_failed(error);
         }
         result

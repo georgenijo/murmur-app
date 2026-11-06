@@ -29,9 +29,7 @@ pub(crate) fn initialize(
                 _ => None,
             };
             let _ = super::tray::set_tray_update_available(version);
-            if snapshot.completed_update.is_some()
-                && !focused.swap(true, std::sync::atomic::Ordering::AcqRel)
-            {
+            activate_completed(&snapshot, &focused, || {
                 let app = changed.clone();
                 let _ = changed.run_on_main_thread(move || {
                     if let Some(window) = app.get_webview_window("main") {
@@ -39,7 +37,7 @@ pub(crate) fn initialize(
                         let _ = window.set_focus();
                     }
                 });
-            }
+            });
             let _ = changed
                 .events()
                 .publish(EventKind::UpdaterStateChanged, snapshot);
@@ -49,7 +47,7 @@ pub(crate) fn initialize(
             let _ = notification
                 .notification()
                 .builder()
-                .title("Murmur update available")
+                .title("Update Available")
                 .body(format!("Murmur v{version} is ready to install."))
                 .show();
         },
@@ -74,6 +72,19 @@ pub(crate) fn initialize(
         }
     });
     Ok(())
+}
+// A failed activation never consumes durable notes or repeats focus on each
+// Configure/snapshot. The window operations remain on the native main thread.
+fn activate_completed(
+    snapshot: &Snapshot,
+    focused: &std::sync::atomic::AtomicBool,
+    activate: impl FnOnce(),
+) {
+    if snapshot.completed_update.is_some()
+        && !focused.swap(true, std::sync::atomic::Ordering::AcqRel)
+    {
+        activate();
+    }
 }
 fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != "main" {
@@ -242,6 +253,51 @@ pub(crate) fn shutdown_flush(app: &tauri::AppHandle, deadline: std::time::Instan
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn completed_notes_activate_once_and_survive_activation_failure() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let focused = AtomicBool::new(false);
+        let calls = AtomicUsize::new(0);
+        let mut snapshot = murmur_core::updater::Snapshot::default();
+        super::activate_completed(&snapshot, &focused, || {
+            calls.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        snapshot.completed_update = Some(murmur_core::updater::CompletedUpdate {
+            version: "1.2.0".into(),
+            notes: "Notes".into(),
+        });
+        super::activate_completed(&snapshot, &focused, || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            let _ = Err::<(), _>("Synthetic focus unavailable");
+        });
+        super::activate_completed(&snapshot, &focused, || {
+            calls.fetch_add(1, Ordering::Relaxed);
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(snapshot.completed_update.unwrap().notes, "Notes");
+    }
+    #[test]
+    fn canary_command_preserves_read_write_wire_schema() {
+        let read: super::UpdaterCanaryRequest =
+            serde_json::from_value(serde_json::json!({"action":"read"})).unwrap();
+        assert_eq!(read.action, "read");
+        assert!(read.result.is_none());
+        let write: super::UpdaterCanaryRequest = serde_json::from_value(
+            serde_json::json!({"action":"write","result":{"schemaVersion":1,"status":"dry-run"}}),
+        )
+        .unwrap();
+        assert_eq!(write.result.unwrap()["status"], "dry-run");
+        let state = super::UpdaterCanaryState {
+            path: Some("synthetic/canary.json".into()),
+            result: None,
+            dry_run: true,
+        };
+        assert_eq!(
+            serde_json::to_value(state).unwrap(),
+            serde_json::json!({"path":"synthetic/canary.json","result":null,"dryRun":true})
+        );
+    }
     #[test]
     fn generated_updater_fixture_acl_is_qa_only_and_main_only() {
         let mut context = crate::generated_context();

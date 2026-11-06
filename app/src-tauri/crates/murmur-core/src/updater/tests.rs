@@ -27,6 +27,9 @@ fn signed(bytes: &[u8]) -> (String, String) {
     let rng = ring::rand::SystemRandom::new();
     let pair =
         Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()).unwrap();
+    signed_with(bytes, &pair)
+}
+fn signed_with(bytes: &[u8], pair: &Ed25519KeyPair) -> (String, String) {
     let id = [42; 8];
     let sig = pair.sign(bytes);
     let key = [b"Ed".as_slice(), &id, pair.public_key().as_ref()].concat();
@@ -156,6 +159,17 @@ fn make_bundle(path: &Path, version: &str) {
         format!("synthetic {version}"),
     )
     .unwrap();
+    for name in install::EXECUTABLES {
+        let path = path.join("Contents/MacOS").join(name);
+        if *name != "ui" {
+            fs::write(&path, "synthetic helper").unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
     let plist = plist::Value::Dictionary(plist::Dictionary::from_iter([
         ("CFBundleIdentifier", plist::Value::String(ID.into())),
         ("CFBundleExecutable", plist::Value::String("ui".into())),
@@ -169,6 +183,7 @@ fn make_bundle(path: &Path, version: &str) {
 fn archive(bundle: &Path) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut tar = tar::Builder::new(encoder);
+    tar.follow_symlinks(false);
     tar.append_dir_all("Murmur.app", bundle).unwrap();
     tar.into_inner().unwrap().finish().unwrap()
 }
@@ -265,16 +280,15 @@ fn corrupt_future_or_foreign_install_receipts_are_preserved() {
 }
 #[test]
 fn interrupted_download_cannot_become_ready() {
-    use std::{
-        io::{Read, Write},
-        net::TcpListener,
-    };
+    use std::{io::Write, net::TcpListener};
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let thread = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
-        let mut request = [0; 4096];
-        let _ = socket.read(&mut request);
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        read_request(&mut socket).unwrap();
         socket
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort")
             .unwrap();
@@ -310,8 +324,12 @@ fn rust_owner_retains_ready_bytes_and_serializes_install_retry_and_relaunch() {
     updater.key = key;
     {
         let mut e = updater.engine.lock().unwrap();
-        e.offer = Some(offer(sig));
-        e.bytes = Some(bytes);
+        let offer = offer(sig);
+        e.bytes = Some(Download {
+            identity: Download::identity(&offer),
+            bytes,
+        });
+        e.offer = Some(offer);
     }
     assert!(updater.act(Action::Install).unwrap());
     assert!(!updater.act(Action::Install).unwrap());
@@ -343,7 +361,31 @@ fn rust_owner_requires_v3_before_network_and_generic_sources_cannot_seed_invalid
     assert!(crate::state::normalize("updater-last-check", json!(-1)).is_err());
 }
 
+fn read_request(socket: &mut impl std::io::Read) -> std::io::Result<String> {
+    let mut request = Vec::new();
+    while !request.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        socket.read_exact(&mut byte)?;
+        request.push(byte[0]);
+        if request.len() > 8192 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "fixture headers too large",
+            ));
+        }
+    }
+    String::from_utf8(request).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+type ResponseGate = (
+    String,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
 struct Server {
+    gate: Arc<Mutex<Option<ResponseGate>>>,
+    feed_failures: Arc<std::sync::atomic::AtomicUsize>,
+    omit_length: Arc<AtomicBool>,
     address: std::net::SocketAddr,
     routes: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     count: Arc<std::sync::atomic::AtomicUsize>,
@@ -352,10 +394,7 @@ struct Server {
 }
 impl Server {
     fn new() -> Self {
-        use std::{
-            io::{Read, Write},
-            net::TcpListener,
-        };
+        use std::{io::Write, net::TcpListener};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -367,25 +406,58 @@ impl Server {
         let calls = count.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
+        let gate = Arc::new(Mutex::new(None::<ResponseGate>));
+        let paused = gate.clone();
+        let feed_failures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let failures = feed_failures.clone();
+        let omit_length = Arc::new(AtomicBool::new(false));
+        let omit = omit_length.clone();
         let thread = std::thread::spawn(move || {
             while !done.load(Ordering::Acquire) {
                 if let Ok((mut socket, _)) = listener.accept() {
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
-                    let mut bytes = [0; 8192];
-                    let n = socket.read(&mut bytes).unwrap_or(0);
-                    let request = String::from_utf8_lossy(&bytes[..n]);
-                    let path = request.split_whitespace().nth(1).unwrap_or("");
+                    let request = read_request(&mut socket)
+                        .expect("fixture request must contain complete headers");
+                    let path = request
+                        .split_whitespace()
+                        .nth(1)
+                        .expect("fixture request target");
                     calls.fetch_add(1, Ordering::AcqRel);
-                    let body = copy.lock().unwrap().get(path).cloned();
+                    let pause = {
+                        let mut gate = paused.lock().unwrap();
+                        if gate.as_ref().is_some_and(|g| g.0 == path) {
+                            gate.take()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((_, arrived, resume)) = pause {
+                        arrived.send(()).unwrap();
+                        resume
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("fixture gate released");
+                    }
+                    let body = if path == "/feed"
+                        && failures
+                            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+                            .is_ok()
+                    {
+                        None
+                    } else {
+                        copy.lock().unwrap().get(path).cloned()
+                    };
                     let (code, body) = body
                         .map(|b| ("200 OK", b))
                         .unwrap_or_else(|| ("503 Unavailable", vec![]));
-                    let header = format!(
-                        "HTTP/1.1 {code}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
+                    let length = if omit.load(Ordering::Acquire) {
+                        String::new()
+                    } else {
+                        format!("Content-Length: {}\r\n", body.len())
+                    };
+                    let header = format!("HTTP/1.1 {code}\r\n{length}Connection: close\r\n\r\n");
                     let _ = socket.write_all(header.as_bytes());
                     let _ = socket.write_all(&body);
                 } else {
@@ -394,12 +466,21 @@ impl Server {
             }
         });
         Self {
+            gate,
+            feed_failures,
+            omit_length,
             address,
             routes,
             count,
             stop,
             thread: Some(thread),
         }
+    }
+    fn hold(&self, path: &str) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (arrived, waiting) = std::sync::mpsc::channel();
+        let (resume, held) = std::sync::mpsc::channel();
+        *self.gate.lock().unwrap() = Some((path.into(), arrived, held));
+        (waiting, resume)
     }
     fn url(&self, path: &str) -> String {
         format!("http://{}{path}", self.address)
@@ -587,7 +668,7 @@ fn uncertain_install_adopts_new_bundle_and_pre_exchange_failure_retries_without_
     updater.act(Action::Check { background: false }).unwrap();
     updater.act(Action::Download).unwrap();
     let offer = updater.engine.lock().unwrap().offer.clone().unwrap();
-    let bytes = updater.engine.lock().unwrap().bytes.clone().unwrap();
+    let bytes = updater.engine.lock().unwrap().bytes.clone().unwrap().bytes;
     // Complete the real exchange but lose the process-local acknowledgement.
     install::install(
         &updater.root,
@@ -726,4 +807,924 @@ fn compiled_qa_seam_rejects_production_identity_and_nonloopback_endpoints() {
         .is_ok());
     assert_eq!(owner("com.localdictation").feed, FEED);
     assert_eq!(owner("com.localdictation").key, PUBLIC_KEY);
+}
+
+fn pending(store: &CompletionService) -> Value {
+    store
+        .lifecycle(Operation::Status)
+        .unwrap()
+        .values
+        .get("pending-update-release-notes")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+fn stale(store: &CompletionService) {
+    store
+        .lifecycle(Operation::Save {
+            key: "updater-last-check".into(),
+            value: json!(0),
+        })
+        .unwrap();
+}
+fn feed_value(server: &Server) -> Value {
+    serde_json::from_slice(server.routes.lock().unwrap().get("/feed").unwrap()).unwrap()
+}
+fn publish(server: &Server, manifest: &Value) {
+    server.set("/feed", serde_json::to_vec(manifest).unwrap());
+}
+fn assert_original(updater: &Updater, target: &Path) {
+    assert_eq!(
+        fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+        "synthetic 1.0.0"
+    );
+    let engine = updater.engine.lock().unwrap();
+    assert!(!engine.installed);
+    assert!(!engine.relaunch_requested);
+    assert!(engine.bytes.is_none());
+    assert!(!updater.root.join("updater-install.json").exists());
+    assert!(fs::read_dir(target.parent().unwrap()).unwrap().all(|e| !e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".murmur-update-")));
+}
+#[test]
+fn nonexecutable_missing_symlinked_helpers_or_invalid_main_are_refused_before_swap() {
+    for name in install::EXECUTABLES {
+        for failure in ["mode", "missing", "symlink"] {
+            let temp = scratch();
+            let server = Server::new();
+            let (mut updater, _, target) = network_owner(temp.path(), &server, false);
+            let file = temp.path().join("New.app/Contents/MacOS").join(name);
+            match failure {
+                "mode" => {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(file, fs::Permissions::from_mode(0o644)).unwrap();
+                }
+                "missing" => fs::remove_file(file).unwrap(),
+                _ => {
+                    fs::remove_file(&file).unwrap();
+                    std::os::unix::fs::symlink("ui", file).unwrap();
+                }
+            }
+            let bytes = archive(&temp.path().join("New.app"));
+            let (key, signature) = signed(&bytes);
+            updater.key = key;
+            let mut manifest = feed_value(&server);
+            manifest["platforms"][platform()]["signature"] = json!(signature);
+            publish(&server, &manifest);
+            server.set("/archive", bytes);
+            updater.act(Action::Check { background: false }).unwrap();
+            updater.act(Action::Download).unwrap();
+            assert!(updater.act(Action::Install).is_err(), "{name}: {failure}");
+            assert_original(&updater, &target);
+        }
+    }
+    let temp = scratch();
+    let server = Server::new();
+    let (mut updater, _, target) = network_owner(temp.path(), &server, false);
+    let path = temp.path().join("New.app/Contents/Info.plist");
+    let mut plist = plist::Value::from_file(&path).unwrap();
+    plist.as_dictionary_mut().unwrap().insert(
+        "CFBundleExecutable".into(),
+        plist::Value::String("other".into()),
+    );
+    plist.to_file_xml(path).unwrap();
+    let bytes = archive(&temp.path().join("New.app"));
+    let (key, signature) = signed(&bytes);
+    updater.key = key;
+    let mut manifest = feed_value(&server);
+    manifest["platforms"][platform()]["signature"] = json!(signature);
+    publish(&server, &manifest);
+    server.set("/archive", bytes);
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Download).unwrap();
+    assert!(updater.act(Action::Install).is_err());
+    assert_original(&updater, &target);
+}
+#[test]
+fn signed_bad_archive_can_be_corrected_at_same_version_without_restarting() {
+    for failure in ["extract", "validate", "verify"] {
+        let temp = scratch();
+        let server = Server::new();
+        let (mut updater, _, target) = network_owner(temp.path(), &server, false);
+        let pair = Ed25519KeyPair::from_seed_unchecked(&[7; 32]).unwrap();
+        let good = archive(&temp.path().join("New.app"));
+        let bad = if failure == "extract" {
+            b"not gzip".to_vec()
+        } else {
+            make_bundle(&temp.path().join("Wrong.app"), "9.9.9");
+            archive(&temp.path().join("Wrong.app"))
+        };
+        let (key, sig) = signed_with(&bad, &pair);
+        updater.key = key;
+        let mut manifest = feed_value(&server);
+        manifest["platforms"][platform()]["signature"] = json!(sig);
+        publish(&server, &manifest);
+        server.set("/archive", bad);
+        updater.act(Action::Check { background: false }).unwrap();
+        updater.act(Action::Download).unwrap();
+        if failure == "verify" {
+            updater.engine.lock().unwrap().bytes.as_mut().unwrap().bytes[0] ^= 1;
+        }
+        assert!(updater.act(Action::Install).is_err());
+        assert_original(&updater, &target);
+        let (_, sig) = signed_with(&good, &pair);
+        manifest["platforms"][platform()]["signature"] = json!(sig);
+        manifest["platforms"][platform()]["url"] = json!(server.url("/corrected"));
+        publish(&server, &manifest);
+        server.set("/corrected", good);
+        updater.act(Action::Check { background: false }).unwrap();
+        updater.act(Action::Download).unwrap();
+        assert!(updater.act(Action::Install).unwrap());
+        assert_eq!(
+            fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+            "synthetic 1.2.0"
+        );
+    }
+}
+#[test]
+fn cache_identity_requires_version_url_and_signature() {
+    for field in ["version", "url", "signature"] {
+        let temp = scratch();
+        let server = Server::new();
+        let (updater, _, target) = network_owner(temp.path(), &server, false);
+        updater.act(Action::Check { background: false }).unwrap();
+        updater.act(Action::Download).unwrap();
+        let mut e = updater.engine.lock().unwrap();
+        let offer = e.offer.as_mut().unwrap();
+        match field {
+            "version" => offer.version = "1.3.0".into(),
+            "url" => offer.url = server.url("/new"),
+            _ => offer.signature.push('x'),
+        }
+        drop(e);
+        assert!(updater.act(Action::Install).is_err());
+        assert_original(&updater, &target);
+    }
+}
+#[test]
+fn configure_preserves_downloaded_notes_then_relaunch_shows_once_after_dismissal() {
+    let temp = scratch();
+    let server = Server::new();
+    let (updater, store, target) = network_owner(temp.path(), &server, false);
+    let mut manifest = feed_value(&server);
+    manifest["release_history"] = json!([{"version":"1.1.0","notes":"Intermediate"}]);
+    publish(&server, &manifest);
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Download).unwrap();
+    let saved = pending(&store);
+    assert!(saved["notes"].as_str().unwrap().contains("Intermediate"));
+    for automatic in [false, true, false] {
+        updater.act(Action::Configure { automatic }).unwrap();
+        assert_eq!(pending(&store), saved);
+        assert!(updater.snapshot().completed_update.is_none());
+    }
+    assert!(updater.act(Action::Install).unwrap());
+    let next = || {
+        Updater::production(
+            temp.path().join("data"),
+            target.join("Contents/MacOS/ui"),
+            ID.into(),
+            "1.2.0".into(),
+            store.clone(),
+            |_| {},
+            |_| {},
+        )
+    };
+    let replacement = next();
+    replacement
+        .act(Action::Configure { automatic: false })
+        .unwrap();
+    assert_eq!(
+        replacement.snapshot().completed_update.unwrap().notes,
+        saved["notes"]
+    );
+    replacement.act(Action::DismissCompleted).unwrap();
+    assert!(pending(&store).is_null());
+    let later = next();
+    later.act(Action::Configure { automatic: false }).unwrap();
+    assert!(later.snapshot().completed_update.is_none());
+}
+#[test]
+fn pending_notes_preserve_future_clear_obsolete_and_are_superseded_on_new_download() {
+    let temp = scratch();
+    let server = Server::new();
+    let (updater, store, _) = network_owner(temp.path(), &server, false);
+    for version in ["0.9.0", "1.1.0", "1.0.0-beta.1", "1.0.0+other"] {
+        store
+            .lifecycle(Operation::Save {
+                key: "pending-update-release-notes".into(),
+                value: json!({"version":version,"notes":"Saved"}),
+            })
+            .unwrap();
+        updater.act(Action::Configure { automatic: false }).unwrap();
+        assert!(updater.snapshot().completed_update.is_none());
+        // Future notes, including a distinct build, are never mistaken for installed notes.
+        assert_eq!(
+            pending(&store).is_null(),
+            matches!(version, "0.9.0" | "1.0.0-beta.1")
+        );
+    }
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Download).unwrap();
+    assert_eq!(pending(&store)["version"], "1.2.0");
+}
+#[test]
+fn startup_timer_focus_visibility_and_wake_errors_are_quiet_but_manual_actions_open() {
+    // All lifecycle sources map to Check(background:true); exercise each label
+    // separately and pair with the frontend forwarding tests.
+    for trigger in [
+        "startup",
+        "timer",
+        "focus",
+        "visibility",
+        "wake",
+        "manual",
+        "download",
+        "install",
+        "canary",
+    ] {
+        let temp = scratch();
+        let server = Server::new();
+        let (mut updater, _, _) = network_owner(temp.path(), &server, false);
+        updater.automatic.store(true, Ordering::Release);
+        server.routes.lock().unwrap().remove("/feed");
+        let action = match trigger {
+            "startup" => Action::Configure { automatic: true },
+            "manual" => Action::Check { background: false },
+            "download" => Action::Download,
+            "install" => Action::Install,
+            "canary" => {
+                updater.canary = Some(temp.path().join("canary.json"));
+                Action::Configure { automatic: true }
+            }
+            _ => Action::Check { background: true },
+        };
+        assert!(updater.act(action).is_err(), "{trigger}");
+        assert!(matches!(
+            updater.snapshot().update_status,
+            Status::Error { .. }
+        ));
+        assert_eq!(
+            updater.snapshot().is_update_dialog_open,
+            matches!(trigger, "manual" | "download" | "install" | "canary"),
+            "{trigger}"
+        );
+    }
+}
+#[test]
+fn request_fixture_waits_for_fragmented_headers_and_rejects_truncation() {
+    use std::{
+        io::{Read, Write},
+        net::TcpStream,
+    };
+    let server = Server::new();
+    server.set("/fragmented", b"synthetic response".to_vec());
+    let mut socket = TcpStream::connect(server.address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    socket.write_all(b"GET /frag").unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+    assert_eq!(server.count(), 0);
+    socket
+        .write_all(b"mented HTTP/1.1\r\nHost: fixture\r\n")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+    assert_eq!(server.count(), 0);
+    socket.write_all(b"\r\n").unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).unwrap();
+    assert!(response.ends_with("synthetic response"));
+    assert_eq!(server.count(), 1);
+    assert!(read_request(&mut &b"GET / HTTP/1.1\r\n"[..]).is_err());
+    assert!(read_request(&mut &vec![b'a'; 8193][..]).is_err());
+}
+
+#[test]
+fn stale_refresh_selects_newer_or_corrected_same_version_and_retains_no_newer() {
+    for change in ["newer", "same-version", "withdrawn", "older", "recent"] {
+        let temp = scratch();
+        let server = Server::new();
+        let (mut updater, store, _) = network_owner(temp.path(), &server, false);
+        updater.act(Action::Check { background: false }).unwrap();
+        if change != "recent" {
+            updater
+                .engine
+                .lock()
+                .unwrap()
+                .offer
+                .as_mut()
+                .unwrap()
+                .discovered = 0;
+        }
+        let mut manifest = feed_value(&server);
+        let original_sig = manifest["platforms"][platform()]["signature"].clone();
+        if matches!(change, "newer" | "same-version") {
+            let target = if change == "newer" { "1.3.0" } else { "1.2.0" };
+            make_bundle(&temp.path().join("Corrected.app"), target);
+            let bytes = archive(&temp.path().join("Corrected.app"));
+            let (key, sig) = signed(&bytes);
+            updater.key = key;
+            manifest["version"] = json!(target);
+            manifest["min_version"] = json!("1.1.0");
+            manifest["notes"] = json!("Corrected");
+            manifest["release_history"] = json!([{"version":"1.1.0","notes":"Missed"}]);
+            manifest["platforms"][platform()]["signature"] = json!(sig);
+            manifest["platforms"][platform()]["url"] = json!(server.url("/corrected"));
+            server.set("/corrected", bytes);
+        } else if change == "withdrawn" {
+            manifest["version"] = json!("1.0.0");
+        } else {
+            manifest["version"] = json!("1.1.0");
+        }
+        publish(&server, &manifest);
+        updater.act(Action::Download).unwrap();
+        let e = updater.engine.lock().unwrap();
+        let offered = e.offer.as_ref().unwrap();
+        assert_eq!(
+            offered.version,
+            if change == "newer" { "1.3.0" } else { "1.2.0" }
+        );
+        assert!(e.bytes.as_ref().unwrap().matches(offered));
+        if matches!(change, "newer" | "same-version") {
+            assert!(offered.forced);
+            assert!(pending(&store)["notes"]
+                .as_str()
+                .unwrap()
+                .contains("Missed"));
+        } else {
+            assert_eq!(offered.signature, original_sig);
+        }
+        assert_eq!(server.count(), if change == "recent" { 2 } else { 3 });
+    }
+}
+#[test]
+fn semver_policy_and_notes_cover_legacy_edge_matrix() {
+    for (a, b, result) in [
+        ("1.2.3", "1.2.3", Some(std::cmp::Ordering::Equal)),
+        ("0.6.1", "0.6.2", Some(std::cmp::Ordering::Less)),
+        ("0.6.3", "0.6.2", Some(std::cmp::Ordering::Greater)),
+        ("1.0.0", "0.9.9", Some(std::cmp::Ordering::Greater)),
+        (
+            " v1.2.3-rc.1+build ",
+            "1.2.3",
+            Some(std::cmp::Ordering::Equal),
+        ),
+        ("bad", "1.0.0", None),
+        ("1.0.0", "bad", None),
+        ("bad", "bad", None),
+    ] {
+        assert_eq!(compare(a, b), result);
+    }
+    for invalid in ["", "abc", "1.2"] {
+        assert!(version(invalid).is_none());
+    }
+    for valid in [
+        "1.2.3",
+        "0.6.2",
+        "10.20.30",
+        "1.2.3-beta.1",
+        "1.2.3+build.123",
+        " v0.6.2 ",
+    ] {
+        assert!(version(valid).is_some());
+    }
+    assert!(!forced("0.7.0", &json!("0.7.0")));
+    assert!(forced("bad", &json!("bad")));
+    let mut m = manifest();
+    for minimum in [
+        None,
+        Some(json!("1.1.0")),
+        Some(json!(23)),
+        Some(Value::Null),
+    ] {
+        m.as_object_mut().unwrap().remove("min_version");
+        if let Some(v) = &minimum {
+            m["min_version"] = v.clone();
+        }
+        let offer = parse_feed(
+            &serde_json::to_vec(&m).unwrap(),
+            "1.0.0",
+            "darwin-aarch64",
+            0,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            offer.policy_verified,
+            minimum.is_none() || minimum.as_ref().unwrap().is_string()
+        );
+        assert_eq!(offer.forced, minimum.as_ref().is_some_and(Value::is_string));
+    }
+    for (stored, current, matches) in [
+        ("v1.2.0", "1.2.0", true),
+        ("1.2.0-beta.1", "1.2.0", false),
+        ("bad", "bad", false),
+    ] {
+        assert_eq!(
+            pending_for(&json!({"version":stored,"notes":"Notes"}), current).is_some(),
+            matches
+        );
+    }
+    assert!(normalize_pending(json!("{broken")).is_err());
+    assert!(pending_for(&Value::Null, "1.2.0").is_none());
+    m["version"] = json!("0.59.11");
+    m["notes"] = json!("Eleven");
+    m["release_history"] = json!([{"version":"v0.59.9","notes":"Nine"},{"version":"0.59.10","notes":"Ten"},null,{"version":"bad","notes":"Invalid"},{"version":"0.59.10-beta","notes":"Preview"},{"version":"0.59.12","notes":"Future"}]);
+    let notes = parse_feed(
+        &serde_json::to_vec(&m).unwrap(),
+        "v0.59.8",
+        "darwin-aarch64",
+        0,
+    )
+    .unwrap()
+    .unwrap()
+    .notes;
+    assert_eq!(
+        notes,
+        "# v0.59.11\n\nEleven\n\n---\n\n# v0.59.10\n\nTen\n\n---\n\n# v0.59.9\n\nNine"
+    );
+    for history in [
+        Value::Null,
+        json!("bad"),
+        json!([null, {}, {"version":"0.59.9","notes":42}]),
+    ] {
+        m["release_history"] = history;
+        assert_eq!(
+            parse_feed(
+                &serde_json::to_vec(&m).unwrap(),
+                "0.59.8",
+                "darwin-aarch64",
+                0
+            )
+            .unwrap()
+            .unwrap()
+            .notes,
+            "Eleven"
+        );
+    }
+    m["release_history"] = json!([{"version":"0.59.9","notes":"Nine"}]);
+    assert_eq!(
+        parse_feed(
+            &serde_json::to_vec(&m).unwrap(),
+            "0.59.8-beta",
+            "darwin-aarch64",
+            0
+        )
+        .unwrap()
+        .unwrap()
+        .notes,
+        "Eleven"
+    );
+}
+#[test]
+fn background_policy_optional_forced_notification_once_and_withdrawal() {
+    for forced in [false, true] {
+        let temp = scratch();
+        let server = Server::new();
+        let (mut updater, store, _) = network_owner(temp.path(), &server, forced);
+        let notified = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let copy = notified.clone();
+        updater.notify = Arc::new(move |_| {
+            copy.fetch_add(1, Ordering::AcqRel);
+        });
+        updater.act(Action::Configure { automatic: false }).unwrap();
+        assert_eq!(server.count(), 0);
+        updater.act(Action::Configure { automatic: true }).unwrap();
+        assert_eq!(updater.snapshot().is_update_dialog_open, forced);
+        assert_eq!(notified.load(Ordering::Acquire), 1);
+        updater.act(Action::Configure { automatic: true }).unwrap();
+        assert_eq!(server.count(), 1);
+        stale(&store);
+        updater.act(Action::Check { background: true }).unwrap();
+        assert_eq!(server.count(), 2);
+        assert_eq!(notified.load(Ordering::Acquire), 1);
+        updater.act(Action::Show).unwrap();
+        let mut m = feed_value(&server);
+        m["version"] = json!("1.0.0");
+        publish(&server, &m);
+        stale(&store);
+        updater.act(Action::Check { background: true }).unwrap();
+        assert_eq!(updater.snapshot().update_status, Status::Idle);
+        assert!(!updater.snapshot().is_update_dialog_open);
+        assert!(updater.engine.lock().unwrap().offer.is_none());
+        assert!(updater.act(Action::Download).is_err());
+    }
+}
+#[test]
+fn in_flight_background_setup_suppresses_presentation_then_due_checks_resume() {
+    for forced in [false, true] {
+        let temp = scratch();
+        let server = Server::new();
+        let (mut updater, store, _) = network_owner(temp.path(), &server, forced);
+        let notified = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let copy = notified.clone();
+        updater.notify = Arc::new(move |_| {
+            copy.fetch_add(1, Ordering::AcqRel);
+        });
+        let updater = Arc::new(updater);
+        let (arrived, resume) = server.hold("/feed");
+        let copy = updater.clone();
+        let background =
+            std::thread::spawn(move || copy.act(Action::Configure { automatic: true }));
+        arrived.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Configure stores readiness before waiting for the serialized owner.
+        let copy = updater.clone();
+        let setup = std::thread::spawn(move || copy.act(Action::Configure { automatic: false }));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while updater.automatic.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "setup readiness published before gate deadline"
+            );
+            std::thread::yield_now();
+        }
+        resume.send(()).unwrap();
+        background.join().unwrap().unwrap();
+        setup.join().unwrap().unwrap();
+        assert!(!updater.snapshot().is_update_dialog_open);
+        assert_eq!(notified.load(Ordering::Acquire), 0);
+        updater.act(Action::Check { background: false }).unwrap();
+        assert!(updater.snapshot().is_update_dialog_open);
+        assert_eq!(notified.load(Ordering::Acquire), 0);
+        updater.act(Action::Configure { automatic: true }).unwrap();
+        assert_eq!(server.count(), 2); // no repeated startup check
+        stale(&store);
+        updater.act(Action::Check { background: true }).unwrap();
+        assert_eq!(notified.load(Ordering::Acquire), 1);
+        stale(&store);
+        updater.act(Action::Check { background: true }).unwrap();
+        assert_eq!(notified.load(Ordering::Acquire), 1);
+    }
+}
+#[test]
+fn concurrent_checks_downloads_and_installs_have_one_owner_and_preserve_dialog() {
+    for owner in ["check", "background", "download"] {
+        let temp = scratch();
+        let server = Server::new();
+        let (updater, _, _) = network_owner(temp.path(), &server, false);
+        let updater = Arc::new(updater);
+        if owner == "download" {
+            updater.act(Action::Check { background: false }).unwrap();
+        }
+        updater.automatic.store(true, Ordering::Release);
+        let (arrived, resume) = server.hold(if owner == "download" {
+            "/archive"
+        } else {
+            "/feed"
+        });
+        let copy = updater.clone();
+        let kind = owner.to_string();
+        let first = std::thread::spawn(move || {
+            copy.act(match kind.as_str() {
+                "check" => Action::Check { background: false },
+                "background" => Action::Check { background: true },
+                _ => Action::Download,
+            })
+        });
+        arrived.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!updater.drained());
+        let calls = server.count();
+        if owner == "download" {
+            updater.act(Action::Check { background: false }).unwrap();
+            assert!(matches!(
+                updater.snapshot().update_status,
+                Status::Downloading { .. }
+            ));
+        }
+        updater.act(Action::Check { background: true }).unwrap();
+        assert_eq!(server.count(), calls);
+        let copy = updater.clone();
+        let second = std::thread::spawn(move || copy.act(Action::Download));
+        // A second download joins the first owner; no second transfer.
+        resume.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        assert!(matches!(
+            updater.snapshot().update_status,
+            Status::Ready { .. }
+        ));
+        assert!(updater.snapshot().is_update_dialog_open);
+        assert_eq!(server.count(), 2);
+        updater.act(Action::Check { background: false }).unwrap();
+        updater.act(Action::Download).unwrap();
+        assert_eq!(server.count(), 2);
+        let copy = updater.clone();
+        let first = std::thread::spawn(move || copy.act(Action::Install));
+        let copy = updater.clone();
+        let second = std::thread::spawn(move || copy.act(Action::Install));
+        assert_ne!(
+            first.join().unwrap().unwrap(),
+            second.join().unwrap().unwrap()
+        );
+    }
+}
+#[test]
+fn canary_policy_download_archive_and_completion_failures_preserve_exact_stage() {
+    for failure in ["policy", "download", "archive", "relaunch"] {
+        let temp = scratch();
+        let server = Server::new();
+        let (mut updater, _, target) = network_owner(temp.path(), &server, false);
+        updater.canary = Some(temp.path().join("canary.json"));
+        let mut m = feed_value(&server);
+        match failure {
+            "policy" => {
+                m["min_version"] = json!(23);
+                publish(&server, &m);
+            }
+            "download" => {
+                server.routes.lock().unwrap().remove("/archive");
+            }
+            "archive" => {
+                let bad = b"signed invalid archive".to_vec();
+                let (key, sig) = signed(&bad);
+                updater.key = key;
+                m["platforms"][platform()]["signature"] = json!(sig);
+                publish(&server, &m);
+                server.set("/archive", bad);
+            }
+            _ => {}
+        }
+        let result = updater.act(Action::Configure { automatic: true });
+        if failure == "relaunch" {
+            assert!(result.unwrap());
+            updater.canary_failed("Synthetic host relaunch refused");
+        } else {
+            assert!(result.is_err());
+        }
+        let result = updater.read_canary().unwrap();
+        assert_eq!(result["status"], "failed");
+        let stage = match failure {
+            "archive" => "install",
+            other => other,
+        };
+        assert_eq!(result["stages"][stage], "failed");
+        if failure == "relaunch" {
+            assert_eq!(result["stages"]["install"], "passed");
+        } else {
+            assert_eq!(
+                fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+                "synthetic 1.0.0"
+            );
+            assert!(!updater.engine.lock().unwrap().relaunch_requested);
+        }
+    }
+}
+
+#[test]
+fn transient_feed_failure_retries_once_and_canary_marker_absence_is_inert() {
+    let temp = scratch();
+    let server = Server::new();
+    let (updater, _, _) = network_owner(temp.path(), &server, false);
+    server.feed_failures.store(1, Ordering::Release);
+    updater.act(Action::Configure { automatic: true }).unwrap();
+    assert_eq!(server.count(), 2);
+    assert!(matches!(
+        updater.snapshot().update_status,
+        Status::Available { .. }
+    ));
+    assert!(updater.canary.is_none());
+    assert!(updater.read_canary().is_none());
+    assert!(updater.engine.lock().unwrap().bytes.is_none());
+}
+#[test]
+fn preparing_progress_ready_and_translocated_recovery_follow_the_real_owner() {
+    let temp = scratch();
+    let server = Server::new();
+    let (mut updater, _, target) = network_owner(temp.path(), &server, false);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let copy = seen.clone();
+    updater.changed = Arc::new(move |s| {
+        copy.lock().unwrap().push(s);
+    });
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Dismiss).unwrap();
+    updater.act(Action::Download).unwrap();
+    assert!(seen
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|s| matches!(s.update_status, Status::Preparing { .. }) && s.is_update_dialog_open));
+    assert!(seen.lock().unwrap().iter().any(|s| matches!(
+        s.update_status,
+        Status::Downloading { progress: None, .. }
+    ) && s.is_update_dialog_open));
+    assert!(seen.lock().unwrap().iter().any(
+        |s| matches!(s.update_status,Status::Downloading { progress: Some(p), .. } if p == 100.)
+    ));
+    assert!(!updater.engine.lock().unwrap().installed);
+    assert_eq!(
+        fs::read_to_string(target.join("Contents/MacOS/ui")).unwrap(),
+        "synthetic 1.0.0"
+    );
+    updater.act(Action::Dismiss).unwrap();
+    assert!(!updater.snapshot().is_update_dialog_open);
+    let temp = scratch();
+    let server = Server::new();
+    let (mut updater, _, _) = network_owner(temp.path(), &server, false);
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.executable =
+        PathBuf::from("/private/AppTranslocation/fixture/Murmur.app/Contents/MacOS/ui");
+    assert!(updater.act(Action::Download).is_err());
+    assert_eq!(server.count(), 1);
+    assert!(
+        matches!(updater.snapshot().update_status,Status::Error { recovery: Some(r), .. } if r=="reinstall")
+    );
+}
+#[test]
+fn manual_check_joins_busy_owner_without_another_fetch() {
+    let temp = scratch();
+    let server = Server::new();
+    let (updater, _, _) = network_owner(temp.path(), &server, false);
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Dismiss).unwrap();
+    let updater = Arc::new(updater);
+    let (locked, ready) = std::sync::mpsc::channel();
+    let copy = updater.clone();
+    let owner = std::thread::spawn(move || {
+        let _engine = copy.engine.lock().unwrap();
+        locked.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+    });
+    ready.recv_timeout(Duration::from_secs(2)).unwrap();
+    updater.act(Action::Check { background: false }).unwrap();
+    owner.join().unwrap();
+    assert_eq!(server.count(), 1);
+    assert!(updater.snapshot().is_update_dialog_open);
+}
+
+#[derive(Clone)]
+struct DiagnosticCodes(Arc<Mutex<Vec<String>>>);
+impl tracing::Subscriber for DiagnosticCodes {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        // Other test threads have no subscriber. Reevaluate this thread's
+        // dispatcher rather than caching their disabled callsite globally.
+        tracing::subscriber::Interest::sometimes()
+    }
+    fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
+        Some(tracing::metadata::LevelFilter::TRACE)
+    }
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Codes<'a>(&'a mut Vec<String>);
+        impl tracing::field::Visit for Codes<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "event_code" {
+                    self.0
+                        .push(format!("{value:?}").trim_matches('"').to_owned());
+                }
+            }
+        }
+        event.record(&mut Codes(&mut self.0.lock().unwrap()));
+    }
+}
+#[test]
+fn stable_diagnostics_cover_current_retry_policy_download_ready_and_failures() {
+    // Tracing caches callsite interest process-wide while the rest of the
+    // suite runs without subscribers. Isolate this diagnostic contract test
+    // from those concurrent callsites; this is a test binary, never the app.
+    if std::env::var_os("MURMUR_UPDATER_DIAGNOSTIC_TEST").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "updater::tests::stable_diagnostics_cover_current_retry_policy_download_ready_and_failures", "--test-threads=1"])
+            .env("MURMUR_UPDATER_DIAGNOSTIC_TEST", "1")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let codes = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(DiagnosticCodes(codes.clone()), || {
+        let temp = scratch();
+        let server = Server::new();
+        let (updater, _, _) = network_owner(temp.path(), &server, false);
+        let original = feed_value(&server);
+        let mut m = original.clone();
+        m["version"] = json!("1.0.0");
+        publish(&server, &m);
+        updater.act(Action::Check { background: false }).unwrap();
+        let mut m = original;
+        m["min_version"] = json!(23);
+        publish(&server, &m);
+        server.feed_failures.store(1, Ordering::Release);
+        updater.act(Action::Check { background: false }).unwrap();
+        updater.act(Action::Download).unwrap();
+        updater.engine.lock().unwrap().bytes = None;
+        server.routes.lock().unwrap().remove("/archive");
+        assert!(updater.act(Action::Download).is_err());
+        assert!(updater.act(Action::Install).is_err());
+        server.routes.lock().unwrap().remove("/feed");
+        assert!(updater.act(Action::Check { background: false }).is_err());
+    });
+    let codes = codes.lock().unwrap();
+    for code in [
+        "updater.check_current",
+        "updater.check_retry",
+        "updater.policy_unavailable",
+        "updater.download_starting",
+        "updater.download_ready",
+        "updater.install_failed",
+        "updater.restart_failed",
+        "updater.check_failed",
+    ] {
+        assert!(codes.iter().any(|c| c == code), "missing {code}: {codes:?}");
+    }
+}
+
+#[test]
+fn canary_receipt_roundtrip_requires_matching_installed_version_to_confirm() {
+    let temp = scratch();
+    let server = Server::new();
+    let (mut updater, _, _) = network_owner(temp.path(), &server, false);
+    updater.canary = Some(temp.path().join("canary/result.json"));
+    let receipt = json!({"schemaVersion":1,"status":"pending","checkedVersion":"0.9.0","offeredVersion":"1.2.0","forced":false,"dryRun":false,"stages":{"discover":"passed","policy":"passed","download":"passed","signatureVerify":"passed","install":"passed","relaunch":"pending"},"error":null});
+    updater.write_canary(&receipt).unwrap();
+    assert_eq!(updater.read_canary().unwrap(), receipt);
+    server.routes.lock().unwrap().remove("/feed");
+    assert!(updater.act(Action::Configure { automatic: true }).is_err());
+    assert_eq!(updater.read_canary().unwrap()["status"], "failed");
+    assert_ne!(
+        updater.read_canary().unwrap()["stages"]["relaunch"],
+        "passed"
+    );
+}
+
+#[test]
+fn download_without_content_length_remains_indeterminate_until_ready() {
+    let temp = scratch();
+    let server = Server::new();
+    server.omit_length.store(true, Ordering::Release);
+    let (mut updater, _, _) = network_owner(temp.path(), &server, false);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let copy = seen.clone();
+    updater.changed = Arc::new(move |s| {
+        copy.lock().unwrap().push(s.update_status);
+    });
+    updater.act(Action::Check { background: false }).unwrap();
+    updater.act(Action::Download).unwrap();
+    let seen = seen.lock().unwrap();
+    assert!(seen
+        .iter()
+        .any(|s| matches!(s, Status::Downloading { progress: None, .. })));
+    assert!(!seen.iter().any(|s| matches!(
+        s,
+        Status::Downloading {
+            progress: Some(_),
+            ..
+        }
+    )));
+    assert!(matches!(
+        updater.snapshot().update_status,
+        Status::Ready { .. }
+    ));
+}
+
+#[test]
+fn download_click_presents_dialog_while_waiting_for_background_discovery() {
+    let temp = scratch();
+    let server = Server::new();
+    let (mut updater, _, _) = network_owner(temp.path(), &server, false);
+    let (presented, waiting) = std::sync::mpsc::channel();
+    updater.changed = Arc::new(move |s| {
+        if s.is_update_dialog_open {
+            let _ = presented.send(());
+        }
+    });
+    updater.automatic.store(true, Ordering::Release);
+    let updater = Arc::new(updater);
+    let (arrived, resume) = server.hold("/feed");
+    let copy = updater.clone();
+    let background = std::thread::spawn(move || copy.act(Action::Check { background: true }));
+    arrived.recv_timeout(Duration::from_secs(2)).unwrap();
+    let copy = updater.clone();
+    let download = std::thread::spawn(move || copy.act(Action::Download));
+    waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(updater.snapshot().is_update_dialog_open);
+    assert_eq!(updater.snapshot().update_status, Status::Idle);
+    resume.send(()).unwrap();
+    background.join().unwrap().unwrap();
+    download.join().unwrap().unwrap();
+    assert!(updater.snapshot().is_update_dialog_open);
+    assert!(matches!(
+        updater.snapshot().update_status,
+        Status::Ready { .. }
+    ));
+    assert_eq!(server.count(), 2);
 }

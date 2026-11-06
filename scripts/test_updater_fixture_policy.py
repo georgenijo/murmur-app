@@ -31,6 +31,14 @@ class UpdaterFixturePolicy(unittest.TestCase):
             self.assertNotIn('updater:default', path.read_text())
             self.assertNotIn('process:allow-restart', path.read_text())
 
+    def test_installer_requires_every_packaged_executable(self):
+        config = json.loads((TAURI / 'tauri.macos.conf.json').read_text())
+        packaged = {'ui', *(Path(value).name for value in config['bundle']['externalBin'])}
+        source = (TAURI / 'crates/murmur-core/src/updater/install.rs').read_text()
+        required = re.search(r'const EXECUTABLES:.*?= &\[(.*?)\];', source, re.S)
+        self.assertIsNotNone(required)
+        self.assertEqual(set(re.findall(r'"([^"]+)"', required.group(1))), packaged)
+
     def test_production_trust_matches_installed_clients_and_has_no_override(self):
         config = json.loads((TAURI / 'tauri.conf.json').read_text())['plugins']['updater']
         source = (TAURI / 'crates/murmur-core/src/updater/feed.rs').read_text()

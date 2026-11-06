@@ -67,6 +67,14 @@ pub fn bundle(executable: &Path) -> Result<PathBuf> {
     }
     Ok(canonical)
 }
+// Keep aligned with tauri.macos.conf.json and finalize_macos_bundle.py. These
+// helpers are required even if an accidentally incomplete old bundle omitted one.
+pub(super) const EXECUTABLES: &[&str] = &[
+    "ui",
+    "murmur-capture-agent",
+    "murmur-capture-helper",
+    "murmur-capture-worker",
+];
 fn validate(app: &Path, expected: &str, identifier: &str) -> Result<()> {
     let value = plist::Value::from_file(app.join("Contents/Info.plist"))
         .map_err(|_| "Invalid update bundle metadata")?;
@@ -80,9 +88,31 @@ fn validate(app: &Path, expected: &str, identifier: &str) -> Result<()> {
     {
         return Err("Update bundle identity or version mismatch".into());
     }
-    let executable = app.join("Contents/MacOS/ui");
-    if !fs::symlink_metadata(executable).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()) {
-        return Err("Update executable is missing".into());
+    if !real_dir(&app.join("Contents")) || !real_dir(&app.join("Contents/MacOS")) {
+        return Err("Invalid update executable directory".into());
+    }
+    for name in EXECUTABLES {
+        let executable = app.join("Contents/MacOS").join(name);
+        let metadata = fs::symlink_metadata(&executable).map_err(io)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("Update executable is missing or invalid".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            use std::os::unix::fs::PermissionsExt;
+            let path = CString::new(executable.as_os_str().as_bytes())
+                .map_err(|_| "Invalid executable path")?;
+            // Check mode as well as effective access: privileged test processes
+            // must also reject a signed archive carrying a nonexecutable file.
+            if metadata.permissions().mode() & 0o111 == 0
+                || unsafe { libc::access(path.as_ptr(), libc::X_OK) } != 0
+            {
+                return Err("Update executable lacks execute permission".into());
+            }
+        }
+        #[cfg(not(unix))]
+        return Err("Updates require a Unix executable permission check".into());
     }
     Ok(())
 }
@@ -251,6 +281,32 @@ pub fn download(
     }
     Ok(bytes)
 }
+#[derive(Debug)]
+pub(super) struct InstallError {
+    pub invalid_payload: bool,
+    pub message: String,
+}
+impl InstallError {
+    fn invalid(message: String) -> Self {
+        Self {
+            invalid_payload: true,
+            message,
+        }
+    }
+}
+impl From<&str> for InstallError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+impl From<String> for InstallError {
+    fn from(message: String) -> Self {
+        Self {
+            invalid_payload: false,
+            message,
+        }
+    }
+}
 pub fn install(
     root: &Path,
     target: &Path,
@@ -259,8 +315,8 @@ pub fn install(
     key: &str,
     identifier: &str,
     allowed: impl Fn() -> bool,
-) -> Result<()> {
-    verify(bytes, &offer.signature, key)?;
+) -> std::result::Result<(), InstallError> {
+    verify(bytes, &offer.signature, key).map_err(InstallError::invalid)?;
     if root.join(JOURNAL).exists() {
         return Err("An update transaction needs recovery before retrying".into());
     }
@@ -268,8 +324,8 @@ pub fn install(
     let stage = staging(target, id)?;
     fs::create_dir(&stage).map_err(io)?;
     let prepare = (|| {
-        let unpacked = extract(bytes, &stage)?;
-        validate(&unpacked, &offer.version, identifier)?;
+        let unpacked = extract(bytes, &stage).map_err(InstallError::invalid)?;
+        validate(&unpacked, &offer.version, identifier).map_err(InstallError::invalid)?;
         fs::rename(unpacked, stage.join("payload.app")).map_err(io)?;
         sync_tree(&stage)?;
         atomic_json(
@@ -282,6 +338,7 @@ pub fn install(
                 identifier: identifier.into(),
             },
         )
+        .map_err(InstallError::from)
     })();
     if let Err(error) = prepare {
         // An uncertain journal write must retain its stage for startup recovery.
@@ -298,7 +355,7 @@ pub fn install(
     // complete bundles; no destructive rollback can remove the running path.
     sync(target.parent().ok_or("Missing app parent")?)?;
     sync(&stage)?;
-    validate(target, &offer.version, identifier)
+    validate(target, &offer.version, identifier).map_err(InstallError::invalid)
 }
 /// Resolve an uncertain post-exchange sync without exchanging twice. Keep the
 /// old bundle until a new process validates its own running version.
