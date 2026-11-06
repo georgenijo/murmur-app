@@ -14,733 +14,17 @@
 //!
 //! Both modes reject trigger-key combos (for example Shift+A or F8+A).
 
-use crate::audio_lifecycle::gesture::Candidate;
 use crate::MutexExt;
+use murmur_core::keyboard::*;
+use rdev::listen;
 #[cfg(target_os = "macos")]
 use rdev::set_is_main_thread;
-use rdev::{listen, Event, EventType, Key};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
-/// Max duration a single tap can be held before it's rejected
-const MAX_HOLD_DURATION_MS: u128 = 200;
-
-/// Max gap between first key-up and second key-down
-const DOUBLE_TAP_WINDOW_MS: u128 = 400;
-
-/// Cooldown after firing to prevent triple-tap spam
-const COOLDOWN_MS: u128 = 50;
-
-/// Cooldown after hold-down stop to prevent accidental re-trigger
-const HOLD_DOWN_COOLDOWN_MS: u128 = 50;
-
-/// Hold-down mode defers a modifier-only trigger's start by this long. Shift
-/// is pressed for every capital letter: production false starts typed the
-/// next key a p50 of ~81–98ms after the start was requested, so 150ms rejects
-/// ordinary capitalization while staying below Both mode's 200ms promotion.
-/// Capture startup (~220ms p50 to first PCM) still dominates start latency.
-const MODIFIER_HOLD_ARMING_MS: u128 = 150;
-const _: () = assert!(MODIFIER_HOLD_ARMING_MS < MAX_HOLD_DURATION_MS);
-
-/// Report callback inactivity after this duration; it is not a health check.
-const TAP_SILENCE_WARNING_MS: u64 = 5 * 60 * 1000;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum DetectorState {
-    Idle,
-    WaitingFirstUp,
-    WaitingSecondDown,
-    WaitingSecondUp,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum RejectionReason {
-    HeldTooLong,
-    SecondTapExpired,
-    ComboCancelled,
-    SingleShortTapNoop,
-    ProcessingSkipped,
-}
-
-impl RejectionReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::HeldTooLong => "held_too_long",
-            Self::SecondTapExpired => "second_tap_expired",
-            Self::ComboCancelled => "combo_cancelled",
-            Self::SingleShortTapNoop => "single_short_tap_noop",
-            Self::ProcessingSkipped => "processing_skipped",
-        }
-    }
-}
-
-struct DoubleTapDetector {
-    candidate: Option<Candidate>,
-    fired_candidate: Option<Candidate>,
-    state: DetectorState,
-    target_key: Option<Key>,
-    recording: bool,
-    state_entered_at: Instant,
-    last_fired_at: Option<Instant>,
-    last_rejection: Option<RejectionReason>,
-    /// A first clean tap that may silently prepare a capture helper (#933).
-    prepare_request: Option<Candidate>,
-    /// The gesture token whose preparation is outstanding until this sequence
-    /// fires or is abandoned.
-    prepared_token: Option<u64>,
-}
-
-/// What the listener must do with silent first-tap preparation after one
-/// detector event.
-#[derive(Debug, Clone, Copy)]
-enum PrepareSignal {
-    None,
-    Request(Candidate),
-    Abandon,
-}
-
-impl DoubleTapDetector {
-    fn new() -> Self {
-        Self {
-            candidate: None,
-            fired_candidate: None,
-            state: DetectorState::Idle,
-            target_key: None,
-            recording: false,
-            state_entered_at: Instant::now(),
-            last_fired_at: None,
-            last_rejection: None,
-            prepare_request: None,
-            prepared_token: None,
-        }
-    }
-
-    /// Drain this event's preparation transition. A fired double tap leaves
-    /// the prepared helper for the confirmed start to adopt; any other exit
-    /// from the second-tap phases abandons it.
-    fn take_prepare_signal(&mut self, fired: bool) -> PrepareSignal {
-        if let Some(candidate) = self.prepare_request.take() {
-            self.prepared_token = Some(candidate.token);
-            return PrepareSignal::Request(candidate);
-        }
-        let in_second_phase = matches!(
-            self.state,
-            DetectorState::WaitingSecondDown | DetectorState::WaitingSecondUp
-        );
-        match self.prepared_token {
-            Some(_) if fired => {
-                self.prepared_token = None;
-                PrepareSignal::None
-            }
-            Some(_) if !in_second_phase => {
-                self.prepared_token = None;
-                PrepareSignal::Abandon
-            }
-            _ => PrepareSignal::None,
-        }
-    }
-
-    fn set_target(&mut self, key: Option<Key>) {
-        self.target_key = key;
-        self.reset();
-    }
-
-    fn reset(&mut self) {
-        self.candidate = None;
-        self.state = DetectorState::Idle;
-        self.state_entered_at = Instant::now();
-    }
-
-    fn preparation_candidate_matches(&self, token: u64) -> bool {
-        self.prepared_token == Some(token)
-            && self
-                .candidate
-                .is_some_and(|candidate| candidate.token == token)
-            && matches!(
-                self.state,
-                DetectorState::WaitingSecondDown | DetectorState::WaitingSecondUp
-            )
-    }
-
-    fn transition(&mut self, new_state: DetectorState) {
-        self.state = new_state;
-        self.state_entered_at = Instant::now();
-    }
-
-    fn elapsed_ms(&self) -> u128 {
-        self.state_entered_at.elapsed().as_millis()
-    }
-
-    fn in_cooldown(&self) -> bool {
-        self.last_fired_at
-            .map(|t| t.elapsed().as_millis() < COOLDOWN_MS)
-            .unwrap_or(false)
-    }
-
-    fn log_rejection(&mut self, reason: RejectionReason, event_type: &EventType) {
-        self.last_rejection = Some(reason);
-        tracing::info!(
-            target: "keyboard",
-            detector = "double_tap",
-            reason = reason.as_str(),
-            state = ?self.state,
-            elapsed_ms = self.elapsed_ms() as u64,
-            recording = self.recording,
-            target_key = target_key_label(self.target_key),
-            event_kind = event_kind(event_type),
-            key_class = event_key_class(event_type),
-            is_target_key = is_target_event(event_type, self.target_key),
-            "keyboard detector rejected sequence"
-        );
-    }
-
-    /// Process a keyboard event. Returns true if a double-tap was detected.
-    #[cfg(test)]
-    fn handle_event(&mut self, event_type: &EventType) -> bool {
-        self.handle_event_with_shortcut_modifiers(event_type, false)
-    }
-
-    #[cfg(test)]
-    fn handle_event_with_shortcut_modifiers(
-        &mut self,
-        event_type: &EventType,
-        shortcut_modifiers_held: bool,
-    ) -> bool {
-        self.handle_event_with_context(event_type, shortcut_modifiers_held, false)
-    }
-
-    fn handle_event_with_context(
-        &mut self,
-        event_type: &EventType,
-        shortcut_modifiers_held: bool,
-        repeated_function_press: bool,
-    ) -> bool {
-        self.last_rejection = None;
-        let target = match self.target_key {
-            Some(k) => k,
-            None => return false,
-        };
-
-        let function_chord_rejected = is_function_key(target)
-            && match (self.state, event_type) {
-                (DetectorState::Idle, EventType::KeyPress(key)) => {
-                    is_target_key(*key, target)
-                        && (shortcut_modifiers_held || repeated_function_press)
-                }
-                (DetectorState::WaitingFirstUp, EventType::KeyPress(_))
-                | (DetectorState::WaitingSecondDown, EventType::KeyPress(_))
-                | (DetectorState::WaitingSecondUp, EventType::KeyPress(_)) => {
-                    shortcut_modifiers_held
-                }
-                _ => false,
-            };
-        if function_chord_rejected {
-            self.log_rejection(RejectionReason::ComboCancelled, event_type);
-            self.reset();
-            return false;
-        }
-
-        if self.in_cooldown() {
-            return false;
-        }
-
-        match self.state {
-            DetectorState::Idle => {
-                if let EventType::KeyPress(key) = event_type {
-                    if is_target_key(*key, target) {
-                        self.candidate = Some(Candidate::new());
-                        self.transition(DetectorState::WaitingFirstUp);
-                    }
-                }
-                false
-            }
-
-            DetectorState::WaitingFirstUp => {
-                match event_type {
-                    EventType::KeyRelease(key) if is_target_key(*key, target) => {
-                        if self.elapsed_ms() <= MAX_HOLD_DURATION_MS {
-                            if self.recording {
-                                self.fired_candidate = None;
-                                // Single tap to stop — fire immediately
-                                self.last_fired_at = Some(Instant::now());
-                                self.reset();
-                                return true;
-                            }
-                            if let Some(candidate) = self.candidate.as_mut() {
-                                candidate.released = Some(Instant::now());
-                            }
-                            self.prepare_request = self.candidate;
-                            self.transition(DetectorState::WaitingSecondDown);
-                        } else {
-                            // Held too long — not a tap
-                            self.log_rejection(RejectionReason::HeldTooLong, event_type);
-                            self.reset();
-                        }
-                    }
-                    EventType::KeyPress(key) if is_target_key(*key, target) => {
-                        // Key repeat event — ignore, stay in same state
-                        // But check if we've been held too long
-                        if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.log_rejection(RejectionReason::HeldTooLong, event_type);
-                            self.reset();
-                        }
-                    }
-                    EventType::KeyPress(_)
-                    | EventType::ButtonPress(_)
-                    | EventType::Wheel { .. } => {
-                        // Not a clean tap: a combo like Shift+A or Cmd+Shift+4,
-                        // or a mouse button/wheel while the trigger is down.
-                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
-                        self.reset();
-                    }
-                    _ => {
-                        // Check timeout
-                        if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.log_rejection(RejectionReason::HeldTooLong, event_type);
-                            self.reset();
-                        }
-                    }
-                }
-                false
-            }
-
-            DetectorState::WaitingSecondDown => {
-                if self.elapsed_ms() > DOUBLE_TAP_WINDOW_MS {
-                    self.log_rejection(RejectionReason::SecondTapExpired, event_type);
-                    self.reset();
-                    return false;
-                }
-                match event_type {
-                    EventType::KeyPress(key) if is_target_key(*key, target) => {
-                        self.transition(DetectorState::WaitingSecondUp);
-                    }
-                    EventType::KeyPress(_) => {
-                        // Any other key press — abort
-                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
-                        self.reset();
-                    }
-                    _ => {}
-                }
-                false
-            }
-
-            DetectorState::WaitingSecondUp => {
-                match event_type {
-                    EventType::KeyRelease(key) if is_target_key(*key, target) => {
-                        if self.elapsed_ms() <= MAX_HOLD_DURATION_MS {
-                            self.fired_candidate = self.candidate;
-                            // Double-tap detected!
-                            self.last_fired_at = Some(Instant::now());
-                            self.reset();
-                            return true;
-                        } else {
-                            self.log_rejection(RejectionReason::HeldTooLong, event_type);
-                            self.reset();
-                        }
-                    }
-                    EventType::KeyPress(key) if is_target_key(*key, target) => {
-                        // Key repeat — check timeout
-                        if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.log_rejection(RejectionReason::HeldTooLong, event_type);
-                            self.reset();
-                        }
-                    }
-                    EventType::KeyPress(_)
-                    | EventType::ButtonPress(_)
-                    | EventType::Wheel { .. } => {
-                        // Combo, other modifier, or mouse input on second press
-                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
-                        self.reset();
-                    }
-                    _ => {
-                        if self.elapsed_ms() > MAX_HOLD_DURATION_MS {
-                            self.log_rejection(RejectionReason::HeldTooLong, event_type);
-                            self.reset();
-                        }
-                    }
-                }
-                false
-            }
-        }
-    }
-
-    fn take_rejection(&mut self) -> Option<RejectionReason> {
-        self.last_rejection.take()
-    }
-
-    fn second_tap_wait_started_at(&self) -> Option<Instant> {
-        (self.state == DetectorState::WaitingSecondDown).then_some(self.state_entered_at)
-    }
-
-    fn expire_second_tap_wait(&mut self, started_at: Instant) -> Option<u64> {
-        if self.state != DetectorState::WaitingSecondDown
-            || self.state_entered_at != started_at
-            || self.elapsed_ms() <= DOUBLE_TAP_WINDOW_MS
-        {
-            return None;
-        }
-
-        let elapsed_ms = self.elapsed_ms() as u64;
-        self.reset();
-        self.prepared_token = None;
-        Some(elapsed_ms)
-    }
-}
-
-/// Whether a dictation trigger is a bare modifier that ordinary typing also
-/// presses (Shift for capitals, Option/Control/Command for shortcuts).
-fn is_modifier_only_hotkey(key: Key) -> bool {
-    is_modifier(key) || key == Key::Function
-}
-
-/// Arming window for a dictation hold detector: modifier-only triggers wait
-/// before committing a start; other triggers start immediately (0). Both mode
-/// already waits `MAX_HOLD_DURATION_MS` before promoting a hold.
-fn hold_arming_ms(mode: DetectorMode, target: Option<Key>) -> u128 {
-    match (mode, target) {
-        (_, None) => 0,
-        (_, Some(key)) if !is_modifier_only_hotkey(key) => 0,
-        (DetectorMode::HoldDown, Some(_)) => MODIFIER_HOLD_ARMING_MS,
-        (DetectorMode::Both, Some(_)) => MAX_HOLD_DURATION_MS,
-        (DetectorMode::DoubleTap, Some(_)) => 0,
-    }
-}
-
-/// Check if a key is any modifier key
-fn is_modifier(key: Key) -> bool {
-    matches!(
-        key,
-        Key::ShiftLeft
-            | Key::ShiftRight
-            | Key::Alt
-            | Key::AltGr
-            | Key::ControlLeft
-            | Key::ControlRight
-            | Key::MetaLeft
-            | Key::MetaRight
-    )
-}
-
-fn is_function_key(key: Key) -> bool {
-    matches!(
-        key,
-        Key::F1
-            | Key::F2
-            | Key::F3
-            | Key::F4
-            | Key::F5
-            | Key::F6
-            | Key::F7
-            | Key::F8
-            | Key::F9
-            | Key::F10
-            | Key::F11
-            | Key::F12
-            | Key::F13
-            | Key::F14
-            | Key::F15
-            | Key::F16
-            | Key::F17
-            | Key::F18
-            | Key::F19
-            | Key::F20
-    )
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct PressedFunctionKeys(u32);
-
-impl PressedFunctionKeys {
-    /// Record physical F-key state and report whether this KeyPress is an OS
-    /// autorepeat. Releases always clear the bit, even while dictation is
-    /// disabled or processing, so the next physical press starts fresh.
-    fn update(&mut self, event_type: &EventType) -> bool {
-        match event_type {
-            EventType::KeyPress(key) => {
-                let Some(bit) = function_key_bit(*key) else {
-                    return false;
-                };
-                let repeated = self.0 & bit != 0;
-                self.0 |= bit;
-                repeated
-            }
-            EventType::KeyRelease(key) => {
-                if let Some(bit) = function_key_bit(*key) {
-                    self.0 &= !bit;
-                }
-                false
-            }
-            _ => false,
-        }
-    }
-}
-
-fn function_key_bit(key: Key) -> Option<u32> {
-    match key {
-        Key::F1 => Some(1 << 0),
-        Key::F2 => Some(1 << 1),
-        Key::F3 => Some(1 << 2),
-        Key::F4 => Some(1 << 3),
-        Key::F5 => Some(1 << 4),
-        Key::F6 => Some(1 << 5),
-        Key::F7 => Some(1 << 6),
-        Key::F8 => Some(1 << 7),
-        Key::F9 => Some(1 << 8),
-        Key::F10 => Some(1 << 9),
-        Key::F11 => Some(1 << 10),
-        Key::F12 => Some(1 << 11),
-        Key::F13 => Some(1 << 12),
-        Key::F14 => Some(1 << 13),
-        Key::F15 => Some(1 << 14),
-        Key::F16 => Some(1 << 15),
-        Key::F17 => Some(1 << 16),
-        Key::F18 => Some(1 << 17),
-        Key::F19 => Some(1 << 18),
-        Key::F20 => Some(1 << 19),
-        _ => None,
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ShortcutModifierState(u16);
-
-impl ShortcutModifierState {
-    fn update(&mut self, event_type: &EventType) {
-        match event_type {
-            EventType::KeyPress(key) => {
-                if let Some(bit) = shortcut_modifier_bit(*key) {
-                    self.0 |= bit;
-                }
-            }
-            EventType::KeyRelease(key) => {
-                if let Some(bit) = shortcut_modifier_bit(*key) {
-                    self.0 &= !bit;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn any(self) -> bool {
-        self.0 != 0
-    }
-}
-
-fn shortcut_modifier_bit(key: Key) -> Option<u16> {
-    match key {
-        Key::ShiftLeft => Some(1 << 0),
-        Key::ShiftRight => Some(1 << 1),
-        Key::Alt => Some(1 << 2),
-        Key::AltGr => Some(1 << 3),
-        Key::ControlLeft => Some(1 << 4),
-        Key::ControlRight => Some(1 << 5),
-        Key::MetaLeft => Some(1 << 6),
-        Key::MetaRight => Some(1 << 7),
-        _ => None,
-    }
-}
-
-/// Match the configured physical trigger key, including function keys.
-fn is_target_key(a: Key, b: Key) -> bool {
-    a == b
-}
-
-// -- Hold-down detector --
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum HoldDownEvent {
-    None,
-    Start,
-    Stop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum HoldState {
-    Idle,
-    Held,
-}
-
-struct HoldDownDetector {
-    state: HoldState,
-    target_key: Option<Key>,
-    last_stopped_at: Option<Instant>,
-    /// While a hold is younger than this, any other key press ends it. The
-    /// listener commits the recording start only after the window (0 = off).
-    arming_ms: u128,
-    held_at: Instant,
-}
-
-impl HoldDownDetector {
-    fn new() -> Self {
-        Self {
-            state: HoldState::Idle,
-            target_key: None,
-            last_stopped_at: None,
-            arming_ms: 0,
-            held_at: Instant::now(),
-        }
-    }
-
-    fn is_arming(&self) -> bool {
-        self.state == HoldState::Held && self.held_at.elapsed().as_millis() < self.arming_ms
-    }
-
-    fn held_ms(&self) -> u64 {
-        self.held_at.elapsed().as_millis() as u64
-    }
-
-    /// Set the target key. Returns `true` if the detector was in `Held` state
-    /// (i.e. the caller should emit a stop event to the frontend).
-    fn set_target(&mut self, key: Option<Key>) -> bool {
-        let was_held = self.state == HoldState::Held;
-        if was_held {
-            self.state = HoldState::Idle;
-            self.last_stopped_at = Some(Instant::now());
-        }
-        self.target_key = key;
-        was_held
-    }
-
-    fn reset(&mut self) {
-        self.state = HoldState::Idle;
-    }
-
-    fn in_cooldown(&self) -> bool {
-        self.last_stopped_at
-            .map(|t| t.elapsed().as_millis() < HOLD_DOWN_COOLDOWN_MS)
-            .unwrap_or(false)
-    }
-
-    fn log_rejection(&self, reason: RejectionReason, event_type: &EventType) {
-        tracing::info!(
-            target: "keyboard",
-            detector = "hold_down",
-            reason = reason.as_str(),
-            state = ?self.state,
-            target_key = target_key_label(self.target_key),
-            event_kind = event_kind(event_type),
-            key_class = event_key_class(event_type),
-            is_target_key = is_target_event(event_type, self.target_key),
-            "keyboard detector rejected sequence"
-        );
-    }
-
-    /// Process a keyboard event. Returns Start, Stop, or None.
-    #[cfg(test)]
-    fn handle_event(&mut self, event_type: &EventType) -> HoldDownEvent {
-        self.handle_event_with_shortcut_modifiers(event_type, false)
-    }
-
-    #[cfg(test)]
-    fn handle_event_with_shortcut_modifiers(
-        &mut self,
-        event_type: &EventType,
-        shortcut_modifiers_held: bool,
-    ) -> HoldDownEvent {
-        self.handle_event_with_context(event_type, shortcut_modifiers_held, false)
-    }
-
-    fn handle_event_with_context(
-        &mut self,
-        event_type: &EventType,
-        shortcut_modifiers_held: bool,
-        repeated_function_press: bool,
-    ) -> HoldDownEvent {
-        let target = match self.target_key {
-            Some(k) => k,
-            None => return HoldDownEvent::None,
-        };
-
-        let function_chord_rejected = is_function_key(target)
-            && match (self.state, event_type) {
-                (HoldState::Idle, EventType::KeyPress(key)) => {
-                    is_target_key(*key, target)
-                        && (shortcut_modifiers_held || repeated_function_press)
-                }
-                (HoldState::Held, EventType::KeyPress(_)) => shortcut_modifiers_held,
-                _ => false,
-            };
-        if function_chord_rejected {
-            self.log_rejection(RejectionReason::ComboCancelled, event_type);
-            return match self.state {
-                HoldState::Idle => HoldDownEvent::None,
-                HoldState::Held => {
-                    self.state = HoldState::Idle;
-                    self.last_stopped_at = Some(Instant::now());
-                    HoldDownEvent::Stop
-                }
-            };
-        }
-
-        match self.state {
-            HoldState::Idle => {
-                if let EventType::KeyPress(key) = event_type {
-                    if is_target_key(*key, target) && !self.in_cooldown() {
-                        self.state = HoldState::Held;
-                        self.held_at = Instant::now();
-                        return HoldDownEvent::Start;
-                    }
-                }
-                HoldDownEvent::None
-            }
-
-            HoldState::Held => {
-                match event_type {
-                    EventType::KeyRelease(key) if is_target_key(*key, target) => {
-                        self.state = HoldState::Idle;
-                        self.last_stopped_at = Some(Instant::now());
-                        HoldDownEvent::Stop
-                    }
-                    EventType::KeyPress(key) if is_target_key(*key, target) => {
-                        // Key repeat — ignore, stay held
-                        HoldDownEvent::None
-                    }
-                    EventType::KeyPress(_)
-                    | EventType::ButtonPress(_)
-                    | EventType::Wheel { .. }
-                        if self.is_arming() =>
-                    {
-                        // Shift+letter or Shift+Command: ordinary typing, not
-                        // dictation. Ends the hold before the listener commits
-                        // a start; the caller logs it without the key.
-                        self.state = HoldState::Idle;
-                        self.last_stopped_at = Some(Instant::now());
-                        HoldDownEvent::Stop
-                    }
-                    EventType::KeyPress(key) if !is_modifier(*key) => {
-                        // User is typing a combo like Shift+A — cancel hold
-                        self.log_rejection(RejectionReason::ComboCancelled, event_type);
-                        self.state = HoldState::Idle;
-                        self.last_stopped_at = Some(Instant::now());
-                        HoldDownEvent::Stop
-                    }
-                    _ => HoldDownEvent::None,
-                }
-            }
-        }
-    }
-}
-
 // -- Shared types --
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum DetectorMode {
-    DoubleTap,
-    HoldDown,
-    Both,
-}
-
-impl DetectorMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::DoubleTap => "double_tap",
-            Self::HoldDown => "hold_down",
-            Self::Both => "both",
-        }
-    }
-}
 
 fn should_surface_hotkey_rejection(reason: RejectionReason, mode: DetectorMode) -> bool {
     reason == RejectionReason::SecondTapExpired
@@ -773,6 +57,10 @@ fn current_gesture() -> Option<Candidate> {
 }
 fn emit_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
     let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, true));
+    crate::dictation_control::send(
+        handle,
+        murmur_core::dictation::Input::HoldStart(token.clone()),
+    );
     let _ = handle.emit(
         "hold-down-start",
         serde_json::json!({ "gestureToken": token }),
@@ -784,6 +72,7 @@ fn emit_dictation_toggle(handle: &tauri::AppHandle) {
         .as_mut()
         .and_then(|d| d.fired_candidate.take());
     let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, false));
+    crate::dictation_control::send(handle, murmur_core::dictation::Input::Toggle(token.clone()));
     let _ = handle.emit(
         "double-tap-toggle",
         serde_json::json!({ "gestureToken": token }),
@@ -1325,8 +614,8 @@ fn log_hotkey_arming_cancelled(mode: DetectorMode, reason: &'static str, held_ms
 
 // -- Both-mode arbitration state --
 
-mod hold_promotion;
 use hold_promotion::HoldPromotion;
+use murmur_core::hold_promotion;
 
 static HOLD_PROMOTION: HoldPromotion = HoldPromotion::new();
 
@@ -1406,6 +695,10 @@ fn schedule_hold_promotion(
             || {
                 if over_recording {
                     tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-start");
+                    crate::dictation_control::send(
+                        &app_handle,
+                        murmur_core::dictation::Input::HoldOverStart,
+                    );
                     let _ = app_handle.emit("hold-over-recording-start", ());
                 } else {
                     tracing::info!(
@@ -1755,7 +1048,12 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
             crate::launch::milestone("system.launch_listener_armed");
             let mut shortcut_modifiers = ShortcutModifierState::default();
             let mut pressed_function_keys = PressedFunctionKeys::default();
-            let callback = move |event: Event| {
+            let callback = move |raw: rdev::Event| {
+                let event = Event {
+                    event_type: native_event(raw.event_type),
+                    time: raw.time,
+                    name: None,
+                };
                 // Track these even while every feature is idle. If a user
                 // holds Command before enabling a function-key trigger, the
                 // next F-key press must still be recognized as a chord. Fn is
@@ -1783,7 +1081,10 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 if PASTE_LAST_ACTIVE.load(Ordering::SeqCst)
                     && handle_paste_last_chord(&event.event_type)
                 {
-                    crate::delivery_recovery::spawn_retry(handle.clone());
+                    crate::dictation_control::send(
+                        &handle,
+                        murmur_core::dictation::Input::PasteLast,
+                    );
                 }
 
                 // Escape key: cancel recording/transcription regardless of mode.
@@ -1818,6 +1119,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         event_code = "keyboard.escape_cancel",
                         "escape-cancel emitted"
                     );
+                    crate::dictation_control::send(&handle, murmur_core::dictation::Input::Escape);
                     let _ = handle.emit("escape-cancel", ());
                     return;
                 }
@@ -1896,6 +1198,10 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                 }
                                 HoldDownSignal::Stop => {
                                     stamp_hold_release(&handle, &event.event_type);
+                                    crate::dictation_control::send(
+                                        &handle,
+                                        murmur_core::dictation::Input::HoldStop,
+                                    );
                                     let _ = handle.emit("hold-down-stop", ());
                                 }
                                 HoldDownSignal::Arm {
@@ -2030,11 +1336,13 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     if let Some(over_recording) = promoted {
                                         if !promoted_hold_stops_recording(over_recording, &event.event_type) {
                                             tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-end (combo; recording continues)");
-                                            let _ = handle.emit("hold-over-recording-end", ());
+                                            crate::dictation_control::send(&handle, murmur_core::dictation::Input::HoldOverEnd);
+let _ = handle.emit("hold-over-recording-end", ());
                                         } else {
                                             tracing::info!(target: "keyboard", "BOTH -> emit hold-down-stop (promoted hold)");
                                             stamp_hold_release(&handle, &event.event_type);
-                                            let _ = handle.emit("hold-down-stop", ());
+                                            crate::dictation_control::send(&handle, murmur_core::dictation::Input::HoldStop);
+let _ = handle.emit("hold-down-stop", ());
                                         }
                                         true
                                     } else if dtap_fired {
@@ -2076,6 +1384,11 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 LISTENER_THREAD_SPAWNED.store(false, Ordering::SeqCst);
                 LISTENER_ACTIVE.store(false, Ordering::SeqCst);
                 let _ = error_handle.emit("keyboard-listener-error", format!("{:?}", e));
+                let retry_handle = error_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    crate::dictation_control::refresh(&retry_handle).await;
+                });
             }
         });
 
@@ -2377,7 +1690,7 @@ mod tests {
                 press(Key::MetaLeft),
                 press(Key::Alt),
                 press(Key::ShiftRight),
-                EventType::ButtonPress(rdev::Button::Left),
+                EventType::ButtonPress(Button::Left),
                 EventType::Wheel {
                     delta_x: 0,
                     delta_y: 1,
@@ -3800,7 +3113,7 @@ mod tests {
     #[test]
     fn hold_down_mouse_click_or_wheel_while_arming_never_starts_recording() {
         for interrupt in [
-            EventType::ButtonPress(rdev::Button::Left),
+            EventType::ButtonPress(Button::Left),
             EventType::Wheel {
                 delta_x: 0,
                 delta_y: -1,
@@ -4330,5 +3643,144 @@ mod tests {
             fields.contains(&"target_key=shift_l".to_string()),
             "{fields:?}"
         );
+    }
+}
+
+fn native_key(key: rdev::Key) -> Key {
+    match key {
+        rdev::Key::Alt => Key::Alt,
+        rdev::Key::AltGr => Key::AltGr,
+        rdev::Key::BackQuote => Key::BackQuote,
+        rdev::Key::BackSlash => Key::BackSlash,
+        rdev::Key::Backspace => Key::Backspace,
+        rdev::Key::CapsLock => Key::CapsLock,
+        rdev::Key::Comma => Key::Comma,
+        rdev::Key::ControlLeft => Key::ControlLeft,
+        rdev::Key::ControlRight => Key::ControlRight,
+        rdev::Key::Delete => Key::Delete,
+        rdev::Key::Dot => Key::Dot,
+        rdev::Key::DownArrow => Key::DownArrow,
+        rdev::Key::End => Key::End,
+        rdev::Key::Equal => Key::Equal,
+        rdev::Key::Escape => Key::Escape,
+        rdev::Key::F1 => Key::F1,
+        rdev::Key::F10 => Key::F10,
+        rdev::Key::F11 => Key::F11,
+        rdev::Key::F12 => Key::F12,
+        rdev::Key::F13 => Key::F13,
+        rdev::Key::F14 => Key::F14,
+        rdev::Key::F15 => Key::F15,
+        rdev::Key::F16 => Key::F16,
+        rdev::Key::F17 => Key::F17,
+        rdev::Key::F18 => Key::F18,
+        rdev::Key::F19 => Key::F19,
+        rdev::Key::F2 => Key::F2,
+        rdev::Key::F20 => Key::F20,
+        rdev::Key::F21 => Key::F21,
+        rdev::Key::F22 => Key::F22,
+        rdev::Key::F23 => Key::F23,
+        rdev::Key::F24 => Key::F24,
+        rdev::Key::F3 => Key::F3,
+        rdev::Key::F4 => Key::F4,
+        rdev::Key::F5 => Key::F5,
+        rdev::Key::F6 => Key::F6,
+        rdev::Key::F7 => Key::F7,
+        rdev::Key::F8 => Key::F8,
+        rdev::Key::F9 => Key::F9,
+        rdev::Key::Function => Key::Function,
+        rdev::Key::Home => Key::Home,
+        rdev::Key::Insert => Key::Insert,
+        rdev::Key::IntlBackslash => Key::IntlBackslash,
+        rdev::Key::KeyA => Key::KeyA,
+        rdev::Key::KeyB => Key::KeyB,
+        rdev::Key::KeyC => Key::KeyC,
+        rdev::Key::KeyD => Key::KeyD,
+        rdev::Key::KeyE => Key::KeyE,
+        rdev::Key::KeyF => Key::KeyF,
+        rdev::Key::KeyG => Key::KeyG,
+        rdev::Key::KeyH => Key::KeyH,
+        rdev::Key::KeyI => Key::KeyI,
+        rdev::Key::KeyJ => Key::KeyJ,
+        rdev::Key::KeyK => Key::KeyK,
+        rdev::Key::KeyL => Key::KeyL,
+        rdev::Key::KeyM => Key::KeyM,
+        rdev::Key::KeyN => Key::KeyN,
+        rdev::Key::KeyO => Key::KeyO,
+        rdev::Key::KeyP => Key::KeyP,
+        rdev::Key::KeyQ => Key::KeyQ,
+        rdev::Key::KeyR => Key::KeyR,
+        rdev::Key::KeyS => Key::KeyS,
+        rdev::Key::KeyT => Key::KeyT,
+        rdev::Key::KeyU => Key::KeyU,
+        rdev::Key::KeyV => Key::KeyV,
+        rdev::Key::KeyW => Key::KeyW,
+        rdev::Key::KeyX => Key::KeyX,
+        rdev::Key::KeyY => Key::KeyY,
+        rdev::Key::KeyZ => Key::KeyZ,
+        rdev::Key::Kp0 => Key::Kp0,
+        rdev::Key::Kp1 => Key::Kp1,
+        rdev::Key::Kp2 => Key::Kp2,
+        rdev::Key::Kp3 => Key::Kp3,
+        rdev::Key::Kp4 => Key::Kp4,
+        rdev::Key::Kp5 => Key::Kp5,
+        rdev::Key::Kp6 => Key::Kp6,
+        rdev::Key::Kp7 => Key::Kp7,
+        rdev::Key::Kp8 => Key::Kp8,
+        rdev::Key::Kp9 => Key::Kp9,
+        rdev::Key::KpDelete => Key::KpDelete,
+        rdev::Key::KpDivide => Key::KpDivide,
+        rdev::Key::KpMinus => Key::KpMinus,
+        rdev::Key::KpMultiply => Key::KpMultiply,
+        rdev::Key::KpPlus => Key::KpPlus,
+        rdev::Key::KpReturn => Key::KpReturn,
+        rdev::Key::LeftArrow => Key::LeftArrow,
+        rdev::Key::LeftBracket => Key::LeftBracket,
+        rdev::Key::MetaLeft => Key::MetaLeft,
+        rdev::Key::MetaRight => Key::MetaRight,
+        rdev::Key::Minus => Key::Minus,
+        rdev::Key::Num0 => Key::Num0,
+        rdev::Key::Num1 => Key::Num1,
+        rdev::Key::Num2 => Key::Num2,
+        rdev::Key::Num3 => Key::Num3,
+        rdev::Key::Num4 => Key::Num4,
+        rdev::Key::Num5 => Key::Num5,
+        rdev::Key::Num6 => Key::Num6,
+        rdev::Key::Num7 => Key::Num7,
+        rdev::Key::Num8 => Key::Num8,
+        rdev::Key::Num9 => Key::Num9,
+        rdev::Key::PageDown => Key::PageDown,
+        rdev::Key::PageUp => Key::PageUp,
+        rdev::Key::Quote => Key::Quote,
+        rdev::Key::Return => Key::Return,
+        rdev::Key::RightArrow => Key::RightArrow,
+        rdev::Key::RightBracket => Key::RightBracket,
+        rdev::Key::SemiColon => Key::SemiColon,
+        rdev::Key::ShiftLeft => Key::ShiftLeft,
+        rdev::Key::ShiftRight => Key::ShiftRight,
+        rdev::Key::Slash => Key::Slash,
+        rdev::Key::Space => Key::Space,
+        rdev::Key::Tab => Key::Tab,
+        rdev::Key::UpArrow => Key::UpArrow,
+        rdev::Key::VolumeUp => Key::VolumeUp,
+        rdev::Key::Unknown(code) => Key::Unknown(code),
+        _ => Key::Unknown(u32::MAX),
+    }
+}
+fn native_button(button: rdev::Button) -> Button {
+    match button {
+        rdev::Button::Left => Button::Left,
+        rdev::Button::Right => Button::Right,
+        rdev::Button::Middle => Button::Middle,
+        rdev::Button::Unknown(n) => Button::Unknown(n),
+    }
+}
+fn native_event(event: rdev::EventType) -> EventType {
+    match event {
+        rdev::EventType::KeyPress(k) => EventType::KeyPress(native_key(k)),
+        rdev::EventType::KeyRelease(k) => EventType::KeyRelease(native_key(k)),
+        rdev::EventType::ButtonPress(b) => EventType::ButtonPress(native_button(b)),
+        rdev::EventType::ButtonRelease(b) => EventType::ButtonRelease(native_button(b)),
+        rdev::EventType::Wheel { delta_x, delta_y } => EventType::Wheel { delta_x, delta_y },
+        rdev::EventType::MouseMove { x, y } => EventType::MouseMove { x, y },
     }
 }

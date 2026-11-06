@@ -5250,6 +5250,7 @@ pub async fn start_native_recording(
             }
         }
     };
+    crate::dictation_control::started(&app_handle, rid, origin);
     // Publish Starting before the worker can report Ready. Otherwise a very
     // fast device open could emit Recording first and this command would then
     // overwrite the frontend with a stale Starting event.
@@ -5503,7 +5504,7 @@ fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u
 /// Stop only the recording generation captured by the caller. User commands
 /// pass no expectation; asynchronous lifecycle continuations must pass the
 /// generation that scheduled them so they cannot stop a newer recording.
-async fn stop_native_recording_for(
+pub(crate) async fn stop_native_recording_for(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
     expected_recording_id: Option<u64>,

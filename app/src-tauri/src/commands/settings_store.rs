@@ -235,6 +235,12 @@ pub fn save_settings_blob(app: tauri::AppHandle, blob: String) -> Result<(), Str
     crate::audio::prepare::configuration_changed();
     write_blob(&data_dir(&app)?, SETTINGS, &blob)?;
     notify_settings_committed(&app, &blob);
+    if let Ok(settings) = serde_json::from_str(&blob) {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::dictation_control::configure(&handle, settings).await;
+        });
+    }
     Ok(())
 }
 

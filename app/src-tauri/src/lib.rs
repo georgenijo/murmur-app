@@ -29,6 +29,8 @@ mod diarization_assignment;
 mod diarization_audio;
 mod diarization_model;
 mod dictation_context;
+mod dictation_control;
+mod dictation_cues;
 mod dictation_diagnostics;
 #[cfg(test)]
 mod dictation_diagnostics_contract;
@@ -298,6 +300,8 @@ pub fn run() {
             commands::microphone_startup_benchmark::cancel_microphone_startup_benchmark,
             commands::microphone_startup_benchmark::save_microphone_startup_benchmark_report,
             commands::integrations::is_notchpill_installed,
+            dictation_control::configure_dictation_control,
+            dictation_control::toggle_dictation_lock,
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,
             commands::keyboard::update_keyboard_key,
@@ -443,10 +447,11 @@ pub fn run() {
         })
         .setup(|app| {
             app.manage(app_context::new(app.handle().clone()));
+            dictation_control::initialize(app.handle());
+            dictation_cues::initialize(app.handle());
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
             launch::milestone("system.launch_process_start");
-            launch::prepare(app.handle());
             audio_inventory::initialize(app.handle().clone());
             smart_auto_probe::initialize(app.handle().clone());
             audio_graph_snapshot::set_app_handle(app.handle().clone());
@@ -703,6 +708,7 @@ pub fn run() {
                 .build(app)?;
 
             commands::mode_runtime::spawn_mode_watcher(app.handle().clone());
+            launch::prepare(app.handle());
             launch::milestone("system.launch_native_setup_done");
 
             Ok(())

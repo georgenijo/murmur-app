@@ -1,9 +1,7 @@
 //! Content-free launch timing and conservative native preparation.
 //!
-//! Capture still waits for the frontend's fully validated configuration and
-//! event subscriptions. Native setup only prepares the shared rdev thread and
-//! installed ASR runtime; it never opens a microphone or applies partial settings.
-use crate::MutexExt;
+//! Native startup applies a committed v7 configuration before arming control.
+//! Unknown/legacy snapshots still use the existing frontend migration path.
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     OnceLock,
@@ -93,12 +91,27 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
         return;
     };
     crate::keyboard::set_app_disabled(plan.disabled);
-    plan.start_resources(
-        || crate::keyboard::ensure_listener_thread_spawned(app.clone()),
-        |model| spawn_model_preparation(app.clone(), model.to_string()),
-    );
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(settings) = serde_json::from_str::<serde_json::Value>(&blob) else {
+            return;
+        };
+        // The persisted v7 snapshot was confirmed by the current loader. Apply
+        // the existing backend configuration path before arming native control.
+        if crate::commands::recording::configure_dictation(
+            settings.clone(),
+            handle.clone(),
+            handle.state::<crate::State>(),
+        )
+        .await
+        .is_ok()
+        {
+            let _ = crate::dictation_control::configure(&handle, settings).await;
+        }
+    });
 }
 
+#[cfg(test)]
 impl Preparation {
     fn start_resources(&self, listener: impl FnOnce(), warm: impl FnOnce(&str)) {
         if self.disabled {
@@ -113,24 +126,6 @@ impl Preparation {
             warm(&self.model);
         }
     }
-}
-
-fn spawn_model_preparation(app: tauri::AppHandle, model: String) {
-    *app.state::<crate::State>()
-        .app_state
-        .last_transcription_at
-        .lock_or_recover() = Some(Instant::now());
-    drop(tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<crate::State>();
-        let _ = state
-            .app_state
-            .model_runtime
-            .prepare_startup_if(Some(&app), &model, || {
-                !FRONTEND_CONFIGURING.load(Ordering::SeqCst)
-            });
-        // Preparation failure is optional; recording/configuration retains the
-        // normal installed-model checks and error handling. Never log raw errors.
-    }));
 }
 
 #[cfg(test)]

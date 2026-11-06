@@ -80,6 +80,7 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Resu
         *key = hotkey.clone();
     }
     if should_stop {
+        crate::dictation_control::send(&app_handle, murmur_core::dictation::Input::HoldStop);
         let _ = app_handle.emit("hold-down-stop", ());
         tracing::info!(target: "keyboard", "Keyboard key changed while held — emitted stop; updated to: {}", hotkey);
     } else {
