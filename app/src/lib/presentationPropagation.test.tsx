@@ -139,24 +139,30 @@ it.each([false, true])('real main hooks and persistence propagate all sources de
   check();
 });
 
-it.each(['dictation-settings', 'murmur-appearance', 'murmur-theme-library'])('out-of-order %s snapshot completions across all renderers retain the latest source', async key => {
+it.each(['dictation-settings', 'murmur-appearance', 'murmur-theme-library'])('a %s change during an in-flight snapshot is applied by the coalesced follow-up', async key => {
   const { sessions, disk, old } = await setup();
   const held: ((value: unknown) => void)[] = [];
   const normal = mock.invoke.getMockImplementation()!;
   mock.invoke.mockImplementation((command: string, args: unknown) => command === 'webkit_state_snapshot'
     ? new Promise(resolve => { held.push(resolve); }) : normal(command, args));
   storageEvent(key, old[key]);
-  expect(held.length).toBeGreaterThanOrEqual(3);
+  expect(held).toHaveLength(3);
   const older = held.splice(0);
   disk[key] = key === 'dictation-settings' ? { ...(disk[key] as object), autoPaste: false }
     : key === 'murmur-appearance' ? { ...(disk[key] as object), mode: 'light', revision: 9 }
     : { version: 1, revision: 19, themes: [] };
   const latest = structuredClone(disk);
   storageEvent(key, old[key]);
+  expect(held).toHaveLength(0);
+  await act(async () => {
+    for (const resolve of older.reverse()) resolve({ v1: true, v2: true, values: old });
+  });
+  // The old response was invalidated by the later hint, and the next native
+  // read starts only after it settles.
+  expect(held).toHaveLength(3);
+  for (const session of sessions) expect(JSON.parse(session.storage.presentationStorage.getItem(key)!)).toEqual(old[key]);
   await act(async () => {
     for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: latest });
-    await Promise.resolve();
-    for (const resolve of older.reverse()) resolve({ v1: true, v2: true, values: old });
   });
   for (const session of sessions) expect(JSON.parse(session.storage.presentationStorage.getItem(key)!)).toEqual(latest[key]);
 });
@@ -190,4 +196,101 @@ it('a reload started during a failed pending source intent preserves the retry a
   await main.lifecycle.flushSourceState();
   await act(async () => deliverNotices());
   expect(sessions[2].appearance.loadAppearanceDocument().document.mode).toBe('light');
+});
+
+it.each(['storage', 'native'] as const)('1,000 %s hints per renderer use one active snapshot and one bounded follow-up', async transport => {
+  const { sessions, disk } = await setup();
+  const keys = [...sessions[0].lifecycle.V2_KEYS, 'murmur-overlay-vertical-offset', 'murmur-ui-latency-v1'];
+  const held: ((value: unknown) => void)[] = [];
+  mock.invoke.mockClear().mockImplementation(() => new Promise(resolve => { held.push(resolve); }));
+  for (let i = 0; i < 1000; i++) {
+    const key = keys[i % keys.length];
+    if (transport === 'storage') storageEvent(key);
+    else for (const session of sessions) {
+      mock.listeners.get(`${session.label}:presentation-source-committed`)!({ payload: { key } });
+    }
+  }
+  // Each independently imported renderer owns exactly one active read.
+  expect(held).toHaveLength(3);
+  expect(mock.invoke).toHaveBeenCalledTimes(3);
+  disk['usage-dashboard-collapsed'] = false;
+  await act(async () => {
+    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: {} });
+  });
+  expect(held).toHaveLength(3);
+  expect(mock.invoke).toHaveBeenCalledTimes(6);
+  await act(async () => {
+    for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: structuredClone(disk) });
+  });
+  expect(held).toHaveLength(0);
+  expect(mock.invoke).toHaveBeenCalledTimes(6);
+  for (const session of sessions) {
+    for (const key of keys) {
+      expect(session.storage.presentationStorage.getItem(key)).toBe(key in disk ? JSON.stringify(disk[key]) : null);
+    }
+  }
+});
+
+it.each([false, true])('reload failure storms preserve state and emit one content-free diagnostic per renderer, cache failure=%s', async cacheFails => {
+  const { sessions, old } = await setup(cacheFails);
+  const warn = vi.mocked(console.warn);
+  warn.mockClear();
+  mock.invoke.mockClear().mockRejectedValue(new Error('synthetic private exception and values must not be logged'));
+  for (let wave = 0; wave < 3; wave++) {
+    await act(async () => {
+      for (let i = 0; i < 1000; i++) storageEvent(null, { syntheticPrivate: 'must not be logged' });
+    });
+    for (const session of sessions) {
+      for (const [key, value] of Object.entries(old)) {
+        expect(session.storage.presentationStorage.getItem(key)).toBe(JSON.stringify(value));
+      }
+    }
+  }
+  expect(warn.mock.calls).toEqual(Array.from({ length: 3 }, () => [
+    'Presentation cache reload failed; keeping in-memory state.',
+  ]));
+  expect(mock.invoke).toHaveBeenCalledTimes(18); // 2 reads × 3 renderers × 3 waves.
+});
+
+it('a failed active reload still drains the change queued while it was in flight', async () => {
+  const { sessions, disk, old } = await setup();
+  const held: { resolve: (value: unknown) => void; reject: (error: Error) => void }[] = [];
+  mock.invoke.mockImplementation(() => new Promise((resolve, reject) => { held.push({ resolve, reject }); }));
+  storageEvent('usage-dashboard-collapsed');
+  disk['usage-dashboard-collapsed'] = false;
+  storageEvent('usage-dashboard-collapsed');
+  await act(async () => {
+    for (const request of held.splice(0)) request.reject(new Error('synthetic failure'));
+  });
+  expect(held).toHaveLength(3);
+  for (const session of sessions) {
+    expect(session.storage.presentationStorage.getItem('usage-dashboard-collapsed')).toBeNull();
+    expect(JSON.parse(session.storage.presentationStorage.getItem('dictation-settings')!)).toEqual(old['dictation-settings']);
+  }
+  await act(async () => {
+    for (const request of held.splice(0)) request.resolve({ v1: true, v2: true, values: structuredClone(disk) });
+  });
+  for (const session of sessions) expect(session.storage.presentationStorage.getItem('usage-dashboard-collapsed')).toBe('false');
+});
+
+it('a queued follow-up cannot overwrite a later session write or pending intent', async () => {
+  const { sessions, old } = await setup();
+  const held: ((value: unknown) => void)[] = [];
+  mock.invoke.mockImplementation((command: string) => command === 'webkit_state_snapshot'
+    ? new Promise(resolve => { held.push(resolve); }) : Promise.reject(new Error('synthetic pending write')));
+  storageEvent('dictation-settings');
+  storageEvent('dictation-settings');
+  const newer = JSON.stringify({ ...(old['dictation-settings'] as object), autoPaste: false });
+  sessions[0].lifecycle.sourceStorage.setItem('dictation-settings', newer);
+  await expect(sessions[0].lifecycle.flushSourceState()).rejects.toThrow('Source storage unavailable');
+  sessions[1].storage.presentationStorage.rememberItem('dictation-settings', newer);
+  for (let batch = 0; batch < 2; batch++) {
+    expect(held).toHaveLength(3);
+    await act(async () => {
+      for (const resolve of held.splice(0)) resolve({ v1: true, v2: true, values: old });
+    });
+    expect(sessions[0].storage.presentationStorage.getItem('dictation-settings')).toBe(newer);
+    expect(sessions[1].storage.presentationStorage.getItem('dictation-settings')).toBe(newer);
+  }
+  expect(held).toHaveLength(0);
 });

@@ -13,11 +13,13 @@ export function ownsPresentationKey(key: string): boolean { return ownedKeys.has
 const values = new Map<string, string | null>();
 const generations = new Map<string, number>();
 let reload: ((keys: readonly string[]) => void) | undefined;
-let reported = false;
-function cacheFailure(): void {
-  if (reported) return;
-  reported = true;
-  console.warn('Presentation cache unavailable; using in-memory state.');
+const reported = new Set<'unavailable' | 'reload-failed'>();
+export function cacheFailure(reason: 'unavailable' | 'reload-failed' = 'unavailable'): void {
+  if (reported.has(reason)) return;
+  reported.add(reason);
+  console.warn(reason === 'reload-failed'
+    ? 'Presentation cache reload failed; keeping in-memory state.'
+    : 'Presentation cache unavailable; using in-memory state.');
 }
 function remember(key: string, value: string | null): void {
   if (!ownedKeys.has(key)) return;

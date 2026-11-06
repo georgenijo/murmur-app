@@ -1,4 +1,4 @@
-import { PRESENTATION_KEYS, PRESENTATION_CHANGED, ownsPresentationKey, presentationStorage, setPresentationReloader } from './presentationStorage';
+import { PRESENTATION_KEYS, PRESENTATION_CHANGED, ownsPresentationKey, presentationStorage, setPresentationReloader, cacheFailure } from './presentationStorage';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, sendTo } from './targetedEvents';
 
@@ -18,23 +18,38 @@ const pending = new Map<string, { raw: string; generation: number; ownedEdits?: 
 const SOURCE_COMMITTED = 'presentation-source-committed';
 interface SourceCommitted { key: string }
 let synchronization: Promise<unknown> | undefined;
-async function refreshPresentation(keys: readonly string[]): Promise<void> {
-  const ownership = keys.filter(ownsPresentationKey).map(key => ({
-    key, generation: presentationStorage.beginRead(key), pending: pending.has(key),
-  }));
-  if (!ownership.length) return;
+type ReadOwner = { key: string; generation: number; pending: boolean };
+// One active snapshot and one coalesced follow-up, bounded to owned keys.
+const reloadKeys = new Map<string, ReadOwner>();
+let reloadInFlight = false;
+function refreshPresentation(keys: readonly string[]): void {
+  for (const key of keys) {
+    if (!ownsPresentationKey(key)) continue;
+    // Invalidate an active read immediately, before its stale result can land.
+    reloadKeys.set(key, { key, generation: presentationStorage.beginRead(key), pending: pending.has(key) });
+  }
+  if (!reloadInFlight && reloadKeys.size) void drainPresentationReloads();
+}
+async function drainPresentationReloads(): Promise<void> {
+  reloadInFlight = true;
   try {
-    const state = await invoke<StateReceipt>('webkit_state_snapshot');
-    let changed = false;
-    for (const owner of ownership) {
-      // Recheck both read and write ownership after the async boundary. An
-      // intent pending at either boundary must keep its optimistic session copy.
-      if (owner.pending || pending.has(owner.key)) continue;
-      const value = Object.prototype.hasOwnProperty.call(state.values, owner.key) ? JSON.stringify(state.values[owner.key]) : null;
-      changed = presentationStorage.rememberIfCurrent(owner.key, value, owner.generation) || changed;
+    while (reloadKeys.size) {
+      const ownership = [...reloadKeys.values()].map(owner => ({ ...owner, pending: owner.pending || pending.has(owner.key) }));
+      reloadKeys.clear();
+      try {
+        const state = await invoke<StateReceipt>('webkit_state_snapshot');
+        let changed = false;
+        for (const owner of ownership) {
+          // Recheck both read and write ownership after the async boundary. An
+          // intent pending at either boundary must keep its optimistic session copy.
+          if (owner.pending || pending.has(owner.key)) continue;
+          const value = Object.prototype.hasOwnProperty.call(state.values, owner.key) ? JSON.stringify(state.values[owner.key]) : null;
+          changed = presentationStorage.rememberIfCurrent(owner.key, value, owner.generation) || changed;
+        }
+        if (changed) window.dispatchEvent(new Event(PRESENTATION_CHANGED));
+      } catch { cacheFailure('reload-failed'); }
     }
-    if (changed) window.dispatchEvent(new Event(PRESENTATION_CHANGED));
-  } catch { /* Preserve the last usable snapshot; another hint can retry. */ }
+  } finally { reloadInFlight = false; }
 }
 function synchronizePresentation(): Promise<unknown> {
   if (!synchronization) {
