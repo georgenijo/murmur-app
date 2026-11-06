@@ -355,6 +355,36 @@ pub(crate) async fn source_call<T: Send + 'static>(
     receive.await.map_err(|_| ())
 }
 
+/// Generation checks run inside the source FIFO, before any disk access.
+/// Renderer UUIDs scope counters across reloads; window labels scope owners.
+pub(crate) async fn versioned_source_call<T: Send + 'static>(
+    owner: String,
+    session: String,
+    key: String,
+    generation: u64,
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<murmur_core::source_order::SourceWrite<T>, String> {
+    if owner != "main"
+        || session.is_empty()
+        || session.len() > 128
+        || !session.is_ascii()
+        || generation == 0
+        || generation > 9_007_199_254_740_991
+    {
+        return Err("Invalid source write owner or generation".into());
+    }
+    source_call(move || {
+        static ORDER: std::sync::OnceLock<Mutex<murmur_core::source_order::SourceOrder>> =
+            std::sync::OnceLock::new();
+        ORDER
+            .get_or_init(Default::default)
+            .lock_or_recover()
+            .apply(&owner, &session, &key, generation, work)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
 #[cfg(feature = "shutdown-test-support")]
 pub(crate) mod test_support {
     use super::*;
@@ -460,6 +490,40 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_task_polled_out_of_order_never_publishes_older_content() {
+        use murmur_core::source_order::SourceWrite;
+        let root = tempfile::tempdir().unwrap();
+        for key in [
+            "dictation-settings",
+            "murmur-theme-library",
+            "usage-dashboard-collapsed",
+        ] {
+            let session = uuid::Uuid::new_v4().to_string();
+            let path = root.path().join(key);
+            let older_path = path.clone();
+            // Construct A first but poll B first, exactly the IPC scheduling race.
+            let older =
+                versioned_source_call("main".into(), session.clone(), key.into(), 1, move || {
+                    std::fs::write(older_path, b"older")
+                        .map_err(|_| "synthetic write failure".into())
+                });
+            let newer_path = path.clone();
+            let newer = versioned_source_call("main".into(), session, key.into(), 2, move || {
+                std::fs::write(newer_path, b"newer").map_err(|_| "synthetic write failure".into())
+            });
+            assert_eq!(
+                tauri::async_runtime::block_on(newer).unwrap(),
+                SourceWrite::Applied { value: () }
+            );
+            assert_eq!(
+                tauri::async_runtime::block_on(older).unwrap(),
+                SourceWrite::Superseded
+            );
+            assert_eq!(std::fs::read(path).unwrap(), b"newer");
+        }
+    }
+
     #[test]
     fn idle_presentation_cannot_overtake_final_native_completion() {
         use murmur_core::completion::{Command, CompletionService};

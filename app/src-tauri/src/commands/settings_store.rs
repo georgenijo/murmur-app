@@ -217,6 +217,7 @@ pub(crate) fn save_settings_blob_worker(
     blob: String,
     owned_edits: Option<OwnedEdits>,
     intent_generation: Option<u64>,
+    source_session: String,
 ) -> Result<String, String> {
     require_settings_owner(window.label())?;
     let value =
@@ -257,6 +258,7 @@ pub(crate) fn save_settings_blob_worker(
                     &blob,
                 );
                 notice["intentGeneration"] = serde_json::json!(intent_generation);
+                notice["intentSession"] = serde_json::json!(source_session);
                 notice["acknowledgedFields"] = serde_json::json!(owned_edits
                     .as_ref()
                     .map(|edits| {
@@ -813,6 +815,56 @@ mod tests {
 mod lifecycle_ordering_tests {
     use super::*;
     #[test]
+    fn generation_fence_and_native_quick_control_preserve_both_edits() {
+        use murmur_core::source_order::SourceWrite;
+        let dir = tempfile::tempdir().unwrap();
+        let original = serde_json::json!({"settingsVersion":7,"autoPaste":false,"disabled":false,"language":"en","ownedFieldsRevision":0}).to_string();
+        write_blob(dir.path(), SETTINGS, &original).unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let older_dir = dir.path().to_path_buf();
+        let older = crate::shutdown::versioned_source_call(
+            "main".into(),
+            session.clone(),
+            "dictation-settings".into(),
+            1,
+            move || write_blob(&older_dir, SETTINGS, &original),
+        );
+        patch_owned_setting(dir.path(), OverlaySettingField::AutoPaste, true).unwrap();
+        let newer_dir = dir.path().to_path_buf();
+        let newer = crate::shutdown::versioned_source_call(
+            "main".into(),
+            session,
+            "dictation-settings".into(),
+            2,
+            move || {
+                let _guard = WRITE_LOCK.lock_or_recover();
+                let blob = merge_owned_fields_with_edits(
+                    &newer_dir,
+                    r#"{"settingsVersion":7,"autoPaste":false,"disabled":true,"language":"es","ownedFieldsRevision":0}"#,
+                    Some(&OwnedEdits {
+                        auto_paste: None,
+                        disabled: Some(true),
+                    }),
+                )?;
+                write_blob_locked(&newer_dir, SETTINGS, &blob)
+            },
+        );
+        assert_eq!(
+            tauri::async_runtime::block_on(newer).unwrap(),
+            SourceWrite::Applied { value: () }
+        );
+        assert_eq!(
+            tauri::async_runtime::block_on(older).unwrap(),
+            SourceWrite::Superseded
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&read_blob(dir.path(), SETTINGS).unwrap().unwrap()).unwrap();
+        assert_eq!(value["language"], "es");
+        assert_eq!(value["autoPaste"], true);
+        assert_eq!(value["disabled"], true);
+    }
+
+    #[test]
     fn delayed_or_retried_full_settings_cannot_undo_a_newer_overlay_disable() {
         let dir = tempfile::tempdir().unwrap();
         let original=serde_json::json!({"settingsVersion":7,"autoPaste":false,"disabled":false,"language":"es"}).to_string();
@@ -1001,15 +1053,28 @@ pub async fn save_settings_blob(
     window: tauri::WebviewWindow,
     blob: String,
     owned_edits: Option<OwnedEdits>,
-    intent_generation: Option<u64>,
-) -> Result<String, String> {
+    intent_generation: u64,
+    source_session: String,
+) -> Result<murmur_core::source_order::SourceWrite<String>, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    crate::shutdown::source_call(move || {
-        let _admission = admission;
-        save_settings_blob_worker(app, window, blob, owned_edits, intent_generation)
-    })
+    crate::shutdown::versioned_source_call(
+        window.label().into(),
+        source_session.clone(),
+        "dictation-settings".into(),
+        intent_generation,
+        move || {
+            let _admission = admission;
+            save_settings_blob_worker(
+                app,
+                window,
+                blob,
+                owned_edits,
+                Some(intent_generation),
+                source_session,
+            )
+        },
+    )
     .await
-    .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
 #[tauri::command]
@@ -1047,14 +1112,21 @@ pub async fn save_theme_library_blob(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     blob: String,
-) -> Result<(), String> {
+    intent_generation: u64,
+    source_session: String,
+) -> Result<murmur_core::source_order::SourceWrite<()>, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    crate::shutdown::source_call(move || {
-        let _admission = admission;
-        save_theme_library_blob_worker(window, app, blob)
-    })
+    crate::shutdown::versioned_source_call(
+        window.label().into(),
+        source_session,
+        "murmur-theme-library".into(),
+        intent_generation,
+        move || {
+            let _admission = admission;
+            save_theme_library_blob_worker(window, app, blob)
+        },
+    )
     .await
-    .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
 #[tauri::command]

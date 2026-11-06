@@ -69,7 +69,7 @@ it('quota errors cannot suppress Rust writes for UI settings or themes', async (
   saveSettings({ ...DEFAULT_SETTINGS, language: 'ja' });
   writeThemeLibrary({ version: 1, revision: 1, themes: [] });
   await flushSourceState();
-  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: true });
+  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: true, sourceSession: expect.any(String), intentGeneration: expect.any(Number) });
   expect(mock.invoke.mock.calls.some(([c,a]) => c === 'save_settings_blob' && JSON.parse(a.blob).language === 'ja')).toBe(true);
   expect(mock.invoke.mock.calls.some(([c]) => c === 'save_theme_library_blob')).toBe(true);
   quota.mockRestore();
@@ -88,7 +88,7 @@ it.each([false, true])('in-flight generation cannot discard the newer edit on fa
   persistSourceState('usage-dashboard-collapsed', 'false');
   release();
   await flushSourceState();
-  expect(mock.invoke).toHaveBeenLastCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: false });
+  expect(mock.invoke).toHaveBeenLastCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: false, sourceSession: expect.any(String), intentGeneration: expect.any(Number) });
 });
 it.each([false, true])('removes obsolete calibration key after v2, settings-present=%s', async present => {
   localStorage.setItem('murmur-overlay-vertical-offset', '48');
@@ -139,9 +139,9 @@ it('public onboarding complete and reset persist despite cache write and removal
   const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('synthetic quota'); });
   const remove = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('synthetic quota'); });
   markOnboardingComplete(); await flushSourceState();
-  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'murmur_onboarding_complete', value: true });
+  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'murmur_onboarding_complete', value: true, sourceSession: expect.any(String), intentGeneration: expect.any(Number) });
   resetOnboarding(); await flushSourceState();
-  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'murmur_onboarding_complete', value: false });
+  expect(mock.invoke).toHaveBeenCalledWith('save_webkit_source', { key: 'murmur_onboarding_complete', value: false, sourceSession: expect.any(String), intentGeneration: expect.any(Number) });
   write.mockRestore(); remove.mockRestore();
 });
 
@@ -152,7 +152,7 @@ it('submits a new native intent while an earlier publication is still blocked', 
   persistSourceState('usage-dashboard-collapsed', 'true');
   persistSourceState('usage-dashboard-collapsed', 'false');
   expect(mock.invoke).toHaveBeenCalledTimes(2);
-  expect(mock.invoke).toHaveBeenLastCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: false });
+  expect(mock.invoke).toHaveBeenLastCalledWith('save_webkit_source', { key: 'usage-dashboard-collapsed', value: false, sourceSession: expect.any(String), intentGeneration: expect.any(Number) });
   release(); await flushSourceState();
 });
 
@@ -205,4 +205,86 @@ it('a different owned-field acknowledgement preserves the failed field until ret
   const args = mock.invoke.mock.calls.filter(([c]) => c === 'save_settings_blob').slice(-1)[0]?.[1];
   expect(args.ownedEdits).toEqual({});
   expect(JSON.parse(args.blob).autoPaste).toBe(false);
+});
+
+it('flush submits a retained owned field after joining an unrelated in-flight save', async () => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  mock.invoke.mockRejectedValueOnce(new Error('synthetic failure'));
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, language: 'en' }), { autoPaste: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  let release!: () => void;
+  mock.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; })).mockResolvedValue(undefined);
+  const flushing = flushSourceState();
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, language: 'es' }), {});
+  await Promise.resolve(); // flush joins the request carrying no Auto Paste patch.
+  release();
+  await flushing;
+  const saves = mock.invoke.mock.calls.filter(([command]) => command === 'save_settings_blob');
+  expect(saves).toHaveLength(3);
+  expect(saves[2][1].ownedEdits).toEqual({ autoPaste: true });
+  expect(JSON.parse(saves[2][1].blob).language).toBe('es');
+});
+
+it('an identical save retries immediately after a failed submission settles', async () => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  const raw = JSON.stringify({ autoPaste: true, language: 'en' });
+  mock.invoke.mockRejectedValueOnce(new Error('synthetic failure'));
+  persistSourceState('dictation-settings', raw, { autoPaste: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  mock.invoke.mockResolvedValue(undefined);
+  persistSourceState('dictation-settings', raw, { autoPaste: true });
+  const immediateCalls = mock.invoke.mock.calls.length;
+  await flushSourceState();
+  expect(immediateCalls).toBe(2);
+});
+
+it('superseded saves do not acknowledge owned fields omitted from the newer commit', async () => {
+  const { persistSourceState, flushSourceState } = await import('./webkitLifecycle');
+  let supersede!: (value: unknown) => void;
+  mock.invoke.mockImplementationOnce(() => new Promise(resolve => { supersede = resolve; })).mockResolvedValue(undefined);
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, disabled: false, language: 'en' }), { autoPaste: true });
+  persistSourceState('dictation-settings', JSON.stringify({ autoPaste: true, disabled: true, language: 'es' }), { disabled: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  supersede({ status: 'superseded' });
+  await flushSourceState();
+  const saves = mock.invoke.mock.calls.filter(([command]) => command === 'save_settings_blob');
+  expect(saves).toHaveLength(3);
+  expect(saves[2][1].ownedEdits).toEqual({ autoPaste: true });
+  expect(JSON.parse(saves[2][1].blob).language).toBe('es');
+  expect(saves[2][1].intentGeneration).toBeGreaterThan(saves[1][1].intentGeneration);
+});
+
+it.each([
+  ['dictation-settings', '{"language":"es"}', 'save_settings_blob'],
+  ['murmur-theme-library', '{"version":1,"revision":2,"themes":[]}', 'save_theme_library_blob'],
+  ['usage-dashboard-collapsed', 'true', 'save_webkit_source'],
+])('a superseded %s save retries with a fresh generation without reporting a storage failure', async (key, raw, command) => {
+  const { persistSourceState, flushSourceState, SOURCE_STORAGE_FAILED } = await import('./webkitLifecycle');
+  const failure = vi.fn();
+  window.addEventListener(SOURCE_STORAGE_FAILED, failure);
+  try {
+    mock.invoke.mockResolvedValueOnce({ status: 'superseded' }).mockResolvedValue({ status: 'applied', value: null });
+    persistSourceState(key, raw);
+    await flushSourceState();
+    const saves = mock.invoke.mock.calls.filter(([name]) => name === command);
+    expect(saves).toHaveLength(2);
+    expect(saves[0][1].sourceSession).toEqual(expect.any(String));
+    expect(saves[1][1].sourceSession).toBe(saves[0][1].sourceSession);
+    expect(saves[1][1].intentGeneration).toBeGreaterThan(saves[0][1].intentGeneration);
+    expect(failure).not.toHaveBeenCalled();
+  } finally { window.removeEventListener(SOURCE_STORAGE_FAILED, failure); }
+});
+
+it('an acknowledgement from a previous renderer session cannot clear this session owned-field intent', async () => {
+  const { persistSourceState, flushSourceState, rebasePendingOwnedSettings } = await import('./webkitLifecycle');
+  mock.invoke.mockRejectedValueOnce(new Error('synthetic failure'));
+  persistSourceState('dictation-settings', '{"autoPaste":true,"disabled":false}', { autoPaste: true });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const result = rebasePendingOwnedSettings({ autoPaste: false, disabled: false, ownedFieldsRevision: 1,
+    intentSession: 'previous-synthetic-session', intentGeneration: Number.MAX_SAFE_INTEGER, acknowledgedFields: ['autoPaste'] });
+  expect(result.autoPaste).toBe(true);
+  mock.invoke.mockResolvedValue({ status: 'applied', value: null });
+  await flushSourceState();
+  const saves = mock.invoke.mock.calls.filter(([name]) => name === 'save_settings_blob');
+  expect(saves[saves.length - 1][1].ownedEdits).toEqual({ autoPaste: true });
 });

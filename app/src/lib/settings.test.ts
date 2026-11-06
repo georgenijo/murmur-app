@@ -142,7 +142,7 @@ describe('durable settings store', () => {
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual({ ...original, launchOnboardingComplete: false });
     await flushSourceState();
     expect(mocks.invoke).toHaveBeenLastCalledWith('save_webkit_source', {
-      key: ONBOARDING_KEY, value: false,
+      key: ONBOARDING_KEY, value: false, sourceSession: expect.any(String), intentGeneration: expect.any(Number),
     });
   });
 
@@ -174,7 +174,7 @@ describe('durable settings store', () => {
 
     await hydrateSettingsFromDisk();
 
-    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: cached });
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: cached, sourceSession: expect.any(String), intentGeneration: expect.any(Number) });
     expect(localStorage.getItem(STORAGE_KEY)).toBe(cached);
   });
 
@@ -192,7 +192,7 @@ describe('durable settings store', () => {
     await hydrateSettingsFromDisk();
 
     const seeded = localStorage.getItem(STORAGE_KEY)!;
-    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: seeded });
+    expect(mocks.invoke).toHaveBeenCalledWith('save_settings_blob', { blob: seeded, sourceSession: expect.any(String), intentGeneration: expect.any(Number) });
     expect(JSON.parse(seeded)).toMatchObject({ settingsVersion: 7, overlayLiveWords: true });
   });
 

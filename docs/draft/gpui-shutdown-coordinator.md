@@ -247,3 +247,33 @@ Parakeet models. This limitation is deliberate and does not change production.
 Final Linux/Mac counts and final-head CI are recorded in the PR body. Baseline
 comparisons used a synthetic source archive under the Linux cache, not another
 active checkout. No independent review is claimed by this worker.
+
+## Round-two corrections
+
+Renderer source saves now carry a fresh per-webview-session UUID and a monotonic
+submission generation, including settings/theme bootstrap saves. All three native
+source commands check the session/key generation inside the native FIFO before
+running their publication closure. Stale or duplicate requests return the distinct
+`superseded` receipt without touching disk, emitting commit events, or acknowledging
+owned fields. Failed publications also fence older generations because their exact
+payload may already belong to replay; retries receive fresh generations. Settings
+acknowledgement events carry their session as well as the original generation and
+`acknowledgedFields`, preserving round-one per-field retry ownership.
+
+`flushSourceState` now drains until no intent or owned field remains: joining an
+in-flight request with fewer fields cannot count as a completed retry. Identical
+content is deduplicated only while its request remains in flight, so repeating a
+failed save submits immediately. Superseded receipts retain unacknowledged fields
+and retry the latest document rather than acknowledging newer content or reporting
+a storage failure. Native quick controls retain the existing locked revision merge.
+
+The three targeted Vitest regressions fail on `ad1e1976` and pass after these fixes.
+Additional tests cover superseded settings/themes/other source keys, fresh retry
+generations, and old-session acknowledgement isolation. Core Rust tests reject
+stale/duplicate generations (both fail with the fence disabled), retain fences after failures, and scope keys/sessions/
+owning windows independently. Native adapter tests deterministically construct A
+before B but poll B before A and prove the older publication never runs; a settings
+integration test combines this ordering with a native quick-control commit and
+preserves the deliberate fields and latest language. Existing authoritative reload,
+tombstone, coalescing, and content-free warning tests remain unchanged. The parent
+owns independent Sol rechecks and GUI verification; this worker launches no app.

@@ -1,6 +1,7 @@
 import { PRESENTATION_KEYS, PRESENTATION_CHANGED, ownsPresentationKey, presentationStorage, setPresentationReloader, cacheFailure } from './presentationStorage';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen, sendTo } from './targetedEvents';
+import { sourceSession, nextSourceWriteVersion } from './sourceWriteVersion';
 
 // This cache contains presentation source state only. Migration ownership and
 // validation belong to murmur-core; malformed raw strings reach Rust intact.
@@ -10,10 +11,10 @@ interface StateReceipt { v1: boolean; v2: boolean; values: Record<string, unknow
 export const SOURCE_STORAGE_FAILED = 'murmur-source-storage-error';
 export const SOURCE_STORAGE_SAVED = 'murmur-source-storage-saved';
 const inFlight = new Map<number, Promise<void>>();
-let generation = 0;
+const nextGeneration = () => nextSourceWriteVersion().intentGeneration;
 export type OwnedEdits = Partial<Record<'autoPaste' | 'disabled', boolean>>;
 type OwnedField = keyof OwnedEdits;
-export type OwnedCommit = { autoPaste?: boolean; disabled?: boolean; ownedFieldsRevision?: number; intentGeneration?: number; field?: OwnedField; acknowledgedFields?: OwnedField[] };
+export type OwnedCommit = { autoPaste?: boolean; disabled?: boolean; ownedFieldsRevision?: number; intentGeneration?: number; intentSession?: string; field?: OwnedField; acknowledgedFields?: OwnedField[] };
 const pending = new Map<string, { raw: string; generation: number; ownedEdits?: OwnedEdits; fieldGenerations?: Partial<Record<OwnedField, number>> }>();
 const SOURCE_COMMITTED = 'presentation-source-committed';
 interface SourceCommitted { key: string }
@@ -76,13 +77,14 @@ async function notifySourceCommitted(key: string): Promise<void> {
 export function persistSourceState(key: string, raw: string, ownedEdits?: OwnedEdits): void {
   try { if (!isTauri()) return; } catch { return; }
   const previous = pending.get(key);
-  if (previous?.raw === raw && JSON.stringify(previous.ownedEdits ?? {}) === JSON.stringify({ ...previous.ownedEdits, ...ownedEdits })) return;
-  const nextGeneration = ++generation;
+  if (previous && inFlight.has(previous.generation) && previous.raw === raw
+    && JSON.stringify(previous.ownedEdits ?? {}) === JSON.stringify({ ...previous.ownedEdits, ...ownedEdits })) return;
+  const editGeneration = nextGeneration();
   const fieldGenerations = { ...previous?.fieldGenerations };
   for (const field of ['autoPaste', 'disabled'] as const) {
-    if (typeof ownedEdits?.[field] === 'boolean') fieldGenerations[field] = nextGeneration;
+    if (typeof ownedEdits?.[field] === 'boolean') fieldGenerations[field] = editGeneration;
   }
-  const intent = { raw, generation: nextGeneration, ownedEdits: { ...previous?.ownedEdits, ...ownedEdits }, fieldGenerations };
+  const intent = { raw, generation: editGeneration, ownedEdits: { ...previous?.ownedEdits, ...ownedEdits }, fieldGenerations };
   pending.set(key, intent);
   // Only this edit's deliberate fields go on the immediate request. Older
   // unacknowledged fields stay retryable, but must not be patched again behind
@@ -95,12 +97,16 @@ function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending
   // invoke occurs now, before awaiting any previous source publication.
   let request: Promise<unknown>;
   const wireEdits = { ...(freshEdits ?? intent.ownedEdits) };
+  const version = { sourceSession, intentGeneration: intent.generation };
   try {
     request = key === 'dictation-settings' || key === 'murmur-theme-library'
-      ? invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ...(wireEdits ? { ownedEdits: wireEdits } : {}), ...(key === 'dictation-settings' ? { intentGeneration: intent.generation } : {}) })
-      : invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown });
+      ? invoke(key === 'dictation-settings' ? 'save_settings_blob' : 'save_theme_library_blob', { blob: intent.raw, ownedEdits: wireEdits, ...version })
+      : invoke('save_webkit_source', { key, value: JSON.parse(intent.raw) as unknown, ...version });
   } catch { request = Promise.reject(new Error('Source storage unavailable')); }
-  const promise = Promise.resolve(request).then(async () => {
+  const promise = Promise.resolve(request).then(async result => {
+    // No disk publication and no field acknowledgement occurred. In particular,
+    // a newer snapshot may have omitted fields this stale request carried.
+    if (result && typeof result === 'object' && 'status' in result && result.status === 'superseded') return;
     const current = pending.get(key);
     if (current) {
       const ownedEdits = { ...current.ownedEdits };
@@ -124,15 +130,15 @@ function submitIntent(key: string, intent: NonNullable<ReturnType<typeof pending
 }
 export async function flushSourceState(): Promise<void> {
   await Promise.allSettled([...inFlight.values()]);
-  // One explicit retry pass. A newer rebase/edit discovered during that pass
-  // also reaches native ownership before returning.
-  const attempted = new Set<number>();
-  for (;;) {
-    const batch = [...pending].filter(([, intent]) => !attempted.has(intent.generation));
-    if (!batch.length) return;
-    await Promise.all(batch.map(([key, intent]) => {
-      attempted.add(intent.generation);
-      return submitIntent(key, intent);
+  // Joining an in-flight save does not mean it carried every retained field.
+  // Drain until empty, failing visibly on publication errors. Every actual
+  // retry gets a fresh native generation, even when its content is identical.
+  while (pending.size) {
+    await Promise.all([...pending].map(([key, intent]) => {
+      if (inFlight.has(intent.generation)) return submitIntent(key, intent);
+      const retry = { ...intent, generation: nextGeneration() };
+      pending.set(key, retry);
+      return submitIntent(key, retry);
     }));
   }
 }
@@ -145,8 +151,9 @@ export function rebasePendingOwnedSettings(settings: OwnedCommit): OwnedCommit {
   const ownedEdits = { ...intent.ownedEdits };
   const fieldGenerations = { ...intent.fieldGenerations };
   for (const field of ['autoPaste', 'disabled'] as const) {
-    const unacknowledged = settings.intentGeneration !== undefined && settings.acknowledgedFields !== undefined
-      && !settings.acknowledgedFields.includes(field);
+    const otherSession = settings.intentSession !== undefined && settings.intentSession !== sourceSession;
+    const unacknowledged = otherSession || (settings.intentGeneration !== undefined && settings.acknowledgedFields !== undefined
+      && !settings.acknowledgedFields.includes(field));
     const otherNativeField = settings.intentGeneration === undefined && settings.field !== undefined && settings.field !== field;
     if (typeof ownedEdits[field] === 'boolean' && (unacknowledged || otherNativeField
       || (settings.intentGeneration !== undefined && (fieldGenerations[field] ?? 0) > settings.intentGeneration))) {
@@ -159,7 +166,7 @@ export function rebasePendingOwnedSettings(settings: OwnedCommit): OwnedCommit {
   }
   value.ownedFieldsRevision = settings.ownedFieldsRevision;
   // Rebase is not a new deliberate edit. Retain per-field intent ownership.
-  pending.set('dictation-settings', { ...intent, generation: ++generation, raw: JSON.stringify(value), ownedEdits, fieldGenerations });
+  pending.set('dictation-settings', { ...intent, generation: nextGeneration(), raw: JSON.stringify(value), ownedEdits, fieldGenerations });
   return rebased;
 }
 export const sourceStorage = {

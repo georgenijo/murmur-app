@@ -540,12 +540,19 @@ pub(crate) async fn save_webkit_source(
     app: tauri::AppHandle,
     key: String,
     value: serde_json::Value,
-) -> Result<(), String> {
+    intent_generation: u64,
+    source_session: String,
+) -> Result<murmur_core::source_order::SourceWrite<()>, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    crate::shutdown::source_call(move || {
-        let _admission = admission;
-        save_webkit_source_worker(window, app, key, value)
-    })
+    crate::shutdown::versioned_source_call(
+        window.label().into(),
+        source_session,
+        key.clone(),
+        intent_generation,
+        move || {
+            let _admission = admission;
+            save_webkit_source_worker(window, app, key, value)
+        },
+    )
     .await
-    .map_err(|_| "Source writer unavailable".to_owned())?
 }
