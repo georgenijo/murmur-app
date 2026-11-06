@@ -289,7 +289,10 @@ impl CompletionService {
                 .as_ref()
                 .ok_or(Error::Stopped)?
                 .send(Box::new(move |engine| {
-                    let result = engine.execute(Command::Snapshot).map(|_| ());
+                    let result = engine
+                        .execute(Command::Snapshot)
+                        .and_then(|_| engine.lifecycle(lifecycle::Operation::Status))
+                        .map(|_| ());
                     let _ = send.send(result);
                 }))
                 .map_err(|_| Error::Stopped)?;
@@ -376,7 +379,10 @@ struct Engine {
 impl Engine {
     fn write_receipt(&mut self) -> crate::shutdown::WriteOutcome {
         use crate::shutdown::WriteOutcome;
-        let reconciled = self.execute(Command::Snapshot).is_ok();
+        let reconciled = self
+            .execute(Command::Snapshot)
+            .and_then(|_| self.lifecycle(lifecycle::Operation::Status))
+            .is_ok();
         if self.unpreserved_content {
             return WriteOutcome::UnpreservedFailure;
         }
@@ -666,6 +672,14 @@ impl Engine {
         })
     }
     fn execute(&mut self, command: Command) -> Result<Snapshot> {
+        let content = matches!(&command, Command::Complete { entry: Some(_), .. });
+        let result = self.execute_inner(command);
+        if content && result.is_err() && !self.storage.root.join(PENDING).exists() {
+            self.unpreserved_content = true;
+        }
+        result
+    }
+    fn execute_inner(&mut self, command: Command) -> Result<Snapshot> {
         self.revision += 1;
         // Initialization retry must not inflate launch counts on every command.
         if !self.initialized

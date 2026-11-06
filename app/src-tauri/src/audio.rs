@@ -1884,33 +1884,8 @@ fn write_capture_memo_file(
     path: &Path,
     entries: &[(Option<String>, BackendMemo)],
 ) -> std::io::Result<()> {
-    let document = serde_json::to_string(&encode_capture_memo(entries))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(CAPTURE_MEMO_FILE_NAME);
-    let temp = path.with_file_name(format!(".{name}.murmur-tmp"));
-    if let Err(e) = std::fs::write(&temp, document) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(e);
-        }
-    }
-    if let Err(e) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
-    }
-    Ok(())
+    murmur_core::completion::publish_snapshot(path, &encode_capture_memo(entries))
+        .map_err(|_| std::io::Error::other("capture memo publication failed"))
 }
 
 fn read_capture_memo_file(path: &Path) -> Option<CaptureMemoEntries> {
@@ -1927,6 +1902,7 @@ fn read_capture_memo_file(path: &Path) -> Option<CaptureMemoEntries> {
 /// every failure mode leaves the in-memory defaults in place.
 pub(crate) fn initialize_capture_memo_persistence(data_dir: PathBuf) {
     let path = data_dir.join(CAPTURE_MEMO_FILE_NAME);
+    let _ = murmur_core::completion::recover_snapshot(&path);
     let restored = read_capture_memo_file(&path);
     let mut memo = CAPTURE_MEMO.lock_or_recover();
     if CAPTURE_MEMO_PATH.set(path).is_err() {
