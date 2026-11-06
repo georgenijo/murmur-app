@@ -1318,13 +1318,16 @@ async fn ensure_vad_model_with_progress(
         guard = VAD_INSTALL_LOCK.lock() => guard,
     };
     cancel.check()?;
-    if vad::vad_model_exists() {
-        return Ok(());
-    }
-
     let context = app_handle.state::<murmur_core::context::AppContext>();
     let model_path = crate::model_artifact::vad_model_path(&context, vad::VAD_MODEL_FILENAME)
         .ok_or_else(|| "Could not determine VAD model path".to_string())?;
+    if crate::model_artifact::binary_model_is_valid(
+        &model_path,
+        crate::model_artifact::MIN_VAD_MODEL_BYTES,
+    ) {
+        return Ok(());
+    }
+
     let models_dir = model_path
         .parent()
         .ok_or_else(|| "Could not determine models directory".to_string())?;

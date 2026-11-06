@@ -326,6 +326,9 @@ jobs:
           cp target/capture-worker-build/debug/murmur-capture-helper \
             binaries/murmur-capture-worker-aarch64-apple-darwin
 
+      - name: Test core foundation
+        run: cd app/src-tauri && cargo test --locked -p murmur-core
+
       - name: Build test binaries
         # Build examples first, then every test target in one invocation.
         # Record the build metadata so nextest can select unit-test subsets
