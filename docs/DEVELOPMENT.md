@@ -263,6 +263,7 @@ Initialization precedes CLI worker dispatch as well as Tauri setup.
 | Persistent/global surface | Ownership / isolation for every non-production identity |
 |---|---|
 | Application Support | Tauri app data uses the configured bundle identifier: settings, completion, UI, window state, knowledge, meetings and performance data all descend from it. Legacy global stores instead descend from `murmur-isolated/<hex-id>`. |
+| Default transcript/audio/report exports | Empty output settings resolve below the isolated legacy app-data namespace (`murmur-isolated/<hex-id>/exports`), never Documents/Murmur. Resolution fails if identity or the isolated data root is unavailable; sequence scans occur only after resolution. Production retains its Documents/home default. |
 | Telemetry and shipper state | `identity::namespace` selects isolated `local-dictation/logs`; buffer seeding and rotating writers use that path. All non-production identities are internal bundles and never start the shipper. |
 | Whisper, VAD, Parakeet, Smart Turn models | Legacy model paths descend from isolated Application Support; Whisper disables production/global search and environment overrides for internal identities. Parakeet explicitly uses CPU, with no provider disk cache. |
 | FluidAudio/shared model caches | Inspection, download destinations and repair markers are namespaced. The pinned FluidAudio SDK has no cache-path API: its ASR initializer is refused for internal bundles, and speaker diarization is unavailable there, preventing implicit SDK access to the shared production cache. Use isolated Whisper/Parakeet for QA. |
@@ -271,16 +272,49 @@ Initialization precedes CLI worker dispatch as well as Tauri setup.
 | UserDefaults/preferences | App defaults use NSBundle identity. Explicit appearance/Dock reads access system appearance/layout preferences only; no app data is read or written in another app domain. |
 | Keychain | No application keychain store/API is used. Updater signature verification uses the bundled public key. |
 | Temp directories | Generated cue files use a namespaced temp root and UUID; explicit test fixtures use unique synthetic roots. Owned publication temps are exclusive 0600 siblings of their isolated destinations. |
-| Helper sockets/IPC | Capture and inference helpers use inherited anonymous pipes/stdio and generation-bound IDs, not global named sockets. Fixed helper bundle IDs identify signed executables, not persistent storage or IPC endpoints. |
+| Helper pipes | Ordinary capture and inference helpers use inherited anonymous pipes/stdio and generation-bound IDs. Their fixed executable bundle IDs do not select persistent storage. |
+| Capture-agent Mach IPC | The experimental agent uses the fixed production endpoint `com.localdictation.capture-agent.xpc`. Every capture-agent CLI action (status, recovery, probes including synthetic probes, and service register/refresh/status/unregister) is refused before dispatch unless the initialized identity is exactly production. Unknown/uninitialized identities fail closed. The shutdown QA matrix uses ordinary capture helpers and does not require this agent. |
 | Capture spools | Meeting WAV/SQLite and optional capture fixtures descend from Tauri app data. No persistent dictation audio is introduced. |
 | Pending files | Completion, UI/source, window and memo pending documents are siblings of isolated destinations. Startup removes abandoned completion/destination temps. Transcript pending evidence is pinned until explicit recovery, then bounded; Clear/Delete/caps remove superseded pending evidence. |
 | Update caches | Updater plugin is not registered for any non-production identity; no update cache/installation is started by the QA bundle. |
-| Launch agents | Autostart plugin is not registered for any non-production identity. The opt-in capture-agent CLI probe is outside normal app startup; never invoke its service-registration actions in QA. |
-| User-selected imports/exports | Explicit paths are user-controlled; QA supplies synthetic fixtures only. No implicit scan of user documents is added. |
+| Launch agents | Autostart plugin is not registered for any non-production identity. Capture-agent service registration and all other CLI operations are refused for non-production or unproven identities. |
+| User-selected imports/exports | Explicit paths are user-controlled; QA supplies synthetic fixtures only. Explicit QA paths must contain synthetic fixtures only; implicit exports use the isolated default above. |
 
 Tests cover bench, refactor-test, shutdown-test, future/empty/path-like IDs,
 ensuring namespace separation and injectivity, plus the actual telemetry resolver.
-No production data is accessed by the tests.
+No production data is accessed by the tests. Regression coverage includes independent
+production/QA default-export numbering, all refused capture-agent operations,
+and queued early logs during an injected stalled telemetry history reader.
+
+#### Startup disk-I/O audit (round two)
+
+Telemetry installs its subscriber synchronously using only memory/channel setup.
+A dedicated worker reads history, merges it before live ring-buffer events, opens
+and rotates both log formats, and drains queued early output. Tracing calls no
+longer write JSONL synchronously. A stalled reader/writer cannot hold the setup
+thread or a disk-writer lock needed by that thread.
+
+Other setup disk work remains synchronous and is explicitly **not covered** by
+that telemetry guarantee:
+
+| Setup call | Remaining synchronous file work |
+|---|---|
+| `completion::initialize` | `settings_store::data_dir` creates the identity app-data root; exact-identity WebKit existence check; completion service startup may wait for its storage owner. |
+| Legacy query/transform cleanup | Enumerates/removes retired app-data files. |
+| `capture_health.initialize` | Creates diagnostics, loads history or replays JSONL, and publishes migrated history while holding its accumulator lock. |
+| `performance.initialize` | Machine-ID load/create and SQLite repository initialization/migrations. |
+| `dictation_diagnostics.initialize` | Private-directory creation and capture pruning. |
+| `knowledge.initialize` / correction refresh | SQLite open/migration, queries and correction matcher load. |
+| `diarization_audio::sweep_abandoned` / `meeting_store.initialize` | Removes abandoned isolated spools; opens/migrates/queries the meeting database. |
+
+Window snapshot and capture memo restoration already run on workers. Launch
+settings recovery uses the source FIFO; cue WAV creation occurs only in a
+blocking playback worker. Audio inventory, Smart Auto, meeting suggestions,
+log shipping and resource heartbeats schedule workers/tasks; their startup
+registration does not perform app-file reads on main. Native menu/window,
+AppKit observer, WebKit identity and system-device/display calls remain on main
+as required by their APIs. This audit does not claim all startup disk I/O has
+been removed; the rows above can still delay main dispatch before setup ends.
 
 ### Completion pending recovery
 

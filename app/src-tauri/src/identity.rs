@@ -9,6 +9,9 @@ static IDENTIFIER: OnceLock<String> = OnceLock::new();
 pub(crate) fn initialize(identifier: &str) {
     let _ = IDENTIFIER.set(identifier.to_owned());
 }
+pub(crate) fn initialized_identifier() -> Option<&'static str> {
+    IDENTIFIER.get().map(String::as_str)
+}
 pub(crate) fn identifier() -> &'static str {
     IDENTIFIER.get().map(String::as_str).unwrap_or(PRODUCTION)
 }

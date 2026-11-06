@@ -5,7 +5,10 @@ use murmur_core::events::{EventKind, EventSink};
 use std::collections::VecDeque;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc, Arc, Mutex, OnceLock,
+};
 use tauri::Manager;
 
 mod key_identity;
@@ -31,6 +34,12 @@ pub struct AppEvent {
 
 static EVENT_BUFFER: OnceLock<Arc<Mutex<VecDeque<AppEvent>>>> = OnceLock::new();
 static LOG_DIRECTORY: OnceLock<PathBuf> = OnceLock::new();
+// Clearing cannot resurrect queued pre-clear output or asynchronously restored
+// history. Only the disk worker/clear operation use this lock; event callers
+// read the generation atomically and never wait on disk.
+static LOG_IO_LOCK: Mutex<()> = Mutex::new(());
+static LOG_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static BUFFER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn get_event_buffer() -> Arc<Mutex<VecDeque<AppEvent>>> {
     EVENT_BUFFER
@@ -130,7 +139,7 @@ impl tracing::field::Visit for JsonVisitor {
 pub struct TauriEmitterLayer {
     app_handle: tauri::AppHandle,
     buffer: Arc<Mutex<VecDeque<AppEvent>>>,
-    jsonl_writer: Mutex<SizeRotatingFile>,
+    jsonl_writer: QueuedLogSender,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer {
@@ -181,13 +190,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         }
 
         // Write AppEvent JSON line to JSONL file
-        if let Ok(mut writer) = self.jsonl_writer.lock() {
-            if let Ok(mut line) = serde_json::to_string(&app_event) {
-                line.push('\n');
-                // One write per event: the rotation check runs between
-                // events, so a rotated file always ends on a line boundary.
-                let _ = writer.write_all(line.as_bytes());
-            }
+        if let Ok(mut line) = serde_json::to_string(&app_event) {
+            line.push('\n');
+            let _ = self.jsonl_writer.send(LogWrite::Event(line.into_bytes()));
         }
 
         // Emit to all windows
@@ -2308,17 +2313,85 @@ fn read_recent_events(paths: &[PathBuf], n: usize) -> Vec<AppEvent> {
     newest_first
 }
 
-/// Seed the ring buffer with the last `n` events from every retained JSONL
-/// generation.
-fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
-    let events = read_recent_events(&event_jsonl_paths(), n);
-    let mut buf = buffer.lock().unwrap_or_else(|p| p.into_inner());
-    for event in events {
-        if buf.len() >= 500 {
-            buf.pop_front();
-        }
-        buf.push_back(event);
+/// Read without holding the live buffer lock, then prepend history. Events
+/// observed during a stalled read stay newer than restored history and survive
+/// the capacity cap. The writer has not consumed any new JSONL events yet.
+fn seed_buffer_with(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, read: impl FnOnce() -> Vec<AppEvent>) {
+    let generation = BUFFER_GENERATION.load(Ordering::SeqCst);
+    let mut restored: VecDeque<_> = read().into();
+    let mut live = buffer.lock().unwrap_or_else(|p| p.into_inner());
+    if generation != BUFFER_GENERATION.load(Ordering::SeqCst) {
+        return;
     }
+    restored.append(&mut live);
+    while restored.len() > 500 {
+        restored.pop_front();
+    }
+    *live = restored;
+}
+
+#[derive(Debug)]
+enum LogWrite {
+    Event(Vec<u8>),
+    Pretty(Vec<u8>),
+}
+
+#[derive(Clone)]
+struct QueuedLogSender(mpsc::Sender<(u64, LogWrite)>);
+impl QueuedLogSender {
+    fn send(&self, record: LogWrite) -> Result<(), mpsc::SendError<(u64, LogWrite)>> {
+        self.0
+            .send((LOG_WRITE_GENERATION.load(Ordering::SeqCst), record))
+    }
+}
+
+#[derive(Clone)]
+struct QueuedPrettyWriter(QueuedLogSender);
+impl Write for QueuedPrettyWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .send(LogWrite::Pretty(bytes.to_vec()))
+            .map_err(|_| std::io::Error::other("telemetry writer unavailable"))?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Install callers before starting disk work. Startup events queue while the
+/// worker seeds history and opens/rotates files; no call site waits on disk or
+/// a writer mutex. One worker preserves each file's event order.
+fn start_log_worker(
+    initialize: impl FnOnce() -> (SizeRotatingFile, SizeRotatingFile) + Send + 'static,
+) -> (QueuedLogSender, std::thread::JoinHandle<()>) {
+    let (sender, receiver) = mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .name("telemetry-writer".into())
+        .spawn(move || {
+            let (mut jsonl, mut pretty) = {
+                let _io = LOG_IO_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+                initialize()
+            };
+            for (generation, message) in receiver {
+                let _io = LOG_IO_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+                if generation != LOG_WRITE_GENERATION.load(Ordering::SeqCst) {
+                    continue;
+                }
+                match message {
+                    LogWrite::Event(bytes) => {
+                        let _ = jsonl.write_all(&bytes);
+                    }
+                    LogWrite::Pretty(bytes) => {
+                        let _ = pretty.write_all(&bytes);
+                    }
+                }
+            }
+            let _ = jsonl.flush();
+            let _ = pretty.flush();
+        })
+        .expect("Failed to start telemetry writer");
+    (QueuedLogSender(sender), worker)
 }
 
 pub fn init(app_handle: tauri::AppHandle) {
@@ -2329,7 +2402,6 @@ pub fn init(app_handle: tauri::AppHandle) {
         .map(|root| log_directory_for(&root, &identifier))
         .expect("Could not determine log directory");
     let _ = LOG_DIRECTORY.set(log_dir.clone());
-    std::fs::create_dir_all(&log_dir).ok();
 
     let log_file_name = if cfg!(debug_assertions) {
         "app.dev.log"
@@ -2337,44 +2409,44 @@ pub fn init(app_handle: tauri::AppHandle) {
         "app.log"
     };
 
-    // Seed ring buffer from existing JSONL before subscribing
     let buffer = get_event_buffer();
-    seed_buffer_from_jsonl(&buffer, 500);
-
-    // Open JSONL file for appending (AppEvent format). It rotates at startup
-    // and again at runtime whenever it reaches EVENT_LOG_MAX_BYTES.
-    let jsonl_writer = SizeRotatingFile::open(
-        jsonl_path().expect("Could not determine JSONL path"),
-        EVENT_LOG_MAX_BYTES,
-        EVENT_LOG_GENERATIONS,
-    )
-    .expect("Could not open JSONL file")
-    .with_drop_note(event_drop_note);
-    register_writer(&jsonl_writer);
-
-    // Layer 1: Pretty file. Size-capped; the non-blocking worker thread does
-    // the rotation, so logging call sites never wait on it.
-    let pretty_file = SizeRotatingFile::open(
-        log_dir.join(log_file_name),
-        APP_LOG_MAX_BYTES,
-        APP_LOG_GENERATIONS,
-    )
-    .expect("Could not open app log file")
-    .with_drop_note(|dropped| {
-        format!("WARN log file was unavailable; {dropped} log lines were dropped\n")
+    let restore_buffer = buffer.clone();
+    let (sender, _worker) = start_log_worker(move || {
+        std::fs::create_dir_all(&log_dir).ok();
+        seed_buffer_with(&restore_buffer, || {
+            read_recent_events(&event_jsonl_paths(), 500)
+        });
+        let jsonl_writer = SizeRotatingFile::open(
+            jsonl_path().expect("Could not determine JSONL path"),
+            EVENT_LOG_MAX_BYTES,
+            EVENT_LOG_GENERATIONS,
+        )
+        .expect("Could not open JSONL file")
+        .with_drop_note(event_drop_note);
+        register_writer(&jsonl_writer);
+        let pretty_file = SizeRotatingFile::open(
+            log_dir.join(log_file_name),
+            APP_LOG_MAX_BYTES,
+            APP_LOG_GENERATIONS,
+        )
+        .expect("Could not open app log file")
+        .with_drop_note(|dropped| {
+            format!("WARN log file was unavailable; {dropped} log lines were dropped\n")
+        });
+        register_writer(&pretty_file);
+        (jsonl_writer, pretty_file)
     });
-    register_writer(&pretty_file);
-    let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(pretty_file);
+    let pretty_sender = QueuedPrettyWriter(sender.clone());
     let pretty_layer = tracing_subscriber::fmt::layer()
         .event_format(key_identity::PrettyFormat)
-        .with_writer(pretty_writer)
+        .with_writer(move || pretty_sender.clone())
         .with_ansi(false);
 
     // Layer 2: Tauri event emitter (also writes JSONL)
     let emitter_layer = TauriEmitterLayer {
         app_handle,
         buffer,
-        jsonl_writer: Mutex::new(jsonl_writer),
+        jsonl_writer: sender,
     };
 
     let filter = tracing_subscriber::EnvFilter::new("info");
@@ -2396,9 +2468,6 @@ pub fn init(app_handle: tauri::AppHandle) {
         },
         "telemetry initialized"
     );
-
-    // Leak guard to keep writer alive for app lifetime
-    Box::leak(Box::new(pretty_guard));
 }
 
 // ---------------------------------------------------------------------------
@@ -2426,6 +2495,8 @@ pub fn read_pretty_log_tail(n: usize) -> String {
 }
 
 pub fn clear_all_logs() -> Result<(), String> {
+    let _io = LOG_IO_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    LOG_WRITE_GENERATION.fetch_add(1, Ordering::SeqCst);
     let dir = match logs_dir() {
         Some(d) => d,
         None => return Ok(()),
@@ -2497,6 +2568,7 @@ pub fn get_event_history() -> Vec<AppEvent> {
 pub fn clear_event_history() {
     let buffer = get_event_buffer();
     let mut guard = buffer.lock().unwrap_or_else(|p| p.into_inner());
+    BUFFER_GENERATION.fetch_add(1, Ordering::SeqCst);
     guard.clear();
 }
 
@@ -5016,5 +5088,148 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_io_tests {
+    use super::*;
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    #[test]
+    fn clear_during_restore_does_not_resurrect_history() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        seed_buffer_with(&buffer, || {
+            BUFFER_GENERATION.fetch_add(1, Ordering::SeqCst);
+            buffer.lock().unwrap().clear();
+            vec![AppEvent {
+                timestamp: "old".into(),
+                stream: "system".into(),
+                level: "info".into(),
+                summary: "cleared history".into(),
+                data: serde_json::json!({}),
+            }]
+        });
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_discards_queued_old_generation_but_preserves_new_output() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let jsonl_path = fixture.path().join("events.jsonl");
+        let pretty_path = fixture.path().join("app.log");
+        let output = jsonl_path.clone();
+        let pretty_output = pretty_path.clone();
+        let (ready, initialized) = mpsc::channel();
+        let (sender, worker) = start_log_worker(move || {
+            let files = (
+                SizeRotatingFile::open(output, 4096, 1).unwrap(),
+                SizeRotatingFile::open(pretty_output, 4096, 1).unwrap(),
+            );
+            ready.send(()).unwrap();
+            files
+        });
+        initialized
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        {
+            let _io = LOG_IO_LOCK.lock().unwrap();
+            sender
+                .send(LogWrite::Event(b"old event\n".to_vec()))
+                .unwrap();
+            sender
+                .send(LogWrite::Pretty(b"old pretty\n".to_vec()))
+                .unwrap();
+            LOG_WRITE_GENERATION.fetch_add(1, Ordering::SeqCst);
+            sender
+                .send(LogWrite::Event(b"new event\n".to_vec()))
+                .unwrap();
+            sender
+                .send(LogWrite::Pretty(b"new pretty\n".to_vec()))
+                .unwrap();
+        }
+        drop(sender);
+        worker.join().unwrap();
+        assert_eq!(std::fs::read_to_string(jsonl_path).unwrap(), "new event\n");
+        assert_eq!(
+            std::fs::read_to_string(pretty_path).unwrap(),
+            "new pretty\n"
+        );
+    }
+
+    #[test]
+    fn stalled_startup_reader_keeps_setup_and_early_logging_nonblocking() {
+        let _test = TEST_LOCK.lock().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let jsonl_path = fixture.path().join("events.jsonl");
+        let pretty_path = fixture.path().join("app.log");
+        let output = jsonl_path.clone();
+        let pretty_output = pretty_path.clone();
+        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let restored_buffer = buffer.clone();
+        let (reading, reader_entered) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let (setup_done, setup_returned) = mpsc::channel();
+        let setup = std::thread::spawn(move || {
+            let pair = start_log_worker(move || {
+                seed_buffer_with(&restored_buffer, || {
+                    reading.send(()).unwrap();
+                    resume.recv().unwrap();
+                    vec![AppEvent {
+                        timestamp: "old".into(),
+                        stream: "system".into(),
+                        level: "info".into(),
+                        summary: "restored".into(),
+                        data: serde_json::json!({}),
+                    }]
+                });
+                (
+                    SizeRotatingFile::open(output, 4096, 1).unwrap(),
+                    SizeRotatingFile::open(pretty_output, 4096, 1).unwrap(),
+                )
+            });
+            setup_done.send(pair).unwrap();
+        });
+        reader_entered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        // setup returns and both log formats queue while read is still stalled.
+        let (sender, worker) = setup_returned
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        buffer.lock().unwrap().push_back(AppEvent {
+            timestamp: "new".into(),
+            stream: "system".into(),
+            level: "info".into(),
+            summary: "early".into(),
+            data: serde_json::json!({}),
+        });
+        sender
+            .send(LogWrite::Event(b"synthetic early event\n".to_vec()))
+            .unwrap();
+        sender
+            .send(LogWrite::Pretty(b"synthetic pretty event\n".to_vec()))
+            .unwrap();
+        assert!(!jsonl_path.exists());
+        release.send(()).unwrap();
+        drop(sender);
+        setup.join().unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(jsonl_path).unwrap(),
+            "synthetic early event\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(pretty_path).unwrap(),
+            "synthetic pretty event\n"
+        );
+        let summaries: Vec<_> = buffer
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.summary.clone())
+            .collect();
+        assert_eq!(summaries, ["restored", "early"]);
     }
 }

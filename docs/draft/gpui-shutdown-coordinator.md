@@ -285,3 +285,33 @@ integration suites) and `cargo clippy --all-targets -- -D warnings
 -A clippy::chunks_exact_to_as_chunks -A clippy::byte_char_slices`. The native
 reordered-task and quick-control tests both pass. No GUI verification or new
 independent review is claimed.
+
+## Round-two isolation and guard corrections
+
+- I1: implicit transcript/audio/report exports select an identity-namespaced
+  app-data `exports` directory. Only initialized production selects Documents;
+  absent identity/data roots fail closed. Synthetic regression writes production
+  file 1 and QA file 1 independently, checking production is unchanged.
+- I1: the fixed production capture-agent Mach endpoint is inaccessible from
+  non-production/uninitialized CLI dispatch. All probe/recovery/status and
+  service actions refuse before launching a helper or invoking SMAppService.
+  The shutdown QA matrix needs ordinary capture helpers, not this experiment.
+- N2: telemetry installs its subscriber before worker disk startup. History reads,
+  ring seeding, file open/rotation, and both JSONL/pretty writes run on one worker;
+  early events queue and restored history is prepended to live events. Clear
+  invalidates queued output and pending restore generations, preventing deleted
+  logs from reappearing after asynchronous startup. A blocked
+  synthetic reader regression proves setup returns and early output survives.
+  DEVELOPMENT lists the other synchronous setup file operations still present;
+  this fix does not establish an all-startup-I/O-off-main claim.
+- N3: the restart guard inventories every maintained Cargo.toml recursively,
+  including workspace/target/patch package renames, and reserves their Rust crate
+  identifiers. Runtime exit uses a conservative literal-zero exit-code allowlist;
+  unknown expressions, const aliases, numeric MAX spellings, UFCS and function
+  references are refused. Audited pre-Tauri CLI process exits remain supported.
+  Fixtures cover renames in every table, inherited workspace dependencies,
+  decimal/hex/octal/binary/MAX/alias exit bypasses, and malformed manifests.
+
+Verification results are appended after the requested Linux and windowless Mac
+checks. No GUI, production capture-agent contact, app launch or merge is part of
+this implementation worker's scope.
