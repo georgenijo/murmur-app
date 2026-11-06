@@ -1714,8 +1714,9 @@ pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod source_recovery_tests;
-/// Private single-owner snapshot publication. The immutable pending document is
-/// synced before the destination; replay runs before admitting another writer.
+/// Private single-owner immutable snapshot publication, with recovery before
+/// admitting another writer. No host types or runtime are required.
+
 pub fn publish_snapshot<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
     let root = path.parent().ok_or(Error::Invalid)?;
     std::fs::create_dir_all(root).map_err(|_| Error::Io)?;
@@ -1723,10 +1724,7 @@ pub fn publish_snapshot<T: Serialize>(path: &std::path::Path, value: &T) -> Resu
         .file_name()
         .and_then(|v| v.to_str())
         .ok_or(Error::Invalid)?;
-    let pending = format!("{file}.pending");
-    let mut storage = Storage::new(root.into());
-    storage.write(&pending, &json!({"schema":1,"value":value}))?;
-    recover_snapshot(path)
+    Storage::new(root.into()).publish_snapshot(file, value)
 }
 pub fn recover_snapshot(path: &std::path::Path) -> Result<()> {
     let root = path.parent().ok_or(Error::Invalid)?;
@@ -1734,15 +1732,5 @@ pub fn recover_snapshot(path: &std::path::Path) -> Result<()> {
         .file_name()
         .and_then(|v| v.to_str())
         .ok_or(Error::Invalid)?;
-    let pending = format!("{file}.pending");
-    let mut storage = Storage::new(root.into());
-    storage.sync_directory()?;
-    if let Some(receipt) =
-        storage.read::<Value>(&pending, |v| v["schema"] == 1 && v.get("value").is_some())?
-    {
-        storage.write(file, &receipt["value"])?;
-        std::fs::remove_file(root.join(pending)).map_err(|_| Error::Io)?;
-        storage.sync_directory()?;
-    }
-    Ok(())
+    Storage::new(root.into()).recover_snapshot(file)
 }

@@ -40,6 +40,25 @@ pub struct Storage {
     pub trace: std::cell::RefCell<Vec<String>>,
 }
 impl Storage {
+    pub fn publish_snapshot<T: Serialize>(&mut self, file: &str, value: &T) -> Result<()> {
+        self.write(
+            &format!("{file}.pending"),
+            &serde_json::json!({"schema":1,"value":value}),
+        )?;
+        self.recover_snapshot(file)
+    }
+    pub fn recover_snapshot(&mut self, file: &str) -> Result<()> {
+        let pending = format!("{file}.pending");
+        self.sync_directory()?;
+        if let Some(receipt) = self
+            .read::<serde_json::Value>(&pending, |v| v["schema"] == 1 && v.get("value").is_some())?
+        {
+            self.write(file, &receipt["value"])?;
+            fs::remove_file(self.root.join(pending)).map_err(|_| Error::Io)?;
+            self.sync_directory()?;
+        }
+        Ok(())
+    }
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,

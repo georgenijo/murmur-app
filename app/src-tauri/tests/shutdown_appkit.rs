@@ -23,15 +23,14 @@ fn main() {
         platform::{
             macos::{
                 set_application_termination_handler, ActivationPolicy, ApplicationTerminationReply,
-                EventLoopBuilderExtMacOS,
+                EventLoopExtMacOS,
             },
             run_return::EventLoopExtRunReturn,
         },
     };
     let mtm = MainThreadMarker::new().unwrap();
-    let mut event_loop = EventLoopBuilder::<()>::new()
-        .with_activation_policy(ActivationPolicy::Prohibited)
-        .build();
+    let mut event_loop = EventLoopBuilder::<()>::new().build();
+    event_loop.set_activation_policy(ActivationPolicy::Prohibited);
     let application = NSApplication::sharedApplication(mtm);
     let reply = Arc::new(AtomicBool::new(false));
     let callbacks = Arc::new(AtomicUsize::new(0));

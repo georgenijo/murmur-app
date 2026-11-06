@@ -413,7 +413,7 @@ pub(crate) mod test_support {
             run_loop.wake_up();
             std::thread::sleep(Duration::from_millis(100));
         }
-        tracing::info!(target:"shutdown", callbacks=counts.load(Ordering::Acquire), expected=130, "synthetic shutdown dispatcher receipt");
+        tracing::info!(target:"shutdown", callbacks=counts.load(Ordering::Acquire), expected=195, "synthetic shutdown dispatcher receipt");
     }
     #[tauri::command]
     pub(crate) fn shutdown_test_action(
