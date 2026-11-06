@@ -3,6 +3,7 @@
 //! A host writer lock orders these commands with WebKit lifecycle imports.
 
 use crate::events::EventsExt;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -50,6 +51,13 @@ fn require_main_window(label: &str) -> Result<(), String> {
 /// Serializes writers across every window and blob. Each file has its own temp
 /// sibling, while one lock keeps publish/delete ordering deterministic.
 pub(crate) static WRITE_LOCK: Mutex<()> = Mutex::new(());
+// Native owns accepted patches even when reading/merging the current snapshot
+// fails before the durable publisher can retain an exact merged document.
+fn pending_owned() -> &'static Mutex<HashMap<PathBuf, OwnedEdits>> {
+    static PENDING: std::sync::OnceLock<Mutex<HashMap<PathBuf, OwnedEdits>>> =
+        std::sync::OnceLock::new();
+    PENDING.get_or_init(Default::default)
+}
 
 fn blob_path(dir: &Path, spec: BlobSpec) -> PathBuf {
     dir.join(spec.file_name)
@@ -182,6 +190,11 @@ fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
 /// The per-bundle app data directory that owns every durable host-written
 /// file. Shared so non-command hosts (the capture backend memo) publish beside
 /// `settings.json` instead of resolving their own directory.
+fn source_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("Durable data directory unavailable: {e}"))
+}
 pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -228,13 +241,15 @@ pub(crate) fn save_settings_blob_worker(
     // Conservatively revoke passive input resolution for every persisted
     // settings update, including device/Smart Auto edits that do not change HAL topology.
     crate::audio::prepare::configuration_changed();
-    let dir = data_dir(&app)?;
+    let dir = source_dir(&app)?;
     let (revision, blob) = {
         // Assign revisions in durable commit order across concurrent saves.
         // Native overrides can still supersede this intent during disk I/O.
         let _guard = WRITE_LOCK.lock_or_recover();
-        let blob = commit_settings_intent(&dir, &blob, owned_edits.as_ref(), snapshot_current)?;
-        let revision = crate::dictation_control::accept_configuration(&app);
+        let (blob, revision) =
+            commit_settings_intent(&dir, &blob, owned_edits.as_ref(), snapshot_current, || {
+                crate::dictation_control::accept_configuration(&app)
+            })?;
         (revision, blob)
     };
     notify_settings_committed(&app, &blob);
@@ -281,20 +296,36 @@ pub(crate) fn save_settings_blob_worker(
 
 /// Caller holds WRITE_LOCK. A superseded document contributes only its owned
 /// patch; every other field comes from the authoritative durable snapshot.
-fn commit_settings_intent(
+fn commit_settings_intent<T>(
     dir: &Path,
     blob: &str,
     edits: Option<&OwnedEdits>,
     snapshot: bool,
-) -> Result<String, String> {
+    before_publish: impl FnOnce() -> T,
+) -> Result<(String, T), String> {
+    let edits = {
+        let mut pending = pending_owned().lock_or_recover();
+        let retained = pending.entry(dir.into()).or_default();
+        if let Some(edits) = edits {
+            if edits.auto_paste.is_some() {
+                retained.auto_paste = edits.auto_paste;
+            }
+            if edits.disabled.is_some() {
+                retained.disabled = edits.disabled;
+            }
+        }
+        *retained
+    };
     let base = if snapshot {
         blob.to_owned()
     } else {
         read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?
     };
-    let committed = merge_owned_fields_with_edits(dir, &base, edits)?;
+    let committed = merge_owned_fields_with_edits(dir, &base, Some(&edits))?;
+    let revision = before_publish();
     write_blob_locked(dir, SETTINGS, &committed)?;
-    Ok(committed)
+    pending_owned().lock_or_recover().remove(dir);
+    Ok((committed, revision))
 }
 
 fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
@@ -346,24 +377,17 @@ fn patch_owned_setting(
     value: bool,
 ) -> Result<String, String> {
     let _guard = WRITE_LOCK.lock_or_recover();
-    let blob = read_blob(dir, SETTINGS)?.ok_or("No durable settings snapshot is available")?;
-    let mut settings: serde_json::Value =
-        serde_json::from_str(&blob).map_err(|_| "Durable settings could not be decoded")?;
-    let epoch = settings["ownedFieldsRevision"]
-        .as_u64()
-        .unwrap_or(0)
-        .checked_add(1)
-        .filter(|n| *n <= 9_007_199_254_740_991)
-        .ok_or("Settings revision exhausted")?;
-    settings["ownedFieldsRevision"] = serde_json::json!(epoch);
-    settings
-        .as_object_mut()
-        .ok_or("Durable settings must be an object")?
-        .insert(field.key().into(), serde_json::Value::Bool(value));
-    let committed =
-        serde_json::to_string(&settings).map_err(|_| "Settings could not be encoded")?;
-    write_blob_locked(dir, SETTINGS, &committed)?;
-    Ok(committed)
+    let edits = match field {
+        OverlaySettingField::AutoPaste => OwnedEdits {
+            auto_paste: Some(value),
+            disabled: None,
+        },
+        OverlaySettingField::Disabled => OwnedEdits {
+            auto_paste: None,
+            disabled: Some(value),
+        },
+    };
+    commit_settings_intent(dir, "{}", Some(&edits), false, || ()).map(|(blob, ())| blob)
 }
 
 fn owned_fields_notification(
@@ -380,7 +404,7 @@ fn owned_fields_notification(
 
 /// Older full snapshots cannot undo an overlay commit accepted since their
 /// capture. The epoch is durable and advances with each owned-field patch.
-#[derive(Default, serde::Deserialize)]
+#[derive(Clone, Copy, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OwnedEdits {
     auto_paste: Option<bool>,
@@ -442,7 +466,7 @@ pub(crate) fn patch_overlay_setting_worker(
     value: bool,
 ) -> Result<String, String> {
     require_overlay_owner(window.label())?;
-    let committed = patch_owned_setting(&data_dir(&app)?, field, value)?;
+    let committed = patch_owned_setting(&source_dir(&app)?, field, value)?;
     notify_settings_committed(&app, &committed);
     let _ = app.events().send_to(
         murmur_core::events::Consumer::Main,
@@ -1051,9 +1075,21 @@ pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
     let Ok(root) = data_dir(app) else {
         return false;
     };
+    if !flush_owned(&root) {
+        return false;
+    }
     ["dictation-settings", "murmur-theme-library"]
         .iter()
         .all(|key| murmur_core::completion::recover_source(&root, key).is_ok())
+}
+
+/// Caller holds WRITE_LOCK, after the accepted producer drain.
+fn flush_owned(root: &Path) -> bool {
+    let has_pending = pending_owned()
+        .lock_or_recover()
+        .get(root)
+        .is_some_and(|e| e.auto_paste.is_some() || e.disabled.is_some());
+    !has_pending || commit_settings_intent(root, "{}", None, false, || ()).is_ok()
 }
 
 #[tauri::command]
@@ -1318,7 +1354,8 @@ mod round_three_ordering_tests {
                 let (snapshot, edits, _) =
                     select_settings_intent(order, owner, session, generation, edits, fields)?;
                 let _guard = WRITE_LOCK.lock_or_recover();
-                let blob = commit_settings_intent(&root, &blob, Some(&edits), snapshot)?;
+                let (blob, ()) =
+                    commit_settings_intent(&root, &blob, Some(&edits), snapshot, || ())?;
                 Ok(if snapshot {
                     SourceWrite::Applied { value: blob }
                 } else {
@@ -1366,6 +1403,8 @@ mod round_three_ordering_tests {
         // renderer flush runs. Reopen/recover exactly as the next launch does.
         let path = root.to_path_buf();
         tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+            let _guard = WRITE_LOCK.lock_or_recover();
+            assert!(flush_owned(&path));
             murmur_core::completion::recover_source(&path, "dictation-settings").unwrap();
         }))
         .unwrap();
@@ -1421,6 +1460,59 @@ mod round_three_ordering_tests {
         assert_eq!(disk["disabled"], true);
         assert_eq!(disk["language"], "es");
     }
+    #[test]
+    fn accepted_patch_is_native_owned_even_when_merge_read_fails() {
+        let (root, main, _) = setup();
+        let path = root.path().join("settings.json");
+        let held = root.path().join("synthetic-settings-held");
+        std::fs::rename(&path, &held).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let dir = root.path().to_path_buf();
+        let result = tauri::async_runtime::block_on(crate::shutdown::ordered_source_call(
+            "main".into(),
+            main,
+            move |order, owner, session| {
+                let (_, edits, _) = select_settings_intent(
+                    order,
+                    owner,
+                    session,
+                    1,
+                    OwnedEdits {
+                        auto_paste: Some(true),
+                        disabled: None,
+                    },
+                    OwnedEditGenerations {
+                        auto_paste: Some(1),
+                        disabled: None,
+                    },
+                )?;
+                let _guard = WRITE_LOCK.lock_or_recover();
+                commit_settings_intent(&dir, "{}", Some(&edits), false, || ())
+            },
+        ));
+        assert!(result.is_err());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(held, path).unwrap();
+        // No renderer retry: the shutdown owner publishes the retained field.
+        assert_eq!(recovered(root.path())["autoPaste"], true);
+    }
+    #[test]
+    fn superseded_settings_receipt_separates_document_and_exact_field_ownership() {
+        let receipt = SettingsWrite {
+            snapshot: SourceWrite::Superseded,
+            owned_patch_generations: OwnedEditGenerations {
+                auto_paste: Some(1),
+                disabled: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(receipt).unwrap(),
+            serde_json::json!({
+                "status":"superseded", "ownedPatchGenerations":{"autoPaste":1}
+            })
+        );
+    }
+
     #[test]
     fn concurrent_windows_order_same_field_and_never_clobber_other_fields() {
         let (root, main, overlay) = setup();

@@ -454,3 +454,19 @@ acknowledgement, flush, identical retry and authoritative-cache tests remain.
 Verification results will be appended after Linux and Mac mini checks. This
 implementation worker performs no GUI action, merge or independent review; the
 parent retains the independent Sol recheck gate.
+
+The native field owner also retains patches that fail during the read/merge,
+before a complete document can reach the durable publisher. A later source
+commit combines those retained fields with its own fresh patches; shutdown
+retries any remainder under the same writer lock. A later quick control replaces
+only its own field in that owner. Configuration revision reservation remains
+before disk publication, preserving the existing native override fence.
+
+The new session command is documented in the command reference. Current command
+counts in the agent guide, architecture and feature index are 186; historical
+rewrite-plan inventory counts remain historical.
+
+Linux verification: `npm ci`, TypeScript, all 183 Vitest files / 1,892 tests,
+and all 192 core unit/integration tests pass. Every local command in the CI
+`policy` job passes, including reference/link validators, 435 Python unittest
+cases, 25 canary tests, restart guard suites and 42 frontend event-guard tests.

@@ -304,7 +304,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 185 registered commands |
+| Rust backend | `app/src-tauri/src/` — 186 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
