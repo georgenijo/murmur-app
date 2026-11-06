@@ -580,6 +580,9 @@ fn real_http_owner_checks_downloads_retries_installs_and_confirms_notes_on_new_l
     let blocked = target.parent().unwrap().join("placeholder");
     fs::rename(&target, &blocked).unwrap();
     assert!(updater.act(Action::Install).is_err());
+    assert!(
+        matches!(updater.snapshot().update_status, Status::Error { stage, .. } if stage == "restart")
+    );
     fs::rename(&blocked, &target).unwrap();
     assert!(updater.act(Action::Install).unwrap());
     assert_eq!(server.count(), calls);
@@ -929,6 +932,9 @@ fn signed_bad_archive_can_be_corrected_at_same_version_without_restarting() {
         }
         assert!(updater.act(Action::Install).is_err());
         assert_original(&updater, &target);
+        assert!(
+            matches!(updater.snapshot().update_status, Status::Error { stage, .. } if stage == "check")
+        );
         let (_, sig) = signed_with(&good, &pair);
         manifest["platforms"][platform()]["signature"] = json!(sig);
         manifest["platforms"][platform()]["url"] = json!(server.url("/corrected"));

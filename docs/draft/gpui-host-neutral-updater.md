@@ -206,6 +206,8 @@ last signed offer. As before, a downloaded Ready update stays stable through
 ordinary Check and duplicate Download clicks. A failed verify/extract/validate
 removes failed preparation staging and discards cached bytes, so Check can
 read a corrected feed and Download can fetch it without a process restart.
+The rejection error offers Check in the existing dialog, rather than an
+Install retry with no downloaded bytes.
 Filesystem replacement errors retain valid bytes for retry. An uncertain
 post-exchange receipt retains both bundles for recovery and never swaps back.
 

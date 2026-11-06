@@ -653,6 +653,15 @@ impl Updater {
             Ok(false)
         })();
         if let Err(error) = &result {
+            // A rejected payload was discarded. The dialog must offer Check,
+            // rather than retry Install forever without downloaded bytes.
+            let stage =
+                if matches!(action, Action::Install) && !engine.installed && engine.bytes.is_none()
+                {
+                    "check"
+                } else {
+                    stage
+                };
             self.state(
                 Status::Error {
                     stage: stage.into(),
