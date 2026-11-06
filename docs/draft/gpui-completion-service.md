@@ -409,3 +409,11 @@ All producer fixtures used for exact-row mutation now include native
 eviction asserts 200 entries without the target, and edit asserts the changed
 text **before** retry. The other completion fixture helper already carries
 `schemaVersion: 2`; intentionally legacy fixtures retain their legacy shape.
+
+Baseline checks on archived `91dc0f25`, with only new test functions added,
+fail X (first missing History evidence), I (holding loss allows admission), and
+O (registry exceeds the tombstone bound). Adding only the new pre-retry mutation
+assertions to that baseline makes delete and edit fail: neither mutation had
+actually run. Switching those fixtures to the native shape makes all five
+receipt mutation controls pass, confirming the fixture repair rather than a
+production mutation change.
