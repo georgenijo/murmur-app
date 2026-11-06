@@ -1511,6 +1511,13 @@ pub fn complete_source_document(key: &str, value: &Value) -> bool {
     })
 }
 
+/// Quarantine a rejected source under the host's existing WRITE_LOCK, using the
+/// same durable history guard and monotonic evidence sequence as core recovery.
+pub fn quarantine_source(root: &std::path::Path, key: &str) -> Result<()> {
+    let file = crate::state::file(key).ok_or(Error::Invalid)?;
+    Storage::new(root.into()).quarantine(file)
+}
+
 /// Bound per-source evidence and abandoned publication siblings. Host readers
 /// also call this after quarantining a destination under WRITE_LOCK.
 pub fn prune_source_artifacts(root: &std::path::Path, key: &str) -> Result<()> {
@@ -1523,7 +1530,9 @@ pub fn prune_source_artifacts(root: &std::path::Path, key: &str) -> Result<()> {
         format!("{file}.identity"),
     ] {
         storage.prune_artifacts(&name)?;
+        storage.prune_artifacts(&format!("{name}.quarantine_sequence"))?;
     }
+    storage.prune_artifacts(&format!("{file}.required-history"))?;
     Ok(())
 }
 
@@ -1535,8 +1544,10 @@ pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
     std::fs::create_dir_all(root).map_err(|_| Error::Io)?;
     let mut storage = Storage::new(root.into());
     storage.sync_directory()?;
-    prune_source_artifacts(root, key)?;
+    // Establish whether the destination is usable before treating any evidence
+    // as resolved. A corrupt destination is quarantined and pins its evidence.
     let destination = source_destination(&storage, key)?;
+    prune_source_artifacts(root, key)?;
     let existed = root.join(&pending).exists();
     let receipt: Option<Value> = storage.read(&pending, |v: &Value| {
         let Some(receipt_key) = v["key"]
@@ -1602,7 +1613,10 @@ pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
     let file = crate::state::file(key).ok_or(Error::Invalid)?;
     recover_source(root, key)?;
     let storage = Storage::new(root.into());
-    if root.join(format!("{file}.required")).exists() || storage.quarantined(file)? {
+    if root.join(format!("{file}.required")).exists()
+        || root.join(format!("{file}.required-history")).exists()
+        || storage.quarantined(file)?
+    {
         return Ok(true);
     }
     storage.reject_future("ui-state.json", "schema", 1)?;

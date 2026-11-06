@@ -139,7 +139,11 @@ documents the host's exclusive directory and no-live-webview preconditions.
 | Directory absent | Before/after retirement marker rename | Repeat harmless removal; sync parent and commit marker |
 | Retired | Later startup | Host skips WebKit entirely; source state remains on disk |
 | First source save | After pending receipt or required marker, before destination publication | Replay the exact durable pending document before status/import/read/merge; finish marker and destination sync |
-| Required source genuinely missing/quarantined | No valid pending publication | Startup stays blocked visibly; restore a user-selected complete backup; keep quarantine, never seed defaults |
+| Required source genuinely missing/quarantined | No valid pending publication | Persist `.required-history` before pruning; pin all unresolved destination/receipt/identity evidence; startup stays blocked across relaunch and evidence loss until explicit selected-backup restore; never seed defaults |
+| Recovery history without old markers | Before pruning, including legacy quarantines and identity-only history | Durably publish a separate mode-0600 history guard without changing replay generation markers; missing source remains required |
+| History guard publication | Crash/error after guard rename, before directory sync or pruning | Remove no evidence; on restart sync directory and retain blocking; simulated boundary failure is not physical power-loss proof |
+| Quarantine generation | Preserved content timestamps or clock rollback | Reserve and sync a per-family monotonic counter before rename; encoded sequence orders new quarantines; legacy unsequenced files sort before sequenced files, with lexical ties |
+| Resolved recovery evidence | Per-family cap exceeded after usable destination and no live pending receipt | Independently retain eight destination, pending receipt, identity and required-marker quarantines; orphan temps have separate per-owner caps (including metadata temps); unresolved evidence is exempt |
 | Corrupt pending receipt, readable destination | Receipt decode/schema failure | Quarantine receipt, preserve and use destination; no write to destination |
 | Stale pending receipt | Destination differs from both base and target digest | Quarantine receipt and surface recovery; preserve newer/conflicting destination |
 | Foreign pending receipt | Store identity or source key differs | Never replay; quarantine receipt, preserve destination; missing required source still needs explicit backup |
@@ -186,7 +190,7 @@ receipts and exact `.pending` publication documents bound to a durable per-store
 reads and relaunches; status, import replay and retirement all check them. Destination-receipt metadata is mandatory; a missing field fails visibly too. An exact pending publication is fully synced before the required marker and removed only after destination directory sync. Replay requires the same store/source identity and a generation marker matching the expected prior or target generation, plus an absent destination or one matching the base or exact target. Stale/foreign receipts cannot replace newer data.
 Missing or quarantined destinations without a pending document require an explicit
 user-selected complete current-version backup through the startup recovery screen
-and main-only `restore_source_backup`. Explicit restore supersedes the failed pending generation under `WRITE_LOCK`; a readable destination is preserved even when receipt recovery fails. Corrupt receipts beside readable destinations are quarantined without blocking startup. Evidence and orphan temps are bounded to eight oldest-first entries per source-owned artifact family (legacy prefixes can share a cap). No defaults are
+and main-only `restore_source_backup`. Explicit restore supersedes the failed pending generation under `WRITE_LOCK`; a readable destination is preserved even when receipt recovery fails. Corrupt receipts beside readable destinations are quarantined without blocking startup. Destination, pending receipt, identity and required-marker quarantines each have independent eight-entry caps after recovery resolves (a usable destination and no live pending receipt). While the destination is missing/quarantined or a live receipt is pending, all these evidence families are pinned; unresolved evidence can exceed eight entries until explicit recovery. Orphan temps have independent eight-entry caps per exact owner, including guard and sequence metadata. Legacy `.json`-replacement aliases belong only to the destination family. New quarantines reserve a durable monotonic sequence encoded in their filenames; pruning never reads content mtime or wall time. Legacy evidence has unknown generation and sorts before sequenced evidence, with lexical ties. A separate sticky `.required-history` guard is fully synced before quarantine/pruning whenever source, receipt, identity, required-marker or quarantine history exists; it cannot change receipt base-marker comparisons. Losing all other evidence cannot clear this guard. Native rejected-source quarantines use the same publisher under the existing write lock. No defaults are
 published to replace an expected missing destination.
 
 React queues Rust intents before attempting cache writes. This includes settings,
@@ -291,3 +295,23 @@ CI suites (15 Python / 42 Node); reference documentation and Markdown links.
 Mac and final-head CI receipts are recorded in the PR body. The restore matrix
 also restarts the public CompletionService, and foreign-receipt coverage includes
 both another store and the other source key.
+
+
+## Recovery evidence pruning re-check
+
+The shared stem prefix mixed destination evidence into receipt/identity caps,
+and original-content mtime ranked just-quarantined older documents for deletion.
+Five new regression tests failed on `269dfa39`: current old receipt/destination
+preservation under eight newer quarantines; marker-free missing-source public
+status blocking; clock rollback across fresh storage owners; failure after guard
+rename before pruning; and unresolved pinning followed by independent resolved
+caps. Each exercises settings and the theme library using synthetic files only.
+The failure matrix above describes the preservation exception and persistent
+guard precisely; resolved evidence remains bounded while unresolved evidence is
+retained until recovery. No independent review is claimed by this worker.
+
+Linux verification for this fix: **154 core tests** (126 unit + 28 integration),
+strict core Clippy, TypeScript and **180 files / 1,833 Vitest tests**; the
+Tauri-free dependency guard, both event guards and their **15 Python / 42 Node**
+checks, reference documentation and Markdown links pass. Mac full-suite and
+Clippy results and final-head CI are reported separately after execution.

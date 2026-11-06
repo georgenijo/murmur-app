@@ -35,6 +35,8 @@ pub struct Storage {
     #[cfg(test)]
     pub fail_sync: std::cell::Cell<bool>,
     #[cfg(test)]
+    pub fail_prune_after_guard: std::cell::Cell<bool>,
+    #[cfg(test)]
     pub trace: std::cell::RefCell<Vec<String>>,
 }
 impl Storage {
@@ -52,6 +54,8 @@ impl Storage {
             fail_read: None,
             #[cfg(test)]
             fail_sync: Default::default(),
+            #[cfg(test)]
+            fail_prune_after_guard: Default::default(),
             #[cfg(test)]
             trace: Default::default(),
         }
@@ -111,49 +115,61 @@ impl Storage {
         Ok(None)
     }
     pub fn quarantine(&self, name: &str) -> Result<()> {
+        // Preserve the missing-source guard before any rename or deletion. This
+        // guard is independent of the generation marker used to validate replay.
+        self.preserve_source_history(name)?;
+        let sequence_file = format!("{name}.quarantine_sequence");
+        let previous: u64 = match fs::read(self.root.join(&sequence_file)) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| Error::Invalid)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(_) => return Err(Error::Io),
+        };
+        let sequence = self
+            .artifact_paths(name, false)?
+            .iter()
+            .map(|p| quarantine_sequence(p))
+            .max()
+            .unwrap_or(0)
+            .max(previous)
+            .checked_add(1)
+            .ok_or(Error::Invalid)?;
+        // Reserve durably first. Gaps after a crash are harmless; sequence reuse
+        // and wall-clock/content timestamps must never order new quarantines.
+        self.write_metadata(&sequence_file, sequence.to_string().as_bytes())?;
         fs::rename(
             self.root.join(name),
-            self.root
-                .join(format!("{name}.quarantine-{}", uuid::Uuid::new_v4())),
+            self.root.join(format!(
+                "{name}.quarantine-seq-{sequence:020}-{}",
+                uuid::Uuid::new_v4()
+            )),
         )
         .map_err(|_| Error::Io)?;
         self.sync_directory()?;
         self.prune_artifacts(name)
     }
-    /// Bounded evidence and abandoned temp siblings, oldest first. Only exact
-    /// source-owned prefixes are eligible; live files and other stores survive.
+
+    /// Cap each exact artifact family independently. Legacy destination aliases
+    /// belong only to the destination, never its pending/identity/marker family.
+    /// Callers hold the existing owner/write lock across pruning and recovery.
     pub fn prune_artifacts(&self, name: &str) -> Result<()> {
-        let stem = Path::new(name)
-            .file_stem()
-            .ok_or(Error::Invalid)?
-            .to_string_lossy();
-        for prefixes in [
-            vec![
-                format!("{name}.quarantine-"),
-                format!("{stem}.quarantine-"),
-                format!("{name}.corrupt-"),
-            ],
-            vec![format!("{name}.tmp-"), format!("{stem}.tmp-")],
-        ] {
-            let mut files = fs::read_dir(&self.root)
-                .map_err(|_| Error::Io)?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    prefixes.iter().any(|p| n.starts_with(p))
-                })
-                .map(|e| {
-                    let modified = e
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .unwrap_or(std::time::UNIX_EPOCH);
-                    (modified, e.path())
-                })
-                .collect::<Vec<_>>();
-            files.sort();
+        self.preserve_source_history(name)?;
+        #[cfg(test)]
+        if self.fail_prune_after_guard.replace(false) {
+            return Err(Error::Io);
+        }
+        let unresolved = source_file(name).is_some_and(|file| {
+            !self.root.join(file).exists() || self.root.join(format!("{file}.pending")).exists()
+        });
+        for temps in [false, true] {
+            // All evidence for an unresolved source is pinned, including legacy
+            // files whose generation cannot be proven. Temps carry no receipt.
+            if !temps && unresolved {
+                continue;
+            }
+            let mut files = self.artifact_paths(name, temps)?;
+            files.sort_by_key(|p| (quarantine_sequence(p), p.clone()));
             let excess = files.len().saturating_sub(8);
-            for (_, path) in files.into_iter().take(excess) {
+            for path in files.into_iter().take(excess) {
                 fs::remove_file(path).map_err(|_| Error::Io)?;
             }
             if excess > 0 {
@@ -162,22 +178,82 @@ impl Storage {
         }
         Ok(())
     }
+
+    fn artifact_paths(&self, name: &str, temps: bool) -> Result<Vec<PathBuf>> {
+        let kind = if temps { "tmp" } else { "quarantine" };
+        let mut prefixes = vec![format!("{name}.{kind}-")];
+        // The old publisher replaced .json with the artifact extension. Other
+        // extensions are receipt families and must not alias the .json prefix.
+        if let Some(stem) = name.strip_suffix(".json") {
+            prefixes.push(format!("{stem}.{kind}-"));
+        }
+        if !temps {
+            prefixes.push(format!("{name}.corrupt-"));
+        }
+        let mut paths = Vec::new();
+        for entry in fs::read_dir(&self.root).map_err(|_| Error::Io)? {
+            let entry = entry.map_err(|_| Error::Io)?;
+            let filename = entry.file_name();
+            let filename = filename.to_string_lossy();
+            if prefixes.iter().any(|p| filename.starts_with(p)) {
+                paths.push(entry.path());
+            }
+        }
+        Ok(paths)
+    }
+
     pub fn quarantined(&self, name: &str) -> Result<bool> {
-        let stem = std::path::Path::new(name)
-            .file_stem()
-            .ok_or(Error::Invalid)?
-            .to_string_lossy();
-        Ok(fs::read_dir(&self.root)
-            .map_err(|_| Error::Io)?
-            .any(|entry| {
-                entry.is_ok_and(|e| {
-                    let n = e.file_name();
-                    let n = n.to_string_lossy();
-                    n.starts_with(&format!("{name}.quarantine-"))
-                        || n.starts_with(&format!("{stem}.quarantine-"))
-                        || n.starts_with(&format!("{name}.corrupt-"))
-                })
-            }))
+        Ok(!self.artifact_paths(name, false)?.is_empty())
+    }
+
+    /// A separate sticky guard cannot invalidate a pending receipt's base marker.
+    /// Once observed, source history survives pruning and loss of other evidence.
+    fn preserve_source_history(&self, name: &str) -> Result<()> {
+        let Some(file) = source_file(name) else {
+            return Ok(());
+        };
+        let guard = format!("{file}.required-history");
+        if self.root.join(&guard).try_exists().map_err(|_| Error::Io)? {
+            // A prior publication may have returned an unknown sync outcome.
+            return self.sync_directory();
+        }
+        for owner in [
+            file.to_string(),
+            format!("{file}.pending"),
+            format!("{file}.identity"),
+            format!("{file}.required"),
+        ] {
+            if self.root.join(&owner).try_exists().map_err(|_| Error::Io)?
+                || self.quarantined(&owner)?
+            {
+                return self.write_metadata(&guard, b"true");
+            }
+        }
+        Ok(())
+    }
+
+    /// Nonrecursive durable metadata publication, with the same mode and full
+    /// sync discipline as receipts. Never calls pruning before the guard exists.
+    fn write_metadata(&self, name: &str, bytes: &[u8]) -> Result<()> {
+        let temp = self
+            .root
+            .join(format!("{name}.tmp-{}", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp).map_err(|_| Error::Io)?;
+            file.write_all(bytes).map_err(|_| Error::Io)?;
+            full_sync(&file)?;
+            fs::rename(&temp, self.root.join(name)).map_err(|_| Error::Io)?;
+            self.sync_directory()
+        })();
+        let _ = fs::remove_file(temp);
+        result
     }
     pub fn sync_directory(&self) -> Result<()> {
         #[cfg(test)]
@@ -203,7 +279,9 @@ impl Storage {
         fs::create_dir_all(&self.root).map_err(|_| Error::Io)?;
         self.prune_artifacts(name)?;
         let path = self.root.join(name);
-        let temp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+        let temp = self
+            .root
+            .join(format!("{name}.tmp-{}", uuid::Uuid::new_v4()));
         let result = (|| {
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -260,6 +338,22 @@ impl Storage {
         Ok(())
     }
 }
+// Only the two separately stored source destinations have sticky history guards.
+fn source_file(name: &str) -> Option<&'static str> {
+    ["settings.json", "theme-library.json"]
+        .into_iter()
+        .find(|file| name == *file || name.strip_prefix(file).is_some_and(|s| s.starts_with('.')))
+}
+
+fn quarantine_sequence(path: &Path) -> u64 {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.split_once(".quarantine-seq-"))
+        .and_then(|(_, n)| n.split_once('-'))
+        .and_then(|(n, _)| n.parse().ok())
+        .unwrap_or(0) // Legacy evidence has no provable ordering; never use mtime.
+}
+
 fn full_sync(file: &File) -> Result<()> {
     file.sync_all().map_err(|_| Error::Io)?;
     #[cfg(target_os = "macos")]

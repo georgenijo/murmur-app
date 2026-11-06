@@ -207,6 +207,23 @@ fn foreign_receipts_and_receipt_permissions() {
             )
             .unwrap();
             assert!(recover_source(local.path(), key).is_err());
+            #[cfg(unix)]
+            for metadata in [
+                "required",
+                "required-history",
+                "identity",
+                "pending.quarantine_sequence",
+            ] {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(local.path().join(format!("{file}.{metadata}")))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
             if destination_exists {
                 assert_eq!(
                     serde_json::from_slice::<Value>(
@@ -283,6 +300,236 @@ fn interrupted_transition_replays_only_base_absent_or_exact_target() {
                 // Crash after destination sync but before retiring the receipt.
                 std::fs::write(dir.path().join(format!("{file}.pending")), &pending).unwrap();
             }
+        }
+    }
+}
+
+fn artifacts(root: &std::path::Path, owner: &str) -> Vec<std::path::PathBuf> {
+    let mut paths: Vec<_> = std::fs::read_dir(root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&format!("{owner}.quarantine-"))
+        })
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn set_mtime(path: &std::path::Path, seconds: u64) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds)),
+        )
+        .unwrap();
+}
+
+#[test]
+fn pruning_preserves_current_old_receipt_and_destination_in_separate_families() {
+    for key in ["dictation-settings", "murmur-theme-library"] {
+        for suffix in ["", ".pending"] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = crate::state::file(key).unwrap();
+            save_source(dir.path(), key, &document(key, 2).to_string()).unwrap();
+            let owner = format!("{file}{suffix}");
+            let storage = Storage::new(dir.path().into());
+            // Eight newer same-family entries and eight identity entries must not
+            // evict the just-quarantined, timestamp-preserved current evidence.
+            for family in [&owner, &format!("{file}.identity")] {
+                for n in 0..8 {
+                    let path = dir.path().join(format!("{family}.quarantine-legacy-{n}"));
+                    std::fs::write(&path, b"synthetic older quarantine").unwrap();
+                    set_mtime(&path, 2000 + n);
+                }
+            }
+            let path = dir.path().join(&owner);
+            std::fs::write(&path, b"synthetic current evidence").unwrap();
+            set_mtime(&path, 1);
+            storage.quarantine(&owner).unwrap();
+            prune_source_artifacts(dir.path(), key).unwrap();
+            assert!(artifacts(dir.path(), &owner)
+                .iter()
+                .any(|p| std::fs::read(p).unwrap() == b"synthetic current evidence"));
+            assert!(!artifacts(dir.path(), file).is_empty() || !suffix.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pruning_missing_source_without_markers_keeps_evidence_and_blocks_public_status() {
+    for key in ["dictation-settings", "murmur-theme-library"] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::state::file(key).unwrap();
+        let backup = dir.path().join(format!("{file}.quarantine-legacy-backup"));
+        std::fs::write(&backup, document(key, 1).to_string()).unwrap();
+        set_mtime(&backup, 1);
+        for n in 0..9 {
+            let path = dir
+                .path()
+                .join(format!("{file}.identity.quarantine-legacy-{n}"));
+            std::fs::write(&path, b"synthetic identity").unwrap();
+            set_mtime(&path, 2000 + n);
+        }
+        for _ in 0..3 {
+            let service = CompletionService::start(dir.path().into(), true).unwrap();
+            assert!(service.lifecycle(lifecycle::Operation::Status).is_err());
+            drop(service);
+            assert!(source_required(dir.path(), key).unwrap());
+            assert!(backup.exists());
+        }
+        // Even loss of the remaining backup must not erase the durable guard.
+        std::fs::remove_file(backup).unwrap();
+        assert!(source_required(dir.path(), key).unwrap());
+        let service = CompletionService::start(dir.path().into(), true).unwrap();
+        assert!(service.lifecycle(lifecycle::Operation::Status).is_err());
+        drop(service);
+        restore_source(dir.path(), key, &document(key, 2)).unwrap();
+        let service = CompletionService::start(dir.path().into(), true).unwrap();
+        assert_eq!(
+            service
+                .lifecycle(lifecycle::Operation::Status)
+                .unwrap()
+                .values[key],
+            document(key, 2)
+        );
+    }
+}
+
+#[test]
+fn pruning_uses_quarantine_sequence_across_clock_rollback_and_restart() {
+    for key in ["dictation-settings", "murmur-theme-library"] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::state::file(key).unwrap();
+        save_source(dir.path(), key, &document(key, 2).to_string()).unwrap();
+        let owner = format!("{file}.pending");
+        let mut first = None;
+        for n in 0..20 {
+            let storage = Storage::new(dir.path().into());
+            let path = dir.path().join(&owner);
+            std::fs::write(&path, format!("synthetic generation {n}")).unwrap();
+            // Later quarantines have strictly earlier content mtimes.
+            set_mtime(&path, 2000 - n);
+            storage.quarantine(&owner).unwrap();
+            if n == 0 {
+                first = artifacts(dir.path(), &owner).first().cloned();
+            }
+        }
+        let paths = artifacts(dir.path(), &owner);
+        assert_eq!(paths.len(), 8);
+        assert!(!first.unwrap().exists());
+        for n in 12..20 {
+            assert!(paths.iter().any(
+                |p| std::fs::read_to_string(p).unwrap() == format!("synthetic generation {n}")
+            ));
+        }
+    }
+}
+
+#[test]
+fn pruning_persists_guard_before_a_crash_can_remove_history() {
+    for key in ["dictation-settings", "murmur-theme-library"] {
+        for after_durable_guard in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = crate::state::file(key).unwrap();
+            for n in 0..12 {
+                std::fs::write(
+                    dir.path().join(format!("{file}.quarantine-legacy-{n:02}")),
+                    b"synthetic backup",
+                )
+                .unwrap();
+            }
+            // A usable destination makes these old backups eligible for pruning.
+            std::fs::write(dir.path().join(file), document(key, 1).to_string()).unwrap();
+            let storage = Storage::new(dir.path().into());
+            if after_durable_guard {
+                // Crash after file full-sync + guard rename + directory sync,
+                // before removing any resolved evidence.
+                storage.fail_prune_after_guard.set(true);
+            } else {
+                // Unknown guard publication: directory sync fails after rename.
+                storage.fail_sync.set(true);
+            }
+            assert!(storage.prune_artifacts(file).is_err());
+            assert_eq!(artifacts(dir.path(), file).len(), 12);
+            assert!(dir.path().join(format!("{file}.required-history")).exists());
+            std::fs::remove_file(dir.path().join(file)).unwrap();
+            let service = CompletionService::start(dir.path().into(), true).unwrap();
+            assert!(service.lifecycle(lifecycle::Operation::Status).is_err());
+            drop(service);
+            assert!(source_required(dir.path(), key).unwrap());
+        }
+    }
+}
+
+#[test]
+fn pruning_pins_unresolved_evidence_then_bounds_each_resolved_family() {
+    for key in ["dictation-settings", "murmur-theme-library"] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = crate::state::file(key).unwrap();
+        let storage = Storage::new(dir.path().into());
+        for owner in [
+            file.to_string(),
+            format!("{file}.pending"),
+            format!("{file}.identity"),
+        ] {
+            for _ in 0..12 {
+                std::fs::write(dir.path().join(&owner), b"synthetic unresolved evidence").unwrap();
+                storage.quarantine(&owner).unwrap();
+            }
+            assert_eq!(artifacts(dir.path(), &owner).len(), 12);
+        }
+        // Restore resolves the missing source. Each family then has its own cap.
+        restore_source(dir.path(), key, &document(key, 2)).unwrap();
+        prune_source_artifacts(dir.path(), key).unwrap();
+        for owner in [
+            file.to_string(),
+            format!("{file}.pending"),
+            format!("{file}.identity"),
+        ] {
+            assert_eq!(artifacts(dir.path(), &owner).len(), 8);
+        }
+        // A live receipt also pins evidence while its base destination remains
+        // readable. Retirement of that exact receipt makes the caps eligible.
+        let mut interrupted = Storage::new(dir.path().into());
+        interrupted.fail = Some((file.into(), storage::Boundary::BeforeRename));
+        assert!(publish_source(&mut interrupted, key, &document(key, 2)).is_err());
+        for owner in [
+            file.to_string(),
+            format!("{file}.pending"),
+            format!("{file}.identity"),
+        ] {
+            for n in 0..12 {
+                std::fs::write(
+                    dir.path()
+                        .join(format!("{owner}.quarantine-legacy-live-{n:02}")),
+                    b"synthetic pending generation evidence",
+                )
+                .unwrap();
+            }
+        }
+        prune_source_artifacts(dir.path(), key).unwrap();
+        for owner in [
+            file.to_string(),
+            format!("{file}.pending"),
+            format!("{file}.identity"),
+        ] {
+            assert_eq!(artifacts(dir.path(), &owner).len(), 20);
+        }
+        recover_source(dir.path(), key).unwrap();
+        prune_source_artifacts(dir.path(), key).unwrap();
+        for owner in [
+            file.to_string(),
+            format!("{file}.pending"),
+            format!("{file}.identity"),
+        ] {
+            assert_eq!(artifacts(dir.path(), &owner).len(), 8);
         }
     }
 }

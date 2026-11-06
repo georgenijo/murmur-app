@@ -83,29 +83,19 @@ fn validate_blob(spec: BlobSpec, blob: &str) -> Result<(), String> {
 /// Preserve rejected content as local evidence rather than deleting it. Log
 /// only the file kind and rejection reason, never any user content.
 fn quarantine(path: &Path, spec: BlobSpec, reason: &str) {
-    let target = path.with_file_name(format!(
-        "{}.corrupt-{}",
-        spec.file_name,
-        uuid::Uuid::new_v4()
-    ));
-    match std::fs::rename(path, &target) {
+    let key = if spec.file_name == SETTINGS.file_name {
+        "dictation-settings"
+    } else {
+        "murmur-theme-library"
+    };
+    match murmur_core::completion::quarantine_source(path.parent().expect("source parent"), key) {
         Ok(()) => {
-            let key = if spec.file_name == SETTINGS.file_name {
-                "dictation-settings"
-            } else {
-                "murmur-theme-library"
-            };
-            let _ = murmur_core::completion::prune_source_artifacts(
-                path.parent().expect("source parent"),
-                key,
-            );
-            tracing::warn!(target: "system", store = spec.label, reason, "durable data file quarantined");
+            tracing::warn!(target: "system", store = spec.label, reason, "durable data file quarantined")
         }
-        Err(e) => tracing::warn!(
+        Err(_) => tracing::warn!(
             target: "system",
             store = spec.label,
-            reason,
-            "failed to quarantine durable data file: {e}"
+            "failed to quarantine durable data file"
         ),
     }
 }
@@ -585,9 +575,11 @@ mod tests {
                 "settings.json",
                 "settings.json.identity",
                 "settings.json.required",
+                "settings.json.required-history",
                 "theme-library.json",
                 "theme-library.json.identity",
-                "theme-library.json.required"
+                "theme-library.json.required",
+                "theme-library.json.required-history"
             ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
@@ -639,7 +631,8 @@ mod tests {
             vec![
                 SETTINGS.file_name.to_string(),
                 "settings.json.identity".into(),
-                "settings.json.required".into()
+                "settings.json.required".into(),
+                "settings.json.required-history".into()
             ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
@@ -672,7 +665,7 @@ mod tests {
         std::fs::write(blob_path(&dir, THEME_LIBRARY), "private transcript{{{").unwrap();
         assert!(read_blob(&dir, THEME_LIBRARY).is_err());
         let names = entries(&dir);
-        assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
+        assert_eq!(names.len(), 3, "unexpected entries: {names:?}");
         assert!(
             names[0].starts_with("theme-library.json.quarantine-"),
             "{names:?}"
@@ -686,7 +679,7 @@ mod tests {
         std::fs::write(blob_path(&dir, SETTINGS), [0xff, 0xfe]).unwrap();
         assert!(read_blob(&dir, SETTINGS).is_err());
         let names = entries(&dir);
-        assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
+        assert_eq!(names.len(), 3, "unexpected entries: {names:?}");
         assert!(
             names[0].starts_with("settings.json.quarantine-"),
             "{names:?}"
@@ -715,8 +708,11 @@ mod tests {
         .unwrap();
         assert!(read_blob(&dir, SETTINGS).is_err());
         let names = entries(&dir);
-        assert_eq!(names.len(), 1, "unexpected entries: {names:?}");
-        assert!(names[0].starts_with("settings.json.corrupt-"), "{names:?}");
+        assert_eq!(names.len(), 3, "unexpected entries: {names:?}");
+        assert!(
+            names[0].starts_with("settings.json.quarantine-"),
+            "{names:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -749,7 +745,8 @@ mod tests {
             vec![
                 THEME_LIBRARY.file_name.to_string(),
                 "theme-library.json.identity".into(),
-                "theme-library.json.required".into()
+                "theme-library.json.required".into(),
+                "theme-library.json.required-history".into()
             ]
         );
         std::fs::remove_dir_all(&dir).unwrap();
