@@ -544,6 +544,12 @@ future targets, exact report replays and conflicts before/after migration, both
 FIFO limits, mixed lifecycle/completion pressure, rejected oversized requests,
 failed shutdown while requests remain in memory, and ordered recovery afterward.
 
-Final Linux checks are recorded after rebasing onto the concurrent worker's head.
+After rebasing onto the concurrent worker's `7b9b9358` head, Linux `cargo test`
+passes all **166 unit tests and 35 integration tests**, including every round-two
+regression and D2/D4/D5. All-target clippy passes with
+`-D warnings -A clippy::byte_char_slices` on rustc/clippy 1.93.1; the unsupported
+`chunks_exact_to_as_chunks` exemption is omitted as requested. Rustfmt checks and
+`git diff --check` pass. The two additional live/restart damage regressions were
+also confirmed red against the pre-digest implementation, then green here.
 No app host caller or frontend changes, Mac checkout, GUI action, user data, or
 user logs are involved in this completion-only delta.
