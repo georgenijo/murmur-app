@@ -177,40 +177,53 @@ fn reveal_axis(start: Pixels, end: Pixels, low: Pixels, high: Pixels) -> Pixels 
 }
 /// Shared immediate reveal, also used by table arrow navigation. No animation,
 /// so keyboard focus obeys Reduced Motion without an extra motion path.
-pub(crate) fn reveal_bounds(bounds: Bounds<Pixels>, scroll: &ScrollHandle) -> bool {
-    let viewport = scroll.bounds();
-    let old = scroll.offset();
-    let next = point(
-        old.x
-            + reveal_axis(
-                bounds.left(),
-                bounds.right(),
-                viewport.left(),
-                viewport.right(),
-            ),
-        old.y
-            + reveal_axis(
-                bounds.top(),
-                bounds.bottom(),
-                viewport.top(),
-                viewport.bottom(),
-            ),
-    );
-    if next == old {
-        return false;
+pub(crate) fn reveal_bounds<'a>(
+    mut bounds: Bounds<Pixels>,
+    parents: impl IntoIterator<Item = &'a ScrollHandle>,
+) -> bool {
+    let mut changed = false;
+    // Innermost first. Carry the actual movement into the enclosing viewport;
+    // it must not reveal the stale bounds from before the inner scroll.
+    for scroll in parents {
+        let viewport = scroll.bounds();
+        let old = scroll.offset();
+        let max = scroll.max_offset();
+        let next = point(
+            (old.x
+                + reveal_axis(
+                    bounds.left(),
+                    bounds.right(),
+                    viewport.left(),
+                    viewport.right(),
+                ))
+            .clamp(-max.x, px(0.)),
+            (old.y
+                + reveal_axis(
+                    bounds.top(),
+                    bounds.bottom(),
+                    viewport.top(),
+                    viewport.bottom(),
+                ))
+            .clamp(-max.y, px(0.)),
+        );
+        if next != old {
+            scroll.set_offset(next);
+            bounds.origin += next - old;
+            changed = true;
+        }
     }
-    scroll.set_offset(next);
-    true
+    changed
 }
 
 /// Paint-time bounds include wrapping and the current scroll offsets. Reveal
 /// only on focus entry: wheel scrolling must remain possible while focused.
-pub(crate) fn focus_reveal(
+pub(crate) fn focus_reveal<P: IntoIterator<Item = ScrollHandle>>(
     focus: FocusHandle,
-    parent: Option<ScrollHandle>,
+    parents: P,
     w: &mut Window,
     cx: &mut App,
-) -> impl IntoElement + use<> {
+) -> impl IntoElement + use<P> {
+    let parents: Vec<_> = parents.into_iter().collect();
     let state = w.use_keyed_state(
         SharedString::from(format!("focus-reveal-{focus:?}")),
         cx,
@@ -224,10 +237,7 @@ pub(crate) fn focus_reveal(
                 *was = focused;
                 entered
             });
-            if entered
-                && let Some(parent) = &parent
-                && reveal_bounds(bounds.dilate(px(1.)), parent)
-            {
+            if entered && reveal_bounds(bounds.dilate(px(1.)), &parents) {
                 w.on_next_frame(|w, _| w.refresh());
             }
         },
@@ -266,7 +276,9 @@ impl RenderOnce for DataTable {
             s.cells.resize(row_count, vec![]);
         });
         let active = (navigation.read(cx).row, navigation.read(cx).column);
-        let action_parent = parent.clone();
+        let action_parents: Vec<_> = std::iter::once(scroll.clone())
+            .chain(parent.clone())
+            .collect();
         let mut actions = self.actions.into_iter();
         let header = div()
             .on_children_prepainted({
@@ -309,13 +321,15 @@ impl RenderOnce for DataTable {
                     let s = navigation.read(cx);
                     let focused = s.focus.is_focused(w);
                     let cell = s.cells.get(s.row).and_then(|r| r.get(s.column)).copied();
+                    let scroll = s.scroll.clone();
                     let entered = focus_entry.update(cx, |was, _| {
                         let entered = focused && !*was;
                         *was = focused;
                         entered
                     });
                     if entered && let Some(cell) = cell {
-                        let changed = parent.as_ref().is_some_and(|p| reveal_bounds(cell, p));
+                        let changed =
+                            reveal_bounds(cell, std::iter::once(&scroll).chain(parent.as_ref()));
                         if changed {
                             w.on_next_frame(|w, _| w.refresh());
                         }
@@ -385,18 +399,10 @@ impl RenderOnce for DataTable {
                                 }
                                 if let Some(cell) = s.cells.get(s.row).and_then(|r| r.get(s.column))
                                 {
-                                    let viewport = s.scroll.bounds();
-                                    let mut offset = s.scroll.offset();
-                                    offset.x += reveal_axis(
-                                        cell.left(),
-                                        cell.right(),
-                                        viewport.left(),
-                                        viewport.right(),
+                                    reveal_bounds(
+                                        *cell,
+                                        std::iter::once(&s.scroll).chain(parent.as_ref()),
                                     );
-                                    s.scroll.set_offset(offset);
-                                    if let Some(parent) = &parent {
-                                        reveal_bounds(*cell, parent);
-                                    }
                                 }
                                 cx.notify();
                             });
@@ -421,7 +427,7 @@ impl RenderOnce for DataTable {
                     .children(self.rows.into_iter().enumerate().map(|(r, cells)| {
                         let mut action = actions
                             .next()
-                            .map(|a| a.with_scroll_parent(action_parent.as_ref()));
+                            .map(|a| a.with_scroll_parents(action_parents.clone()));
                         div()
                             .on_children_prepainted({
                                 let navigation = navigation.clone();
