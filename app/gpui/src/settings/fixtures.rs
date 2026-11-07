@@ -51,6 +51,8 @@ pub struct FixtureHost {
     pub cancel_folder: Cell<bool>,
     pub root: Option<PathBuf>,
     pub delay_preview: Cell<bool>,
+    pub fail_preview: Cell<bool>,
+    pub fail_shortcut: Cell<bool>,
     pub delayed: RefCell<Vec<(Request, Inbox)>>,
 }
 impl Default for FixtureHost {
@@ -65,6 +67,8 @@ impl Default for FixtureHost {
             cancel_folder: Cell::new(false),
             root: None,
             delay_preview: Cell::new(false),
+            fail_preview: Cell::new(false),
+            fail_shortcut: Cell::new(false),
             delayed: RefCell::new(vec![]),
         }
     }
@@ -105,6 +109,23 @@ impl Host for FixtureHost {
         self.calls.borrow_mut().push("request");
         let mut next = self.state.borrow().clone();
         let result = (|| {
+            if matches!(
+                r.kind,
+                RequestKind::Action(Action::Calibration { finish: false, .. })
+            ) && self.fail_preview.replace(false)
+            {
+                return Err(Problem::Unavailable);
+            }
+            if matches!(
+                r.kind,
+                RequestKind::Patch {
+                    key: "doubleTapKey" | "pasteLastShortcut",
+                    ..
+                }
+            ) && self.fail_shortcut.get()
+            {
+                return Err(Problem::Conflict);
+            }
             if let Some(error) = self.fail.take() {
                 return Err(error);
             }
@@ -233,5 +254,125 @@ impl Host for FixtureHost {
             ticket: r.ticket,
             result,
         });
+    }
+}
+
+// This capture surface exists only in tests/gallery builds. It sends ordinary
+// Settings edits to the synthetic owner and never installs a global key hook.
+impl super::Settings {
+    pub(super) fn fixture_capture_buttons(
+        &mut self,
+        cx: &mut gpui::Context<Self>,
+    ) -> Vec<gpui::AnyElement> {
+        use gpui::IntoElement;
+        let mut controls = vec![];
+        if !self.fixture_shortcuts {
+            return controls;
+        }
+        for (key, label) in [
+            ("doubleTapKey", "Capture dictation shortcut (synthetic)"),
+            (
+                "pasteLastShortcut",
+                "Capture Paste last shortcut (synthetic)",
+            ),
+        ] {
+            let e = cx.entity();
+            controls.push(
+                crate::Button::new(key, label)
+                    .caption(if self.fixture_capture == Some(key) {
+                        "Press a shortcut; Escape cancels"
+                    } else {
+                        label
+                    })
+                    .with_scroll_parent(Some(&self.scroll))
+                    .track_focus(&self.focus_for(format!("capture-{key}"), cx))
+                    .disabled(self.model.pending)
+                    .on_click(move |_, w, cx| {
+                        e.update(cx, |s, cx| {
+                            s.fixture_capture = Some(key);
+                            s.fixture_capture_message = None;
+                            w.focus(&s.focus_for(format!("capture-{key}"), cx), cx);
+                            cx.notify();
+                        })
+                    })
+                    .into_any_element(),
+            );
+        }
+        if let Some(message) = self.fixture_capture_message {
+            use gpui::{InteractiveElement, ParentElement, StatefulInteractiveElement};
+            controls.push(
+                gpui::div()
+                    .id("synthetic-shortcut-status")
+                    .role(gpui::Role::Status)
+                    .aria_label(message)
+                    .child(message)
+                    .into_any_element(),
+            );
+        }
+        controls
+    }
+    pub(super) fn fixture_capture_key(
+        &mut self,
+        e: &gpui::KeyDownEvent,
+        w: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> bool {
+        let Some(key) = self.fixture_capture else {
+            return false;
+        };
+        let k = &e.keystroke;
+        if k.key == "escape" && k.modifiers.number_of_modifiers() == 0 {
+            self.fixture_capture = None;
+            self.fixture_capture_message = Some("Synthetic shortcut capture cancelled");
+        } else {
+            let candidate = if key == "doubleTapKey" && k.modifiers.number_of_modifiers() == 0 {
+                Some(k.key.as_str())
+            } else if key == "pasteLastShortcut"
+                && k.key == "v"
+                && k.modifiers.platform
+                && k.modifiers.number_of_modifiers() == 2
+            {
+                if k.modifiers.shift {
+                    Some("command_shift_v")
+                } else if k.modifiers.alt {
+                    Some("command_option_v")
+                } else if k.modifiers.control {
+                    Some("command_control_v")
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let row = *super::schema::ROWS.iter().find(|r| r.key == key).unwrap();
+            let value = candidate.and_then(|v| {
+                let super::schema::Kind::Choice(options) = row.kind else {
+                    return None;
+                };
+                options
+                    .iter()
+                    .any(|(option, _)| *option == v)
+                    .then(|| row.parse(v))
+                    .flatten()
+            });
+            if let Some(value) = value {
+                self.fixture_capture = None;
+                self.edit(row, value, w, cx);
+                self.fixture_capture_message =
+                    Some(if self.model.problem == Some(Problem::Conflict) {
+                        "Synthetic shortcut registration conflict; previous binding retained"
+                    } else if self.model.problem.is_some() {
+                        "Synthetic shortcut registration failed; previous binding retained"
+                    } else {
+                        "Synthetic shortcut registered"
+                    });
+            } else {
+                self.fixture_capture_message = Some(
+                    "Use F1–F20 for dictation, or Command-Shift/Option/Control-V for Paste last",
+                );
+            }
+        }
+        cx.notify();
+        true
     }
 }

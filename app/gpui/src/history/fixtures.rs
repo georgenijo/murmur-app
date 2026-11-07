@@ -1,6 +1,8 @@
 //! Only synthetic text and in-memory fake side effects. Never production I/O.
 use super::{host::*, inbox::Inbox, model::*};
 use serde_json::json;
+#[path = "allocation_probe.rs"]
+pub mod allocation_probe;
 use std::cell::{Cell, RefCell};
 pub const NOW: i64 = 1_799_000_000_000;
 pub fn entry(n: u64) -> Entry {
@@ -26,6 +28,8 @@ pub fn clock() -> Clock {
 pub struct FixtureHost {
     pub rows: RefCell<Vec<Entry>>,
     revision: Cell<u64>,
+    listener: RefCell<Option<(u64, Inbox)>>,
+    pub retry_import: Cell<bool>,
     epoch: Cell<u64>,
     pub clipboard: RefCell<String>,
     pub saved: RefCell<Vec<(Format, String)>>,
@@ -38,6 +42,8 @@ impl Default for FixtureHost {
         Self {
             rows: RefCell::new(snapshot().entries),
             revision: Cell::new(0),
+            listener: RefCell::new(None),
+            retry_import: Cell::new(false),
             epoch: Cell::new(0),
             clipboard: RefCell::new(String::new()),
             saved: RefCell::new(vec![]),
@@ -57,11 +63,12 @@ impl Host for FixtureHost {
     fn subscribe(
         &self,
         c: murmur_core::events::Consumer,
-        _: u64,
-        _: Inbox,
+        attachment: u64,
+        inbox: Inbox,
     ) -> Box<dyn Subscription> {
         assert_eq!(c, murmur_core::events::Consumer::Main);
         self.calls.borrow_mut().push("subscribe");
+        *self.listener.borrow_mut() = Some((attachment, inbox));
         Box::new(Stop(self.stops.clone()))
     }
     fn request(&self, r: Request, inbox: Inbox) {
@@ -133,9 +140,16 @@ impl Host for FixtureHost {
                 }
                 changed = true;
             }
-            RequestKind::CorrectAndTeach { .. }
-            | RequestKind::TranscribeFile
-            | RequestKind::RetryImport => (),
+            RequestKind::RetryImport => {
+                self.retry_import.set(false);
+                let mut rows = self.rows.borrow_mut();
+                if rows.len() == 200 {
+                    rows.remove(0);
+                }
+                rows.push(entry(201));
+                changed = true;
+            }
+            RequestKind::CorrectAndTeach { .. } | RequestKind::TranscribeFile => (),
         }
         self.revision.set(self.revision.get() + 1);
         let event = if changed {
@@ -146,7 +160,7 @@ impl Host for FixtureHost {
                 snapshot: Snapshot {
                     entries: self.rows.borrow().clone(),
                     retain_history: true,
-                    retry_import: false,
+                    retry_import: self.retry_import.get(),
                 },
             }
         } else if read {
@@ -157,7 +171,7 @@ impl Host for FixtureHost {
                 result: Ok(Snapshot {
                     entries: self.rows.borrow().clone(),
                     retain_history: true,
-                    retry_import: false,
+                    retry_import: self.retry_import.get(),
                 }),
             }
         } else {
@@ -168,4 +182,65 @@ impl Host for FixtureHost {
         };
         assert!(inbox.publish(event).is_ok());
     }
+}
+
+/// The same attach/follow path is used by the gallery and its regression tests.
+pub fn attach(history: &mut super::History, cx: &mut gpui::Context<super::History>) {
+    history.attach(cx);
+    history.drain(cx);
+    history.follow(cx);
+}
+impl FixtureHost {
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+    /// Synthetic notification from the persistence owner; no direct view mutation.
+    pub fn replace_row(&self, key: u64, text: &str) {
+        let mut rows = self.rows.borrow_mut();
+        let row = rows.iter_mut().find(|e| e.key == key).unwrap();
+        let mut target = row.target();
+        target["text"] = json!(text);
+        *row = Entry::project(key, target).unwrap();
+        self.revision.set(self.revision.get() + 1);
+        if let Some((attachment, inbox)) = self.listener.borrow().as_ref() {
+            assert!(
+                inbox
+                    .publish(Event::Changed {
+                        attachment: *attachment,
+                        revision: self.revision.get(),
+                        clear_epoch: self.epoch.get(),
+                        snapshot: Snapshot {
+                            entries: rows.clone(),
+                            retain_history: true,
+                            retry_import: self.retry_import.get(),
+                        },
+                    })
+                    .is_ok()
+            );
+        }
+    }
+}
+/// Known calendar boundaries, independent of the Mac's system time zone.
+/// Santiago skips midnight; Havana repeats midnight. Tokyo provides a no-DST contrast.
+pub fn calendar(name: &str) -> (chrono_tz::Tz, Clock, Vec<Entry>) {
+    use chrono::{Duration, TimeZone};
+    let (zone, y, m, d) = match name {
+        "santiago" => (chrono_tz::America::Santiago, 2026, 9, 6),
+        "havana" => (chrono_tz::America::Havana, 2026, 11, 1),
+        "tokyo" => (chrono_tz::Asia::Tokyo, 2026, 9, 6),
+        _ => panic!("calendar fixture must be santiago, havana or tokyo"),
+    };
+    let clock = super::calendar_clock(zone.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap());
+    let rows = [-1, 0, 1, 3600]
+        .iter()
+        .enumerate()
+        .map(|(i, seconds)| {
+            let mut target = entry(i as u64 + 1).target();
+            target["timestamp"] =
+                json!(clock.today + Duration::seconds(*seconds).num_milliseconds());
+            target["text"] = json!(format!("Synthetic {name} boundary {seconds:+} seconds"));
+            Entry::project(i as u64 + 1, target).unwrap()
+        })
+        .collect();
+    (zone, clock, rows)
 }
