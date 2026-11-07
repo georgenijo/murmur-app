@@ -348,7 +348,11 @@ impl Render for Home {
             let b = self
                 .button(id, label, d, cx)
                 .toggled(id == "nav-home")
-                .intent(ButtonIntent::Ghost);
+                .intent(if id == "nav-home" {
+                    ButtonIntent::Secondary
+                } else {
+                    ButtonIntent::Ghost
+                });
             nav = nav.child(if collapsed { b.caption(short) } else { b });
         }
         nav = nav.child(div().flex_1());

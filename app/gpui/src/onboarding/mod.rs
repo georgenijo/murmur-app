@@ -774,6 +774,11 @@ impl Render for Onboarding {
                                         caption,
                                     )
                                     .toggled(self.selected_model == model.id)
+                                    .intent(if self.selected_model == model.id {
+                                        ButtonIntent::Primary
+                                    } else {
+                                        ButtonIntent::Secondary
+                                    })
                                     .disabled(self.downloading())
                                     .on_click(
                                         move |_, _, cx| {
@@ -982,7 +987,6 @@ impl Render for Onboarding {
                 format!("Step {} of 8", self.step.index() + 1),
                 Some((self.step.index() + 1) as f64 / 8.),
             ))
-            .child(format!("Step {} of 8", self.step.index() + 1))
             .child(body)
             .child(nav)
     }

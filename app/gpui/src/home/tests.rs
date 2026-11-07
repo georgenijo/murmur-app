@@ -299,6 +299,7 @@ fn home_command_f_exits_detail_and_searches_the_real_embedded_list(cx: &mut Test
 #[gpui::test]
 fn palette_shortcut_restores_the_originating_history_editor(cx: &mut TestAppContext) {
     let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| w.focus(&e.read(cx).focus["settings"].clone(), cx));
     keys(cx, "cmd-f");
     assert!(cx.update(|w, cx| {
         e.read(cx)
