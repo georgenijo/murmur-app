@@ -324,7 +324,7 @@ Test key:
 | canary uses the real download, install, and relaunch path | G asserts HTTP download, filesystem installation, a host relaunch request signal, and confirmation by a synthetic new-version owner. Actual process relaunch/OTA remains separate native acceptance. |
 | canary dry-run launches discovery and policy but never downloads or relaunches | G |
 | records production stages as pending until install evidence is available | G |
-| records policy failure without fabricating production stages | H |
+| records policy failure without fabricating production stages | H asserts failed policy, one feed request with no archive transfer, and no production stage marked passed. The core failure receipt can also mark the first pending stage failed; it does not promise all later stages remain pending. |
 | records a canary download failure at the download stage | H |
 | records a canary relaunch failure after install evidence | H asserts the core failure-reporting seam after install evidence using an injected host-refusal message; it does not execute or fail an OS relaunch. |
 | recovers a pending canary only after the installed version matches | I, G |
@@ -416,5 +416,7 @@ the synchronous pre-environment-verification boundary rather than an HTTP
 response. AC supplies the actual queued Download assertion. O now explicitly
 asserts a missing timestamp defaults to zero and a saved timestamp round-trips;
 Z explicitly rejects malformed pending-note values through the generic source
-normalizer. Retired WebView scenarios above state their replacement guarantees;
+normalizer. G now asserts every production stage stays pending in dry-run and
+no relaunch is requested; H asserts policy failure performs no archive request
+and never marks a production stage passed. Retired WebView scenarios above state their replacement guarantees;
 core canary coverage does not claim an OS relaunch or real OTA acceptance.

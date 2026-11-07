@@ -730,7 +730,13 @@ fn canary_dry_run_preserves_pending_stages_and_actual_flow_marks_only_new_versio
         assert_eq!(result["offeredVersion"], "1.2.0");
         if dry {
             assert_eq!(result["status"], "dry-run");
-            assert_eq!(result["stages"]["download"], "pending");
+            for stage in ["discover", "policy"] {
+                assert_eq!(result["stages"][stage], "passed");
+            }
+            for stage in ["download", "signatureVerify", "install", "relaunch"] {
+                assert_eq!(result["stages"][stage], "pending");
+            }
+            assert!(!updater.engine.lock().unwrap().relaunch_requested);
             assert_eq!(server.count(), 1);
         } else {
             assert_eq!(result["status"], "pending");
@@ -1490,6 +1496,12 @@ fn canary_policy_download_archive_and_completion_failures_preserve_exact_stage()
             other => other,
         };
         assert_eq!(result["stages"][stage], "failed");
+        if failure == "policy" {
+            assert_eq!(server.count(), 1);
+            for stage in ["download", "signatureVerify", "install", "relaunch"] {
+                assert_ne!(result["stages"][stage], "passed");
+            }
+        }
         if failure == "relaunch" {
             assert_eq!(result["stages"]["install"], "passed");
         } else {
