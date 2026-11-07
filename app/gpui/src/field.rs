@@ -46,7 +46,7 @@ impl RenderOnce for TextField {
     fn render(self, w: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = Palette::get(cx);
         let focus = self.state.read(cx).focus_handle(cx);
-        let reveal = crate::data_components::focus_reveal(focus, self.scroll_parent, w, cx);
+        let reveal = crate::data_components::focus_reveal(focus, self.scroll_parent, None, w, cx);
         div().relative().child(reveal).child(
             Input::new(&self.state)
                 .aria_label(self.label)
