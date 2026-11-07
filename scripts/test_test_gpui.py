@@ -22,20 +22,24 @@ class TestSourceTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
-            for name in original:
-                path = target / name
-                path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(root / 'vendor/accesskit_macos' / name, path)
+            shutil.copytree(root / 'vendor/accesskit_macos', target, dirs_exist_ok=True)
             env = {**os.environ, 'GIT_CEILING_DIRECTORIES': str(target.parent)}
             patch_file = root / 'patches/accesskit-expanded.patch'
+            # Layer 10 adds the separately recorded press probe to node.rs.
+            # Remove both additive patches before comparing layer 9's pin.
+            press_patch = root / 'patches/accesskit-press-probe.patch'
+            subprocess.run(['git', 'apply', '--reverse', str(press_patch)],
+                           cwd=target, env=env, check=True)
             subprocess.run(['git', 'apply', '--reverse', str(patch_file)],
                            cwd=target, env=env, check=True)
             for name, digest in original.items():
                 self.assertEqual(hashlib.sha256((target / name).read_bytes()).hexdigest(), digest)
             subprocess.run(['git', 'apply', str(patch_file)], cwd=target, env=env, check=True)
-            for name in original:
-                self.assertEqual((target / name).read_bytes(),
-                                 (root / 'vendor/accesskit_macos' / name).read_bytes())
+            subprocess.run(['git', 'apply', str(press_patch)], cwd=target, env=env, check=True)
+            for path in (root / 'vendor/accesskit_macos').rglob('*'):
+                if path.is_file():
+                    self.assertEqual((target / path.relative_to(root / 'vendor/accesskit_macos')).read_bytes(),
+                                     path.read_bytes())
 
     def source(self, root, relative='vendor/gpui', revision=test_gpui.REV):
         source = root / relative

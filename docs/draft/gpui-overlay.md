@@ -312,3 +312,76 @@ Gate logs and the golden receipt are preserved before removing checkout 44 and
 its target. No real app, GUI session, AX client automation, permissions or user
 data were touched. Independent review and native acceptance remain with the
 lead; this PR stays draft and unmerged.
+
+## Native acceptance corrections (checkout 48)
+
+Layer 9 at `7a22c5c8` is merged, retaining its window AX focus forwarding,
+dropdown expanded state and live system appearance watcher.
+
+The floating material was a **child of the Metal-backed GPUIView**. Child
+views composite above their parent's layer, regardless of their ordering among
+siblings; `NSWindowBelow` on that child did not put it behind GPUI's foreground.
+The material is now a non-hit-testing sibling below GPUIView, with its mask
+converted from the same presentation rectangle. GPUI paints the semantic tint
+and border above the visual effect in the same scene as the foreground;
+NSVisualEffectView's backing color did not provide a reliable dark/opaque tint.
+Reduce Transparency uses an
+opaque surface; Increase Contrast additionally uses an opaque surface, a solid
+border and the matching accessible AppKit appearance. Both hide the unused
+backdrop effect and retain the existing
+opaque semantic foreground colors.
+
+Native frame writes now refresh GPUI's viewport in the same main-thread turn,
+before controls are revealed. The AppKit callback alone was deferred while the
+window was borrowed: centering the expanded 241 pt card in the stale 120 pt
+viewport displaced paint, hitboxes and AX by approximately 60 pt. Paint, input
+and AX now share the acknowledged viewport after growth and shrink.
+
+The existing 33 ms watchdog reconciles actual pointer presence in the painted
+surface, independently of tracking events and key-window status. Only presence
+transitions feed hover intent, preserving the 150 ms dwell, 300 ms leave and
+380 ms shrink without repeatedly moving deadlines. An AX-opened panel stays
+open until the pointer actually enters and leaves; a stationary pointer cannot
+undo an explicit AX close. Headless hosts retain GPUI hover transport.
+
+Regression coverage includes native sibling order/material hit-test exclusion
+and mask refits, missed-exit recovery and exact collapsed bounds with/without
+Reduced Motion, AX-open/close and rapid-graze handling, and repeated native-size
+transactions with emitted AX bounds inside the viewport and pointer clicks at
+Mode's exported center. The merged adapter reproduction test removes and
+reapplies both additive patches and compares every AccessKit vendor file.
+
+Native verification uses only a task-owned background synthetic host and
+window-specific captures. Process-local preference fixtures do not write System
+Settings. No pointer/key input, focus changes, permission grants or production
+profile access are part of this correction run. The lead retains the live HID
+recheck and independent review gates.
+
+Correction verification on Rust 1.98.1, fresh `~/Builds/gpui-checkout-48` with
+its private `target48` directory:
+
+- Locked gallery check, strict all-target gallery Clippy and rustfmt passed.
+- `scripts/test_gpui.py`: **64 passed** plus **1 AccessKit adapter test**;
+  ordinary gallery-enabled `cargo test`: **43 passed**; **9 source/native-shim
+  tests passed**, including the hierarchy regression.
+- Goldens: **63 cases / 126 captures**, nonblank and byte-identical per pair;
+  every **33 overlay cases / 66 captures** reported zero WebKit images.
+- Actual native window-only captures: **12 cases**, covering light/dark,
+  normal/Reduce Transparency/Increase Contrast, collapsed recording/expanded
+  controls. The foreground is readable in all cases. Every observed frontmost
+  PID differed from the synthetic host. Read-only native AX queries place the
+  expanded window and disclosure at x=839, and Mode at x=871 (75×24 pt), inside
+  the window. No AX action or HID interaction was used for this receipt.
+- Removing the same-turn viewport refresh makes the new AX/geometry regression
+  fail at its explicit stale-viewport assertion; the fixed revision passes.
+- **102 GPUI files** reproduce byte-for-byte from the pinned upstream and
+  recorded patches. All **16 AccessKit files** pass the merged round-trip
+  patch check; executable source also reconstructs from the published crate
+  plus Phase 0, expanded-state and press-probe patches, retaining the imported
+  repository-level license files. No additional vendor edits were needed.
+- All **16 changed build/test source hashes** matched the Mac checkout.
+  Markdown, workflow-policy, core-dependency and whitespace checks passed.
+
+Captures and gate logs are preserved before deleting the task checkout and its
+target. The live HID recheck and independent review remain with the lead; this
+stack layer is still draft and unmerged.

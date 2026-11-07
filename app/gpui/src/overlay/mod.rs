@@ -34,6 +34,7 @@ pub struct Overlay {
     applied: Option<native::Surface>,
     last_indicator: Option<Indicator>,
     interested: bool,
+    pointer: PointerPresence,
 }
 impl Overlay {
     pub fn new(snapshot: Snapshot, host: Rc<dyn Host>) -> Self {
@@ -48,6 +49,7 @@ impl Overlay {
             applied: None,
             last_indicator: None,
             interested: false,
+            pointer: PointerPresence::default(),
         }
     }
     pub fn receive(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
@@ -93,10 +95,12 @@ impl Overlay {
                         floating,
                         hidden,
                         reduce_transparency: prefs.reduce_transparency,
+                        increase_contrast: prefs.increase_contrast,
                         dark,
                         surface_height: frame.height,
                         radius: if frame.height <= 34. { 17. } else { 12. },
                     },
+                    cx,
                 )
             });
         self.send(intent);
@@ -114,6 +118,7 @@ impl Overlay {
             floating,
             hidden: self.model.hidden(self.now),
             reduce_transparency: prefs.reduce_transparency,
+            increase_contrast: prefs.increase_contrast,
             dark,
             surface_height: visual.height,
             radius: if self.model.phase == Phase::Open {
@@ -122,7 +127,7 @@ impl Overlay {
                 17.
             },
         };
-        if self.applied != Some(surface) && native::apply(window, surface) {
+        if self.applied != Some(surface) && native::apply(window, surface, cx) {
             self.applied = Some(surface);
             self.host.preview_anchor(
                 self.model.frame(false, self.now),
@@ -178,6 +183,7 @@ impl Overlay {
                                 || level.is_some()
                                 || s.applied.is_some_and(|a| {
                                     a.reduce_transparency != prefs.reduce_transparency
+                                        || a.increase_contrast != prefs.increase_contrast
                                         || a.dark != dark
                                 });
                             for event in events {
@@ -185,6 +191,12 @@ impl Overlay {
                             }
                             if let Some((generation, level)) = level {
                                 s.model.sample(generation, level, s.now);
+                            }
+                            if let Some(inside) = native::pointer_inside(w)
+                                && s.pointer.observe(inside)
+                            {
+                                s.model.hover(inside, s.now);
+                                changed = true;
                             }
                             if s.now >= s.screen_poll {
                                 s.screen_poll = s.now + 500;
@@ -304,23 +316,38 @@ impl Render for Overlay {
             .text_size(tokens::CAPTION_SIZE)
             .line_height(tokens::CAPTION_LEADING)
             .text_color(p.text)
-            .bg(
-                if g.floating && native::has_native_window(window) && self.applied.is_some() {
-                    p.surface.opacity(0.)
-                } else if g.floating {
-                    p.surface
-                        .opacity(if preferences::current(cx).reduce_transparency {
-                            1.
-                        } else {
-                            0.76
-                        })
-                } else {
-                    tokens::overlay_surface()
-                },
-            )
+            // Tint belongs above the AppKit effect in the same Metal scene as
+            // the foreground. NSVisualEffectView's backing color is not a tint.
+            .bg(if g.floating {
+                p.surface.opacity(
+                    if preferences::current(cx).reduce_transparency
+                        || preferences::current(cx).increase_contrast
+                    {
+                        1.
+                    } else {
+                        0.76
+                    },
+                )
+            } else {
+                tokens::overlay_surface()
+            })
+            .when(g.floating, |s| {
+                s.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(radius))
+                        .border_1()
+                        .border_color(p.border),
+                )
+            })
             .on_hover(cx.listener(|s, inside, w, cx| {
-                s.model.hover(*inside, s.now);
-                s.advance(w, cx);
+                // Native panels use reconciled pointer presence, independent of
+                // AppKit tracking delivery. Test/headless windows use GPUI.
+                if !native::has_native_window(w) {
+                    s.model.hover(*inside, s.now);
+                    s.advance(w, cx);
+                }
             }));
         // This never-key panel cannot receive keyboard disclosure commands.
         // Keep a nonvisual AX button present even in the idle notch cutout.

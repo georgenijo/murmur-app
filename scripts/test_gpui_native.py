@@ -111,6 +111,55 @@ int main(void) {
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
             subprocess.run([str(path / 'test')], check=True)
 
+    def test_overlay_material_is_a_sibling_below_metal_and_never_takes_hits(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
+#include <assert.h>
+extern void *murmur_overlay_material(void *view);
+extern void murmur_overlay_refit_hud(void *view, double width, double height, double radius);
+int main(void) {
+    @autoreleasepool {
+        NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 241, 98)];
+        NSView *metal = [[NSView alloc] initWithFrame:container.bounds];
+        metal.wantsLayer = YES;
+        CALayer *layer = metal.layer;
+        [container addSubview:metal];
+        void *raw = (__bridge void *)metal;
+        NSVisualEffectView *hud = (__bridge NSVisualEffectView *)murmur_overlay_material(raw);
+        assert(hud && hud.superview == metal.superview);
+        assert(container.subviews.count == 2 && container.subviews[0] == hud && container.subviews[1] == metal);
+        assert(metal.subviews.count == 0 && metal.layer == layer);
+        assert(murmur_overlay_material(raw) == (__bridge void *)hud);
+        assert([hud hitTest:NSMakePoint(10, 10)] == nil);
+        murmur_overlay_refit_hud(raw, 241, 98, 12);
+        assert(NSEqualRects(hud.frame, metal.frame));
+        // A shrink retains a centered bottom-anchored material, then exact bounds.
+        murmur_overlay_refit_hud(raw, 120, 34, 17);
+        assert(NSEqualRects(hud.frame, NSMakeRect(60.5, 0, 120, 34)));
+        metal.frame = NSMakeRect(0, 0, 120, 34);
+        murmur_overlay_refit_hud(raw, 120, 34, 17);
+        assert(NSEqualRects(hud.frame, metal.frame));
+        // Reparenting/placement changes must preserve ordering and conversion.
+        NSView *other = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 200)];
+        [metal removeFromSuperview];
+        metal.frame = NSMakeRect(25, 30, 241, 98);
+        [other addSubview:metal];
+        murmur_overlay_refit_hud(raw, 241, 98, 12);
+        assert(hud.superview == other && other.subviews[0] == hud && other.subviews[1] == metal);
+        assert(NSEqualRects(hud.frame, metal.frame));
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-hierarchy-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_overlay_never_key_hook_is_instance_local_and_idempotent(self):
         source = r'''
 #import <AppKit/AppKit.h>

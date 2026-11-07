@@ -905,3 +905,167 @@ fn initial_hydration_and_current_epoch_refresh_accept_newer_revisions() {
     assert_eq!(m.snapshot.revision, 2);
     assert_eq!(m.elapsed(9000), "1:04");
 }
+
+#[test]
+fn sampled_pointer_recovers_missed_exit_and_releases_expanded_hit_area() {
+    for reduced in [false, true] {
+        let mut m = active();
+        m.snapshot.placement = OverlayPlacement::FloatingPill;
+        let mut pointer = PointerPresence::default();
+        let mut sample = |m: &mut Model, inside, now| {
+            if pointer.observe(inside) {
+                m.hover(inside, now);
+            }
+        };
+        sample(&mut m, true, 0);
+        sample(&mut m, true, 149);
+        m.tick(149, reduced, |_, _| panic!("dwell"));
+        m.tick(150, reduced, |_, _| true);
+        assert_eq!(m.phase, Phase::Open);
+        // No tracking exit is delivered. The next watchdog sample finds the
+        // pointer outside even if resize or rapid movement lost the event.
+        sample(&mut m, false, 183);
+        for now in [216, 249, 282, 315, 348, 381, 414, 447] {
+            sample(&mut m, false, now);
+            m.tick(now, reduced, |_, _| panic!("leave delay"));
+        }
+        let mut applied = m.frame(true, 150);
+        m.tick(483, reduced, |frame, _| {
+            applied = frame;
+            true
+        });
+        m.tick(863, reduced, |frame, _| {
+            applied = frame;
+            true
+        });
+        assert_eq!(m.phase, Phase::Collapsed);
+        assert_eq!(applied, m.frame(false, 863));
+        assert_eq!((applied.width, applied.height), (120., 34.));
+    }
+}
+
+#[test]
+fn pointer_samples_do_not_undo_ax_disclosure_or_restart_stationary_dwell() {
+    let mut m = active();
+    let mut pointer = PointerPresence::default();
+    assert!(!pointer.observe(false));
+    m.expand(0);
+    m.tick(0, false, |_, _| true);
+    assert!(!pointer.observe(false), "AX opening is not a pointer exit");
+    assert_eq!(m.phase, Phase::Open);
+    assert!(pointer.observe(true));
+    m.hover(true, 1);
+    m.close(2);
+    m.tick(2, false, |_, _| true);
+    assert!(
+        !pointer.observe(true),
+        "stationary pointer must not reopen AX close"
+    );
+    m.tick(382, false, |_, _| true);
+    assert_eq!(m.phase, Phase::Collapsed);
+    assert!(pointer.observe(false));
+    m.hover(false, 400);
+    assert!(pointer.observe(true));
+    m.hover(true, 500);
+    assert!(pointer.observe(false));
+    m.hover(false, 510);
+    m.tick(1000, false, |_, _| panic!("a graze cannot open"));
+    assert_eq!(m.phase, Phase::Collapsed);
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn resized_overlay_ax_frames_match_viewport_and_mode_pointer_target(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let host = Rc::new(FakeHost::default());
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| {
+            let mut overlay = Overlay::new(active().snapshot, host.clone());
+            overlay.model.snapshot.placement = OverlayPlacement::FloatingPill;
+            overlay.model.screen.bounds = (-1920., -200., 0., 880.);
+            overlay.model.screen.work = (-1920., -176., 0., 840.);
+            overlay
+        });
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    for expanded in [false, true, false, true] {
+        cx.update(|w, cx| {
+            overlay.update(cx, |s, cx| {
+                s.model.phase = if expanded {
+                    Phase::Open
+                } else {
+                    Phase::Collapsed
+                };
+                s.advance(w, cx);
+                let frame = s.applied.unwrap().frame;
+                assert_eq!(
+                    w.viewport_size(),
+                    gpui::size(gpui::px(frame.width as f32), gpui::px(frame.height as f32)),
+                    "layout must refresh before returning from native transaction"
+                );
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|w, cx| w.draw(cx).clear(cx));
+        let tree = cx.accessibility_tree(window);
+        let (frame, scale) = cx.update(|w, cx| {
+            (
+                overlay.read(cx).applied.unwrap().frame,
+                w.scale_factor() as f64,
+            )
+        });
+        for (_, node) in &tree.nodes {
+            if let Some(bounds) = node.bounds() {
+                assert!(
+                    bounds.x0 >= 0. && bounds.y0 >= 0.,
+                    "outside window: {:?} {bounds:?}",
+                    node.label()
+                );
+                assert!(
+                    bounds.x1 / scale <= frame.width + 0.5
+                        && bounds.y1 / scale <= frame.height + 0.5,
+                    "outside window: {:?} {bounds:?}, {frame:?}",
+                    node.label()
+                );
+            }
+        }
+        if expanded {
+            let mode = tree
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some("Mode: Everyday. Click to cycle"))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            let before = host.intents.borrow().len();
+            cx.simulate_click(
+                gpui::point(
+                    gpui::px(((mode.x0 + mode.x1) / (2. * scale)) as f32),
+                    gpui::px(((mode.y0 + mode.y1) / (2. * scale)) as f32),
+                ),
+                gpui::Modifiers::default(),
+            );
+            cx.run_until_parked();
+            assert_eq!(host.intents.borrow().len(), before + 1);
+            assert!(matches!(
+                host.intents.borrow().last(),
+                Some(Intent::CycleMode)
+            ));
+        }
+    }
+}

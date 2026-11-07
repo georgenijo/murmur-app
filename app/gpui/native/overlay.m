@@ -30,10 +30,49 @@ bool murmur_overlay_never_key(void *object) {
     return true;
 }
 
-static char hud_key;
+// GPUI draws into the parent view's Metal layer. Any child of that view,
+// even NSWindowBelow, composites ABOVE the Metal foreground. Keep material
+// and renderer as siblings; the material must never intercept input.
+@interface MurmurOverlayMaterial : NSVisualEffectView
+@end
+@implementation MurmurOverlayMaterial
+- (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
+@end
+static char hud_key, surface_key;
+
+// Shared by the native transaction and the windowless hierarchy regression.
+void *murmur_overlay_material(void *raw) {
+    assert([NSThread isMainThread]);
+    NSView *view = (__bridge NSView *)raw;
+    MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
+    if (!hud && view.superview) {
+        hud = [[MurmurOverlayMaterial alloc] initWithFrame:NSZeroRect];
+        hud.material = NSVisualEffectMaterialHUDWindow;
+        hud.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        hud.state = NSVisualEffectStateActive;
+        hud.wantsLayer = YES;
+        [view.superview addSubview:hud positioned:NSWindowBelow relativeTo:view];
+        objc_setAssociatedObject(view, &hud_key, hud, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return (__bridge void *)hud;
+}
+
+static void refit_surface(NSView *view, double width, double height, double radius) {
+    NSRect surface = NSMakeRect((view.bounds.size.width-width)/2.0,
+        view.isFlipped ? view.bounds.size.height-height : 0, width, height);
+    objc_setAssociatedObject(view, &surface_key, [NSValue valueWithRect:surface], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
+    if (!hud) return;
+    if (hud.superview != view.superview) {
+        [hud removeFromSuperview];
+        [view.superview addSubview:hud positioned:NSWindowBelow relativeTo:view];
+    }
+    hud.frame = [view convertRect:surface toView:view.superview];
+    hud.layer.cornerRadius = radius;
+}
 bool murmur_overlay_apply(void *raw, double x, double y, double width, double height,
                           bool floating, bool hidden, bool reduced_transparency,
-                          bool dark, double radius, double surface_height) {
+                          bool high_contrast, bool dark, double radius, double surface_height) {
     assert([NSThread isMainThread]);
     NSView *view = (__bridge NSView *)raw;
     NSWindow *window = view.window;
@@ -64,31 +103,22 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     NSRect target = NSMakeRect(x, primary_top-y-height, width, height);
     if (!NSEqualRects(window.frame,target)) [window setFrame:target display:YES];
     window.alphaValue = hidden ? 0.0 : 1.0;
-    NSVisualEffectView *hud = objc_getAssociatedObject(view, &hud_key);
+    MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
     if (!floating) {
         [hud removeFromSuperview];
         objc_setAssociatedObject(view, &hud_key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return true;
     }
-    if (!hud) {
-        hud = [[NSVisualEffectView alloc] initWithFrame:view.bounds];
-        hud.material = NSVisualEffectMaterialHUDWindow;
-        hud.blendingMode = NSVisualEffectBlendingModeBehindWindow;
-        hud.state = NSVisualEffectStateActive;
-        hud.wantsLayer = YES;
-        // This is the raw content view, not a WKWebView. No WebKit exists here.
-        [view addSubview:hud positioned:NSWindowBelow relativeTo:nil];
-        objc_setAssociatedObject(view, &hud_key, hud, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    hud.appearance = [NSAppearance appearanceNamed:dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
-    hud.frame = NSMakeRect(0, view.isFlipped ? view.bounds.size.height-surface_height : 0, view.bounds.size.width, surface_height);
-    hud.layer.cornerRadius = radius;
+    hud = (__bridge MurmurOverlayMaterial *)murmur_overlay_material(raw);
+    NSString *appearance = high_contrast
+        ? (dark ? NSAppearanceNameAccessibilityHighContrastDarkAqua : NSAppearanceNameAccessibilityHighContrastAqua)
+        : (dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua);
+    hud.appearance = [NSAppearance appearanceNamed:appearance];
+    // GPUI owns the tint/foreground above the effect. Opaque accessibility
+    // surfaces do not need a backdrop effect at all.
+    hud.hidden = reduced_transparency || high_contrast;
+    refit_surface(view, view.bounds.size.width, surface_height, radius);
     hud.layer.masksToBounds = YES;
-    hud.layer.borderWidth = 1.0;
-    hud.layer.borderColor = [NSColor colorWithWhite:dark ? 1.0 : 0.0 alpha:0.10].CGColor;
-    hud.layer.backgroundColor = [NSColor colorWithSRGBRed:(dark ? 28.0 : 246.0)/255.0
-        green:(dark ? 28.0 : 246.0)/255.0 blue:(dark ? 30.0 : 248.0)/255.0
-        alpha:reduced_transparency ? 1.0 : (dark ? 0.74 : 0.76)].CGColor;
     return true;
 }
 
@@ -142,8 +172,17 @@ uint32_t murmur_overlay_webkit_images(void) {
 void murmur_overlay_refit_hud(void *raw, double width, double height, double radius) {
     assert([NSThread isMainThread]);
     NSView *view=(__bridge NSView *)raw;
-    NSVisualEffectView *hud=objc_getAssociatedObject(view,&hud_key);
-    if (!hud) return;
-    hud.frame=NSMakeRect((view.bounds.size.width-width)/2.0,view.isFlipped ? view.bounds.size.height-height : 0,width,height);
-    hud.layer.cornerRadius=radius;
+    refit_surface(view, width, height, radius);
+}
+
+// A never-key panel can miss tracking/GPUI exit events, especially across a
+// resize. Read pointer presence without monitoring events or requiring AX.
+bool murmur_overlay_pointer_inside(void *raw) {
+    assert([NSThread isMainThread]);
+    NSView *view = (__bridge NSView *)raw;
+    NSValue *surface = objc_getAssociatedObject(view, &surface_key);
+    if (!view.window || !surface || view.window.ignoresMouseEvents) return false;
+    NSPoint point = [view.window convertPointFromScreen:NSEvent.mouseLocation];
+    point = [view convertPoint:point fromView:nil];
+    return NSPointInRect(point, surface.rectValue);
 }
