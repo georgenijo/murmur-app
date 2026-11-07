@@ -125,6 +125,9 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank History capture"
                     );
+                    // Preserve frames and inventory for diagnosing OS-injected
+                    // accessibility frameworks. The golden runner owns the
+                    // strict zero-WebKit gate; this executable reports facts.
                     let images = murmur_ui::overlay::native::webkit_images();
                     println!(
                         "MURMUR_HISTORY_INVENTORY={{\"pid\":{},\"webkitImages\":{images}}}",

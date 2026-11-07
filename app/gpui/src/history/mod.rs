@@ -277,7 +277,10 @@ impl History {
         self.model.refresh();
         self.authority.sync(&self.model);
         let count = self.model.matches.len();
-        let mut choices = vec![Choice::new("import", "Transcribe audio or video file…")];
+        let mut choices = vec![
+            Choice::new("menu", "More history actions…"),
+            Choice::new("import", "Transcribe audio or video file…"),
+        ];
         for (save, verb) in [(false, "Copy"), (true, "Save")] {
             for (i, f) in Format::ALL.iter().enumerate() {
                 choices.push(
@@ -295,8 +298,10 @@ impl History {
         }
         choices
             .push(Choice::new("clear", "Clear History…").disabled(self.model.entries.is_empty()));
-        self.actions
-            .update(cx, |s, cx| s.replace_choices(choices, cx));
+        self.actions.update(cx, |s, cx| {
+            s.replace_choices(choices, cx);
+            s.set_value("menu", cx);
+        });
         cx.notify();
     }
     fn action(&mut self, value: &str, w: &mut Window, cx: &mut Context<Self>) {
