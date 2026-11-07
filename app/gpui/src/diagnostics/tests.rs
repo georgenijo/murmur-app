@@ -892,6 +892,96 @@ mod ax {
         );
     }
 
+    // TestWindow AX bounds are real laid-out cell bounds, not just indices.
+    fn assert_active_cell_visible(cx: &mut VisualTestContext) {
+        let t = tree(cx);
+        let cell = &t.nodes.iter().find(|(id, _)| *id == t.focus).unwrap().1;
+        assert!(matches!(cell.role(), Role::Cell | Role::ColumnHeader));
+        let bounds = cell.bounds().expect("active cell bounds");
+        let panel = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == Role::TabPanel)
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let table = named(&t, "UI latency edges").1.bounds().unwrap();
+        let low_x = table.x0.max(panel.x0);
+        let high_x = table.x1.min(panel.x1);
+        assert!(
+            bounds.x0 >= low_x && bounds.x1 <= high_x,
+            "active cell {bounds:?} outside horizontal viewport {low_x}..{high_x}"
+        );
+        assert!(
+            bounds.y0 >= panel.y0 && bounds.y1 <= panel.y1,
+            "active cell {bounds:?} outside vertical viewport {panel:?}"
+        );
+        let scale = cx.update(|w, _| w.scale_factor()) as f64;
+        assert!(bounds.x0 >= 0. && bounds.x1 <= 480. * scale);
+        assert!(bounds.y0 >= 0. && bounds.y1 <= 440. * scale);
+    }
+
+    #[gpui::test]
+    fn table_keyboard_reveals_actual_cells_on_both_axes_at_minimum_size(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        cx.simulate_resize(gpui::size(gpui::px(480.), gpui::px(440.)));
+        entity.update(cx, |s, cx| {
+            let sample = s.model.latency[0].clone();
+            s.model.latency = (0..40)
+                .map(|i| {
+                    let mut row = sample.clone();
+                    row.from = format!("Synthetic edge {i}");
+                    row
+                })
+                .collect();
+            s.model.navigate(Tab::Latency);
+            s.sync(cx);
+            cx.notify();
+        });
+        for reduced_motion in [false, true] {
+            cx.update(|_, cx| {
+                crate::preferences::apply(
+                    crate::preferences::DisplayPreferences {
+                        reduce_motion: reduced_motion,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            draw(cx);
+            cx.update(|w, cx| {
+                w.blur(cx);
+                w.focus_next(cx);
+            });
+            let mut reached = false;
+            for _ in 0..12 {
+                cx.simulate_keystrokes("tab");
+                let t = tree(cx);
+                if t.nodes.iter().any(|(id, n)| {
+                    *id == t.focus && matches!(n.role(), Role::Cell | Role::ColumnHeader)
+                }) {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached);
+            // Check every key independently so stale painted bounds cannot pass.
+            for key in [
+                "home", "right", "right", "right", "right", "right", "down", "pagedown", "end",
+                "up", "left", "pageup", "home",
+            ] {
+                cx.simulate_keystrokes(key);
+                assert_active_cell_visible(cx);
+            }
+            // Already-visible moves and clamped Home must not drift vertically.
+            let before = entity.read_with(cx, |s, _| s.panel_scroll.offset());
+            cx.simulate_keystrokes("home");
+            assert_active_cell_visible(cx);
+            assert_eq!(before, entity.read_with(cx, |s, _| s.panel_scroll.offset()));
+        }
+    }
+
     #[gpui::test]
     fn confirmation_restores_keyboard_and_ax_origins_after_remount(cx: &mut TestAppContext) {
         let (entity, cx) = harness(cx);
@@ -965,6 +1055,78 @@ mod ax {
         });
         draw(cx);
         assert_eq!(focused_label(&tree(cx)), "Dictation");
+    }
+
+    #[gpui::test]
+    fn deferred_restore_revalidates_capture_removal_after_cancel(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Dictation);
+            s.sync(cx);
+            cx.notify();
+        });
+        let t = tree(cx);
+        click(cx, named(&t, "Delete local capture for recording 7…").0);
+        // Dismissal queues restoration. Admit removal before its next-frame callback,
+        // while the persistent handle is still registered (no intervening draw).
+        cx.update(|w, cx| {
+            entity.update(cx, |s, cx| {
+                s.dismiss(w, cx);
+                s.receive(
+                    Event::Notification {
+                        attachment: s.model.ticket(Lane::Captures).attachment,
+                        lane: Lane::Captures,
+                        revision: 99,
+                        store_epoch: 0,
+                        payload: Payload::Captures(vec![]),
+                    },
+                    cx,
+                );
+                assert!(s.model.captures.is_empty());
+            })
+        });
+        draw(cx);
+        cx.update(|w, cx| w.simulate_next_frame(cx));
+        draw(cx);
+        assert_eq!(focused_label(&tree(cx)), "Dictation");
+    }
+
+    #[gpui::test]
+    fn deferred_restore_rejects_an_opener_disabled_after_cancel(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Runs);
+            s.model.health = Some(Health {
+                available: false,
+                recommended: Recovery::Reinitialize,
+                problem: Some(StoreProblem::CorruptIntegrity),
+                skipped: 0,
+                recent_write_failed: false,
+                recovered: false,
+            });
+            s.sync(cx);
+            cx.notify();
+        });
+        let t = tree(cx);
+        click(cx, named(&t, "Reinitialize store…").0);
+        cx.update(|w, cx| {
+            entity.update(cx, |s, cx| {
+                s.dismiss(w, cx);
+                // A fresh host read disables the still-present recovery button.
+                s.model.begin_read(Lane::Health);
+                cx.notify();
+                assert!(s.model.loading.contains(&Lane::Health));
+            })
+        });
+        // The in-flight read can outlast restoration; no host completion is
+        // admitted in this interval.
+        cx.update(|w, cx| {
+            w.draw(cx).clear(cx);
+            w.simulate_next_frame(cx);
+        });
+        draw(cx);
+        assert_eq!(focused_label(&tree(cx)), "Runs");
+        assert!(named(&tree(cx), "Reinitialize store…").1.is_disabled());
     }
 
     #[gpui::test]

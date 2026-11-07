@@ -123,6 +123,7 @@ pub struct DataTable {
     headers: Vec<SharedString>,
     rows: Vec<Vec<SharedString>>,
     actions: Vec<Button>,
+    scroll_parent: Option<ScrollHandle>,
 }
 impl DataTable {
     pub fn new(
@@ -140,7 +141,14 @@ impl DataTable {
             headers: headers.iter().map(|s| (*s).into()).collect(),
             rows,
             actions: vec![],
+            scroll_parent: None,
         }
+    }
+    /// The enclosing vertical viewport, when the table grows with its rows.
+    /// Headers scroll with the rows; there is no sticky-header occlusion.
+    pub fn with_scroll_parent(mut self, parent: &ScrollHandle) -> Self {
+        self.scroll_parent = Some(parent.clone());
+        self
     }
     pub fn with_row_actions(mut self, actions: Vec<Button>) -> Self {
         assert_eq!(actions.len(), self.rows.len());
@@ -152,6 +160,20 @@ struct TableNavigation {
     focus: FocusHandle,
     row: usize,
     column: usize,
+    scroll: ScrollHandle,
+    cells: Vec<Vec<Bounds<Pixels>>>,
+}
+
+// Immediate offsets also honor Reduced Motion. Move only the hidden portion;
+// an oversized cell aligns its leading edge rather than oscillating.
+fn reveal_axis(start: Pixels, end: Pixels, low: Pixels, high: Pixels) -> Pixels {
+    if start < low || end - start > high - low {
+        low - start
+    } else if end > high {
+        high - end
+    } else {
+        px(0.)
+    }
 }
 impl RenderOnce for DataTable {
     fn render(self, w: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -161,20 +183,30 @@ impl RenderOnce for DataTable {
             focus: cx.focus_handle().tab_stop(true),
             row: 0,
             column: 0,
+            scroll: ScrollHandle::new(),
+            cells: vec![],
         });
+        let scroll = navigation.read(cx).scroll.clone();
+        let parent = self.scroll_parent;
         let focus = navigation.read(cx).focus.clone();
         let table_focused = focus.is_focused(w);
         let row_count = self.rows.len() + 1;
         navigation.update(cx, |s, _| {
             s.row = s.row.min(row_count - 1);
             s.column = s.column.min(cols - 1);
+            s.cells.resize(row_count, vec![]);
         });
         let active = (navigation.read(cx).row, navigation.read(cx).column);
         let mut actions = self.actions.into_iter();
         let header = div()
+            .on_children_prepainted({
+                let navigation = navigation.clone();
+                move |bounds, _, cx| navigation.update(cx, |s, _| s.cells[0] = bounds)
+            })
             .id("headers")
             .role(Role::Row)
             .flex()
+            .min_w(px(cols as f32 * 90.))
             .bg(p.raised)
             .a11y_synthetic_children(|b| b.parent_node().set_row_index(0))
             .children(self.headers.iter().enumerate().map(|(i, h)| {
@@ -196,101 +228,165 @@ impl RenderOnce for DataTable {
                     })
                     .child(h.clone())
             }));
+        // Keep the border outside the scroll viewport: ScrollHandle measures
+        // content against its full bounds, including any border on that element.
         div()
-            .id(self.id)
-            .track_focus(&focus)
-            .focus_visible(|d| d.border_color(p.focus))
-            .capture_key_down(move |e, w, cx| {
-                if !focus.is_focused(w)
-                    || e.prefer_character_input
-                    || e.keystroke.modifiers.number_of_modifiers() != 0
-                {
-                    return;
-                }
-                let key = e.keystroke.key.as_str();
-                if !matches!(key, "up" | "down" | "left" | "right" | "home" | "end") {
-                    return;
-                }
-                navigation.update(cx, |s, cx| {
-                    match key {
-                        "up" => s.row = s.row.saturating_sub(1),
-                        "down" => s.row = (s.row + 1).min(row_count - 1),
-                        "left" => s.column = s.column.saturating_sub(1),
-                        "right" => s.column = (s.column + 1).min(cols - 1),
-                        "home" => {
-                            s.row = 0;
-                            s.column = 0;
-                        }
-                        "end" => {
-                            s.row = row_count - 1;
-                            s.column = cols - 1;
-                        }
-                        _ => unreachable!(),
-                    }
-                    cx.notify();
-                });
-                w.prevent_default();
-                cx.stop_propagation();
-                w.refresh();
-            })
-            .role(Role::Table)
-            .overflow_x_scroll()
             .flex_shrink_0()
-            .aria_label(self.label)
             .border_1()
-            .border_color(p.border)
+            .border_color(if table_focused { p.focus } else { p.border })
             .rounded(tokens::CONTROL_RADIUS)
-            .a11y_synthetic_children(move |b| {
-                b.parent_node().set_column_count(cols);
-                b.parent_node().set_row_count(row_count);
-            })
-            .text_size(tokens::CAPTION_SIZE)
-            .line_height(tokens::CAPTION_LEADING)
-            .child(header)
-            .children(self.rows.into_iter().enumerate().map(|(r, cells)| {
-                let mut action = actions.next();
+            .child(
                 div()
-                    .id(r)
-                    .role(Role::Row)
-                    .flex()
-                    .border_t_1()
-                    .border_color(p.border)
-                    .a11y_synthetic_children(move |b| b.parent_node().set_row_index(r + 1))
-                    .children(cells.into_iter().enumerate().map(|(i, c)| {
-                        div()
-                            .id(i)
-                            .role(Role::Cell)
-                            .when(active == (r + 1, i), |d| {
-                                d.aria_active_descendant()
-                                    .when(table_focused, |d| d.bg(p.focus.opacity(0.15)))
-                            })
-                            .aria_label(self.headers[i].clone())
-                            .aria_value(c.clone())
-                            .a11y_synthetic_children(move |b| {
-                                b.parent_node().set_column_index(i);
-                                b.parent_node().set_row_index(r + 1);
-                            })
-                            .flex_1()
-                            .min_w(px(90.))
-                            .p(px(8.))
-                            .child(if i == 0 {
-                                if let Some(action) = action.take() {
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .items_start()
-                                        .gap(px(4.))
-                                        .child(c)
-                                        .child(action)
-                                        .into_any_element()
-                                } else {
-                                    c.into_any_element()
+                    .id(self.id)
+                    .track_focus(&focus)
+                    .focus_visible(|d| d.border_color(p.focus))
+                    .capture_key_down({
+                        let navigation = navigation.clone();
+                        move |e, w, cx| {
+                            if !focus.is_focused(w)
+                                || e.prefer_character_input
+                                || e.keystroke.modifiers.number_of_modifiers() != 0
+                            {
+                                return;
+                            }
+                            let key = e.keystroke.key.as_str();
+                            if !matches!(
+                                key,
+                                "up" | "down"
+                                    | "left"
+                                    | "right"
+                                    | "home"
+                                    | "end"
+                                    | "pageup"
+                                    | "pagedown"
+                            ) {
+                                return;
+                            }
+                            navigation.update(cx, |s, cx| {
+                                let viewport = parent
+                                    .as_ref()
+                                    .map_or(s.scroll.bounds(), ScrollHandle::bounds);
+                                let page = s.cells.get(s.row).and_then(|r| r.get(s.column)).map_or(
+                                    1,
+                                    |b| {
+                                        ((viewport.size.height / b.size.height).floor() as usize)
+                                            .max(1)
+                                    },
+                                );
+                                match key {
+                                    "pageup" => s.row = s.row.saturating_sub(page),
+                                    "pagedown" => {
+                                        s.row = s.row.saturating_add(page).min(row_count - 1)
+                                    }
+                                    "up" => s.row = s.row.saturating_sub(1),
+                                    "down" => s.row = (s.row + 1).min(row_count - 1),
+                                    "left" => s.column = s.column.saturating_sub(1),
+                                    "right" => s.column = (s.column + 1).min(cols - 1),
+                                    "home" => {
+                                        s.row = 0;
+                                        s.column = 0;
+                                    }
+                                    "end" => {
+                                        s.row = row_count - 1;
+                                        s.column = cols - 1;
+                                    }
+                                    _ => unreachable!(),
                                 }
-                            } else {
-                                c.into_any_element()
+                                if let Some(cell) = s.cells.get(s.row).and_then(|r| r.get(s.column))
+                                {
+                                    let viewport = s.scroll.bounds();
+                                    let mut offset = s.scroll.offset();
+                                    offset.x += reveal_axis(
+                                        cell.left(),
+                                        cell.right(),
+                                        viewport.left(),
+                                        viewport.right(),
+                                    );
+                                    s.scroll.set_offset(offset);
+                                    if let Some(parent) = &parent {
+                                        let viewport = parent.bounds();
+                                        let mut offset = parent.offset();
+                                        offset.y += reveal_axis(
+                                            cell.top(),
+                                            cell.bottom(),
+                                            viewport.top(),
+                                            viewport.bottom(),
+                                        );
+                                        parent.set_offset(offset);
+                                    }
+                                }
+                                cx.notify();
+                            });
+                            w.prevent_default();
+                            cx.stop_propagation();
+                            w.refresh();
+                        }
+                    })
+                    .role(Role::Table)
+                    .overflow_x_scroll()
+                    .track_scroll(&scroll)
+                    .flex_shrink_0()
+                    .aria_label(self.label)
+                    .rounded(tokens::CONTROL_RADIUS)
+                    .a11y_synthetic_children(move |b| {
+                        b.parent_node().set_column_count(cols);
+                        b.parent_node().set_row_count(row_count);
+                    })
+                    .text_size(tokens::CAPTION_SIZE)
+                    .line_height(tokens::CAPTION_LEADING)
+                    .child(header)
+                    .children(self.rows.into_iter().enumerate().map(|(r, cells)| {
+                        let mut action = actions.next();
+                        div()
+                            .on_children_prepainted({
+                                let navigation = navigation.clone();
+                                move |bounds, _, cx| {
+                                    navigation.update(cx, |s, _| s.cells[r + 1] = bounds)
+                                }
                             })
-                    }))
-            }))
+                            .id(r)
+                            .role(Role::Row)
+                            .flex()
+                            .min_w(px(cols as f32 * 90.))
+                            .border_t_1()
+                            .border_color(p.border)
+                            .a11y_synthetic_children(move |b| b.parent_node().set_row_index(r + 1))
+                            .children(cells.into_iter().enumerate().map(|(i, c)| {
+                                div()
+                                    .id(i)
+                                    .role(Role::Cell)
+                                    .when(active == (r + 1, i), |d| {
+                                        d.aria_active_descendant()
+                                            .when(table_focused, |d| d.bg(p.focus.opacity(0.15)))
+                                    })
+                                    .aria_label(self.headers[i].clone())
+                                    .aria_value(c.clone())
+                                    .a11y_synthetic_children(move |b| {
+                                        b.parent_node().set_column_index(i);
+                                        b.parent_node().set_row_index(r + 1);
+                                    })
+                                    .flex_1()
+                                    .min_w(px(90.))
+                                    .p(px(8.))
+                                    .child(if i == 0 {
+                                        if let Some(action) = action.take() {
+                                            div()
+                                                .flex()
+                                                .flex_col()
+                                                .items_start()
+                                                .gap(px(4.))
+                                                .child(c)
+                                                .child(action)
+                                                .into_any_element()
+                                        } else {
+                                            c.into_any_element()
+                                        }
+                                    } else {
+                                        c.into_any_element()
+                                    })
+                            }))
+                    })),
+            )
     }
 }
 

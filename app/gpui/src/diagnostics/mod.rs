@@ -537,23 +537,46 @@ impl Diagnostics {
         w.focus(&self.cancel_focus, cx);
         cx.notify();
     }
-    fn dismiss(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        let origin_exists = match self.confirm.as_ref() {
-            Some(Confirm::Delete(id)) => self.model.captures.iter().any(|c| &c.id == id),
-            Some(Confirm::Upload(id)) => {
-                self.model.selected_capture.as_ref() == Some(id)
-                    && self.model.capture_detail.is_some()
-            }
-            Some(Confirm::Reinitialize) => self
-                .model
-                .health
-                .as_ref()
-                .is_some_and(|h| h.can_recover() && h.recommended == Recovery::Reinitialize),
-            _ => true,
+    // All registered origins are ordinary focusable Buttons. Re-evaluate their
+    // render/disabled conditions at callback time, even if no draw has happened
+    // since a host notification changed the model.
+    fn restorable_origin(&self, focus: &FocusHandle) -> bool {
+        let Some((id, _)) = self.confirmation_origins.iter().find(|(_, h)| *h == focus) else {
+            return false;
         };
-        if !origin_exists {
-            self.restore_focus = Some(self.tabs.read(cx).focus_handle(cx));
+        match id.as_str() {
+            "clear-events" => self.model.tab() == Tab::Events,
+            "clear-performance" => {
+                self.model.tab() == Tab::Runs && self.model.selected_run.is_none()
+            }
+            "clear-latency" => self.model.tab() == Tab::Latency,
+            "recover" => {
+                matches!(self.model.tab(), Tab::Runs | Tab::Performance)
+                    && !(self.model.tab() == Tab::Runs && self.model.selected_run.is_some())
+                    && !self.model.errors.contains(&Lane::Health)
+                    && !self.model.loading.contains(&Lane::Health)
+                    && self.model.health.as_ref().is_some_and(Health::can_recover)
+            }
+            "upload-capture" => {
+                self.model.tab() == Tab::Dictation
+                    && self
+                        .model
+                        .capture_detail
+                        .as_ref()
+                        .is_some_and(|c| self.model.selected_capture.as_ref() == Some(&c.id))
+            }
+            _ => {
+                self.model.tab() == Tab::Dictation
+                    && self.model.capture_detail.is_none()
+                    && self
+                        .model
+                        .captures
+                        .iter()
+                        .any(|c| id == &format!("delete-{}", c.id))
+            }
         }
+    }
+    fn dismiss(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.confirm = None;
         self.confirm_ticket = None;
         if let Some(focus) = self.restore_focus.take() {
@@ -569,7 +592,12 @@ impl Diagnostics {
                         && s.subscription.is_some()
                         && s.model.ticket(Lane::Events).attachment == attachment
                     {
-                        w.focus(&focus, cx);
+                        let target = if s.restorable_origin(&focus) {
+                            focus.clone()
+                        } else {
+                            s.tabs.read(cx).focus_handle(cx)
+                        };
+                        w.focus(&target, cx);
                     }
                 });
             });
@@ -639,6 +667,7 @@ impl Diagnostics {
                 .map(|r| r.into_iter().map(Into::into).collect())
                 .collect(),
         )
+        .with_scroll_parent(&self.panel_scroll)
     }
     fn health(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut d = div()
