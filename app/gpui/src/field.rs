@@ -9,6 +9,7 @@ pub use gpui_component::input::{InputEvent, InputState as TextFieldState};
 #[derive(IntoElement)]
 pub struct TextField {
     state: Entity<InputState>,
+    scroll_parent: Option<ScrollHandle>,
     label: SharedString,
     disabled: bool,
     readonly: bool,
@@ -22,10 +23,15 @@ impl TextField {
         );
         Self {
             state: state.clone(),
+            scroll_parent: None,
             label,
             disabled: false,
             readonly: false,
         }
+    }
+    pub fn with_scroll_parent(mut self, parent: &ScrollHandle) -> Self {
+        self.scroll_parent = Some(parent.clone());
+        self
     }
     pub fn disabled(mut self, value: bool) -> Self {
         self.disabled = value;
@@ -37,21 +43,25 @@ impl TextField {
     }
 }
 impl RenderOnce for TextField {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, w: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = Palette::get(cx);
-        Input::new(&self.state)
-            .aria_label(self.label)
-            .placeholder_color(p.muted)
-            .disabled(self.disabled)
-            .readonly(self.readonly)
-            .h(tokens::INPUT_HEIGHT)
-            .px(tokens::CONTROL_INSET)
-            .rounded(tokens::CONTROL_RADIUS)
-            .text_size(tokens::BODY_SIZE)
-            .line_height(tokens::BODY_LEADING)
-            .bg(p.surface)
-            .border_1()
-            .border_color(p.border)
-            .when(self.disabled, |s| s.opacity(tokens::DISABLED_OPACITY))
+        let focus = self.state.read(cx).focus_handle(cx);
+        let reveal = crate::data_components::focus_reveal(focus, self.scroll_parent, w, cx);
+        div().relative().child(reveal).child(
+            Input::new(&self.state)
+                .aria_label(self.label)
+                .placeholder_color(p.muted)
+                .disabled(self.disabled)
+                .readonly(self.readonly)
+                .h(tokens::INPUT_HEIGHT)
+                .px(tokens::CONTROL_INSET)
+                .rounded(tokens::CONTROL_RADIUS)
+                .text_size(tokens::BODY_SIZE)
+                .line_height(tokens::BODY_LEADING)
+                .bg(p.surface)
+                .border_1()
+                .border_color(p.border)
+                .when(self.disabled, |s| s.opacity(tokens::DISABLED_OPACITY)),
+        )
     }
 }

@@ -39,6 +39,7 @@ pub struct SelectionChanged(pub SharedString);
 /// explicit selection (Space/Return), wrapping arrows, Home/End, and Escape.
 /// The owner subscribes to SelectionChanged; labels and stable values are separate.
 pub struct Choices {
+    pub(crate) scroll_parent: Option<ScrollHandle>,
     pub(crate) focus: FocusHandle,
     label: SharedString,
     kind: ChoiceKind,
@@ -79,6 +80,7 @@ impl Choices {
             }
         });
         Self {
+            scroll_parent: None,
             popup_bounds: Default::default(),
             focus,
             _blur: blur,
@@ -263,6 +265,12 @@ impl Render for Choices {
         let mut root = div()
             .id("choices")
             .relative()
+            .child(crate::data_components::focus_reveal(
+                self.focus.clone(),
+                self.scroll_parent.clone(),
+                window,
+                cx,
+            ))
             .w(tokens::SELECT_MAX)
             .role(role)
             .when(popup, |s| s.h(tokens::STANDARD_HEIGHT))
