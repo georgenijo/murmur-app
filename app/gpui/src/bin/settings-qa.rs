@@ -130,6 +130,13 @@ fn main() {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(100))
                     .await;
+                // Let controlled pickers/ranges finish their first layout and
+                // deferred notifications before the captured presentation turn.
+                cx.update_window(handle.into(), |_, w, cx| w.draw(cx).clear(cx))
+                    .expect("settle Settings controls");
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(32))
+                    .await;
                 cx.update_window(handle.into(), |_, w, cx| {
                     w.draw(cx).clear(cx);
                     let image = w.render_to_image().expect("offscreen Settings");
