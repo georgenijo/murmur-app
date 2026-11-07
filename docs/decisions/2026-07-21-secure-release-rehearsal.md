@@ -26,3 +26,18 @@ Use a separate `Release Rehearsal` workflow with these boundaries:
 ## Consequences
 
 Pre-merge performance decisions use the warm rehearsal's critical build leg, not notarization or overall production-release wall time. Production `Release Build` remains the authority for signing, updater behavior, notarization, Gatekeeper, and publication. A change that improves the rehearsal still must preserve `strip = false`, updater bundle markers, production policy tests, and normal signed-release validation.
+
+## Native packaging application (2026-11-07, #994)
+
+The same secretless boundary applies to `scripts/rehearse_gpui_bundle.py`.
+An isolated arm64 Mac checkout runs no credentialed workflow, rejects release
+credential environment names, and compares the non-Tauri packager against the
+real Tauri bundler with a common native binary payload. It validates packaging,
+not production Tauri/GPUI host behavior. Ad-hoc signing checks entitlements and
+the executable allowlist; it cannot prove Developer ID, notarization or TCC
+identity continuity. Synthetic-key signer tests prove wire compatibility only.
+
+The native-parity-first decision forbids landing rewrite work on main during
+the stack. The manual trusted-main signed GPUI rehearsal and subsequent exact
+artifact installation on the Mac mini therefore remain explicit handoffs after
+an authorized whole-stack landing. No production credentials go to the Mac mini.
