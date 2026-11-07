@@ -5,7 +5,7 @@ pub mod host;
 pub mod inbox;
 pub mod model;
 mod panes;
-mod range;
+pub mod range;
 pub mod schema;
 #[cfg(test)]
 mod tests;

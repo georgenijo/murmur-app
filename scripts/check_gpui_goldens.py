@@ -105,6 +105,55 @@ def render_onboarding_home(target, output, policy_log):
     return results
 
 
+def render_meetings(target, output, policy_log):
+    results = {}
+    binary = str(target / 'debug/meetings-qa')
+    prefix = 'MURMUR_MEETINGS_INVENTORY'
+    baseline = subprocess.check_output([binary], env={**os.environ,
+        'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(baseline, prefix)['webkitImages'] != 0:
+        raise AssertionError('nonzero meetings launch-only baseline')
+    policy_log.extend(baseline.splitlines())
+    states = ('review', 'empty', 'search', 'starting', 'recording', 'stopping',
+              'processing', 'denied', 'unsupported', 'relaunch', 'echo', 'naming',
+              'speakers', 'calendar', 'calendar-empty', 'calendar-denied', 'bundle',
+              'not-retained', 'audio-error', 'audio-busy', 'playing', 'compact',
+              'loading', 'error', 'text-input')
+    try:
+        for mode in ('light', 'dark', 'contrast'):
+            for state in states:
+                case = f'meetings-{mode}-{state}'
+                paths = [output / f'{case}-{i}.png' for i in (1, 2)]
+                for path in paths:
+                    env = {k: v for k, v in os.environ.items() if k not in
+                           ('MURMUR_DARK', 'MURMUR_CONTRAST', 'MURMUR_MIDNIGHT',
+                            'MURMUR_WEBKIT_BASELINE_ONLY', 'MURMUR_FIXTURE_NATIVE_AUDIO')}
+                    env.update(MURMUR_GOLDEN=str(path), MURMUR_MEETINGS_STATE=state, TZ='UTC')
+                    if mode == 'dark':
+                        env['MURMUR_DARK'] = '1'
+                    if mode == 'contrast':
+                        env['MURMUR_CONTRAST'] = '1'
+                    run = subprocess.run([binary], env=env, cwd=UI, timeout=60,
+                                         text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    policy_log.extend(line for line in run.stdout.splitlines() if line.startswith('MURMUR_'))
+                    check_inventory(run.stdout, prefix)
+                    run.check_returncode()
+                if paths[0].read_bytes() != paths[1].read_bytes():
+                    raise AssertionError(f'non-deterministic {case}')
+                results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+                print(f'PASS {case}: identical offscreen Metal images')
+        for mode in ('light', 'dark', 'contrast'):
+            distinct = ('review', 'empty', 'recording', 'denied', 'calendar', 'loading', 'error')
+            if len({results[f'meetings-{mode}-{state}'] for state in distinct}) != len(distinct):
+                raise AssertionError('Meetings states rendered identically')
+        if len({results[f'meetings-{mode}-review'] for mode in ('light', 'dark', 'contrast')}) != 3:
+            raise AssertionError('Meetings appearance variants rendered identically')
+    finally:
+        # Preserve failing Writing Tools inventory too; never relax attribution.
+        (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')
+    return results
+
+
 def check_inventory(stdout, prefix):
     inventories = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
                    if line.startswith(prefix + '=')]
@@ -153,8 +202,13 @@ def main():
         (output / 'receipt.json').write_text(json.dumps({'comparison': 'same-host strict byte equality',
             'sha256': results}, indent=2) + '\n')
         return
+    if sys.argv[1:] == ['--meetings-only']:
+        results = render_meetings(target, output, policy_log)
+        (output / 'receipt.json').write_text(json.dumps({'comparison': 'same-host strict byte equality',
+            'sha256': results}, indent=2) + '\n')
+        return
     if sys.argv[1:]:
-        raise SystemExit('usage: check_gpui_goldens.py [--settings-only|--onboarding-home-only]')
+        raise SystemExit('usage: check_gpui_goldens.py [--settings-only|--onboarding-home-only|--meetings-only]')
     cases = [(mode, state) for mode in ('light', 'dark', 'contrast')
              for state in ('rest', 'hover', 'pressed', 'button', 'toggle', 'field', 'dropdown', 'popup', 'list', 'navigation')]
     for mode, state in cases:
@@ -307,6 +361,7 @@ def main():
         raise AssertionError('History appearance variants rendered identically')
     results.update(render_settings(target, output, policy_log))
     results.update(render_onboarding_home(target, output, policy_log))
+    results.update(render_meetings(target, output, policy_log))
 
 
     (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')

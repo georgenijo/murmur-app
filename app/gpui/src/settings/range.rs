@@ -6,10 +6,10 @@ pub struct Range {
     pub state: Entity<SliderState>,
     pub draft: Rc<std::cell::Cell<Option<i64>>>,
     focus: FocusHandle,
-    pub(super) scroll_parent: Option<ScrollHandle>,
     label: &'static str,
     unit: &'static str,
     disabled: bool,
+    pub(crate) scroll_parent: Option<ScrollHandle>,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<Committed> for Range {}
@@ -57,11 +57,19 @@ impl Range {
             state,
             draft,
             focus,
-            scroll_parent: None,
             label,
             unit,
             disabled: false,
+            scroll_parent: None,
             _subscriptions: vec![change, blur, activation],
+        }
+    }
+    /// Change timeline bounds only when the source duration changes.
+    pub fn set_max(&mut self, max: i64, cx: &mut Context<Self>) {
+        if self.state.read(cx).max_value() != max.max(1) as f32 {
+            self.state.update(cx, |s, _| {
+                *s = SliderState::new().min(0.).max(max.max(1) as f32).step(100.)
+            });
         }
     }
     pub fn value(&self, cx: &App) -> i64 {
@@ -74,6 +82,20 @@ impl Range {
         if self.disabled != disabled {
             self.disabled = disabled;
             cx.notify();
+        }
+    }
+    /// Progress may update while the pointer owns a draft seek. Release must
+    /// commit that draft, rather than the latest playback position.
+    pub fn set_playback_position(
+        &mut self,
+        value: i64,
+        disabled: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_disabled(disabled, cx);
+        if !self.state.read(cx).is_dragging() {
+            self.set(value, disabled, w, cx);
         }
     }
     pub fn set(&mut self, value: i64, disabled: bool, w: &mut Window, cx: &mut Context<Self>) {
@@ -129,15 +151,21 @@ impl Render for Range {
                             .rounded_full()
                             .relative()
                             .child(
-                                gpui_base::SliderThumb::new(&self.state)
-                                    .disabled(self.disabled)
-                                    .absolute()
-                                    .left(relative((v - min) / (max - min)))
-                                    .ml(px(-7.))
-                                    .top(px(-5.))
-                                    .size(px(14.))
-                                    .bg(p.accent)
-                                    .rounded_full(),
+                                gpui_base::SliderIndicator::new(&self.state)
+                                    .w_full()
+                                    .h_full()
+                                    .relative()
+                                    .child(
+                                        gpui_base::SliderThumb::new(&self.state)
+                                            .disabled(self.disabled)
+                                            .absolute()
+                                            .left(relative((v - min) / (max - min)))
+                                            .ml(px(-7.))
+                                            .top(px(-5.))
+                                            .size(px(14.))
+                                            .bg(p.accent)
+                                            .rounded_full(),
+                                    ),
                             ),
                     ),
             )
