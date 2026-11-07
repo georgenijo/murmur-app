@@ -510,12 +510,18 @@ impl Render for Modes {
                         SharedString::from(format!("mode-{id}")),
                         m["name"].as_str().unwrap_or("Untitled mode").to_string(),
                     )
-                    .nav_row()
+                    .intent(crate::ButtonIntent::Ghost)
                     .palette(Palette {
-                        tint_raised: p.surface.blend(p.accent.opacity(0.12)),
+                        hairline_strong: if id == self.selected {
+                            p.accent
+                        } else {
+                            p.hairline_strong
+                        },
+                        raised: p.surface.blend(p.accent.opacity(0.06)),
+                        tint_raised: p.surface.blend(p.accent.opacity(0.06)),
                         ..p
                     })
-                    .padding_y(px(8.))
+                    .padding_y(px(10.))
                     .padding_x(px(12.))
                     .bordered()
                     .description(if m["builtIn"] == true {
@@ -1013,7 +1019,11 @@ impl Render for Modes {
             self.sample
                 .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
             let text = self.sample.read(cx).value("sample").to_string();
-            body=body.child(gpui::text!("Before / after test")).child(gpui::text!("Preview stays in this window. It never copies, pastes, or injects into another app.")).child(self.sample.clone()).child(gpui::text!(format!("Before: {text}"))).child(gpui::text!(format!("After: {}",preview(&text,&selected))));
+            body = body.child(group("Before / after test", div().flex().flex_col()
+                .child(row(p).child(copy("mode-sample", "Sample text", "Preview stays in this window. It never copies, pastes, or injects into another app.", p)).child(self.sample.clone()))
+                .child(div().grid().grid_cols(2).gap(px(12.)).p(px(16.)).border_t_1().border_color(p.hairline)
+                    .child(div().child(div().text_size(tokens::CAPTION_SIZE).text_color(p.muted).child("Before")).child(gpui::text!(text.clone())))
+                    .child(div().child(div().text_size(tokens::CAPTION_SIZE).text_color(p.muted).child("After")).child(gpui::text!(preview(&text, &selected)))))));
             if let Some(n) = s.notice {
                 body = body.child(
                     div()

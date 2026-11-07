@@ -145,7 +145,7 @@ impl Render for Insights {
                         .role(Role::Group)
                         .aria_label(label)
                         .min_w_0()
-                        .p(px(12.))
+                        .p(px(16.))
                         .border_1()
                         .border_color(p.hairline_strong)
                         .bg(p.tint_raised)
@@ -160,9 +160,9 @@ impl Render for Insights {
                         )
                         .child(
                             div()
-                                .text_size(px(if value.chars().count() > 7 { 20. } else { 24. }))
+                                .text_size(px(24.))
                                 .line_height(px(28.))
-                                .font_weight(FontWeight::MEDIUM)
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .font_features(tokens::tabular_numbers())
                                 .child(gpui::text!(value)),
                         )

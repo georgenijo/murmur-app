@@ -1040,7 +1040,7 @@ impl Render for Settings {
             .aria_label(self.model.page.label())
             .flex_1()
             .min_w(px(0.))
-            .h_full()
+            .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .p(px(24.))
@@ -1208,10 +1208,8 @@ impl Render for Settings {
         }
         let mut nav = div()
             .id("settings-nav")
-            .track_scroll(&self.nav_scroll)
             .w(px(if compact { 56. } else { 240. }))
             .h_full()
-            .overflow_y_scroll()
             .bg(p.surface_container_low)
             .p(px(8.))
             .pt(px(48.))
@@ -1277,7 +1275,11 @@ impl Render for Settings {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(TextField::new(&self.search, "Search settings").search_chrome())
+                    .child(
+                        TextField::new(&self.search, "Search settings")
+                            .search_chrome()
+                            .search_radius(px(6.)),
+                    )
                     .child(content);
             }
         } else {
@@ -1285,9 +1287,18 @@ impl Render for Settings {
                 .child(
                     TextField::new(&self.search, "Search settings")
                         .search_chrome()
+                        .search_radius(px(6.))
                         .with_scroll_parent(&self.nav_scroll),
                 )
-                .child(self.navigation.clone());
+                .child(
+                    div()
+                        .id("settings-nav-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.nav_scroll)
+                        .child(self.navigation.clone()),
+                );
         }
 
         if self.reveal_scroll {

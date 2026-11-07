@@ -55,7 +55,8 @@ impl Settings {
         );
         card = card.child(
             div()
-                .p(px(16.))
+                .px(px(16.))
+                .py(px(12.))
                 .border_t_1()
                 .border_b_1()
                 .border_color(p.hairline)

@@ -734,7 +734,11 @@ impl Model {
             .map(|i| {
                 let center = (count - 1) as f32 / 2.;
                 let envelope = 1. - 0.5 * (i as f32 - center).abs() / center.max(1.);
-                (self.level * 16. * envelope).clamp(0.14, 1.)
+                let level = (self.level * 16.).clamp(0., 1.);
+                // Stable per-bar variation keeps offscreen fixtures deterministic.
+                let variation = ((i * 17 + 11) % 23) as f32 / 23.;
+                (0.08 + 0.07 * variation + level * envelope + level * level * 0.4 * variation)
+                    .clamp(0.14, 1.)
             })
             .collect()
     }

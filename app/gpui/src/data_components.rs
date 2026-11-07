@@ -958,38 +958,34 @@ impl Chart {
             .flex()
             .items_end()
             .gap(px(4.));
+        let mut cells = div()
+            .grid()
+            .grid_cols(8)
+            .grid_rows(7)
+            .gap(px(3.))
+            .w_full()
+            .max_w(px(256.))
+            .aspect_ratio(8. / 7.);
         if heatmap {
-            for (i, day) in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-                .into_iter()
-                .enumerate()
-            {
-                plot = plot.child(
+            plot = div().flex().gap(px(4.)).items_stretch();
+            let mut weekdays = div()
+                .w(px(32.))
+                .flex_shrink_0()
+                .grid()
+                .grid_rows(7)
+                .gap(px(3.))
+                .pt(px(20.));
+            for day in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] {
+                weekdays = weekdays.child(
                     div()
-                        .absolute()
-                        .left_0()
-                        .top(px(20. + i as f32 * 23.))
+                        .flex()
+                        .items_center()
                         .text_size(px(10.))
                         .text_color(p.muted)
                         .child(day),
                 );
             }
-            let mut last_month = None;
-            for (week, points) in self.points.chunks(7).enumerate() {
-                if let Some(day) = points.first().and_then(date)
-                    && last_month != Some(day.month())
-                {
-                    plot = plot.child(
-                        div()
-                            .absolute()
-                            .left(px(34. + week as f32 * 25.))
-                            .top_0()
-                            .text_size(px(10.))
-                            .text_color(p.muted)
-                            .child(day.format("%b").to_string()),
-                    );
-                    last_month = Some(day.month());
-                }
-            }
+            plot = plot.child(weekdays);
         }
         if self.kind == ChartKind::Line {
             let values: Vec<_> = self.points.iter().map(|p| p.value).collect();
@@ -1058,23 +1054,27 @@ impl Chart {
                     }
                 });
             if heatmap {
-                let intensity = measured
-                    .map(|v| {
-                        if v <= 0. {
-                            0.08
+                let color = match measured {
+                    Some(v) if v > 0. => {
+                        let ratio = v / max;
+                        let alpha = if ratio > 0.75 {
+                            1.
+                        } else if ratio > 0.5 {
+                            0.68
+                        } else if ratio > 0.25 {
+                            0.42
                         } else {
-                            0.30 + 0.70 * (v / max) as f32
-                        }
-                    })
-                    .unwrap_or(0.03);
-                plot = plot.child(
-                    mark.absolute()
-                        .left(px(34. + (i / 7) as f32 * 25.))
-                        .top(px(20. + (i % 7) as f32 * 23.))
-                        .w(px(22.))
-                        .h(px(20.))
+                            0.24
+                        };
+                        p.surface.blend(p.accent.opacity(alpha))
+                    }
+                    _ => p.raised,
+                };
+                cells = cells.child(
+                    mark.col_start((i / 7 + 1) as i16)
+                        .row_start((i % 7 + 1) as i16)
                         .rounded(px(2.))
-                        .bg(p.surface.blend(p.accent.opacity(intensity))),
+                        .bg(color),
                 );
             } else {
                 let height = measured
@@ -1096,8 +1096,8 @@ impl Chart {
                             .h(px(height))
                             .rounded_t(px(5.))
                             .rounded_b(px(2.))
-                            .bg(if active || i + 1 == self.points.len() {
-                                p.accent
+                            .bg(if active {
+                                p.surface.blend(p.accent.opacity(0.45))
                             } else {
                                 p.surface.blend(p.accent.opacity(0.32))
                             }),
@@ -1122,6 +1122,27 @@ impl Chart {
                 );
                 plot = plot.child(target);
             }
+        }
+        if heatmap {
+            let mut months = div().grid().grid_cols(8).gap(px(3.)).h(px(20.));
+            let mut last = None;
+            for points in self.points.chunks(7) {
+                let day = points.first().and_then(date);
+                let label = day
+                    .filter(|d| last != Some(d.month()))
+                    .map(|d| d.format("%b").to_string())
+                    .unwrap_or_default();
+                last = day.map(|d| d.month());
+                months = months.child(div().text_size(px(10.)).text_color(p.muted).child(label));
+            }
+            plot = plot.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .max_w(px(256.))
+                    .child(months)
+                    .child(cells),
+            );
         }
         div()
             .when(heatmap, |d| {

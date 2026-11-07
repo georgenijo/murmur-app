@@ -45,9 +45,13 @@ pub enum Glyph {
     ClipboardCheck,
     CircleDot,
     Panels,
+    Alert,
 }
 pub fn icon(glyph: Glyph) -> Icon {
     let bytes: &'static [u8] = match glyph {
+        Glyph::Alert => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/circle-alert.svg")
+        }
         Glyph::Pencil => {
             include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/pencil.svg")
         }
@@ -179,8 +183,8 @@ pub fn settings_glyph(label: &str) -> Glyph {
         "AI & models" => Glyph::Sun,
         "Modes" => Glyph::Panels,
         "Appearance" => Glyph::Palette,
-        "Performance Lab" => Glyph::Gauge,
-        "Diagnostics" => Glyph::Bug,
+        "Performance Lab" => Glyph::Chart,
+        "Diagnostics" => Glyph::File,
         "Keyboard shortcuts" => Glyph::Keyboard,
         _ => Glyph::Audio,
     }

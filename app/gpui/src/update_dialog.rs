@@ -21,7 +21,13 @@ pub fn card(p: Palette) -> Stateful<Div> {
         .border_1()
         .border_color(p.hairline_strong)
         .rounded(tokens::CARD_RADIUS)
-        .shadow(p.card_shadow())
+        .shadow(vec![BoxShadow {
+            color: black().opacity(0.24),
+            offset: point(px(0.), px(16.)),
+            blur_radius: px(48.),
+            spread_radius: px(0.),
+            inset: false,
+        }])
 }
 pub fn header(
     title: impl Into<SharedString>,
@@ -35,7 +41,8 @@ pub fn header(
         .flex()
         .items_start()
         .gap(px(12.))
-        .p(px(16.))
+        .px(px(24.))
+        .py(px(16.))
         .border_b_1()
         .border_color(p.hairline)
         .flex_shrink_0()
@@ -79,7 +86,8 @@ pub fn notes() -> Stateful<Div> {
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
-        .p(px(20.))
+        .px(px(24.))
+        .py(px(20.))
         .flex()
         .flex_col()
         .gap(px(8.))
@@ -96,7 +104,8 @@ pub fn footer(p: Palette) -> Div {
         .items_center()
         .justify_center()
         .gap(px(8.))
-        .p(px(16.))
+        .px(px(24.))
+        .py(px(16.))
         .border_t_1()
         .border_color(p.hairline)
         .bg(p.surface_container_low)
@@ -110,7 +119,8 @@ pub fn scrim() -> Stateful<Div> {
         .on_click(|_, _, cx| cx.stop_propagation())
         .absolute()
         .inset_0()
-        .p(px(20.))
+        .px(px(24.))
+        .py(px(20.))
         .flex()
         .items_center()
         .justify_center()

@@ -691,6 +691,8 @@ impl Render for Onboarding {
                 div()
                     .text_center()
                     .text_color(p.muted)
+                    .max_w(px(420.))
+                    .self_center()
                     .child(text!(self.step.subtitle())),
             );
         if self.model.snapshot.is_none() {
@@ -764,8 +766,24 @@ impl Render for Onboarding {
                             .px(px(10.))
                             .py(px(3.))
                             .text_size(tokens::CAPTION_SIZE)
-                            .text_color(p.muted)
-                            .bg(p.surface_container_low)
+                            .text_color(if access == Access::Denied {
+                                p.danger
+                            } else {
+                                p.muted
+                            })
+                            .bg(if access == Access::Denied {
+                                p.surface.blend(p.danger.opacity(0.10))
+                            } else {
+                                p.surface_container_low
+                            })
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .when(access == Access::Denied, |d| {
+                                d.child(
+                                    crate::icons::icon(crate::icons::Glyph::Alert).size(px(12.)),
+                                )
+                            })
                             .child(text),
                     ),
             );
@@ -802,7 +820,15 @@ impl Render for Onboarding {
                 Permission::Calendar => "Calendar details stay on this Mac.",
                 _ => "",
             };
-            body = body.child(div().text_color(p.muted).child(text!(detail)));
+            body = body.child(
+                div()
+                    .w_full()
+                    .max_w(px(420.))
+                    .self_center()
+                    .text_center()
+                    .text_color(p.muted)
+                    .child(text!(detail)),
+            );
             if self
                 .model
                 .snapshot
