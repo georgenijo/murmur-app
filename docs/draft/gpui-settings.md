@@ -63,6 +63,13 @@ remain independent of disclosure. Reduce Motion introduces no delayed motion.
   uses completion's `lifecycle::Operation::Save` and `ui-state.json`. Never wait
   on completion while holding the source lock. Owned Auto-paste/disabled intent
   fences remain the existing host's responsibility.
+- `RequestKind::ManualMicrophone` is one accepted preference intent: persist
+  the selected stable ID, `microphoneIdMigrationComplete=true`, and
+  `smartAutoMicrophoneEnabled=false` together, including reselecting the saved
+  ID while Smart Auto is active. This matches React's manual-selection policy.
+  Smart Auto preference actions move the selected approved device to the front;
+  only that first device is marked Preferred. Existing enabled Smart Auto-Stop
+  can always be switched off while idle, even without silence stopping/model.
 - Capture-sensitive changes and all operational actions must revalidate native
   service admission at their effect, independently of UI disablement. No action
   re-resolves an active recording's immutable configuration. Async recording
@@ -79,7 +86,10 @@ remain independent of disclosure. Reduce Motion introduces no delayed motion.
   after dismissal; Settings never steals focus when opening an editor is
   merely acknowledged. Nested shortcut-owner navigation keeps the return stack.
 - Calibration sends bounded one-point preview requests and explicit Save/Cancel.
-  Save and the explicit Reset publish a durable offset. Native applied bounds
+  Save preserves the requested durable offset, independently of display clamping;
+  the explicit Reset publishes zero. Escape/Cancel supersedes a pending preview,
+  revokes its lease, and retains the controls until cancellation succeeds. Host
+  async continuations recheck ownership before applying geometry. Native applied bounds
   and the acknowledged preview position drive the visible one-point controls. Page exit/hide restores the durable
   placement through the host's page-lifetime teardown. Rust/native code owns
   geometry and queues all NSWindow mutations on the main thread.
@@ -102,7 +112,12 @@ No existing React, Tauri or native-control suite is retired.
 
 `settings-qa` uses only synthetic state. `scripts/check_gpui_goldens.py` includes
 all 11 destinations, drill-ins, six Advanced panes, compact/search/loading/error
-states in light, dark and Increase Contrast. `--settings-only` runs that family
+states in light, dark and Increase Contrast. Midnight is not implemented in this
+GPUI layer: `tokens::apply_appearance(dark: bool, cx)` selects Sonic light/dark
+roles only; `settings-qa` selects that boolean plus display contrast preferences.
+The Appearance pane delegates its full theme manager to 3.5e. React's Midnight
+palette does not supply a GPUI theme, so no invented Midnight capture is added.
+`--settings-only` runs that family
 independently when a pre-existing earlier-family failure prevents reaching it;
 the default runner and the inherited startup/linkage/AX-attribution policy remain
 strict. Settings uses the same `start_webkit_policy` / `assert_webkit_policy`

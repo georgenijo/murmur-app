@@ -263,6 +263,7 @@ impl Model {
             ) && (s["saveAudio"] == true || s["saveTranscript"] == true)
             || row.key == "language" && r.english_only
             || row.key == "smartAutoStopEnabled"
+                && s["smartAutoStopEnabled"] != true
                 && (s["autoStopSilenceMs"] == 0 || r.smart_turn != Install::Installed)
     }
     pub fn begin(&mut self) -> Option<Ticket> {

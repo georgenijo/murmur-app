@@ -50,6 +50,8 @@ pub struct FixtureHost {
     pub fail: Cell<Option<Problem>>,
     pub cancel_folder: Cell<bool>,
     pub root: Option<PathBuf>,
+    pub delay_preview: Cell<bool>,
+    pub delayed: RefCell<Vec<(Request, Inbox)>>,
 }
 impl Default for FixtureHost {
     fn default() -> Self {
@@ -62,6 +64,8 @@ impl Default for FixtureHost {
             fail: Cell::new(None),
             cancel_folder: Cell::new(false),
             root: None,
+            delay_preview: Cell::new(false),
+            delayed: RefCell::new(vec![]),
         }
     }
 }
@@ -89,6 +93,15 @@ impl Host for FixtureHost {
         if !r.lease.is_current() || inbox.is_closed() {
             return;
         }
+        if self.delay_preview.get()
+            && matches!(
+                r.kind,
+                RequestKind::Action(Action::Calibration { finish: false, .. })
+            )
+        {
+            self.delayed.borrow_mut().push((r, inbox));
+            return;
+        }
         self.calls.borrow_mut().push("request");
         let mut next = self.state.borrow().clone();
         let result = (|| {
@@ -101,6 +114,19 @@ impl Host for FixtureHost {
             let mut source = None;
             match &r.kind {
                 RequestKind::Read => (),
+                RequestKind::ManualMicrophone { id } => {
+                    let mut candidate = next.settings.clone();
+                    candidate["microphone"] = json!(id);
+                    candidate["microphoneIdMigrationComplete"] = json!(true);
+                    candidate["smartAutoMicrophoneEnabled"] = json!(false);
+                    let normalized = murmur_core::state::settings(candidate.clone())
+                        .map_err(|_| Problem::Invalid)?;
+                    if normalized != candidate {
+                        return Err(Problem::Invalid);
+                    }
+                    next.settings = normalized;
+                    source = Some("dictation-settings");
+                }
                 RequestKind::Patch { key, value } => {
                     next.settings =
                         murmur_core::state::settings_edit(&next.settings, key, value.clone())
