@@ -1016,11 +1016,13 @@ impl Render for Modes {
                 }
             }
             body = body.child(group("Where it applies", applies));
-            self.sample
-                .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
+            self.sample.update(cx, |f, _| {
+                f.scroll_parent = Some(self.scroll.clone());
+                f.inline = true;
+            });
             let text = self.sample.read(cx).value("sample").to_string();
             body = body.child(group("Before / after test", div().flex().flex_col()
-                .child(row(p).child(copy("mode-sample", "Sample text", "Preview stays in this window. It never copies, pastes, or injects into another app.", p)).child(self.sample.clone()))
+                .child(div().w_full().p(px(16.)).flex().flex_col().gap(px(12.)).child(copy("mode-sample", "Sample text", "Preview stays in this window. It never copies, pastes, or injects into another app.", p)).child(self.sample.clone()))
                 .child(div().grid().grid_cols(2).gap(px(12.)).p(px(16.)).border_t_1().border_color(p.hairline)
                     .child(div().child(div().text_size(tokens::CAPTION_SIZE).text_color(p.muted).child("Before")).child(gpui::text!(text.clone())))
                     .child(div().child(div().text_size(tokens::CAPTION_SIZE).text_color(p.muted).child("After")).child(gpui::text!(preview(&text, &selected)))))));
