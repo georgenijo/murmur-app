@@ -39,6 +39,90 @@ fn active() -> Model {
     });
     m
 }
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn preview_root_paints_only_the_card_and_keeps_other_roots_opaque(cx: &mut gpui::TestAppContext) {
+    use gpui::{prelude::*, *};
+    use std::rc::Rc;
+    struct Current;
+    impl super::Host for Current {
+        fn is_current(&self, _: u64) -> bool {
+            true
+        }
+    }
+    cx.update(|cx| crate::init_with_preferences(cx, Some(Default::default())));
+    let mut preview = None;
+    let (_, view) = cx.add_window_view(|w, cx| {
+        let p = cx.new(|_| {
+            let mut p = super::Preview::new(Rc::new(Current));
+            p.model = active();
+            p
+        });
+        preview = Some(p.clone());
+        super::Preview::root(p, w, cx)
+    });
+    let preview = preview.unwrap();
+    for dark in [false, true] {
+        for above in [false, true] {
+            for lift in [0., 64.] {
+                view.update(|w, cx| {
+                    crate::tokens::apply_appearance(dark, cx);
+                    preview.update(cx, |p, _| {
+                        let mut a = anchor(above);
+                        a.lift = lift;
+                        p.model.anchor = Some(a);
+                        let f = a.window(p.model.reserve).unwrap();
+                        w.resize(size(px(f.width as f32), px(f.height as f32)));
+                    });
+                    w.refresh();
+                    w.draw(cx).clear(cx);
+                    // GPUI rounds quad edges to device pixels; allow that
+                    // rounding without allowing paint into the reservation.
+                    let card = preview
+                        .read(cx)
+                        .painted_card
+                        .unwrap()
+                        .scale(w.scale_factor())
+                        .dilate(ScaledPixels(1.));
+                    let quads = w.painted_quads();
+                    assert!(!quads.is_empty(), "card did not render");
+                    for q in quads {
+                        let clipped = q.bounds.intersect(&q.content_mask.bounds);
+                        if q.background.as_solid().is_none_or(|c| c.a > 0.) || q.border_color.a > 0.
+                        {
+                            assert_eq!(
+                                card.intersect(&clipped),
+                                clipped,
+                                "paint outside card: {q:?}"
+                            );
+                        }
+                    }
+                });
+            }
+        }
+    }
+    struct Empty;
+    impl Render for Empty {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full()
+        }
+    }
+    let (_, normal) = cx.add_window_view(|w, cx| {
+        let empty = cx.new(|_| Empty);
+        gpui_base::Root::new(empty, w, cx)
+    });
+    normal.update(|w, cx| {
+        w.draw(cx).clear(cx);
+        assert!(
+            w.painted_quads().iter().any(|q| {
+                q.bounds.size == w.viewport_size().scale(w.scale_factor())
+                    && q.background.as_solid().is_some_and(|c| c.a == 1.)
+            }),
+            "ordinary Root lost its theme background"
+        );
+    });
+}
 #[test]
 fn consent_is_durable_latest_read_only_and_opt_out_clears_before_reply() {
     let mut m = active();
@@ -270,7 +354,7 @@ fn ordered_bounded_inbox_never_coalesces_across_privacy_barriers() {
 fn actual_preview_adapter_tree_is_informational_and_lifecycle_clears_text(
     cx: &mut gpui::TestAppContext,
 ) {
-    use gpui::{prelude::*, *};
+    use gpui::*;
     use std::rc::Rc;
     struct Current;
     impl super::Host for Current {
@@ -295,7 +379,7 @@ fn actual_preview_adapter_tree_is_informational_and_lifecycle_clears_text(
             p
         });
         entity = Some(p.clone());
-        gpui_base::Root::new(p, w, cx)
+        super::Preview::root(p, w, cx)
     });
     let entity = entity.unwrap();
     let handle = cx.update(|w, _| w.window_handle());
@@ -346,7 +430,7 @@ fn actual_preview_adapter_tree_is_informational_and_lifecycle_clears_text(
 #[cfg(feature = "a11y-tests")]
 #[gpui::test]
 fn queued_show_rechecks_host_ownership_and_layout_shrink_wraps(cx: &mut gpui::TestAppContext) {
-    use gpui::{prelude::*, *};
+    use gpui::*;
     use std::{cell::Cell, rc::Rc};
     struct Current(Rc<Cell<bool>>);
     impl super::Host for Current {
@@ -365,7 +449,7 @@ fn queued_show_rechecks_host_ownership_and_layout_shrink_wraps(cx: &mut gpui::Te
             p
         });
         entity = Some(p.clone());
-        gpui_base::Root::new(p, w, cx)
+        super::Preview::root(p, w, cx)
     });
     let entity = entity.unwrap();
     cx.update(|w, cx| {
@@ -432,7 +516,7 @@ fn closed_consumer_releases_queued_text_and_refuses_late_producers() {
 fn first_frame_callback_cannot_show_after_queued_opt_out_or_clear_successor(
     cx: &mut gpui::TestAppContext,
 ) {
-    use gpui::{prelude::*, *};
+    use gpui::*;
     use std::rc::Rc;
     struct Current;
     impl super::Host for Current {
@@ -449,7 +533,7 @@ fn first_frame_callback_cannot_show_after_queued_opt_out_or_clear_successor(
             p
         });
         entity = Some(p.clone());
-        gpui_base::Root::new(p, w, cx)
+        super::Preview::root(p, w, cx)
     });
     let entity = entity.unwrap();
     cx.update(|w, cx| {
@@ -486,7 +570,7 @@ fn first_frame_callback_cannot_show_after_queued_opt_out_or_clear_successor(
 fn overlay_applied_anchor_interface_drives_preview_lift_without_moving_window(
     cx: &mut gpui::TestAppContext,
 ) {
-    use gpui::{prelude::*, *};
+    use gpui::*;
     use std::{cell::Cell, rc::Rc};
     struct Bridge(Cell<Option<(OverlayFrame, bool, f64)>>);
     impl crate::overlay::Host for Bridge {
@@ -718,7 +802,7 @@ fn hydration_accepts_initial_state_but_not_replies_from_before_detach_or_cancel(
 #[cfg(feature = "a11y-tests")]
 #[gpui::test]
 fn direct_receive_follows_queued_lifecycle_anchor_and_consent(cx: &mut gpui::TestAppContext) {
-    use gpui::{prelude::*, *};
+    use gpui::*;
     use std::rc::Rc;
     struct Current;
     impl super::Host for Current {
@@ -731,7 +815,7 @@ fn direct_receive_follows_queued_lifecycle_anchor_and_consent(cx: &mut gpui::Tes
     let (_, cx) = cx.add_window_view(|w, cx| {
         let p = cx.new(|_| super::Preview::new(Rc::new(Current)));
         entity = Some(p.clone());
-        gpui_base::Root::new(p, w, cx)
+        super::Preview::root(p, w, cx)
     });
     let entity = entity.unwrap();
     cx.update(|w, cx| {
@@ -824,7 +908,7 @@ fn direct_receive_follows_queued_lifecycle_anchor_and_consent(cx: &mut gpui::Tes
 #[cfg(feature = "a11y-tests")]
 #[gpui::test]
 fn hidden_paint_admits_without_next_frame_callbacks_and_restarts(cx: &mut gpui::TestAppContext) {
-    use gpui::{prelude::*, *};
+    use gpui::*;
     use std::{cell::Cell, rc::Rc};
     struct Current(Cell<usize>);
     impl super::Host for Current {
@@ -846,7 +930,7 @@ fn hidden_paint_admits_without_next_frame_callbacks_and_restarts(cx: &mut gpui::
             p
         });
         entity = Some(p.clone());
-        gpui_base::Root::new(p, w, cx)
+        super::Preview::root(p, w, cx)
     });
     let entity = entity.unwrap();
     for generation in 7..11 {

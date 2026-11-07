@@ -1,4 +1,4 @@
-"""Compile the focus shim against inert classes; never create AppKit windows."""
+"""Compile native shims against synthetic views/panels; never show windows."""
 from pathlib import Path
 import platform
 import subprocess
@@ -10,6 +10,51 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
 class FocusHookTests(unittest.TestCase):
+    def test_preview_normalizes_a_default_resizable_panel_before_presentation(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+@interface SyntheticPreviewPanel : NSPanel
+@property NSUInteger styleWrites;
+@end
+@implementation SyntheticPreviewPanel
+- (void)setStyleMask:(NSWindowStyleMask)mask { self.styleWrites++; [super setStyleMask:mask]; }
+@end
+extern void murmur_preview_refit(void *, double, double, double, double);
+int main(void) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskResizable |
+            NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskNonactivatingPanel;
+        SyntheticPreviewPanel *panel = [[SyntheticPreviewPanel alloc] initWithContentRect:NSMakeRect(0,0,460,168)
+            styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+        NSPanel *other = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,460,168)
+            styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+        panel.styleWrites = 0;
+        NSView *view = panel.contentView;
+        murmur_preview_refit((__bridge void *)view, 120,0,220,42);
+        assert(!(panel.styleMask & NSWindowStyleMaskResizable));
+        assert(!(panel.styleMask & (NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)));
+        assert(panel.styleMask & NSWindowStyleMaskFullSizeContentView);
+        assert(panel.styleMask & NSWindowStyleMaskNonactivatingPanel);
+        assert(panel.titlebarAppearsTransparent && panel.titleVisibility == NSWindowTitleHidden);
+        assert(!panel.movable && panel.ignoresMouseEvents && !panel.visible);
+        assert(panel.contentView == view);
+        assert(NSEqualSizes(view.frame.size, panel.frame.size));
+        murmur_preview_refit((__bridge void *)view, 120,64,220,42);
+        assert(panel.styleWrites == 1);
+        assert(other.styleMask == mask && !other.ignoresMouseEvents && !other.visible);
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-preview-panel-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore', str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_overlay_contraction_and_reentry_sample_the_painted_band_in_both_placements(self):
         source = r'''
 #import <AppKit/AppKit.h>

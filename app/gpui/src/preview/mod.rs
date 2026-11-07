@@ -27,6 +27,32 @@ pub struct Preview {
     painted_card: Option<Bounds<Pixels>>,
 }
 impl Preview {
+    /// Preview hosts must use the full content area, with no native titlebar
+    /// competing with the card's frame/clip during hidden-frame admission.
+    pub fn window_options(bounds: Bounds<Pixels>) -> WindowOptions {
+        WindowOptions {
+            kind: WindowKind::PopUp,
+            titlebar: None,
+            is_resizable: false,
+            is_movable: false,
+            show: false,
+            focus: false,
+            window_background: WindowBackgroundAppearance::Transparent,
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        }
+    }
+
+    /// Override the component plugin's opaque default on this root only. A
+    /// transparent child cannot erase a background already painted by Root.
+    pub fn root(
+        preview: Entity<Self>,
+        window: &mut Window,
+        cx: &mut Context<gpui_base::Root>,
+    ) -> gpui_base::Root {
+        gpui_base::Root::new(preview, window, cx).bg(transparent_black())
+    }
+
     pub fn new(host: Rc<dyn Host>) -> Self {
         Self {
             model: Model::default(),
