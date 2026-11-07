@@ -424,10 +424,10 @@ fn tabs_lists_charts_and_data_pickers_support_keyboard_without_native_windows(
     cx.update(|w, cx| w.focus(&tabs.read(cx).focus_handle(cx), cx));
     cx.simulate_keystrokes("right");
     draw(cx);
-    assert_eq!(entity.read_with(cx, |s, _| s.model.tab), Tab::Runs);
+    assert_eq!(entity.read_with(cx, |s, _| s.model.tab()), Tab::Runs);
     cx.simulate_keystrokes("end");
     draw(cx);
-    assert_eq!(entity.read_with(cx, |s, _| s.model.tab), Tab::Dictation);
+    assert_eq!(entity.read_with(cx, |s, _| s.model.tab()), Tab::Dictation);
     cx.simulate_keystrokes("home");
     draw(cx);
     let list = entity.read_with(cx, |s, _| s.events.clone());
@@ -443,7 +443,7 @@ fn tabs_lists_charts_and_data_pickers_support_keyboard_without_native_windows(
     list.update(cx, |s, cx| s.resume(cx));
     assert!(list.read_with(cx, |s, _| s.following));
     entity.update(cx, |s, cx| {
-        s.model.tab = Tab::Performance;
+        s.model.navigate(Tab::Performance);
         s.sync(cx);
     });
     draw(cx);
@@ -570,7 +570,7 @@ mod ax {
         );
         click(cx, named(&t, "Cancel").0);
         entity.update(cx, |s, cx| {
-            s.model.tab = Tab::Events;
+            s.model.navigate(Tab::Events);
             s.model.loading.insert(Lane::Events);
             cx.notify();
         });
@@ -586,13 +586,13 @@ mod ax {
     ) {
         let (entity, cx) = harness(cx);
         entity.update(cx, |s, cx| {
-            s.model.tab = Tab::Compare;
+            s.model.navigate(Tab::Compare);
             s.sync(cx);
         });
         let t = tree(cx);
         assert!(named(&t, "Comparison deltas").1.row_count().unwrap() > 1);
         entity.update(cx, |s, cx| {
-            s.model.tab = Tab::Dictation;
+            s.model.navigate(Tab::Dictation);
             s.sync(cx);
         });
         let t = tree(cx);
@@ -773,4 +773,373 @@ fn diagnostics_follows_the_hosts_live_palette_without_overwriting_other_windows(
     cx.update(|_, cx| crate::tokens::apply_appearance(false, cx));
     draw(cx);
     cx.update(|_, cx| assert!(crate::tokens::Palette::get(cx).surface.l > 0.5));
+}
+
+#[test]
+fn every_report_string_is_bounded_before_schema_or_identity_work() {
+    fn reject_strings(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::String(_) => {
+                *v = serde_json::json!("s".repeat(MAX_STRING_BYTES + 1));
+            }
+            _ => unreachable!(),
+        }
+    }
+    fn visit(root: &serde_json::Value, path: &mut Vec<String>, paths: &mut Vec<Vec<String>>) {
+        match root {
+            serde_json::Value::String(_) => paths.push(path.clone()),
+            serde_json::Value::Array(a) => {
+                for (i, v) in a.iter().enumerate() {
+                    path.push(i.to_string());
+                    visit(v, path, paths);
+                    path.pop();
+                }
+            }
+            serde_json::Value::Object(o) => {
+                for (k, v) in o {
+                    path.push(k.clone());
+                    visit(v, path, paths);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let hardware = serde_json::from_slice(include_bytes!(
+        "../../../../tests/fixtures/diagnostic-reports/evaluation-v1-hardware.json"
+    ))
+    .unwrap();
+    for original in [benchmark(), evaluation(), hardware] {
+        let mut paths = vec![];
+        visit(&original, &mut vec![], &mut paths);
+        for path in paths {
+            let mut v = original.clone();
+            reject_strings(v.pointer_mut(&format!("/{}", path.join("/"))).unwrap());
+            assert_eq!(parse(&v).err(), Some(ImportError::StringLimit));
+        }
+    }
+    for path in [
+        "/results/0/error",
+        "/environment/hardwareModel",
+        "/recommendations/fastest",
+    ] {
+        let mut v = benchmark();
+        *v.pointer_mut(path).unwrap() = serde_json::json!("x".repeat(MAX_STRING_BYTES + 1));
+        assert_eq!(parse(&v).err(), Some(ImportError::StringLimit));
+    }
+    let mut exploit = benchmark();
+    exploit["results"][0]["modelName"] = serde_json::json!("m".repeat(1024 * 1024));
+    assert_eq!(parse(&exploit).err(), Some(ImportError::StringLimit));
+}
+fn max_fixture_report(models: usize, identity_bytes: usize) -> serde_json::Value {
+    let mut v = benchmark();
+    let fixture = v["results"][0]["fixtures"][0].clone();
+    let fixtures: Vec<_> = (0..512)
+        .map(|i| {
+            let mut f = fixture.clone();
+            f["fixtureId"] = serde_json::json!(format!("fixture-{i}"));
+            f
+        })
+        .collect();
+    v["corpus"]["fixtureIds"] =
+        serde_json::json!((0..512).map(|i| format!("fixture-{i}")).collect::<Vec<_>>());
+    v["corpus"]["fixtureCount"] = serde_json::json!(512);
+    let mut model = v["results"][0].clone();
+    model["fixtures"] = serde_json::json!(fixtures);
+    v["results"] = serde_json::json!(
+        (0..models)
+            .map(|i| {
+                let mut m = model.clone();
+                m["modelName"] = serde_json::json!(format!(
+                    "{i}{}",
+                    "m".repeat(identity_bytes.saturating_sub(1))
+                ));
+                m
+            })
+            .collect::<Vec<_>>()
+    );
+    v
+}
+#[test]
+fn maximum_fixture_comparisons_share_scopes_and_enforce_preflight_budgets() {
+    use std::sync::Arc;
+    let r = parse(&max_fixture_report(1, MAX_STRING_BYTES))
+        .ok()
+        .unwrap();
+    let c = compare(&r, &r);
+    assert!(!c.blocked());
+    assert_eq!(c.metrics.len(), 1 + 10 + 512 * 7);
+    assert!(c.metrics.len() <= MAX_COMPARISON_METRICS);
+    for group in c.metrics[11..].as_chunks::<7>().0 {
+        assert!(group.iter().all(|m| Arc::ptr_eq(&group[0].scope, &m.scope)));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let scope_bytes: usize = c
+        .metrics
+        .iter()
+        .filter(|m| seen.insert(Arc::as_ptr(&m.scope) as *const () as usize))
+        .map(|m| m.scope.len())
+        .sum();
+    assert!(scope_bytes < 3 * 1024 * 1024);
+    // String lengths remain legal, but shared scope amplification is too large.
+    let mut large_scope = max_fixture_report(1, MAX_STRING_BYTES);
+    large_scope["results"][0]["backend"] = serde_json::json!("b".repeat(MAX_STRING_BYTES));
+    large_scope["results"][0]["accelerator"] = serde_json::json!("a".repeat(MAX_STRING_BYTES));
+    for v in [max_fixture_report(3, 128), large_scope] {
+        let r = parse(&v).ok().unwrap();
+        let c = compare(&r, &r);
+        assert!(c.blocked() && c.metrics.is_empty());
+        assert_eq!(c.findings[0].code, "comparison_limit");
+    }
+    // Evaluation matching is also bounded before its case-by-case scan.
+    let mut v = evaluation();
+    let case = v["cases"][0].clone();
+    v["cases"] = serde_json::json!(
+        (0..1001)
+            .map(|i| {
+                let mut c = case.clone();
+                c["id"] = serde_json::json!(format!("case-{i}"));
+                c
+            })
+            .collect::<Vec<_>>()
+    );
+    v["summary"]["total"] = serde_json::json!(1001);
+    v["summary"]["passed"] = serde_json::json!(1001);
+    let r = parse(&v).ok().unwrap();
+    assert!(compare(&r, &r).metrics.is_empty());
+    assert_eq!(compare(&r, &r).findings[0].code, "comparison_limit");
+}
+#[test]
+fn report_selections_survive_refresh_reorder_and_imports_without_substitution() {
+    fn local(n: u64) -> Report {
+        let mut v = benchmark();
+        v["sharedInitMs"] = serde_json::json!(n);
+        Report::parse(&serde_json::to_vec(&v).unwrap(), 0, Source::Local)
+            .ok()
+            .unwrap()
+    }
+    let mut m = active();
+    notify(
+        &mut m,
+        Lane::Reports,
+        1,
+        0,
+        Payload::Reports(vec![local(1), local(2)]),
+    );
+    let baseline = m.baseline.clone();
+    let candidate = m.candidate.clone();
+    notify(
+        &mut m,
+        Lane::Reports,
+        2,
+        0,
+        Payload::Reports(vec![local(3), local(2), local(1)]),
+    );
+    assert_eq!(m.baseline, baseline);
+    assert_eq!(m.candidate, candidate);
+    let ticket = m.begin_read(Lane::Reports);
+    m.event(Event::Import {
+        ticket,
+        result: Ok(Some(parse(&benchmark()).ok().unwrap())),
+    });
+    let imported = m.candidate.clone();
+    notify(
+        &mut m,
+        Lane::Reports,
+        3,
+        0,
+        Payload::Reports(vec![local(2), local(3), local(1)]),
+    );
+    assert_eq!(m.candidate, imported);
+    assert_eq!(m.baseline, baseline);
+    notify(
+        &mut m,
+        Lane::Reports,
+        4,
+        0,
+        Payload::Reports(vec![local(2), local(3)]),
+    );
+    assert!(m.baseline.is_none());
+    assert_eq!(m.candidate, imported);
+    assert!(m.notice.unwrap().contains("no longer available"));
+    m.clear_imports();
+    assert!(m.baseline.is_none() && m.candidate.is_none());
+    let mut early = active();
+    let ticket = early.begin_read(Lane::Reports);
+    early.event(Event::Import {
+        ticket,
+        result: Ok(Some(parse(&benchmark()).ok().unwrap())),
+    });
+    let imported = early.candidate.clone();
+    notify(
+        &mut early,
+        Lane::Reports,
+        1,
+        0,
+        Payload::Reports(vec![local(1), local(2)]),
+    );
+    assert_eq!(early.candidate, imported);
+    // An identical source read has the same key; timestamp alone is not identity.
+    assert_eq!(local(1).id(), local(1).id());
+    assert_ne!(local(1).id(), local(2).id());
+}
+#[gpui::test]
+fn routes_and_tab_navigation_clear_review_confirmations_and_revoke_detail(cx: &mut TestAppContext) {
+    let (entity, cx) = harness(cx);
+    entity.update(cx, |s, cx| {
+        s.model.navigate(Tab::Dictation);
+        s.sync(cx);
+        s.model.selected_capture = Some("synthetic-capture".into());
+        s.model.capture_detail = Some(fixtures::capture("synthetic-capture".into()));
+        s.confirm = Some(Confirm::Upload("synthetic-capture".into()));
+        s.confirm_ticket = Some(s.model.ticket(Lane::Captures));
+        s.restore_focus = Some(s.confirm_focus.clone());
+        let ticket = s.model.ticket(Lane::Captures);
+        let lease = s.authority.lease(ticket);
+        for (revision, tab) in [(100, Tab::Events), (101, Tab::Dictation)] {
+            s.receive(
+                Event::Notification {
+                    attachment: s.model.ticket(Lane::Route).attachment,
+                    lane: Lane::Route,
+                    revision,
+                    store_epoch: 0,
+                    payload: Payload::Route(tab),
+                },
+                cx,
+            );
+            assert!(s.model.capture_detail.is_none() && s.model.selected_capture.is_none());
+            assert!(s.confirm.is_none() && s.confirm_ticket.is_none() && s.restore_focus.is_none());
+        }
+        assert!(!lease.is_current());
+        assert!(!s.model.event(Event::Read {
+            ticket,
+            revision: 200,
+            payload: Payload::CaptureDetail(fixtures::capture("synthetic-capture".into()))
+        }));
+    });
+    // Keyboard tab navigation uses the same private review cleanup. An open
+    // confirmation traps keyboard focus, so this path starts without a dialog.
+    entity.update(cx, |s, _| {
+        s.model.selected_capture = Some("synthetic-capture".into());
+        s.model.capture_detail = Some(fixtures::capture("synthetic-capture".into()));
+    });
+    let tabs = entity.read_with(cx, |s, _| s.tabs.clone());
+    cx.update(|w, cx| w.focus(&tabs.read(cx).focus_handle(cx), cx));
+    cx.simulate_keystrokes("home");
+    draw(cx);
+    entity.read_with(cx, |s, _| {
+        assert!(s.model.capture_detail.is_none() && s.confirm.is_none())
+    });
+    // A queued route must cancel confirmation before the Confirm handler can
+    // issue a side effect, even when it drains before the next paint/sync.
+    cx.update(|w, cx| {
+        entity.update(cx, |s, cx| {
+            s.open_confirm(Confirm::Events, Lane::Events, w, cx);
+            let events_ticket = s.model.ticket(Lane::Events);
+            assert!(
+                s.inbox
+                    .publish(Event::Notification {
+                        attachment: events_ticket.attachment,
+                        lane: Lane::Route,
+                        revision: 102,
+                        store_epoch: 0,
+                        payload: Payload::Route(Tab::Runs),
+                    })
+                    .is_ok()
+            );
+            s.confirm(w, cx);
+            assert_eq!(s.model.ticket(Lane::Events), events_ticket);
+            assert!(s.confirm.is_none() && s.confirm_ticket.is_none());
+        })
+    });
+}
+#[gpui::test]
+fn stale_capture_reads_retry_original_uuid_only_for_current_selection(cx: &mut TestAppContext) {
+    use super::host::{Host, Request, RequestKind, Subscription};
+    use std::cell::RefCell;
+    #[derive(Default)]
+    struct Probe {
+        requests: RefCell<Vec<Request>>,
+    }
+    struct Stop;
+    impl Subscription for Stop {
+        fn stop(&mut self) {}
+    }
+    impl Host for Probe {
+        fn subscribe(
+            &self,
+            _: murmur_core::events::Consumer,
+            _: u64,
+            _: Inbox,
+        ) -> Box<dyn Subscription> {
+            Box::new(Stop)
+        }
+        fn request(&self, r: Request, _: Inbox) {
+            self.requests.borrow_mut().push(r);
+        }
+    }
+    cx.update(crate::init);
+    let host = Rc::new(Probe::default());
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let d = cx.new(|cx| Diagnostics::new(host.clone(), w, cx));
+        entity = Some(d.clone());
+        gpui_base::Root::new(d, w, cx)
+    });
+    entity.unwrap().update(cx, |s, cx| {
+        s.model.attach();
+        s.model.navigate(Tab::Dictation);
+        s.model.selected_capture = Some("synthetic-capture".into());
+        s.request(Lane::Captures, RequestKind::ReadCapture { capture_id: "synthetic-capture".into() });
+        let ticket = s.model.ticket(Lane::Captures);
+        assert!(s.inbox.publish(Event::Notification { attachment: ticket.attachment, lane: Lane::Captures, revision: 2, store_epoch: 0, payload: fixtures::payload(Lane::Captures) }).is_ok());
+        assert!(s.inbox.publish(Event::Read { ticket, revision: 3, payload: Payload::CaptureDetail(fixtures::capture("synthetic-capture".into())) }).is_ok());
+        s.drain(cx);
+        assert_eq!(host.requests.borrow().len(), 2);
+        assert!(matches!(&host.requests.borrow()[1].kind, RequestKind::ReadCapture { capture_id } if capture_id == "synthetic-capture"));
+        let retry = s.model.ticket(Lane::Captures);
+        assert_ne!(ticket, retry);
+        assert!(s.inbox.publish(Event::Read { ticket: retry, revision: 4, payload: Payload::CaptureDetail(fixtures::capture("synthetic-capture".into())) }).is_ok());
+        s.drain(cx);
+        assert!(s.model.capture_detail.is_some());
+        s.request(Lane::Captures, RequestKind::ReadCapture { capture_id: "synthetic-capture".into() });
+        let stale = s.model.ticket(Lane::Captures);
+        s.model.clear_capture_review();
+        assert!(s.inbox.publish(Event::Read { ticket: stale, revision: 5, payload: Payload::CaptureDetail(fixtures::capture("synthetic-capture".into())) }).is_ok());
+        s.drain(cx);
+        assert_eq!(host.requests.borrow().len(), 3);
+        assert!(s.model.capture_detail.is_none());
+        // An older request cannot supersede a newly selected capture's read.
+        s.model.selected_capture = Some("second-synthetic".into());
+        s.request(Lane::Captures, RequestKind::ReadCapture { capture_id: "second-synthetic".into() });
+        assert!(s.inbox.publish(Event::Read { ticket: stale, revision: 6, payload: Payload::CaptureDetail(fixtures::capture("synthetic-capture".into())) }).is_ok());
+        s.drain(cx);
+        assert_eq!(host.requests.borrow().len(), 4);
+    });
+}
+
+#[test]
+fn latency_identity_and_route_strings_are_bounded_before_retention() {
+    let mut m = active();
+    let Payload::Latency(rows) = fixtures::payload(Lane::Latency) else {
+        unreachable!()
+    };
+    for field in 0..3 {
+        let mut row = rows[0].clone();
+        *match field {
+            0 => &mut row.build,
+            1 => &mut row.from,
+            _ => &mut row.to,
+        } = "x".repeat(257);
+        assert!(notify(
+            &mut m,
+            Lane::Latency,
+            field + 1,
+            0,
+            Payload::Latency(vec![row])
+        ));
+        assert!(m.latency.is_empty());
+    }
+    assert!(notify(&mut m, Lane::Latency, 4, 0, Payload::Latency(rows)));
+    assert_eq!(m.latency.len(), 1);
 }

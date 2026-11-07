@@ -30,7 +30,10 @@ Supply `host::Host`, using existing core/service owners. The host must:
    notifications and error results, including same-record updates. Hydration
    returns its exact `Ticket`; notifications carry the attachment and service
    clear epoch. Notifications invalidate hydration epochs. Rejected same-session
-   reads are retried with a fresh ticket; duplicate revisions never replay.
+   reads are retried with a fresh ticket and their original read kind. Capture
+   detail retries retain their UUID and stop when that selection is cleared or
+   superseded; older replies cannot replace a newer pending read. Duplicate
+   revisions never replay.
    Revisions must remain monotonic across hide/reopen. Never reset counters on
    subscription creation. A host restart creates a new screen/model.
 3. Preserve distinct event and performance clear epochs. A clear notification
@@ -61,6 +64,14 @@ Supply `host::Host`, using existing core/service owners. The host must:
    enforcing the 8 MiB bounded read. Imports remain session-only (20 maximum),
    never adopted into run history or the completion store. Do not retain file
    paths, raw JSON, parser errors, transcript text or evaluator failures.
+   Every JSON string and key is limited to 4 KiB before schema/identity work,
+   including nullable and subsequently stripped fields. Comparison preflight
+   caps metrics at 8,192, shared scope storage at 4 MiB and pair-matching work at
+   1,000,000 before generating metrics. Legal larger reports remain importable
+   but visibly block comparison. Metrics share their model/fixture scope via
+   `Arc<str>`. Report selections use source-qualified SHA-256 identities of the
+   normalized content; saved-report refreshes preserve selections across order
+   changes and visibly clear a selection whose report disappears.
 7. A native report-panel cancellation returns `Import { result: Ok(None) }`.
    Copy writes only explicit filtered Events or content-free latency JSON.
    The synthetic adapter never reads or writes the real pasteboard.
@@ -180,3 +191,27 @@ The PR records final-head CI and any additional read-only native observations.
 These results do not establish the native interaction checklist or production
 host integration. Independent Sol review remains a lead gate; this implementation
 sub-agent does not delegate another agent. The PR stays draft and unmerged.
+
+## Sol finding repair receipt (Mac mini, checkout 61)
+
+The four review findings are repaired: bounded report strings/comparison work and
+shared metric scopes; centralized route/tab cleanup (including queued routes
+before confirmation); UUID-preserving current-selection detail retries; stable
+report identities across saved-report refreshes. The same-pattern scan also
+bounds latency strings, includes identities in inbox accounting, preserves early
+import selection and removes private text from synthetic review goldens.
+
+Rust 1.98.1, fresh `~/Builds/gpui-checkout-61`, via opti only:
+**104 GPUI tests**, **8 runner/native-shim tests**, locked default/gallery checks,
+strict all-target gallery Clippy, rustfmt, TypeScript, **28 React report tests**
+and the relocated core report-schema fixture test pass. Helpers build first for
+the core test. No native interaction is claimed; the other worker owns the GUI.
+
+The full golden run passed the first **30 control cases / 60 captures**, then
+stopped at the overlay host's unchanged zero-WebKit-image assertion: **5 loaded
+images**. A separate Diagnostics probe fails the same guard. Rebuilding and
+running the original `a327c29b` overlay host reproduces the identical failure.
+The guard is unchanged; Diagnostics golden acceptance remains blocked on this
+Mac mini. Test output and both failure receipts are published with the PR.
+Checkout 61 and its targets are removed after evidence collection. Sol recheck
+and the native interaction checklist remain with the lead. The PR stays draft.

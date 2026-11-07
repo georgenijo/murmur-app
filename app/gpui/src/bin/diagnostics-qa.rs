@@ -86,20 +86,18 @@ fn main() {
                         },
                         cx,
                     );
-                    s.model.tab = if state == "run-detail" {
+                    s.model.navigate(if state == "run-detail" { Tab::Runs } else if state == "private-detail" { Tab::Dictation } else { Tab::from_route(&state).unwrap_or(Tab::Events) });
+                    if state == "run-detail" {
                         s.model.selected_run = Some("synthetic-run".into());
-                        Tab::Runs
                     } else if state == "private-detail" {
                         s.model.selected_capture = Some("synthetic-capture".into());
-                        s.model.capture_detail = Some(murmur_ui::diagnostics::fixtures::capture(
-                            "synthetic-capture".into(),
-                        ));
-                        Tab::Dictation
-                    } else {
-                        Tab::from_route(&state).unwrap_or(Tab::Events)
-                    };
+                        let mut detail = murmur_ui::diagnostics::fixtures::capture("synthetic-capture".into());
+                        // Golden captures cover the review controls, never private text.
+                        detail.sections.clear();
+                        s.model.capture_detail = Some(detail);
+                    }
                     if state == "store-unavailable" {
-                        s.model.tab = Tab::Runs;
+                        s.model.navigate(Tab::Runs);
                         s.model.health = Some(Health {
                             available: false,
                             recommended: Recovery::Reinitialize,
@@ -111,7 +109,7 @@ fn main() {
                     }
                     if state=="empty" {s.model.events.clear();s.model.reports.clear();s.model.runs.clear();s.model.samples.clear();s.model.captures.clear();}
             if state=="loading" {s.model.events.clear();s.model.loading.insert(Lane::Events);}
-            if state=="reports-blocked" {s.model.tab=Tab::Compare; s.model.reports[1]=murmur_ui::diagnostics::reports::Report::parse(include_bytes!("../../../../tests/fixtures/diagnostic-reports/evaluation-v1-deterministic.json"),0,murmur_ui::diagnostics::reports::Source::Imported).ok().unwrap();}
+            if state=="reports-blocked" {s.model.navigate(Tab::Compare); s.model.reports[1]=murmur_ui::diagnostics::reports::Report::parse(include_bytes!("../../../../tests/fixtures/diagnostic-reports/evaluation-v1-deterministic.json"),0,murmur_ui::diagnostics::reports::Source::Imported).ok().unwrap(); s.model.candidate=Some(s.model.reports[1].id().into());}
             s.prepare(cx);
             if state=="events-expanded" {s.events.update(cx,|s,cx|s.set_expanded(160,true,cx));}
                     if !headless {

@@ -446,6 +446,11 @@ pub struct Latency {
     pub painted: Measurement,
     pub p95: Measurement,
 }
+impl Latency {
+    fn valid(&self) -> bool {
+        self.build.len() <= 256 && self.from.len() <= 256 && self.to.len() <= 256
+    }
+}
 /// Exact private text is intentionally separate and has no formatter/serializer.
 /// It may only enter the selected private review surface, never events or copy.
 #[derive(Clone)]
@@ -567,7 +572,8 @@ pub struct Model {
     clocks: BTreeMap<Lane, Clock>,
     event_epoch: u64,
     performance_epoch: u64,
-    pub tab: Tab,
+    tab: Tab,
+    pub(crate) navigation: u64,
     pub filters: Filters,
     pub events: Vec<EventRow>,
     pub runs: Vec<Run>,
@@ -583,8 +589,9 @@ pub struct Model {
     pub notice: Option<&'static str>,
     pub selected_run: Option<String>,
     pub selected_capture: Option<String>,
-    pub baseline: usize,
-    pub candidate: usize,
+    pub baseline: Option<String>,
+    pub candidate: Option<String>,
+    reports_initialized: bool,
 }
 impl Default for Model {
     fn default() -> Self {
@@ -595,6 +602,7 @@ impl Default for Model {
             event_epoch: 0,
             performance_epoch: 0,
             tab: Tab::Events,
+            navigation: 0,
             filters: Filters::default(),
             events: vec![],
             runs: vec![],
@@ -610,12 +618,44 @@ impl Default for Model {
             notice: None,
             selected_run: None,
             selected_capture: None,
-            baseline: 0,
-            candidate: 1,
+            baseline: None,
+            candidate: None,
+            reports_initialized: false,
         }
     }
 }
 impl Model {
+    pub fn tab(&self) -> Tab {
+        self.tab
+    }
+    pub fn navigate(&mut self, tab: Tab) {
+        self.tab = tab;
+        self.navigation += 1;
+        self.selected_run = None;
+        self.clear_capture_review();
+    }
+    pub fn clear_capture_review(&mut self) {
+        self.selected_capture = None;
+        self.capture_detail = None;
+        self.clocks.entry(Lane::Captures).or_default().epoch += 1;
+        self.loading.remove(&Lane::Captures);
+    }
+    pub fn report(&self, id: &Option<String>) -> Option<&Report> {
+        id.as_ref()
+            .and_then(|id| self.reports.iter().find(|r| r.id() == id))
+    }
+    fn reconcile_reports(&mut self) {
+        for selection in [&mut self.baseline, &mut self.candidate] {
+            if selection
+                .as_ref()
+                .is_some_and(|id| !self.reports.iter().any(|r| r.id() == id))
+            {
+                *selection = None;
+                self.notice =
+                    Some("A selected report is no longer available. Choose it again to compare.");
+            }
+        }
+    }
     pub fn attach(&mut self) -> u64 {
         self.attachment += 1;
         self.attached = true;
@@ -627,8 +667,7 @@ impl Model {
             c.epoch += 1;
         }
         self.captures.clear();
-        self.capture_detail = None;
-        self.selected_capture = None;
+        self.clear_capture_review();
         self.loading.clear();
     }
     pub fn ticket(&self, lane: Lane) -> Ticket {
@@ -664,8 +703,7 @@ impl Model {
     pub fn clear_imports(&mut self) {
         self.clocks.entry(Lane::Reports).or_default().epoch += 1;
         self.reports.retain(|r| r.source == Source::Local);
-        self.baseline = 0;
-        self.candidate = 1;
+        self.reconcile_reports();
         self.import_error = None;
         self.notice =
             Some("Session imports cleared. Source files and saved reports are unchanged.");
@@ -745,8 +783,8 @@ impl Model {
                         {
                             self.import_error = Some(ImportError::SessionLimit);
                         } else {
+                            self.candidate = Some(report.id().into());
                             self.reports.push(report);
-                            self.candidate = self.reports.len() - 1;
                             self.import_error = None;
                             self.notice =
                                 Some("Imported into this session. No saved runs were changed.");
@@ -854,8 +892,26 @@ impl Model {
                         .filter(|r| r.source == Source::Local)
                         .take(10),
                 );
+                let mut seen = BTreeSet::new();
+                self.reports.retain(|r| seen.insert(r.id().to_owned()));
+                if !self.reports_initialized {
+                    if self.baseline.is_none() {
+                        self.baseline = self.reports.first().map(|r| r.id().into());
+                    }
+                    if self.candidate.is_none() {
+                        self.candidate = self.reports.get(1).map(|r| r.id().into());
+                    }
+                    self.reports_initialized = true;
+                }
+                self.reconcile_reports();
             }
-            Payload::Latency(v) => self.latency = v.into_iter().take(MAX_SAMPLES).collect(),
+            Payload::Latency(v) => {
+                self.latency = v
+                    .into_iter()
+                    .filter(Latency::valid)
+                    .take(MAX_SAMPLES)
+                    .collect();
+            }
             Payload::Captures(v) => {
                 self.captures = v
                     .into_iter()
@@ -871,8 +927,7 @@ impl Model {
                     .as_ref()
                     .is_some_and(|id| !self.captures.iter().any(|c| &c.id == id))
                 {
-                    self.selected_capture = None;
-                    self.capture_detail = None;
+                    self.clear_capture_review();
                 }
             }
             Payload::CaptureDetail(c) => {
@@ -880,7 +935,7 @@ impl Model {
                     self.capture_detail = Some(c);
                 }
             }
-            Payload::Route(tab) => self.tab = tab,
+            Payload::Route(tab) => self.navigate(tab),
             Payload::Failed => {
                 self.errors.insert(lane);
             }

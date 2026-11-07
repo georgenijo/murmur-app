@@ -126,22 +126,18 @@ pub fn payload(lane: Lane) -> Payload {
             recent_write_failed: false,
             recovered: false,
         }),
-        Lane::Reports => Payload::Reports(vec![
-            Report::parse(
-                include_bytes!("../../../../tests/fixtures/diagnostic-reports/benchmark-v2.json"),
-                0,
-                Source::Local,
-            )
-            .ok()
-            .unwrap(),
-            Report::parse(
-                include_bytes!("../../../../tests/fixtures/diagnostic-reports/benchmark-v2.json"),
-                0,
-                Source::Local,
-            )
-            .ok()
-            .unwrap(),
-        ]),
+        Lane::Reports => {
+            let bytes =
+                include_bytes!("../../../../tests/fixtures/diagnostic-reports/benchmark-v2.json");
+            let mut candidate: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+            candidate["createdAt"] = serde_json::json!("2026-07-17T12:00:00Z");
+            Payload::Reports(vec![
+                Report::parse(bytes, 0, Source::Local).ok().unwrap(),
+                Report::parse(&serde_json::to_vec(&candidate).unwrap(), 0, Source::Local)
+                    .ok()
+                    .unwrap(),
+            ])
+        }
         Lane::Latency => Payload::Latency(vec![Latency {
             build: "synthetic-build".into(),
             from: "Home".into(),

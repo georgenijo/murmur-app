@@ -17,7 +17,10 @@ use gpui::{prelude::*, *};
 use host::{Authority, Host, Request, RequestKind};
 use inbox::Inbox;
 use model::*;
-use std::{collections::BTreeSet, rc::Rc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 #[derive(Clone)]
 enum Confirm {
     Events,
@@ -83,7 +86,9 @@ pub struct Diagnostics {
     confirm_focus: FocusHandle,
     cancel_focus: FocusHandle,
     restore_focus: Option<FocusHandle>,
-    report_titles: Vec<String>,
+    report_titles: Vec<(String, String)>,
+    navigation: u64,
+    pending_reads: BTreeMap<Lane, (Ticket, Option<String>)>,
     pub fixture: bool,
 }
 impl Diagnostics {
@@ -179,15 +184,13 @@ impl Diagnostics {
             cancel_focus: cx.focus_handle(),
             restore_focus: None,
             report_titles: vec![],
+            navigation: 0,
+            pending_reads: BTreeMap::new(),
             fixture: false,
         };
         s.subscriptions
             .push(cx.subscribe(&tabs, |s, _, e: &TabChanged, cx| {
-                s.model.tab = Tab::ALL[e.0];
-                s.model.selected_run = None;
-                s.model.selected_capture = None;
-                s.model.capture_detail = None;
-                s.confirm = None;
+                s.model.navigate(Tab::ALL[e.0]);
                 s.sync(cx);
                 cx.notify();
             }));
@@ -219,12 +222,12 @@ impl Diagnostics {
             }));
         s.subscriptions
             .push(cx.subscribe(&baseline, |s, _, e: &SelectionChanged, cx| {
-                s.model.baseline = e.0.parse().unwrap_or(0);
+                s.model.baseline = Some(e.0.to_string());
                 cx.notify();
             }));
         s.subscriptions
             .push(cx.subscribe(&candidate, |s, _, e: &SelectionChanged, cx| {
-                s.model.candidate = e.0.parse().unwrap_or(1);
+                s.model.candidate = Some(e.0.to_string());
                 cx.notify();
             }));
         s.subscriptions
@@ -261,8 +264,10 @@ impl Diagnostics {
             subscription.stop();
         }
         self.model.detach();
+        self.pending_reads.clear();
         self.confirm = None;
         self.confirm_ticket = None;
+        self.restore_focus = None;
     }
     pub fn follow(&self, cx: &mut Context<Self>) {
         let attachment = self.model.ticket(Lane::Events).attachment;
@@ -310,28 +315,64 @@ impl Diagnostics {
         cx.notify();
     }
     fn drain(&mut self, cx: &mut Context<Self>) {
-        let mut retry = BTreeSet::new();
+        let mut retry = BTreeMap::new();
         for event in self.inbox.drain() {
             let read = if let Event::Read { ticket, .. } = &event {
                 Some(*ticket)
             } else {
                 None
             };
-            if !self.model.event(event)
-                && let Some(t) = read
-                && self.model.ticket(t.lane).attachment == t.attachment
+            let accepted = self.model.event(event);
+            if let Some(t) = read
+                && self
+                    .pending_reads
+                    .get(&t.lane)
+                    .is_some_and(|(pending, _)| *pending == t)
             {
-                retry.insert(t.lane);
+                if accepted {
+                    self.pending_reads.remove(&t.lane);
+                } else {
+                    retry.insert(t.lane, t);
+                }
             }
         }
+        self.sync_navigation();
         self.authority.sync(&self.model);
-        for lane in retry {
-            self.request(lane, RequestKind::Read);
+        for (lane, ticket) in retry {
+            if let Some((pending, capture_id)) = self.pending_reads.get(&lane)
+                && *pending == ticket
+                && self.model.ticket(lane).attachment == ticket.attachment
+            {
+                let kind = match capture_id {
+                    Some(id) if self.model.selected_capture.as_ref() == Some(id) => {
+                        Some(RequestKind::ReadCapture {
+                            capture_id: id.clone(),
+                        })
+                    }
+                    Some(_) => None,
+                    None => Some(RequestKind::Read),
+                };
+                self.pending_reads.remove(&lane);
+                if let Some(kind) = kind {
+                    self.request(lane, kind);
+                }
+            }
         }
         cx.notify();
     }
     fn request(&mut self, lane: Lane, kind: RequestKind) {
         let ticket = self.model.begin_read(lane);
+        self.pending_reads.remove(&lane);
+        match &kind {
+            RequestKind::Read => {
+                self.pending_reads.insert(lane, (ticket, None));
+            }
+            RequestKind::ReadCapture { capture_id } => {
+                self.pending_reads
+                    .insert(lane, (ticket, Some(capture_id.clone())));
+            }
+            _ => {}
+        }
         self.authority.sync(&self.model);
         self.host.request(
             Request {
@@ -342,7 +383,17 @@ impl Diagnostics {
             self.inbox.clone(),
         );
     }
+    fn sync_navigation(&mut self) {
+        if self.navigation != self.model.navigation {
+            self.navigation = self.model.navigation;
+            self.confirm = None;
+            self.confirm_ticket = None;
+            self.restore_focus = None;
+        }
+    }
     fn sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_navigation();
+        self.authority.sync(&self.model);
         let rows = self
             .model
             .filtered_events()
@@ -402,7 +453,7 @@ impl Diagnostics {
             .reports
             .iter()
             .enumerate()
-            .map(|(i, r)| format!("{} · {}", i + 1, r.title()))
+            .map(|(i, r)| (r.id().to_owned(), format!("{} · {}", i + 1, r.title())))
             .collect();
         if titles != self.report_titles {
             // Recreate only when membership changes. Ordinary refreshes preserve
@@ -411,20 +462,19 @@ impl Diagnostics {
             let values: Vec<_> = self
                 .report_titles
                 .iter()
-                .enumerate()
-                .map(|(i, t)| Choice::new(i.to_string(), t.clone()))
+                .map(|(id, title)| Choice::new(id.clone(), title.clone()))
                 .collect();
             self.baseline
                 .update(cx, |s, cx| s.replace_choices(values.clone(), cx));
             self.candidate
                 .update(cx, |s, cx| s.replace_choices(values, cx));
-            self.baseline.update(cx, |s, cx| {
-                s.set_value(&self.model.baseline.to_string(), cx)
-            });
-            self.candidate.update(cx, |s, cx| {
-                s.set_value(&self.model.candidate.to_string(), cx)
-            });
         }
+        self.baseline.update(cx, |s, cx| {
+            s.set_value(self.model.baseline.as_deref().unwrap_or(""), cx)
+        });
+        self.candidate.update(cx, |s, cx| {
+            s.set_value(self.model.candidate.as_deref().unwrap_or(""), cx)
+        });
         let builds: BTreeSet<_> = self.model.latency.iter().map(|l| l.build.clone()).collect();
         self.build.update(cx, |s, cx| {
             s.replace_choices(
@@ -437,7 +487,10 @@ impl Diagnostics {
         });
         self.tabs.update(cx, |s, cx| {
             s.set_selected(
-                Tab::ALL.iter().position(|t| *t == self.model.tab).unwrap(),
+                Tab::ALL
+                    .iter()
+                    .position(|t| *t == self.model.tab())
+                    .unwrap(),
                 cx,
             )
         });
@@ -766,7 +819,7 @@ impl Diagnostics {
                                 s.model.filters.correlation = r.correlation.1.clone();
                                 s.model.filters.streams = Stream::ALL.into();
                                 s.model.filters.levels = Level::ALL.into();
-                                s.model.tab = Tab::Events;
+                                s.model.navigate(Tab::Events);
                                 s.field.update(cx, |f, cx| {
                                     f.set_value(
                                         &CorrelationField::ALL
@@ -937,10 +990,10 @@ impl Diagnostics {
             d = d.child(div().id("error").role(Role::Alert).child(e.message()));
         }
         for (title, index) in [
-            ("Baseline", self.model.baseline),
-            ("Candidate", self.model.candidate),
+            ("Baseline", &self.model.baseline),
+            ("Candidate", &self.model.candidate),
         ] {
-            if let Some(r) = self.model.reports.get(index) {
+            if let Some(r) = self.model.report(index) {
                 d = d
                     .child(format!("{title}: {}", r.title()))
                     .child(r.privacy_notice())
@@ -956,14 +1009,19 @@ impl Diagnostics {
                     ));
             }
         }
+        if self.model.baseline.is_none() || self.model.candidate.is_none() {
+            return d
+                .child("Choose a baseline and candidate report to compare.")
+                .into_any_element();
+        }
         if self.model.baseline == self.model.candidate {
             return d
                 .child("Choose two different reports to compare.")
                 .into_any_element();
         }
         if let (Some(a), Some(b)) = (
-            self.model.reports.get(self.model.baseline),
-            self.model.reports.get(self.model.candidate),
+            self.model.report(&self.model.baseline),
+            self.model.report(&self.model.candidate),
         ) {
             let c = reports::compare(a, b);
             d = d.child(
@@ -1056,8 +1114,8 @@ impl Diagnostics {
             d = d.child(
                 Button::new("back-captures", "Back to private captures").on_click(cx.listener(
                     |s, _, _, cx| {
-                        s.model.selected_capture = None;
-                        s.model.capture_detail = None;
+                        s.model.clear_capture_review();
+                        s.authority.sync(&s.model);
                         cx.notify();
                     },
                 )),
@@ -1144,7 +1202,7 @@ impl Render for Diagnostics {
             crate::preferences::refresh(cx);
         }
         let p = Palette::get(cx);
-        let panel = match self.model.tab {
+        let panel = match self.model.tab() {
             Tab::Events => self.event_view(cx),
             Tab::Runs => self.runs_view(cx),
             Tab::Performance => self.performance_view(cx),
@@ -1217,7 +1275,7 @@ impl Render for Diagnostics {
         if let Some(notice) = self.model.notice {
             root = root.child(div().id("notice").role(Role::Status).child(notice));
         }
-        if self.model.errors.contains(&match self.model.tab {
+        if self.model.errors.contains(&match self.model.tab() {
             Tab::Events => Lane::Events,
             Tab::Runs | Tab::Performance => Lane::Performance,
             Tab::Latency => Lane::Latency,
@@ -1230,10 +1288,10 @@ impl Render for Diagnostics {
             div()
                 .id("diagnostics-panel")
                 .role(Role::TabPanel)
-                .aria_label(self.model.tab.label())
+                .aria_label(self.model.tab().label())
                 .flex_1()
                 .min_h_0()
-                .when(self.model.tab != Tab::Events, |d| d.overflow_y_scroll())
+                .when(self.model.tab() != Tab::Events, |d| d.overflow_y_scroll())
                 .flex()
                 .flex_col()
                 .child(panel),
