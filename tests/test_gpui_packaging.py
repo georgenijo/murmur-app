@@ -21,8 +21,8 @@ from finalize_macos_bundle import HELPERS, require_exact_macos_executables
 import gpui_artifacts
 from gpui_artifacts import BUILD_FILES, SIGNER_FILES, pack, sha256, verify, verify_zip
 from release_bundle_target import validate_target
-from validate_workflow_policy import (GPUI_JOB_SHA256, WORKFLOW_PRELUDE_SHA256, job_block, references_secrets,
-                                      validate_release_build, validate_promotion_policy, workflow_prelude)
+from validate_workflow_policy import (GPUI_JOB_SHA256, RELEASE_BUILD_SHA256, job_block, references_secrets,
+                                      validate_release_build, validate_promotion_policy)
 from notarize_and_repackage_macos import native_sign, tauri_sign
 from rehearse_gpui_bundle import check_links
 
@@ -500,16 +500,22 @@ minos 14.0
             with self.subTest(job=name), self.assertRaisesRegex(AssertionError, "SHA-256 pin"):
                 validate_release_build(workflow.replace(block, block + "    # Unreviewed edit\n"))
 
-    def test_workflow_level_settings_are_pinned(self):
+    def test_whole_release_workflow_is_pinned(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        self.assertEqual(hashlib.sha256(workflow_prelude(workflow).encode()).hexdigest(), WORKFLOW_PRELUDE_SHA256)
+        self.assertEqual(hashlib.sha256(workflow.encode()).hexdigest(), RELEASE_BUILD_SHA256)
         shell = ("defaults:\n  run:\n    shell: bash --noprofile --norc -c 'source \"$1\"; "
                  "if [ -f \"$RUNNER_TEMP/gpui-build/ui\" ]; then \"$RUNNER_TEMP/gpui-build/ui\"; fi' -- {0}\n\n")
-        for addition in (shell,
-                         'env:\n  PAYLOAD: "${{ toJSON(\\u0073ecrets) }}"\n\n',
-                         "env:\n  FLAG: harmless\n\n"):
-            mutated = workflow.replace("\njobs:\n", "\n" + addition + "jobs:\n", 1)
-            with self.subTest(addition=addition), self.assertRaisesRegex(AssertionError, "workflow-level settings"):
+        escaped = 'env:\n  PAYLOAD: "${{ toJSON(\\u0073ecrets) }}"\n\n'
+        trailing_job = "  later:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n\n"
+        mutations = [workflow.replace("\njobs:\n", "\n" + addition + "jobs:\n", 1)
+                     for addition in (shell, escaped, "env:\n  FLAG: harmless\n\n")]
+        # Root keys appended after a terminating job sit outside every job pin.
+        mutations += [workflow.rstrip("\n") + "\n\n" + trailing_job + addition for addition in (shell, escaped)]
+        mutations.append(workflow.replace("source-sha: ${{ steps.context.outputs.source_sha }}",
+                                          "source-sha: refs/heads/unreviewed"))
+        for mutated in mutations:
+            self.assertNotEqual(mutated, workflow)
+            with self.subTest(mutated=mutated[-200:]), self.assertRaisesRegex(AssertionError, "reviewed SHA-256 pin"):
                 validate_release_build(mutated)
 
     def test_every_compilation_step_and_builder_job_are_secretless(self):

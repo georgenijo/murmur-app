@@ -108,21 +108,17 @@ GPUI_JOB_SHA256 = {
 }
 
 
-# Workflow-level settings (env, defaults.run.shell, concurrency, permissions)
-# are inherited by every GPUI job, so they are pinned like the jobs. Pinning the
-# raw text also covers YAML escapes that only decode to `secrets` at load time.
-WORKFLOW_PRELUDE_SHA256 = "d8108a8616fccf955a51b252b152c3d389272f91713b16b613474204c0cd28e1"
-
-
-def workflow_prelude(workflow: str) -> str:
-    return workflow[:workflow.index("\njobs:\n") + 1]
+# The GPUI lane inherits workflow-level settings (env, defaults.run.shell) and
+# consumes context-job outputs (source-sha), and YAML can append root keys after
+# any job. Rather than chase each channel, pin the whole file: every edit to
+# release-build.yml must deliberately update this digest after review. It is
+# checked last so semantic failures report their specific cause first.
+RELEASE_BUILD_SHA256 = "8b41a63db43f23b5066f309d26400ccf7c0c231c08a2d004090061c6015b9dae"
 
 
 def validate_gpui_isolation(workflow: str) -> None:
     for env in mapping_blocks(workflow, "env", 0):
         assert not references_secrets(env), "GPUI compilation inherits workflow secrets"
-    assert hashlib.sha256(workflow_prelude(workflow).encode()).hexdigest() == WORKFLOW_PRELUDE_SHA256, \
-        "workflow-level settings must match their reviewed SHA-256 pin"
     guard = "github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'"
     jobs = {name: job_block(workflow, name) for name in ("gpui-build", "gpui-signer", "gpui-sign")}
     gpui_names = re.findall(r"^  (gpui-[A-Za-z0-9_-]+):\n", workflow, re.MULTILINE)
@@ -522,6 +518,8 @@ def validate_release_build(workflow: str) -> int:
     )
     for event_name, message, expected in cases:
         assert should_run_release_build(event_name, message) is expected
+    assert hashlib.sha256(workflow.encode()).hexdigest() == RELEASE_BUILD_SHA256, \
+        "release-build.yml must match its reviewed SHA-256 pin"
     return len(cases)
 
 

@@ -284,10 +284,14 @@ All three jobs have explicit `contents: read` permissions; only `gpui-sign` adds
 `actions: read` for the raw download. No signing secrets are present in that step.
 
 The workflow policy validator pins the exact content of all three GPUI jobs,
-and of the workflow-level settings every job inherits (`env`, `defaults`,
-`concurrency`, `permissions`), by SHA-256. Any edit, including appended shell
-commands, a default `run.shell`, or a YAML escape that decodes to `secrets`,
-fails until its pin is deliberately updated after review. Raw artifact ZIPs and
+and of the whole `release-build.yml`, by SHA-256. The file pin covers what the
+GPUI lane inherits or consumes from outside its jobs: workflow-level `env` and
+`defaults` (including root keys appended after the last job) and the context
+job's `source-sha` output. Any edit, including appended shell commands, a
+default `run.shell`, or a YAML escape that decodes to `secrets`, fails until
+the pins are deliberately updated after review. That includes edits to the
+Tauri lane, so any change to this workflow must update `RELEASE_BUILD_SHA256`
+in `scripts/validate_workflow_policy.py`. Raw artifact ZIPs and
 their decompressed payloads are capped at 1 GiB before hashing. Semantic assertions additionally reject
 inherited workflow/job secret env and all secret-context references (including
 `toJSON(secrets)` and `secrets: inherit`) in either builder. They require the fresh
