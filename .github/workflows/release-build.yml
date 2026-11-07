@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      bundle_target:
+        description: Bundle host (GPUI is a non-publishing manual rehearsal only)
+        type: choice
+        options: [tauri, gpui]
+        default: tauri
       prime_caches:
         description: Save trusted main release caches after this non-publishing rehearsal
         type: boolean
@@ -28,6 +33,7 @@ jobs:
     outputs:
       source-sha: ${{ steps.context.outputs.source_sha }}
       cache-write: ${{ steps.context.outputs.cache_write }}
+      bundle-target: ${{ steps.context.outputs.bundle_target }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,6 +43,7 @@ jobs:
         id: context
         env:
           PRIME_CACHES: ${{ inputs.prime_caches || false }}
+          BUNDLE_TARGET: ${{ inputs.bundle_target || 'tauri' }}
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "ERROR: release builds may only execute from the trusted main branch"
@@ -47,6 +54,9 @@ jobs:
             echo "ERROR: release source $GITHUB_SHA is not on origin/main"
             exit 1
           fi
+
+          TARGET=$(python3 scripts/release_bundle_target.py) || exit 1
+          echo "bundle_target=$TARGET" >> "$GITHUB_OUTPUT"
 
           CACHE_WRITE=false
           if [ "$GITHUB_EVENT_NAME" = "push" ] || [ "$PRIME_CACHES" = "true" ]; then
@@ -95,6 +105,7 @@ jobs:
 
   release-macos:
     needs: context
+    if: needs.context.outputs.bundle-target == 'tauri'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -414,6 +425,196 @@ jobs:
             echo "- restore hit: \`${{ steps.rust-cache.outputs.cache-hit || 'false' }}\`"
             echo "- write authorized: \`${{ needs.context.outputs.cache-write }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete signing keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/murmur-signing.keychain-db" 2>/dev/null || true
+
+  gpui-build:
+    # App dependencies can write only this credential-free runner.
+    needs: context
+    if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+      sha256: ${{ steps.payload.outputs.sha256 }}
+    steps:
+      - name: Check out app source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Install capture worker build tools
+        run: brew install meson ninja pkg-config
+
+      - name: Build capture helpers
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
+        run: python3 scripts/build_capture_helpers.py --release
+
+      - name: Build GPUI rehearsal binaries without credentials
+        run: >-
+          python3 scripts/release_gpui.py build
+          --target-dir "$RUNNER_TEMP/gpui-release-target"
+
+      - name: Record app artifact hash
+        id: payload
+        run: |
+          SHA256=$(python3 scripts/gpui_artifacts.py pack build \
+            --archive "$RUNNER_TEMP/gpui-build.tar" \
+            --binary "$RUNNER_TEMP/gpui-release-target/release/ui" \
+            --helpers-dir app/src-tauri/binaries)
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload isolated app build
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-build-${{ needs.context.outputs.source-sha }}
+          path: ${{ runner.temp }}/gpui-build.tar
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  gpui-signer:
+    # Its locked dependency tree never builds or shares state with the app.
+    needs: context
+    if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+      sha256: ${{ steps.payload.outputs.sha256 }}
+    steps:
+      - name: Check out signer source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Build independent updater signer without credentials
+        run: >-
+          python3 scripts/release_gpui.py build-signer
+          --target-dir "$RUNNER_TEMP/gpui-signer-target"
+
+      - name: Record signer artifact hash
+        id: payload
+        run: |
+          SHA256=$(python3 scripts/gpui_artifacts.py pack signer \
+            --archive "$RUNNER_TEMP/gpui-signer.tar" \
+            --binary "$RUNNER_TEMP/gpui-signer-target/release/murmur-updater-signer")
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload isolated updater signer
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-signer-${{ needs.context.outputs.source-sha }}
+          path: ${{ runner.temp }}/gpui-signer.tar
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  gpui-sign:
+    # Fresh runner and checkout: app build code cannot rewrite signing tooling.
+    needs: [context, gpui-build, gpui-signer]
+    if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out trusted signing scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Make trusted checkout read-only
+        run: chmod -R a-w "$GITHUB_WORKSPACE"
+
+      - name: Download raw isolated artifact ZIPs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ARTIFACT_ID: ${{ needs.gpui-build.outputs.artifact-id }}
+          SIGNER_ARTIFACT_ID: ${{ needs.gpui-signer.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_ARTIFACT_ID" =~ ^[0-9]+$ && "$SIGNER_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BUILD_ARTIFACT_ID/zip" > "$RUNNER_TEMP/gpui-build.zip"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SIGNER_ARTIFACT_ID/zip" > "$RUNNER_TEMP/gpui-signer.zip"
+
+      - name: Verify artifact hashes and extract allowlisted binaries
+        env:
+          BUILD_SHA256: ${{ needs.gpui-build.outputs.sha256 }}
+          SIGNER_SHA256: ${{ needs.gpui-signer.outputs.sha256 }}
+        run: |
+          python3 scripts/gpui_artifacts.py verify-zip build \
+            --archive "$RUNNER_TEMP/gpui-build.zip" \
+            --sha256 "$BUILD_SHA256" --output "$RUNNER_TEMP/gpui-build"
+          python3 scripts/gpui_artifacts.py verify-zip signer \
+            --archive "$RUNNER_TEMP/gpui-signer.zip" \
+            --sha256 "$SIGNER_SHA256" --output "$RUNNER_TEMP/gpui-signer"
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] || {
+            echo "ERROR: APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD must be set"; exit 1; }
+          KEYCHAIN="$RUNNER_TEMP/murmur-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          CERT="$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          security import "$CERT" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$CERT"
+
+      - name: Sign, notarize and record GPUI rehearsal
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SIGNING_KEYCHAIN: ${{ runner.temp }}/murmur-signing.keychain-db
+        run: >-
+          python3 scripts/release_gpui.py sign
+          --binary "$RUNNER_TEMP/gpui-build/ui"
+          --helpers-dir "$RUNNER_TEMP/gpui-build"
+          --native-signer "$RUNNER_TEMP/gpui-signer/murmur-updater-signer"
+          --output "$RUNNER_TEMP/gpui-release"
+
+      - name: Upload non-publishing GPUI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-rehearsal-${{ needs.context.outputs.source-sha }}
+          path: ${{ runner.temp }}/gpui-release/artifacts
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          overwrite: true
 
       - name: Delete signing keychain
         if: always()

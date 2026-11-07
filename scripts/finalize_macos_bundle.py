@@ -17,6 +17,9 @@ HELPERS = {
 }
 CAPTURE_AGENT_PLIST = "com.localdictation.capture-agent.plist"
 CAPTURE_AGENT_MACH_SERVICE = "com.localdictation.capture-agent.xpc"
+# Both release hosts retain the installed executable name. QA/gallery binaries
+# must never enter a signed bundle, even if Info.plist names one of them.
+MAIN_EXECUTABLES = frozenset({"ui"})
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -123,6 +126,8 @@ def require_exact_macos_executables(
     app: Path, main_binary: Path, helpers: list[Path]
 ) -> None:
     """Fail closed unless the app ships exactly its production executables."""
+    if main_binary.name not in MAIN_EXECUTABLES or main_binary.parent != app / "Contents/MacOS":
+        raise SystemExit("app bundle main executable is not allowlisted")
     executable_dir = app / "Contents" / "MacOS"
     expected = {main_binary.name, *(helper.name for helper in helpers)}
     actual = {path.name for path in executable_dir.iterdir()}
@@ -131,6 +136,8 @@ def require_exact_macos_executables(
             "app bundle executables differ: "
             f"expected={sorted(expected)!r} actual={sorted(actual)!r}"
         )
+    if any(path.is_symlink() or not path.is_file() for path in executable_dir.iterdir()):
+        raise SystemExit("app bundle executables must be regular files")
 
 
 def install_capture_agent_plist(app: Path, source: Path) -> Path:

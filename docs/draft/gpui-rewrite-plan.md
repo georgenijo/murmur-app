@@ -770,14 +770,20 @@ notarization, provenance, and the executable allowlist in
 - A **signed rehearsal** proves code signing, notarization, Gatekeeper
   acceptance, minisign signatures readable by installed clients, and the
   designated requirements that TCC depends on. Signed artifacts come only
-  from the trusted path: the GPUI bundle target lands on `main` as a
-  non-default target, a manual non-publishing `Release Build` dispatch on
+  from the trusted path: after the authorized whole-stack landing (never a
+  packaging-only landing during the native-parity rewrite), the GPUI bundle
+  target is available on `main` as a non-default target. A manual
+  non-publishing `Release Build` dispatch on
   `main` builds, signs, and notarizes it (`docs/release.md`, DECISIONS
   2026-07-21), and that exact artifact is installed and tested on the Mac
   mini. `release-build.yml` gains a `bundle_target` dispatch input (default
   `tauri`) beside `prime_caches`; a `gpui` value is accepted only on
   `workflow_dispatch`, so it can never publish. No signing credentials go to
-  the Mac mini.
+  the Mac mini. The script-based secretless proof is
+  `scripts/rehearse_gpui_bundle.py`; it compares independent native and Tauri
+  bundler output with the same native payload, not Tauri host behavior. The
+  packaged `ui` shell remains inert until #996/#997 wire production startup.
+  Signed acceptance remains a handoff; #994 is not fully closed by this PR.
 
 **2.2 Bridge for unported React screens.** wry webviews inside GPUI windows,
 not a hand-built WKWebView bridge, meeting the 0d accessibility and keyboard
