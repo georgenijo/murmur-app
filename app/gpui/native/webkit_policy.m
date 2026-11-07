@@ -118,7 +118,7 @@ bool murmur_webkit_writing_tools_chain(const WebkitFrame *frames, unsigned count
     // dyld may expose its internal frames under the literal dyld-internal
     // symbol. Preserve those names as returned by dladdr; never fill gaps.
     while (i<count && !strcmp(frames[i].image,"/usr/lib/dyld")) i++;
-    static const char *symbols[]={
+    static const char *symbols[][8]={{
         "_sl_dlopen",
         "WritingToolsUILibraryCore",
         "+[NSWritingToolsCoordinator isWritingToolsAvailable]",
@@ -127,17 +127,35 @@ bool murmur_webkit_writing_tools_chain(const WebkitFrame *frames, unsigned count
         "-[NSApplication finishLaunching]",
         "_NSApplicationBeginRunning",
         "-[NSApplication run]",
-    };
-    unsigned n=sizeof(symbols)/sizeof(*symbols);
+    },{
+        // macOS 26's recorded main-menu launch probe uses NSTextView's
+        // availability check. It still requires the entire adjacent launch.
+        "_sl_dlopen",
+        "WritingToolsUILibraryCore",
+        "+[NSTextView(NSTextView_WritingTools) _supportsWritingTools]",
+        "-[NSApplication(NSMenuUpdating) _addTextInputMenuItems:]",
+        "-[NSApplication(NSMenuUpdating) _customizeMainMenu]",
+        "-[NSApplication finishLaunching]",
+        "_NSApplicationBeginRunning",
+        "-[NSApplication run]",
+    }};
+    unsigned n=sizeof(symbols[0])/sizeof(symbols[0][0]);
     if (i+n>=count) return false;
-    for (unsigned j=0; j<n; j++) {
-        const WebkitFrame *f=&frames[i+j];
-        const char *image=j==0 ?
-            "/System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking" :
-            "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
-        if (strcmp(f->image,image) || strcmp(f->symbol,symbols[j])) return false;
+    for (unsigned alternative=0; alternative<sizeof(symbols)/sizeof(symbols[0]); alternative++) {
+        bool matches=true;
+        for (unsigned j=0; j<n; j++) {
+            const WebkitFrame *f=&frames[i+j];
+            const char *image=j==0 ?
+                "/System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking" :
+                "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
+            if (strcmp(f->image,image) || strcmp(f->symbol,symbols[alternative][j])) {
+                matches=false;
+                break;
+            }
+        }
+        if (matches) return true;
     }
-    return true;
+    return false;
 }
 
 // Check every load command of the executable and non-system dylibs, including
