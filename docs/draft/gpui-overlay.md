@@ -186,18 +186,31 @@ frames in both placements and disabled states. It checks full target containment
 in the card clip, the 20×24 pt AX/hit bounds, near-corner and center clicks,
 AXPress reversal, unchanged focus/intents and traversal of actual AX child
 links before all four quick controls.
-An explicit disclosure close suppresses hover expansion for the current pointer
-visit, including an enter delivered after both rapid clicks. A current native
-outside sample or a genuine exit rearms the ordinary dwell; another deliberate
-disclosure click can reopen immediately. Deferred GPUI hover callbacks recheck
-the current native painted surface before changing presence, because their
-layout snapshot can report an exit during a centered resize even while the
-screen pointer remains inside. The normal- and reduced-motion
-`rapid_disclosure_close_rejects_late_stationary_enter_*` regressions exercise
-49/101/197 ms open/close pairs ten times in both placements, settlement beyond
-the animation/dwell deadlines, deliberate reopening and real exit/re-entry.
-`explicit_close_without_an_enter_rearms_on_an_outside_sample` covers an AX close
-before any pointer-enter transition.
+An explicit disclosure or Escape close samples the current native painted
+surface and synchronizes stored presence before closing. Only a pointer inside
+at that instant suppresses hover for its current visit; an outside AX/keyboard
+close cannot claim the next visit before the watchdog samples again. A real
+outside sample or delivered pointer exit releases suppression, and another
+explicit disclosure activation can reopen immediately.
+
+The additive `gpui-hover-source.patch` distinguishes deferred layout observations
+from delivered pointer events. Only layout observations recheck native presence;
+queued pointer transitions retain their delivered order even when the current
+native sample is already inside again. The source-aware listener receives real
+exit events even if an earlier layout observation already marked GPUI's hover
+state outside. Existing `on_hover` consumers retain transition-only behavior.
+Overlay presence ignores keyboard input modality, preserving hover after an
+Escape close. All observations still share one transition/dwell reducer.
+
+`ax_close_outside_allows_entry_before_next_watchdog_sample` and
+`delayed_exit_and_reentry_release_close_even_when_native_sample_is_inside`
+exercise emitted adapter presses and delivered mouse events with injected native
+samples, in both placements and both motion modes. They require a full 150 ms
+dwell and no recording intent. The original
+`rapid_disclosure_close_rejects_late_stationary_enter_*` tests retain stationary
+close ownership across 49/101/197 ms open/close pairs, ten repetitions, deliberate
+reopening and real exit/re-entry. The source patch has a byte-for-byte reverse /
+forward reconstruction test against the pinned GPUI file.
 The windowless adapter probe shares the production press target resolution and
 dispatch function; it creates no NSView/NSWindow and makes no AX client calls.
 It establishes adapter mapping/action handling, not VoiceOver spoken behavior.

@@ -70,7 +70,19 @@ pub fn apply(window: &mut Window, surface: Surface, cx: &mut gpui::App) -> bool 
     true
 }
 
+#[cfg(all(test, feature = "a11y-tests"))]
+thread_local! {
+    // Exercise native-sample decisions in TestWindow; real native query/geometry
+    // is additionally exercised by the isolated NSWindow regression probe.
+    pub(super) static TEST_POINTER_SAMPLE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
 pub fn pointer_inside(window: &Window) -> Option<bool> {
+    #[cfg(all(test, feature = "a11y-tests"))]
+    if let Some(inside) = TEST_POINTER_SAMPLE.get() {
+        return Some(inside);
+    }
+
     #[cfg(target_os = "macos")]
     if let Some(raw) = raw(window) {
         // SAFETY: main-thread query of the retained view's presentation rect.
