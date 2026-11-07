@@ -97,7 +97,7 @@ impl Render for Insights {
                         .child(
                             div()
                                 .text_size(px(20.))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .font_weight(FontWeight::MEDIUM)
                                 .child("Insights"),
                         )
                         .child(
@@ -137,7 +137,7 @@ impl Render for Insights {
                 .aria_label("Usage totals")
                 .grid()
                 .grid_cols(4)
-                .gap(px(10.));
+                .gap(px(12.));
             for (label, value, detail) in snapshot.totals() {
                 totals = totals.child(
                     div()
@@ -145,7 +145,7 @@ impl Render for Insights {
                         .role(Role::Group)
                         .aria_label(label)
                         .min_w_0()
-                        .p(px(14.))
+                        .p(px(12.))
                         .border_1()
                         .border_color(p.hairline_strong)
                         .bg(p.tint_raised)
@@ -160,9 +160,9 @@ impl Render for Insights {
                         )
                         .child(
                             div()
-                                .text_size(px(25.))
+                                .text_size(px(if value.chars().count() > 7 { 20. } else { 24. }))
                                 .line_height(px(28.))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .font_weight(FontWeight::MEDIUM)
                                 .font_features(tokens::tabular_numbers())
                                 .child(gpui::text!(value)),
                         )
@@ -176,7 +176,15 @@ impl Render for Insights {
                 );
             }
             body = body.child(totals);
-            let mut charts = div().grid().grid_cols(2).gap(px(12.));
+            let mut charts = div()
+                .grid()
+                .grid_cols(2)
+                .gap(px(12.))
+                .p(px(12.))
+                .border_1()
+                .border_color(p.hairline)
+                .rounded(tokens::CARD_RADIUS)
+                .bg(p.tint_raised);
             for (i, days) in [snapshot.heatmap(), snapshot.recent(7), snapshot.recent(7)]
                 .into_iter()
                 .enumerate()

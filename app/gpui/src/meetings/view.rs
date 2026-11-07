@@ -3,14 +3,13 @@ impl Meetings {
     fn meeting_rows(
         &mut self,
         range: std::ops::Range<usize>,
-        w: &mut Window,
+        _w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(s) = self.model.snapshot.clone() else {
             return vec![];
         };
         let p = Palette::get(cx);
-        let scroll_parent = self.list_scroll.0.borrow().base_handle.clone();
         range
             .filter_map(|index| s.meetings.get(index).map(|m| (index, m)))
             .map(|(index, meeting)| {
@@ -39,47 +38,117 @@ impl Meetings {
                     || date(s.meetings[index - 1].started_at_ms) != date(meeting.started_at_ms);
                 div()
                     .relative()
-                    .h(px(112.))
                     .w_full()
                     .flex()
                     .flex_col()
                     .gap(px(4.))
+                    .when(new_day, |d| {
+                        d.child(
+                            div()
+                                .text_size(tokens::MICRO_SIZE)
+                                .text_color(p.muted)
+                                .pt(px(12.))
+                                .pb(px(4.))
+                                .child(date(meeting.started_at_ms).to_uppercase()),
+                        )
+                    })
+                    .child({
+                        let focus = focus.clone();
+                        let list = self.list_scroll.clone();
+                        let outer = self.content_scroll.clone();
+                        canvas(
+                            move |bounds, w, _| {
+                                let entered = focus.is_focused(w) && !reveal.replace(true);
+                                if !focus.is_focused(w) {
+                                    reveal.set(false);
+                                }
+                                if entered {
+                                    let list = list.clone();
+                                    let outer = outer.clone();
+                                    w.on_next_frame(move |w, _| {
+                                        let viewport = list.viewport_bounds();
+                                        let bounds = list.bounds_for_item(index).unwrap_or(bounds);
+                                        if bounds.top() < viewport.top()
+                                            || bounds.bottom() > viewport.bottom()
+                                        {
+                                            list.scroll_to_reveal_item(index);
+                                        }
+                                        crate::data_components::reveal_bounds(bounds, [&outer]);
+                                        w.refresh();
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full()
+                    })
                     .child(
-                        div()
-                            .h(px(20.))
-                            .text_size(tokens::MICRO_SIZE)
-                            .text_color(p.muted)
-                            .child(if new_day {
-                                date(meeting.started_at_ms).to_uppercase()
-                            } else {
-                                String::new()
-                            }),
-                    )
-                    // The title is only 32pt tall. Reveal the complete row on
-                    // every focus entry, including Tab and AX Focus.
-                    .child(crate::data_components::focus_reveal(
-                        focus.clone(),
-                        [scroll_parent.clone(), self.content_scroll.clone()],
-                        Some(reveal),
-                        w,
-                        cx,
-                    ))
-                    .child(
-                        Button::new(format!("meeting-{id}"), title)
+                        Button::new(format!("meeting-{id}"), title.clone())
                             .nav_row()
-                            .description(format!(
-                                "{} · {} · {}",
-                                meeting.preview.chars().take(70).collect::<String>(),
-                                chrono::DateTime::from_timestamp_millis(meeting.started_at_ms)
-                                    .map(|t| t
-                                        .with_timezone(&chrono::Local)
-                                        .format("%-I:%M %p")
-                                        .to_string())
-                                    .unwrap_or_default(),
-                                duration(meeting.duration_ms)
-                            ))
-                            .track_focus(&focus)
                             .toggled(selected)
+                            .when(selected, |b| b.bordered())
+                            .content(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .child(title),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .text_size(tokens::MICRO_SIZE)
+                                                    .text_color(p.muted)
+                                                    .child(
+                                                        chrono::DateTime::from_timestamp_millis(
+                                                            meeting.started_at_ms,
+                                                        )
+                                                        .map(|t| {
+                                                            t.with_timezone(&chrono::Local)
+                                                                .format("%-I:%M %p")
+                                                                .to_string()
+                                                        })
+                                                        .unwrap_or_default(),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_size(tokens::CAPTION_SIZE)
+                                                    .text_color(p.muted)
+                                                    .child(meeting.preview.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .text_size(tokens::MICRO_SIZE)
+                                                    .text_color(p.muted)
+                                                    .child(duration(meeting.duration_ms)),
+                                            ),
+                                    ),
+                            )
+                            .track_focus(&focus)
                             .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx))),
                     )
                     .into_any_element()
@@ -231,7 +300,7 @@ impl Meetings {
                                     .unwrap_or_else(|| "Untitled meeting".into()),
                             )
                             .text_size(px(18.))
-                            .font_weight(FontWeight::SEMIBOLD)
+                            .font_weight(FontWeight::MEDIUM)
                             .child(
                                 d.session
                                     .title
@@ -465,13 +534,17 @@ impl Meetings {
                             c.set_value(s.audio.channel.wire(), cx);
                         }
                     });
-                    content=content.child(div().id("meeting-playback").role(Role::Group).aria_label("Meeting audio playback").flex().flex_col().gap(px(8.))
-                    .child(div().flex().flex_wrap().items_center().gap(px(8.))
-                        .child(self.button("audio-toggle",if playing{"Pause"}else if s.audio.state==AudioState::Paused{"Resume"}else{"Play"},Action::Playback{id:id.clone(),action:if playing{PlaybackAction::Pause}else{PlaybackAction::Play}},cx))
-                        .child(format!("{} / {}",timestamp(s.audio.position_ms),timestamp(s.audio.duration_ms))).child(self.detail_control(&self.channel_control, w, cx)))
-                    .child(self.detail_control(&self.seek, w, cx))
-                    .when(s.busy(),|v|v.child(Self::notice("Playback is paused while Murmur records or processes a request.",false)))
-                    .when(s.audio.state==AudioState::Buffering,|v|v.child(Self::notice("Buffering retained audio…",false))));
+                    content = content.child(div().id("meeting-playback").role(Role::Group).aria_label("Meeting audio playback")
+                        .child(div().flex().items_center().gap(px(8.))
+                            .child(self.button("audio-toggle", if playing {"Pause"} else if s.audio.state == AudioState::Paused {"Resume"} else {"Play"},
+                                Action::Playback { id: id.clone(), action: if playing { PlaybackAction::Pause } else { PlaybackAction::Play } }, cx)
+                                .size(ButtonSize::Compact).pill())
+                            .child(div().flex_shrink_0().font_family(tokens::MONO_FONT).text_size(tokens::MICRO_SIZE)
+                                .text_color(p.muted).child(format!("{} / {}", timestamp(s.audio.position_ms), timestamp(s.audio.duration_ms))))
+                            .child(self.detail_control(&self.channel_control, w, cx))
+                            .child(div().flex_1().min_w(px(48.)).child(self.detail_control(&self.seek, w, cx))))
+                        .when(s.busy(), |v| v.child(Self::notice("Playback is paused while Murmur records or processes a request.", false)))
+                        .when(s.audio.state == AudioState::Buffering, |v| v.child(Self::notice("Buffering retained audio…", false))));
                 }
             }
         }
@@ -499,17 +572,22 @@ impl Meetings {
                     },
                     cx,
                 )
-                .caption("Copy"),
+                .size(ButtonSize::Compact)
+                .pill(),
             )
-            .child(self.button(
-                "export",
-                "Export…",
-                Action::Export {
-                    id: id.clone(),
-                    format: self.format,
-                },
-                cx,
-            ));
+            .child(
+                self.button(
+                    "export",
+                    "Export…",
+                    Action::Export {
+                        id: id.clone(),
+                        format: self.format,
+                    },
+                    cx,
+                )
+                .size(ButtonSize::Compact)
+                .pill(),
+            );
         if d.session.retain_audio {
             exports = exports.child(
                 self.button(
@@ -518,8 +596,8 @@ impl Meetings {
                     Action::BundlePreview(id.clone()),
                     cx,
                 )
-                .icon_only(crate::icons::Glyph::Download)
-                .intent(crate::ButtonIntent::Ghost),
+                .size(ButtonSize::Compact)
+                .pill(),
             );
         }
         content = content.child(exports);
@@ -539,7 +617,18 @@ impl Meetings {
                 .flex()
                 .flex_wrap()
                 .gap(px(8.))
-                .child(format!("Transcript · {} segments", d.segments.len()))
+                .items_center()
+                .pt(px(16.))
+                .border_t_1()
+                .border_color(p.hairline)
+                .child(div().font_weight(FontWeight::MEDIUM).child("Transcript"))
+                .child(
+                    div()
+                        .text_size(tokens::CAPTION_SIZE)
+                        .text_color(p.muted)
+                        .child(format!("{} segments", d.segments.len())),
+                )
+                .child(div().flex_1())
                 .child(
                     self.detail_button(
                         "speakers",
@@ -562,6 +651,7 @@ impl Meetings {
                         ),
                     )
                     .size(ButtonSize::Compact)
+                    .pill()
                     .on_click(cx.listener(|s, _, _, cx| {
                         s.speakers = !s.speakers;
                         cx.notify();
@@ -690,7 +780,7 @@ impl Meetings {
                 .child(time)
                 .child(
                     div()
-                        .w(px(84.))
+                        .w(px(112.))
                         .flex_shrink_0()
                         .text_size(tokens::CAPTION_SIZE)
                         .text_color(if segment.channel == Channel::Me {
@@ -779,7 +869,7 @@ impl Render for Meetings {
                 .get(&format!("meeting-{id}"))
                 .is_some_and(|f| f.is_focused(w))
             {
-                state.reset();
+                state.set(false);
             }
             present
         });
@@ -912,17 +1002,32 @@ impl Render for Meetings {
             if s.meetings.is_empty() {
                 list=list.child(if s.query.is_empty(){"No meeting transcripts yet. Start one to capture microphone and Mac playback as separate speakers."}else{"No meetings match this search. Try another word or clear the search."});
             }
-            list = list.child(
-                div().flex_1().min_h(px(0.)).overflow_hidden().child(
-                    uniform_list(
-                        "saved-meeting-rows",
-                        s.meetings.len(),
-                        cx.processor(Self::meeting_rows),
-                    )
-                    .track_scroll(&self.list_scroll)
-                    .size_full(),
-                ),
-            );
+            let identity: Vec<_> = s
+                .meetings
+                .iter()
+                .map(|m| (m.id.clone(), m.started_at_ms))
+                .collect();
+            if identity != self.list_identity {
+                let prefix = identity.starts_with(&self.list_identity);
+                let from = if prefix { self.list_identity.len() } else { 0 };
+                let handles: Vec<_> = identity
+                    .iter()
+                    .skip(from)
+                    .map(|(id, _)| Some(self.focus_for(&format!("meeting-{id}"), cx)))
+                    .collect();
+                self.list_scroll
+                    .splice_focusable(from..self.list_identity.len(), handles);
+                self.list_identity = identity;
+            }
+            list = list.child(div().flex_1().min_h(px(0.)).overflow_hidden().child({
+                let entity = cx.entity();
+                gpui::list(self.list_scroll.clone(), move |index, w, cx| {
+                    entity.update(cx, |s, cx| {
+                        s.meeting_rows(index..index + 1, w, cx).pop().unwrap()
+                    })
+                })
+                .size_full()
+            }));
             if s.meetings.len() < s.total {
                 list = list.child(self.button(
                     "load-more",
@@ -953,8 +1058,7 @@ impl Render for Meetings {
                             .when(!narrow, |v| {
                                 v.w(px(272.)).border_r_1().border_color(p.hairline)
                             })
-                            // Includes the toolbar/status chrome plus at least one
-                            // complete 112pt row and its focus-ring inset.
+                            // Includes toolbar/status chrome and a complete meeting row.
                             .when(narrow, |v| v.h(px(288.)).flex_shrink_0())
                             .min_h(px(0.))
                             .child(list.h_full()),

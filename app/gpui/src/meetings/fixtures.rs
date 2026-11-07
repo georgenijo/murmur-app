@@ -684,7 +684,7 @@ impl super::Meetings {
             return;
         };
         match state {
-            "captions"=>{s.phase=Phase::Recording;s.recording_generation=42;s.elapsed_ms=65000;s.microphone_active=true;s.system_audio_active=true;if let Some(d)=s.detail.as_mut(){d.session.status="active".into();d.session.retain_audio=false;d.segments.retain(|v|v.status=="final");s.recording_session=Some(d.session.id.clone());}},
+            "live-captions"=>{s.phase=Phase::Recording;s.recording_generation=42;s.elapsed_ms=65000;s.microphone_active=true;s.system_audio_active=true;if let Some(d)=s.detail.as_mut(){d.session.status="active".into();d.session.retain_audio=false;d.segments.retain(|v|v.status=="final");s.recording_session=Some(d.session.id.clone());}},
             "empty"=>{s.meetings.clear();s.total=0;s.detail=None;},
             "search"=>{s.meetings.clear();s.total=0;s.detail=None;s.query="unmatched fixture".into();},
             "starting"|"recording"|"stopping"|"processing"=>{s.phase=match state{"starting"=>Phase::Starting,"recording"=>Phase::Recording,"stopping"=>Phase::Stopping,_=>Phase::Processing};s.recording_generation=42;s.recording_session=Some("fixture-capture".into());s.elapsed_ms=65000;s.microphone_active=state=="recording";s.system_audio_active=state=="recording";},
@@ -702,6 +702,11 @@ impl super::Meetings {
             "playing"=>{s.audio.state=AudioState::Playing;s.audio.position_ms=1000;},
             "loading"=>{self.model.snapshot=None;self.model.pending=true;return;},
             "error"=>self.model.problem=Some(Problem::Unavailable),_=>(),
+        }
+        if state == "captions" {
+            self.format = Format::Srt;
+            self.format_control
+                .update(cx, |s, cx| s.set_value("srt", cx));
         }
         if matches!(state, "naming" | "text-input") {
             self.name(w, cx);

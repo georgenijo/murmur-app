@@ -52,12 +52,13 @@ pub struct Meetings {
     calendar_selection: Option<String>,
     confirmation: Option<(String, Instant)>,
     focus: BTreeMap<String, FocusHandle>,
-    row_reveal: BTreeMap<String, crate::data_components::FocusRevealState>,
+    row_reveal: BTreeMap<String, Rc<std::cell::Cell<bool>>>,
     query_epoch: u64,
     detail_id: Option<String>,
     page: usize,
     text_pages: BTreeMap<u64, usize>,
-    list_scroll: UniformListScrollHandle,
+    list_scroll: ListState,
+    list_identity: Vec<(String, i64)>,
     list_selection: Option<String>,
     detail_scroll: ScrollHandle,
     content_scroll: ScrollHandle,
@@ -79,7 +80,8 @@ impl Meetings {
             )
         });
         format_control.update(cx, |s, cx| {
-            s.set_width(px(104.), cx);
+            s.compact = true;
+            s.set_width(px(124.), cx);
             s.set_value("markdown", cx)
         });
         let channel_control = cx.new(|cx| {
@@ -95,12 +97,14 @@ impl Meetings {
             )
         });
         channel_control.update(cx, |s, cx| {
-            s.set_width(px(160.), cx);
+            s.compact = true;
+            s.set_width(px(108.), cx);
             s.set_value("all", cx)
         });
         let seek = cx.new(|cx| {
             crate::settings::range::Range::new("Playback position", "ms", 0, 1, 100, w, cx)
         });
+        seek.update(cx, |s, _| s.compact = true);
         let mut s = Self {
             embedded: false,
             list_actions_open: false,
@@ -128,7 +132,8 @@ impl Meetings {
             detail_id: None,
             page: 0,
             text_pages: BTreeMap::new(),
-            list_scroll: UniformListScrollHandle::new(),
+            list_scroll: ListState::new(0, ListAlignment::Top, px(80.)),
+            list_identity: Vec::new(),
             list_selection: None,
             detail_scroll: ScrollHandle::new(),
             content_scroll: ScrollHandle::new(),
@@ -425,6 +430,8 @@ impl Meetings {
         self.request(Action::List { query, limit: 50 }, cx);
     }
     pub fn select(&mut self, id: String, cx: &mut Context<Self>) {
+        self.detail_scroll.set_offset(point(px(0.), px(0.)));
+        self.page = 0;
         self.list_selection = Some(id.clone());
         self.host.pause_playback();
         self.cancel_transient();
@@ -667,8 +674,10 @@ impl Meetings {
             _ => return false,
         };
         let id = snapshot.meetings[index].id.clone();
-        self.list_scroll
-            .scroll_to_item(index, ScrollStrategy::Nearest);
+        self.list_scroll.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
         let focus = self.focus_for(&format!("meeting-{id}"), cx);
         w.focus(&focus, cx);
         if index != current {

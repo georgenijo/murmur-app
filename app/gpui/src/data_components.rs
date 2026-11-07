@@ -220,11 +220,6 @@ pub(crate) fn reveal_bounds<'a>(
 /// The owner resets this on blur even when the control is not rendered.
 #[derive(Clone, Default)]
 pub(crate) struct FocusRevealState(Rc<Cell<bool>>);
-impl FocusRevealState {
-    pub(crate) fn reset(&self) {
-        self.0.set(false);
-    }
-}
 
 /// Paint-time bounds include wrapping and the current scroll offsets. Reveal
 /// only on focus entry: wheel scrolling must remain possible while focused.
@@ -927,68 +922,232 @@ impl Render for Chart {
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .child(div().text_size(tokens::MICRO_SIZE).font_weight(FontWeight::MEDIUM).text_color(p.muted).child(self.heading.clone().unwrap_or_else(||self.label.clone())))
             .child(
                 div()
-                    .h(px(24.)).text_size(tokens::MICRO_SIZE).truncate()
+                    .text_size(tokens::MICRO_SIZE)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.muted)
+                    .child(self.heading.clone().unwrap_or_else(|| self.label.clone())),
+            )
+            .child(
+                div()
+                    .h(px(24.))
+                    .text_size(tokens::MICRO_SIZE)
+                    .truncate()
                     .text_color(p.muted)
                     .child(if self.points.is_empty() {
                         "No samples".into()
                     } else if self.shown {
                         self.value(self.active)
                     } else {
-                        "Hover or use arrow keys for values.".into()
+                        "Focus a day for exact values.".into()
                     }),
             )
-            .child(div().h(px(if self.kind==ChartKind::Heatmap{126.}else{108.})).relative().flex().items_end().gap(px(1.)).when(self.kind==ChartKind::Line, |d| {
-                let values:Vec<_>=self.points.iter().map(|p|p.value).collect();
-                d.child(canvas(|b,_,_|b,move|b,_,w,_|{
-                    let mut path=PathBuilder::stroke(px(2.));let mut started=false;
-                    for(i,v)in values.iter().enumerate(){if let Some(v)=v.filter(|v|v.is_finite()) {let p=point(b.left()+b.size.width*(i as f32/values.len().max(1) as f32)+px(5.),b.top()+px(101.-v.max(0.) as f32/max as f32*88.));if started{path.line_to(p)}else{path.move_to(p);started=true}}else{started=false}}
-                    if let Ok(path)=path.build(){w.paint_path(path,p.accent);}
-                }).absolute().size_full())
-            }).children(self.points.iter().enumerate().map(|(i,point)|{let measured=point.value.filter(|v|v.is_finite());
+            .child(self.plot(max, p, cx))
+    }
+}
+impl Chart {
+    fn plot(&self, max: f64, p: Palette, cx: &mut Context<Self>) -> Div {
+        use chrono::Datelike;
+        let date =
+            |point: &ChartPoint| chrono::NaiveDate::parse_from_str(&point.label, "%Y-%m-%d").ok();
+        let heatmap = self.kind == ChartKind::Heatmap;
+        let mut plot = div()
+            .relative()
+            .h(px(if heatmap { 188. } else { 88. }))
+            .flex()
+            .items_end()
+            .gap(px(4.));
+        if heatmap {
+            for (i, day) in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                .into_iter()
+                .enumerate()
+            {
+                plot = plot.child(
                     div()
-                        .id(i)
-                        .role(Role::Button)
-                        .aria_label(self.value(i))
-                        .when(i == self.active, |d| {
-                            d.aria_active_descendant().border_1().border_color(p.focus)
-                        })
-                        .when(self.kind==ChartKind::Bars, |d| d.flex_1())
-                        .h(px(measured
-                            .map(|v| (v.max(0.) / max * 96.).max(2.) as f32)
-                            .unwrap_or(2.)))
-                        .bg(if measured.is_some() {
-                            p.accent
-                        } else {
-                            p.muted
-                        })
-                        .when(self.kind==ChartKind::Heatmap,|d|d.absolute().left(px((i/7) as f32*22.)).top(px((i%7) as f32*18.)).w(px(18.)).h(px(14.)).rounded(px(3.)).bg(if measured.is_some(){p.accent.opacity(0.12+0.88*measured.unwrap_or(0.).max(0.) as f32/max as f32)}else{p.surface}))
-                        .when(self.kind==ChartKind::Line,|d|d.absolute().left(relative(i as f32/self.points.len().max(1) as f32)).top(px(96.-measured.unwrap_or(0.).max(0.) as f32/max as f32*88.)).w(px(10.)).h(px(10.)).rounded(px(5.)))
-                        .on_mouse_move(cx.listener(move |s, _, _, cx| {
-                            s.active = i;
-                            s.shown = true;
-                            cx.notify();
-                        }))
-                        .on_click(cx.listener(move |s, _, w, cx| {
+                        .absolute()
+                        .left_0()
+                        .top(px(20. + i as f32 * 23.))
+                        .text_size(px(10.))
+                        .text_color(p.muted)
+                        .child(day),
+                );
+            }
+            let mut last_month = None;
+            for (week, points) in self.points.chunks(7).enumerate() {
+                if let Some(day) = points.first().and_then(date)
+                    && last_month != Some(day.month())
+                {
+                    plot = plot.child(
+                        div()
+                            .absolute()
+                            .left(px(34. + week as f32 * 25.))
+                            .top_0()
+                            .text_size(px(10.))
+                            .text_color(p.muted)
+                            .child(day.format("%b").to_string()),
+                    );
+                    last_month = Some(day.month());
+                }
+            }
+        }
+        if self.kind == ChartKind::Line {
+            let values: Vec<_> = self.points.iter().map(|p| p.value).collect();
+            plot = plot.child(
+                canvas(
+                    |b, _, _| b,
+                    move |b, _, w, _| {
+                        let mut path = PathBuilder::stroke(px(1.5));
+                        let mut started = false;
+                        for (i, value) in values.iter().enumerate() {
+                            if let Some(value) = value.filter(|v| v.is_finite()) {
+                                let point = point(
+                                    b.left()
+                                        + b.size.width
+                                            * ((i as f32 + 0.5) / values.len().max(1) as f32),
+                                    b.top() + px(62. - value.max(0.) as f32 / max as f32 * 60.),
+                                );
+                                if started {
+                                    path.line_to(point);
+                                } else {
+                                    path.move_to(point);
+                                    started = true;
+                                }
+                            } else {
+                                started = false;
+                            }
+                        }
+                        if let Ok(path) = path.build() {
+                            w.paint_path(path, p.muted);
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
+        for (i, point) in self.points.iter().enumerate() {
+            let measured = point.value.filter(|v| v.is_finite());
+            let active = self.shown && i == self.active;
+            let mark = div()
+                .id(i)
+                .role(Role::Button)
+                .aria_label(self.value(i))
+                .when(i == self.active, |d| d.aria_active_descendant())
+                .when(active, |d| d.border_1().border_color(p.focus))
+                .on_mouse_move(cx.listener(move |s, _, _, cx| {
+                    s.active = i;
+                    s.shown = true;
+                    cx.notify();
+                }))
+                .on_click(cx.listener(move |s, _, w, cx| {
+                    s.active = i;
+                    s.shown = true;
+                    w.focus(&s.focus, cx);
+                    cx.notify();
+                }))
+                .on_a11y_action(AccessibleAction::Click, {
+                    let entity = cx.entity();
+                    move |_, w, cx| {
+                        entity.update(cx, |s, cx| {
                             s.active = i;
                             s.shown = true;
                             w.focus(&s.focus, cx);
                             cx.notify();
-                        }))
-                        .on_a11y_action(AccessibleAction::Click, {
-                            let entity = cx.entity();
-                            move |_, w, cx| {
-                                entity.update(cx, |s, cx| {
-                                    s.active = i;
-                                    s.shown = true;
-                                    w.focus(&s.focus, cx);
-                                    cx.notify();
-                                })
-                            }
                         })
-            })))
+                    }
+                });
+            if heatmap {
+                let intensity = measured
+                    .map(|v| {
+                        if v <= 0. {
+                            0.08
+                        } else {
+                            0.30 + 0.70 * (v / max) as f32
+                        }
+                    })
+                    .unwrap_or(0.03);
+                plot = plot.child(
+                    mark.absolute()
+                        .left(px(34. + (i / 7) as f32 * 25.))
+                        .top(px(20. + (i % 7) as f32 * 23.))
+                        .w(px(22.))
+                        .h(px(20.))
+                        .rounded(px(2.))
+                        .bg(p.surface.blend(p.accent.opacity(intensity))),
+                );
+            } else {
+                let height = measured
+                    .map(|v| (v.max(0.) / max * 64.).max(4.) as f32)
+                    .unwrap_or(4.);
+                let mut target = mark
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .items_center()
+                    .gap(px(4.));
+                if self.kind == ChartKind::Bars {
+                    target = target.child(
+                        div()
+                            .w(px(20.))
+                            .max_w_full()
+                            .h(px(height))
+                            .rounded_t(px(5.))
+                            .rounded_b(px(2.))
+                            .bg(if active || i + 1 == self.points.len() {
+                                p.accent
+                            } else {
+                                p.surface.blend(p.accent.opacity(0.32))
+                            }),
+                    );
+                }
+                target = target.child(
+                    div()
+                        .h(px(16.))
+                        .text_size(px(10.))
+                        .text_color(p.muted)
+                        .child(
+                            date(point)
+                                .map(|d| {
+                                    d.format("%a")
+                                        .to_string()
+                                        .chars()
+                                        .take(1)
+                                        .collect::<String>()
+                                })
+                                .unwrap_or_default(),
+                        ),
+                );
+                plot = plot.child(target);
+            }
+        }
+        div()
+            .when(heatmap, |d| {
+                d.child(
+                    div()
+                        .mt(px(8.))
+                        .text_size(tokens::CAPTION_SIZE)
+                        .text_color(p.muted)
+                        .child(
+                            match (
+                                self.points.first().and_then(date),
+                                self.points.last().and_then(date),
+                            ) {
+                                (Some(start), Some(end)) => {
+                                    format!(
+                                        "{} – {}",
+                                        start.format("%b %-d"),
+                                        end.format("%b %-d, %Y")
+                                    )
+                                }
+                                _ => String::new(),
+                            },
+                        ),
+                )
+            })
+            .child(plot)
     }
 }
 

@@ -10,6 +10,7 @@ pub struct Range {
     unit: &'static str,
     disabled: bool,
     pub(crate) scroll_parent: Option<ScrollHandle>,
+    pub(crate) compact: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<Committed> for Range {}
@@ -61,6 +62,7 @@ impl Range {
             unit,
             disabled: false,
             scroll_parent: None,
+            compact: false,
             _subscriptions: vec![change, blur, activation],
         }
     }
@@ -131,12 +133,19 @@ impl Render for Range {
                     .accessibility_label(self.label)
                     .track_focus(&self.focus)
                     .disabled(self.disabled)
-                    .h(tokens::STANDARD_HEIGHT)
-                    .border_1()
+                    .h(if self.compact {
+                        tokens::COMPACT_HEIGHT
+                    } else {
+                        tokens::STANDARD_HEIGHT
+                    })
+                    .when(!self.compact, |s| s.border_1())
                     .border_color(if self.focus.is_focused(w) {
                         p.focus
                     } else {
                         p.border
+                    })
+                    .when(self.focus.is_focused(w), |s| {
+                        s.border_1().border_color(p.focus)
                     })
                     .rounded(tokens::CONTROL_RADIUS)
                     .px(px(8.))
@@ -169,11 +178,13 @@ impl Render for Range {
                             ),
                     ),
             )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .line_height(px(18.))
-                    .child(format!("{} {}", v as i64, self.unit)),
-            )
+            .when(!self.compact, |d| {
+                d.child(
+                    div()
+                        .text_size(px(12.))
+                        .line_height(px(18.))
+                        .child(format!("{} {}", v as i64, self.unit)),
+                )
+            })
     }
 }

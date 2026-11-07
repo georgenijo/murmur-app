@@ -429,8 +429,7 @@ mod ax {
                 assert_eq!(node.label(), Some(title));
                 let bounds = node.bounds().unwrap();
                 let scale = cx.update(|w, _| f64::from(w.scale_factor()));
-                let viewport =
-                    e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.bounds());
+                let viewport = e.read_with(cx, |s, _| s.list_scroll.viewport_bounds());
                 assert!(
                     bounds.x0 >= scale * f64::from(f32::from(viewport.left()))
                         && bounds.x1 <= scale * f64::from(f32::from(viewport.right()))
@@ -783,12 +782,12 @@ fn list_navigation_reaches_offscreen_rows_and_retains_row_focus(cx: &mut TestApp
         );
         if key == "end" {
             assert!(
-                e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset().y)
+                e.read_with(cx, |s, _| s.list_scroll.scroll_px_offset_for_scrollbar().y)
                     < gpui::px(0.)
             );
         } else if key == "home" {
             assert_eq!(
-                e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset().y),
+                e.read_with(cx, |s, _| s.list_scroll.scroll_px_offset_for_scrollbar().y),
                 gpui::px(0.)
             );
         }
@@ -868,12 +867,18 @@ mod native_playback;
 
 fn assert_row_visible(e: &Entity<Meetings>, cx: &mut VisualTestContext, index: usize) {
     e.read_with(cx, |s, _| {
-        let scroll = s.list_scroll.0.borrow();
-        let viewport = scroll.base_handle.bounds();
-        let top = scroll.base_handle.offset().y + gpui::px(index as f32 * 112.);
+        let viewport = s.list_scroll.viewport_bounds();
+        let row = s.list_scroll.bounds_for_item(index).unwrap_or_else(|| {
+            panic!(
+                "focused row {index} not measured, top {:?}, viewport {:?}",
+                s.list_scroll.logical_scroll_top(),
+                s.list_scroll.viewport_bounds()
+            )
+        });
         assert!(
-            top >= gpui::px(-1.) && top + gpui::px(112.) <= viewport.size.height + gpui::px(1.),
-            "row {index} clipped: top={top:?}, viewport={viewport:?}"
+            row.top() >= viewport.top() - gpui::px(1.)
+                && row.bottom() <= viewport.bottom() + gpui::px(1.),
+            "row {index} clipped: {row:?}, viewport={viewport:?}"
         );
     });
 }
@@ -881,12 +886,13 @@ fn assert_row_visible(e: &Entity<Meetings>, cx: &mut VisualTestContext, index: u
 // Place row 1 at the bottom with its title visible but its metadata clipped.
 fn partially_visible_second_row(e: &Entity<Meetings>, cx: &mut VisualTestContext) {
     e.update(cx, |s, cx| {
-        let scroll = s.list_scroll.0.borrow();
-        let height = scroll.base_handle.bounds().size.height;
-        assert!(height >= gpui::px(112.));
-        scroll
-            .base_handle
-            .set_offset(gpui::point(gpui::px(0.), height - gpui::px(48. + 112.)));
+        let viewport = s.list_scroll.viewport_bounds();
+        let row = s
+            .list_scroll
+            .bounds_for_item(1)
+            .expect("second row measured");
+        s.list_scroll
+            .scroll_by(row.top() - viewport.bottom() + gpui::px(24.));
         cx.notify();
     });
     draw(cx);
@@ -967,7 +973,7 @@ fn compact_permission_relaunch_and_error_keep_both_panes_reachable(cx: &mut Test
                 "{state}: usable detail"
             );
             assert!(
-                s.list_scroll.0.borrow().base_handle.bounds().size.height >= gpui::px(112.),
+                s.list_scroll.viewport_bounds().size.height >= gpui::px(72.),
                 "{state}: complete list row"
             );
             crate::data_components::reveal_bounds(s.detail_scroll.bounds(), [&s.content_scroll]);
@@ -981,13 +987,13 @@ fn compact_permission_relaunch_and_error_keep_both_panes_reachable(cx: &mut Test
                 "{state}: detail must be reachable: {detail:?}, page {outer:?}"
             );
             crate::data_components::reveal_bounds(
-                s.list_scroll.0.borrow().base_handle.bounds(),
+                s.list_scroll.viewport_bounds(),
                 [&s.content_scroll],
             );
         });
         settle_reveal(cx);
         e.read_with(cx, |s, _| {
-            let list = s.list_scroll.0.borrow().base_handle.bounds();
+            let list = s.list_scroll.viewport_bounds();
             let outer = s.content_scroll.bounds();
             assert!(
                 list.top() >= outer.top() && list.bottom() <= outer.bottom(),
@@ -1038,27 +1044,25 @@ fn large_fixture_paging_keyboard_and_retained_reveal(cx: &mut TestAppContext) {
     }
     // A focused row can unmount and remount after wheel scrolling. Its retained
     // reveal must not pull the viewport back, until focus actually leaves.
-    let original = e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset());
+    let original = e.read_with(cx, |s, _| s.list_scroll.scroll_px_offset_for_scrollbar());
     e.update(cx, |s, cx| {
         s.list_scroll
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+            .set_offset_from_scrollbar(gpui::point(gpui::px(0.), gpui::px(0.)));
         cx.notify();
     });
     draw(cx);
     let partial = original + gpui::point(gpui::px(0.), gpui::px(60.));
     e.update(cx, |s, cx| {
-        s.list_scroll.0.borrow().base_handle.set_offset(partial);
+        s.list_scroll.set_offset_from_scrollbar(partial);
         cx.notify();
     });
+    let partial_logical = e.read_with(cx, |s, _| s.list_scroll.logical_scroll_top());
     draw(cx);
     cx.update(|w, cx| w.simulate_next_frame(cx));
     draw(cx);
     assert_eq!(
-        e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset()),
-        partial
+        e.read_with(cx, |s, _| s.list_scroll.logical_scroll_top()),
+        partial_logical
     );
     cx.simulate_keystrokes("home");
     draw(cx);
