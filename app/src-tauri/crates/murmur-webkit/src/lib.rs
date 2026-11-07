@@ -8,3 +8,7 @@ pub use importer::*;
 mod overlay_retirement;
 #[cfg(target_os = "macos")]
 pub use overlay_retirement::OverlayRetirement;
+
+/// The same deallocation barrier for the independently replaced preview.
+#[cfg(target_os = "macos")]
+pub use overlay_retirement::OverlayRetirement as PreviewRetirement;

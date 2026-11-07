@@ -145,3 +145,8 @@ pub fn apply_appearance(dark: bool, cx: &mut App) {
 pub fn overlay_surface() -> Hsla {
     Hsla::from(gpui::rgb(0x141414)).opacity(0.92)
 }
+
+/// Live Words notch card; Reduce Transparency is completely opaque.
+pub fn preview_surface(opaque: bool) -> Hsla {
+    Hsla::from(gpui::rgb(0x141414)).opacity(if opaque { 1. } else { 0.95 })
+}

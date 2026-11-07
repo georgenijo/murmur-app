@@ -74,6 +74,34 @@ def main():
             raise AssertionError(f'non-deterministic {case}')
         results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
         print(f'PASS {case}: identical offscreen Metal images')
+    # Preview captures contain synthetic text only. Inventory this process,
+    # not other applications; WebKit destruction has its own standalone test.
+    for placement in ('notch', 'pill-light', 'pill-dark'):
+        for state in ('short', 'long', 'unicode', 'unbroken', 'lift', 'contrast', 'stable'):
+            case = f'preview-{placement}-{state}'
+            paths = [output / f'{case}-{i}.png' for i in (1, 2)]
+            for path in paths:
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ('MURMUR_PILL', 'MURMUR_DARK', 'MURMUR_PREVIEW_STATE')}
+                env.update(MURMUR_GOLDEN=str(path), MURMUR_PREVIEW_STATE=state)
+                if placement.startswith('pill'):
+                    env['MURMUR_PILL'] = '1'
+                if placement != 'pill-light':
+                    env['MURMUR_DARK'] = '1'
+                stdout = subprocess.check_output([str(target / 'debug/preview-qa')], env=env,
+                                                 cwd=UI, timeout=60, text=True)
+                inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
+                             if line.startswith('MURMUR_PREVIEW_INVENTORY=')]
+                if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
+                    raise AssertionError('missing or nonempty native preview WebKit inventory')
+            if paths[0].read_bytes() != paths[1].read_bytes():
+                raise AssertionError(f'non-deterministic {case}')
+            results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+            print(f'PASS {case}: identical offscreen Metal images')
+        if results[f'preview-{placement}-short'] == results[f'preview-{placement}-lift']:
+            raise AssertionError('preview lift did not move the painted card')
+    if results['preview-pill-light-short'] == results['preview-pill-dark-short']:
+        raise AssertionError('preview system appearance fixtures did not differ')
     (output / 'receipt.json').write_text(json.dumps({
         'os': platform.platform(), 'gpui': '654efae441bc8eb117d0042bb28cd7cf3570bdc9',
         'comparison': 'same-host repeated render, strict byte equality',

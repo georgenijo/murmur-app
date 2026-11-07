@@ -156,3 +156,8 @@ type_complexity = "allow"
 # Temporarily allow this until we can migrate to the new APIs.
 # https://github.com/longbridge/gpui-kit/pull/2149
 useless_conversion = "allow"
+
+[[bin]]
+name = "preview-qa"
+path = "src/bin/preview-qa.rs"
+required-features = ["gallery"]

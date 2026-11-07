@@ -70,6 +70,20 @@ pub fn announce(window: &Window, label: &'static str) {
         unsafe { murmur_overlay_announce(raw, message.as_ptr()) };
     }
 }
+/// Live Words already announces transcript text through React's polite live
+/// region. Only its consent/generation-checked presentation owner may call
+/// this explicit exception; overlay state announcements stay static/content-free.
+/// The borrowed text goes only to the native accessibility notification, never
+/// diagnostics, telemetry, a clipboard, persistence or an event payload.
+pub fn announce_preview_text(window: &Window, text: &str) {
+    #[cfg(target_os = "macos")]
+    if let Some(raw) = raw(window)
+        && let Ok(message) = std::ffi::CString::new(text)
+    {
+        // SAFETY: synchronous main-turn notification; no pointer is retained.
+        unsafe { murmur_overlay_announce(raw, message.as_ptr()) };
+    }
+}
 pub fn screen() -> Option<Screen> {
     #[cfg(target_os = "macos")]
     {
@@ -153,4 +167,44 @@ pub fn refit_material(window: &Window, width: gpui::Pixels, height: gpui::Pixels
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn murmur_overlay_refit_hud(view: *mut std::ffi::c_void, width: f64, height: f64, radius: f64);
+}
+
+/// Same main-thread panel path, with permanent click-through and a card-sized
+/// HUD clip. The preview reserves transparent room for synchronized hover lift.
+pub fn apply_preview(
+    window: &mut Window,
+    surface: Surface,
+    card: gpui::Bounds<gpui::Pixels>,
+) -> bool {
+    if !apply(window, surface) {
+        return false;
+    }
+    refit_preview_material(window, card);
+    #[cfg(target_os = "macos")]
+    if let Some(raw) = raw(window) {
+        // SAFETY: synchronous main-turn show/hide; never activates a key window.
+        unsafe { murmur_preview_visibility(raw, surface.hidden) };
+    }
+    true
+}
+/// Paint-turn clip update only; never resizes or changes window visibility.
+pub fn refit_preview_material(window: &Window, card: gpui::Bounds<gpui::Pixels>) {
+    #[cfg(target_os = "macos")]
+    if let Some(raw) = raw(window) {
+        // SAFETY: GPUI main turn retains this NSView; synchronous borrowed frame.
+        unsafe {
+            murmur_preview_refit(
+                raw,
+                f32::from(card.origin.x) as f64,
+                f32::from(card.origin.y) as f64,
+                f32::from(card.size.width) as f64,
+                f32::from(card.size.height) as f64,
+            );
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn murmur_preview_visibility(view: *mut std::ffi::c_void, hidden: bool);
+    fn murmur_preview_refit(view: *mut std::ffi::c_void, x: f64, y: f64, width: f64, height: f64);
 }

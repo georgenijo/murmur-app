@@ -31,6 +31,7 @@ bool murmur_overlay_never_key(void *object) {
 }
 
 static char hud_key;
+static char panel_setup_key;
 bool murmur_overlay_apply(void *raw, double x, double y, double width, double height,
                           bool floating, bool hidden, bool reduced_transparency,
                           bool dark, double radius, double surface_height) {
@@ -38,23 +39,30 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     NSView *view = (__bridge NSView *)raw;
     NSWindow *window = view.window;
     if (!window || !murmur_overlay_never_key((__bridge void *)window)) return false;
-    window.level = 25;
-    window.hasShadow = NO;
-    window.opaque = NO;
-    window.backgroundColor = NSColor.clearColor;
-    window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
-        NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle |
-        NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorCanJoinAllApplications;
-    if ([window isKindOfClass:NSPanel.class]) {
-        NSPanel *panel = (NSPanel *)window;
-        panel.styleMask |= NSWindowStyleMaskNonactivatingPanel;
-        panel.hidesOnDeactivate = NO;
-        panel.becomesKeyOnlyIfNeeded = YES;
-    }
-    SEL prevent = NSSelectorFromString(@"_setPreventsActivation:");
-    if ([window respondsToSelector:prevent]) {
-        void (*setter)(id, SEL, BOOL) = (void *)[window methodForSelector:prevent];
-        setter(window, prevent, YES);
+    // AppKit setup is instance-local and idempotent. Reinstalling style/opacity
+    // during a presentation callback can reenter the platform's frame update.
+    if (!objc_getAssociatedObject(window, &panel_setup_key)) {
+        window.level = 25;
+        window.hasShadow = NO;
+        window.opaque = NO;
+        window.backgroundColor = NSColor.clearColor;
+        window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+            NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle |
+            NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorCanJoinAllApplications;
+        if ([window isKindOfClass:NSPanel.class]) {
+            NSPanel *panel = (NSPanel *)window;
+            if (!(panel.styleMask & NSWindowStyleMaskNonactivatingPanel)) {
+                panel.styleMask |= NSWindowStyleMaskNonactivatingPanel;
+            }
+            panel.hidesOnDeactivate = NO;
+            panel.becomesKeyOnlyIfNeeded = YES;
+        }
+        SEL prevent = NSSelectorFromString(@"_setPreventsActivation:");
+        if ([window respondsToSelector:prevent]) {
+            void (*setter)(id, SEL, BOOL) = (void *)[window methodForSelector:prevent];
+            setter(window, prevent, YES);
+        }
+        objc_setAssociatedObject(window, &panel_setup_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     window.ignoresMouseEvents = hidden;
     // Input uses global top-left coordinates; AppKit uses the primary screen's
@@ -119,8 +127,9 @@ void murmur_overlay_announce(void *raw, const char *message) {
     assert([NSThread isMainThread]);
     NSView *view = (__bridge NSView *)raw;
     if (!view.window || !message) return;
-    // Only a fixed content-free state label crosses this API, never words or a
-    // calendar title. GPUI's pinned AccessKit lacks a live-region API.
+    // Overlay callers send only content-free state labels. The explicit
+    // preview-only wrapper preserves the existing consent-gated polite live
+    // region's speech. GPUI's pinned AccessKit lacks a live-region API.
     NSAccessibilityPostNotificationWithUserInfo(view, NSAccessibilityAnnouncementRequestedNotification,
         @{NSAccessibilityAnnouncementKey: [NSString stringWithUTF8String:message],
           NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium)});
@@ -146,4 +155,27 @@ void murmur_overlay_refit_hud(void *raw, double width, double height, double rad
     if (!hud) return;
     hud.frame=NSMakeRect((view.bounds.size.width-width)/2.0,view.isFlipped ? view.bounds.size.height-height : 0,width,height);
     hud.layer.cornerRadius=radius;
+}
+
+// Preview reuses the overlay's never-key/main-thread panel transaction, but
+// ignores every pointer event even while visible. Mask only the painted card.
+void murmur_preview_refit(void *raw, double x, double y, double width, double height) {
+    assert([NSThread isMainThread]);
+    NSView *view=(__bridge NSView *)raw;
+    view.window.ignoresMouseEvents=YES;
+    NSVisualEffectView *hud=objc_getAssociatedObject(view,&hud_key);
+    if (!hud) return;
+    hud.frame=NSMakeRect(x, view.isFlipped ? y : view.bounds.size.height-y-height, width, height);
+    hud.layer.cornerRadius=14.;
+}
+
+// A preview starts ordered out. Admit only after its nonempty frame and the
+// exact recording/consent ticket have been checked in the main-thread owner.
+void murmur_preview_visibility(void *raw, bool hidden) {
+    assert([NSThread isMainThread]);
+    NSView *view=(__bridge NSView *)raw;
+    NSWindow *window=view.window;
+    window.ignoresMouseEvents=YES;
+    if (hidden) [window orderOut:nil];
+    else if (!window.isVisible) [window orderFrontRegardless];
 }
