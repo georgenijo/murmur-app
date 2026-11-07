@@ -11,6 +11,10 @@ fn main() {
     // (commands::permissions::check_microphone_permission). AppKit does not load it.
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     build_foundation_models_bridge();
+    // Tauri's bundler normally supplies this search path. Native library tests
+    // and contract executables link the same Swift archives without that host.
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     #[cfg(feature = "tauri-host")]
     {
         let attributes = if std::env::var_os("CARGO_FEATURE_SHUTDOWN_TEST_SUPPORT").is_some() {
