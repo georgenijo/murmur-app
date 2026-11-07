@@ -186,6 +186,18 @@ frames in both placements and disabled states. It checks full target containment
 in the card clip, the 20×24 pt AX/hit bounds, near-corner and center clicks,
 AXPress reversal, unchanged focus/intents and traversal of actual AX child
 links before all four quick controls.
+An explicit disclosure close suppresses hover expansion for the current pointer
+visit, including an enter delivered after both rapid clicks. A current native
+outside sample or a genuine exit rearms the ordinary dwell; another deliberate
+disclosure click can reopen immediately. Deferred GPUI hover callbacks recheck
+the current native painted surface before changing presence, because their
+layout snapshot can report an exit during a centered resize even while the
+screen pointer remains inside. The normal- and reduced-motion
+`rapid_disclosure_close_rejects_late_stationary_enter_*` regressions exercise
+49/101/197 ms open/close pairs ten times in both placements, settlement beyond
+the animation/dwell deadlines, deliberate reopening and real exit/re-entry.
+`explicit_close_without_an_enter_rearms_on_an_outside_sample` covers an AX close
+before any pointer-enter transition.
 The windowless adapter probe shares the production press target resolution and
 dispatch function; it creates no NSView/NSWindow and makes no AX client calls.
 It establishes adapter mapping/action handling, not VoiceOver spoken behavior.
