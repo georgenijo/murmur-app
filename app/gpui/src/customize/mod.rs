@@ -314,7 +314,7 @@ impl Customize {
         #[cfg(feature = "production-host")]
         if self.return_mode {
             self.return_mode = false;
-            cx.emit(Back);
+            crate::events::publish(cx, Back);
         }
         self.discard = false;
         self.controller.invalidate();
@@ -495,7 +495,7 @@ impl Render for Customize {
                 #[cfg(feature = "production-host")]
                 if self.return_mode {
                     self.return_mode = false;
-                    cx.emit(Back);
+                    crate::events::publish(cx, Back);
                 }
                 if let Some(f) = self.return_focus.take() {
                     w.focus(&f, cx)

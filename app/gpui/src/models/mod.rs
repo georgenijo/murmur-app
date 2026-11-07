@@ -76,7 +76,7 @@ impl Models {
                     return;
                 }
             }
-            Action::Select(id) => {
+            Action::Select { id, .. } => {
                 if s.busy || s.attempt.is_some() || !s.model(id).is_some_and(|m| m.supported) {
                     return;
                 }
@@ -169,7 +169,12 @@ impl Render for Models {
                                 || self.controller.model.pending,
                         )
                         .on_click(move |_, _, cx| {
-                            e.update(cx, |s, cx| s.act(Action::Select(id.clone()), cx))
+                            e.update(cx, |s, cx| {
+                                if let Some(snapshot) = &s.controller.model.snapshot {
+                                    let action = snapshot.select(id.clone());
+                                    s.act(action, cx);
+                                }
+                            })
                         }),
                     );
                 }

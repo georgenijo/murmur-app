@@ -232,6 +232,17 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
 }
 impl Backend {
     fn pause_player(&self) {
+        if let Some((_, worker)) = self
+            .meetings
+            .player
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+        {
+            worker.pause();
+        }
+    }
+    fn retire_player(&self) {
         let player = self
             .meetings
             .player
@@ -326,6 +337,14 @@ impl Backend {
 struct AudioSource(Backend);
 impl p::Source for AudioSource {
     fn admitted(&self, session: &str) -> Result<(), p::Error> {
+        let busy = self
+            .0
+            .runtime
+            .block_on(self.0.call("get_meeting_audio_capture_busy", json!({})))
+            .map_err(|_| p::Error::Unavailable)?;
+        if busy == true {
+            return Err(p::Error::Unavailable);
+        }
         let result = self
             .0
             .runtime
@@ -468,7 +487,7 @@ impl Host for Backend {
         // Selection is accepted synchronously, before a preceding read can finish.
         match &r.action {
             Action::Select(id) => {
-                self.pause_player();
+                self.retire_player();
                 self.meetings
                     .selection
                     .lock()
@@ -509,6 +528,18 @@ impl Host for Backend {
                     },
                     Action::Stop{generation}=>b.services.stop_meeting(*generation).await?,
                     Action::Read|Action::List{..}|Action::Select(_)=>{},
+                    Action::Delete(id) => {
+                        b.retire_player();
+                        b.effect("delete_meeting", json!({"id":id}), current.clone()).await?;
+                        let mut selection=b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner());
+                        if selection.id.as_ref()==Some(id) { selection.id=None; selection.audio=Audio::default(); selection.calendar=Calendar::Closed; selection.bundle=None; }
+                    },
+                    Action::DeleteAll => {
+                        b.retire_player();
+                        b.effect("delete_all_meetings", json!({}), current.clone()).await?;
+                        let mut selection=b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner());
+                        selection.id=None; selection.audio=Audio::default(); selection.calendar=Calendar::Closed; selection.bundle=None;
+                    },
                     Action::Back=>{b.pause_player();b.discard_calendar();b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).id=None;},
                     Action::Playback{id,action}=>b.player_action(id.clone(),*action)?,
                     Action::CalendarLookup(id)=>{

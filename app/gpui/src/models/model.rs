@@ -34,6 +34,8 @@ pub struct ModelInfo {
 #[derive(Clone)]
 pub struct Snapshot {
     pub revision: u64,
+    /// Settings owner revision captured with selected model, independent of runtime events.
+    pub settings_revision: u64,
     pub selected: String,
     pub catalog: Vec<ModelInfo>,
     pub busy: bool,
@@ -46,6 +48,12 @@ pub struct Snapshot {
     pub hardware: Option<String>,
 }
 impl Snapshot {
+    pub fn select(&self, id: String) -> super::host::Action {
+        super::host::Action::Select {
+            id,
+            settings_revision: self.settings_revision,
+        }
+    }
     pub fn merge_runtime(&mut self, update: ModelInfo) -> bool {
         if !known(&update.id) {
             return false;

@@ -81,10 +81,15 @@ pub fn themes(b: Backend) -> Read<crate::themes::model::Snapshot> {
 }
 pub fn knowledge(b: Backend) -> Read<crate::knowledge::model::Snapshot> {
     Box::pin(async move {
+        let (filter, offset) = b
+            .knowledge_page
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         let result = b
-            .call("list_knowledge", json!({"request":{"limit":50,"offset":0}}))
+            .call("list_knowledge", json!({"request":filter.wire(offset)}))
             .await?;
-        knowledge_page(&b, result, 0).await
+        knowledge_page(&b, result, offset).await
     })
 }
 pub async fn knowledge_page(
@@ -144,7 +149,7 @@ pub fn customize(b: Backend) -> Read<crate::customize::model::Snapshot> {
 pub fn models(b: Backend) -> Read<crate::models::model::Snapshot> {
     Box::pin(async move {
         use crate::models::model::{Install, Lifecycle, ModelInfo, Snapshot};
-        let settings = settings(&b).await?;
+        let (settings_revision, settings) = b.services.settings_snapshot().await?;
         let rows = b.call("get_model_runtime_catalog", json!({})).await?;
         let guidance = b.call("get_model_hardware_guidance", json!({})).await?;
         let status = b.call("get_status", json!({})).await?;
@@ -194,6 +199,7 @@ pub fn models(b: Backend) -> Read<crate::models::model::Snapshot> {
             .next()
             .cloned();
         Ok(Snapshot {
+            settings_revision,
             revision: b.events.revision(),
             selected: text(&settings, "model"),
             catalog,

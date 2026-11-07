@@ -353,6 +353,9 @@ impl Main {
                 });
             }
             Route::Update(snapshot) => {
+                if snapshot.revision < self.updater.revision {
+                    return;
+                }
                 use murmur_core::updater::Status;
                 match &snapshot.update_status {
                     Status::Available { is_forced, .. }
@@ -567,7 +570,9 @@ impl Render for Main {
                     .child(nav)
                     .child(div().flex_1().min_w_0().h_full().child(self.body())),
             )
-            .child(self.palette.clone());
+            .when(self.palette.read(cx).open, |root| {
+                root.child(div().absolute().inset_0().child(self.palette.clone()))
+            });
         if let Some(error) = self.error {
             root = root.child(gpui::text!(error));
         }
@@ -803,7 +808,10 @@ impl Render for Main {
                         .text_size(px(20.))
                         .child(gpui::text!("Correct & Teach")),
                 )
-                .child(TextField::new(&self.corrected, "Corrected dictation"));
+                .child(
+                    TextField::new(&self.corrected, "Corrected dictation")
+                        .readonly(teaching.busy || proposal_id.is_some()),
+                );
             if let Some(id) = proposal_id {
                 let label = format!(
                     "Remember “{}” as “{}”",

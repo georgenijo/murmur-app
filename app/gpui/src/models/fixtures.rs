@@ -37,6 +37,7 @@ pub fn snapshot() -> Snapshot {
         })
         .unwrap();
     Snapshot {
+        settings_revision: 1,
         revision: 1,
         selected: "parakeet-tdt-0.6b-v3-coreml".into(),
         catalog,
@@ -81,7 +82,7 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
         }
         let mut s = self.state.borrow_mut();
         match &r.action {
-            Action::Select(id) => s.selected = id.clone(),
+            Action::Select { id, .. } => s.selected = id.clone(),
             Action::Download(id) => {
                 if let Some(m) = s.catalog.iter_mut().find(|m| &m.id == id) {
                     m.install = Install::Installed;

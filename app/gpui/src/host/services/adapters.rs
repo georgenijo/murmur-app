@@ -697,9 +697,16 @@ mod model_action {
     }
 
     use crate::models::host::Action;
-    pub fn admit(b: &Backend, a: &Action, r: u64) -> Accepted {
-        if let Action::Select(id) = a {
-            Some(b.services.accept_settings(json!({"model":id}), r))
+    pub fn admit(b: &Backend, a: &Action, _r: u64) -> Accepted {
+        if let Action::Select {
+            id,
+            settings_revision,
+        } = a
+        {
+            Some(
+                b.services
+                    .accept_settings(json!({"model":id}), *settings_revision),
+            )
         } else {
             None
         }
@@ -711,7 +718,7 @@ mod model_action {
         current: Live,
     ) -> Result<Option<crate::models::model::Snapshot>, String> {
         match a {
-            Action::Read | Action::Select(_) => {}
+            Action::Read | Action::Select { .. } => {}
             Action::Download(id) => b.download("models".into(), id).await?,
             Action::Cancel { model, request_id } => {
                 b.effect(
@@ -872,7 +879,10 @@ mod knowledge_action {
         host::Action,
         model::{Bulk, BulkAction, Snapshot},
     };
-    pub fn admit(_: &Backend, _: &Action, _: u64) -> Accepted {
+    pub fn admit(b: &Backend, a: &Action, _: u64) -> Accepted {
+        if let Action::List { filter, offset } = a {
+            *b.knowledge_page.lock().unwrap_or_else(|p| p.into_inner()) = (filter.clone(), *offset);
+        }
         None
     }
     pub async fn run(

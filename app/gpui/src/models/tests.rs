@@ -35,3 +35,25 @@ fn late_runtime_updates_do_not_regress_catalog() {
     assert!(!s.merge_runtime(update));
     assert_eq!(s.model("base.en").unwrap().install, Install::Invalid);
 }
+
+#[test]
+fn selection_uses_settings_revision_even_after_runtime_events() {
+    let mut snapshot = fixtures::snapshot();
+    snapshot.revision = 90;
+    snapshot.settings_revision = 7;
+    assert_eq!(
+        snapshot.select("tiny.en".into()),
+        super::host::Action::Select {
+            id: "tiny.en".into(),
+            settings_revision: 7
+        }
+    );
+    snapshot.revision += 1;
+    assert_eq!(
+        snapshot.select("tiny.en".into()),
+        super::host::Action::Select {
+            id: "tiny.en".into(),
+            settings_revision: 7
+        }
+    );
+}

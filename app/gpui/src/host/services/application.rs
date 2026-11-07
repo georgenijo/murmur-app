@@ -929,6 +929,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             preview: microphone,
             levels,
             history_keys: Default::default(),
+            knowledge_page: Default::default(),
             knowledge_reviews: Default::default(),
             meetings: playback,
             diagnostics: Default::default(),

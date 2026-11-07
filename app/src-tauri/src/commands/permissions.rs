@@ -4,9 +4,9 @@ use crate::{audio, injector};
 pub(crate) fn open_system_preference_pane(pane: &str) -> Result<(), String> {
     #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
     {
-        return crate::native_services::open_system_url(format!(
+        crate::native_services::open_system_url(format!(
             "x-apple.systempreferences:com.apple.preference.security?{pane}"
-        ));
+        ))
     }
     #[cfg(feature = "tauri-host")]
     {
