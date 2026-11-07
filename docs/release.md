@@ -185,6 +185,154 @@ warm path. Record the `release-macos` and overall workflow durations, the Rust
 cache summary, and repository cache usage. The release target is macOS and total
 wall time <= 5 minutes.
 
+## GPUI packaging rehearsal (draft rewrite stack)
+
+Issue #994 adds a non-default `bundle_target` choice to **Release Build**.
+The default is `tauri`; its build, signing, cache, artifact and promotion steps
+are unchanged. `gpui` is accepted only for `workflow_dispatch` on trusted
+`main`. Three isolated jobs produce `gpui-build-<source-sha>`,
+`gpui-signer-<source-sha>` and `gpui-rehearsal-<source-sha>`, never
+`macos-release-<source-sha>`. Promotion requires a trusted **push** build and
+the latter artifact name, so a GPUI rehearsal cannot publish, even on rerun.
+GPUI does not save the Tauri release cache; `prime_caches` retains its existing
+Tauri meaning.
+
+The native packager is `scripts/bundle_gpui.py`, a standard-library Python
+script. The required layout is small and fixed, so reusing the repository's
+existing finalizer and assets is simpler than adopting a second bundling
+configuration. Both hosts read identity and the application version from
+`app/src-tauri/tauri.conf.json`; GPUI's build script embeds that same version.
+The `murmur-ui` crate's package version is a library version, not an app release
+version. Existing `release_version.py` synchronization remains unchanged.
+
+The packager copies `ui`, the three arm64 capture helpers, `icon.icns`, and
+`Contents/Library/LaunchAgents/com.localdictation.capture-agent.plist`.
+Its Info.plist preserves every Tauri-generated key and the shared permission
+descriptions, bundle ID, version and macOS 14 minimum. GPUI links the Swift
+runtime rpath and weak-links FoundationModels when present in the SDK. The
+existing finalizer applies the same per-binary entitlements and fixed helper
+identifiers, checks embedded helper plists and rejects extra executables,
+QA binaries as main, and symlinked executables.
+
+On an **isolated arm64 Mac checkout**, without any credential environment:
+
+```bash
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+export RUSTUP_TOOLCHAIN=1.98.1
+python3 scripts/build_capture_helpers.py
+(cd app && npm ci)
+python3 scripts/rehearse_gpui_bundle.py \
+  --target-dir "$HOME/Builds/gpui-target-pkg18" \
+  --output "$PWD/local/gpui-packaging-rehearsal"
+```
+
+Use a fresh output directory. The rehearsal builds release helpers and native
+`ui`, verifies Cargo resolved **this checkout's** vendored GPUI, and runs the
+real Tauri **bundler** against the same native payload in a separate target
+directory. This isolates packaging parity from host behavior: it does not
+compile or run the Tauri host. Both independently assembled bundles are
+ad-hoc finalized. `rehearsal.json` records an exact Info.plist key/value diff,
+layout diff (only the code-signature resource seal is excluded), matching
+resource/launch-agent bytes, extra-executable rejection, Mach-O weak link,
+Swift rpath, deployment minimum, binary/bundle version equality and an exact
+native-shell PID launch check. Gatekeeper's result is recorded, with ad-hoc
+rejection expected; it is **not** a signed-release pass. The script does not
+register agents, launch production, send input, access profiles or pasteboard,
+or generate updater signatures. It refuses release-credential environments.
+
+`ui` is currently an inert packaging shell. Production startup, services,
+shutdown, and updater integration belong to the subsequent native host work
+(#996/#997); a passing packaging rehearsal does not establish product parity.
+
+The [Mac mini receipt](draft/gpui-packaging-rehearsal.json) at source
+`a7110f223401220ab25990785b34e86817e4779f` records 19 matching plist keys,
+12 matching layout entries, the expected ad-hoc Gatekeeper rejection and a
+successful native-shell launch. It establishes packaging at that revision,
+not the deferred signed gate.
+
+The future signed lane uses three fresh GitHub-hosted macOS runners, each
+checking out the exact `source-sha` with `persist-credentials: false`:
+
+- `gpui-build` builds the capture helpers and runs `release_gpui.py build`
+  (`cargo build --locked --release --bin ui`). It receives no secrets at any
+  workflow, job or step scope. The build phase refuses credential-like variables.
+  Its artifact contains exactly `ui` and the three capture helper binaries.
+- `gpui-signer` receives no secrets and runs `release_gpui.py build-signer`.
+  It compiles only `scripts/updater-signer`, using that tool's independent locked
+  dependency tree and target directory. Its sole payload is the updater signer;
+  no app dependency code runs on or can write to this runner.
+- `gpui-sign` needs both builders and `context`. Signing scripts, configuration,
+  finalizer and assets come from its fresh trusted source checkout, made read-only
+  before downloading. A step with no signing secrets uses `gh api` and the job's
+  `GITHUB_TOKEN` to fetch both raw artifact ZIPs under `$RUNNER_TEMP`, outside the
+  checkout. It never uses `download-artifact` extraction. The trusted stdlib
+  `gpui_artifacts.py` requires exactly one expected tar member in each ZIP and
+  verifies that tar's SHA-256 against the respective builder job output before
+  importing the certificate. It extracts only exact allowlisted regular files
+  into fresh directories under `$RUNNER_TEMP`. Links, traversal paths,
+  duplicates, extra files and swapped artifact kinds
+  fail closed. The app artifact cannot replace a signing script or the signer.
+  `release_gpui.py sign` takes explicit `--binary`, `--helpers-dir` and
+  `--native-signer` paths. No app binary or helper is executed while signing.
+  This job compiles nothing and uses no shared build caches. Its keychain is
+  deleted even on failure.
+
+Builder output is integrity-checked data. App build output is never executed,
+and neither builder's output is extracted outside the allowlist. The independently
+built updater signer is the sole executable transferred for use in signing.
+All three jobs have explicit `contents: read` permissions; only `gpui-sign` adds
+`actions: read` for the raw download. No signing secrets are present in that step.
+
+The workflow policy validator pins the exact content of all three GPUI jobs,
+and of the whole `release-build.yml`, by SHA-256. The file pin covers what the
+GPUI lane inherits or consumes from outside its jobs: workflow-level `env` and
+`defaults` (including root keys appended after the last job) and the context
+job's `source-sha` output. Any edit, including appended shell commands, a
+default `run.shell`, or a YAML escape that decodes to `secrets`, fails until
+the pins are deliberately updated after review. That includes edits to the
+Tauri lane, so any change to this workflow must update `RELEASE_BUILD_SHA256`
+in `scripts/validate_workflow_policy.py`. Raw artifact ZIPs and
+their decompressed payloads are capped at 1 GiB before hashing. Semantic assertions additionally reject
+inherited workflow/job secret env and all secret-context references (including
+`toJSON(secrets)` and `secrets: inherit`) in either builder. They require the fresh
+checkout, minimal permissions, isolated raw downloads and hash verification.
+Mutation tests cover whole-context secrets, obfuscated `c"ar"go`, `pip install`,
+`brew install`, and malicious outer ZIPs and inner tars. Promotion policy rejects
+every `gpui-*` artifact namespace;
+all three jobs keep the manual-only guard and cannot publish.
+
+The shared packager's default helper lookup is unchanged for secretless
+rehearsals; only the signing lane supplies the verified helper directory.
+The `sign` phase uses the same finalizer,
+notarizes and staples the app and DMG, checks Gatekeeper, signs the updater
+archive, and records hashes, sizes and helper designated requirements/Team IDs
+in provenance. `--native-signer` opts into the new signer; the default
+notarization/repackaging path still invokes the original Tauri signer. The
+native signer consumes the existing base64-encoded Minisign key format through
+environment only, verifies its signature against the configured public key
+before writing `.sig`, and emits base64-encoded Minisign text readable by
+installed clients. Tests use only generated synthetic keys, including an
+encrypted key, wrong passwords/keys and tampered archives.
+
+**Existing Tauri follow-up:** production `release-macos` still imports its
+certificate before `npx tauri build`, which runs with
+`TAURI_SIGNING_PRIVATE_KEY` in its environment and notarizes on the same runner.
+That pre-existing compilation/signing boundary needs a separate lead-owned
+change. This GPUI isolation change leaves that job byte-identical.
+
+**Handoffs before #994 can be closed:** the native-parity decision forbids
+landing any rewrite work on `main` now. Therefore do not dispatch Release Build
+from this stack or move signing credentials to a personal Mac. After an
+explicitly authorized whole-stack landing, an operator must run a manual
+non-publishing Release Build on `main` with `bundle_target=gpui` and existing
+hosted-runner secrets; validate signing, notarization/stapling, Gatekeeper,
+minisign readability in installed clients and TCC designated requirements;
+then install and exercise **that exact downloaded artifact** in an isolated
+Mac mini location. No signed artifact or real-update proof is claimed by the
+secretless rehearsal. Full native-host flows and the later real OTA proof
+remain separate gates. No release workflow dispatch is part of the current
+implementation task.
+
 ## Cold fallback
 
 If the automatic build for a version-bump commit fails, no tag or release is
