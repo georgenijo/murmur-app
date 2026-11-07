@@ -307,7 +307,7 @@ impl Render for Choices {
             .id("choices")
             .relative()
             .when(self.kind == ChoiceKind::Navigation, |s| {
-                s.flex_1().min_h_0().flex().flex_col()
+                s.flex_1().h_full().min_h_0().flex().flex_col()
             })
             .child(crate::data_components::focus_reveal(
                 self.focus.clone(),
@@ -434,6 +434,7 @@ impl Render for Choices {
                         }
                     })
                     .h(tokens::STANDARD_HEIGHT)
+                    .flex_shrink_0()
                     .px(px(10.))
                     .rounded(if popup {
                         tokens::MENU_RADIUS
