@@ -1172,7 +1172,7 @@ fn pointer_samples_do_not_undo_ax_disclosure_or_restart_stationary_dwell() {
     assert_eq!(m.phase, Phase::Open);
     assert!(pointer.observe(true));
     m.hover(true, 1);
-    m.close(2);
+    m.close(2, true);
     m.tick(2, false, |_, _| true);
     assert!(
         !pointer.observe(true),
@@ -1188,6 +1188,185 @@ fn pointer_samples_do_not_undo_ax_disclosure_or_restart_stationary_dwell() {
     m.hover(false, 510);
     m.tick(1000, false, |_, _| panic!("a graze cannot open"));
     assert_eq!(m.phase, Phase::Collapsed);
+}
+
+#[test]
+fn rapid_disclosure_close_rejects_late_stationary_enter_until_real_exit() {
+    rapid_disclosure_close_for_motion(false);
+}
+
+#[test]
+fn rapid_disclosure_close_rejects_late_stationary_enter_with_reduced_motion() {
+    rapid_disclosure_close_for_motion(true);
+}
+
+fn rapid_disclosure_close_for_motion(reduced: bool) {
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for interval in [49, 101, 197] {
+            let mut m = active();
+            m.snapshot.placement = placement;
+            for cycle in 0..10 {
+                let start = cycle * 2000;
+                m.expand(start);
+                assert!(m.tick(start, reduced, |_, _| true).is_none());
+                assert_eq!(m.phase, Phase::Open);
+                // Both releases precede the end of the 360 ms animation.
+                m.close(start + interval, true);
+                m.tick(start + interval, reduced, |_, _| true);
+                // A never-key panel can deliver its first enter/poll after
+                // both clicks. It is still the same stationary pointer,
+                // not permission to undo the explicit disclosure close.
+                m.hover(true, start + interval + 33);
+                for elapsed in (33..=1254).step_by(33) {
+                    assert!(
+                        m.tick(start + interval + elapsed, reduced, |_, _| true)
+                            .is_none()
+                    );
+                    assert_ne!(
+                        m.phase,
+                        Phase::Open,
+                        "cycle={cycle}, reduced={reduced}, interval={interval}"
+                    );
+                }
+                assert_eq!(m.phase, Phase::Collapsed);
+                // A deliberate click can reopen without a pointer exit.
+                m.expand(start + 1500);
+                m.tick(start + 1500, reduced, |_, _| true);
+                assert_eq!(m.phase, Phase::Open);
+                m.close(start + 1550, true);
+                m.tick(start + 1550, reduced, |_, _| true);
+                m.tick(start + 1930, reduced, |_, _| true);
+                m.hover(false, start + 1940);
+            }
+            // Actual exit/re-entry restores the ordinary 150 ms dwell.
+            m.hover(true, 21000);
+            m.tick(21149, reduced, |_, _| panic!("early dwell"));
+            m.tick(21150, reduced, |_, _| true);
+            assert_eq!(m.phase, Phase::Open);
+        }
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn explicit_close_without_an_enter_rearms_on_an_outside_sample(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    cx.update(|cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, Rc::new(FakeHost::default())));
+        overlay.update(cx, |s, _| {
+            s.model.expand(0);
+            s.model.tick(0, false, |_, _| true);
+            s.model.close(50, true);
+            s.model.tick(50, false, |_, _| true);
+            s.model.tick(430, false, |_, _| true);
+            // AX close while outside: no enter/exit transition was delivered.
+            assert!(!s.observe_pointer(false, 450));
+            assert!(s.observe_pointer(true, 500));
+            s.model.tick(649, false, |_, _| panic!("early dwell"));
+            s.model.tick(650, false, |_, _| true);
+            assert_eq!(s.model.phase, Phase::Open);
+        });
+    });
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn ax_close_outside_allows_entry_before_next_watchdog_sample(cx: &mut TestAppContext) {
+    close_visit_regression(cx, false);
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn delayed_exit_and_reentry_release_close_even_when_native_sample_is_inside(
+    cx: &mut TestAppContext,
+) {
+    close_visit_regression(cx, true);
+}
+
+#[cfg(feature = "a11y-tests")]
+fn close_visit_regression(test_cx: &mut TestAppContext, close_inside: bool) {
+    use super::native::TEST_POINTER_SAMPLE;
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_POINTER_SAMPLE.set(None);
+        }
+    }
+    let _reset = Reset;
+    test_cx.update(crate::init);
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for reduced in [false, true] {
+            TEST_POINTER_SAMPLE.set(Some(false));
+            test_cx.update(|cx| {
+                crate::preferences::apply(
+                    crate::preferences::DisplayPreferences {
+                        reduce_motion: reduced,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            let host = Rc::new(FakeHost::default());
+            let mut entity = None;
+            let (_, cx) = test_cx.add_window_view(|w, cx| {
+                let overlay = cx.new(|_| {
+                    let mut s = Overlay::new(active().snapshot, host.clone());
+                    s.model.snapshot.placement = placement;
+                    s
+                });
+                entity = Some(overlay.clone());
+                gpui_base::Root::new(overlay, w, cx)
+            });
+            let overlay = entity.unwrap();
+            let handle = cx.update(|w, cx| {
+                overlay.update(cx, |s, cx| s.advance(w, cx));
+                w.window_handle()
+            });
+            cx.activate_accessibility(handle);
+            adapter_press(cx, "Quick settings, collapsed");
+            assert_eq!(overlay.read_with(cx, |s, _| s.model.phase), Phase::Open);
+            cx.update(|w, cx| {
+                overlay.update(cx, |s, _| {
+                    s.epoch = std::time::Instant::now() - std::time::Duration::from_millis(50);
+                    // Deliberately stale stored presence: close must use the
+                    // native sample, not the most recent watchdog observation.
+                    s.pointer.observe(true);
+                });
+                w.draw(cx).clear(cx);
+            });
+            TEST_POINTER_SAMPLE.set(Some(close_inside));
+            adapter_press(cx, "Quick settings, expanded");
+            assert_ne!(overlay.read_with(cx, |s, _| s.model.phase), Phase::Open);
+            // Keep the current native sample INSIDE while queued outside and
+            // inside mouse events are dispatched. No outside watchdog sample.
+            TEST_POINTER_SAMPLE.set(Some(true));
+            let band = cx.debug_bounds("overlay-status").unwrap().center();
+            cx.update(|w, cx| {
+                overlay.update(cx, |s, _| {
+                    s.epoch = std::time::Instant::now() - std::time::Duration::from_millis(60);
+                });
+                if close_inside {
+                    w.simulate_mouse_move(gpui::point(gpui::px(-10.), gpui::px(-10.)), cx);
+                }
+                w.simulate_mouse_move(band, cx);
+                overlay.update(cx, |s, _| {
+                    let entered = s.epoch.elapsed().as_millis() as u64;
+                    s.model.tick(entered + 149, reduced, |_, _| true);
+                    assert_ne!(s.model.phase, Phase::Open, "full dwell is required");
+                    s.model.tick(entered + 150, reduced, |_, _| true);
+                    assert_eq!(
+                        s.model.phase,
+                        Phase::Open,
+                        "placement={placement:?}, reduced={reduced}, close_inside={close_inside}"
+                    );
+                });
+            });
+            assert!(
+                host.intents.borrow().is_empty(),
+                "hover/disclosure cannot send recording intents"
+            );
+        }
+    }
 }
 
 #[cfg(feature = "a11y-tests")]
