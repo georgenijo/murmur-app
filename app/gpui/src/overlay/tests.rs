@@ -1240,7 +1240,7 @@ fn disclosure_ax_frame_is_its_pointer_target_in_both_placements(cx: &mut TestApp
                     let scale = cx.update(|w, _| w.scale_factor()) as f64;
                     assert_eq!(ax.x0 / scale, f32::from(hit.left()) as f64);
                     assert_eq!(ax.y0 / scale, f32::from(hit.top()) as f64);
-                    assert_eq!(ax.width() / scale, 12.);
+                    assert_eq!(ax.width() / scale, 20.);
                     assert_eq!(ax.height() / scale, 24.);
                     // The disclosure owns no Mode/power/paste/settings area.
                     for (_, other) in &tree.nodes {
@@ -1263,6 +1263,22 @@ fn disclosure_ax_frame_is_its_pointer_target_in_both_placements(cx: &mut TestApp
                             );
                         }
                     }
+                    cx.simulate_mouse_move(
+                        gpui::point(gpui::px(-10.), gpui::px(-10.)),
+                        None,
+                        gpui::Modifiers::default(),
+                    );
+                    cx.simulate_mouse_move(
+                        gpui::point(hit.right() - gpui::px(1.), hit.center().y),
+                        None,
+                        gpui::Modifiers::default(),
+                    );
+                    overlay.update(cx, |s, _| {
+                        assert!(
+                            !s.observe_pointer(true, s.now),
+                            "hovering the enlarged disclosure counts as inside the card"
+                        );
+                    });
                     let (_, _, pressable, request) = accesskit_macos::test_press(tree, id);
                     assert!(pressable);
                     assert!(request.is_some());
@@ -1364,4 +1380,170 @@ fn disclosure_ax_frame_is_its_pointer_target_in_both_placements(cx: &mut TestApp
         cx.debug_bounds("overlay-quick-settings-disclosure")
             .is_none()
     );
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn disclosure_stays_hittable_and_precedes_controls_during_motion(cx: &mut TestAppContext) {
+    use std::time::Duration;
+
+    cx.update(crate::init);
+    let host = Rc::new(FakeHost::default());
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, host.clone()));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for disabled in [false, true] {
+            for opening in [true, false] {
+                for sample_ms in [0, 16, 60, 120, 180, 240, 270, 360] {
+                    for (x, y) in [(0.05, 0.05), (0.5, 0.5), (0.95, 0.95)] {
+                        // Settle the starting geometry, then enable the real
+                        // transition engine and advance its simulated clock.
+                        cx.update(|w, cx| {
+                            crate::preferences::apply(
+                                crate::preferences::DisplayPreferences {
+                                    reduce_motion: true,
+                                    ..Default::default()
+                                },
+                                cx,
+                            );
+                            overlay.update(cx, |s, cx| {
+                                s.model = active();
+                                s.model.snapshot.placement = placement;
+                                s.model.snapshot.disabled = disabled;
+                                s.model.phase = if opening {
+                                    Phase::Collapsed
+                                } else {
+                                    Phase::Open
+                                };
+                                s.advance(w, cx);
+                            });
+                            w.draw(cx).clear(cx);
+                            crate::preferences::apply(Default::default(), cx);
+                            assert!(!cx.reduce_motion());
+                            overlay.update(cx, |s, cx| s.toggle_quick_settings(w, cx));
+                            w.draw(cx).clear(cx);
+                        });
+                        cx.executor()
+                            .advance_clock(Duration::from_millis(sample_ms));
+                        cx.update(|w, cx| w.draw(cx).clear(cx));
+                        let card = cx.debug_bounds("overlay-surface").unwrap();
+                        let hit = cx
+                            .debug_bounds("overlay-quick-settings-disclosure")
+                            .unwrap();
+                        let g = overlay.read_with(cx, |s, _| s.model.geometry(opening, s.now));
+                        let height = f32::from(card.size.height) as f64;
+                        if sample_ms > 0 && sample_ms < 360 {
+                            assert!(
+                                height > g.collapsed_h && height < g.expanded_h,
+                                "must sample a real intermediate frame: {height}, sample={sample_ms}, opening={opening}, placement={placement:?}"
+                            );
+                        }
+                        // Overflow hit-testing clips to this rectangle. The
+                        // entire AX target must stay within it, not just its center.
+                        assert!(hit.left() >= card.left() && hit.right() <= card.right());
+                        assert!(hit.top() >= card.top() && hit.bottom() <= card.bottom());
+                        if placement == OverlayPlacement::FloatingPill {
+                            assert_eq!(hit.bottom() + gpui::px(5.), card.bottom());
+                        } else {
+                            assert_eq!(
+                                hit.top() - card.top(),
+                                gpui::px((g.collapsed_h as f32 - 24.) / 2.)
+                            );
+                        }
+                        let tree = cx.accessibility_tree(window);
+                        let focus = tree.focus;
+                        let name = if opening {
+                            "Quick settings, expanded"
+                        } else {
+                            "Quick settings, collapsed"
+                        };
+                        let (disclosure_id, node) = tree
+                            .nodes
+                            .iter()
+                            .find(|(_, n)| n.label() == Some(name))
+                            .unwrap();
+                        let scale = cx.update(|w, _| w.scale_factor()) as f64;
+                        let ax = node.bounds().unwrap();
+                        assert_eq!(ax.x0 / scale, f32::from(hit.left()) as f64);
+                        assert_eq!(ax.y0 / scale, f32::from(hit.top()) as f64);
+                        assert_eq!(ax.width() / scale, 20.);
+                        assert_eq!(ax.height() / scale, 24.);
+                        if opening {
+                            // Walk actual AX child links. Node emission order
+                            // alone is not the navigation order consumed by VO.
+                            fn walk(
+                                tree: &gpui::accesskit::TreeUpdate,
+                                id: gpui::accesskit::NodeId,
+                                order: &mut Vec<gpui::accesskit::NodeId>,
+                            ) {
+                                order.push(id);
+                                let node = &tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1;
+                                for child in node.children() {
+                                    walk(tree, *child, order);
+                                }
+                            }
+                            let mut order = Vec::new();
+                            walk(&tree, tree.tree.as_ref().unwrap().root, &mut order);
+                            let disclosure_index =
+                                order.iter().position(|id| id == disclosure_id).unwrap();
+                            for label in [
+                                "Mode: Everyday. Click to cycle",
+                                if disabled {
+                                    "Enable Murmur"
+                                } else {
+                                    "Disable Murmur"
+                                },
+                                "Auto-paste",
+                                "Open settings",
+                            ] {
+                                let id = tree
+                                    .nodes
+                                    .iter()
+                                    .find(|(_, n)| n.label() == Some(label))
+                                    .unwrap()
+                                    .0;
+                                assert!(
+                                    disclosure_index < order.iter().position(|n| *n == id).unwrap(),
+                                    "disclosure must precede {label} in AX child order"
+                                );
+                            }
+                        }
+                        let before = host.intents.borrow().len();
+                        cx.simulate_click(
+                            gpui::point(
+                                gpui::px(((ax.x0 + ax.width() * x) / scale) as f32),
+                                gpui::px(((ax.y0 + ax.height() * y) / scale) as f32),
+                            ),
+                            gpui::Modifiers::default(),
+                        );
+                        assert_eq!(
+                            overlay.read_with(cx, |s, _| s.model.phase),
+                            if opening { Phase::Closing } else { Phase::Open }
+                        );
+                        adapter_press(
+                            cx,
+                            if opening {
+                                "Quick settings, collapsed"
+                            } else {
+                                "Quick settings, expanded"
+                            },
+                        );
+                        assert_eq!(
+                            overlay.read_with(cx, |s, _| s.model.phase),
+                            if opening { Phase::Open } else { Phase::Closing }
+                        );
+                        assert_eq!(cx.accessibility_tree(window).focus, focus);
+                        assert_eq!(host.intents.borrow().len(), before);
+                    }
+                }
+            }
+        }
+    }
 }
