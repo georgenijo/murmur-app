@@ -882,3 +882,39 @@ pub const LINKS: &[SearchLink] = &[
         keywords: "events logs runs performance compare debugger",
     },
 ];
+
+/// The reference screen uses human-readable bindings, retaining paused choices.
+pub fn shortcut_reference(settings: &Value) -> [String; 2] {
+    let key = settings["doubleTapKey"].as_str().unwrap_or("shift_l");
+    let key = ROWS
+        .iter()
+        .find(|r| r.key == "doubleTapKey")
+        .and_then(|r| match r.kind {
+            Kind::Choice(options) => options
+                .iter()
+                .find(|(v, _)| *v == key)
+                .map(|(_, label)| *label),
+            _ => None,
+        })
+        .unwrap_or("Left Shift");
+    let gesture = match settings["recordingMode"].as_str() {
+        Some("double_tap") => "Double-tap",
+        Some("both") => "Hold or double-tap",
+        _ => "Hold",
+    };
+    let recording_state = if settings["disabled"] == true {
+        "Paused while Murmur is disabled"
+    } else {
+        "On"
+    };
+    let paste = match settings["pasteLastShortcut"].as_str() {
+        Some("command_shift_v") => "⌘⇧V · On",
+        Some("command_option_v") => "⌘⌥V · On",
+        Some("command_control_v") => "⌘⌃V · On",
+        _ => "Not assigned · Off",
+    };
+    [
+        format!("Recording: {gesture} {key} · {recording_state}"),
+        format!("Paste last or retry delivery: {paste}"),
+    ]
+}

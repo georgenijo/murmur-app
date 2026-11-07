@@ -75,6 +75,25 @@ fn catalog_matches_every_preference_owner_and_core_validation() {
     ] {
         assert_eq!(Page::resolve(alias), page);
     }
+    let mut reference = murmur_core::state::settings(defaults.clone()).unwrap();
+    assert_eq!(
+        super::schema::shortcut_reference(&reference),
+        [
+            "Recording: Hold Left Shift · On",
+            "Paste last or retry delivery: Not assigned · Off"
+        ]
+    );
+    reference["recordingMode"] = json!("both");
+    reference["doubleTapKey"] = json!("f13");
+    reference["disabled"] = json!(true);
+    reference["pasteLastShortcut"] = json!("command_option_v");
+    assert_eq!(
+        super::schema::shortcut_reference(&reference),
+        [
+            "Recording: Hold or double-tap F13 · Paused while Murmur is disabled",
+            "Paste last or retry delivery: ⌘⌥V · On"
+        ]
+    );
     let settings = murmur_core::state::settings(defaults).unwrap();
     for row in ROWS {
         assert_eq!(

@@ -150,19 +150,8 @@ impl Settings {
                 }
             }
             Page::Shortcuts => {
-                let key = settings["doubleTapKey"]
-                    .as_str()
-                    .unwrap_or("shift_l")
-                    .to_string();
-                text!(format!(
-                    "Recording: {key} · {}{}",
-                    settings["recordingMode"].as_str().unwrap_or("hold_down"),
-                    if settings["disabled"] == true {
-                        " · Paused while Murmur is disabled"
-                    } else {
-                        ""
-                    }
-                ));
+                let [recording, paste] = shortcut_reference(&settings);
+                text!(recording);
                 out.push(
                     self.route_button(
                         "shortcut-recording",
@@ -172,10 +161,7 @@ impl Settings {
                     )
                     .into_any_element(),
                 );
-                text!(format!(
-                    "Paste last: {}",
-                    settings["pasteLastShortcut"].as_str().unwrap_or("Disabled")
-                ));
+                text!(paste);
                 out.push(
                     self.route_button(
                         "shortcut-delivery",
