@@ -317,6 +317,20 @@ def validate_release_build(workflow: str) -> int:
         in workflow
     )
     assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
+    assert "options: [tauri, gpui]\n        default: tauri" in workflow
+    context = job_block(workflow, "context")
+    assert "BUNDLE_TARGET: ${{ inputs.bundle_target || 'tauri' }}" in context
+    assert 'TARGET=$(python3 scripts/release_bundle_target.py) || exit 1' in context
+    assert 'echo "bundle_target=$TARGET" >> "$GITHUB_OUTPUT"' in context
+    assert "bundle-target: ${{ steps.context.outputs.bundle_target }}" in context
+    assert scalar(job_block(workflow, "release-macos"), "if") == "needs.context.outputs.bundle-target == 'tauri'"
+    gpui = job_block(workflow, "gpui-macos")
+    assert scalar(gpui, "if") == "github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'"
+    assert "persist-credentials: false" in gpui
+    assert "name: gpui-rehearsal-${{ needs.context.outputs.source-sha }}" in gpui
+    assert "macos-release-" not in gpui
+    assert "scripts/release_gpui.py" in gpui
+    assert "save-if:" not in gpui  # no writes to trusted Tauri caches
     for job in ("typecheck", "release-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"
 
