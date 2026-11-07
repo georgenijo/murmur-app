@@ -1,0 +1,78 @@
+{
+  "source": "macOS 26.7.2 (25G332), GitHub macos-26-arm64 runner image 20261102.0473; CI run 42356885588, job 128356939374, head 411fce8769ac116a0d595e5eb52bb5cec4206b73; application path sanitized, symbol names unchanged",
+  "chain": [
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "_ZZZN5dyld412RuntimeState10notifyLoadERKNSt3__14spanIPKNS_6LoaderELm18446744073709551615EEEEUb_ENK3$_8clEv"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "___ZN5dyld412RuntimeState10notifyLoadERKNSt3__14spanIPKNS_6LoaderELm18446744073709551615EEE_block_invoke"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "_ZN5dyld412RuntimeLocks21withNotifiersReadLockEU13block_pointerFvvE"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "_ZN5dyld412RuntimeState10notifyLoadERKNSt3__14spanIPKNS_6LoaderELm18446744073709551615EEE"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "_ZZN5dyld44APIs11dlopen_fromEPKciPvENK3$_0clEv"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "_ZN5dyld44APIs11dlopen_fromEPKciPv"
+    },
+    {
+      "image": "/System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking",
+      "symbol": "_sl_dlopen"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "WritingToolsUILibraryCore"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "+[NSTextView(NSTextView_WritingTools) _supportsWritingTools]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication(NSMenuUpdating) _addTextInputMenuItems:]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication(NSMenuUpdating) _customizeMainMenu]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication finishLaunching]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "_NSApplicationBeginRunning"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication run]"
+    },
+    {
+      "image": "/synthetic/murmur-appkit-menu/test",
+      "symbol": "main"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "start"
+    }
+  ],
+  "loadedImages": [
+    "/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit",
+    "/System/Library/Frameworks/WebKit.framework/Versions/A/Frameworks/WebKitLegacy.framework/Versions/A/WebKitLegacy",
+    "/System/Library/Frameworks/WebKit.framework/Versions/A/Frameworks/WebCore.framework/Versions/A/Frameworks/libwebrtc.dylib",
+    "/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/JavaScriptCore",
+    "/System/Library/Frameworks/WebKit.framework/Versions/A/Frameworks/WebCore.framework/Versions/A/WebCore",
+    "/System/Library/Frameworks/WebKit.framework/Versions/A/Frameworks/WebCore.framework/Versions/A/Frameworks/libANGLE-shared.dylib",
+    "/System/Library/PrivateFrameworks/WebGPU.framework/Versions/A/WebGPU"
+  ]
+}
