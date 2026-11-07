@@ -167,6 +167,12 @@ def main():
             raise AssertionError('diagnostics screens rendered identically')
     if len({results[f'diagnostics-{mode}-events'] for mode in ('light', 'dark', 'contrast')}) != 3:
         raise AssertionError('diagnostics appearance variants rendered identically')
+    history_baseline = subprocess.check_output([str(target / 'debug/history-qa')],
+        env={**os.environ, 'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(history_baseline, 'MURMUR_HISTORY_INVENTORY')['webkitImages'] != 0:
+        raise AssertionError('nonzero History launch-only baseline')
+    policy_log.extend(history_baseline.splitlines())
+    print('PASS zero-image History launch baseline and native linkage policy')
     # History: native production view, complete synthetic 200-row snapshot.
     # No native interaction, user history, pasteboard or memory measurement.
     for mode in ('light', 'dark', 'contrast'):
@@ -184,10 +190,8 @@ def main():
                     env['MURMUR_CONTRAST'] = '1'
                 stdout = subprocess.check_output([str(target / 'debug/history-qa')],
                                                  env=env, cwd=UI, timeout=60, text=True)
-                inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
-                             if line.startswith('MURMUR_HISTORY_INVENTORY=')]
-                if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
-                    raise AssertionError('missing or nonempty History WebKit inventory')
+                check_inventory(stdout, 'MURMUR_HISTORY_INVENTORY')
+                policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
             if paths[0].read_bytes() != paths[1].read_bytes():
                 raise AssertionError(f'non-deterministic {case}')
             results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()

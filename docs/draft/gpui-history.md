@@ -76,7 +76,7 @@ The Phase 2 host (#994/#996/#997) must implement `history::host::Host`:
    Retry Import goes to the existing migration/holding owner, never a UI importer.
 7. Before switching the **whole** main window in Phase 2, release the real legacy
    main webview and every other owner, and verify its destruction. This isolated
-   QA process loading zero WebKit images is not evidence of production retirement.
+   QA process's clean launch baseline is not evidence of production retirement.
    Keep React/Vitest/visual/backend suites until integrated replacements pass.
 
 The projection admits transcript text up to the completion store's existing
@@ -160,7 +160,12 @@ perpetual animations, and the shared Toggle honors Reduce Motion.
 | H06 | Complete 200-entry JSON/Markdown/plain exports; exclusion/ordering/bounds; fake save/cancel. | Native file panel cancel, real atomic document sink with synthetic files, clipboard adapter and truthful AX format labels. |
 | F01 / K06 | Typed file-picker and newest-entry teaching entry points only. | Host panels/queue and full teaching consent review in their assigned phases. |
 
-Verification commands run only on the Mac mini in fresh checkout 71, via Fleet
+History QA uses the shared overlay/preview/Diagnostics WebKit attribution policy.
+Launch-only baselines require zero WebKit images and clean native linkage;
+later accessibility-attributed loads are allowed, while app-owned and unknown
+loads fail closed. The golden policy log preserves every process inventory.
+
+Verification commands run only on the Mac mini in fresh checkout 77, via Fleet
 through opti with `RUSTUP_TOOLCHAIN=1.98.1`. Native GUI input, AX actions/focus
 changes on the shared desktop, production application/profile/pasteboard, and
 memory measurements are prohibited for this worker. Windowless GPUI tests may
