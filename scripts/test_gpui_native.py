@@ -410,8 +410,11 @@ int main(void) { @autoreleasepool {
             subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
                             '-framework', 'AppKit', '-I', str(ROOT / 'app/gpui/native'),
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
-            output = subprocess.check_output([str(path / 'test')], text=True, timeout=30)
-            check_inventory(output, 'MURMUR_TEST_APPKIT_INVENTORY')
+            result = subprocess.run([str(path / 'test')], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0,
+                             f'AppKit launch exited {result.returncode}\n'
+                             f'stdout:\n{result.stdout}\nstderr:\n{result.stderr}')
+            check_inventory(result.stdout, 'MURMUR_TEST_APPKIT_INVENTORY')
 
     def test_classifier_linkage_and_zero_baseline(self):
         source = r'''
