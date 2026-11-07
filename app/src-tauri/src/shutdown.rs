@@ -15,18 +15,17 @@ pub(crate) fn require_running() -> Result<(), String> {
     }
 }
 
-use crate::{MutexExt, State};
-use murmur_core::{
-    context::AppContext,
-    shutdown::{Action, Coordinator, Effect, Event, Outcome, Request, Step, WriteOutcome},
+use crate::host::ServiceAccess;
+use crate::MutexExt;
+use murmur_core::shutdown::{
+    Action, Coordinator, Effect, Event, Outcome, Request, Step, WriteOutcome,
 };
 use std::{
     sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::Manager;
 pub(crate) mod adapter;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "tauri-host"))]
 mod macos;
 #[cfg(feature = "shutdown-test-support")]
 pub(crate) mod qa_evidence;
@@ -36,21 +35,21 @@ pub(crate) struct Shutdown {
     core: Arc<Mutex<Coordinator>>,
     send: mpsc::Sender<Message>,
 }
-pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn initialize(app: &crate::host::Context) -> Result<(), String> {
     #[cfg(feature = "shutdown-test-support")]
     test_support::initialize_evidence(app);
     let clock = Instant::now();
     let core = Arc::new(Mutex::new(Coordinator::default()));
     let (send, receive) = mpsc::channel();
-    app.manage(Shutdown {
+    app.install_shutdown_owner(Shutdown {
         clock,
         core: core.clone(),
         send: send.clone(),
     });
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "tauri-host"))]
     macos::install(app.clone())?;
     let handle = app.clone();
-    let context = app.state::<AppContext>().inner().clone();
+    let context = app.context().inner().clone();
     std::thread::Builder::new()
         .name("shutdown-deadlines".into())
         .spawn(move || loop {
@@ -100,10 +99,10 @@ fn reduce(
     }
     adapter::reduce(core, message, now)
 }
-pub(crate) fn request(app: &tauri::AppHandle, request: Request) {
+pub(crate) fn request(app: &crate::host::Context, request: Request) {
     crate::commands::updater::close_admission(app);
     close_admission(); // synchronous even if the reducer/owner thread is delayed
-    if let Some(shutdown) = app.try_state::<Shutdown>() {
+    if let Some(shutdown) = app.try_shutdown_owner() {
         // Acceptance and issue share the reducer mutex. A queued notification
         // cannot hide an accepted Quit/System request from terminal commitment.
         let now = shutdown.clock.elapsed().as_millis() as u64;
@@ -123,16 +122,17 @@ pub(crate) fn request(app: &tauri::AppHandle, request: Request) {
         adapter::accept(&shutdown.core, &shutdown.send, request, now);
     }
 }
+#[cfg(feature = "tauri-host")]
 pub(crate) fn forbidden_restart_exit(code: Option<i32>, permitted: bool) -> bool {
     !permitted && code == Some(tauri::RESTART_EXIT_CODE)
 }
-pub(crate) fn permitted(app: &tauri::AppHandle) -> bool {
-    app.try_state::<Shutdown>()
+pub(crate) fn permitted(app: &crate::host::Context) -> bool {
+    app.try_shutdown_owner()
         .is_some_and(|s| s.core.lock_or_recover().termination_permitted())
 }
-pub(crate) fn receipt(app: &tauri::AppHandle) {
+pub(crate) fn receipt(app: &crate::host::Context) {
     let logs = crate::telemetry::shutdown_receipt();
-    if let Some(shutdown) = app.try_state::<Shutdown>() {
+    if let Some(shutdown) = app.try_shutdown_owner() {
         let mut core = shutdown.core.lock_or_recover();
         #[cfg(feature = "shutdown-test-support")]
         if core.termination_permitted() {
@@ -145,20 +145,20 @@ pub(crate) fn receipt(app: &tauri::AppHandle) {
         core.exited();
     }
 }
-async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) -> Outcome {
+async fn run_owner(app: &crate::host::Context, effect: Effect, deadline: Instant) -> Outcome {
     match effect.step {
         Step::Admission => {
-            let state = app.state::<State>();
+            let state = app.services();
             let _fence = state.app_state.recording_transition.lock().await;
             let worker_app = app.clone();
-            let fenced = tauri::async_runtime::spawn_blocking(move || {
+            let fenced = crate::host::runtime::spawn_blocking(move || {
                 crate::managed_child::shutdown_fence();
                 crate::audio::prepare::invalidate(
                     crate::audio::prepare::InvalidateReason::Superseded,
                 );
                 crate::smart_auto_probe::preempt();
                 crate::smart_destination::set_enabled(false);
-                worker_app.state::<State>().meeting_suggestions.shutdown();
+                worker_app.services().meeting_suggestions.shutdown();
                 true
             })
             .await
@@ -166,14 +166,14 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
             Outcome::Admission(fenced)
         }
         Step::Capture => {
-            let state = app.state::<State>();
+            let state = app.services();
             let generation = {
                 let _fence = state.app_state.recording_transition.lock().await;
                 state.app_state.recording_id.load(Ordering::SeqCst)
             };
             let stop_app = app.clone();
             let dictation = async move {
-                let state = stop_app.state::<State>();
+                let state = stop_app.services();
                 let _ = crate::commands::recording::stop_native_recording_for(
                     stop_app.clone(),
                     state,
@@ -184,7 +184,7 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
                 // An existing Processing operation owns its completion; join its
                 // generation instead of submitting another stop/pipeline.
                 loop {
-                    let state = stop_app.state::<State>();
+                    let state = stop_app.services();
                     if state.app_state.recording_id.load(Ordering::SeqCst) != generation {
                         return false;
                     }
@@ -201,9 +201,9 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
             };
             let meeting_app = app.clone();
             let meetings = async move {
-                tauri::async_runtime::spawn_blocking(move || {
+                crate::host::runtime::spawn_blocking(move || {
                     meeting_app
-                        .state::<State>()
+                        .services()
                         .meetings
                         .shutdown(&meeting_app, deadline)
                 })
@@ -215,7 +215,7 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
         }
         Step::Helpers => {
             let app = app.clone();
-            let confirmed = tauri::async_runtime::spawn_blocking(move || {
+            let confirmed = crate::host::runtime::spawn_blocking(move || {
                 crate::audio_lifecycle::retire_standby();
                 crate::audio_lifecycle::cancel_preview_for_environment_change(
                     crate::audio_lifecycle::AudioCancelReason::User,
@@ -239,11 +239,11 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
             // Keep accepting final owner events until writers finish or their
             // absolute deadline. A stuck owner cannot postpone the log drain.
             let (writers_done, drained) = mpsc::channel();
-            let telemetry = tauri::async_runtime::spawn_blocking(move || {
+            let telemetry = crate::host::runtime::spawn_blocking(move || {
                 crate::telemetry::shutdown_flush(drained, deadline)
             });
             let app = app.clone();
-            let committed = tauri::async_runtime::spawn_blocking(move || {
+            let committed = crate::host::runtime::spawn_blocking(move || {
                 wait_accepted_producers();
                 let updater = crate::commands::updater::shutdown_flush(&app, deadline);
                 let sources = crate::commands::settings_store::flush(&app);
@@ -274,7 +274,7 @@ pub(crate) fn writer_outcome(content: WriteOutcome, telemetry_flushed: bool) -> 
 }
 
 #[allow(clippy::disallowed_methods)]
-fn terminal(app: &tauri::AppHandle, action: Action) {
+fn terminal(app: &crate::host::Context, action: Action) {
     // This is the sole application restart API call; the reducer committed its
     // drained permit before queuing this callback.
     if !permitted(app) {
@@ -282,14 +282,17 @@ fn terminal(app: &tauri::AppHandle, action: Action) {
     }
     #[cfg(feature = "shutdown-test-support")]
     test_support::write_terminal_evidence(app, action);
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "tauri-host"))]
     if macos::reply_if_pending() {
         return;
     }
+    #[cfg(feature = "tauri-host")]
     match action {
         Action::Restart => app.request_restart(),
         Action::Quit => app.exit(0),
     }
+    #[cfg(not(feature = "tauri-host"))]
+    app.terminal(action);
 }
 
 #[cfg(unix)]
@@ -298,7 +301,7 @@ mod signal;
 /// The raw handler does nothing except a nonblocking async-signal-safe write.
 /// Locks, allocation and host calls live on the reader thread.
 #[cfg(unix)]
-fn signals(app: tauri::AppHandle) -> Result<(), String> {
+fn signals(app: crate::host::Context) -> Result<(), String> {
     use std::sync::atomic::AtomicI32;
     static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
     extern "C" fn notify(signal: libc::c_int) {
@@ -346,7 +349,7 @@ fn signals(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 #[cfg(not(unix))]
-fn signals(_: tauri::AppHandle) -> Result<(), String> {
+fn signals(_: crate::host::Context) -> Result<(), String> {
     Ok(())
 }
 
@@ -420,9 +423,9 @@ fn valid_source_session(session: &str) -> bool {
     !session.is_empty() && session.len() <= 128 && session.is_ascii()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) async fn register_source_session(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     source_session: String,
 ) -> Result<(), String> {
     let admission = WriterPermit::acquire()?;
@@ -498,7 +501,7 @@ pub(crate) async fn versioned_source_call<T: Send + 'static>(
 
 #[cfg(test)]
 pub(crate) fn register_test_source(owner: &str, session: &str) {
-    tauri::async_runtime::block_on(register_source_owner(
+    crate::host::runtime::block_on(register_source_owner(
         owner.into(),
         session.into(),
         WriterPermit::accepted_producer(),
@@ -523,7 +526,7 @@ pub(crate) mod test_support {
             .is_some_and(|evidence| evidence.lock_or_recover().is_some())
     }
 
-    pub(super) fn initialize_evidence(app: &tauri::AppHandle) {
+    pub(super) fn initialize_evidence(app: &crate::host::Context) {
         let evidence = qa_evidence::Evidence::new(
             &app.config().identifier,
             crate::identity::initialized_identifier(),
@@ -547,7 +550,7 @@ pub(crate) mod test_support {
             }
         }
     }
-    pub(super) fn write_terminal_evidence(app: &tauri::AppHandle, action: Action) {
+    pub(super) fn write_terminal_evidence(app: &crate::host::Context, action: Action) {
         qa_evidence::with_terminal_evidence(
             || {
                 if !isolated(app) {
@@ -574,10 +577,10 @@ pub(crate) mod test_support {
             || (),
         );
     }
-    fn isolated(app: &tauri::AppHandle) -> bool {
+    fn isolated(app: &crate::host::Context) -> bool {
         app.config().identifier == "com.localdictation.shutdown-test"
     }
-    pub(super) async fn delay(app: &tauri::AppHandle, step: Step) {
+    pub(super) async fn delay(app: &crate::host::Context, step: Step) {
         if !isolated(app) {
             return;
         }
@@ -598,7 +601,7 @@ pub(crate) mod test_support {
     /// After real owner work, hold final release for >=6 s. Each dispatcher
     /// must execute repeatedly while an actual AppKit termination wait is active.
     pub(super) fn hold(
-        app: &tauri::AppHandle,
+        app: &crate::host::Context,
         context: &AppContext,
         receive: &mpsc::Receiver<Message>,
         core: &Mutex<Coordinator>,
@@ -643,16 +646,16 @@ pub(crate) mod test_support {
         }
         tracing::info!(target:"shutdown", callbacks=counts.snapshot().total(), expected=195, "synthetic shutdown dispatcher receipt");
     }
-    pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<crate::host::DefaultRuntime> {
         tauri::plugin::Builder::new("shutdown-test")
             .invoke_handler(tauri::generate_handler![shutdown_test_action])
             .build()
     }
-    #[tauri::command]
+    #[cfg_attr(feature = "tauri-host", tauri::command)]
     #[allow(clippy::disallowed_methods)]
     pub(crate) fn shutdown_test_action(
-        app: tauri::AppHandle,
-        window: tauri::WebviewWindow,
+        app: crate::host::Context,
+        window: crate::host::Window,
         action: String,
     ) -> Result<(), String> {
         if !isolated(&app) || window.label() != "main" {
@@ -745,11 +748,11 @@ mod tests {
                 std::fs::write(newer_path, b"newer").map_err(|_| "synthetic write failure".into())
             });
             assert_eq!(
-                tauri::async_runtime::block_on(newer).unwrap(),
+                crate::host::runtime::block_on(newer).unwrap(),
                 SourceWrite::Applied { value: () }
             );
             assert_eq!(
-                tauri::async_runtime::block_on(older).unwrap(),
+                crate::host::runtime::block_on(older).unwrap(),
                 SourceWrite::Superseded
             );
             assert_eq!(std::fs::read(path).unwrap(), b"newer");
@@ -780,7 +783,7 @@ mod tests {
             register_test_source("main", &new_session);
             let new_path = path.clone();
             assert_eq!(
-                tauri::async_runtime::block_on(versioned_source_call(
+                crate::host::runtime::block_on(versioned_source_call(
                     "main".into(),
                     new_session,
                     key.into(),
@@ -791,12 +794,12 @@ mod tests {
                 SourceWrite::Applied { value: () }
             );
             assert_eq!(
-                tauri::async_runtime::block_on(old).unwrap(),
+                crate::host::runtime::block_on(old).unwrap(),
                 SourceWrite::Superseded
             );
             assert_eq!(std::fs::read(path).unwrap(), b"new");
             // A delayed registration retry cannot resurrect the retired session.
-            assert!(tauri::async_runtime::block_on(register_source_owner(
+            assert!(crate::host::runtime::block_on(register_source_owner(
                 "main".into(),
                 old_session,
                 WriterPermit::accepted_producer()
@@ -839,7 +842,7 @@ mod tests {
         barrier_done.recv_timeout(Duration::from_secs(5)).unwrap();
         barrier.join().unwrap();
         assert_eq!(
-            tauri::async_runtime::block_on(service.shutdown_receipt()),
+            crate::host::runtime::block_on(service.shutdown_receipt()),
             WriteOutcome::Committed
         );
         drop(service);

@@ -17,6 +17,11 @@ exclude = ["patches/tao"]
 default-members = ["."]
 resolver = "2"
 
+[[bin]]
+name = "ui"
+path = "src/main.rs"
+required-features = ["tauri-host"]
+
 [lib]
 name = "ui_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
@@ -27,6 +32,9 @@ name = "main_thread_queue"
 harness = false
 
 [features]
+default = ["tauri-host"]
+tauri-host = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-autostart", "dep:tauri-plugin-notification", "dep:tauri-plugin-process", "dep:tauri-plugin-dialog", "dep:murmur-webkit", "dep:tao"]
+native-host = []
 # Test-only capture helper executable injection.
 capture-test-support = []
 # Isolated synthetic shutdown fixture; never enabled in release workflows.
@@ -38,18 +46,19 @@ internal-benchmark = []
 preview-decode-reuse = []
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { optional = true, version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
-tauri-plugin-opener = "2"
-tauri-plugin-autostart = "2"
-tauri-plugin-notification = "2"
-tauri-plugin-process = "2"
-tauri-plugin-dialog = "2"
+dpi = "0.1"
+tauri = { optional = true, version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-autostart = { version = "2", optional = true }
+tauri-plugin-notification = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "fs", "time", "macros"] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt", "rt-multi-thread", "fs", "time", "macros"] }
 base64 = "0.22"
 whisper-rs = { version = "0.15", features = ["log_backend"] }
 sherpa-onnx = "1.13"
@@ -94,9 +103,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-
 tauri = { version = "2", features = ["test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tao = { version = "=0.35.3", default-features = false, features = ["rwh_06"] }
+tao = { optional = true, version = "=0.35.3", default-features = false, features = ["rwh_06"] }
 whisper-rs = { version = "0.15", features = ["metal"] }
-murmur-webkit = { path = "crates/murmur-webkit" }
+murmur-webkit = { optional = true, path = "crates/murmur-webkit" }
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-event-kit = { version = "0.3.2", default-features = false, features = ["std", "EKCalendar", "EKCalendarItem", "EKEvent", "EKEventStore", "EKObject", "EKParticipant", "EKTypes", "block2"] }
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSScreen", "NSGraphics", "NSApplication", "NSRunningApplication", "NSWorkspace", "NSPasteboard", "NSPasteboardItem"] }
@@ -129,8 +138,13 @@ opt-level = "s"
 strip = false
 
 [patch.crates-io]
-tao = { path = "patches/tao" }
+tao = { optional = true, path = "patches/tao" }
 
 [[test]]
 name = "shutdown_appkit"
 harness = false
+
+[[test]]
+name = "native_host_contract"
+harness = false
+required-features = ["native-host"]

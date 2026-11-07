@@ -494,7 +494,7 @@ impl ModelRuntimeManager {
     /// inference/preparation and then delete a model after the request became stale.
     pub fn remove_model_artifact(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         selected_model: &str,
         remove: impl FnOnce() -> Result<(), String>,
@@ -506,7 +506,7 @@ impl ModelRuntimeManager {
 
     fn remove_model_artifact_with_presence(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         selected_model: &str,
         remove: impl FnOnce() -> Result<(), String>,
@@ -547,7 +547,7 @@ impl ModelRuntimeManager {
 
     pub fn begin_install(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
     ) -> Result<bool, String> {
         self.begin_install_with_presence(app, model_name, model_installed(model_name))
@@ -555,7 +555,7 @@ impl ModelRuntimeManager {
 
     fn begin_install_with_presence(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         already_installed: bool,
     ) -> Result<bool, String> {
@@ -571,7 +571,7 @@ impl ModelRuntimeManager {
 
     pub fn set_install_state(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         state: InstallState,
     ) -> Result<(), String> {
@@ -588,7 +588,7 @@ impl ModelRuntimeManager {
 
     fn publish(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         reason: &'static str,
     ) -> Result<(), String> {
@@ -616,7 +616,7 @@ impl ModelRuntimeManager {
 
     fn set_lifecycle(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         lifecycle: LifecycleState,
         failure_present: bool,
@@ -634,7 +634,7 @@ impl ModelRuntimeManager {
 
     fn ensure_backend<'a>(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         inner: &'a mut MutexGuard<'_, RuntimeInner>,
         model_name: &str,
     ) -> Result<&'a mut Box<dyn TranscriptionBackend>, String> {
@@ -676,7 +676,7 @@ impl ModelRuntimeManager {
 
     fn ensure_loaded(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         inner: &mut MutexGuard<'_, RuntimeInner>,
         model_name: &str,
         reason: PreparationReason,
@@ -741,7 +741,7 @@ impl ModelRuntimeManager {
 
     pub fn prepare(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         reason: PreparationReason,
     ) -> Result<LoadReport, String> {
@@ -759,7 +759,7 @@ impl ModelRuntimeManager {
     /// Recheck the launch generation under the same lock that selects/loads.
     pub(crate) fn prepare_startup_if(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         is_current: impl FnOnce() -> bool,
     ) -> Result<Option<LoadReport>, String> {
@@ -774,7 +774,7 @@ impl ModelRuntimeManager {
 
     pub fn with_ready_backend<T>(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
         reason: PreparationReason,
         operation: impl FnOnce(&mut dyn TranscriptionBackend) -> Result<T, String>,
@@ -818,7 +818,7 @@ impl ModelRuntimeManager {
 
     pub fn select_model(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         model_name: &str,
     ) -> Result<(), String> {
         self.definition(model_name)?;
@@ -861,7 +861,7 @@ impl ModelRuntimeManager {
 
     pub fn unload(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         reason: UnloadReason,
     ) -> Result<Option<String>, String> {
         let mut inner = self.inner.lock_or_recover();

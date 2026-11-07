@@ -1,12 +1,14 @@
 //! Transport only. Network, trust, policy, state and recovery live in murmur-core.
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use murmur_core::events::{EventKind, EventSink};
 use murmur_core::updater::{self, Action, Snapshot, Updater};
 use std::sync::Arc;
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
 
 pub(crate) fn initialize(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     store: murmur_core::completion::CompletionService,
 ) -> Result<(), String> {
     let root = super::settings_store::data_dir(app)?;
@@ -43,20 +45,25 @@ pub(crate) fn initialize(
                 .publish(EventKind::UpdaterStateChanged, snapshot);
         },
         move |version| {
-            use tauri_plugin_notification::NotificationExt;
-            let _ = notification
-                .notification()
-                .builder()
-                .title("Update Available")
-                .body(format!("Murmur v{version} is ready to install."))
-                .show();
+            #[cfg(feature = "tauri-host")]
+            {
+                use tauri_plugin_notification::NotificationExt;
+                let _ = notification
+                    .notification()
+                    .builder()
+                    .title("Update Available")
+                    .body(format!("Murmur v{version} is ready to install."))
+                    .show();
+            }
+            #[cfg(not(feature = "tauri-host"))]
+            notification.notify_update(&version);
         },
     );
     #[cfg(feature = "shutdown-test-support")]
     let updater = fixture::configure(app, updater)?;
-    app.manage(Arc::new(updater));
+    app.install_updater_owner(Arc::new(updater));
     let timer = app.clone();
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(15 * 60));
         interval.tick().await;
         loop {
@@ -65,7 +72,7 @@ pub(crate) fn initialize(
                 break;
             }
             let app = timer.clone();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _ = crate::host::runtime::spawn_blocking(move || {
                 run(&app, Action::Check { background: true })
             })
             .await;
@@ -86,18 +93,18 @@ fn activate_completed(
         activate();
     }
 }
-fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn main_only(window: &crate::host::Window) -> Result<(), String> {
     if window.label() != "main" {
         return Err("Updater belongs to the main window".into());
     }
     Ok(())
 }
-fn owner(app: &tauri::AppHandle) -> Result<Arc<Updater>, String> {
-    app.try_state::<Arc<Updater>>()
+fn owner(app: &crate::host::Context) -> Result<Arc<Updater>, String> {
+    app.try_updater_owner()
         .map(|s| s.inner().clone())
         .ok_or_else(|| "Updater is still initializing".into())
 }
-fn run(app: &tauri::AppHandle, action: Action) -> Result<Snapshot, String> {
+fn run(app: &crate::host::Context, action: Action) -> Result<Snapshot, String> {
     crate::shutdown::require_running()?;
     // Other internal builds must never consume the production feed or replace
     // their unsigned developer bundle. The QA fixture alone opts in explicitly.
@@ -117,22 +124,22 @@ fn run(app: &tauri::AppHandle, action: Action) -> Result<Snapshot, String> {
     }
     Ok(updater.snapshot())
 }
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn updater_snapshot(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
 ) -> Result<Snapshot, String> {
     main_only(&window)?;
     Ok(owner(&app)?.snapshot())
 }
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn updater_action(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     action: Action,
 ) -> Result<Snapshot, String> {
     main_only(&window)?;
-    tauri::async_runtime::spawn_blocking(move || run(&app, action))
+    crate::host::runtime::spawn_blocking(move || run(&app, action))
         .await
         .map_err(|_| "Updater worker unavailable".to_string())?
 }
@@ -141,7 +148,7 @@ pub async fn updater_action(
 pub struct UpdateInstallEnvironment {
     app_translocated: bool,
 }
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_update_install_environment() -> Result<UpdateInstallEnvironment, String> {
     Ok(UpdateInstallEnvironment {
         app_translocated: updater::translocated(
@@ -162,9 +169,9 @@ pub struct UpdaterCanaryState {
     dry_run: bool,
 }
 /// Existing OTA canary command contract is retained; Rust runs the canary.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn updater_canary(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     request: UpdaterCanaryRequest,
 ) -> Result<UpdaterCanaryState, String> {
     main_only(&window)?;
@@ -185,11 +192,14 @@ mod fixture {
     use super::*;
     /// This override is compiled only with the QA feature. Production identity
     /// ignores it, even in a feature-enabled developer build.
-    pub(super) fn enabled(app: &tauri::AppHandle) -> bool {
+    pub(super) fn enabled(app: &crate::host::Context) -> bool {
         app.config().identifier == "com.localdictation.shutdown-test"
             && std::env::var_os("MURMUR_UPDATER_FIXTURE").is_some()
     }
-    pub(super) fn configure(app: &tauri::AppHandle, updater: Updater) -> Result<Updater, String> {
+    pub(super) fn configure(
+        app: &crate::host::Context,
+        updater: Updater,
+    ) -> Result<Updater, String> {
         if !enabled(app) {
             return Ok(updater);
         }
@@ -213,16 +223,16 @@ mod fixture {
 }
 
 #[cfg(feature = "shutdown-test-support")]
-pub(crate) fn fixture_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+pub(crate) fn fixture_plugin() -> tauri::plugin::TauriPlugin<crate::host::DefaultRuntime> {
     tauri::plugin::Builder::new("updater-test")
         .invoke_handler(tauri::generate_handler![updater_test_run])
         .build()
 }
 #[cfg(feature = "shutdown-test-support")]
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 async fn updater_test_run(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     action: Action,
 ) -> Result<Snapshot, String> {
     main_only(&window)?;
@@ -232,12 +242,12 @@ async fn updater_test_run(
     updater_action(app, window, action).await
 }
 
-pub(crate) fn close_admission(app: &tauri::AppHandle) {
+pub(crate) fn close_admission(app: &crate::host::Context) {
     if let Ok(updater) = owner(app) {
         updater.stop();
     }
 }
-pub(crate) fn shutdown_flush(app: &tauri::AppHandle, deadline: std::time::Instant) -> bool {
+pub(crate) fn shutdown_flush(app: &crate::host::Context, deadline: std::time::Instant) -> bool {
     let Ok(updater) = owner(app) else {
         return true;
     };

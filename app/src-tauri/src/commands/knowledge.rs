@@ -48,13 +48,13 @@ fn refresh_with(
     Ok(())
 }
 
-#[tauri::command]
-pub fn get_knowledge_store_status(state: tauri::State<'_, State>) -> KnowledgeStoreStatus {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn get_knowledge_store_status(state: crate::host::StateRef<'_, State>) -> KnowledgeStoreStatus {
     state.knowledge.status()
 }
 
-#[tauri::command]
-pub fn retry_knowledge_store(state: tauri::State<'_, State>) -> KnowledgeStoreStatus {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn retry_knowledge_store(state: crate::host::StateRef<'_, State>) -> KnowledgeStoreStatus {
     let status = state.knowledge.retry();
     if status.availability != StoreAvailability::Unavailable {
         if let Err(error) = refresh_correction_rules(&state) {
@@ -64,23 +64,26 @@ pub fn retry_knowledge_store(state: tauri::State<'_, State>) -> KnowledgeStoreSt
     status
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn list_knowledge(
     request: KnowledgeListRequest,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<KnowledgeListResponse, String> {
     state.knowledge.list(request)
 }
 
-#[tauri::command]
-pub fn get_knowledge(id: String, state: tauri::State<'_, State>) -> Result<KnowledgeEntry, String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn get_knowledge(
+    id: String,
+    state: crate::host::StateRef<'_, State>,
+) -> Result<KnowledgeEntry, String> {
     state.knowledge.get(id.trim())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn upsert_knowledge(
     draft: KnowledgeDraft,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<KnowledgeEntry, String> {
     if matches!(draft.payload, KnowledgePayload::Transform { .. }) {
         return Err("Saved rewrite instructions are no longer supported.".into());
@@ -113,12 +116,12 @@ pub fn upsert_knowledge(
     Ok(entry)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_knowledge_enabled(
     id: String,
     enabled: bool,
     expected_revision: u64,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<KnowledgeEntry, String> {
     let entry = state
         .knowledge
@@ -127,26 +130,26 @@ pub fn set_knowledge_enabled(
     Ok(entry)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn delete_knowledge(
     id: String,
     expected_revision: u64,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<u64, String> {
     let revision = state.knowledge.delete(id.trim(), expected_revision)?;
     refresh_correction_rules(&state)?;
     Ok(revision)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn resolve_knowledge(
     request: KnowledgeResolveRequest,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<Option<KnowledgeEntry>, String> {
     state.knowledge.resolve(request)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn preview_voice_command(
     request: VoiceCommandPreviewRequest,
 ) -> Result<VoiceCommandPreviewResponse, String> {
@@ -163,36 +166,36 @@ pub fn preview_voice_command(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn export_knowledge_to_file(
     path: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<u64, String> {
     state.knowledge.export_to_file(&PathBuf::from(path))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn inspect_knowledge_import(
     path: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<KnowledgeImportSummary, String> {
     state.knowledge.inspect_import(&PathBuf::from(path))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn import_knowledge_from_file(
     path: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<KnowledgeImportResult, String> {
     let result = state.knowledge.import_from_file(&PathBuf::from(path))?;
     refresh_correction_rules(&state)?;
     Ok(result)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn delete_all_knowledge(
     expected_revision: u64,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<u64, String> {
     let revision = state.knowledge.delete_all(expected_revision)?;
     refresh_correction_rules(&state)?;

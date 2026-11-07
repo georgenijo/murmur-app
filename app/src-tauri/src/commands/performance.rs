@@ -1,9 +1,11 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::performance_metrics::{
     PerformanceRunListV1, PerformanceRunV1, PerformanceStoreHealthV1, ResourceSampleV1,
 };
 use crate::State;
 use murmur_core::events::{EventKind, EventSink};
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
 
 const DIAGNOSTICS_TABS: [&str; 6] = [
@@ -28,8 +30,8 @@ fn require_diagnostics_window(label: &str) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn show_diagnostics_window(app: crate::host::Context, tab: String) -> Result<(), String> {
     if !DIAGNOSTICS_TABS.contains(&tab.as_str()) {
         return Err("Unknown diagnostics tab.".to_string());
     }
@@ -52,52 +54,52 @@ pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(),
         })
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "tauri-host", tauri::command(async))]
 pub fn list_performance_runs(
     limit: Option<u32>,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<PerformanceRunListV1, String> {
     state.performance.list(limit.unwrap_or(50))
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "tauri-host", tauri::command(async))]
 pub fn get_performance_run(
     run_id: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<Option<PerformanceRunV1>, String> {
     state.performance.get(run_id.trim())
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "tauri-host", tauri::command(async))]
 pub fn get_performance_resource_window(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<Vec<ResourceSampleV1>, String> {
     state.performance.resource_window()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_performance_store_health(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<PerformanceStoreHealthV1, String> {
     require_diagnostics_window(window.label())?;
     Ok(state.performance.health())
 }
 
-#[tauri::command(async)]
+#[cfg_attr(feature = "tauri-host", tauri::command(async))]
 pub fn recover_performance_store(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     allow_reinitialize: bool,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<PerformanceStoreHealthV1, String> {
     require_diagnostics_window(window.label())?;
     state.performance.recover(allow_reinitialize)
 }
 
-#[tauri::command]
-pub async fn clear_performance_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<State>();
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub async fn clear_performance_diagnostics(app: crate::host::Context) -> Result<(), String> {
+    crate::host::runtime::spawn_blocking(move || {
+        let state = app.services();
         state.performance.clear()?;
         state.capture_health.clear()
     })

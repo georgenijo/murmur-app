@@ -12,7 +12,7 @@ pub(crate) fn open_system_preference_pane(pane: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn open_system_preferences() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -26,7 +26,7 @@ pub fn open_system_preferences() -> Result<(), String> {
 
 /// Open the macOS pane that owns Screen & System Audio Recording access.
 /// CATap permission is surfaced there on supported macOS releases.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn open_system_audio_preferences() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -39,13 +39,13 @@ pub fn open_system_audio_preferences() -> Result<(), String> {
 }
 
 /// Check if accessibility permission is granted (macOS)
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn check_accessibility_permission() -> bool {
     injector::is_accessibility_enabled()
 }
 
 /// Request accessibility permission (triggers system prompt + opens System Settings on macOS)
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn request_accessibility_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -98,7 +98,7 @@ pub(crate) fn current_bundle_identifier() -> Option<String> {
 /// rebuilding a dev bundle). Resets ONLY the current bundle identifier via
 /// `tccutil reset Accessibility <bundle-id>` — never all apps. macOS still requires
 /// the user to re-enable the app manually afterward; this only clears the stale entry.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn reset_accessibility_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -136,7 +136,7 @@ pub fn reset_accessibility_permission() -> Result<(), String> {
 }
 
 /// Request microphone permission (opens System Settings on macOS)
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn request_microphone_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -157,7 +157,7 @@ pub fn request_microphone_permission() -> Result<(), String> {
 /// immediately and no dialog appears. Fire-and-forget: callers observe the outcome
 /// by polling `check_microphone_permission_status`, so this never blocks on the
 /// user's answer.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn request_microphone_access() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -203,7 +203,7 @@ pub fn request_microphone_access() -> Result<(), String> {
 /// signature changes and the TCC entry goes stale). Resets ONLY the current bundle
 /// identifier via `tccutil reset Microphone <bundle-id>` — never all apps. macOS
 /// re-prompts on next mic use afterward; this only clears the stale entry.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn reset_microphone_permission() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -246,7 +246,7 @@ pub fn reset_microphone_permission() -> Result<(), String> {
 /// TCC state — it never instantiates a capture/voice-processing audio unit, so
 /// it cannot duck other apps' audio. (Issue #177: the previous getUserMedia probe
 /// opened VPIO on every window focus, ducking other system audio each time.)
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn check_microphone_permission() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -305,7 +305,7 @@ fn mic_status_to_banner_state(status: isize) -> &'static str {
 /// Returns one of: "granted" | "denied" | "notDetermined" | "unknown".
 /// Like the bool probe, this only reads TCC state — it never opens the device,
 /// so it cannot duck other apps' audio (issue #177).
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn check_microphone_permission_status() -> String {
     #[cfg(target_os = "macos")]
     {
@@ -339,14 +339,14 @@ fn audio_inventory_request_allowed(window_label: &str) -> bool {
 async fn run_audio_inventory_read<T: Send + 'static>(
     read: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(read)
+    crate::host::runtime::spawn_blocking(read)
         .await
         .map_err(|_| AUDIO_INVENTORY_REQUEST_DENIED.to_string())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn list_audio_devices(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
 ) -> Result<Vec<audio::AudioDeviceDescriptor>, String> {
     if !audio_inventory_request_allowed(window.label()) {
         return Err(AUDIO_INVENTORY_REQUEST_DENIED.to_string());
@@ -355,9 +355,9 @@ pub async fn list_audio_devices(
     run_audio_inventory_read(audio::list_input_devices).await?
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn get_audio_input_inventory(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
 ) -> Result<crate::audio_inventory::AudioInputInventorySnapshot, String> {
     if !audio_inventory_request_allowed(window.label()) {
         return Err(AUDIO_INVENTORY_REQUEST_DENIED.to_string());

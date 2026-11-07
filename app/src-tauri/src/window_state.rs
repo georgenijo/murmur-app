@@ -1,4 +1,6 @@
 //! Persistent workspace windows. Popovers retain their own geometry/visibility.
+use crate::host::ServiceAccess;
+use crate::host::{LogicalPosition, LogicalSize};
 use crate::MutexExt;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -7,7 +9,8 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
-use tauri::{LogicalPosition, LogicalSize, Manager};
+#[cfg(feature = "tauri-host")]
+use tauri::Manager;
 
 const LABELS: [&str; 2] = ["main", "diagnostics"];
 pub(crate) const TRAFFIC_LIGHT_X: f64 = 16.0;
@@ -169,14 +172,14 @@ pub(crate) struct WindowState {
     ready: std::sync::atomic::AtomicBool,
 }
 
-pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
+pub(crate) fn initialize(app: &crate::host::Context) -> crate::host::Result<()> {
     let path = app.path().app_data_dir()?.join("window-state.json");
     let store = Arc::new(Mutex::new(Store {
         path: path.clone(),
         saved: SavedState::default(),
     }));
     let (changed, receiver) = mpsc::channel();
-    app.manage(WindowState {
+    app.install_window_state_owner(WindowState {
         store: store.clone(),
         changed,
         chrome: Mutex::new(BTreeMap::new()),
@@ -185,10 +188,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
         ready: false.into(),
     });
     let worker_app = app.clone();
-    let main_thread = app
-        .state::<murmur_core::context::AppContext>()
-        .main_thread
-        .clone();
+    let main_thread = app.context().main_thread.clone();
     let worker_store = store.clone();
     std::thread::Builder::new()
         .name("window-state".into())
@@ -212,7 +212,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
             if main_thread
                 .dispatch(Box::new(move || {
                     use std::sync::atomic::Ordering;
-                    let state = restore_app.state::<WindowState>();
+                    let state = restore_app.window_state_owner();
                     // A newer renderer chrome intent always wins the saved source.
                     saved
                         .backgrounds
@@ -262,10 +262,10 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
         })?;
     // Independent of JS/hydration/rAF: a broken renderer never strands the app.
     let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(5)).await;
         if let Some(window) = handle.get_webview_window("main") {
-            if let Err(error) = reveal_once(&window, &handle.state::<WindowState>()) {
+            if let Err(error) = reveal_once(&window, &handle.window_state_owner()) {
                 tracing::warn!(target: "system", "window safety reveal failed: {error}");
             }
         }
@@ -275,7 +275,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 /// Geometry restoration is exclusively dispatched to AppKit main; this helper
 /// has no filesystem calls and never takes the writer mutex across native APIs.
-fn restore_windows(app: &tauri::AppHandle, saved: &mut SavedState) -> tauri::Result<()> {
+fn restore_windows(app: &crate::host::Context, saved: &mut SavedState) -> crate::host::Result<()> {
     for label in LABELS {
         if let Some(window) = app.get_webview_window(label) {
             if let Some(color) = saved
@@ -316,7 +316,7 @@ fn restore_windows(app: &tauri::AppHandle, saved: &mut SavedState) -> tauri::Res
                     window.maximize()?;
                 }
             } else {
-                window.set_size(tauri::LogicalSize::new(1100.0, 780.0))?;
+                window.set_size(crate::host::LogicalSize::new(1100.0, 780.0))?;
                 window.center()?;
                 let position = window.outer_position()?;
                 let size = window.outer_size()?;
@@ -343,24 +343,25 @@ fn restore_windows(app: &tauri::AppHandle, saved: &mut SavedState) -> tauri::Res
     Ok(())
 }
 
-pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+pub(crate) fn on_event(window: &crate::host::HostWindow, event: &crate::host::WindowEvent) {
     if !LABELS.contains(&window.label()) {
         return;
     }
     if !matches!(
         event,
-        tauri::WindowEvent::Moved(_)
-            | tauri::WindowEvent::Resized(_)
-            | tauri::WindowEvent::CloseRequested { .. }
-            | tauri::WindowEvent::ScaleFactorChanged { .. }
+        crate::host::WindowEvent::Moved(_)
+            | crate::host::WindowEvent::Resized(_)
+            | crate::host::WindowEvent::CloseRequested { .. }
+            | crate::host::WindowEvent::ScaleFactorChanged { .. }
     ) {
         return;
     }
-    let Some(state) = window.try_state::<WindowState>() else {
+    let Some(state) = window.app_handle().try_window_state_owner() else {
         return;
     };
     // An explicit hide during startup wins over a delayed automatic reveal.
-    if window.label() == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+    if window.label() == "main" && matches!(event, crate::host::WindowEvent::CloseRequested { .. })
+    {
         state
             .painted
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -416,17 +417,17 @@ pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
 
 /// Called only by the shutdown worker. FIFO acknowledgement follows every
 /// previously accepted geometry snapshot; the UI mutex is never held over I/O.
-pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
-    let Some(state) = app.try_state::<WindowState>() else {
+pub(crate) fn flush(app: &crate::host::Context) -> bool {
+    let Some(state) = app.try_window_state_owner() else {
         return true;
     };
     let (tx, rx) = mpsc::channel();
     state.changed.send(WindowWrite::Flush(tx)).is_ok() && rx.recv().unwrap_or(false)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn sync_window_chrome(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     background: String,
     header_height: f64,
     zoom: f64,
@@ -443,7 +444,7 @@ pub(crate) fn sync_window_chrome(
         return Err("Invalid window metrics".into());
     }
     let color = parse_background(&background)?;
-    let state = window.state::<WindowState>();
+    let state = window.app_handle().window_state_owner();
     let old_zoom = state.chrome.lock_or_recover().get(window.label()).copied();
     if old_zoom.map(|(_, old)| old != zoom).unwrap_or(zoom != 1.0) {
         window.set_zoom(zoom).map_err(|error| error.to_string())?;
@@ -475,7 +476,7 @@ pub(crate) fn sync_window_chrome(
     Ok(())
 }
 
-fn reveal_once(window: &tauri::WebviewWindow, state: &WindowState) -> Result<(), String> {
+fn reveal_once(window: &crate::host::Window, state: &WindowState) -> Result<(), String> {
     use std::sync::atomic::Ordering;
     state.ready.store(true, Ordering::SeqCst);
     if !state.initialized.load(Ordering::SeqCst) {
@@ -496,7 +497,7 @@ fn reveal_once(window: &tauri::WebviewWindow, state: &WindowState) -> Result<(),
     Ok(())
 }
 
-fn parse_background(value: &str) -> Result<tauri::window::Color, String> {
+fn parse_background(value: &str) -> Result<crate::host::window::Color, String> {
     // Tauri's hex parser indexes bytes; reject non-ASCII before calling it.
     if !value.is_ascii()
         || !value
@@ -507,7 +508,7 @@ fn parse_background(value: &str) -> Result<tauri::window::Color, String> {
         return Err("Invalid background color".into());
     }
     let color = value
-        .parse::<tauri::window::Color>()
+        .parse::<crate::host::window::Color>()
         .map_err(|_| "Invalid background color")?;
     if color.3 != 255 {
         return Err("Workspace background must be opaque".into());
@@ -627,11 +628,11 @@ mod tests {
             // Simulate Tao's conversion while the window is still on the 2x
             // launch monitor. Physical inputs used to halve both values here.
             assert_eq!(
-                tauri::Size::from(restored.inner_size).to_logical::<f64>(2.0),
+                crate::host::Size::from(restored.inner_size).to_logical::<f64>(2.0),
                 LogicalSize::new(1100.0, 780.0)
             );
             assert_eq!(
-                tauri::Position::from(LogicalPosition::new(bounds.x, bounds.y))
+                crate::host::Position::from(LogicalPosition::new(bounds.x, bounds.y))
                     .to_logical::<f64>(2.0),
                 LogicalPosition::new(2000.0, 100.0)
             );
@@ -651,11 +652,11 @@ mod tests {
         // On the 1x launch display, Physical inputs used to double the size and
         // send x=-3600 rather than x=-1800 to AppKit.
         assert_eq!(
-            tauri::Size::from(restored.inner_size).to_logical::<f64>(1.0),
+            crate::host::Size::from(restored.inner_size).to_logical::<f64>(1.0),
             LogicalSize::new(1100.0, 780.0)
         );
         assert_eq!(
-            tauri::Position::from(LogicalPosition::new(restored.bounds.x, restored.bounds.y))
+            crate::host::Position::from(LogicalPosition::new(restored.bounds.x, restored.bounds.y))
                 .to_logical::<f64>(1.0),
             LogicalPosition::new(-1800.0, -100.0)
         );
@@ -726,7 +727,7 @@ mod tests {
     fn native_background_refuses_transparency_and_invalid_input() {
         assert_eq!(
             parse_background("#123456").unwrap(),
-            tauri::window::Color(18, 52, 86, 255)
+            crate::host::window::Color(18, 52, 86, 255)
         );
         for invalid in ["#12345600", "transparent", "rgb(0,0,0)", "é0", ""] {
             assert!(parse_background(invalid).is_err());

@@ -1,5 +1,6 @@
 use crate::events::EventsExt;
 use crate::frontmost::DeliveryTargetSnapshot;
+use crate::host::ServiceAccess;
 use crate::injector::authority::{AttemptStop, CancelOnDrop, PasteAttempt, RetrySlot};
 use crate::injector::{self, ClipboardOnlyReason, InjectionOutcome};
 use crate::{MutexExt, State};
@@ -7,7 +8,6 @@ use murmur_core::events::{EventKind, EventSink};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
 
 #[derive(Clone)]
 pub(crate) struct LastDelivery {
@@ -148,7 +148,7 @@ fn result(kind: RetryResultKind, message: &'static str) -> RetryResult {
     RetryResult { kind, message }
 }
 
-fn publish(app: &tauri::AppHandle, response: &RetryResult) {
+fn publish(app: &crate::host::Context, response: &RetryResult) {
     if matches!(
         response.kind,
         RetryResultKind::AutoPasted | RetryResultKind::ClipboardOnly
@@ -162,10 +162,10 @@ fn publish(app: &tauri::AppHandle, response: &RetryResult) {
         .publish(EventKind::DeliveryRetryFeedback, response);
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) async fn retry_last_delivery(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<RetryResult, String> {
     let _producer = crate::shutdown::WriterPermit::acquire()?;
     let Some(mut latest) = state.delivery_recovery.latest() else {
@@ -248,7 +248,7 @@ pub(crate) async fn retry_last_delivery(
                 if sender.is_closed() || !preparation_worker.is_current() {
                     return;
                 }
-                let state = prepare_app.state::<State>();
+                let state = prepare_app.services();
                 let dictation = state.app_state.dictation.lock_or_recover();
                 let outcome = if dictation.status == crate::state::DictationStatus::Idle
                     && state.app_state.recording_id.load(Ordering::SeqCst) == retry_generation
@@ -293,7 +293,7 @@ pub(crate) async fn retry_last_delivery(
     let worker = work.clone();
     app_handle
         .run_on_main_thread(move || {
-            let state = retry_app.state::<State>();
+            let state = retry_app.services();
             let dictation = state.app_state.dictation.lock_or_recover();
             if dictation.status != crate::state::DictationStatus::Idle
                 || state.app_state.recording_id.load(Ordering::SeqCst) != retry_generation
@@ -387,9 +387,9 @@ pub(crate) async fn retry_last_delivery(
     Ok(response)
 }
 
-pub(crate) fn spawn_retry(app_handle: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        let state = app_handle.state::<State>();
+pub(crate) fn spawn_retry(app_handle: crate::host::Context) {
+    crate::host::runtime::spawn(async move {
+        let state = app_handle.services();
         let _ = retry_last_delivery(app_handle.clone(), state).await;
     });
 }

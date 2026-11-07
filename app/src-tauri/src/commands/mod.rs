@@ -25,5 +25,9 @@ pub mod recording;
 pub mod settings_store;
 pub mod smart_turn;
 pub mod theme;
+#[cfg(feature = "tauri-host")]
+pub mod tray;
+#[cfg(not(feature = "tauri-host"))]
+#[path = "../host/tray.rs"]
 pub mod tray;
 pub mod updater;

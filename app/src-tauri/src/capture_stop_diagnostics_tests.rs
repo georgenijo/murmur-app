@@ -16,7 +16,7 @@ impl LifecycleSink for MetricsSink {
 
     fn notify(
         &self,
-        app: Option<&tauri::AppHandle>,
+        app: Option<&crate::host::Context>,
         owner: AudioOwner,
         event: AudioLifecycleEvent,
     ) {

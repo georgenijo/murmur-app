@@ -1,10 +1,10 @@
 //! Output-only synthetic cues. Same sine tones/envelopes as the React player;
 //! no microphone samples, transcripts or clipboard contents enter this path.
-use crate::{dictation_control::Control, MutexExt};
+use crate::host::ServiceAccess;
+use crate::MutexExt;
 use murmur_core::events::{Consumer, EventKind};
-use tauri::Manager;
-pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn initialize_event_subscriptions<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     callback: impl Fn(&str, &str) + Send + Sync + 'static,
 ) {
     let callback = std::sync::Arc::new(callback);
@@ -21,17 +21,15 @@ pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
         });
     }
 }
-pub(crate) fn initialize(app: &tauri::AppHandle) {
+pub(crate) fn initialize(app: &crate::host::Context) {
     let handle = app.clone();
     initialize_event_subscriptions(app, move |cue, payload| {
         let Some(cue) = cue_for(cue, payload) else {
             return;
         };
-        let control = handle.state::<Control>();
+        let control = handle.control();
         let settings = control.settings.lock_or_recover();
-        if settings["soundCuesEnabled"] != true
-            || handle.state::<crate::State>().meetings.is_active()
-        {
+        if settings["soundCuesEnabled"] != true || handle.services().meetings.is_active() {
             return;
         }
         let volume = settings["soundCueVolume"]
@@ -45,7 +43,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
         drop(settings);
         // A blocking worker owns only this short-lived output player and
         // removes its synthetic WAV after playback. It cannot capture input.
-        tauri::async_runtime::spawn_blocking(move || play(cue, volume));
+        crate::host::runtime::spawn_blocking(move || play(cue, volume));
     });
 }
 

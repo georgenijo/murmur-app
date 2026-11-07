@@ -1,4 +1,5 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::meeting_store::MeetingRepository;
 use crate::{MutexExt, State};
 use rusqlite::Connection;
@@ -7,7 +8,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use tauri::Manager;
 
 pub(crate) const MAX_MANIFEST_CHUNKS: u32 = 256;
 pub(crate) const MAX_AUDIO_FILE_BYTES: u64 = 512 * 1024;
@@ -140,24 +140,24 @@ pub(crate) fn capture_busy(state: &State) -> bool {
         || crate::audio_lifecycle::is_audio_active()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_meeting_audio_capture_busy(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<bool, String> {
     require_main_window(window.label())?;
     Ok(capture_busy(&state))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn get_meeting_audio_manifest(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     session_id: String,
     from_ms: Option<u64>,
     channel: Option<PlaybackChannel>,
     cursor: Option<AudioCursor>,
     limit: Option<u32>,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<AudioManifest, String> {
     require_main_window(window.label())?;
     let from_ms = from_ms.unwrap_or(0);
@@ -165,7 +165,7 @@ pub async fn get_meeting_audio_manifest(
     validate_manifest_request(&session_id, from_ms, cursor.as_ref(), limit)?;
     let repository = state.meeting_store.repository()?;
     let permit = AudioReadPermit::acquire()?;
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::host::runtime::spawn_blocking(move || {
         let _permit = permit;
         repository.audio_manifest(
             &session_id,
@@ -203,7 +203,7 @@ pub(crate) fn revoke_audio_reads() {
     AUDIO_REVISION.fetch_add(1, Ordering::AcqRel);
 }
 
-pub(crate) fn invalidate_playback(app: &tauri::AppHandle, session_id: Option<&str>) {
+pub(crate) fn invalidate_playback(app: &crate::host::Context, session_id: Option<&str>) {
     #[derive(Clone, Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Invalidated<'a> {
@@ -217,16 +217,16 @@ pub(crate) fn invalidate_playback(app: &tauri::AppHandle, session_id: Option<&st
     );
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn read_meeting_audio_range(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     session_id: String,
     segment_id: i64,
     offset_bytes: u64,
     length_bytes: u32,
-    state: tauri::State<'_, State>,
-) -> Result<tauri::ipc::Response, String> {
+    state: crate::host::StateRef<'_, State>,
+) -> Result<crate::host::BinaryResponse, String> {
     require_main_window(window.label())?;
     validate_range_request(&session_id, segment_id, offset_bytes, length_bytes)?;
     if capture_busy(&state) {
@@ -235,9 +235,9 @@ pub async fn read_meeting_audio_range(
     let repository = state.meeting_store.repository()?;
     let permit = AudioReadPermit::acquire()?;
     let revision = AUDIO_REVISION.load(Ordering::Acquire);
-    let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+    let bytes = crate::host::runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
         let _permit = permit;
-        if capture_busy(&app.state::<State>()) {
+        if capture_busy(&app.services()) {
             return Err(CAPTURE_BUSY.into());
         }
         let bytes = read_audio_range(
@@ -248,14 +248,14 @@ pub async fn read_meeting_audio_range(
             length_bytes,
             revision,
         )?;
-        if capture_busy(&app.state::<State>()) {
+        if capture_busy(&app.services()) {
             return Err(CAPTURE_BUSY.into());
         }
         Ok(bytes)
     })
     .await
     .map_err(|_| AUDIO_UNAVAILABLE.to_string())??;
-    Ok(tauri::ipc::Response::new(bytes))
+    Ok(crate::host::BinaryResponse::new(bytes))
 }
 
 fn validate_range_request(

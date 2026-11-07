@@ -152,7 +152,7 @@ pub struct ModelStatus {
     bytes: u64,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_diarization_model_status() -> ModelStatus {
     ModelStatus {
         supported: supported(),
@@ -175,7 +175,7 @@ impl Drop for Installing {
     }
 }
 
-pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
+pub async fn download(app: &crate::host::Context) -> Result<(), String> {
     let _install = INSTALL_LOCK.lock().await;
     if !supported() {
         return Err("Remote speaker models require an Apple Silicon Mac.".into());
@@ -244,7 +244,7 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn remove_diarization_model() -> Result<(), String> {
     let _install = INSTALL_LOCK.lock().await;
     crate::meeting_diarization::cancel_all()?;

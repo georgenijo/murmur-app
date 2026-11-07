@@ -186,9 +186,9 @@ pub struct BrowserSiteProbe {
     host: Option<String>,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn probe_browser_site(
-    state: tauri::State<'_, crate::State>,
+    state: crate::host::StateRef<'_, crate::State>,
 ) -> Result<BrowserSiteProbe, String> {
     if !state
         .app_state

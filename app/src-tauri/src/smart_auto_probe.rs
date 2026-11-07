@@ -2,6 +2,7 @@
 //! The controller owns no audio thread or PCM. A revoked permit cannot be reused.
 
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::microphone_auto::{SmartAutoRequest, SmartAutoStatus};
 use crate::microphone_signal::SignalVerificationResult;
 use crate::{MutexExt, State};
@@ -10,7 +11,6 @@ use serde::Deserialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tauri::Manager;
 use tokio::sync::Notify;
 
 pub(crate) const PROBE_LIMIT: Duration = Duration::from_secs(8);
@@ -209,7 +209,7 @@ struct Inner {
 struct Controller {
     inner: Mutex<Inner>,
     changed: Notify,
-    app: OnceLock<tauri::AppHandle>,
+    app: OnceLock<crate::host::Context>,
 }
 
 fn controller() -> &'static Controller {
@@ -264,9 +264,9 @@ struct ProbePolicy {
     request: Option<SmartAutoRequest>,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn configure_smart_auto_probe(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     policy: serde_json::Value,
 ) -> Result<u64, String> {
     if window.label() != "main" {
@@ -327,8 +327,8 @@ fn apply_policy(inner: &mut Inner, policy: serde_json::Value) -> Result<u64, &'s
     error.map_or(Ok(generation), Err)
 }
 
-#[tauri::command]
-pub(crate) fn retry_smart_auto_probe(window: tauri::WebviewWindow) -> Result<u64, String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub(crate) fn retry_smart_auto_probe(window: crate::host::Window) -> Result<u64, String> {
     if window.label() != "main" {
         return Err("Retry automatic checks from the main Settings window.".into());
     }
@@ -403,8 +403,8 @@ fn corpus_idle(_state: &State) -> bool {
     }
 }
 
-pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn initialize_event_subscriptions<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     callback: impl Fn() + Send + Sync + 'static,
 ) {
     let callback = std::sync::Arc::new(callback);
@@ -427,14 +427,14 @@ pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
     }
 }
 
-pub(crate) fn initialize(app: tauri::AppHandle) {
+pub(crate) fn initialize(app: crate::host::Context) {
     if controller().app.set(app.clone()).is_err() {
         return;
     }
     // Notifications only wake a pending finite budget. Their payloads never
     // authorize work; admission re-reads all backend owner state under lock.
     initialize_event_subscriptions(&app, wake);
-    tauri::async_runtime::spawn(run(app));
+    crate::host::runtime::spawn(run(app));
 }
 
 async fn wait(next: Next) {
@@ -447,9 +447,9 @@ async fn wait(next: Next) {
     }
 }
 
-async fn run(app: tauri::AppHandle) {
+async fn run(app: crate::host::Context) {
     loop {
-        let state = app.state::<State>();
+        let state = app.services();
         {
             let mut inner = controller().inner.lock_or_recover();
             if inner.active.as_ref().is_some_and(|active| {

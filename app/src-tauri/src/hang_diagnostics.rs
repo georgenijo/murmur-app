@@ -307,7 +307,7 @@ fn ship_bundle(capture_id: u64, bundle: String) {
     let Some((install_id, endpoint)) = config_cell().lock_or_recover().clone() else {
         return;
     };
-    let outcome = tauri::async_runtime::block_on(async move {
+    let outcome = crate::host::runtime::block_on(async move {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()

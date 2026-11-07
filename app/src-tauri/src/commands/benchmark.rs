@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-struct BenchmarkRunGuard(Arc<BenchmarkCoordinator>, tauri::AppHandle);
+struct BenchmarkRunGuard(Arc<BenchmarkCoordinator>, crate::host::Context);
 
 impl Drop for BenchmarkRunGuard {
     fn drop(&mut self) {
@@ -16,7 +16,7 @@ impl Drop for BenchmarkRunGuard {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_benchmark_models() -> Vec<BenchmarkModel> {
     benchmark::benchmark_models()
 }
@@ -28,18 +28,18 @@ pub struct BenchmarkActivity {
     file_transcribing: bool,
 }
 
-#[tauri::command]
-pub fn get_benchmark_activity(state: tauri::State<'_, State>) -> BenchmarkActivity {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn get_benchmark_activity(state: crate::host::StateRef<'_, State>) -> BenchmarkActivity {
     BenchmarkActivity {
         benchmark_running: state.benchmark.is_running(),
         file_transcribing: state.app_state.file_transcribing.load(Ordering::SeqCst),
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn run_benchmark(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {
     let coordinator = state.benchmark.clone();
@@ -94,8 +94,8 @@ pub async fn run_benchmark(
     .map_err(|error| format!("Benchmark task failed: {error}"))?
 }
 
-#[tauri::command]
-pub fn cancel_benchmark(state: tauri::State<'_, State>) -> bool {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn cancel_benchmark(state: crate::host::StateRef<'_, State>) -> bool {
     let running = state.benchmark.is_running();
     if running {
         state.benchmark.cancel();
@@ -105,7 +105,7 @@ pub fn cancel_benchmark(state: tauri::State<'_, State>) -> bool {
 
 /// Write a benchmark report (already serialized on the frontend) to the
 /// configured output folder under `file_name`. Returns the absolute path.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn save_benchmark_report(
     report_json: String,
     output_dir: String,
@@ -117,15 +117,21 @@ pub fn save_benchmark_report(
 
 /// Open the benchmark output folder (creating it if needed) in the system file
 /// manager, so the user can see and share saved reports.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn open_benchmark_output_folder(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     output_dir: String,
 ) -> Result<(), String> {
+    #[cfg(feature = "tauri-host")]
     use tauri_plugin_opener::OpenerExt;
     let dir = crate::file_output::resolve_output_dir(&output_dir)?;
-    app_handle
-        .opener()
-        .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
-        .map_err(|e| format!("Failed to open output folder: {}", e))
+    #[cfg(feature = "tauri-host")]
+    {
+        app_handle
+            .opener()
+            .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
+            .map_err(|e| format!("Failed to open output folder: {}", e))
+    }
+    #[cfg(not(feature = "tauri-host"))]
+    app_handle.open_path(dir).map_err(String::from)
 }

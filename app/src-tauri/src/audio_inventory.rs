@@ -326,8 +326,8 @@ fn coordinator() -> &'static AudioInputInventoryCoordinator {
     COORDINATOR.get_or_init(AudioInputInventoryCoordinator::default)
 }
 
-fn app_handle_slot() -> &'static Mutex<Option<tauri::AppHandle>> {
-    static APP_HANDLE: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+fn app_handle_slot() -> &'static Mutex<Option<crate::host::Context>> {
+    static APP_HANDLE: OnceLock<Mutex<Option<crate::host::Context>>> = OnceLock::new();
     APP_HANDLE.get_or_init(|| Mutex::new(None))
 }
 
@@ -591,7 +591,7 @@ fn start_refresh_timer() {
 #[cfg(not(target_os = "macos"))]
 fn start_refresh_timer() {}
 
-pub(crate) fn initialize(app_handle: tauri::AppHandle) {
+pub(crate) fn initialize(app_handle: crate::host::Context) {
     *app_handle_slot().lock_or_recover() = Some(app_handle);
     #[cfg(target_os = "macos")]
     if !crate::audio::start_inventory_helper_reaper_service() {

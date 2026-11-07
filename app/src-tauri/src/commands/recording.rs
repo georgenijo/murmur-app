@@ -3,6 +3,7 @@ use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, S
 use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::{self, PreparationReason};
 use crate::performance_metrics::{
@@ -18,10 +19,9 @@ use murmur_core::events::{EventKind, EventSink};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::Manager;
 
-pub(crate) fn publish_status<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn publish_status<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     status: &str,
 ) -> Result<(), String> {
     app.events()
@@ -100,7 +100,7 @@ fn publish_dictation_terminal_with_capture(
         .complete(recording_id, completion)
     {
         let diagnostics = state.dictation_diagnostics.clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        crate::host::runtime::spawn_blocking(move || {
             if diagnostics.persist_capture(capture).is_err() {
                 tracing::warn!(
                     target: "system",
@@ -179,14 +179,14 @@ fn finish_dictation_partial(app_state: &AppState, recording_id: u64) -> bool {
         .is_ok()
 }
 
-struct DictationPartialLease<R: tauri::Runtime> {
-    app: tauri::AppHandle<R>,
+struct DictationPartialLease<R: crate::host::Runtime> {
+    app: crate::host::Context<R>,
     recording_id: u64,
 }
 
-impl<R: tauri::Runtime> Drop for DictationPartialLease<R> {
+impl<R: crate::host::Runtime> Drop for DictationPartialLease<R> {
     fn drop(&mut self) {
-        let state = self.app.state::<State>();
+        let state = self.app.services();
         #[cfg(feature = "preview-decode-reuse")]
         if std::thread::panicking() {
             state
@@ -220,8 +220,8 @@ fn publish_dictation_partial_tick(recording_id: u64, outcome: &'static str, samp
     );
 }
 
-fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
-    let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
+fn spawn_dictation_partial_ticker(app: crate::host::Context, recording_id: u64) {
+    let Some(context) = app.services().app_state.active_context(recording_id) else {
         return;
     };
     let model = &context.transcription.model_name;
@@ -232,7 +232,7 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
     }
     #[cfg(feature = "preview-decode-reuse")]
     if !whisper {
-        app.state::<State>()
+        app.services()
             .app_state
             .preview_reuse
             .lock_or_recover()
@@ -244,17 +244,17 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
         PARTIAL_INTERVAL
     };
     let preview: WhisperPreview = Arc::new(Mutex::new(None));
-    drop(tauri::async_runtime::spawn(async move {
+    drop(crate::host::runtime::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
-            if !dictation_partial_is_current(&app.state::<State>().app_state, recording_id) {
+            if !dictation_partial_is_current(&app.services().app_state, recording_id) {
                 break;
             }
             // Do not await a decode: ticks skip the global single-flight lease,
             // and stop/hide must not wait for inference or model initialization.
             let tick_app = app.clone();
             let tick_preview = preview.clone();
-            drop(tauri::async_runtime::spawn(async move {
+            drop(crate::host::runtime::spawn(async move {
                 decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
             }));
         }
@@ -263,12 +263,12 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
 }
 
 async fn decode_one_dictation_partial(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     recording_id: u64,
     preview: WhisperPreview,
 ) -> bool {
     let (transcription, lease, retained_preview) = {
-        let state = app.state::<State>();
+        let state = app.services();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
             return false;
         }
@@ -315,7 +315,7 @@ async fn decode_one_dictation_partial(
         // model locks and last preview Arc must drop before completion.
         let _lease = lease;
         let worker_preview = retained_preview;
-        let state = worker_app.state::<State>();
+        let state = worker_app.services();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
             return Err("stopped");
         }
@@ -425,7 +425,7 @@ async fn decode_one_dictation_partial(
         Ok(text) => (text, "empty"),
         Err(outcome) => (None, outcome),
     };
-    let state = app.state::<State>();
+    let state = app.services();
     #[cfg(feature = "preview-decode-reuse")]
     if no_text_outcome == "decode_error" || no_text_outcome == "worker_failed" {
         state
@@ -1023,7 +1023,7 @@ impl Drop for IdleGuard<'_> {
 /// or success).
 struct FileTranscribeGuard<'a> {
     app_state: &'a AppState,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<crate::host::Context>,
 }
 
 impl Drop for FileTranscribeGuard<'_> {
@@ -1041,7 +1041,7 @@ impl Drop for FileTranscribeGuard<'_> {
 
 struct SharedBackendChangeGuard(
     Arc<crate::benchmark::BenchmarkCoordinator>,
-    Option<tauri::AppHandle>,
+    Option<crate::host::Context>,
 );
 
 impl Drop for SharedBackendChangeGuard {
@@ -1065,11 +1065,15 @@ fn status_allows_model_preparation(status: DictationStatus) -> bool {
 /// startup and the user's speech. The normal pipeline still calls `load_model`,
 /// so it either observes a hit or waits on this same backend lock when a very
 /// short recording ends before preparation completes.
-fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, recording_id: u64) {
+fn spawn_model_preparation(
+    app_handle: crate::host::Context,
+    model_name: String,
+    recording_id: u64,
+) {
     let queued_at = std::time::Instant::now();
-    drop(tauri::async_runtime::spawn_blocking(move || {
+    drop(crate::host::runtime::spawn_blocking(move || {
         let queue_ms = queued_at.elapsed().as_millis() as u64;
-        let state = app_handle.state::<State>();
+        let state = app_handle.services();
         let is_active = {
             let dictation = state.app_state.dictation.lock_or_recover();
             state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
@@ -1217,9 +1221,9 @@ impl IdleModelPreparation {
 
 /// Startup, backend configuration and re-enable share a single pending claim.
 /// The runtime load lock also serializes an invalidated worker with its successor.
-pub(crate) fn request_idle_model_preparation(app_handle: &tauri::AppHandle) {
+pub(crate) fn request_idle_model_preparation(app_handle: &crate::host::Context) {
     let model = app_handle
-        .state::<State>()
+        .services()
         .app_state
         .dictation
         .lock_or_recover()
@@ -1234,19 +1238,18 @@ pub(crate) fn request_idle_model_preparation(app_handle: &tauri::AppHandle) {
 /// that cost away from the user's first short dictation; recording-start
 /// preparation remains the fallback if recording begins first.
 fn spawn_idle_model_preparation(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     model_name: String,
     change_guard: Option<SharedBackendChangeGuard>,
 ) {
     let queued_at = std::time::Instant::now();
-    let Some(preparation) =
-        IdleModelPreparation::claim(&app_handle.state::<State>(), model_name.clone())
+    let Some(preparation) = IdleModelPreparation::claim(&app_handle.services(), model_name.clone())
     else {
         return;
     };
-    drop(tauri::async_runtime::spawn_blocking(move || {
+    drop(crate::host::runtime::spawn_blocking(move || {
         let _change_guard = change_guard;
-        let state = app_handle.state::<State>();
+        let state = app_handle.services();
         let result = preparation.run(&state, |is_current| {
             state.app_state.model_runtime.prepare_startup_if(
                 Some(&app_handle),
@@ -1428,7 +1431,7 @@ fn smart_destination_status(
 /// Presentation uses only the accepted delivery policy and an application name,
 /// never a document title, input value, or selected text.
 fn publish_smart_destination(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     app_state: &AppState,
     rid: u64,
     context: &DictationContextSnapshot,
@@ -1535,7 +1538,7 @@ fn with_current_recording_generation<T>(
 }
 
 fn publish_auto_paste_failure_if_current(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     app_state: &AppState,
     recording_id: u64,
     message: &'static str,
@@ -2084,7 +2087,7 @@ fn spawn_dictation_performance_completion(
     recording_id: u64,
     completion: DictationPerformanceCompletion,
 ) {
-    drop(tauri::async_runtime::spawn_blocking(move || {
+    drop(crate::host::runtime::spawn_blocking(move || {
         if persist_dictation_performance_completion(&performance, recording_id, completion).is_ok()
         {
             dictation_performance_begins().finish_completion(recording_id);
@@ -2121,7 +2124,7 @@ fn spawn_native_dictation_performance_begin(
     runtimes: Vec<RuntimeIdentityV1>,
     started_at_ms: i64,
 ) {
-    drop(tauri::async_runtime::spawn_blocking(move || {
+    drop(crate::host::runtime::spawn_blocking(move || {
         let coordinator = dictation_performance_begins();
         let mut registration =
             DictationPerformanceBeginRegistration::new(coordinator, recording_id);
@@ -2529,7 +2532,7 @@ fn decode_final_transcript(
 /// if cancelled, returns empty text without clipboard write or paste.
 async fn run_transcription_pipeline(
     samples: &[f32],
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     app_state: &AppState,
     recording_id: u64,
     performance_guard: &mut impl DictationPerformanceStageRecorder,
@@ -2881,7 +2884,7 @@ async fn run_transcription_pipeline(
                     if sender.is_closed() || !worker_authority.is_current() {
                         return;
                     }
-                    let state = prepare_app.state::<State>();
+                    let state = prepare_app.services();
                     let outcome =
                         with_current_delivery_owner(&state.app_state, recording_id, || {
                             crate::smart_destination::prepare(&preparing, Some(&worker_authority))
@@ -2932,7 +2935,7 @@ async fn run_transcription_pipeline(
         let worker_authority = injection_authority.clone();
         app_handle
             .run_on_main_thread(move || {
-                let state = injection_app_handle.state::<State>();
+                let state = injection_app_handle.services();
                 let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
                     injector::inject_with_destination_authorized(
                         &text_to_inject,
@@ -2981,7 +2984,7 @@ async fn run_transcription_pipeline(
                     result.outcome,
                     injector::InjectionOutcome::NoText | injector::InjectionOutcome::Stopped(_)
                 ) {
-                    app_handle.state::<State>().delivery_recovery.remember(
+                    app_handle.services().delivery_recovery.remember(
                         recording_id,
                         text.clone(),
                         recovery_target,
@@ -3017,7 +3020,7 @@ async fn run_transcription_pipeline(
                 }
                 if let injector::InjectionOutcome::Stopped(reason) = result.outcome {
                     app_handle
-                        .state::<State>()
+                        .services()
                         .delivery_recovery
                         .forget_through(recording_id);
                     tracing::info!(target: "pipeline", reason_code = reason.code(), "Text delivery stopped before completion");
@@ -3057,7 +3060,7 @@ async fn run_transcription_pipeline(
             }
             Ok(Err(_)) => {
                 app_handle
-                    .state::<State>()
+                    .services()
                     .delivery_recovery
                     .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
@@ -3071,7 +3074,7 @@ async fn run_transcription_pipeline(
             }
             Err(_) => {
                 app_handle
-                    .state::<State>()
+                    .services()
                     .delivery_recovery
                     .forget_through(recording_id);
                 tracing::warn!(target: "pipeline", "Text injection timed out");
@@ -3123,7 +3126,7 @@ async fn run_transcription_pipeline(
             let caption = text.clone();
             let mirror_app_handle = app_handle.clone();
             tokio::task::spawn_blocking(move || {
-                let state = mirror_app_handle.state::<State>();
+                let state = mirror_app_handle.services();
                 let installed = super::integrations::notchpill_installed();
                 let prepared = installed
                     .then(|| injector::prepare_mirrored_caption(&caption))
@@ -3166,8 +3169,10 @@ async fn run_transcription_pipeline(
     // _guard drops here, setting status to Idle
 }
 
-#[tauri::command]
-pub async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_json::Value, String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub async fn init_dictation(
+    _state: crate::host::StateRef<'_, State>,
+) -> Result<serde_json::Value, String> {
     tracing::info!(target: "pipeline", "init_dictation");
     Ok(serde_json::json!({
         "type": "initialized",
@@ -3175,11 +3180,11 @@ pub async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_jso
     }))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn process_audio(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     audio_data: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<serde_json::Value, String> {
     let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
@@ -3408,10 +3413,10 @@ fn status_snapshot(app_state: &AppState, locked: impl FnOnce() -> bool) -> serde
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn get_status(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<serde_json::Value, String> {
     // Lock order is dictation -> controller, as in native control dispatch.
     Ok(status_snapshot(&state.app_state, || {
@@ -3614,11 +3619,11 @@ fn sanitize_browser_site_rules(
         .collect()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn configure_dictation(
     options: serde_json::Value,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<serde_json::Value, String> {
     configure_dictation_with_effects(options, &state, Some(&app_handle), |model, guard| {
         spawn_idle_model_preparation(app_handle.clone(), model, Some(guard));
@@ -3630,7 +3635,7 @@ pub async fn configure_dictation(
 fn configure_dictation_with_effects(
     options: serde_json::Value,
     state: &State,
-    app_handle: Option<&tauri::AppHandle>,
+    app_handle: Option<&crate::host::Context>,
     idle_prepare: impl FnOnce(String, SharedBackendChangeGuard),
 ) -> Result<serde_json::Value, String> {
     crate::audio::prepare::configuration_changed();
@@ -4300,8 +4305,8 @@ fn cancel_code_vocab_scan_id(app_state: &AppState, scan_id: &str) -> bool {
     true
 }
 
-#[tauri::command]
-pub fn cancel_code_vocab_scan(state: tauri::State<'_, State>, scan_id: String) -> bool {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn cancel_code_vocab_scan(state: crate::host::StateRef<'_, State>, scan_id: String) -> bool {
     cancel_code_vocab_scan_id(&state.app_state, &scan_id)
 }
 
@@ -4312,7 +4317,7 @@ pub fn cancel_code_vocab_scan(state: tauri::State<'_, State>, scan_id: String) -
 /// can call it without one capturing the other and tripping the borrow checker.
 #[allow(clippy::too_many_arguments)]
 fn publish_scan_progress(
-    handle: &tauri::AppHandle,
+    handle: &crate::host::Context,
     scan_id: &str,
     last_emit: &mut std::time::Instant,
     current_path: String,
@@ -4358,10 +4363,10 @@ const VOCAB_PROGRESS_EVERY_FILES: usize = 10;
 /// matcher — mirroring `configure_dictation` so the scan takes effect immediately
 /// without a second round-trip. The filesystem walk and prompt build run inside
 /// `spawn_blocking`; no std mutex is held across an `.await`.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn scan_code_vocab(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     folder: String,
     scan_id: String,
 ) -> Result<VocabScanSummary, String> {
@@ -4520,14 +4525,17 @@ pub async fn scan_code_vocab(
 /// Run a memory-only IDE project scan off the async runtime. Completion adopts
 /// only the still-current generation; root/profile changes and Clear invalidate
 /// the request before it can publish stale symbols.
-fn schedule_ide_scan(app_handle: tauri::AppHandle, request: crate::ide_context::IdeScanRequest) {
+fn schedule_ide_scan(
+    app_handle: crate::host::Context,
+    request: crate::ide_context::IdeScanRequest,
+) {
     tracing::info!(
         target: "pipeline",
         generation = request.generation,
         roots = request.roots.len(),
         "ide_context_scan: start"
     );
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let generation = request.generation;
         let roots = request.roots.clone();
         let cancellation = request.cancellation.clone();
@@ -4559,7 +4567,7 @@ fn schedule_ide_scan(app_handle: tauri::AppHandle, request: crate::ide_context::
                 failure.outcome_code,
             ),
         };
-        let state = app_handle.state::<State>();
+        let state = app_handle.services();
         let adopted = state
             .app_state
             .ide_context
@@ -4596,7 +4604,7 @@ fn enabled_ide_profile_roots(app_state: &AppState, bundle_id: &str) -> Option<Ve
 }
 
 fn refresh_expired_ide_context(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     app_state: &AppState,
     bundle_id: Option<&str>,
 ) {
@@ -4616,9 +4624,9 @@ fn refresh_expired_ide_context(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_ide_context_status(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
     bundle_id: String,
 ) -> crate::ide_context::IdeContextStatus {
     state
@@ -4628,10 +4636,10 @@ pub fn get_ide_context_status(
         .status(bundle_id.trim())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn refresh_ide_context(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     bundle_id: String,
 ) -> Result<crate::ide_context::IdeContextStatus, String> {
     let bundle_id = bundle_id.trim();
@@ -4652,9 +4660,9 @@ pub fn refresh_ide_context(
         .status(bundle_id))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn clear_ide_context(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
     bundle_id: String,
 ) -> Result<crate::ide_context::IdeContextStatus, String> {
     let bundle_id = bundle_id.trim();
@@ -4677,7 +4685,7 @@ pub fn clear_ide_context(
 /// audio supervisor. The supervisor owns Core Audio and thread teardown; this
 /// bridge owns the dictation state/event/performance contract.
 pub(crate) fn handle_audio_lifecycle(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
@@ -4688,8 +4696,8 @@ pub(crate) fn handle_audio_lifecycle(
         recording_id,
         event,
         |app_handle, recording_id| {
-            tauri::async_runtime::spawn(async move {
-                let state = app_handle.state::<State>();
+            crate::host::runtime::spawn(async move {
+                let state = app_handle.services();
                 if stop_native_recording_for(
                     app_handle.clone(),
                     state,
@@ -4708,20 +4716,19 @@ pub(crate) fn handle_audio_lifecycle(
             });
         },
     );
-    if became_ready
-        && dictation_partial_is_current(&partial_app.state::<State>().app_state, recording_id)
+    if became_ready && dictation_partial_is_current(&partial_app.services().app_state, recording_id)
     {
         spawn_dictation_partial_ticker(partial_app, recording_id);
     }
 }
 
-fn handle_audio_lifecycle_with<R: tauri::Runtime>(
-    app_handle: tauri::AppHandle<R>,
+fn handle_audio_lifecycle_with<R: crate::host::Runtime>(
+    app_handle: crate::host::Context<R>,
     recording_id: u64,
     event: AudioLifecycleEvent,
-    transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
+    transcribe_interruption: impl FnOnce(crate::host::Context<R>, u64),
 ) {
-    let state = app_handle.state::<State>();
+    let state = app_handle.services();
     if let AudioLifecycleEvent::InitializationFailed { kind, .. } = &event {
         state
             .performance
@@ -5135,7 +5142,7 @@ pub(crate) fn complete_dictation_capture_cleanup(
 }
 
 fn publish_recording_ready_if_audio_ready(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     recording_id: u64,
     context_ready_at: std::time::Instant,
 ) -> bool {
@@ -5143,7 +5150,7 @@ fn publish_recording_ready_if_audio_ready(
         return false;
     }
 
-    let state = app_handle.state::<State>();
+    let state = app_handle.services();
     let mut dictation = state.app_state.dictation.lock_or_recover();
     if state.app_state.recording_id.load(Ordering::SeqCst) != recording_id
         || dictation.status != DictationStatus::Starting
@@ -5231,10 +5238,10 @@ pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
         )
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn start_native_recording(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     device_name: Option<String>,
     smart_auto: Option<SmartAutoRequest>,
     origin: Option<String>,
@@ -5624,10 +5631,10 @@ pub async fn start_native_recording(
     }))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn stop_native_recording(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     stop_trigger: Option<audio_lifecycle::DictationStopTrigger>,
     expected_recording_id: Option<u64>,
 ) -> Result<serde_json::Value, String> {
@@ -5648,8 +5655,8 @@ fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u
 /// pass no expectation; asynchronous lifecycle continuations must pass the
 /// generation that scheduled them so they cannot stop a newer recording.
 pub(crate) async fn stop_native_recording_for(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
@@ -6153,10 +6160,10 @@ pub(crate) fn cancel_recording_transition(
 ///
 /// With `expected_recording_id`, cancels only that recording; a newer or
 /// older generation is a no-op.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn cancel_native_recording(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     expected_recording_id: Option<u64>,
 ) -> Result<(), String> {
     let transition = state.app_state.recording_transition.lock().await;
@@ -6229,7 +6236,7 @@ pub async fn cancel_native_recording(
 
 /// Cancel only an in-flight microphone initialization after an environment
 /// change. A live recording is deliberately left alone.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn cancel_audio_initialization(reason: String) -> Result<(), String> {
     let reason = match reason.as_str() {
         "device_changed" => AudioCancelReason::DeviceChanged,
@@ -6241,7 +6248,7 @@ pub fn cancel_audio_initialization(reason: String) -> Result<(), String> {
 
 /// Apply the same local alias matcher used by live dictation without recording,
 /// persisting, copying, or logging any user text.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn preview_vocabulary_aliases(
     entries: Vec<crate::state::VocabularyEntry>,
     voice_commands: Vec<crate::state::VoiceCommand>,
@@ -6271,14 +6278,14 @@ pub async fn preview_vocabulary_aliases(
 /// transcription is a one-shot "give me the text" action whose result is shown
 /// in the UI. It decodes, downmixes to mono, resamples to 16kHz, applies VAD,
 /// transcribes, and returns the text plus the decoded audio duration (seconds).
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn transcribe_file(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     file_path: String,
     operation_id: String,
 ) -> Result<serde_json::Value, String> {
-    let completion = app_handle.state::<crate::completion::Completion>();
+    let completion = app_handle.completion_owner();
     let operation = crate::completion::FileOperation::begin(&completion.producers, operation_id)?;
     let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
@@ -7555,7 +7562,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             app_handle
-                .state::<State>()
+                .services()
                 .app_state
                 .dictation_telemetry
                 .terminal_for_test(recording_id),
@@ -7596,7 +7603,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             app_handle
-                .state::<State>()
+                .services()
                 .app_state
                 .dictation_telemetry
                 .terminal_for_test(recording_id),
@@ -7673,7 +7680,7 @@ pub(crate) mod tests {
             |_, _| {},
         );
 
-        let state = app_handle.state::<State>();
+        let state = app_handle.services();
         assert_eq!(
             state.app_state.dictation.lock_or_recover().status,
             DictationStatus::Idle

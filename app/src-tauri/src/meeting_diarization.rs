@@ -6,6 +6,7 @@ mod probe;
 
 use crate::diarization_assignment::{self, SpeakerTurn};
 use crate::diarization_audio::RemoteAudio;
+use crate::host::ServiceAccess;
 use crate::managed_child::ManagedChild;
 use crate::meeting_store::MeetingRepository;
 use crate::{MutexExt, State};
@@ -14,7 +15,6 @@ use std::io::{BufRead, Read, Write};
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Manager;
 
 const WORKER_ARGUMENT: &str = "--meeting-diarization-worker-v1";
 const PREFIX: &str = "MRMR_DIARIZATION_V1 ";
@@ -124,7 +124,7 @@ fn app_idle(state: &State) -> bool {
 }
 
 pub fn schedule(
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     repository: MeetingRepository,
     session_id: String,
     capture_generation: u64,
@@ -154,7 +154,7 @@ pub fn schedule(
                 {
                     break;
                 }
-                let state = app.state::<State>();
+                let state = app.services();
                 if state.app_state.meeting_generation.load(Ordering::SeqCst) != capture_generation {
                     break;
                 }

@@ -6,6 +6,27 @@ use std::{
 };
 pub(crate) const PRODUCTION: &str = "com.localdictation";
 static IDENTIFIER: OnceLock<String> = OnceLock::new();
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+static NATIVE_SUPPORT: OnceLock<PathBuf> = OnceLock::new();
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn initialize_native(identifier: &str, home: &Path) -> Result<(), String> {
+    if !home.is_absolute() {
+        return Err("Native home path unavailable".into());
+    }
+    let support = home.join("Library/Application Support");
+    if NATIVE_SUPPORT.get().is_some_and(|old| *old != support)
+        || initialized_identifier().is_some_and(|old| old != identifier)
+    {
+        return Err("Native identity already initialized".into());
+    }
+    let _ = NATIVE_SUPPORT.set(support);
+    initialize(identifier);
+    Ok(())
+}
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_support() -> Option<&'static Path> {
+    NATIVE_SUPPORT.get().map(PathBuf::as_path)
+}
 pub(crate) fn initialize(identifier: &str) {
     let _ = IDENTIFIER.set(identifier.to_owned());
 }
@@ -53,6 +74,9 @@ pub(crate) fn namespace(root: &Path, identifier: &str) -> PathBuf {
     root.join("murmur-isolated").join(encoded)
 }
 pub(crate) fn data_dir() -> Option<PathBuf> {
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    return native_support().map(|root| namespace(root, identifier()));
+    #[cfg(feature = "tauri-host")]
     dirs::data_dir().map(|root| namespace(&root, identifier()))
 }
 pub(crate) fn temp_dir() -> PathBuf {

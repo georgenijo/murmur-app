@@ -590,7 +590,7 @@ async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
     }
 }
 
-pub fn start(app_handle: &tauri::AppHandle) {
+pub fn start(app_handle: &crate::host::Context) {
     if std::env::var_os("MURMUR_UPDATER_CANARY").is_some() {
         tracing::info!(target: "system", "log shipper disabled: updater canary run");
         return;
@@ -617,7 +617,7 @@ pub fn start(app_handle: &tauri::AppHandle) {
     }
     let endpoint = std::env::var("MURMUR_LOG_ENDPOINT").unwrap_or_else(|_| ENDPOINT.to_string());
 
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()

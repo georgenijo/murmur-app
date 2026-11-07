@@ -11,24 +11,27 @@ fn main() {
     // (commands::permissions::check_microphone_permission). AppKit does not load it.
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     build_foundation_models_bridge();
-    let attributes = if std::env::var_os("CARGO_FEATURE_SHUTDOWN_TEST_SUPPORT").is_some() {
-        tauri_build::Attributes::new()
-            .plugin(
-                "shutdown-test",
-                tauri_build::InlinedPlugin::new().commands(&["shutdown_test_action"]),
-            )
-            .plugin(
-                "updater-test",
-                tauri_build::InlinedPlugin::new().commands(&["updater_test_run"]),
-            )
-            .plugin(
-                "qa-clipboard",
-                tauri_build::InlinedPlugin::new().commands(&["read_text", "write_text"]),
-            )
-    } else {
-        tauri_build::Attributes::new()
-    };
-    tauri_build::try_build(attributes).expect("failed to build Tauri context");
+    #[cfg(feature = "tauri-host")]
+    {
+        let attributes = if std::env::var_os("CARGO_FEATURE_SHUTDOWN_TEST_SUPPORT").is_some() {
+            tauri_build::Attributes::new()
+                .plugin(
+                    "shutdown-test",
+                    tauri_build::InlinedPlugin::new().commands(&["shutdown_test_action"]),
+                )
+                .plugin(
+                    "updater-test",
+                    tauri_build::InlinedPlugin::new().commands(&["updater_test_run"]),
+                )
+                .plugin(
+                    "qa-clipboard",
+                    tauri_build::InlinedPlugin::new().commands(&["read_text", "write_text"]),
+                )
+        } else {
+            tauri_build::Attributes::new()
+        };
+        tauri_build::try_build(attributes).expect("failed to build Tauri context");
+    }
 }
 
 /// Compile the small Swift bridge used by the optional homophone context pass

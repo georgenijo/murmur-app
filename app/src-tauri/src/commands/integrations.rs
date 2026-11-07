@@ -27,7 +27,7 @@ pub(crate) fn notchpill_installed() -> bool {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn is_notchpill_installed() -> bool {
     notchpill_installed()
 }

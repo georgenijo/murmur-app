@@ -1,10 +1,18 @@
+#[cfg(not(any(feature = "tauri-host", feature = "native-host")))]
+compile_error!("Select either tauri-host or native-host");
+mod host;
 mod identity;
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub mod native_services;
+#[cfg(feature = "tauri-host")]
 use crate::events::EventsExt;
+#[cfg(feature = "tauri-host")]
 use murmur_core::events::{EventKind, EventSink};
 #[cfg(feature = "internal-benchmark")]
 mod accuracy_corpus;
 #[cfg(target_os = "macos")]
 mod alloc;
+#[cfg(feature = "tauri-host")]
 mod app_context;
 mod audio;
 mod audio_decode;
@@ -67,6 +75,7 @@ mod meeting_suggestions;
 mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
+#[cfg(feature = "tauri-host")]
 mod process_plugin;
 #[cfg(any(test, feature = "shutdown-test-support"))]
 mod qa_clipboard;
@@ -148,10 +157,13 @@ pub fn ffi_heap_bytes() -> u64 {
 
 use state::AppState;
 use std::sync::{Mutex, MutexGuard};
+#[cfg(feature = "tauri-host")]
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
+#[cfg(feature = "tauri-host")]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "tauri-host"))]
 use tauri::RunEvent;
 
 /// Helper trait to recover from poisoned mutexes
@@ -218,14 +230,17 @@ pub(crate) struct State {
 
 // Tauri's pre-runtime generated-context panic path contains exit(101).
 // This helper is called only before the application/coordinator is built.
+#[cfg(feature = "tauri-host")]
 #[allow(clippy::disallowed_methods)]
 fn generated_context() -> tauri::Context<tauri::Wry> {
     tauri::generate_context!()
 }
+#[cfg(feature = "tauri-host")]
 pub fn initialize_identity() {
     crate::identity::initialize(&generated_context().config().identifier);
 }
 
+#[cfg(feature = "tauri-host")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = generated_context();
@@ -285,28 +300,7 @@ pub fn run() {
         .plugin(commands::updater::fixture_plugin());
 
     let app = builder
-        .manage(State {
-            app_state: AppState::default(),
-            benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
-            microphone_startup_benchmark:
-                commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
-            #[cfg(feature = "internal-benchmark")]
-            corpus: commands::corpus::CorpusRecorderState::default(),
-            knowledge: knowledge_store::KnowledgeStore::default(),
-            meeting_store: meeting_store::MeetingStore::default(),
-            meetings: meeting_capture::MeetingCoordinator::default(),
-            meeting_suggestions: meeting_suggestions::MeetingSuggestions::default(),
-            delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
-            correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
-            capture_health: capture_health::CaptureHealthDiagnostics::default(),
-            performance: performance_metrics::PerformanceMetrics::default(),
-            dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
-            notch_info: Mutex::new(None),
-            display_snapshot: Mutex::new(None),
-            overlay_calibration: Mutex::new(commands::overlay::OverlayCalibrationState::default()),
-            overlay_frame: Mutex::new(None),
-            overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
-        })
+        .manage(State::default())
         .invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
@@ -767,4 +761,31 @@ pub fn run() {
             shutdown::receipt(_app_handle);
         }
     });
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            app_state: AppState::default(),
+            benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
+            microphone_startup_benchmark:
+                commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
+            #[cfg(feature = "internal-benchmark")]
+            corpus: commands::corpus::CorpusRecorderState::default(),
+            knowledge: knowledge_store::KnowledgeStore::default(),
+            meeting_store: meeting_store::MeetingStore::default(),
+            meetings: meeting_capture::MeetingCoordinator::default(),
+            meeting_suggestions: meeting_suggestions::MeetingSuggestions::default(),
+            delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
+            correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
+            capture_health: capture_health::CaptureHealthDiagnostics::default(),
+            performance: performance_metrics::PerformanceMetrics::default(),
+            dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
+            notch_info: Mutex::new(None),
+            display_snapshot: Mutex::new(None),
+            overlay_calibration: Mutex::new(commands::overlay::OverlayCalibrationState::default()),
+            overlay_frame: Mutex::new(None),
+            overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
+        }
+    }
 }

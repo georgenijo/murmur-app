@@ -1,16 +1,16 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::microphone_auto::SmartAutoRequest;
 use crate::microphone_preview::{MicrophonePreviewStatus, PreviewPhase};
 use crate::state::DictationStatus;
 use crate::{keyboard, MutexExt, State};
 use murmur_core::events::{EventKind, EventSink};
 use std::time::{Duration, Instant};
-use tauri::Manager;
 
 const CONFIRMED_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
-fn require_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn require_main_window(window: &crate::host::Window) -> Result<(), String> {
     if window.label() == "main" {
         Ok(())
     } else {
@@ -18,12 +18,8 @@ fn require_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     }
 }
 
-fn publish_status(app_handle: &tauri::AppHandle) {
-    let status = app_handle
-        .state::<State>()
-        .app_state
-        .microphone_preview
-        .status();
+fn publish_status(app_handle: &crate::host::Context) {
+    let status = app_handle.services().app_state.microphone_preview.status();
     let _ = app_handle
         .events()
         .publish(EventKind::MicrophonePreviewStatus, status);
@@ -43,11 +39,11 @@ fn normalized_device_id(device_id: String) -> Result<Option<String>, String> {
 }
 
 pub(crate) fn handle_audio_lifecycle(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     preview_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    let state = app_handle.state::<State>();
+    let state = app_handle.services();
     let preview = &state.app_state.microphone_preview;
     let changed = match event {
         AudioLifecycleEvent::Accepted => false,
@@ -79,26 +75,26 @@ pub(crate) fn handle_audio_lifecycle(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_microphone_preview_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
     Ok(state.app_state.microphone_preview.status())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_smart_auto_microphone_status(
     smart_auto: SmartAutoRequest,
 ) -> crate::microphone_auto::SmartAutoStatus {
     crate::audio_inventory::smart_auto_status(&smart_auto)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn verify_microphone_preview_signal(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
     preview_id: u64,
 ) -> Result<crate::microphone_signal::SignalVerificationResult, String> {
     require_main_window(&window)?;
@@ -111,11 +107,11 @@ pub async fn verify_microphone_preview_signal(
     Ok(preview.finish_signal_verification(preview_id))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn start_microphone_preview(
-    window: tauri::WebviewWindow,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     device_id: String,
     smart_auto: Option<SmartAutoRequest>,
     vad_sensitivity: u32,
@@ -193,8 +189,8 @@ pub async fn start_microphone_preview(
     // inputs); keeping the command pending would leave Settings unable to send
     // an exact stop for that Connecting generation.
     let task_app_handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        let state = task_app_handle.state::<State>();
+    crate::host::runtime::spawn(async move {
+        let state = task_app_handle.services();
         let transition = state.app_state.recording_transition.lock().await;
         if !state.app_state.microphone_preview.is_connecting(preview_id) {
             if state.app_state.microphone_preview.clear_if(preview_id) {
@@ -228,10 +224,10 @@ pub async fn start_microphone_preview(
     Ok(state.app_state.microphone_preview.status())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn update_microphone_preview_vad_sensitivity(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
     preview_id: u64,
     vad_sensitivity: u32,
 ) -> Result<bool, String> {
@@ -242,11 +238,11 @@ pub fn update_microphone_preview_vad_sensitivity(
         .update_vad_sensitivity_if(preview_id, vad_sensitivity))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn stop_microphone_preview(
-    window: tauri::WebviewWindow,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     preview_id: u64,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
@@ -254,7 +250,7 @@ pub async fn stop_microphone_preview(
 }
 
 pub(crate) async fn stop_exact_preview(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     state: &State,
     preview_id: u64,
 ) -> Result<MicrophonePreviewStatus, String> {
@@ -317,7 +313,7 @@ pub(crate) async fn stop_exact_preview(
 /// is stopped, while a real pipeline that receives the returned guard can
 /// claim its state before another preview is allowed to start.
 pub(crate) async fn transition_after_stopping_preview<'a>(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     state: &'a State,
 ) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
     transition_after_preview_cleanup(&state.app_state, |preview_id| async move {
@@ -357,10 +353,10 @@ fn resolve_cancel_id(current: Option<u64>, requested: Option<u64>) -> Option<u64
 }
 
 async fn cancel_exact_preview(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     requested_id: Option<u64>,
 ) -> Result<bool, String> {
-    let state = app_handle.state::<State>();
+    let state = app_handle.services();
     let transition = state.app_state.recording_transition.lock().await;
     let Some(preview_id) = resolve_cancel_id(
         state.app_state.microphone_preview.current_id(),
@@ -381,20 +377,20 @@ async fn cancel_exact_preview(
     .map_err(|error| format!("Microphone test cancel task failed: {error}"))?
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn cancel_microphone_preview(
-    window: tauri::WebviewWindow,
-    app_handle: tauri::AppHandle,
+    window: crate::host::Window,
+    app_handle: crate::host::Context,
     preview_id: Option<u64>,
 ) -> Result<bool, String> {
     require_main_window(&window)?;
     cancel_exact_preview(app_handle, preview_id).await
 }
 
-pub(crate) fn cancel_for_window_close(app_handle: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
+pub(crate) fn cancel_for_window_close(app_handle: crate::host::Context) {
+    crate::host::runtime::spawn(async move {
         if app_handle
-            .state::<State>()
+            .services()
             .app_state
             .microphone_preview
             .automatic_id()

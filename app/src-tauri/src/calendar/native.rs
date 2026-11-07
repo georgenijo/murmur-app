@@ -19,7 +19,7 @@ thread_local! {
 }
 
 pub(crate) async fn set_suggestion_observation(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     enabled: bool,
 ) -> Result<(), String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -56,7 +56,7 @@ pub(crate) fn permission_status() -> CalendarPermissionStatus {
 }
 
 pub(crate) async fn request_permission(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
 ) -> Result<CalendarPermissionStatus, String> {
     let status = permission_status();
     if status != CalendarPermissionStatus::NotDetermined {
@@ -93,7 +93,7 @@ pub(crate) async fn query_events(
 ) -> Result<Vec<CalendarEventCandidate>, String> {
     permission_status().require_read_access()?;
     let operation = CalendarOperation::acquire()?;
-    let task = tauri::async_runtime::spawn_blocking(move || {
+    let task = crate::host::runtime::spawn_blocking(move || {
         // A timed-out native query keeps ownership until its worker returns.
         // Repeated UI requests therefore cannot accumulate blocked workers.
         let _operation = operation;
@@ -112,7 +112,7 @@ pub(crate) async fn query_suggestion_events(
     permit: Arc<AtomicBool>,
 ) -> Result<Vec<SuggestionEvent>, String> {
     let operation = CalendarOperation::acquire()?;
-    let task = tauri::async_runtime::spawn_blocking(move || {
+    let task = crate::host::runtime::spawn_blocking(move || {
         let _operation = operation;
         if !permit.load(Ordering::Acquire) {
             return Err(UNAVAILABLE.into());

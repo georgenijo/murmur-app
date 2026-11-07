@@ -36,6 +36,7 @@ pub(crate) fn reduce_observed(
     observe(before, &core, event);
     result
 }
+#[allow(dead_code)] // Native host uses its pre-quit gate; core adapter tests include this file.
 pub(crate) fn intercept_exit(permitted: bool, prevent: impl FnOnce(), request: impl FnOnce()) {
     if !permitted {
         prevent();

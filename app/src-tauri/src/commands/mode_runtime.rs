@@ -2,11 +2,11 @@ use crate::browser_site::{self, BrowserSiteIdentity};
 use crate::dictation_context::{builtin_mode, SessionOverrides};
 use crate::events::EventsExt;
 use crate::frontmost;
+use crate::host::ServiceAccess;
 use crate::state::{DictationState, MurmurMode};
 use crate::{MutexExt, State};
 use murmur_core::events::{EventKind, EventSink};
 use serde::Serialize;
-use tauri::Manager;
 
 const BUILTIN_MODE_IDS: [&str; 7] = [
     "builtin.everyday",
@@ -204,13 +204,13 @@ fn observe_context(
     resolved_status(dictation, bundle_id, site)
 }
 
-fn publish(app: &tauri::AppHandle, status: &ModeRuntimeStatus) {
+fn publish(app: &crate::host::Context, status: &ModeRuntimeStatus) {
     super::tray::set_mode_menu_status(status);
     let _ = app.events().publish(EventKind::ModeRuntimeChanged, status);
 }
 
 pub(crate) fn select_next_recording_mode(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     state: &State,
     mode_id: Option<&str>,
 ) -> Result<ModeRuntimeStatus, String> {
@@ -224,16 +224,16 @@ pub(crate) fn select_next_recording_mode(
             .transpose()?;
         dictation.next_recording_mode.set(mode);
     }
-    let status = get_mode_runtime_status(app.state::<State>());
+    let status = get_mode_runtime_status(app.services());
     publish(app, &status);
     Ok(status)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_next_recording_mode(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    app: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     mode_id: Option<String>,
 ) -> Result<ModeRuntimeStatus, String> {
     if window.label() != "main" {
@@ -255,8 +255,8 @@ fn current_site(
         .flatten()
 }
 
-#[tauri::command]
-pub fn get_mode_runtime_status(state: tauri::State<'_, State>) -> ModeRuntimeStatus {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn get_mode_runtime_status(state: crate::host::StateRef<'_, State>) -> ModeRuntimeStatus {
     let identity = current_identity();
     let enabled = state
         .app_state
@@ -268,8 +268,11 @@ pub fn get_mode_runtime_status(state: tauri::State<'_, State>) -> ModeRuntimeSta
     observe_context(&mut dictation, identity.bundle_id.as_deref(), site.as_ref())
 }
 
-#[tauri::command]
-pub fn cycle_mode(app: tauri::AppHandle, state: tauri::State<'_, State>) -> ModeRuntimeStatus {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn cycle_mode(
+    app: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
+) -> ModeRuntimeStatus {
     let identity = current_identity();
     let enabled = state
         .app_state
@@ -313,10 +316,10 @@ pub fn cycle_mode(app: tauri::AppHandle, state: tauri::State<'_, State>) -> Mode
     status
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn clear_temporary_mode_override(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> ModeRuntimeStatus {
     let identity = current_identity();
     let enabled = state
@@ -334,14 +337,14 @@ pub fn clear_temporary_mode_override(
     status
 }
 
-pub(crate) fn spawn_mode_watcher(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
+pub(crate) fn spawn_mode_watcher(app: crate::host::Context) {
+    crate::host::runtime::spawn(async move {
         let mut previous: Option<ModeRuntimeStatus> = None;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             let identity = current_identity();
             let status = {
-                let state = app.state::<State>();
+                let state = app.services();
                 let enabled = state
                     .app_state
                     .dictation

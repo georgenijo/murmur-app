@@ -4,9 +4,9 @@ use murmur_core::events::{EventKind, EventSink};
 use std::sync::{Mutex, OnceLock};
 use tauri::menu::{CheckMenuItemBuilder, MenuItem, MenuItemBuilder, Submenu};
 
-static UPDATE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
-static MODE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
-static NEXT_MODE_MENU: OnceLock<Submenu<tauri::Wry>> = OnceLock::new();
+static UPDATE_MENU_ITEM: OnceLock<MenuItem<crate::host::DefaultRuntime>> = OnceLock::new();
+static MODE_MENU_ITEM: OnceLock<MenuItem<crate::host::DefaultRuntime>> = OnceLock::new();
+static NEXT_MODE_MENU: OnceLock<Submenu<crate::host::DefaultRuntime>> = OnceLock::new();
 #[derive(PartialEq, Eq)]
 struct NextModeMenuStatus {
     revision: u64,
@@ -16,11 +16,11 @@ struct NextModeMenuStatus {
 
 static NEXT_MODE_STATUS: Mutex<Option<NextModeMenuStatus>> = Mutex::new(None);
 
-pub(crate) fn register_next_mode_menu(menu: Submenu<tauri::Wry>) {
+pub(crate) fn register_next_mode_menu(menu: Submenu<crate::host::DefaultRuntime>) {
     let _ = NEXT_MODE_MENU.set(menu);
 }
 
-pub(crate) fn register_mode_item(item: MenuItem<tauri::Wry>) {
+pub(crate) fn register_mode_item(item: MenuItem<crate::host::DefaultRuntime>) {
     let _ = MODE_MENU_ITEM.set(item);
 }
 
@@ -43,7 +43,7 @@ pub(crate) fn set_mode_menu_status(status: &super::mode_runtime::ModeRuntimeStat
                 return;
             }
             if previous.as_ref() != Some(&new_status) {
-                let refreshed = (|| -> tauri::Result<()> {
+                let refreshed = (|| -> crate::host::Result<()> {
                     while menu.remove_at(0)?.is_some() {}
                     for mode in &status.available {
                         let item = CheckMenuItemBuilder::with_id(
@@ -84,7 +84,7 @@ pub(crate) fn set_mode_menu_status(status: &super::mode_runtime::ModeRuntimeStat
 }
 
 #[cfg(not(feature = "internal-benchmark"))]
-pub(crate) fn register_tray_update_item(item: MenuItem<tauri::Wry>) {
+pub(crate) fn register_tray_update_item(item: MenuItem<crate::host::DefaultRuntime>) {
     let _ = UPDATE_MENU_ITEM.set(item);
 }
 
@@ -104,7 +104,7 @@ fn update_menu_label(version: Option<&str>) -> Result<String, String> {
     Ok(format!("Update Murmur to v{version}…"))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_tray_update_available(version: Option<String>) -> Result<(), String> {
     let label = update_menu_label(version.as_deref())?;
     if let Some(item) = UPDATE_MENU_ITEM.get() {
@@ -114,7 +114,7 @@ pub fn set_tray_update_available(version: Option<String>) -> Result<(), String> 
 }
 
 #[cfg(all(target_os = "macos", not(feature = "internal-benchmark")))]
-pub(crate) fn register_update_wake_observer(app_handle: tauri::AppHandle) {
+pub(crate) fn register_update_wake_observer(app_handle: crate::host::Context) {
     use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
     use objc2_foundation::{NSNotification, NSOperationQueue};
 
@@ -136,7 +136,7 @@ pub(crate) fn register_update_wake_observer(app_handle: tauri::AppHandle) {
 }
 
 #[cfg(all(not(target_os = "macos"), not(feature = "internal-benchmark")))]
-pub(crate) fn register_update_wake_observer(_app_handle: tauri::AppHandle) {}
+pub(crate) fn register_update_wake_observer(_app_handle: crate::host::Context) {}
 
 /// Generate 66×66 RGBA pixel data for an audio-bar tray icon. It is installed as a
 /// macOS template image, so only alpha matters: the menu bar tints it to match.
@@ -191,8 +191,8 @@ pub(crate) fn make_tray_icon_data() -> Vec<u8> {
 }
 
 /// No-op — tray icon is a static template image. Kept so the registered command doesn't break.
-#[tauri::command]
-pub fn update_tray_icon(_app: tauri::AppHandle, _icon_state: String) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn update_tray_icon(_app: crate::host::Context, _icon_state: String) -> Result<(), String> {
     Ok(())
 }
 

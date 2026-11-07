@@ -159,12 +159,12 @@ pub(crate) fn set_enabled(enabled: bool) {
 }
 
 /// Start the single bounded sampler. Repeated calls are harmless.
-pub(crate) fn start(app: tauri::AppHandle) {
+pub(crate) fn start(app: crate::host::Context) {
     if STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
 
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
         let mut last_dispatched_generation = 0;
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -196,7 +196,7 @@ pub(crate) fn start(app: tauri::AppHandle) {
 /// Freeze the exact current input, or the recent input while the expected
 /// foreground app is positively identified as media.
 pub async fn capture(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     expected: &DeliveryTargetSnapshot,
     enabled: bool,
 ) -> Snapshot {
@@ -343,12 +343,12 @@ pub(crate) fn abort(snapshot: &Snapshot, pasteboard_change: Option<i64>) {
 /// Schedules guarded rollback even when the async delivery future is dropped
 /// during activation settling, or dispatch fails before insertion is queued.
 pub(crate) struct AbortOnDrop {
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     snapshot: Snapshot,
 }
 
 impl AbortOnDrop {
-    pub(crate) fn new(app: tauri::AppHandle, snapshot: Snapshot) -> Self {
+    pub(crate) fn new(app: crate::host::Context, snapshot: Snapshot) -> Self {
         Self { app, snapshot }
     }
 }

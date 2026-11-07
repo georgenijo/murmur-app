@@ -234,7 +234,7 @@ fn bounded_running_applications(
 
 /// Return a bounded, ephemeral list for Settings. The caller owns the only
 /// copy; this module does not cache or log app names or bundle identifiers.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 #[cfg(target_os = "macos")]
 pub fn list_running_applications() -> Vec<RunningApplication> {
     autoreleasepool(|_| {
@@ -259,7 +259,7 @@ pub fn list_running_applications() -> Vec<RunningApplication> {
 
 /// Unsupported test targets retain the command surface without probing
 /// platform process state.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 #[cfg(not(target_os = "macos"))]
 pub fn list_running_applications() -> Vec<RunningApplication> {
     Vec::new()

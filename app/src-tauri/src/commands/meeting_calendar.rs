@@ -26,25 +26,25 @@ fn validate_session_id(value: &str) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_calendar_permission_status(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
 ) -> Result<CalendarPermissionStatus, String> {
     require_main_window(window.label())?;
     Ok(calendar::permission_status())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn request_calendar_permission(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
 ) -> Result<CalendarPermissionStatus, String> {
     require_main_window(window.label())?;
     calendar::request_permission(&app).await
 }
 
-#[tauri::command]
-pub async fn reset_calendar_permission(window: tauri::WebviewWindow) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub async fn reset_calendar_permission(window: crate::host::Window) -> Result<(), String> {
     require_main_window(window.label())?;
     let _operation = CalendarOperation::acquire()?;
     let bundle_id = super::permissions::current_bundle_identifier().ok_or(calendar::UNAVAILABLE)?;
@@ -73,18 +73,18 @@ pub async fn reset_calendar_permission(window: tauri::WebviewWindow) -> Result<(
     Ok(())
 }
 
-#[tauri::command]
-pub fn open_calendar_preferences(window: tauri::WebviewWindow) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn open_calendar_preferences(window: crate::host::Window) -> Result<(), String> {
     require_main_window(window.label())?;
     super::permissions::open_system_preference_pane("Privacy_Calendars")
         .map_err(|_| "Open System Settings, then Privacy & Security, then Calendars.".into())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn get_meeting_calendar_events(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     session_id: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<Vec<CalendarEventCandidate>, String> {
     require_main_window(window.label())?;
     validate_session_id(&session_id)?;
@@ -93,12 +93,12 @@ pub async fn get_meeting_calendar_events(
     calendar::query_events(session_id, interval).await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn apply_meeting_calendar_event(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     session_id: String,
     selection_token: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<MeetingWorkspace, String> {
     require_main_window(window.label())?;
     validate_session_id(&session_id)?;
