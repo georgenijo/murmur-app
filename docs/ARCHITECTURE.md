@@ -91,7 +91,7 @@ unsafe defaults. Explicit recovery preserves rejected bytes.
 ## Legacy import and retirement
 
 Before showing user data the host reads the durable lifecycle receipt. A retired
-store returns immediately before store inspection, child spawn or WebKit loading.
+store returns immediately before child spawn or WebKit loading.
 If a legacy store remains, the disposable worker serves only a fixed page at the
 original `tauri://localhost/` origin. The parent owns durable fill-only v1/v2/v3
 imports and exact-key removal acknowledgements.

@@ -75,7 +75,8 @@ fn initialize_worker(app: &crate::host::Context) -> Result<(), String> {
         .map_err(|_| "Home directory unavailable")?
         .join("Library/WebKit")
         .join(&app.config().identifier);
-    let service = CompletionService::start(root, webkit.exists()).map_err(|e| e.to_string())?;
+    let service = CompletionService::start(root, crate::identity::legacy_store_present(&webkit)?)
+        .map_err(|e| e.to_string())?;
     initialize_with_service(app, service.clone());
     crate::commands::updater::initialize(app, service)?;
     Ok(())

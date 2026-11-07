@@ -1245,7 +1245,7 @@ async fn contract(b: &Backend) {
                     && b.call("webkit_state_snapshot", json!({})).await?["transcriptKeysRemoved"]
                         == true
                     && b.call("webkit_state_snapshot", json!({})).await?["retired"] == true
-                    && !b.services.legacy_store_present(),
+                    && !b.services.legacy_store_present()?,
             )
         }
         .await

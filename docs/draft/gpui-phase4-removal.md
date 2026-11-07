@@ -27,7 +27,7 @@ Part of #1012. Draft stacked on `gpui/26-ui-parity`; never merge this layer alon
 
 The standalone objc2 importer remains buildable. The GPUI host's exact-child
 worker remains its production transport. The parent checks `retired` before any
-store probe or worker spawn. After import and independently receipted exact-key
+worker spawn or WebKit creation. After import and independently receipted exact-key
 removal, a durable prepare receipt authorizes broad store cleanup. The worker
 releases the view, purges all types, fetches/verifies zero records and exits.
 Only then does the parent remove the exclusive bundle directory, sync its parent,

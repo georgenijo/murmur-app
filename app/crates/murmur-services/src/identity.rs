@@ -24,6 +24,14 @@ pub(crate) fn initialize_native(identifier: &str, home: &Path) -> Result<(), Str
     Ok(())
 }
 
+/// Failure to inspect legacy storage is not evidence that it is absent.
+/// Never commit an empty migration/retirement on a permission or I/O error.
+pub(crate) fn legacy_store_present(directory: &Path) -> Result<bool, String> {
+    directory
+        .try_exists()
+        .map_err(|_| "Legacy store availability is unknown".to_owned())
+}
+
 pub(crate) fn native_support() -> Option<&'static Path> {
     NATIVE_SUPPORT.get().map(PathBuf::as_path)
 }
@@ -132,6 +140,33 @@ mod tests {
                     .starts_with(root.join("local-dictation")));
             }
             assert!(paths.insert(isolated));
+        }
+    }
+}
+
+#[cfg(test)]
+mod legacy_probe_tests {
+    use super::*;
+    #[test]
+    fn missing_present_and_unreadable_legacy_roots_are_distinct() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("private");
+        std::fs::create_dir(&parent).unwrap();
+        let store = parent.join("synthetic-store");
+        assert_eq!(legacy_store_present(&store), Ok(false));
+        std::fs::create_dir(&store).unwrap();
+        assert_eq!(legacy_store_present(&store), Ok(true));
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+        let _restore = Restore(parent.clone());
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(legacy_store_present(&store).is_err());
         }
     }
 }

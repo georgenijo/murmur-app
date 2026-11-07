@@ -187,7 +187,7 @@ pub async fn migrate(b: &Backend, synthetic: bool) -> Result<(), String> {
     if status["retired"] == true {
         return Ok(());
     }
-    if !synthetic && !b.services.legacy_store_present() {
+    if !synthetic && !b.services.legacy_store_present()? {
         b.services.prepare_legacy_retirement().await?;
         b.services.finish_legacy_retirement().await?;
         return Ok(());
