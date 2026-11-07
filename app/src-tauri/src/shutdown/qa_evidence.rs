@@ -365,14 +365,15 @@ impl Evidence {
 }
 
 /// Publish an immutable name atomically: a reader sees either no JSON or the
-/// complete synced file. Hard-link publication refuses to clobber an existing
-/// per-process receipt, including after an uncertain directory-sync failure.
+/// complete synced file, with no staging name left once JSON exists. Exclusive
+/// rename refuses to clobber a receipt even after an uncertain directory sync.
 fn atomic_publish(
     path: &Path,
     bytes: &[u8],
     before_publish: impl FnOnce() -> io::Result<()>,
     sync: &mut impl FnMut(&File) -> io::Result<()>,
 ) -> io::Result<()> {
+    let directory = File::open(path.parent().ok_or(io::ErrorKind::InvalidInput)?)?;
     let staged = path.with_extension("pending");
     let mut file = OpenOptions::new()
         .write(true)
@@ -382,18 +383,49 @@ fn atomic_publish(
         file.write_all(bytes)?;
         sync(&file)?;
         before_publish()?;
-        fs::hard_link(&staged, path)?;
-        sync(&File::open(
-            path.parent().ok_or(io::ErrorKind::InvalidInput)?,
-        )?)
+        rename_exclusive(&staged, path)
     })();
     drop(file);
-    let cleanup = fs::remove_file(&staged);
-    result?;
-    cleanup?;
-    sync(&File::open(
-        path.parent().ok_or(io::ErrorKind::InvalidInput)?,
-    )?)
+    if let Err(error) = result {
+        let _ = fs::remove_file(&staged);
+        return Err(error);
+    }
+    // The terminal budget may expire during this sync. Rename already removed
+    // the staging name atomically; there is no post-publication cleanup window.
+    // On sync failure retain the complete JSON and let exclusivity reject retry.
+    sync(&directory)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn rename_exclusive(staged: &Path, path: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let staged = CString::new(staged.as_os_str().as_bytes())?;
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: both paths are live, NUL-terminated strings. The OS performs the
+    // existence check and rename together; never fall back to clobbering rename
+    // or hard-link/unlink if the kernel/filesystem lacks this operation.
+    #[cfg(target_os = "macos")]
+    let result = unsafe { libc::renamex_np(staged.as_ptr(), path.as_ptr(), libc::RENAME_EXCL) };
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            staged.as_ptr(),
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn rename_exclusive(_staged: &Path, _path: &Path) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 #[cfg(test)]
@@ -487,7 +519,7 @@ mod tests {
         );
         assert!(start.elapsed() <= Duration::from_millis(250));
         assert_eq!(terminal_count, 1);
-        assert_eq!(drained.recv_timeout(Duration::from_secs(15)).unwrap(), 4);
+        assert_eq!(drained.recv_timeout(Duration::from_secs(15)).unwrap(), 3);
         // A late disk completion cannot rewrite the bounded-wait result.
         assert_eq!(attempt.outcome(), AttemptOutcome::TimedOut);
     }
@@ -701,6 +733,184 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
+
+    #[test]
+    fn atomic_publication_sync_failures_preserve_exclusive_complete_receipts() {
+        let bytes = br#"{"count":195}"#;
+        for fail_at in 1..=2 {
+            let root = scratch();
+            let path = root.path().join("synthetic.json");
+            let staged = path.with_extension("pending");
+            let mut calls = 0;
+            let mut ready = false;
+            let error = atomic_publish(
+                &path,
+                bytes,
+                || {
+                    ready = true;
+                    Ok(())
+                },
+                &mut |file| {
+                    calls += 1;
+                    // The file sync precedes visibility; the directory sync
+                    // follows the single atomic transition, without staging.
+                    assert_eq!(path.exists(), calls == 2);
+                    assert_eq!(staged.exists(), calls == 1);
+                    if calls == 2 {
+                        assert_eq!(fs::read(&path).unwrap(), bytes);
+                    }
+                    if calls == fail_at {
+                        Err(io::ErrorKind::Interrupted.into())
+                    } else {
+                        file.sync_all()
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert_eq!(calls, fail_at);
+            assert_eq!(ready, fail_at == 2);
+            assert!(!staged.exists());
+            if fail_at == 1 {
+                assert!(!path.exists());
+                atomic_publish(&path, bytes, || Ok(()), &mut File::sync_all).unwrap();
+            } else {
+                // Directory durability is uncertain. Keep the visible receipt;
+                // retry must not silently replace it or report a fresh success.
+                assert_eq!(
+                    atomic_publish(&path, b"different", || Ok(()), &mut File::sync_all)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::AlreadyExists
+                );
+            }
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn publication_refuses_a_racing_receipt_and_preserves_unowned_staging() {
+        let root = scratch();
+        let path = root.path().join("synthetic.json");
+        let staged = path.with_extension("pending");
+        assert_eq!(
+            atomic_publish(
+                &path,
+                b"candidate",
+                || fs::write(&path, b"winner"),
+                &mut File::sync_all,
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"winner");
+        assert!(!staged.exists());
+
+        fs::remove_file(&path).unwrap();
+        fs::write(&staged, b"unowned staging").unwrap();
+        assert_eq!(
+            atomic_publish(
+                &path,
+                b"candidate",
+                || panic!("existing staging must block publication"),
+                &mut |_| panic!("existing staging must block sync"),
+            )
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert!(!path.exists());
+        assert_eq!(fs::read(&staged).unwrap(), b"unowned staging");
+    }
+
+    #[test]
+    fn terminal_receipt_sync_failures_do_not_claim_success_or_overwrite_json() {
+        for fail_at in 1..=3 {
+            let root = scratch();
+            let mut evidence =
+                Evidence::new(QA_ID, Some(QA_ID), || Some(root.path().to_owned())).unwrap();
+            let path = evidence.directory.join(format!(
+                "{}-{}.json",
+                evidence.pid, evidence.process_start_id
+            ));
+            let mut calls = 0;
+            assert_eq!(
+                evidence
+                    .write_terminal_with_sync(Action::Quit, Counts::default(), |file| {
+                        calls += 1;
+                        if calls == fail_at {
+                            Err(io::ErrorKind::Interrupted.into())
+                        } else {
+                            file.sync_all()
+                        }
+                    })
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Interrupted
+            );
+            assert_eq!(calls, fail_at);
+            assert!(!evidence.written);
+            assert!(!path.with_extension("pending").exists());
+            assert_eq!(path.exists(), fail_at == 3);
+            if fail_at == 3 {
+                let original = fs::read(&path).unwrap();
+                assert_eq!(
+                    evidence
+                        .write_terminal(Action::Restart, Counts::default())
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::AlreadyExists
+                );
+                assert!(!evidence.written);
+                assert_eq!(fs::read(&path).unwrap(), original);
+            } else {
+                assert!(evidence
+                    .write_terminal(Action::Quit, Counts::default())
+                    .unwrap());
+            }
+            assert_eq!(fs::read_dir(&evidence.directory).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn terminal_timeout_during_publication_sync_has_no_staging_cleanup_left() {
+        let root = scratch();
+        let path = root.path().join("synthetic.json");
+        let published_path = path.clone();
+        let bytes = br#"{"count":195}"#;
+        let (published, visible) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (finished, drained) = mpsc::channel();
+        let attempt = TerminalAttempt::new();
+        assert_eq!(
+            attempt.run(None, move || {
+                let mut calls = 0;
+                let result = atomic_publish(&published_path, bytes, || Ok(()), &mut |file| {
+                    calls += 1;
+                    if calls == 2 {
+                        published.send(()).unwrap();
+                        blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    }
+                    file.sync_all()
+                });
+                finished.send(result.is_ok()).unwrap();
+                result
+            }),
+            AttemptOutcome::TimedOut
+        );
+        visible.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The native action can now end the process with the worker still in
+        // its final sync. No cleanup operation remains to strand a second name.
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(!path.with_extension("pending").exists());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        release.send(()).unwrap();
+        assert!(drained.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert_eq!(attempt.outcome(), AttemptOutcome::TimedOut);
+    }
+
     #[test]
     fn one_receipt_per_process_with_closed_content_schema() {
         let root = scratch();
