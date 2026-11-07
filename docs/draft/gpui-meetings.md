@@ -68,6 +68,12 @@ revoke a generation and clear queued output. Start/enqueue/reset share native
 serialization, so a cancellation between a Rust check and enqueue cannot resume
 old audio. Completion blocks retain per-generation counters rather than the
 output object or its lock, preventing stale callbacks from changing new state.
+One persistent Rust worker owns start and pumping for each player. Play replaces
+one pending request; Pause clears it and fences the generation immediately.
+Native teardown requests are also coalesced while Core Audio is stalled. Neither
+Pause nor Drop joins a stalled worker; Drop closes admission and wakes the one
+worker to release its resources when the native call returns. Progress and errors
+use replaceable per-attempt mailboxes, so retired results cannot reach the UI.
 No microphone/input node, TCC request, webview or model is involved.
 
 ## Verification handoff

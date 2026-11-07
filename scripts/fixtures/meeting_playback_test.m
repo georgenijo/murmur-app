@@ -42,42 +42,48 @@ int main(void) { @autoreleasepool {
     assert(!dispatch_semaphore_wait(entered,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC*5)));
     // Simulate a UI pause during a stuck engine start. Reset and counter reads
     // must return before we permit that engine operation to complete.
-    murmur_meeting_output_reset(ptr,2);
+    int stopsBefore=atomic_load(&stops);
+    for(uint64_t g=2;g<=2000;g++)murmur_meeting_output_reset(ptr,g);
+    assert(atomic_load(&o->resetPending));
+    assert(atomic_load(&starts)==1 && atomic_load(&stops)==stopsBefore);
     assert(murmur_meeting_output_queued(ptr)==0);
     assert(murmur_meeting_output_played(ptr)==0);
     assert(!murmur_meeting_output_healthy(ptr,1));
     dispatch_semaphore_signal(releaseStart);
     assert(!dispatch_semaphore_wait(finished,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC*5)));
     dispatch_sync(o->worker, ^{});
-    assert(atomic_load(&o->generation)==2);
+    assert(!atomic_load(&o->resetPending));
+    assert(atomic_load(&stops)==stopsBefore+2); // stale start + one coalesced stop
+    assert(current_epoch(o)->generation==2000);
+    assert(atomic_load(&o->generation)==2000);
     // An old reset cannot revoke the newer generation.
     murmur_meeting_output_reset(ptr,1);
-    assert(atomic_load(&o->generation)==2);
+    assert(atomic_load(&o->generation)==2000);
     dispatch_semaphore_signal(releaseStart);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT,0), ^{
-        assert(murmur_meeting_output_start(ptr,2));
+        assert(murmur_meeting_output_start(ptr,2000));
         dispatch_semaphore_signal(finished);
     });
     assert(!dispatch_semaphore_wait(finished,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC*5)));
-    assert(murmur_meeting_output_healthy(ptr,2));
+    assert(murmur_meeting_output_healthy(ptr,2000));
     MurmurMeetingAudioEpoch *old=current_epoch(o);
     atomic_store(&old->queued,4800);
     assert(murmur_meeting_output_queued(ptr)==4800);
     [[NSNotificationCenter defaultCenter] postNotificationName:AVAudioEngineConfigurationChangeNotification object:o->engine];
-    assert(!murmur_meeting_output_healthy(ptr,2));
+    assert(!murmur_meeting_output_healthy(ptr,2000));
     dispatch_sync(o->worker, ^{});
-    murmur_meeting_output_reset(ptr,3);
+    murmur_meeting_output_reset(ptr,2001);
     dispatch_sync(o->worker, ^{});
     // Late completion of the old output cannot subtract from a new epoch.
     atomic_fetch_sub(&old->queued,1600);atomic_fetch_add(&old->played,1600);
     assert(murmur_meeting_output_queued(ptr)==0 && murmur_meeting_output_played(ptr)==0);
     dispatch_semaphore_signal(releaseStart);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT,0), ^{
-        assert(murmur_meeting_output_start(ptr,3));
+        assert(murmur_meeting_output_start(ptr,2001));
         dispatch_semaphore_signal(finished);
     });
     assert(!dispatch_semaphore_wait(finished,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC*5)));
-    assert(murmur_meeting_output_healthy(ptr,3));
+    assert(murmur_meeting_output_healthy(ptr,2001));
     // Destruction also returns while the audio worker is stalled.
     dispatch_async(o->worker, ^{
         dispatch_semaphore_signal(entered);

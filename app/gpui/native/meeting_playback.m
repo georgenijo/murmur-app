@@ -15,13 +15,14 @@
 @public AVAudioEngine *engine; AVAudioPlayerNode *player; AVAudioFormat *format;
     dispatch_queue_t worker;
     atomic_uint_fast64_t generation; atomic_uint_fast64_t runningGeneration; atomic_uint_fast64_t configurationEpoch;
-    MurmurMeetingAudioEpoch *epoch; id configurationObserver;
+    MurmurMeetingAudioEpoch *epoch; id configurationObserver; atomic_bool resetPending;
 }
 @end
 @implementation MurmurMeetingOutput
 @end
-// The short object lock protects only the ARC epoch pointer. No engine call,
-// dispatch_sync, or notification removal is ever made while holding it.
+// The short object lock protects the ARC epoch pointer and reset publication /
+// queue insertion. No engine call, dispatch_sync, or notification removal is
+// ever made while holding it.
 static MurmurMeetingAudioEpoch *current_epoch(MurmurMeetingOutput *o) {
     @synchronized(o) { return o->epoch; }
 }
@@ -31,23 +32,36 @@ static void stop_output(MurmurMeetingOutput *o) {
 void *murmur_meeting_output_new(void) { @autoreleasepool {
     MurmurMeetingOutput *o=[MurmurMeetingOutput new];
     o->worker=dispatch_queue_create("com.murmur.meeting-output",DISPATCH_QUEUE_SERIAL);
-    atomic_init(&o->generation,0);atomic_init(&o->runningGeneration,0);atomic_init(&o->configurationEpoch,0);
+    atomic_init(&o->generation,0);atomic_init(&o->runningGeneration,0);atomic_init(&o->configurationEpoch,0);atomic_init(&o->resetPending,false);
     o->epoch=[MurmurMeetingAudioEpoch new];
     return (__bridge_retained void *)o;
 }}
 void murmur_meeting_output_reset(void *ptr,uint64_t generation) {
     MurmurMeetingOutput *o=(__bridge MurmurMeetingOutput *)ptr;
+    // Serialize only publication and queue insertion, so a preempted older
+    // reset cannot enqueue a late stop after a newer start has succeeded.
+    @synchronized(o) {
     uint_fast64_t prior=atomic_load(&o->generation);
     do {if(generation<=prior)return;}
     while(!atomic_compare_exchange_weak(&o->generation,&prior,generation));
     // Fence first, without waiting on a stalled Core Audio operation.
+    // Keep at most one queued reset while start/stop is stalled. The block
+    // reads the latest generation rather than retaining one request per click.
+    if(atomic_exchange(&o->resetPending,true))return;
     dispatch_async(o->worker, ^{ @autoreleasepool {
-        if(generation!=atomic_load(&o->generation))return;
-        atomic_store(&o->runningGeneration,0);
-        stop_output(o);
-        MurmurMeetingAudioEpoch *epoch=[MurmurMeetingAudioEpoch new];epoch->generation=generation;
-        @synchronized(o) {o->epoch=epoch;}
+        for(;;) {
+            uint_fast64_t latest=atomic_load(&o->generation);
+            atomic_store(&o->runningGeneration,0);
+            stop_output(o);
+            MurmurMeetingAudioEpoch *epoch=[MurmurMeetingAudioEpoch new];epoch->generation=latest;
+            @synchronized(o) {o->epoch=epoch;}
+            atomic_store(&o->resetPending,false);
+            // Close the race with cancellation during teardown. A racing reset
+            // either queues the next block or lets this one handle its state.
+            if(latest==atomic_load(&o->generation)||atomic_exchange(&o->resetPending,true))break;
+        }
     }});
+    }
 }
 bool murmur_meeting_output_start(void *ptr,uint64_t generation) {
     if([NSThread isMainThread])return false;

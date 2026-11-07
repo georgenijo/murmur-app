@@ -5,7 +5,7 @@ use super::model::Channel;
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -348,19 +348,32 @@ impl Drop for Player {
         self.control.pause_if_current(self.generation);
     }
 }
-/// One bounded mailbox per play attempt. Replacing/dropping it never joins a
-/// worker: the synchronous Control fence revokes even a stalled native start.
-/// Neither source reads nor Sink::start/enqueue run on the caller's UI thread.
+/// One worker per player, with one replaceable pending Play and one progress
+/// mailbox. Cancellation fences immediately; no UI call waits on native audio.
 #[derive(Clone, Copy)]
 pub struct Progress {
     pub position_ms: u64,
     pub playing: bool,
 }
 type Mailbox = Arc<Mutex<Option<Result<Progress, Error>>>>;
+struct PlayRequest {
+    generation: u64,
+    position_ms: u64,
+    channel: Channel,
+    mailbox: Mailbox,
+}
+#[derive(Default)]
+struct Requests {
+    play: Option<PlayRequest>,
+    shutdown: bool,
+}
+type Pending = Arc<(Mutex<Requests>, Condvar)>;
 pub struct Worker {
     source: Arc<dyn Source>,
     control: Control,
     session: String,
+    pending: Pending,
+    thread: Option<std::thread::JoinHandle<()>>,
     updates: Option<Mailbox>,
     start_ms: u64,
     position_ms: u64,
@@ -371,46 +384,109 @@ impl Worker {
             source,
             control,
             session,
+            pending: Default::default(),
+            thread: None,
             updates: None,
             start_ms: 0,
             position_ms: 0,
         }
     }
     pub fn play(&mut self, position_ms: u64, channel: Channel) -> Result<(), Error> {
-        // Reserve on the caller before spawning. An old worker must never mint a
-        // generation after a newer Play/Pause and thereby regain ownership.
+        // Reserve on the caller. The worker cannot mint a generation after a
+        // newer Play/Pause and thereby regain ownership.
         let generation = self.control.next();
         self.updates = None;
         self.start_ms = position_ms;
         self.position_ms = position_ms;
-        let updates: Mailbox = Default::default();
-        let mailbox = updates.clone();
-        let mut player = Player::new(
-            self.source.clone(),
-            self.control.clone(),
-            self.session.clone(),
-        );
-        std::thread::Builder::new()
-            .name("meeting-playback".into())
-            .spawn(move || {
-                let mut result = player.start(generation, position_ms, channel);
-                loop {
-                    let update = result.and_then(|()| player.pump()).map(|playing| Progress {
-                        position_ms: player.position_ms(),
-                        playing,
-                    });
-                    let finished = !matches!(update, Ok(Progress { playing: true, .. }));
-                    *mailbox.lock().unwrap_or_else(|p| p.into_inner()) = Some(update);
-                    if finished {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    result = Ok(());
-                }
-            })
-            .map_err(|_| Error::Output)?;
-        self.updates = Some(updates);
+        if self.thread.is_none() {
+            let pending = self.pending.clone();
+            let player = Player::new(
+                self.source.clone(),
+                self.control.clone(),
+                self.session.clone(),
+            );
+            self.thread = Some(
+                std::thread::Builder::new()
+                    .name("meeting-playback".into())
+                    .spawn(move || Self::run(player, pending))
+                    .map_err(|_| Error::Output)?,
+            );
+        }
+        let mailbox: Mailbox = Default::default();
+        self.pending
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .play = Some(PlayRequest {
+            generation,
+            position_ms,
+            channel,
+            mailbox: mailbox.clone(),
+        });
+        self.updates = Some(mailbox);
+        self.pending.1.notify_one();
         Ok(())
+    }
+    fn run(mut player: Player, pending: Pending) {
+        let mut active: Option<PlayRequest> = None;
+        loop {
+            let request = {
+                let mut requests = pending.0.lock().unwrap_or_else(|p| p.into_inner());
+                loop {
+                    if requests.shutdown {
+                        return;
+                    }
+                    if let Some(request) = requests.play.take() {
+                        break Some(request);
+                    }
+                    if active
+                        .as_ref()
+                        .is_some_and(|r| player.control.current(r.generation))
+                    {
+                        break None;
+                    }
+                    // Pause has already fenced the sink. Release decoded audio
+                    // here without issuing a reset against a newer generation.
+                    active = None;
+                    player.playing = false;
+                    player.tracks = Default::default();
+                    requests = pending.1.wait(requests).unwrap_or_else(|p| p.into_inner());
+                }
+            };
+            // No request/mailbox lock is held across native or source calls.
+            let result = if let Some(request) = request {
+                let result = player.start(request.generation, request.position_ms, request.channel);
+                active = Some(request);
+                result
+            } else {
+                Ok(())
+            };
+            if result.is_err() {
+                player.control.pause_if_current(player.generation);
+            }
+            let update = result.and_then(|()| player.pump()).map(|playing| Progress {
+                position_ms: player.position_ms(),
+                playing,
+            });
+            let finished = !matches!(update, Ok(Progress { playing: true, .. }));
+            if let Some(request) = &active {
+                // Old mailboxes are discarded synchronously by Play/Pause.
+                *request.mailbox.lock().unwrap_or_else(|p| p.into_inner()) = Some(update);
+            }
+            if finished {
+                active = None;
+            }
+            let requests = pending.0.lock().unwrap_or_else(|p| p.into_inner());
+            if !requests.shutdown && requests.play.is_none() && active.is_some() {
+                // Wake promptly for replacement, pause, or shutdown; otherwise
+                // pump every ~20 ms with the existing 300 ms queue bound.
+                drop(
+                    pending
+                        .1
+                        .wait_timeout(requests, std::time::Duration::from_millis(20)),
+                );
+            }
+        }
     }
     pub fn poll(&mut self) -> Option<Result<Progress, Error>> {
         let update = self
@@ -438,13 +514,32 @@ impl Worker {
     pub fn pause(&mut self) {
         self.position_ms = self.position_ms();
         self.control.pause();
+        self.pending
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .play = None;
         // Late start/progress/error results have no route back to the UI.
         self.updates = None;
+        self.pending.1.notify_one();
     }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.pause();
+        self.pending
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .shutdown = true;
+        self.pending.1.notify_one();
+        if let Some(thread) = self.thread.take() {
+            // Never wait for a stalled Core Audio call. At most this one worker
+            // is detached; it releases its player/sink as soon as the call ends.
+            if thread.is_finished() {
+                let _ = thread.join();
+            }
+        }
     }
 }
 fn after(a: Cursor, b: Cursor) -> bool {
