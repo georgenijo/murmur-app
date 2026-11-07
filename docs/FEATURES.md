@@ -9,7 +9,7 @@ speech. See [Transcription](features/transcription.md) and
 [remote-speaker labels](features/meeting-diarization.md) refine clear system-audio
 passages locally after the meeting.
 
-This inventory tracks the current main branch; each area links to its detailed
+This inventory tracks the native GPUI branch; each area links to its detailed
 feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
@@ -139,8 +139,8 @@ Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and sim
 ### Vocabulary and correction
 - **Code-vocabulary scan** — breadth-first walk of a chosen project folder (caps: 1000 files / 32 MB / 512 KB per file), extracting identifiers with live progress, a searchable view-all pop-out, and a cap warning. Top 96 terms feed Whisper's token-bound prompt; top 500 feed Smart Correction.
 - **Smart Correction** — post-model correction applied to *every* backend's output. Tier 1 exact map, Tier 2 phonetic "sounds-like" restricted to structured identifiers (camelCase / snake_case / digit) so ordinary English isn't rewritten.
-- **Explicit spoken aliases** — [features/vocabulary-aliases.md](features/vocabulary-aliases.md). Map exact recognized variants ("Tori", "Tory") to a canonical written term ("Tauri"). Ambiguity, cycles, and command conflicts are rejected atomically.
-- **Context-cued variants** — built-in fixes such as `Tori` → `Tauri`, `Postgres SQL` → `PostgreSQL`, and `Maine` → `main` apply only in a Technical/Terminal register, with project context, or near a cue word. Counter-cues fail closed, so a person named Tori is untouched.
+- **Explicit spoken aliases** — [features/vocabulary-aliases.md](features/vocabulary-aliases.md). Map exact recognized variants ("Tori", "Tory") to a canonical written term ("native host"). Ambiguity, cycles, and command conflicts are rejected atomically.
+- **Context-cued variants** — built-in fixes such as `Tori` → `native host`, `Postgres SQL` → `PostgreSQL`, and `Maine` → `main` apply only in a Technical/Terminal register, with project context, or near a cue word. Counter-cues fail closed, so a person named Tori is untouched.
 
 ### Voice Commands 2.0 — [features/voice-commands.md](features/voice-commands.md)
 Typed, persistent local commands: text replacements and multiline snippets, deterministic `{{date}}` / `{{time}}` variables, explicitly permitted `{{clipboard}}` insertion, global and per-app scopes, conflict validation, and a no-paste preview/test UI.
@@ -211,7 +211,7 @@ Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mi
 ### Settings — [reference/settings.md](reference/settings.md)
 
 The parallel native GPUI Settings workspace and its pane/host ownership contract
-are documented in [GPUI Settings](draft/gpui-settings.md). The shipping React
+are documented in [GPUI Settings](draft/gpui-settings.md). The shipping GPUI
 workspace and its existing test suites remain active.
 
 Settings opens on **General**. The **Customize** page is a compact hub of
@@ -298,7 +298,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 - macOS 14+ on Apple Silicon. App builds fail explicitly for non-macOS targets.
 - Developer ID signed and notarized; hardened runtime; capture helpers ship with dedicated entitlements; release finalization fails closed on any unexpected bundle executable.
-- Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
+- Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so native host can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
 - **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained, apart from disclosed bounded temporary system audio for opted-in speaker refinement.
 - All local data is inspectable and deletable from within the app.
@@ -309,8 +309,8 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 189 registered commands |
-| Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
+| Rust backend | `app/crates/murmur-services/src/` — 187 native requests |
+| Frontend | `app/gpui/src/` — GPUI 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
 | Benchmark fixtures | `bench/` |

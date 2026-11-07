@@ -1,666 +1,125 @@
 # Architecture
 
-> Production microphone ownership is process-isolated. The Tauri process owns
-> policy and retained PCM; `murmur-capture-worker` exclusively owns CPAL/AUHAL
-> objects and is killable as an exact managed process group. See
-> [the capture-helper ADR](decisions/2026-08-01-production-capture-helper.md).
-
-## Overview
-
-Murmur is a privacy-first, local voice dictation app for macOS. Its speech transcription runs on-device on the Apple Neural Engine (Core ML), the GPU (Metal/whisper.cpp), or CPU (sherpa-onnx).
-
-Built with **Tauri 2** (Rust backend + React frontend). Transcription backends:
-
-- **In-process transcription** — Core ML / whisper.cpp / sherpa-onnx behind one `TranscriptionBackend` trait.
-
----
+Murmur is a native GPUI macOS application. Rust owns transcription, capture,
+persistence, permissions, delivery and shutdown. There is no React runtime,
+JavaScript bridge, Tauri runtime or UI webview.
 
 ## Stack
 
-| Layer | Technology | Notes |
-|-------|-----------|-------|
-| Desktop framework | Tauri 2 | Rust backend, React frontend |
-| UI | React 18 + TypeScript + Tailwind CSS 4 | Vite 6 build |
-| Audio capture | cpal + Core Audio CATap | Signed worker owns microphone AUHAL and explicit-session System Audio tap; host resamples channels independently to 16kHz mono |
-| VAD | Silero v5.1.2 via whisper-rs | Filters silence before transcription; thread-local cached context |
-| Transcription | FluidAudio (Core ML/ANE), whisper-rs → whisper.cpp (Metal), sherpa-onnx (CPU) | Selected per model from one catalog |
-| Text injection | arboard + CGEvent (osascript fallback) | Clipboard-first |
-| Keyboard listening | rdev (git main branch) | Global key events; one background thread for dictation and Paste Last |
-| Local storage | rusqlite (SQLite) | Personal knowledge store + performance diagnostics |
-| Telemetry | tracing + tracing-subscriber | Structured events: ring buffer, JSONL file, real-time frontend emission |
-| System info | sysinfo + custom malloc zone | CPU, RSS, and separated Rust/FFI heap accounting |
-| Release | GitHub Actions + Apple notarization | Signed DMG, hardened runtime, sidecar entitlements |
+- `app/Cargo.toml` / `app/Cargo.lock`: native workspace and pinned dependencies.
+- `app/gpui`: native views, accessible controls, Main, Settings, Diagnostics,
+  the nonactivating overlay and Live Words preview, menus and status item.
+- `app/crates/murmur-services`: shared recording, capture, model, meeting,
+  text delivery, native service facade and lifecycle owners. Its normal,
+  optional, target, build and dev dependencies contain no UI host runtime.
+- `app/crates/murmur-core`: typed reducers, context ports, ordered event protocol,
+  completion actor, source schemas, recovery and updater.
+- `app/crates/capture-helper-protocol`: versioned capture transport.
+- `app/crates/murmur-webkit`: permanent standalone legacy importer and store
+  cleanup, using public objc2 WebKit APIs. It is not linked into the UI or
+  service crates. The native host uses a disposable exact-child importer.
+- `app/sidecars/capture`: isolated helper/worker workspace; its CPAL graph
+  cannot share a Cargo resolution with GPUI's optional audio version.
+- `app/sidecars/capture-agent`: Swift recovery agent.
+- `app/macos/bundle.json`: release identity/version metadata. Permission text,
+  signing entitlements, helper metadata and icon files live in `app/macos`.
 
----
+The executable remains `ui`; production bundle identity remains
+`com.localdictation`. The UI package and services share the release version.
+The GPUI source pin and maintained patches remain under `app/gpui/vendor`.
 
-## Data Flow
+## Data flow
 
-### Dictation
+Keyboard admission → immutable recording configuration and generation →
+isolated capture worker → local ASR → ordered transcript pipeline →
+identity-aware delivery → exactly-once completion publication.
 
-```text
-Hotkey event (rdev listener thread)
-    |
-murmur-core gesture detectors → dictation Controller (native AppContext adapter)
-    |
-start_native_recording (native control or a presentation command)
-    |-- CPAL 0.18 capture starts; first retained nonempty callback establishes readiness
-    |-- immutable DictationContextSnapshot resolved (global settings + per-app profile)
-    +-- spawn_model_preparation() warms the model *concurrently with speech*
-    |
-generation-bound stop_native_recording --> trigger-selected tail, drain, samples resampled to 16kHz mono
-    |-- cold teardown: checked native stop + drained seal may deliver before helper exit/join
-    |-- standby: retain 50 ms before live-buffer snapshot; capture ownership stays with the worker
-    |
-Silero VAD trims silence (NoSpeech short-circuits the whole pipeline)
-    |
-ModelRuntimeManager::with_ready_backend() --> transcribe()
-    |
-transform_transcript() -- ordered, backend-neutral text pipeline (see below)
-    |
-injector::inject_text() --> arboard clipboard write
-    |
-[optional] CGEvent Cmd+V (osascript fallback) --> text appears in focused app
-    |
-[optional] file_output --> numbered .txt / .wav
-    |
-'transcription-complete' event + PerformanceRunV1 persisted
-```
+The transform entry point preserves cleanup, voice commands, smart correction,
+smart formatting, spoken structure/numbers, IDE context and CLI formatting order.
+Secure fields and unprovable delivery targets are refused. Stale asynchronous
+continuations cannot mutate a new recording or stop a generation they do not own.
 
-The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in exactly this order, each with a declared failure policy and per-stage timing/outcome telemetry:
-
-1. `cleanup` — filler removal, capitalization
-2. `voice_commands` — typed replacements/snippets from the knowledge store
-3. `smart_correction` — vocabulary matcher (explicit aliases, register/cue-gated contextual variants, exact tier + optional fuzzy tier)
-4. `homophone_context` — opt-in live-only on-device spelling choices for flagged homophones; 150 ms optional fallback
-5. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
-6. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
-7. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen Mode register's prose or technical policy (live dictation)
-8. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
-9. `cli_command` — spoken CLI command formatting
-
-### Meeting capture
-
-```text
-explicit Start Meeting
-    |
-signed murmur-capture-worker --production-v10
-    |-- microphone AUHAL callback --> preallocated SPSC ring --> optional AEC3 --> Me frames
-    +-- private unmuted CATap + aggregate IOProc --> SPSC ring --> Them frames
-    |
-bounded protocol reader (channel/sequence/rate/offset validation)
-    |
-per-channel streaming resampler + VAD chunker
-    |                                      |
-fsynced spool WAV --> pending SQLite row   +-- opted-in Them PCM --> bounded private session WAV
-    |                                                                          |
-shared ModelRuntimeManager (one chunk at a time)                               |
-    |                                                                          |
-final segment + FTS transaction --> optional WAV deletion                      |
-                                                                               |
-capture completes --> idle-only diarization coordinator <---------------------+
-    |
-network-denied worker + SHA-256-pinned Core ML speaker model
-    |
-bounded speaker turns --> conservative assignment to complete Them segments
-    |
-session-scoped Speaker N labels + meeting-speakers-updated --> temporary WAV deleted
-```
-
-Meeting capture is mutually exclusive with dictation, imported-file
-transcription, corpus capture, and benchmarks. The worker owns tap teardown;
-normal stop waits for a teardown receipt and the host confirms termination.
-AEC3 is constructed only for an opted-in meeting. It uses the System stream as
-a private render reference, never changes Them, and bypasses to raw microphone
-PCM on initialization, processing, or backlog failure.
-See [Meeting Capture](features/meeting-capture.md).
-
-Calendar naming is an explicit review action, separate from capture. The main
-window requests Calendar permission, then `commands/meeting_calendar.rs` reads
-the stored session interval. `calendar/native.rs` owns a short-lived EventKit
-store and enumerates overlapping events off the main thread. Apply repeats the
-query and matches a digest of the displayed occurrence and metadata before the
-shared metadata transaction writes a title, attendees, and `calendar` source.
-No event objects or lookup cache survive the operation. Calendar identifiers,
-notes, and URLs never enter the meeting database. See [Calendar naming](features/meeting-calendar.md).
-
-The separate `meeting_suggestions.rs` coordinator stays dormant until explicitly
-enabled. It keeps a bounded, in-memory snapshot of video-call events and wakes
-at event boundaries or native activity changes. A native EventKit store lives
-only while enabled to receive Calendar changes; queried event objects remain
-scoped to their query. The overlay presents a suggestion without claiming audio
-or preparing a model. Accept sends an opaque token to the main window's normal
-`start_meeting` call, which rechecks the native frontmost bundle ID and all busy
-owners under `recording_transition` before consuming it and saving the title.
-See [Meeting suggestions](features/meeting-suggestions.md).
-
-Retained-audio playback uses `meeting_audio.rs` and two bounded data commands:
-a paginated timeline manifest and a binary WAV range reader. Both resolve the
-session and segment in SQLite; the frontend supplies no filesystem path. A
-separate busy command hydrates playback admission from the native recording
-owners. The main webview schedules small decoded chunks on their saved Me/Them
-timeline, preserving overlapping speech and silent gaps. Deletion invalidates
-pending reads and notifies only the main window. See [Meeting audio playback](features/meeting-audio-playback.md).
-
-`meeting_bundle.rs` exports a with-audio `.zip` (review document, retained WAVs,
-manifest). It lists segments from the playback manifest and reads each WAV through
-the same validated `meeting_audio` open path, so no second path resolver exists.
-Entries are stored, and the archive streams to a unique exclusive temp file that is
-renamed only after a final revocation and capture check. One checked database
-connection serves the whole operation, and a separate single-slot permit keeps
-playback's two-slot pool free. See
-[Meeting review workspace](features/meeting-review-workspace.md#export-with-audio).
-
-## Five-window architecture
-
-Each window is a separate webview with its own Tauri capability set.
-
-| Window | Label | Entry point | Size | Purpose |
-|--------|-------|-------------|------|---------|
-| Main | `main` | `index.html` | 1120×820, minimum 720×560 | Settings, embedded diagnostics, recording controls, history, stats, onboarding, and modals |
-| Diagnostics | `diagnostics` | `diagnostics.html` | 1040×760 | Persistent pop-out for events, runs, performance, UI latency, comparisons |
-| Overlay | `overlay` | `overlay.html` | 260×100 | Dynamic Island notch widget. Always on top, transparent, and non-activating |
-| Dictation Preview | `dictation-preview` | `dictation-preview.html` | 460×104 | Live Core ML and Whisper Tiny/Base transcript preview under the notch. Always on top, transparent, non-activating, and click-through |
-
-Main and Diagnostics hide on close instead of being destroyed. Overlay calls the shared non-activating window treatment in `commands/native_window.rs`. Dictation Preview uses its `PopoverSpec` transport, which applies the same window level and activation policy. Every raw `NSWindow` mutation runs on the main thread through `run_on_main_thread`. macOS 26 hard-traps on an off-main mutation (#325).
-
-Rust owns the native frame for each overlay or popover. `geometry_for()` calculates the Overlay frame. The `frame()` function in `commands/dictation_preview.rs` calculates the preview frame. Checked-in Rust and frontend fixtures cover the shared geometry contracts.
-
-Main owns appearance writes, the durable saved-theme library, Open VSX
-discovery, and application-level native `setTheme`. Main and Diagnostics resolve System mode to a concrete `data-appearance` with a
-parser-blocking, same-origin bootstrap plus a strictly validated resolved-token
-cache to avoid a wrong-theme first paint. Library variants are compiled into
-that small active document, so first paint never depends on the larger library
-or a network. The Diagnostics pop-out observes the
-same local storage as Main so its latency table updates while the user
-navigates. Overlay remains unsynchronized transparent,
-always-dark glass surfaces.
-
----
-
-## Rust Backend (`app/src-tauri/src/`)
-
-### Capture worker boundary
-
-The signed `murmur-capture-worker` owns production microphone capture and the
-phase-one System Audio CATap. Production protocol v10 has capture-scoped
-identity, nonce, strict bounded frames, and separate mic/system channel
-sequences. Before each live backend opens the microphone, an `InputResolution`
-message reports only bounded resolution evidence: backend, enumeration success,
-whether the pinned input was present (when knowable), capped input count, and
-default-input availability. It never carries a device ID, display name, or raw
-error. Native callbacks write only to preallocated SPSC rings; the worker's
-drain loop owns protocol I/O. Release builds validate fixed identifier, Team ID,
-hardened runtime, and entitlements before spawn, then retain exact managed
-process-group ownership through confirmed exit. The inventory path bounds its
-ordinary termination wait, retracts authoritative state and blocks replacements
-before transferring an unconfirmed child to the single prestarted app-owned
-reaper service, then performs a bounded exit drain; the worker parent watchdog
-remains the final boundary if the host exits first. If that reaper service
-cannot start, inventory stays unavailable and no inventory helper is launched.
-The earlier health probe
-remains available for packaging and callback-boundary validation. See the
-[capture-helper ADR](decisions/2026-08-01-production-capture-helper.md).
-
-An explicit pinned input that resolves as unavailable in both AUHAL and CPAL
-may run at most two additional complete primary-to-fallback resolution passes
-using the recording's immutable memo-resolved backend order. The
-500 ms gaps are cancellable, every pass uses the same immutable raw device UID,
-and no pass substitutes the OS default. Mixed failures, system-default capture,
-retained audio, or an unavailable device after first PCM remain terminal.
-
-The per-device backend memo that resolves that order (last ready backend,
-promotion-disabled flag, consecutive fast-rescue count) is durable: a bounded,
-versioned `capture-memo.json` beside `settings.json` in the app data
-directory, loaded once during setup and republished atomically on a detached
-writer thread after each change, so a relaunch keeps the shrunken retry budgets
-an affected machine already earned. It is fail-open and never blocks capture
-start; device keys
-stay local and never reach logs or telemetry. See
-[transcription.md](features/transcription.md).
-
-### Module map
-
-| Module | Purpose |
-|--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 189 registered commands, setup, tray, run loop |
-| `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
-| `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
-| `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
-| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
-| `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
-| `audio_graph_snapshot.rs` | Deadline-bounded Core Audio HAL snapshots for armed capture-hang reports, plus content-free graph counts and Murmur audio-owner state |
-| `capture_helper_probe.rs` | Probe-only capture-helper handshake, callback-health observation, cancel, and confirmed termination evidence |
-| `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership primitives |
-| `accuracy_corpus.rs` | Internal-benchmark-only `accuracy-v1` corpus loader (corrected-history or synthetic clips) for `scripts/murmur_accuracy.py` |
-| `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
-| `browser_site.rs` | Allowlisted browser-host discovery and exact host-rule matching for site-bound modes |
-| `capture_agent_probe.rs` | Opt-in LaunchAgent service and recovery probe CLI. Production dictation does not use this path |
-| `capture_health.rs` | Bounded capture startup and fallback history derived from telemetry, persisted in `capture-health-v1.json` |
-| `commands/microphone_startup_benchmark.rs` | Main-window-gated production capture startup cycles, exact-owner progress/cancel, and typed privacy-safe export |
-| `cleanup.rs` | Filler removal and capitalization |
-| `cli_command.rs` | Spoken CLI command grammar and lexicon |
-| `correct_and_teach.rs` | Bounded local diff proposals from a user's edit; never writes without confirmation |
-| `correction.rs` | Smart Correction matcher (exact + fuzzy tiers) |
-| `delivery_recovery.rs` | Generation-bound last-delivery memory and one-at-a-time clipboard or paste retry |
-| `diarization_assignment.rs` | Validation of bounded speaker turns and conservative assignment to complete remote meeting segments |
-| `diarization_audio.rs` | Private temporary owner for up to two hours of 16 kHz remote meeting audio. Drop deletes the WAV |
-| `diarization_model.rs` | Locked download, SHA-256 validation, status, and removal for the pinned Core ML speaker model |
-| `dictation_context.rs` | Immutable per-recording context snapshot resolution |
-| `dictation_diagnostics.rs` | Explicit one-shot private dictation capture store with bounded text, retention, deletion, and upload |
-| `dictation_diagnostics_contract.rs` | Cross-path tests for diagnostic arming, exact recording ownership, content bounds, revocation, and corrupt-data removal |
-| `dictation_telemetry.rs` | Stable content-free lifecycle telemetry and error classification for accepted live dictations |
-| `commands/mode_exchange.rs` | Main-window-only bounded JSON file reader for custom Mode imports |
-| `commands/export.rs` | `save_text_export`: validated, atomic sink for user-chosen text exports |
-| `commands/corpus.rs` | Guided capture-only personal corpus recording, WAV integrity checks, quality reports, and benchmark fixture loading |
-| `commands/dictation_diagnostics.rs` | Window-gated arm, status, list, read, delete, and upload commands for private dictation captures |
-| `commands/integrations.rs` | Local Launch Services availability probe for the optional NotchPill companion app |
-| `commands/microphone_preview.rs` | Main-window microphone test lifecycle, input validation, VAD sensitivity, and exact-owner stop |
-| `commands/mode_runtime.rs` | Foreground app and browser-site mode resolution, mode cycling, temporary overrides, and watcher events |
-| `commands/updater.rs` | Main-only Rust updater intents/snapshots, native notifications, scheduling adapter, coordinated relaunch and QA-only fixture transport |
-| `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
-| `file_output.rs` | Numbered `.txt` / `.wav` output |
-| `frontmost.rs` | Native frontmost-app query + running-application list |
-| `dock_watch.rs` | Live Dock accessibility geometry → floating-pill limit, glide, static fallback |
-| `hang_diagnostics.rs` | Server-armed, consent-bound capture-hang bundle collection with bounded native probes and upload |
-| `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
-| `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
-| `keyboard.rs` | Single rdev input adapter to core gesture detectors and dictation control |
-| `completion.rs` | Native completion adapter and main-window-gated commands; core actor owns History, statistics, reports and v1 import |
-| `dictation_control.rs` | AppContext host adapter for core launch, generation, lock, cancellation and auto-stop policy |
-| `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
-| `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
-| `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
-| `meeting_artifact.rs` | Legacy stored artifact validation for database compatibility |
-| `meeting_diarization.rs` | Idle-only speaker worker ownership, foreground preemption, bounded retries, turn validation, and assignment publication |
-| `meeting_diarization_probe.rs` | Debug-only hardware proof for diarization preemption and seeded meeting-review fixtures |
-| `meeting_review.rs` | Meeting review validation, edits, export rendering, and session-scoped speaker-label resolution |
-| `log_shipper.rs` | Tails privacy-stripped telemetry JSONL to bounded NDJSON batches and advances its durable offset only after acknowledgment |
-| `model_runtime.rs` | Model catalog + lifecycle manager (load/warm/readiness/unload, generation-ordered status events) |
-| `microphone_auto.rs` | Cached-only Smart Auto input policy that freezes an eligible stable microphone ID for one recording |
-| `microphone_preview.rs` | Capture-only microphone-test state, VAD analysis, level accumulation, and quiet or clipping classification |
-| `model_artifact.rs` | Size and prefix validation that rejects HTML, JSON, and Git LFS responses masquerading as downloaded model binaries |
-| `coreml_installer.rs` | Same-signed killable Core ML install worker/supervisor: bounded phases, hard deadline, confirmed process-group cleanup |
-| `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
-| `platform/` | macOS CPU/resource metrics seam |
-| `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
-| `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
-| `smart_turn.rs` | Smart Auto-Stop: Smart Turn log-mel features, scoring on the sherpa-linked ONNX Runtime, model pins |
-| `spoken_numbers.rs` | Deterministic English spoken-cardinal rendering |
-| `spoken_structure.rs` | Single owner for spoken punctuation, layout, symbols, arbitration, and `scratch that` |
-| `sqlite_support.rs` | Shared SQLite pragma, integrity, schema-version, sidecar quarantine, timestamp, and newest-first file helpers |
-| `state.rs` | `DictationStatus`, `TransformStatus`, `DictationState`, `AppState` |
-| `telemetry.rs` | Structured event system: `TauriEmitterLayer`, ring buffer, JSONL, privacy stripping |
-| `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml implementations |
-| `transcript_transform.rs` | The ordered post-recognition pipeline and its stage contracts |
-| `vad.rs` | Silero VAD filtering, thread-local context cache |
-| `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
-| `voice_commands.rs` | Typed voice command execution and variable expansion |
-
-Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Updater flow and migration v3 live in `murmur-core::updater`; the Tauri adapter forwards state and routes installation relaunch through shutdown. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
-
-### `state.rs` — Shared State
-
-```rust
-enum DictationStatus { Idle, Starting, Recording, Recovering, Processing }
-enum TransformStatus { /* Idle, Capturing, Connecting, Listening, Thinking, ReviewPending, ... */ }
-
-struct AppState {
-    dictation: Mutex<DictationState>,
-    recording_transition: tokio::sync::Mutex<()>,   // serializes start/stop/cancel
-    model_runtime: ModelRuntimeManager,
-    recording_id: AtomicU64,                        // generation counter; supersedes stale work
-    meeting_generation: AtomicU64,
-    meeting_active: AtomicBool,                     // native capture/setup owner
-    meeting_inference_active: AtomicBool,           // live or crash-recovery inference
-    cancelled_id: AtomicU64,
-    settings_revision: AtomicU64,
-    correction_matcher: Mutex<...>,                 // immutable, swapped by generation
-    ide_context: Mutex<IdeContextStore>,
-    // ...
-}
-```
-
-Two patterns do most of the concurrency work:
-
-- **Generation counters.** recording generation IDs are monotonic. Every async continuation re-checks whether it still owns the current generation before mutating shared state, so a delayed handler can never cancel or overwrite the pass that replaced it.
-- **Immutable snapshots.** A recording resolves its full context (model, language, delivery, profile overrides, vocabulary, transform stage config) once at start. Settings or focus changes mid-recording apply to the *next* session, never the running one.
-
-### Model runtime (`model_runtime.rs`)
-
-One catalog is the single source of truth for all seven shipped models:
-
-| Model | Backend | Accelerator | Size |
-|-------|---------|-------------|------|
-| `parakeet-tdt-0.6b-v3-coreml` | FluidAudio / Core ML | Apple Neural Engine | ~470 MB |
-| `parakeet-tdt-0.6b-v2-fp16` | sherpa-onnx | CPU | ~1.2 GB |
-| `tiny.en` | whisper.cpp | Metal GPU | ~75 MB |
-| `base.en` | whisper.cpp | Metal GPU | ~150 MB |
-| `small.en` | whisper.cpp | Metal GPU | ~500 MB |
-| `medium.en` | whisper.cpp | Metal GPU | ~1.5 GB |
-| `large-v3-turbo` | whisper.cpp | Metal GPU | ~3 GB |
-
-Each entry declares its backend, accelerator, capabilities (multilingual, translation, timestamps, confidence, punctuation control), install kind, platform requirement, `warm_on_startup`, and `retry_unfiltered_on_empty`. Unknown model identifiers **fail closed** — Murmur never silently falls back to a different model.
-
-The manager serializes load/warm/readiness/unload, emits generation-ordered `model-runtime-status-changed` events, and reports a `LoadReport` (`lock_wait_ms`, `load_ms`, `cache_hit`) that feeds the performance record. Idle release is user-configurable (`idleTimeoutMinutes`, including a power-adapter-only keep-loaded policy).
-
-**Warm-on-record:** `start_native_recording` kicks off `spawn_model_preparation()` immediately after audio capture starts, so model load overlaps with the user still speaking. By the time the key is released the model is usually resident.
-
-### `transcriber/` — Inference Backends
-
-```rust
-trait TranscriptionBackend: Send + Sync {
-    fn name(&self) -> &str;
-    fn load_model(&mut self, model_name: &str) -> Result<(), String>;
-    fn is_model_loaded(&self, model_name: &str) -> bool;
-    fn transcribe(&mut self, samples: &[f32], language: &str,
-                  initial_prompt: Option<&str>, smart_punctuation: bool) -> Result<String, String>;
-    fn token_count(&self, text: &str) -> Option<usize>;
-    fn model_exists(&self) -> bool;
-    fn models_dir(&self) -> Result<PathBuf, String>;
-    fn reset(&mut self);
-}
-```
-
-- **Whisper** — `WhisperContext` and `WhisperState` are both cached; GPU/Metal buffers are allocated once and reused across transcriptions. Greedy sampling, blank suppression, timestamp-based continuation for long audio.
-- **Core ML (FluidAudio)** — Parakeet v3 on the ANE. Decoder state is reset between one-shot dictations. An empty result after VAD trimming retries once with the original unfiltered audio.
-- **Parakeet CPU (sherpa-onnx)** — English fallback, also the non-macOS path.
-
-All backends take one authoritative final-after-stop pass; delivery happens exactly once. Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
-
-### `keyboard.rs` — Keyboard Detection
-
-One persistent rdev background thread feeds the Tauri-free core hold-down and double-tap detectors plus Paste Last. Native signals reach the core controller directly; no main webview listener is required.
-
-- **Hold-down** — 2 states; press emits `hold-down-start`, release emits `hold-down-stop`. Combos (trigger+letter) cancel.
-- **Double-tap** — 4 states; each tap under 200ms, gap under 400ms. Rejects holds, combos, slow taps, triple-tap spam. Emits `hotkey-tap-rejected` when an idle first tap expires (opt-in overlay feedback).
-- **Both** — deferred hold promotion: a 200ms timer thread with an atomic invalidation counter decides tap-vs-hold. Releasing before 200ms invalidates the timer; still held at 200ms promotes to a hold.
-
-**macOS thread safety.** rdev's key translation uses TIS/TSM APIs that must run on the main thread. `rdev::set_is_main_thread(false)` is called before `listen()`, which makes rdev marshal only those calls to main via `dispatch_sync` while the listener loop stays on its background thread. Without it, the app silently segfaults.
-
-Global modifier hotkeys recover when macOS disables the underlying event tap, and the hot path performs no main-thread key-name translation and ignores mouse movement.
-
-### `injector.rs` — Text Injection
-
-1. **Clipboard** (always): `arboard`. Empty/whitespace-only text is skipped.
-2. **Auto-paste** (optional): waits the configured delay, then posts a native `CGEvent` Cmd+V key-down/key-up pair to `CGEventTapLocation::HID`. If the native path fails, it falls back to `osascript`. Retries once on failure; the whole operation is timeout-bounded. A typed, generation-gated delivery outcome distinguishes completed automatic paste, confirmed clipboard-only delivery, failed clipboard write, and an unconfirmed timeout. The overlay shows `⌘V` only for the confirmed clipboard-only case; detailed failures remain on `auto-paste-failed` for the main window.
-
-Focused-field role checks use native AX with a per-element messaging timeout and an osascript fallback, so a hung app can't stall the pipeline.
-
-### `telemetry.rs` — Structured Events
-
-```text
-tracing event
-    |
-    +--> Pretty text file (app.log / app.dev.log)
-    |
-    +--> TauriEmitterLayer
-             |
-             +--> Ring buffer (500 events, FIFO)
-             +--> JSONL file (events.jsonl / events.dev.jsonl, rotated at 5 MB)
-             +--> 'app-event' emitted to all windows
-```
-
-Six active streams plus the retired `query` stream for reading old diagnostics: `pipeline`, `audio`, `keyboard`, `transform`, `meeting`, `system`.
-
-**Privacy stripping.** In release builds, all string fields on `pipeline` events are removed from the data object; only numerics survive. `transform` and `meeting` events are stricter still and stripped in *all* builds: every key, type, and stable string value must satisfy that stream's exact allowlist. The `performance.store_operation_failed` system event is likewise reduced in every build to its stable code, operation, safe SQLite class, attempt count, and recording ID. Anything else is dropped at the layer, independent of the call site. Transcript content, SQL, database paths, and stderr therefore cannot enter those events. The fleet shipper also rejects the entire `meeting` stream and malformed JSONL, so meeting content and lifecycle never leave the Mac.
-
-### Local storage
-
-Three SQLite databases, all stored locally:
-
-| Store | File | Retention |
-|-------|------|-----------|
-| Personal knowledge | `knowledge/knowledge.sqlite3` | User-managed; versioned migrations, backups, quarantine on corruption |
-| Performance diagnostics | `diagnostics/performance.sqlite3` | 200 completed runs, 600 resource samples, 8 follow-ups per run |
-| Meetings | `meetings/meetings.sqlite3` | User-managed searchable sessions; age/count caps applied before start; audio off by default |
-
----
-
-On upgrade, startup removes the retired Voice Query store
-`query-history/query-history.sqlite3` and Assistant mirror
-`assistant/conversations-v1.json`, including only their `-wal`, `-shm`, and
-`-journal` companions. These private questions and answers no longer have a
-view or deletion UI. Cleanup pins directories, refuses symlink traversal,
-never reads or logs content, and warns without blocking startup on failure.
-Other app data and remote provider sessions are untouched. Old settings with
-these retired fields still load; active dictation and meeting preferences survive.
+GPUI calls the [native service facade](reference/commands.md) in process.
+Native sender identity still restricts Main-only operations. Companion views
+cannot claim Main identity. Binary retained-audio access is bounded separately.
+The named event router targets registered consumers and coalesces waveform data;
+queued waveform delivery rechecks its capture generation immediately before the
+transport/callback under its delivery permit. No broadcast bus is introduced.
 
 ## Launch preparation
 
-`main.rs` anchors a monotonic clock at process entry. After telemetry becomes
-available, Rust setup reads the same bounded, quarantine-aware `settings.json`
-as `load_settings_blob`. Native preparation requires settings schema version 7,
-an explicitly completed durable onboarding gate, valid model/key/mode IDs,
-Accessibility permission, and `disabled: false`. Missing, unreadable, legacy,
-or ambiguous settings retain the frontend-driven startup path.
+Startup reads durable state on background workers, preserves recovery evidence,
+and keeps main dispatch responsive. Model warmup follows the accepted recording
+configuration; no recording is admitted before migration and setup gates resolve.
 
-`launch.rs` starts the single shared rdev thread before unrelated store setup
-and prepares models with the catalog's existing `warm_on_startup` policy on a
-blocking worker. `set_is_main_thread(false)` still precedes `rdev::listen`.
-Detectors remain disarmed until the frontend has configured capture and
-subscribed; setup never opens a microphone or applies partial capture settings.
-Identical frontend listener registration is idempotent in Rust. A stopped or
-changed registration still resets the detectors normally. Frontend confirmation
-preserves the already warmed model. A native worker rechecks launch ownership
-under the backend lock so it cannot replace a newer frontend model selection.
+## Process and thread ownership
 
-The main window mirrors onboarding completion/reset in the settings blob as
-`launchOnboardingComplete`; this metadata is excluded from capture settings.
-Durable gate hydration precedes App mounting. Legacy local flags migrate on the
-first frontend boot, so upgrades use the frontend fallback once. Native startup
-does not reproduce the permission/model checks used to grandfather old installs.
+The GPUI executable owns the AppKit run loop and one retained Tokio runtime.
+Worker dispatch (legacy migration, diarization, Core ML installer, capture agent
+and helper) happens before NSApplication or Metal initialization.
 
-This change retains the main window's pre-render history/stats/theme hydration.
-The completion actor owns History/statistics/report mutations and v1 migration;
-React sends commands and keeps only presentation snapshots. Rust owns theme-library
-normalization and durable migrations. The renderer
-defensively parses its presentation snapshot and reconciles active selections;
-deferring those reads needs a separate theme readiness boundary.
-Native stores also remain synchronous: knowledge feeds the frozen recording
-context, while diagnostics and meeting recovery currently
-assume initialization before their commands run. No webview declarations change.
+All NSWindow mutations queue onto the main thread; native service windows are
+ports, not owned webviews. Blocking inference, storage and shutdown work run
+outside the main thread. The FIFO main dispatcher continues during deferred
+termination. rdev starts once, after `set_is_main_thread(false)`.
 
-Content-free `system.launch_*` events carry `launch_elapsed_ms` in the structured
-log/event ring; see [Performance diagnostics](features/performance-diagnostics.md#launch-milestones).
+Capture remains in separately signed, bounded, killable helper processes. The UI
+and service libraries never link CPAL/HAL capture ownership. Meeting playback is
+a separate revocable native worker. Generation and revision checks apply to late
+capture, playback, delivery, export and presentation effects.
 
-## Frontend (`app/src/`)
+## Persistence and privacy
 
-`App.tsx` is a thin orchestrator that wires hooks together. All recording-mode hooks are always called (Rules of Hooks) and gated by an `enabled` prop:
+Production paths remain `~/Library/Application Support/com.localdictation` and
+the established model/export roots. Explicit dev/QA identifiers use isolated
+namespaces and private pasteboards. Validate identity and paths before opening a
+store. No transcript, audio, clipboard or selection content enters logs.
 
-```tsx
-useHoldDownToggle({ enabled: settings.recordingMode === 'hold_down', ... });
-useDoubleTapToggle({ enabled: settings.recordingMode === 'double_tap', ... });
-useCombinedToggle({ enabled: settings.recordingMode === 'both', ... });
-```
+The completion actor journals accepted publications and serializes History,
+statistics, saved reports, retention, Clear/Delete and pending replay. Recording
+publication and statistics writes are exactly once. `retainHistory=false`, Clear
+History and export exclusions apply at the core boundary, including recovery
+copies and legacy imports. Cleared destinations are explicit disk values and
+cannot be resurrected by an old WebKit copy.
 
-See [reference/hooks.md](reference/hooks.md) for the full hook inventory.
+Source writes use the existing FIFO, source lock, generations and per-field
+revisions. Atomic publications use private temporary siblings, full file sync,
+rename and parent-directory sync. Missing required destinations, future schemas,
+corrupt pending publications and retained recovery evidence continue to block
+unsafe defaults. Explicit recovery preserves rejected bytes.
 
-Two rules keep the multi-window state coherent:
+## Legacy import and retirement
 
-- **The core completion actor is the single writer** for History, statistics, reports and migration v1. Native sources submit once; React reads `history-changed`/`statistics-changed` notifications and never writes completions from `transcription-complete`. See [completion ownership](draft/gpui-completion-service.md).
-- **The overlay has no shared React settings context.** `useOverlaySettingsMirror` seeds from its cache and refreshes guarded, read-only durable snapshots after host commit notifications; quick controls retain the latest snapshot.
-- **Appearance has a separate ownership domain.** Main is the only writer and runtime for the small `murmur-appearance` active cache and the revisioned `murmur-theme-library`. Open VSX access is explicit and renderer-side; installed variants compile locally into the active cache. Transparent utility windows remain outside theme synchronization.
-- **Meeting history is Rust-owned.** `useMeetings` reads SQLite through bounded commands and events; neither meeting nor dictation transcripts are cached in localStorage.
+Before showing user data the host reads the durable lifecycle receipt. A retired
+store returns immediately before store inspection, child spawn or WebKit loading.
+If a legacy store remains, the disposable worker serves only a fixed page at the
+original `tauri://localhost/` origin. The parent owns durable fill-only v1/v2/v3
+imports and exact-key removal acknowledgements.
 
----
+After every destination/version/removal receipt is durable, the parent commits
+retirement prepare, then permits the worker to release the view, purge all
+WKWebsiteDataStore types, and fetch/verify zero records. Only after successful
+exact-worker exit does the parent remove the exclusive legacy directory, sync
+its parent and commit `retired`. Failures leave retirement incomplete and retry
+without reimporting committed data. Symlinked retirement directories are refused.
+A fresh profile with no store commits retirement without starting WebKit.
 
-## Tauri Commands
-
-189 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
-
-## Events
-
-See [reference/events.md](reference/events.md) for every Rust → frontend event, its payload, and its listeners.
-
----
-
-## macOS Permissions
-
-| Permission | Required For |
-|-----------|-------------|
-| Microphone | Audio capture — dictation and meetings |
-| Accessibility | Global hotkeys (rdev), auto-paste, AX selection capture, AX write-back |
-| System Audio (optional; macOS 14.2+) | Meeting playback capture as Them; tap exists only during an explicit check or active meeting |
-
-Accessibility is checked via `AXIsProcessTrusted()`; the prompt is triggered with `AXIsProcessTrustedWithOptions()`. Microphone access can be requested in-app via `AVCaptureDevice.requestAccess`. Both core permissions have reset paths for stale TCC entries. System Audio uses an explicit short-lived CATap probe and links denial to the matching privacy pane; passive status reads never create a tap.
-
----
-
-## Data Directories
-
-Murmur uses two roots — a legacy one from before the rename, and the Tauri app-data root:
-
-```text
-~/Library/Application Support/local-dictation/
-├── models/                    # whisper .bin files, Silero VAD, sherpa-onnx bundle
-└── logs/                      # app.log, events.jsonl (+ .dev variants)
-
-~/Library/Application Support/com.localdictation/        (com.localdictation.dev in dev)
-├── knowledge/                 # knowledge.sqlite3, backups/, quarantine/
-├── diagnostics/               # performance.sqlite3
-└── meetings/                  # meetings.sqlite3, backups/, quarantine/, audio/
-```
-
-Core ML models are managed by FluidAudio under `~/Library/Application Support/FluidAudio/Models/`.
-
----
-
-## Build & Release
-
-### Dev
-
-```bash
-python3 scripts/build_capture_helpers.py   # once, before anything else on macOS
-cd app && npm install
-cd app && npm run tauri:dev                  # hot reload, isolated dev bundle/data
-cd app && npm run tauri build                # .app and .dmg
-cd app/src-tauri && cargo test -- --test-threads=1
-cd app && npx tsc --noEmit && npm test
-```
-
-`tauri.macos.conf.json` declares the three capture-helper executables. Build them before `tauri dev`, `cargo check`, or `cargo test`. See [DEVELOPMENT.md](DEVELOPMENT.md).
-
-`tauri.dev.conf.json` overrides only `identifier` → `com.localdictation.dev` and `productName` → `Local Dictation Dev`, so dev installs alongside the release build.
-
-### Release pipeline
-
-1. Push a `chore: bump version ...` commit to trusted `main`.
-2. `Release Build` runs frontend verification and macOS signing/notarization (including capture helper entitlements) concurrently, with launch smoke tests.
-3. Artifacts plus SHA-256 provenance are stored under names keyed by the exact commit SHA.
-4. The completed-build event verifies the trusted push, version-bump message, matching versions, exact run ID, source SHA, and immutable artifacts.
-5. Promotion creates `vX.Y.Z`, verifies remote `.sig` files, generates `latest-v2.json` plus the legacy-safe `latest.json`, then publishes.
-
-Release finalization **fails closed** on any unexpected executable in the bundle: only the Murmur binary and its three capture helpers may ship (#324). Manual dispatches are rehearsal-only. See [release.md](release.md).
-
-### Release profile
-
-```toml
-[profile.release]
-panic = "abort"
-codegen-units = 16
-lto = false
-opt-level = "s"
-strip = false   # retain Tauri's updater bundle-type marker
-```
-
----
-
-## Thread Model
-
-| Thread / task | Lifetime | Purpose |
-|--------|----------|---------|
-| rdev keyboard listener | App lifetime | Global key event loop for all three detectors |
-| Keyboard heartbeat | App lifetime | Trace-level liveness check every 60s |
-| Resource heartbeat (tokio) | App lifetime | 1s CPU/RSS sample → diagnostics; idle-timeout enforcement |
-| Sidecar maintenance (tokio) | App lifetime | 30s tick: RSS ceiling + idle unload |
-| Sidecar reader thread | Per spawn | Reads the helper's protocol stream |
-| Audio capture | Per recording | cpal stream + mono mix |
-| Meeting capture worker | Per explicit meeting/probe | Microphone AUHAL plus CATap/aggregate/IOProc; dual bounded callback rings |
-| Meeting chunker/inference | Per meeting + startup recovery | Per-channel VAD/spool publication and serialized shared-model transcription |
-| Hold-promotion timer | Per key press (both mode) | 200ms sleep, atomic validity check |
-| Model preparation | Per recording start / model change | Warms the backend concurrently with speech |
-
-Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and injection dispatch.
-
----
-
-## Key Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Model handed to the helper as fd 3 | The helper takes no paths and needs no filesystem reach; pinning is enforced host-side by size + SHA-256 |
-| One model catalog, fail-closed | Unknown identifiers error instead of silently substituting a model with different accuracy/latency |
-| Warm-on-record | Model load overlaps with speech instead of being charged to the user after key release |
-| Generation counters everywhere | A delayed continuation can observe that it lost ownership rather than corrupting the pass that replaced it |
-| Immutable per-recording context | Settings or focus changes mid-utterance can't reinterpret a recording already in flight |
-| Secure-field fail-closed | An *errored* AX secure-field check is treated as "possibly a password field" — no read, no clipboard fallback |
-| Transform telemetry allow-list | String keys and values must be in a stable vocabulary; leakage is prevented at the layer, not at the call site |
-| Ordered transcript pipeline | One entry point, declared stage order and failure policy, per-stage timing — instead of ad-hoc string munging per backend |
-| Rust owns all window geometry | Pure `geometry_for()` / `popover_geometry_for()` with fixtures on both sides; no drifting CSS pixel constants |
-| Main-thread `NSWindow` mutation | macOS 26 hard-traps on off-main mutation (#325) |
-| Autorelease pool around off-main AppKit queries | Tokio/std threads have no run-loop pool, so AppKit's internal autoreleases (`NSWorkspace`, `NSRunningApplication`, Launch Services) never drain: the 500 ms Mode watcher leaked ~2.5 MB/hour idle. Wrap each synchronous query in `objc2::rc::autoreleasepool` inside the helper, return owned Rust data, and never hold the pool across an `.await` |
-| CGEvent paste with osascript fallback | Native path avoids process spawn; osascript remains the compatibility net |
-| Custom malloc zone | Separates Rust heap from whisper.cpp's FFI heap; `GlobalAlloc` wrappers drift when FFI frees Rust allocations |
-| `set_is_main_thread(false)` | Prevents the rdev TIS/TSM segfault on the background listener thread |
-| `MutexExt::lock_or_recover()` | Survives a panic while a lock is held; no stuck UI state |
-| `IdleGuard` RAII | Guarantees status reset on every error path in the pipeline |
-| Clipboard-first delivery | Reliable across all apps; auto-paste is layered on top and never the only path |
-| Explicit-session CATap | Avoids idle tap churn; setup/teardown is phased, timeout-bounded, and process-isolated |
-| Durable chunk before inference | A crash loses at most each channel's open VAD chunk; published chunks remain recoverable from SQLite + fsynced spool audio |
-| Per-window least privilege | Overlay and dictation preview get minimal capabilities; only the main window gets the full set |
-| Main-only native appearance | Main owns application `setTheme`; transparent glass windows never join theme synchronization |
-| Bounded theme transport | Dialogs select paths; main-window-gated Rust commands read up to 256 KiB of UTF-8, keep exports at 64 KiB, and publish exports atomically without touching the clipboard |
-| Data-only community themes | Open VSX is queried only from an explicit dialog; supported-license packages are checksum/ZIP/identity bounded and only declared workbench colors are converted—extension code and assets never execute |
-
-
-## Rust-owned source state and WebKit lifecycle (GPUI 1.5)
-
-`murmur-core::state` owns source-state validation and settings v7 migrations;
-React decodes committed snapshots and resolves derived appearance tokens only.
-The existing completion actor serializes `ui-state.json` and `migrations.json`.
-Settings and theme-library transports share their host writer lock with v2
-imports and use the completion publisher (0600 temp, full sync, rename, directory
-sync). Disk values, including explicit empty values, win over WebKit sources.
-
-The main React startup sends bounded raw strings to the core before hydrating
-presentation caches. Transcript removal runs independently after durable v1
-receipts, including when v2 fails. Failed source writes retain their newest
-per-key intent for retry and display a content-free notice. No completion data
-is cached in WebKit. Migration v3 imports updater-last-check and pending-update-release-notes into the same Rust-owned source document; the updater alone writes them thereafter. React removes the legacy keys after v3 and never hydrates them back into WebKit.
-
-The separate `murmur-webkit` crate ships a permanent standalone objc2 importer
-with no Tauri/wry dependency. A native host supplies its data store, retains the
-invisible importer, and polls it before showing data or creating React child
-views. Its fixed `tauri://localhost/` page reads the origin through WebKit APIs;
-all durable I/O stays off the main thread. Its retirement coordinator requires
-a no-webview barrier plus v1/v2/v3 and removal receipts. It purges via
-WKWebsiteDataStore, verifies no records, releases the store, removes the bundle
-store directory and syncs its parent before writing the retirement receipt.
-The React host keeps the store while its pages remain alive; v3 now commits, but retirement still requires the native host's no-webview barrier. See the
-[design and failure matrix](draft/gpui-webkit-lifecycle.md).
-
-The renderer retains defensive theme-library decoding for presentation and import
-previews. It never publishes library repairs on load; Rust publishes reserved-ID
-migrations. Derived appearance caches are regenerated without a source revision
-or repair event. Full settings writes accept optional deliberate owned-field
-edits and return their committed snapshot; the writer lock merges these edits
-against current disk state. The status command takes the same lock because a
-no-WebKit status request can complete an import.
+See [the lifecycle contract](draft/gpui-webkit-lifecycle.md) and
+[Phase 4 evidence](draft/gpui-phase4-removal.md).
 
 ## Coordinated shutdown
 
-`murmur-core::shutdown` owns a Tauri-free reducer with tagged effects and absolute
-capture/helper/writer deadlines of +5/+7/+10 seconds. `src/shutdown.rs` closes
-process admission immediately, drains original generations and accepted native
-writer operations off main, and commits one terminal action. Unconfirmed helper
-groups or unpreserved writes suppress restart. An owned tao 0.35.3 patch holds
-native AppKit termination without replacing the delegate; common-mode CF dispatch
-continues during the wait. The process compatibility plugin routes relaunch into
-this coordinator. RunEvent::Exit only records a content-free terminal receipt.
+Menu Quit, Cmd-Q, Dock/system termination, final-window destruction, signals and
+relaunch converge on one coordinator. Admission closes permanently. Original
+capture generations drain by +5 seconds, helper receipts by +7 and durable writer
+barriers by +10. A single terminal action follows. Missing helper/write receipts
+suppress restart. AppKit defers termination while main dispatch remains live;
+GPUI's 200 ms quit window performs final nonblocking cleanup only.
 
-History/report publication can leave private completion-pending.json for replay;
-Clear/Delete, retention and caps cover it. Source/UI/window snapshots retain
-synced pending publications; window events never hold their state lock over disk
-I/O. Capture memo saves have a tracked writer barrier. Unfinished dictation audio
-remains in memory only. See [shutdown contract](draft/gpui-shutdown-coordinator.md)
-and [decision](decisions/2026-11-06-gpui-shutdown-coordinator.md).
+## Build and release
+
+See [Development](DEVELOPMENT.md) for checked commands and [Release](release.md)
+for the trusted isolated build/sign lanes. Bundling preserves executable/helper
+allowlists, identity, entitlements, FoundationModels weak linkage, Swift rpath
+and macOS 14 minimum. The signed upgrade-chain rehearsal and final memory-budget
+measurement require their separate authorized acceptance runs.

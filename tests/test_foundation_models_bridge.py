@@ -11,7 +11,7 @@ import unittest
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("xcrun"), "macOS Swift required")
 class PreparedSessionTests(unittest.TestCase):
     def test_take_release_and_stale_publication(self):
-        bridge = Path(__file__).resolve().parents[1] / "app/src-tauri/macos/FoundationModelsBridge.swift"
+        bridge = Path(__file__).resolve().parents[1] / "app/macos/macos/FoundationModelsBridge.swift"
         assertions = r'''
 private let first = PreparedSession<String>()
 private let second = PreparedSession<String>()

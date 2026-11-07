@@ -46,7 +46,7 @@ def main():
     env = {**os.environ, 'GIT_CEILING_DIRECTORIES': str(target.parent)}
     subprocess.run(['git', 'apply', patch], check=True, cwd=target, env=env)
     subprocess.run(['git', 'apply', '--check', '--reverse', patch], check=True, cwd=target, env=env)
-    lock = UI / 'Cargo.lock'
+    lock = UI.parent / 'Cargo.lock'
     original = lock.read_bytes()
     try:
         config = 'patch."https://github.com/zed-industries/zed".gpui.path=' + json.dumps(str(target))

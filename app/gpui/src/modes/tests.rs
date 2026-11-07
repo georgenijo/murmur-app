@@ -48,7 +48,7 @@ fn mode_import_is_strict_and_preserves_activation() {
 #[test]
 fn mode_and_spelling_exports_exclude_retained_opaque_fields() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../src-tauri/crates/murmur-core/src/state/gpui-downgrade-fixtures.json"
+        "../../../crates/murmur-core/src/state/gpui-downgrade-fixtures.json"
     ))
     .unwrap();
     let mut raw = fixture["settings"].clone();

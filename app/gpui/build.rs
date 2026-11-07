@@ -4,9 +4,9 @@ fn main() {
     println!("cargo:rerun-if-changed=native/services.m");
     // Packaging and the UI consume Tauri's canonical release version directly;
     // the presentation crate's 0.1.0 is not another application version.
-    println!("cargo:rerun-if-changed=../src-tauri/tauri.conf.json");
+    println!("cargo:rerun-if-changed=../macos/bundle.json");
     let config: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("../src-tauri/tauri.conf.json").expect("shared app config"),
+        &std::fs::read_to_string("../macos/bundle.json").expect("shared app config"),
     )
     .expect("shared app config JSON");
     println!(

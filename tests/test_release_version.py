@@ -14,41 +14,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def write_fixture(root: Path, *, package_version: str = "1.2.3") -> None:
-    paths = (
-        root / "app/src-tauri",
-        root / "app",
-    )
-    for path in paths:
-        path.mkdir(parents=True, exist_ok=True)
-    (root / "app/src-tauri/tauri.conf.json").write_text(
-        json.dumps({"version": "1.2.3"}, indent=2) + "\n"
-    )
-    (root / "app/src-tauri/Cargo.toml").write_text(
-        '[package]\nname = "ui"\nversion = "1.2.3"\n\n[dependencies]\n'
-    )
-    (root / "app/src-tauri/Cargo.lock").write_text(
-        'version = 4\n\n[[package]]\nname = "ui"\nversion = "1.2.3"\n'
-    )
-    (root / "app/package.json").write_text(
-        json.dumps(
-            {"name": "ui", "version": package_version, "private": True}, indent=2
-        )
-        + "\n"
-    )
-    (root / "app/package-lock.json").write_text(
-        json.dumps(
-            {
-                "name": "ui",
-                "version": package_version,
-                "lockfileVersion": 3,
-                "packages": {
-                    "": {"name": "ui", "version": package_version},
-                },
-            },
-            indent=2,
-        )
-        + "\n"
-    )
+    paths = ["app/macos", "app/crates/murmur-services", "app/gpui"]
+    for path in paths: (root / path).mkdir(parents=True, exist_ok=True)
+    (root / "app/macos/bundle.json").write_text(json.dumps({"version":"1.2.3"}))
+    (root / "app/crates/murmur-services/Cargo.toml").write_text('[package]\nname="murmur-services"\nversion="1.2.3"\n')
+    (root / "app/gpui/Cargo.toml").write_text(f'[package]\nname="murmur-ui"\nversion="{package_version}"\n')
+    (root / "app/Cargo.lock").write_text('version = 4\n\n[[package]]\nname = "murmur-services"\nversion = "1.2.3"\n\n[[package]]\nname = "murmur-ui"\nversion = "1.2.3"\n')
     (root / "CHANGELOG.md").write_text(
         "# Changelog\n\n"
         "## [Unreleased]\n\n"
@@ -76,11 +47,10 @@ class ReleaseVersionTests(unittest.TestCase):
 
     def test_check_rejects_each_stale_version_surface(self) -> None:
         surfaces = (
-            "app/src-tauri/tauri.conf.json",
-            "app/src-tauri/Cargo.toml",
-            "app/src-tauri/Cargo.lock",
-            "app/package.json",
-            "app/package-lock.json",
+            "app/macos/bundle.json",
+            "app/crates/murmur-services/Cargo.toml",
+            "app/Cargo.lock",
+            "app/gpui/Cargo.toml",
             "CHANGELOG.md",
         )
         for surface in surfaces:

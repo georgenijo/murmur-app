@@ -17,14 +17,14 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from bundle_gpui import TAURI, bundle, bundle_info, compare_bundles
+from bundle_gpui import BUNDLE_ROOT, bundle, bundle_info, compare_bundles
 from finalize_macos_bundle import HELPERS, require_exact_macos_executables
 import gpui_artifacts
 from gpui_artifacts import BUILD_FILES, SIGNER_FILES, pack, sha256, verify, verify_zip
 from release_bundle_target import validate_target
 from validate_workflow_policy import (GPUI_JOB_SHA256, RELEASE_BUILD_SHA256, job_block, references_secrets,
                                       validate_release_build, validate_promotion_policy)
-from notarize_and_repackage_macos import native_sign, tauri_sign
+from notarize_and_repackage_macos import native_sign
 from rehearse_gpui_bundle import check_links, isolated_launch
 
 
@@ -35,22 +35,22 @@ class BundleTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.tauri = self.root / "tauri"
         self.tauri.mkdir()
-        for name in ("tauri.conf.json", "macos/Info.plist", "macos/com.localdictation.capture-agent.plist", "icons/icon.icns"):
+        for name in ("bundle.json", "macos/Info.plist", "macos/com.localdictation.capture-agent.plist", "icons/icon.icns"):
             target = self.tauri / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(TAURI / name, target)
+            shutil.copy2((BUNDLE_ROOT.parent / name) if name.startswith("sidecars/") else (BUNDLE_ROOT / name), target)
         (self.tauri / "binaries").mkdir()
         for name in HELPERS:
             (self.tauri / "binaries" / f"{name}-aarch64-apple-darwin").write_bytes(b"synthetic helper")
         self.binary = self.root / "ui"
         self.binary.write_bytes(b"synthetic main")
-        self.app = bundle(self.binary, self.root / "native.app", self.tauri)
+        self.app = bundle(self.binary, self.root / "native.app", self.tauri, helpers_dir=self.tauri / "binaries")
         self.oracle = self.root / "oracle.app"
         shutil.copytree(self.app, self.oracle)
 
     def test_identity_version_and_permission_descriptions_share_tauri_sources(self):
         info = bundle_info(self.tauri)
-        config = json.loads((self.tauri / "tauri.conf.json").read_text())
+        config = json.loads((self.tauri / "bundle.json").read_text())
         self.assertEqual(info["CFBundleExecutable"], "ui")
         self.assertEqual(info["LSMinimumSystemVersion"], "14.0")
         self.assertEqual(info["CFBundleIdentifier"], config["identifier"])
@@ -59,7 +59,7 @@ class BundleTests(unittest.TestCase):
         permissions = plistlib.loads((self.tauri / "macos/Info.plist").read_bytes())
         self.assertEqual({k: info[k] for k in permissions}, permissions)
         config["version"] = "99.98.97"
-        (self.tauri / "tauri.conf.json").write_text(json.dumps(config))
+        (self.tauri / "bundle.json").write_text(json.dumps(config))
         self.assertEqual(bundle_info(self.tauri)["CFBundleVersion"], "99.98.97")
 
     def test_only_production_entry_is_packaged(self):
@@ -379,7 +379,7 @@ class WorkflowTests(unittest.TestCase):
     def test_target_event_matrix(self):
         for event in ("push", "pull_request", "workflow_run", "workflow_dispatch", "schedule"):
             with self.subTest(event=event):
-                self.assertEqual(validate_target(event, "tauri"), "tauri")
+                with self.assertRaises(ValueError): validate_target(event, "tauri")
                 if event == "workflow_dispatch":
                     self.assertEqual(validate_target(event, "gpui"), "gpui")
                 else:
@@ -394,18 +394,17 @@ class WorkflowTests(unittest.TestCase):
         validate_release_build(workflow)
         for guard in ("github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'",
                       'TARGET=$(python3 scripts/release_bundle_target.py) || exit 1',
-                      "needs.context.outputs.bundle-target == 'tauri'"):
+                      "github.event_name == 'workflow_dispatch'"):
             with self.subTest(guard=guard), self.assertRaises(AssertionError):
                 validate_release_build(workflow.replace(guard, "true"))
         promotion = (ROOT / ".github/workflows/release.yml").read_text()
         validate_promotion_policy(promotion)
         self.assertNotIn("gpui-rehearsal-", promotion)
 
-    def test_tauri_release_job_is_unchanged_except_target_selection(self):
+    def test_only_manual_native_release_jobs_remain(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        job = job_block(workflow, "release-macos")
-        job = job.replace("    if: needs.context.outputs.bundle-target == 'tauri'\n", "")
-        self.assertEqual(hashlib.sha256(job.rstrip().encode()).hexdigest(), "88721a915e7bb8f56b9562e77736fd05536374349ef1365846fdf82a6bc62cdb")
+        self.assertNotIn("  release-macos:", workflow)
+        validate_release_build(workflow)
 
     def test_native_signer_is_opt_in_and_uses_public_config(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -415,10 +414,7 @@ class WorkflowTests(unittest.TestCase):
                 native_sign(archive, ROOT / "app", Path("/synthetic/signer"))
                 self.assertEqual(run.call_args.args[0], ["/synthetic/signer", str(archive)])
                 self.assertEqual(run.call_args.kwargs["env"]["MURMUR_SIGNING_PUBLIC_KEY"],
-                                 json.loads((TAURI / "tauri.conf.json").read_text())["plugins"]["updater"]["pubkey"])
-            with patch.dict("os.environ", {"TAURI_SIGNING_PRIVATE_KEY": "synthetic"}), patch("notarize_and_repackage_macos.run") as run:
-                tauri_sign(archive, ROOT / "app")
-                self.assertEqual(run.call_args.args[0][:5], ["npx", "--no-install", "tauri", "signer", "sign"])
+                                 json.loads((BUNDLE_ROOT / "bundle.json").read_text())["updater"]["pubkey"])
 
     def test_macho_contract_rejects_missing_rpath_strong_framework_or_newer_minimum(self):
         loads = """Load command 0
@@ -530,7 +526,7 @@ minos 14.0
     def test_all_gpui_job_bytes_are_pinned(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
         expected = {
-            "gpui-build": "6c771424f82f3fc52d7841c04692186def2a0e9e7a59a6f5ed1539b044dceb52",
+            "gpui-build": "4b2015c205c3e33914403fbd2226759f659e450ece5a3f21a13c5a3c70daf6e4",
             "gpui-signer": "eb7ac7e93ae582b2da6df56dbfb205d9053ff8323e3cafe62d42a81b7678760a",
             "gpui-sign": "17727ea273f3d5e5922c31d571fe8d1a7110c43bf8e311101b831750d0841888",
         }
@@ -643,13 +639,13 @@ class MigrationPolicyTests(unittest.TestCase):
         from gpui_migration_policy import PLISTS, validate_identity
         with tempfile.TemporaryDirectory() as directory:
             tauri = Path(directory)
-            for name in (*PLISTS, "tauri.conf.json", "tauri.macos.conf.json"):
-                target = tauri / name
+            for name in (*PLISTS, "bundle.json"):
+                target = (tauri.parent / name) if name.startswith("sidecars/") else tauri / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(TAURI / name, target)
+                shutil.copy2((BUNDLE_ROOT.parent / name) if name.startswith("sidecars/") else (BUNDLE_ROOT / name), target)
             for name in PLISTS:
                 with self.subTest(name=name):
-                    path = tauri / name
+                    path = (tauri.parent / name) if name.startswith("sidecars/") else tauri / name
                     original = path.read_bytes()
                     value = plistlib.loads(original)
                     value[next(iter(value))] = "drift"
@@ -657,36 +653,23 @@ class MigrationPolicyTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "identity inputs drifted"):
                         validate_identity(tauri)
                     path.write_bytes(original)
-            for name, key in (("tauri.conf.json", "identifier"), ("tauri.macos.conf.json", "bundle")):
+            for name, key in (("bundle.json", "identifier"),):
                 path = tauri / name
                 value = json.loads(path.read_text())
                 value[key] = "drift"
                 path.write_text(json.dumps(value))
                 with self.assertRaises((ValueError, TypeError)):
                     validate_identity(tauri)
-                shutil.copy2(TAURI / name, path)
+                shutil.copy2(BUNDLE_ROOT / name, path)
 
-    def test_gpui_finalization_uses_the_tauri_release_inputs_and_team_slot(self):
-        import re
-        import shlex
+    def test_native_finalize_preserves_the_frozen_signing_inputs(self):
         from rehearse_gpui_bundle import finalize
-        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        command = re.search(r'python3 scripts/finalize_macos_bundle.py (.*?)\n\n', workflow, re.S)[1]
-        args = shlex.split(command.replace("\\\n", " "))
-        tauri_flags = dict(zip(args[::2], args[1::2]))
-        self.assertEqual(tauri_flags.pop("--app"), "$APP")
-        self.assertEqual(tauri_flags.pop("--identity"), "$APPLE_SIGNING_IDENTITY")
-        self.assertEqual(tauri_flags.pop("--expected-team-id"), "$APPLE_TEAM_ID")
-        # Synthetic values only; subprocess is intercepted before any codesign.
         with patch("rehearse_gpui_bundle.subprocess.run") as process:
             finalize(Path("/synthetic/Murmur.app"), "synthetic identity", "ABCDE12345")
-        native = process.call_args.args[0][2:]
-        native_flags = dict(zip(native[::2], native[1::2]))
-        self.assertEqual(native_flags.pop("--app"), "/synthetic/Murmur.app")
-        self.assertEqual(native_flags.pop("--identity"), "synthetic identity")
-        self.assertEqual(native_flags.pop("--expected-team-id"), "ABCDE12345")
-        self.assertEqual({k: Path(v).resolve() for k, v in tauri_flags.items()},
-                         {k: Path(v).resolve() for k, v in native_flags.items()})
+        command = process.call_args.args[0]
+        self.assertIn(str(BUNDLE_ROOT / "entitlements.plist"), command)
+        self.assertIn(str(ROOT / "app/sidecars/capture/Info.plist"), command)
+        self.assertIn("ABCDE12345", command)
 
     def test_codesign_and_designated_requirement_shape_for_host_and_every_helper(self):
         import finalize_macos_bundle as finalizer
@@ -694,7 +677,7 @@ class MigrationPolicyTests(unittest.TestCase):
         identifiers = {"ui": "com.localdictation", **HELPERS}
         for name, identifier in identifiers.items():
             with self.subTest(name=name):
-                entitlement = TAURI / ("entitlements.plist" if name == "ui" else name.removeprefix("murmur-") + ".entitlements.plist")
+                entitlement = BUNDLE_ROOT / ("entitlements.plist" if name == "ui" else name.removeprefix("murmur-") + ".entitlements.plist")
                 with patch("finalize_macos_bundle.run") as run:
                     finalizer.sign(Path("/synthetic") / name, "synthetic identity", entitlement,
                                    None if name == "ui" else identifier)
@@ -715,9 +698,9 @@ class MigrationPolicyTests(unittest.TestCase):
                               requirement.replace(identifier, identifier + ".qa")):
                     with self.assertRaises(EvidenceError):
                         _designated_requirement_profile(drift, identifier, "ABCDE12345", name)
-        rust = (ROOT / "app/src-tauri/src/code_signing.rs").read_text()
+        rust = (ROOT / "app/crates/murmur-services/src/code_signing.rs").read_text()
         self.assertIn(r'identifier \"{expected_identifier}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\"', rust)
-        swift = (TAURI / "sidecars/capture-agent/main.swift").read_text()
+        swift = (ROOT / "app/sidecars/capture-agent/main.swift").read_text()
         self.assertIn(r'certificate leaf[subject.OU] = \"\(signingTeamID)\"', swift)
 
     def test_update_configuration_retains_null_and_the_downgrade_dmg(self):

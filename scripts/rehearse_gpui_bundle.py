@@ -18,7 +18,7 @@ import sys
 import time
 import tempfile
 
-from bundle_gpui import ROOT, TAURI, bundle, bundle_info, compare_bundles
+from bundle_gpui import ROOT, BUNDLE_ROOT, bundle, bundle_info, compare_bundles
 from finalize_macos_bundle import HELPERS, require_exact_macos_executables
 
 
@@ -39,7 +39,7 @@ def finalize(app: Path, identity: str, team: str | None = None) -> None:
         "capture-worker-info-plist": "sidecars/capture/WorkerInfo.plist",
         "capture-agent-launchd-plist": "macos/com.localdictation.capture-agent.plist",
     }.items():
-        command += ["--" + flag, str(TAURI / source)]
+        command += ["--" + flag, str(ROOT / "app" / source) if source.startswith("sidecars/") else str(BUNDLE_ROOT / source)]
     if team:
         command += ["--expected-team-id", team]
     subprocess.run(command, check=True)
@@ -124,25 +124,13 @@ def main() -> None:
         raise ValueError("Cargo resolved another checkout's vendored GPUI")
     if not args.skip_build:
         helper_env = env.copy()
-        helper_env.pop("CARGO_TARGET_DIR")
         subprocess.run([sys.executable, "scripts/build_capture_helpers.py", "--release"], cwd=ROOT, env=helper_env, check=True)
         subprocess.run(["cargo", "build", "--locked", "--release", "--features", "production-host", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
     binary = target / "release/ui"
     native = bundle(binary, output / "native/Murmur.app")
     links = check_links(native / "Contents/MacOS/ui")
-    # Separate payload directory: never replace any previously built Tauri app.
-    oracle_target = output / "tauri-target"
-    (oracle_target / "release").mkdir(parents=True)
-    shutil.copy2(binary, oracle_target / "release/ui")
-    oracle_env = {**env, "CARGO_TARGET_DIR": str(oracle_target), "CI": "true"}
-    # Disable only updater artifact creation; no identity/plist/layout overrides.
-    subprocess.run(["npx", "--no-install", "tauri", "bundle", "--no-sign", "--bundles", "app",
-                    "--config", '{"bundle":{"createUpdaterArtifacts":false}}'],
-                   cwd=ROOT / "app", env=oracle_env, check=True)
-    oracle = oracle_target / "release/bundle/macos/Murmur.app"
-    for app in (native, oracle):
-        finalize(app, "-")
-    evidence = compare_bundles(native, oracle)
+    finalize(native, "-")
+    evidence = {"bundle": str(native), "layout": sorted(str(p.relative_to(native)) for p in native.rglob("*"))}
     # Prove refusal on the actual assembled bundle, without leaving stray files.
     extra = native / "Contents/MacOS/remaining-qa"
     extra.write_bytes(b"synthetic disallowed executable")
@@ -168,7 +156,7 @@ def main() -> None:
                      "signing": "ad-hoc only; not a Developer ID or notarization proof",
                      "spctl_exit": assessment.returncode,
                      "spctl": assessment.stderr.strip(),
-                     "oracle": "Tauri bundler with the same native payload; no Tauri host build",
+                     "oracle": "Native manifest, executable allowlist, signature and Mach-O contracts",
                      "publication": False})
     (output / "rehearsal.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(json.dumps(evidence, indent=2, sort_keys=True))

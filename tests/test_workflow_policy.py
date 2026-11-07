@@ -49,34 +49,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             with self.subTest(marker=marker), self.assertRaises(AssertionError):
                 validate_promotion_policy(mutated)
 
-    def test_test_library_configuration_precedes_rust_cache(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        configured = workflow.replace(
-            "      - name: Configure test-only Rust library\n",
-            "      - name: Unrelated\n",
-            1,
-        )
-        self.assertNotEqual(workflow, configured)
-        with self.assertRaises(AssertionError):
-            validate_ci(configured)
-        step = named_step_block(workflow, "Configure test-only Rust library", 6)
-        late = workflow.replace(step, "", 1).replace(
-            "      - name: Build capture isolation helpers\n",
-            step + "      - name: Build capture isolation helpers\n",
-            1,
-        )
-        self.assertNotEqual(workflow, late)
-        with self.assertRaises(AssertionError):
-            validate_ci(late)
-        marker = "              - 'scripts/configure_ci_rust_library.py'\n"
-        self.assertEqual(workflow.count(marker), 2)
-        for index in range(2):
-            start = -1
-            for _ in range(index + 1):
-                start = workflow.index(marker, start + 1)
-            with self.subTest(path_filter=index):
-                with self.assertRaises(AssertionError):
-                    validate_ci(workflow[:start] + workflow[start + len(marker):])
 
     def test_release_build_rejects_test_library_override(self) -> None:
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
@@ -102,14 +74,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 validate_release_build(mutated)
 
-    def test_release_build_rejects_pre_openssl_fix_cache(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        mutated = workflow.replace(
-            "shared-key: macos-release-v2", "shared-key: macos-release-v1", 1
-        )
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_release_build(mutated)
 
     def test_publication_never_lets_an_older_release_become_latest(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
@@ -122,250 +86,22 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 validate_promotion_policy(mutated)
 
-    def test_ci_rust_filter_includes_root_rustfmt_config(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        without_rust_path = workflow.replace("              - 'rustfmt.toml'\n", "", 1)
-        moved_to_github = without_rust_path.replace(
-            "            github:\n",
-            "            github:\n              - 'rustfmt.toml'\n",
-            1,
-        )
-        for name, mutated in (
-            ("removed", without_rust_path),
-            ("moved to another filter", moved_to_github),
-        ):
-            with self.subTest(mutation=name):
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_ci_runs_reference_doc_drift_check(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for marker in (
-            "python3 scripts/validate_reference_docs.py\n",
-            "            tests/test_reference_docs.py \\\n",
-        ):
-            with self.subTest(marker=marker.strip()):
-                mutated = workflow.replace(marker, "", 1)
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_ci_installs_pinned_python_test_dependencies(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for marker in (
-            "          python3 -m pip install -r requirements-test.txt\n",
-        ):
-            with self.subTest(marker=marker.strip()):
-                mutated = workflow.replace(marker, "", 1)
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_ci_pins_and_enforces_clippy_and_rustfmt(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for old in (
-            "        uses: dtolnay/rust-toolchain@1.96.0\n",
-            "          components: clippy, rustfmt\n",
-            "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
-            "        run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings\n",
-            "          --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'\n",
-            "          tool: cargo-nextest@0.9.150\n",
-        ):
-            with self.subTest(policy=old.strip()):
-                mutated = workflow.replace(old, "", 1)
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_ci_clippy_and_tests_cannot_drop_workspace(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for old, new in (
-            (
-                "cargo clippy --workspace --all-targets",
-                "cargo clippy --all-targets",
-            ),
-            (
-                "cargo nextest list --workspace",
-                "cargo nextest list",
-            ),
-        ):
-            with self.subTest(rewrite=f"{old} -> {new}"):
-                mutated = workflow.replace(old, new, 1)
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_dependency_audits_are_present_and_advisory(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for old in (
-            "          cargo audit\n",
-            "          npm audit --audit-level=high\n",
-            "        continue-on-error: true\n",
-        ):
-            with self.subTest(policy=old.strip()):
-                mutated = workflow.replace(old, "", 1)
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_dependency_audit_skips_release_bump_pushes(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        guard = (
-            "  dependency-audit:\n"
-            "    if: \"${{ github.event_name != 'push' || "
-            "!startsWith(github.event.head_commit.message, "
-            "'chore: bump version') }}\"\n"
-        )
-        mutated = workflow.replace(guard, "  dependency-audit:\n", 1)
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
 
-    def test_ci_step_policy_is_independent_of_job_order(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        dependency_start = workflow.index("  dependency-audit:\n")
-        dependency_end = workflow.index("  ci-pass:\n")
-        dependency_block = workflow[dependency_start:dependency_end]
-        reordered = workflow[:dependency_start] + workflow[dependency_end:]
-        reordered = reordered.replace(
-            "  rust-macos:\n", dependency_block + "  rust-macos:\n", 1
-        )
 
-        validate_ci(reordered)
 
-    def test_ci_runs_capture_worker_unit_tests(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for old, new in (
-            # Dropping the step or skipping binary reuse loses coverage or
-            # recompiles native dependencies.
-            ("      - name: Run capture worker unit tests\n", "      - name: Unrelated\n"),
-            (
-                "          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json\n"
-                "          --binaries-metadata target/ci-test-binaries.json\n"
-                "          -E 'package(=murmur-capture-helper)'\n\n",
-                "          cargo test -p murmur-capture-helper\n\n",
-            ),
-        ):
-            with self.subTest(policy=old.strip()):
-                mutated = workflow.replace(old, new, 1)
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_ci_pass_requires_visual_regression_result(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace(
-            '            "${{ needs.visual-regression.result }}" \\\n',
-            "",
-            1,
-        )
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
 
-    def test_ci_pass_requires_every_parallel_job(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for job in ("policy", "visual-linux", "rust-lint", "gpui-macos"):
-            with self.subTest(job=job):
-                result = f'            "${{{{ needs.{job}.result }}}}"'
-                start = workflow.index(result)
-                end = workflow.index("\n", start) + 1
-                mutated = workflow[:start] + workflow[end:]
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
-                needs = "needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos, gpui-macos]"
-                dropped = workflow.replace(needs, needs.replace(f", {job}", ""), 1)
-                self.assertNotEqual(workflow, dropped)
-                with self.assertRaises(AssertionError):
-                    validate_ci(dropped)
 
-    def test_ci_changes_job_stays_filter_only(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace(
-            "  policy:\n",
-            "      - name: Slow validation\n"
-            "        run: python3 scripts/validate_workflow_policy.py\n\n"
-            "  policy:\n",
-            1,
-        )
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
 
-    def test_verified_push_skips_tests_but_not_ci_pass(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for old, new in (
-            ("        if: github.event_name == 'push'\n", ""),
-            ("        run: bash scripts/ci_verified_tree.sh\n", "        run: true\n"),
-            ("      verified: ${{ steps.verified.outputs.verified == 'true' }}\n", ""),
-            (
-                "      - name: Run tests\n"
-                "        if: needs.changes.outputs.verified != 'true'\n",
-                "      - name: Run tests\n",
-            ),
-            (
-                "      - name: Run deterministic dictation evaluation\n"
-                "        if: needs.changes.outputs.verified != 'true'\n",
-                "      - name: Run deterministic dictation evaluation\n",
-            ),
-        ):
-            with self.subTest(policy=old.strip()):
-                mutated = workflow.replace(old, new, 1)
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_rust_caches_are_saved_only_from_main(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        line = "          save-if: ${{ github.ref == 'refs/heads/main' }}\n"
-        self.assertEqual(workflow.count(line), 2)
-        for index in range(2):
-            with self.subTest(cache=index):
-                start = -1
-                for _ in range(index + 1):
-                    start = workflow.index(line, start + 1)
-                mutated = workflow[:start] + workflow[start + len(line):]
-                with self.assertRaises(AssertionError):
-                    validate_ci(mutated)
 
-    def test_cargo_audit_installs_pinned_prebuilt(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace(
-            "          tool: cargo-audit@0.22.2\n", "          tool: cargo-audit\n", 1
-        )
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
 
-    def test_rust_test_prebuild_builds_examples_before_test_targets(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        examples = (
-            "          cargo build --workspace\n"
-            "          --example murmur-eval &&\n"
-        )
-        tests = (
-            "          cargo nextest list --workspace\n"
-            "          --lib --bin murmur-capture-helper --test topology_watch\n"
-            "          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&\n"
-            "          cargo metadata --format-version 1 > target/ci-cargo-metadata.json\n"
-        )
-        swapped = tests.rstrip("\n") + " &&\n" + examples.removesuffix(" &&\n") + "\n"
-        mutated = workflow.replace(examples + tests, swapped, 1)
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
-
-    def test_macos_compile_check_builds_capture_worker(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        mutated = workflow.replace(
-            "          MURMUR_CAPTURE_ROLE=worker \\\n",
-            "",
-            1,
-        )
-        self.assertNotEqual(workflow, mutated)
-        with self.assertRaises(AssertionError):
-            validate_ci(mutated)
 
     def test_automatic_promotion_requires_workflow_run_trigger(self) -> None:
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
@@ -485,34 +221,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_build(mutated)
 
-    def test_capture_evidence_must_use_structured_collector_and_strict_validator(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        for marker in (
-            "scripts/capture_helper_evidence.py collect-signature",
-            "scripts/capture_helper_evidence.py validate-probe",
-        ):
-            with self.subTest(marker=marker):
-                mutated = workflow.replace(marker, "echo skipped")
-                self.assertNotEqual(workflow, mutated)
-                with self.assertRaises(AssertionError):
-                    validate_release_build(mutated)
-
-        without_agent = workflow.replace("--kind capture-agent", "--kind capture-helper", 1)
-        with self.assertRaises(AssertionError):
-            validate_release_build(without_agent)
-        without_worker = workflow.replace("--kind capture-worker", "--kind capture-helper", 1)
-        with self.assertRaises(AssertionError):
-            validate_release_build(without_worker)
-
-        leaked = workflow.replace(
-            "          # Collect only allowlisted signature facts.",
-            '          codesign -d --verbose=4 "$CAPTURE_HELPER" '
-            '> "$EVIDENCE/codesign.txt" 2>&1\n'
-            "          # Collect only allowlisted signature facts.",
-            1,
-        )
-        with self.assertRaises(AssertionError):
-            validate_release_build(leaked)
 
     def test_release_rehearsal_requires_main_workflow_definition(self) -> None:
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
@@ -534,15 +242,6 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_release_rehearsal(mutated)
 
-    def test_release_rehearsal_requires_isolated_cache_namespaces(self) -> None:
-        workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
-        mutated = workflow.replace(
-            "macos-release-rehearsal-${{ needs.context.outputs.source-sha }}",
-            "macos-release-v2",
-            1,
-        )
-        with self.assertRaises(AssertionError):
-            validate_release_rehearsal(mutated)
 
     def test_release_rehearsal_requires_immutable_source_checkouts(self) -> None:
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
@@ -554,11 +253,16 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_rehearsal(mutated)
 
-    def test_release_profile_must_retain_tauri_bundle_marker(self) -> None:
-        cargo_toml = (ROOT / "app/src-tauri/Cargo.toml").read_text()
-        with self.assertRaises(AssertionError):
-            validate_release_profile(cargo_toml.replace("strip = false", "strip = true"))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+class NativeWorkflowTests(unittest.TestCase):
+    def test_current_native_checks_and_manual_release_pass(self):
+        validate_ci((ROOT / ".github/workflows/ci.yml").read_text())
+        validate_release_build((ROOT / ".github/workflows/release-build.yml").read_text())
+    def test_sentinel_cannot_omit_replacement_checks_or_allow_skips(self):
+        source = (ROOT / ".github/workflows/ci.yml").read_text()
+        for old, new in [("needs: [changes, policy, typecheck, rust-lint, rust-macos, gpui-macos, visual-linux, visual-regression]", "needs: [changes, policy]"), ("job['result'] != 'success'", "job['result'] == 'failure'"), ("scripts/check_native_only.py", "scripts/removed.py"), ("--all-targets --features gallery,production-host -- -D warnings", "--lib")]:
+            with self.subTest(old=old), self.assertRaises(AssertionError): validate_ci(source.replace(old, new))

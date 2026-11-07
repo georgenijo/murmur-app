@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the macOS capture helpers and recovery agent for Tauri externalBin."""
+"""Build the macOS capture helpers and recovery agent for the native app bundle."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TAURI_ROOT = ROOT / "app" / "src-tauri"
+APP_ROOT = ROOT / "app"
+TARGET_ROOT = Path(os.environ.get("CARGO_TARGET_DIR", APP_ROOT / "target")).resolve()
 CAPTURE_HELPER_NAME = "murmur-capture-helper"
 CAPTURE_AGENT_NAME = "murmur-capture-agent"
 CAPTURE_WORKER_NAME = "murmur-capture-worker"
@@ -50,11 +51,11 @@ def publish_binary(
     source_name: str | None = None,
     built_path: Path | None = None,
 ) -> Path:
-    built = built_path or TAURI_ROOT / "target" / profile / (source_name or name)
+    built = built_path or TARGET_ROOT / profile / (source_name or name)
     if not built.is_file():
         raise SystemExit(f"helper build did not produce {built}")
 
-    destination = TAURI_ROOT / "binaries" / f"{name}-{TARGET}"
+    destination = APP_ROOT / "binaries" / f"{name}-{TARGET}"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(built, destination)
     destination.chmod(destination.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -77,11 +78,11 @@ def publish_binary(
 
 def build_capture_agent(profile: str, env: dict[str, str]) -> None:
     """Build the probe-only SMAppService launch agent with the system Swift toolchain."""
-    output = TAURI_ROOT / "target" / profile / CAPTURE_AGENT_NAME
+    output = TARGET_ROOT / profile / CAPTURE_AGENT_NAME
     output.parent.mkdir(parents=True, exist_ok=True)
-    with (TAURI_ROOT / "capture-agent-info.plist").open("rb") as handle:
+    with (APP_ROOT / "macos/capture-agent-info.plist").open("rb") as handle:
         embedded_info_payload = plistlib.load(handle)
-    with (TAURI_ROOT / "tauri.conf.json").open(encoding="utf-8") as handle:
+    with (APP_ROOT / "macos/bundle.json").open(encoding="utf-8") as handle:
         app_version = str(json.load(handle)["version"])
     for key in ("CFBundleShortVersionString", "CFBundleVersion"):
         embedded_info_payload[key] = app_version
@@ -97,7 +98,7 @@ def build_capture_agent(profile: str, env: dict[str, str]) -> None:
             "-parse-as-library",
             "-target",
             "arm64-apple-macos14.0",
-            str(TAURI_ROOT / "sidecars" / "capture-agent" / "main.swift"),
+            str(APP_ROOT / "sidecars" / "capture-agent" / "main.swift"),
             "-framework",
             "Foundation",
             "-framework",
@@ -113,7 +114,7 @@ def build_capture_agent(profile: str, env: dict[str, str]) -> None:
             "-o",
             str(output),
         ],
-        cwd=TAURI_ROOT,
+        cwd=APP_ROOT,
         env=env,
         check=True,
     )
@@ -130,23 +131,23 @@ def main() -> int:
         return 0
 
     profile = "release" if args.release else "debug"
-    app_version = str(json.loads((TAURI_ROOT / "tauri.conf.json").read_text())["version"])
+    app_version = str(json.loads((APP_ROOT / "macos/bundle.json").read_text())["version"])
     env = {
         **os.environ,
         "MACOSX_DEPLOYMENT_TARGET": "14.0",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
         "MURMUR_APP_VERSION": app_version,
     }
-    capture_command = ["cargo", "build", "-p", CAPTURE_HELPER_NAME]
+    capture_command = ["cargo", "build", "--manifest-path", str(APP_ROOT / "sidecars/capture/Cargo.toml"), "-p", CAPTURE_HELPER_NAME]
     if args.release:
         capture_command.append("--release")
     capture_env = env.copy()
-    empty_pkg_config = TAURI_ROOT / "target" / "capture-empty-pkgconfig"
+    empty_pkg_config = TARGET_ROOT / "capture-empty-pkgconfig"
     empty_pkg_config.mkdir(parents=True, exist_ok=True)
     capture_env.pop("PKG_CONFIG_PATH", None)
     capture_env["PKG_CONFIG_LIBDIR"] = str(empty_pkg_config)
-    subprocess.run(capture_command, cwd=TAURI_ROOT, env=capture_env, check=True)
-    worker_target = TAURI_ROOT / "target" / "capture-worker-build"
+    subprocess.run(capture_command, cwd=APP_ROOT, env=capture_env, check=True)
+    worker_target = TARGET_ROOT / "capture-worker-build"
     worker_env = capture_env.copy()
     worker_env.update(
         {
@@ -154,7 +155,7 @@ def main() -> int:
             "CARGO_TARGET_DIR": str(worker_target),
         }
     )
-    subprocess.run(capture_command, cwd=TAURI_ROOT, env=worker_env, check=True)
+    subprocess.run(capture_command, cwd=APP_ROOT, env=worker_env, check=True)
     build_capture_agent(profile, env)
 
     capture_destination = publish_binary(CAPTURE_HELPER_NAME, profile)

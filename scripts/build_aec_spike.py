@@ -14,7 +14,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TAURI_ROOT = ROOT / "app" / "src-tauri"
+TAURI_ROOT = ROOT / "app"
 TARGET_DIR = TAURI_ROOT / "target" / "aec-spike"
 
 

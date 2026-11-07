@@ -12,14 +12,14 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-ADAPTER = Path('app/src-tauri/src/events.rs')
+ADAPTER = Path('app/crates/murmur-services/src/events.rs')
 GPUI_ADAPTER = Path('app/gpui/src/events.rs')
 # Exact repository-relative build/dependency paths only. Nested maintained
 # modules named vendor/target/etc. must still be inspected. The exact vendored
 # Tao, GPUI Kit and AccessKit dependencies are third-party code, not Tauri
 # transport owners. Authored GPUI sources remain scanned. .git is metadata.
 EXCLUDED = {Path('.git'), Path('app/node_modules'), Path('node_modules'),
-            Path('app/src-tauri/target'), Path('target'), Path('app/src-tauri/patches/tao'),
+            Path('app/target'), Path('app/src-tauri/target'), Path('app/sidecars/capture/target'), Path('app/crates/murmur-services/target'), Path('target'), Path('app/crates/murmur-services/patches/tao'),
             Path('app/gpui/target'), Path('app/gpui/vendor/gpui-component'),
             Path('app/gpui/vendor/accesskit_macos'), Path('app/gpui/vendor/gpui')}
 

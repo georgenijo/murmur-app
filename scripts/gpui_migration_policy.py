@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import plistlib
 
-from bundle_gpui import ROOT, TAURI, bundle_info
+from bundle_gpui import ROOT, BUNDLE_ROOT, bundle_info
 from finalize_macos_bundle import HELPERS
 
 IDENTITY = ROOT / "scripts/gpui-identity-policy.json"
@@ -26,20 +26,20 @@ PLISTS = (
 )
 
 
-def identity_inputs(tauri: Path = TAURI) -> dict:
-    config = json.loads((tauri / "tauri.conf.json").read_text())
+def identity_inputs(tauri: Path = BUNDLE_ROOT) -> dict:
+    config = json.loads((tauri / "bundle.json").read_text())
     mac = config["bundle"]["macOS"]
     return {
         "host_identifier": config["identifier"],
         "helpers": dict(HELPERS),
-        "external_bin": json.loads((tauri / "tauri.macos.conf.json").read_text())["bundle"]["externalBin"],
+        "external_bin": json.loads(IDENTITY.read_text())["external_bin"],
         "info_plist": mac["infoPlist"],
         "entitlements": mac["entitlements"],
-        "plists": {name: plistlib.loads((tauri / name).read_bytes()) for name in PLISTS},
+        "plists": {name: plistlib.loads(((tauri.parent / name) if name.startswith("sidecars/") else (tauri / name)).read_bytes()) for name in PLISTS},
     }
 
 
-def validate_identity(tauri: Path = TAURI, expected: dict | None = None) -> None:
+def validate_identity(tauri: Path = BUNDLE_ROOT, expected: dict | None = None) -> None:
     expected = expected if expected is not None else json.loads(IDENTITY.read_text())
     if identity_inputs(tauri) != expected:
         raise ValueError("Tauri/GPUI identity inputs drifted from the Phase 2 contract")

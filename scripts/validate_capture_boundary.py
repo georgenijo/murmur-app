@@ -6,9 +6,9 @@ import re
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_MANIFEST = ROOT / "app/src-tauri/Cargo.toml"
-HELPER_MANIFEST = ROOT / "app/src-tauri/sidecars/capture/Cargo.toml"
-APP_SOURCE = ROOT / "app/src-tauri/src"
+APP_MANIFEST = ROOT / "app/crates/murmur-services/Cargo.toml"
+HELPER_MANIFEST = ROOT / "app/sidecars/capture/Cargo.toml"
+APP_SOURCE = ROOT / "app/crates/murmur-services/src"
 
 
 def dependency_names(table: dict) -> set[str]:

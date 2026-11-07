@@ -186,30 +186,12 @@ def build_updater_archive(app: Path) -> Path:
     return tarball
 
 
-def tauri_sign(tarball: Path, app_dir: Path) -> Path:
-    # The signer subcommand reads TAURI_PRIVATE_KEY / TAURI_PRIVATE_KEY_PASSWORD
-    # from the environment, so the key never appears in argv/ps. Map the release
-    # build's TAURI_SIGNING_* names onto the signer's names.
-    env = os.environ.copy()
-    env["TAURI_PRIVATE_KEY"] = os.environ["TAURI_SIGNING_PRIVATE_KEY"]
-    env["TAURI_PRIVATE_KEY_PASSWORD"] = os.environ.get(
-        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD", ""
-    )
-    run(
-        ["npx", "--no-install", "tauri", "signer", "sign", str(tarball)],
-        cwd=app_dir,
-        env=env,
-    )
-    signature = Path(f"{tarball}.sig")
-    if not signature.is_file():
-        raise SystemExit(f"updater signature was not produced: {signature}")
-    return signature
 
 
 def native_sign(tarball: Path, app_dir: Path, signer: Path) -> Path:
     env = os.environ.copy()
-    config = json.loads((app_dir / "src-tauri/tauri.conf.json").read_text())
-    env["MURMUR_SIGNING_PUBLIC_KEY"] = config["plugins"]["updater"]["pubkey"]
+    config = json.loads((app_dir / "macos/bundle.json").read_text())
+    env["MURMUR_SIGNING_PUBLIC_KEY"] = config["updater"]["pubkey"]
     run([str(signer), str(tarball)], env=env)
     signature = Path(f"{tarball}.sig")
     if not signature.is_file():
@@ -268,7 +250,7 @@ def main() -> int:
     if args.native_signer:
         signature = native_sign(tarball, args.app_dir.resolve(), args.native_signer.resolve())
     else:
-        signature = tauri_sign(tarball, args.app_dir.resolve())
+        raise SystemExit("Native updater signer is required; pass --native-signer")
 
     print(
         json.dumps(

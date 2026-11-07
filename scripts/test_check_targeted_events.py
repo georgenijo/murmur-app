@@ -210,9 +210,9 @@ class TargetedEventsGuardTests(unittest.TestCase):
                 self.assertTrue(violations(source))
 
     def test_explicit_cargo_roots_cannot_enter_excluded_directories(self):
-        for manifest in ['Cargo.toml', 'app/src-tauri/Cargo.toml', 'nested/Cargo.toml']:
+        for manifest in ['Cargo.toml', 'app/crates/murmur-services/Cargo.toml', 'nested/Cargo.toml']:
             for target in ['lib', 'bin', 'test', 'example', 'bench', 'build']:
-                for destination in ['target/lib.rs', 'app/src-tauri/target/lib.rs',
+                for destination in ['target/lib.rs', 'app/crates/murmur-services/target/lib.rs',
                                     'node_modules/lib.rs', 'app/node_modules/lib.rs', '.git/lib.rs']:
                     with self.subTest(manifest=manifest, target=target, destination=destination), tempfile.TemporaryDirectory() as directory:
                         root = Path(directory)

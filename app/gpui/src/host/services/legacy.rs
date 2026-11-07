@@ -20,6 +20,7 @@ unsafe extern "C" {
     fn murmur_legacy_message() -> *mut c_char;
     fn murmur_legacy_remove(script: *const c_char);
     fn murmur_legacy_stop();
+    fn murmur_legacy_retire() -> bool;
     fn murmur_services_free(value: *mut c_char);
 }
 fn approved(key: &str) -> bool {
@@ -87,8 +88,14 @@ pub fn worker() -> Option<i32> {
     }))
 }
 fn run_worker(synthetic: bool) -> Result<i32, ()> {
+    // No WebKit object is created before the owning service authorizes this
+    // exact child over its private pipe after checking the durable receipt.
+    let authorization = line(&mut std::io::stdin().lock())?;
+    if authorization["import"] != true {
+        return Err(());
+    }
     let seed = if synthetic {
-        Some(line(&mut std::io::stdin().lock())?)
+        Some(authorization["seed"].clone())
     } else {
         None
     };
@@ -105,8 +112,11 @@ fn run_worker(synthetic: bool) -> Result<i32, ()> {
     let _release = Release;
     let (send, receive) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        let value = line(&mut std::io::stdin().lock());
-        let _ = send.send(value);
+        for _ in 0..2 {
+            if send.send(line(&mut std::io::stdin().lock())).is_err() {
+                break;
+            }
+        }
     });
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut removed = false;
@@ -128,7 +138,20 @@ fn run_worker(synthetic: bool) -> Result<i32, ()> {
                 snapshot = true;
             } else if removed {
                 write(&mut std::io::stdout().lock(), &value)?;
-                return Ok(0);
+                // Wait for the durable prepare receipt before any broad purge.
+                loop {
+                    unsafe { murmur_legacy_pump() };
+                    if let Ok(request) = receive.try_recv() {
+                        if request?["retire"] != true || !unsafe { murmur_legacy_retire() } {
+                            return Err(());
+                        }
+                        write(&mut std::io::stdout().lock(), &json!({"retired":true}))?;
+                        return Ok(0);
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(());
+                    }
+                }
             } else {
                 return Err(());
             }
@@ -158,15 +181,15 @@ impl Drop for ExactChild {
 /// Every failure preserves unacknowledged keys and retries on an explicit Retry
 /// or later launch. The worker's stderr/content never enter application logs.
 pub async fn migrate(b: &Backend, synthetic: bool) -> Result<(), String> {
-    if !synthetic && !b.services.legacy_store_present() {
+    let status = b.call("webkit_state_snapshot", json!({})).await?;
+    // This check precedes store existence, process spawn, and framework loading.
+    // A leftover directory after retirement must never resurrect the importer.
+    if status["retired"] == true {
         return Ok(());
     }
-    let status = b.call("webkit_state_snapshot", json!({})).await?;
-    if status["v1"] == true
-        && status["v2"] == true
-        && status["v3"] == true
-        && status["transcriptKeysRemoved"] == true
-    {
+    if !synthetic && !b.services.legacy_store_present() {
+        b.services.prepare_legacy_retirement().await?;
+        b.services.finish_legacy_retirement().await?;
         return Ok(());
     }
     let work = b.services.accept_work()?;
@@ -192,13 +215,14 @@ pub async fn migrate(b: &Backend, synthetic: bool) -> Result<(), String> {
             );
             let mut input = child.0.stdin.take().ok_or(())?;
             let output = child.0.stdout.take().ok_or(())?;
-            if synthetic {
-                write(&mut input, &fixture_seed())?;
-            }
+            write(
+                &mut input,
+                &json!({"import":true,"seed":if synthetic { fixture_seed() } else { Value::Null }}),
+            )?;
             let (send, receive) = mpsc::sync_channel(2);
             let reader = std::thread::spawn(move || {
                 let mut output = BufReader::new(output);
-                for _ in 0..2 {
+                for _ in 0..3 {
                     if send.send(line(&mut output)).is_err() {
                         break;
                     }
@@ -221,7 +245,39 @@ pub async fn migrate(b: &Backend, synthetic: bool) -> Result<(), String> {
                 runtime
                     .block_on(services.acknowledge_legacy(acknowledgement))
                     .map_err(|_| ())?;
-                if committed { Ok(()) } else { Err(()) }
+                if !committed {
+                    return Err(());
+                }
+                runtime
+                    .block_on(services.prepare_legacy_retirement())
+                    .map_err(|_| ())?;
+                write(&mut input, &json!({"retire":true}))?;
+                let receipt = receive
+                    .recv_timeout(Duration::from_secs(25))
+                    .map_err(|_| ())??;
+                if receipt != json!({"retired":true}) {
+                    return Err(());
+                }
+                // Worker exit is the no-live-WebKit-object barrier. A bounded
+                // wait avoids hanging quit if the framework refuses to exit.
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    if let Some(status) = child.0.try_wait().map_err(|_| ())? {
+                        if !status.success() {
+                            return Err(());
+                        }
+                        break;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(());
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                remove_retired_directory(&services.legacy_directory().map_err(|_| ())?)?;
+                runtime
+                    .block_on(services.finish_legacy_retirement())
+                    .map_err(|_| ())?;
+                Ok(())
             })();
             drop(input);
             drop(child);
@@ -232,12 +288,45 @@ pub async fn migrate(b: &Backend, synthetic: bool) -> Result<(), String> {
         .map_err(|_| "Legacy importer unavailable".to_owned())?;
     result.map_err(|_| "Legacy import preserved for retry".into())
 }
+/// Never follow a symlink supplied in place of the exclusive bundle directory.
+fn remove_retired_directory(directory: &std::path::Path) -> Result<(), ()> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+            std::fs::remove_dir_all(directory).map_err(|_| ())?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err(()),
+    }
+    std::fs::File::open(directory.parent().ok_or(())?)
+        .and_then(|parent| parent.sync_all())
+        .map_err(|_| ())
+}
 fn fixture_seed() -> Value {
     json!({"dictation-history":json!([{"schemaVersion":2,"id":"synthetic-legacy-110","text":"Synthetic migration fixture.","duration":1.0,"source":"recording","timestamp":1,"pinned":false}]).to_string(),"dictation-settings":json!({"settingsVersion":7,"model":"parakeet-tdt-0.6b-v3-coreml","microphone":"system_default","launchAtLogin":false,"language":"es","launchOnboardingComplete":false}).to_string()})
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retirement_directory_cleanup_retries_without_following_links() {
+        let root =
+            std::env::temp_dir().join(format!("murmur-gpui-test-retire-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("exclusive");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("synthetic-cache"), b"synthetic").unwrap();
+        remove_retired_directory(&target).unwrap();
+        assert!(!target.exists());
+        remove_retired_directory(&target).unwrap();
+        let preserved = root.join("preserved");
+        std::fs::create_dir(&preserved).unwrap();
+        std::fs::write(preserved.join("synthetic"), b"keep").unwrap();
+        std::os::unix::fs::symlink(&preserved, &target).unwrap();
+        assert!(remove_retired_directory(&target).is_err());
+        assert!(preserved.join("synthetic").exists());
+        std::fs::remove_file(target).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn worker_fixture_commits_through_the_actual_core_protocol() {
         let root = std::env::temp_dir().join(format!(

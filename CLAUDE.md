@@ -1,6 +1,6 @@
 # Murmur agent guide
 
-Privacy-first macOS voice-to-text app built with Tauri 2, Rust, and React.
+Privacy-first macOS voice-to-text app built with GPUI and Rust.
 Dictation and meeting transcription run locally.
 `AGENTS.md` is a symlink to this file. Edit this file only.
 
@@ -9,31 +9,31 @@ Dictation and meeting transcription run locally.
 - [Architecture](docs/ARCHITECTURE.md): module ownership, data flow, and native boundaries.
 - [Features](docs/FEATURES.md): feature index and links to detailed behavior.
 - [Development](docs/DEVELOPMENT.md): setup, permissions, builds, and troubleshooting.
-- [API reference](docs/reference/commands.md): 189 registered commands.
+- [API reference](docs/reference/commands.md): in-process native service requests.
 
 Read the documentation relevant to the task. Search the source for individual
 files and symbols instead of maintaining another file inventory here.
 
 ## Common commands
 
-Run each command from the repository root:
+Run each command from the repository root with Rust 1.98.1 (`RUSTUP_TOOLCHAIN=1.98.1` outside `app/`):
 
 ```bash
 python3 scripts/build_capture_helpers.py
-(cd app && npm run tauri:dev)
-(cd app/src-tauri && cargo check)
-(cd app/src-tauri && cargo test -- --test-threads=1)
-(cd app && npx tsc --noEmit)
-(cd app && npm test)
+cargo check --manifest-path app/Cargo.toml -p murmur-ui --features production-host
+cargo clippy --manifest-path app/Cargo.toml -p murmur-ui -p murmur-services -p murmur-core --all-targets --features gallery,production-host -- -D warnings
+cargo test --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-webkit -- --test-threads=1
+python3 scripts/test_gpui.py --features production-host -- --test-threads=1
+python3 scripts/check_gpui_goldens.py
+cargo run --manifest-path app/gpui/Cargo.toml --features production-host --bin ui
 ```
 
 On Apple Silicon macOS, build the bundled helpers before the first Rust check
-or Tauri build. Helper binaries are gitignored. See Development for packaging.
+or native bundle build. Helper binaries are gitignored. See Development for packaging.
 
 ## Verify the actual change
 
-Run required CI checks and the narrowest relevant local checks. Frontend changes
-need both TypeScript checks and Vitest. Documentation and script changes use
+Run required CI checks and the narrowest relevant local checks. UI changes need Rust checks, GPUI interaction/AX tests, and relevant Metal goldens. Documentation and script changes use
 file or CLI checks; they do not require launching the app.
 
 For all manual app verification, Codex uses Computer Use against the running

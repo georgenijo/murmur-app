@@ -647,7 +647,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         )
         self.assertEqual(CAPTURE_WORKER_IDENTIFIER, "com.localdictation.capture-worker")
         root = Path(__file__).parents[1]
-        with (root / "app/src-tauri/capture-agent.entitlements.plist").open(
+        with (root / "app/macos/capture-agent.entitlements.plist").open(
             "rb"
         ) as handle:
             self.assertEqual(
@@ -666,7 +666,7 @@ class ReleaseArtifactTests(unittest.TestCase):
             )
 
         agent_source = (
-            root / "app/src-tauri/sidecars/capture-agent/main.swift"
+            root / "app/sidecars/capture-agent/main.swift"
         ).read_text(encoding="utf-8")
         for forbidden_capture_api in (
             "AVFoundation",
@@ -681,13 +681,13 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertIn("SecCodeCopyPath", agent_source)
         self.assertIn("currentExecutableURL()", agent_source)
         self.assertNotIn("CommandLine.arguments[0]", agent_source)
-        with (root / "app/src-tauri/capture-worker.entitlements.plist").open(
+        with (root / "app/macos/capture-worker.entitlements.plist").open(
             "rb"
         ) as handle:
             self.assertEqual(plistlib.load(handle), CAPTURE_WORKER_ENTITLEMENTS)
         with (
             root
-            / "app/src-tauri/macos/com.localdictation.capture-agent.plist"
+            / "app/macos/macos/com.localdictation.capture-agent.plist"
         ).open("rb") as handle:
             self.assertEqual(
                 plistlib.load(handle),
@@ -701,7 +701,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     "ThrottleInterval": 10,
                 },
             )
-        with (root / "app/src-tauri/capture-agent-info.plist").open(
+        with (root / "app/macos/capture-agent-info.plist").open(
             "rb"
         ) as handle:
             self.assertEqual(
@@ -720,13 +720,13 @@ class ReleaseArtifactTests(unittest.TestCase):
         self.assertIn('"__info_plist"', build_script)
 
     def test_calendar_access_is_declared_only_for_the_host(self) -> None:
-        tauri_root = Path(__file__).parents[1] / "app/src-tauri"
+        tauri_root = Path(__file__).parents[1] / "app/macos"
         calendar_key = "com.apple.security.personal-information.calendars"
         with (tauri_root / "entitlements.plist").open("rb") as handle:
             self.assertIs(plistlib.load(handle).get(calendar_key), True)
         with (tauri_root / "macos/Info.plist").open("rb") as handle:
             self.assertTrue(plistlib.load(handle).get("NSCalendarsFullAccessUsageDescription"))
-        configuration = json.loads((tauri_root / "tauri.conf.json").read_text())
+        configuration = json.loads((tauri_root / "bundle.json").read_text())
         self.assertEqual(configuration["bundle"]["macOS"]["entitlements"], "./entitlements.plist")
         for filename in (
             "capture-agent.entitlements.plist",
@@ -743,7 +743,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         )
         entitlement_path = (
             Path(__file__).parents[1]
-            / "app/src-tauri/capture-helper.entitlements.plist"
+            / "app/macos/capture-helper.entitlements.plist"
         )
         with entitlement_path.open("rb") as handle:
             self.assertEqual(
@@ -757,7 +757,7 @@ class ReleaseArtifactTests(unittest.TestCase):
 
     def test_capture_executable_info_templates_are_role_specific_and_versioned(self) -> None:
         capture_helper = (
-            Path(__file__).parents[1] / "app/src-tauri/sidecars/capture"
+            Path(__file__).parents[1] / "app/sidecars/capture"
         )
         with (capture_helper / "Info.plist").open("rb") as handle:
             helper_info = plistlib.load(handle)

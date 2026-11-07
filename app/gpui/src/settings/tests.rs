@@ -63,10 +63,22 @@ fn catalog_matches_every_preference_owner_and_core_validation() {
             }
         }
     }
-    let react = include_str!("../../../src/components/settings/SettingsPanel.tsx");
-    for page in Page::NAV {
-        assert!(react.contains(&format!("id: '{}'", page.id())));
-    }
+    assert_eq!(
+        Page::NAV.map(Page::id),
+        [
+            "general",
+            "recording",
+            "customize",
+            "delivery",
+            "meetings",
+            "text",
+            "ai",
+            "modes",
+            "appearance",
+            "performance",
+            "diagnostics"
+        ]
+    );
     for (alias, page) in [
         ("dictation", Page::Recording),
         ("model", Page::Transcription),

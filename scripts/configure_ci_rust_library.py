@@ -54,7 +54,7 @@ def configure(manifest: Path, recipe: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, default=Path(__file__).resolve().parents[1] / "app/src-tauri/Cargo.toml")
+    parser.add_argument("--manifest", type=Path, default=Path(__file__).resolve().parents[1] / "app/crates/murmur-services/Cargo.toml")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     recipe = recipe_digest(root / ".github/workflows/ci.yml", Path(__file__))

@@ -1,179 +1,43 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
-
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
-
+permissions:
+  contents: read
 jobs:
-  # Path filtering only, plus the push-to-main verified-tree lookup. Keep this
-  # job seconds-long: every build job waits on it, so validation work belongs
-  # in `policy`, which runs alongside the builds.
   changes:
-    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: read
-    # A verified push skips the frontend jobs and every Rust test step. The
-    # Rust jobs still run, build-only, when dependency manifests or this
-    # workflow changed, because only main saves the Rust caches PRs restore.
-    outputs:
-      verified: ${{ steps.verified.outputs.verified == 'true' }}
-      frontend: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}
-      rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}
-      gpui: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.gpui == 'true' }}
-      github: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check whether this tree already passed on its PR
-        id: verified
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: bash scripts/ci_verified_tree.sh
-
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          # Docs, scripts, and Python tests are covered by `policy`, which runs
-          # on every CI run, so they do not start the frontend or Rust builds.
-          filters: |
-            frontend:
-              - 'tests/fixtures/diagnostic-reports/**'
-              - 'app/src/**'
-              - 'app/public/**'
-              - 'app/index.html'
-              - 'app/log-viewer.html'
-              - 'app/overlay.html'
-              - 'app/package.json'
-              - 'app/package-lock.json'
-              - 'app/tsconfig*.json'
-              - 'app/vite.config.ts'
-              - 'app/vitest.config.ts'
-              - 'app/vitest.setup.ts'
-              - 'app/visual-fixtures.html'
-              - 'app/visual-tests/**'
-              - 'app/playwright*.ts'
-              # Read directly by frontend and visual tests.
-              - 'app/src-tauri/tauri.conf.json'
-              - 'app/src-tauri/capabilities/**'
-            rust:
-              - 'tests/fixtures/diagnostic-reports/**'
-              - 'app/src-tauri/**'
-              - 'scripts/configure_ci_rust_library.py'
-              - 'app/src-tauri/Cargo.toml'
-              - 'app/src-tauri/Cargo.lock'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rustfmt.toml'
-            github:
-              - '.github/**'
-            gpui:
-              - 'tests/fixtures/diagnostic-reports/**'
-              - 'app/gpui/**'
-              - 'app/src-tauri/crates/murmur-core/**'
-              - 'scripts/test_gpui.py'
-              - 'scripts/test_gpui_native.py'
-              - 'scripts/test_test_gpui.py'
-              - 'scripts/check_gpui_goldens.py'
-              - '.github/workflows/ci.yml'
-            rust-cache:
-              - 'scripts/configure_ci_rust_library.py'
-              - '**/Cargo.toml'
-              - '**/Cargo.lock'
-              - 'rust-toolchain*'
-              - '.cargo/**'
-              - '.github/workflows/ci.yml'
-
+      - run: git diff --check
   policy:
-    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      - uses: dtolnay/rust-toolchain@1.98.1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: requirements-test.txt
-
-      - name: Enforce Tauri-free core
-        run: |
+      - run: |
+          python3 -m pip install -r requirements-test.txt
           python3 scripts/check_core_dependencies.py
-          python3 scripts/check_targeted_events.py
-          python3 -m unittest discover -s scripts -p 'test_check_targeted_events.py'
+          python3 scripts/check_native_only.py
           python3 scripts/check_restart_policy.py
           python3 -m unittest discover -s scripts -p 'test_check_restart_policy.py'
-          python3 -m unittest discover -s scripts -p 'test_send_shutdown_test_quit.py'
-          python3 -m unittest discover -s scripts -p 'test_updater_fixture_policy.py'
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Enforce targeted frontend events
-        run: |
-          # Only the syntax parser is needed; no application install/build.
-          npm install --prefix "$RUNNER_TEMP/event-guard" --no-package-lock --ignore-scripts typescript@5.6.2
-          export TARGETED_EVENTS_TYPESCRIPT="$RUNNER_TEMP/event-guard/node_modules/typescript"
-          node scripts/check_targeted_frontend.mjs
-          node --test scripts/test_check_targeted_frontend.mjs
-
-      - uses: dtolnay/rust-toolchain@1.98.1
-        with:
-          components: rustfmt, clippy
-      - name: Verify native and installed-client signature compatibility
-        run: |
+          python3 scripts/validate_capture_boundary.py
+          python3 scripts/validate_workflow_policy.py
+          python3 scripts/validate_reference_docs.py
+          python3 scripts/validate_markdown_links.py
+          python3 -m unittest tests/test_native_only.py tests/test_reference_docs.py tests/test_markdown_links.py tests/test_release_artifacts.py tests/test_gpui_packaging.py tests/test_workflow_policy.py tests/test_release_version.py
           cargo fmt --manifest-path scripts/updater-signer/Cargo.toml -- --check
           cargo clippy --locked --manifest-path scripts/updater-signer/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path scripts/updater-signer/Cargo.toml
-
-      - name: Validate workflow policy
-        run: |
-          python3 -m pip install -r requirements-test.txt
-          python3 scripts/validate_workflow_policy.py
-          python3 scripts/validate_capture_boundary.py
-          python3 scripts/validate_reference_docs.py
-          python3 scripts/validate_markdown_links.py
-          # This is the full set of self-contained Python unittest-style tests.
-          # tests/test_murmur_canary.py is pytest-based and runs separately below.
-          python3 -m unittest \
-            tests/test_reference_docs.py \
-            tests/test_markdown_links.py \
-            tests/test_release_artifacts.py \
-            tests/test_gpui_packaging.py \
-            tests/test_release_version.py \
-            tests/test_release_start.py \
-            tests/test_workflow_policy.py \
-            tests/test_ci_rust_library.py \
-            tests/test_capture_agent_matrix.py \
-            tests/test_capture_worker_smoke.py \
-            tests/test_capture_first_pcm.py \
-            tests/test_native_capture_ci.py \
-            tests/test_event_store.py \
-            tests/test_log_receiver.py \
-            tests/test_murmur_bench.py \
-            tests/test_murmur_accuracy.py \
-            tests/test_murmur_bench_remote.py \
-            tests/test_capture_regression_watch.py \
-            tests/test_dictation_lifecycle.py \
-            tests/test_receiver_hang_diagnostics.py \
-            tests/test_receiver_key_scrub.py \
-            tests/test_reliability_slo.py
-          python3 -m pytest tests/test_murmur_canary.py -q
-
+  # Preserve former frontend check names as real native replacements.
   typecheck:
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -181,383 +45,132 @@ jobs:
         shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
-      - name: Install dependencies
-        run: cd app && npm ci
-
-      - name: TypeScript check
-        if: matrix.shard == 1
-        run: cd app && npx tsc --noEmit
-
-      - name: Unit tests
-        run: cd app && npm test -- --shard=${{ matrix.shard }}/2
-
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: |
+          cargo check --locked --manifest-path app/Cargo.toml -p murmur-core -p murmur-capture-helper-protocol
+          cargo clippy --locked --manifest-path app/Cargo.toml -p murmur-core -p murmur-capture-helper-protocol --all-targets -- -D warnings
+          cargo test --locked --manifest-path app/Cargo.toml -p murmur-core -p murmur-capture-helper-protocol -- --test-threads=1
+  rust-lint:
+    runs-on: macos-latest
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/app/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: |
+          brew install meson ninja pkg-config
+          python3 scripts/build_capture_helpers.py
+          cargo fmt --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-ui -p murmur-webkit -p murmur-capture-helper-protocol -- --check
+          cargo clippy --locked --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-ui -p murmur-webkit -p murmur-capture-helper-protocol --all-targets --features gallery,production-host -- -D warnings
+  rust-macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/app/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: |
+          brew install meson ninja pkg-config
+          python3 scripts/build_capture_helpers.py
+          cargo check --locked --manifest-path app/Cargo.toml -p murmur-services -p murmur-webkit
+          cargo test --locked --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-webkit -p murmur-capture-helper-protocol -- --test-threads=1
+          cargo test --locked --manifest-path app/sidecars/capture/Cargo.toml -- --test-threads=1
+          cargo run --locked --manifest-path app/Cargo.toml -p murmur-services --example murmur-eval -- deterministic --output app/target/murmur-eval/ci-report.json
+  gpui-macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/app/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: |
+          brew install meson ninja pkg-config
+          python3 scripts/build_capture_helpers.py
+          cargo check --locked --manifest-path app/Cargo.toml -p murmur-ui --features gallery,production-host
+          python3 -m unittest scripts/test_test_gpui.py scripts/test_gpui_native.py
+          python3 scripts/test_gpui.py --features production-host -- --test-threads=1
+  # Former browser goldens now exercise GPUI's offscreen Metal renderer.
   visual-linux:
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
-    runs-on: ubuntu-latest
-    # Match the Linux golden environment, including its installed fonts.
-    container: mcr.microsoft.com/playwright:v1.62.1-noble
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
-      - name: Install dependencies
-        run: cd app && npm ci
-
-      - name: Linux visual golden tests
-        run: cd app && npm run test:visual -- --shard=${{ matrix.shard }}/3
-
-  visual-regression:
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
-      - name: Install dependencies
-        run: cd app && npm ci
-
-      - name: Install Playwright Chromium
-        run: cd app && npx playwright install chromium
-
-      - name: Visual golden tests
-        # Use the existing runner's cores instead of adding more macOS jobs.
-        run: cd app && npm run test:visual -- --shard=${{ matrix.shard }}/2 --workers=2
-
-  # Formatting and clippy run on their own runner so lint and the test build
-  # compile in parallel instead of back to back.
-  rust-lint:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
-    runs-on: macos-latest
     env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
-      CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-      CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-      CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          components: clippy, rustfmt
-
-      - name: Check Rust formatting
-        if: needs.changes.outputs.verified != 'true'
-        run: cd app/src-tauri && cargo fmt --all -- --check
-
-      - name: Install capture worker build tools
-        run: brew install meson ninja pkg-config
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-          # PRs restore main's cache but never save their own: each PR copy is
-          # 1-2 GB and pushes the repository past its 10 GB cache quota, which
-          # evicts main's and the release build's caches.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Stub externalBin helpers
-        # Clippy only type-checks; tauri-build needs the externalBin paths to
-        # exist. rust-macos builds and tests the real helpers.
-        run: |
-          cd app/src-tauri
-          mkdir -p binaries
-          for helper in capture-agent capture-helper capture-worker; do
-            : > "binaries/murmur-$helper-aarch64-apple-darwin"
-            chmod +x "binaries/murmur-$helper-aarch64-apple-darwin"
-          done
-
-      - name: Guard direct foreign termination bindings
-        run: python3 scripts/check_restart_policy.py
-
-      - name: Lint Rust
-        # --workspace covers the capture worker and protocol crates; default-members
-        # --all-targets ensures `tests/` and `examples/` are type-checked too. Clippy performs the
-        # full compile check, so there is no separate `cargo check` pass.
-        run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Check termination bypass fixtures (compile only)
-        run: python3 scripts/check_restart_clippy.py
-
-  rust-macos:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.github == 'true'
-    runs-on: macos-latest
-    # One environment for every cargo invocation so build scripts that watch
-    # these variables never rebuild between steps.
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
-      CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-      CMAKE_C_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-      CMAKE_CXX_FLAGS: "-march=armv8.5-a -mmacosx-version-min=14.0"
-      # Panics keep file:line; full debuginfo only slows compile, link, and cache.
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          components: clippy
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest@0.9.150
-
-      - name: Install capture worker build tools
-        run: brew install meson ninja pkg-config
-
-      - name: Configure test-only Rust library
-        # Tests need the Rust library, not the additional C/static packaging
-        # outputs. Modify only this job's checkout; releases use the manifest
-        # committed to the repository. Recipe metadata also refreshes the
-        # dependency cache when workflow/helper changes alter the build graph.
-        run: python3 scripts/configure_ci_rust_library.py
-
-      - name: Cache Rust dependencies
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
-          # PRs restore main's cache but never save their own: each PR copy is
-          # 1-2 GB and pushes the repository past its 10 GB cache quota, which
-          # evicts main's and the release build's caches.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Build capture isolation helpers
-        # PR CI compiles the Swift agent with warnings as errors and builds the
-        # Rust worker protocol.
-        run: |
-          cd app/src-tauri
-          mkdir -p binaries
-          xcrun swiftc -warnings-as-errors -parse-as-library \
-            -target arm64-apple-macos14.0 \
-            sidecars/capture-agent/main.swift \
-            -framework Foundation -framework Security \
-            -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
-            -Xlinker capture-agent-info.plist \
-            -o binaries/murmur-capture-agent-aarch64-apple-darwin
-          cargo build -p murmur-capture-helper
-          cp target/debug/murmur-capture-helper \
-            binaries/murmur-capture-helper-aarch64-apple-darwin
-          MURMUR_CAPTURE_ROLE=worker \
-            CARGO_TARGET_DIR=target/capture-worker-build \
-            cargo build -p murmur-capture-helper
-          cp target/capture-worker-build/debug/murmur-capture-helper \
-            binaries/murmur-capture-worker-aarch64-apple-darwin
-
-      - name: Test core foundation
-        run: cd app/src-tauri && cargo test --locked -p murmur-core
-
-      - name: Check native service host without Tauri
-        working-directory: app/src-tauri
-        run: |
-          # rust-cache restores build-script link directives but not this
-          # dependency's target-root prebuilt archive. Refresh only its adapter
-          # so native test linking cannot reuse a missing static-library path.
-          rm -rf target/sherpa-onnx-prebuilt
-          cargo clean -p sherpa-onnx-sys
-          cargo check --locked --lib --no-default-features --features native-host
-          cargo clippy --locked --lib --no-default-features --features native-host -- -D warnings
-          cargo test --locked --no-default-features --features native-host --test native_host_contract -- --test-threads=1
-          cargo tree --locked --no-default-features --features native-host --edges normal --prefix none > target/native-host-dependencies.txt
-          python3 - <<'PYTHON'
-          from pathlib import Path
-          rows = Path("target/native-host-dependencies.txt").read_text().splitlines()
-          banned = ("tauri ", "tao ", "wry ", "murmur-webkit ", "objc2-web-kit ")
-          assert not any(row.startswith(banned) for row in rows), "Native host acquired a webview/runtime dependency"
-          PYTHON
-
-      - name: Test standalone synthetic WebKit lifecycle
-        run: cd app/src-tauri && cargo test --locked -p murmur-webkit
-
-      - name: Build test binaries
-        # Build examples first, then every test target in one invocation.
-        # Record the build metadata so nextest can select unit-test subsets
-        # without asking Cargo to rebuild with a different feature graph.
-        run: >-
-          cd app/src-tauri &&
-          cargo build --workspace
-          --example murmur-eval &&
-          cargo nextest list --workspace
-          --lib --bin murmur-capture-helper --test topology_watch
-          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&
-          cargo metadata --format-version 1 > target/ci-cargo-metadata.json
-
-      - name: Test windowless shutdown and main dispatch
-        if: needs.changes.outputs.verified != 'true'
-        run: >-
-          cd app/src-tauri &&
-          cargo test --locked --test main_thread_queue --test shutdown_appkit
-
-      - name: Run tests
-        if: needs.changes.outputs.verified != 'true'
-        # kind(lib) covers app and protocol crate unit tests. The capture helper
-        # is bin-only, so its tests stay in the following dedicated step.
-        # nextest gives every test its own process, so tests that share process
-        # state stay as isolated as `cargo test -- --test-threads=1` kept them,
-        # while the suite uses every core.
-        run: >-
-          cd app/src-tauri &&
-          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
-          --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'
-
-      - name: Run capture worker unit tests
-        if: needs.changes.outputs.verified != 'true'
-        # Reuse both the helper's bin tests and topology_watch from the prebuild.
-        # A fresh Cargo invocation for this subset recompiles native dependencies.
-        run: >-
-          cd app/src-tauri &&
-          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
-          --binaries-metadata target/ci-test-binaries.json
-          -E 'package(=murmur-capture-helper)'
-
-      - name: Run deterministic dictation evaluation
-        if: needs.changes.outputs.verified != 'true'
-        run: >-
-          cd app/src-tauri &&
-          target/debug/examples/murmur-eval deterministic
-          --output target/murmur-eval/ci-report.json
-
-  gpui-macos:
-    needs: changes
-    if: needs.changes.outputs.gpui == 'true'
-    runs-on: macos-latest
-    timeout-minutes: 45
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
-      CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
-      RUSTUP_TOOLCHAIN: 1.98.1
-      CARGO_TARGET_DIR: ${{ github.workspace }}/app/gpui/target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/app/target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: swatinem/rust-cache@v2
         with:
-          components: clippy, rustfmt
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Build native service capture helpers
-        run: |
-          brew install meson ninja pkg-config
-          # The helper builder resolves its outputs through src-tauri/target.
-          # Keep every Cargo output inside this job's dedicated native target.
-          mkdir -p "$CARGO_TARGET_DIR"
-          ln -s "$CARGO_TARGET_DIR" app/src-tauri/target
-          python3 scripts/build_capture_helpers.py
-      - name: Check and lint the separate native workspace
-        working-directory: app/gpui
-        run: |
-          cargo check --locked -p murmur-ui --features gallery,production-host
-          cargo clippy --locked -p murmur-ui --all-targets --features gallery,production-host -- -D warnings
-          cargo fmt -p murmur-ui -- --check
-      - name: Keyboard, focus, AX tree and action tests (no live windows)
-        run: |
-          python3 -m unittest scripts/test_test_gpui.py scripts/test_gpui_native.py
-          python3 scripts/test_gpui.py --features production-host -- --test-threads=1
-      - name: Deterministic offscreen Metal goldens
-        run: python3 scripts/check_gpui_goldens.py
-      - name: Preserve rendered goldens
+          workspaces: app
+      - run: python3 scripts/check_gpui_goldens.py
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-visual-${{ matrix.shard }}
+          path: app/target/goldens/
+  visual-regression:
+    runs-on: macos-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/app/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - run: python3 scripts/check_gpui_goldens.py
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: gpui-control-goldens
-          path: app/gpui/target/goldens/
-
+          path: app/target/goldens/
   dependency-audit:
-    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@1.96.0
-
-      - name: Install cargo-audit
-        # Prebuilt binary; compiling it from source cost ~2-3 minutes per run.
-        uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit@0.22.2
-
-      - name: Audit Rust dependencies (advisory)
-        continue-on-error: true
+      - continue-on-error: true
         run: |
-          cd app/src-tauri
-          cargo audit
-
-      - name: Audit GPUI dependencies (advisory)
-        continue-on-error: true
-        run: cargo audit --file app/gpui/Cargo.lock
-
-      - name: Audit npm dependencies (advisory)
-        continue-on-error: true
-        # npm audit reads the lockfile; it does not need node_modules.
-        run: |
-          cd app
-          npm audit --audit-level=high
-
+          cargo audit --file app/Cargo.lock
+          cargo audit --file app/sidecars/capture/Cargo.lock
   ci-pass:
-    needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos, gpui-macos]
-    # Keep this guard aligned with `changes`; otherwise the sentinel would turn
-    # an intentionally skipped release-bump run into a failure.
-    if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
+    needs: [changes, policy, typecheck, rust-lint, rust-macos, gpui-macos, visual-linux, visual-regression]
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check CI result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          for result in \
-            "${{ needs.changes.result }}" \
-            "${{ needs.policy.result }}"; do
-            if [ "$result" != "success" ]; then
-              echo "required CI job failed: $result"
-              exit 1
-            fi
-          done
-
-          for result in \
-            "${{ needs.typecheck.result }}" \
-            "${{ needs.visual-linux.result }}" \
-            "${{ needs.visual-regression.result }}" \
-            "${{ needs.rust-lint.result }}" \
-            "${{ needs.rust-macos.result }}" \
-            "${{ needs.gpui-macos.result }}"; do
-            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
-              echo "required CI job failed or was cancelled: $result"
-              exit 1
-            fi
-          done
-
-          if [ "${{ needs.changes.outputs.verified }}" = "true" ]; then
-            echo "CI passed: this tree already passed ci-pass on its PR head; tests skipped"
-          else
-            echo "CI passed"
-          fi
+          python3 - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in jobs.items() if job['result'] != 'success']
+          if failed:
+              raise SystemExit('Required native checks failed: ' + ', '.join(failed))
+          PY

@@ -14,7 +14,7 @@ def main() -> int:
             "--target", "all", "--all-features", "--edges", "all",
             "--prefix", "none", "--format", "{p}",
         ],
-        cwd=ROOT / "app/src-tauri",
+        cwd=ROOT / "app",
         text=True,
         stdout=subprocess.PIPE,
         check=True,
@@ -22,7 +22,7 @@ def main() -> int:
     packages = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
     if "murmur-core" not in packages:
         raise RuntimeError("cargo tree did not include murmur-core")
-    forbidden = sorted(name for name in packages if name == "tauri" or name.startswith("tauri-")
+    forbidden = sorted(name for name in packages if name in {"tauri", "wry", "tao"} or name.startswith("tauri-")
                        or name == "gpui" or name.startswith(("gpui-", "gpui_")))
     if forbidden:
         print("Core depends on forbidden host packages: " + ", ".join(forbidden), file=sys.stderr)

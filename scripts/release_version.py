@@ -18,11 +18,10 @@ SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
 )
 PATHS = {
-    "tauri": Path("app/src-tauri/tauri.conf.json"),
-    "cargo": Path("app/src-tauri/Cargo.toml"),
-    "lock": Path("app/src-tauri/Cargo.lock"),
-    "package": Path("app/package.json"),
-    "package_lock": Path("app/package-lock.json"),
+    "bundle": Path("app/macos/bundle.json"),
+    "cargo": Path("app/crates/murmur-services/Cargo.toml"),
+    "lock": Path("app/Cargo.lock"),
+    "ui": Path("app/gpui/Cargo.toml"),
     "changelog": Path("CHANGELOG.md"),
 }
 
@@ -59,12 +58,12 @@ def _cargo_package_version(text: str, path: Path) -> str:
 
 def _cargo_lock_version(text: str, path: Path) -> str:
     for block in re.split(r"^\[\[package\]\]\s*$", text, flags=re.M):
-        if re.search(r'^name\s*=\s*"ui"\s*$', block, re.M):
+        if re.search(r'^name\s*=\s*"murmur-services"\s*$', block, re.M):
             version = re.search(r'^version\s*=\s*"([^"]+)"', block, re.M)
             if version is None:
                 break
             return version.group(1)
-    raise ReleaseVersionError(f"{path}: missing ui package version")
+    raise ReleaseVersionError(f"{path}: missing murmur-services package version")
 
 
 def _json(text: str, path: Path) -> dict:
@@ -116,30 +115,20 @@ def _latest_changelog_version(text: str, path: Path) -> str:
 def release_versions(
     root: Path = ROOT, git_ref: str | None = None
 ) -> dict[str, str]:
-    tauri_path = PATHS["tauri"]
+    tauri_path = PATHS["bundle"]
     cargo_path = PATHS["cargo"]
     lock_path = PATHS["lock"]
-    package_path = PATHS["package"]
-    package_lock_path = PATHS["package_lock"]
     changelog_path = PATHS["changelog"]
-
     tauri = _json(_read(root, tauri_path, git_ref), tauri_path)
-    package = _json(_read(root, package_path, git_ref), package_path)
-    package_lock = _json(
-        _read(root, package_lock_path, git_ref), package_lock_path
-    )
     versions = {
-        "tauri.conf.json": tauri.get("version"),
+        "bundle.json": tauri.get("version"),
         "Cargo.toml": _cargo_package_version(
             _read(root, cargo_path, git_ref), cargo_path
         ),
         "Cargo.lock": _cargo_lock_version(
             _read(root, lock_path, git_ref), lock_path
         ),
-        "package.json": package.get("version"),
-        "package-lock.json": _package_lock_version(
-            package_lock, package_lock_path
-        ),
+        "GPUI Cargo.toml": _cargo_package_version(_read(root, PATHS["ui"], git_ref), PATHS["ui"]),
         "CHANGELOG.md": _latest_changelog_version(
             _read(root, changelog_path, git_ref), changelog_path
         ),
@@ -157,7 +146,7 @@ def check_release(
     git_ref: str | None = None,
 ) -> str:
     versions = release_versions(root, git_ref)
-    expected = expected or versions["tauri.conf.json"]
+    expected = expected or versions["bundle.json"]
     if not SEMVER.fullmatch(expected):
         raise ReleaseVersionError(f"invalid release version: {expected}")
     mismatches = {
@@ -193,23 +182,18 @@ def _replace_package_version(text: str, version: str, path: Path) -> str:
 
 
 def _replace_lock_version(text: str, version: str, path: Path) -> str:
-    blocks = list(re.finditer(r"^\[\[package\]\]\s*$", text, re.M))
-    for index, marker in enumerate(blocks):
-        end = blocks[index + 1].start() if index + 1 < len(blocks) else len(text)
-        block = text[marker.start() : end]
-        if not re.search(r'^name\s*=\s*"ui"\s*$', block, re.M):
-            continue
-        replaced, count = re.subn(
-            r'(^version\s*=\s*")[^"]+(")',
-            rf"\g<1>{version}\g<2>",
-            block,
-            count=1,
-            flags=re.M,
-        )
-        if count != 1:
-            break
-        return text[: marker.start()] + replaced + text[end:]
-    raise ReleaseVersionError(f"{path}: missing ui package version")
+    count = 0
+    def replace(match):
+        nonlocal count
+        block = match.group(0)
+        if re.search(r'^name = "(?:murmur-services|murmur-ui)"$', block, re.M):
+            count += 1
+            return re.sub(r'^version = "[^"]+"', f'version = "{version}"', block, count=1, flags=re.M)
+        return block
+    result = re.sub(r'^\[\[package\]\].*?(?=^\[\[package\]\]|\Z)', replace, text, flags=re.M | re.S)
+    if count != 2:
+        raise ReleaseVersionError(f"{path}: missing native version owners")
+    return result
 
 
 def _cut_changelog(text: str, version: str, release_date: str, path: Path) -> str:
@@ -248,28 +232,15 @@ def prepare_release(
         raise ReleaseVersionError(f"invalid release date: {release_date}") from error
 
     originals = {name: _read(root, path) for name, path in PATHS.items()}
-    tauri = _json(originals["tauri"], PATHS["tauri"])
-    package = _json(originals["package"], PATHS["package"])
-    package_lock = _json(originals["package_lock"], PATHS["package_lock"])
-
+    tauri = _json(originals["bundle"], PATHS["bundle"])
     tauri["version"] = version
-    package["version"] = version
-    package_lock["version"] = version
-    root_package = package_lock.get("packages", {}).get("")
-    if not isinstance(root_package, dict):
-        raise ReleaseVersionError(
-            f"{PATHS['package_lock']}: missing root package metadata"
-        )
-    root_package["version"] = version
-
     updated = {
-        "tauri": json.dumps(tauri, indent=2) + "\n",
+        "bundle": json.dumps(tauri, indent=2) + "\n",
         "cargo": _replace_package_version(
             originals["cargo"], version, PATHS["cargo"]
         ),
         "lock": _replace_lock_version(originals["lock"], version, PATHS["lock"]),
-        "package": json.dumps(package, indent=2) + "\n",
-        "package_lock": json.dumps(package_lock, indent=2) + "\n",
+        "ui": _replace_package_version(originals["ui"], version, PATHS["ui"]),
         "changelog": _cut_changelog(
             originals["changelog"], version, release_date, PATHS["changelog"]
         ),

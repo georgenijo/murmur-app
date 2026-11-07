@@ -39,7 +39,7 @@ def main() -> int:
         "CFBundleIdentifier": "com.localdictation.signing-probe",
         "CFBundleName": "MurmurSigningProbe",
         "CFBundlePackageType": "APPL",
-        "CFBundleVersion": json.loads((ROOT / "app/src-tauri/tauri.conf.json").read_text())["version"],
+        "CFBundleVersion": json.loads((ROOT / "app/macos/bundle.json").read_text())["version"],
     }
     with (app / "Contents" / "Info.plist").open("wb") as handle:
         plistlib.dump(info, handle)
@@ -72,18 +72,17 @@ def main() -> int:
             "--identity",
             "-",
             "--main-entitlements",
-            str(ROOT / "app" / "src-tauri" / "entitlements.plist"),
+            str(ROOT / "app" / "macos" / "entitlements.plist"),
             "--capture-agent-entitlements",
-            str(ROOT / "app" / "src-tauri" / "capture-agent.entitlements.plist"),
+            str(ROOT / "app" / "macos" / "capture-agent.entitlements.plist"),
             "--capture-agent-info-plist",
-            str(ROOT / "app" / "src-tauri" / "capture-agent-info.plist"),
+            str(ROOT / "app" / "macos" / "capture-agent-info.plist"),
             "--capture-helper-info-plist",
-            str(ROOT / "app" / "src-tauri" / "sidecars" / "capture" / "Info.plist"),
+            str(ROOT / "app" / "sidecars" / "capture" / "Info.plist"),
             "--capture-worker-info-plist",
             str(
                 ROOT
                 / "app"
-                / "src-tauri"
                 / "sidecars"
                 / "capture"
                 / "WorkerInfo.plist"
@@ -92,14 +91,14 @@ def main() -> int:
             str(
                 ROOT
                 / "app"
-                / "src-tauri"
+                / "macos"
                 / "macos"
                 / "com.localdictation.capture-agent.plist"
             ),
             "--capture-helper-entitlements",
-            str(ROOT / "app" / "src-tauri" / "capture-helper.entitlements.plist"),
+            str(ROOT / "app" / "macos" / "capture-helper.entitlements.plist"),
             "--capture-worker-entitlements",
-            str(ROOT / "app" / "src-tauri" / "capture-worker.entitlements.plist"),
+            str(ROOT / "app" / "macos" / "capture-worker.entitlements.plist"),
         ],
         check=True,
     )

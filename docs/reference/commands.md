@@ -1,452 +1,203 @@
-# Tauri Commands Reference
-
-The API reference covers 189 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
-
-Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
-
-For Rust → frontend events see [events.md](events.md). For the hooks that call these commands see [hooks.md](hooks.md).
-
----
-
-## Renderer source sessions (`shutdown.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `register_source_session` | `sourceSession: String` | `Result<(), String>` | Main/overlay-only registration on the native source FIFO. Registration order establishes succession per window label and retires the previous session across all source keys; a retired UUID cannot register again. Different live window labels remain independent. Every renderer source producer shares one completed handshake before writing. Accepted writes and field patches remain inside the native shutdown writer drain. |
-
-## Recording and dictation (`commands/recording.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `init_dictation` | — | `Result<JSON, String>` | Static `{"type":"initialized","state":"idle"}` marker. |
-| `get_status` | — | `Result<JSON, String>` | Atomic status and recording generation (`recordingId`), `recordingStartedAtMs` (epoch milliseconds while recording, otherwise null), native `locked` mode, model name, and language. |
-| `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Pushes settings into `DictationState`: model, language, auto-paste and delay (clamped 10–500), VAD sensitivity (0–100), punctuation, file output, vocabulary entries, voice commands, app profiles, cleanup/formatting/correction toggles, code-vocab folder, idle timeout. A model change reselects the runtime backend, deferring across an active recording generation. Rejects conflicting vocabulary/command configurations without mutating prior state. |
-| `start_native_recording` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>`, `origin: Option<String>`, `gesture_token: Option<String>` | `Result<JSON, String>` | Consumes the originating keyboard gesture token at entry (omitted for toolbar/overlay), then resolves the immutable context, claims the single audio owner, starts model preparation, emits `starting`, and returns `{"type":"recording_starting","state":"starting","recordingId":N}` without waiting for Core Audio. Readiness later emits `recording`. |
-| `stop_native_recording` | `expectedRecordingId?: number`, `stopTrigger?: "hold_release" \| "toggle" \| "overlay" \| "auto_stop" \| "other"` | `Result<JSON, String>` | With an expected ID, no-ops if that generation no longer owns capture. Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
-| `cancel_native_recording` | `expected_recording_id: Option<u64>` | `Result<(), String>` | With an expected ID, acts only when that generation still owns dictation. Cancels initialization or capture through a brief `recovering` transition to `idle`, or discards a processing run without delivery. Detached audio cleanup continues asynchronously. |
-| `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
-| `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
-| `transcribe_file` | `file_path: String`, `operation_id: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
-| `preview_vocabulary_aliases` | `entries`, `voice_commands`, `text`, `cli_formatting` | `Result<String, String>` | Runs alias + command resolution over sample text in memory. No persistence, no delivery. |
-| `scan_code_vocab` | `folder: String`, `scan_id: String` | `Result<VocabScanSummary, String>` | Breadth-first identifier scan of a project folder with throttled progress events. Returns ranked terms, counts, cap state, and whether the result was adopted. |
-| `cancel_code_vocab_scan` | `scan_id: String` | `bool` | Cancels only the matching scan. |
-| `get_ide_context_status` | `bundle_id: String` | `IdeContextStatus` | Index state for one profile. |
-| `refresh_ide_context` | `bundle_id: String` | `Result<IdeContextStatus, String>` | Rebuilds the memory-only index from that profile's opted-in roots. |
-| `clear_ide_context` | `bundle_id: String` | `Result<IdeContextStatus, String>` | Drops the in-memory index for that profile. |
-
-## Private dictation capture (`commands/dictation_diagnostics.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `arm_next_dictation_diagnostic_capture` | — | `Result<DictationCaptureArmStatusV1, String>` | Main-window-only consent for exact text from the next accepted live dictation. The arm expires after 10 minutes and applies to one recording. |
-| `disarm_next_dictation_diagnostic_capture` | — | `Result<DictationCaptureArmStatusV1, String>` | Main-window-only revocation of an unclaimed arm. A recording that already claimed the arm remains active. |
-| `get_dictation_diagnostic_capture_status` | — | `Result<DictationCaptureArmStatusV1, String>` | Returns `unarmed`, an armed expiry time, or the recording ID that claimed the arm. Only the main and Diagnostics windows can call it. |
-| `list_dictation_diagnostic_captures` | — | `Result<Vec<DictationDiagnosticCaptureSummaryV1>, String>` | Lists the three newest unexpired local captures without returning transcript text. Only the main and Diagnostics windows can call it. |
-| `get_dictation_diagnostic_capture` | `capture_id: String` | `Result<Option<DictationDiagnosticCaptureV1>, String>` | Returns one local capture for private review. Only the main and Diagnostics windows can call it. |
-| `delete_dictation_diagnostic_capture` | `capture_id: String` | `Result<(), String>` | Deletes one local capture and syncs the capture directory. Only the main and Diagnostics windows can call it. |
-| `upload_dictation_diagnostic_capture` | `capture_id: String` | `Result<(), String>` | Sends one selected capture in one in-memory POST with no retry store. The Diagnostics UI asks for separate upload confirmation before calling it. |
-
-## Permissions (`commands/permissions.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `check_accessibility_permission` | — | `bool` | `AXIsProcessTrusted()`. |
-| `request_accessibility_permission` | — | `Result<(), String>` | Triggers the system prompt and opens the Accessibility pane. |
-| `reset_accessibility_permission` | — | `Result<(), String>` | Clears a stale TCC entry so the grant can be re-made. |
-| `check_microphone_permission` | — | `bool` | Whether microphone access is granted. |
-| `check_microphone_permission_status` | — | `String` | Fine-grained state (granted / denied / undetermined / restricted) for the onboarding step. |
-| `request_microphone_access` | — | `Result<(), String>` | Fires the native in-app prompt via `AVCaptureDevice.requestAccess`. |
-| `request_microphone_permission` | — | `Result<(), String>` | Opens the Microphone privacy pane. |
-| `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
-| `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
-| `open_system_audio_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Screen & System Audio Recording. |
-| `get_audio_input_inventory` | — | `Result<AudioInputInventorySnapshot, String>` | Exact-main-window-gated shared schema-v1 snapshot: monotonic `revision`, `available` / `stale` / `unavailable` status, stable-ID/display-name descriptors, actual `defaultInputId`, and a bounded error code. The window gate runs before any inventory read or refresh request. A cold read may wait for the one coalesced startup refresh; it never bypasses active capture ownership. |
-| `list_audio_devices` | — | `Result<Vec<AudioDeviceDescriptor>, String>` | Exact-main-window-gated compatibility view over the shared inventory. The gate runs before reading the inventory. Returns descriptors only from an authoritative `available` snapshot; stale/unavailable state fails closed and never enumerates per caller. |
-
-## Meeting capture (`commands/meeting.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `start_meeting` | `request: {deviceName?, retainAudio, retentionDays?, maxSessions, suggestionToken?}` | `Result<MeetingSession, String>` | Freezes model/language/punctuation and retention policy, prunes configured history, creates the SQLite session, and starts separate microphone/System Audio capture. Refuses competing audio/model/query owners. An optional suggestion token requires the main window and current native frontmost eligibility under the recording transition lock; Rust consumes the suggestion and saves its Calendar title and attendees before capture starts. |
-| `stop_meeting` | — | `Result<(), String>` | Requests capture teardown; the worker must destroy the IOProc, aggregate device, and tap before acknowledging. Pending durable chunks continue through serialized inference. |
-| `get_meeting_status` | — | `MeetingRuntimeStatus` | Current generation, session, phase, elapsed time, per-channel activity, and stable failure code. |
-| `get_system_audio_permission_status` | — | `SystemAudioPermissionState` | Returns the cached `unknown` / `granted` / `denied` / `unsupported` state without creating a tap. |
-| `request_system_audio_permission` | — | `Result<SystemAudioPermissionState, String>` | Explicitly creates one short-lived tap probe, then tears it down and emits the resulting permission state. |
-| `get_meeting_store_status` | — | `MeetingStoreStatus` | Store availability, schema version, session count, and pending-segment count. |
-| `list_meetings` | `query?`, `offset?`, `limit?` | `Result<MeetingPage, String>` | Bounded newest-first list; a non-empty query searches the title and finalized transcript text through FTS5. |
-| `get_meeting` | `id` | `Result<MeetingWorkspace, String>` | One session with optional title, title source, attendees, transcript segments, and speaker labels. |
-| `save_meeting_metadata` | `request: {sessionId, title: string \| null, attendees: string[]}` | `Result<MeetingWorkspace, String>` | Main-window-only transactional save of a title and ordered attendee list. Rust assigns `manual` to a non-null title and clears the source with the title. Titles and attendees allow at most 200 characters each, and a meeting allows at most 100 attendees. The command refreshes title search without changing transcript or review data. |
-| `rename_meeting_remote_speaker` | `session_id: String`, `speaker_id: u32`, `label: String` | `Result<MeetingWorkspace, String>` | Validates and saves one session-scoped display label for a remote speaker, then returns the updated meeting workspace. Transcript evidence remains unchanged. |
-| `save_meeting_review` | `request` | `Result<MeetingWorkspace, String>` | Revision-checks and saves speaker labels only; document edits and new claims are rejected. |
-| `get_meeting_review_export` | `id`, `format` | `Result<String, String>` | Renders the meeting transcript for explicit clipboard copy as Markdown, plain text, JSON, SRT, or VTT. |
-| `save_meeting_review_export` | `id`, `format`, `path` | `Result<u64, String>` | Renders and atomically saves the same meeting transcript after enforcing the matching `.md`, `.txt`, `.json`, `.srt`, or `.vtt` extension. |
-| `delete_meeting` | `id` | `Result<(), String>` | Main-window-only deletion of one inactive session, segments/FTS rows, and owned chunk audio. Invalidates playback before deletion. File cleanup failures preserve the session row so deletion can be retried. |
-| `delete_all_meetings` | — | `Result<(), String>` | Main-window-only deletion of sessions and owned chunk audio; refused while a meeting is active. Invalidates all playback and preserves database rows if audio cleanup fails. |
-| `prune_meetings` | `retentionDays?`, `maxSessions` | `Result<u64, String>` | Main-window-only deletion of finished sessions beyond the bounded age/count policy. Invalidates playback only for sessions selected for removal; a no-op prune emits nothing. |
-
-## Calendar naming (`commands/meeting_calendar.rs`)
-
-Every Calendar command requires the main window. Permission reads never query
-events. Event lookup and application run only after explicit user actions.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_calendar_permission_status` | — | `Result<CalendarPermissionStatus, String>` | Reads native authorization without prompting or creating an event store. Returns `notDetermined`, `granted`, `denied`, `restricted`, or `unsupported`; write-only access maps to `denied`. |
-| `request_calendar_permission` | — | `Result<CalendarPermissionStatus, String>` | Explicitly requests full event access on the main thread. Keeps the native store alive through completion. Never fetches events or writes to Calendar. |
-| `reset_calendar_permission` | — | `Result<(), String>` | Resets only the running app's Calendar TCC entry with a ten-second process deadline. Does not request permission afterward. |
-| `open_calendar_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Calendars. |
-| `get_meeting_calendar_events` | `sessionId: String` | `Result<Vec<CalendarEventCandidate>, String>` | Derives a finished session's overlap window from SQLite and queries EventKit off the main thread. Returns at most 100 candidates containing `selectionToken`, `title`, `attendees`, `startMs`, and `endMs`. Retains no cache and applies nothing. |
-| `apply_meeting_calendar_event` | `sessionId: String`, `selectionToken: String` | `Result<MeetingWorkspace, String>` | Requeries the stored session window and matches the displayed event's token. Changed or missing details fail without a write. A successful explicit selection saves only title, attendees, and `calendar` source through the shared metadata transaction. |
-
-Lookup accepts session windows up to seven days and gives the worker fifteen
-seconds to respond. A timed-out worker retains the single Calendar operation
-slot until it returns. Titles and participant names allow 200 characters each,
-with at most 100 participants per event. Oversized results fail instead of
-silently selecting or truncating details. See [Calendar naming](../features/meeting-calendar.md).
-
-## Retained meeting audio (`meeting_audio.rs`)
-
-All three commands require the main window. The manifest carries no transcript,
-title, attendee, or filesystem path. Range responses use binary IPC rather
-than JSON or base64.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_meeting_audio_manifest` | `sessionId`, `fromMs?`, `channel?: all \| me \| them`, `cursor?: {startMs, segmentId}`, `limit?` | `Result<AudioManifest, String>` | Metadata-only timeline of retained final/failed chunks for a finished session. Defaults to position zero, All, and 128 entries; caps pages at 256. Uses `(startMs, segmentId)` keyset pagination and includes chunks overlapping `fromMs`. The global duration is independent of the selected channel. |
-| `read_meeting_audio_range` | `sessionId`, `segmentId`, `offsetBytes`, `lengthBytes` | `Result<binary response, String>` | Revalidates session/segment ownership and retained-audio consent, refuses symlinks and nonregular files, validates mono 16 kHz PCM16 WAV structure, and returns at most 64 KiB. A file may be at most 512 KiB; exact EOF returns an empty response. Busy capture and invalidated reads fail without returning audio. |
-| `get_meeting_audio_capture_busy` | — | `Result<bool, String>` | Native playback-admission snapshot for dictation, meeting/recovery, microphone preview/startup checks, and actual capture activity. Performs no Calendar or model-installation probe. |
-| `get_meeting_bundle_preview` | `id` | `Result<BundlePreview, String>` | Main-window-only size check for a with-audio export: `audioSegments`, `audioBytes`, `unavailableSegments` (retained rows whose WAV is missing or unreadable), and `maxAudioBytes` (2 GiB). Refused for sessions without retained audio, unfinished sessions, busy capture, or when no audio file is readable. |
-| `save_meeting_bundle_export` | `id`, `format`, `path` | `Result<BundleReceipt, String>` | Main-window-only. Atomically writes a `.zip` holding `review.<ext>` (byte-for-byte the document export for `format`), every readable retained WAV as `audio/segment-<id>-<me\|them>.wav` stored without re-encoding, and `manifest.json`. Missing segments are omitted and listed in the manifest (`complete: false`); the receipt returns `bytes`, `includedSegments`, and `omittedSegments`. Audio over 2 GiB, retention off, or no readable audio is refused. |
-
-`AudioManifest` is either `{kind: unavailable, reason: notRetained | notFinished | noAudio}`
-or `{kind: available, sessionId, durationMs, chunks, nextCursor}`. Each chunk has
-`segmentId`, canonical `channel`, `startMs`, and `endMs`. An empty selected channel
-returns an available manifest with no chunks if another channel has retained audio.
-Manifest and range calls share two admitted workers; extra concurrent requests fail
-instead of forming an unbounded queue. See [Meeting audio playback](../features/meeting-audio-playback.md).
-
-## Meeting suggestions (`meeting_suggestions.rs`)
-
-Suggestions default off. Enabling requires Calendar permission already granted;
-the coordinator never opens a permission dialog. Prompt payloads are transient
-and available only to the main window and overlay.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `configure_meeting_suggestions` | `enabled: bool` | `Result<(), String>` | Main-window-only consent boundary. Enables bounded calendar snapshots and native change observation, or revokes pending workers, clears private event data, and releases the observer store. |
-| `get_meeting_suggestion` | — | `Result<Option<MeetingSuggestion>, String>` | Main/overlay-only current prompt with `token`, `title`, `startMs`, and `endMs`. Does not query Calendar; busy or expired prompts return null. |
-| `dismiss_meeting_suggestion` | `token: String` | `Result<(), String>` | Main/overlay-only dismissal of the exact prompt. An already dismissed or stale token does nothing. This occurrence stays suppressed for the app runtime, including off/on toggles. |
-
-Accept routes through `start_meeting`; there is no separate capture entry point.
-See [Meeting suggestions](../features/meeting-suggestions.md) for deadlines and eligibility.
-
-## Microphone input test (`commands/microphone_preview.rs`)
-
-Mutating commands are gated to the main window; the cached Auto status also
-serves the local overlay. Preview owns the production audio
-supervisor but retains no recording buffer and never enters transcription or
-delivery. Live VAD uses only a bounded rolling in-memory window.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_microphone_preview_status` | — | `MicrophonePreviewStatus` | Returns the current generation-aware lifecycle snapshot or retained terminal error. |
-| `verify_microphone_preview_signal` | `preview_id: u64` | `Result<SignalVerificationResult, String>` | Main-window-only five-second signal check on an already active preview. Returns `verified`, `no_pcm`, `insufficient_signal`, or `interrupted`. Never starts capture or changes inputs. Enforces ten seconds between checks on that preview. |
-| `get_smart_auto_microphone_status` | `smart_auto: SmartAutoRequest` | `SmartAutoStatus` | Read-only cached next-capture decision. The request includes `requireRecentSignal`, derived from the background-check setting. Returns `ready` with `deviceId`, content-free `reason`, and nullable `validForMs` (null means no recent signal evidence); `probing` with local `deviceId`, `phase`, and `remainingMs`; or `blocked` with an actionable message and nullable `retryAfterMs`. Does not enumerate, open a microphone, commit selection, or refresh evidence. Device identity stays in local UI IPC. |
-| `configure_smart_auto_probe` | `policy: JSON` | `Result<u64, String>` | Main-window-only ordered consent writer. Accepts `{enabled:false}` or `{enabled:true,request:SmartAutoRequest}` and returns the policy generation. Revokes in-flight permits before validation; malformed policy disables checks. Separate from dictation configuration. |
-| `retry_smart_auto_probe` | none | `Result<u64, String>` | Main-window-only request for another bounded candidate round under the current enabled policy. Returns its generation. Preserves cooldown/backoff, refuses while a check is active, and never opens a permission prompt. |
-| `start_microphone_preview` | `device_id: String`, `vad_sensitivity: u32` | `Result<MicrophonePreviewStatus, String>` | Claims a monotonic Preview owner with the current live-VAD sensitivity, returns its Connecting status immediately, and starts the selected stable device ID asynchronously so startup can be cancelled. `system_default` is the only value normalized to the live default. Refuses competing capture and benchmark owners. |
-| `update_microphone_preview_vad_sensitivity` | `preview_id: u64`, `vad_sensitivity: u32` | `Result<bool, String>` | Updates only the exact active preview generation, clamps sensitivity to 0–100, and invalidates an in-flight decision from the previous slider value. |
-| `stop_microphone_preview` | `preview_id: u64` | `Result<MicrophonePreviewStatus, String>` | Stops only the exact generation and waits for joined-worker `Idle`; a timeout blocks device reopening. |
-| `cancel_microphone_preview` | `preview_id?: u64` | `Result<bool, String>` | Best-effort exact-owner cleanup for page/window teardown. An omitted ID resolves the active preview before cancellation and is a no-op when none exists. |
-
-## Optional integrations (`commands/integrations.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `is_notchpill_installed` | — | `bool` | Uses macOS Launch Services to find NotchPill by bundle identifier; always `false` on other platforms. |
-
-## Native dictation control (`dictation_control.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `configure_dictation_control` | `settings: JSON` | `Result<(), String>` | Main-window control synchronization through the native source FIFO; rebases `disabled`/`autoPaste` from the durable owner before applying. Native startup uses the internal host adapter without a webview. |
-| `suspend_dictation_for_setup` | — | `Result<bool, String>` | Main-only; closes admission under the recording transition fence if no capture owner won the race. |
-| `resume_dictation_after_setup` | `settings: JSON` | `Result<(), String>` | Main-only explicit rearm after successful setup; stale settings updates cannot clear suspension. |
-| `toggle_dictation_lock` | — | `()` | Routes an overlay lock intent to the core controller. |
-| `get_dictation_lock` | — | `bool` | Native lock snapshot for clients after attaching their change listener. |
-
-## Keyboard (`commands/keyboard.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Synchronizes Rust-owned listener registration in `hold_down`, `double_tap`, or `both`; identical registration preserves detector state and reuses a thread prepared by native setup. Validates mode and the modifier/F1–F20 key allowlist; requires Accessibility. |
-| `stop_keyboard_listener` | — | `()` | Stops processing key events; the thread stays alive. |
-| `update_keyboard_key` | `hotkey: String` | `Result<(), String>` | Validates and changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
-| `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
-| `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Runtime synchronization through the native source FIFO, using durable `disabled` when present (argument is only the pre-hydration fallback). Deliberate renderer edits use settings/overlay owned-field publishers; the native tray commits its own durable patch. Mirrors the tray check item and emits `app-disabled-changed`; listeners cache the echo without persisting it. |
-| `get_app_disabled` | — | `bool` | Current global-disable state. |
-| `set_paste_last_shortcut` | `enabled: bool` | `Result<(), String>` | Arms or disarms global ⌘⇧V on the shared rdev listener. Enabling requires Accessibility permission. |
-
-## Delivery recovery (`delivery_recovery.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `retry_last_delivery` | — | `Result<RetryResult, String>` | Re-delivers the latest process-memory final text through the normal secure injector. Returns explicit `auto_pasted`, `clipboard_only`, `empty`, `busy`, or `failed` feedback without recording, retranscription, History, statistics, or learning changes. |
-
-## Smart Auto-Stop (`commands/smart_turn.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `smart_turn_model_status` | — | `SmartTurnModelStatus` | `{state, sizeBytes}` for the pinned Smart Turn v3.2 model: `notDownloaded`, `downloading`, or `ready`. |
-| `download_smart_turn_model` | — | `Result<(), String>` | User-initiated. Streams the pinned ONNX file to a `.partial`, hashes while streaming, fsyncs, then atomically publishes under its SHA-256 directory. Exact size and hash are enforced. |
-| `remove_smart_turn_model` | — | `Result<(), String>` | Drops the loaded session, then deletes the hash directory and any partial. |
-| `check_smart_turn` | — | `Result<SmartTurnCheckResult, String>` | Scores whether the in-flight dictation's speaker has finished: peeks the last 8 s at 16 kHz (capture keeps running) and runs the model on a blocking worker. Tagged `outcome`: `scored` (`recordingId`, `probability`, `inferenceMs`), `notRecording`, `tooShort`, or `unavailable` (`reason`: `not_installed`, `busy`, `load_failed`, `inference_failed`). Nothing is persisted. |
-
-## Models (`commands/models.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `check_model_exists` | — | `bool` | Whether any transcription model is installed (drives first-launch routing). |
-| `check_specific_model_exists` | `model_name: String` | `bool` | Whether a named model is on disk. Path-traversal protected. |
-| `get_model_runtime_catalog` | — | `Vec<ModelRuntimeSnapshot>` | Every catalog entry with backend, accelerator, capabilities, platform support, install state, and lifecycle state. |
-| `get_model_runtime_status` | `model_name: String` | `Result<ModelRuntimeSnapshot, String>` | Snapshot for one model. Unknown identifiers error. |
-| `get_model_hardware_guidance` | — | `ModelHardwareGuidance` | Read-once Apple chip tier and physical-memory guidance for model pickers, including the recommended model, presentation-only model-memory budget, and warned catalog identifiers. It does not select, install, load, unload, or hide models. |
-| `get_diarization_model_status` | — | `ModelStatus` | Platform support, install activity, installed state, and total bytes for the pinned local speaker models. |
-| `remove_model` | `model_name: String` | `Result<(), String>` | Removes only the exact managed catalog artifact (or documented FluidAudio v3 cache); refuses selected/active models, recording/transcription, concurrent model work, downloads, symbolic links, and external Whisper copies. Publishes NotInstalled immediately. |
-| `download_model` | `model_name: String`, `request_id: Option<String>` | `Result<(), String>` | Owned single-flight install with disk preflight, idle-bounded resumable HTTP transfers, cancellable extraction/Core ML worker, atomic publication, and Silero VAD co-download. Optional caller request ID correlates progress and cancellation. |
-| `cancel_model_download` | `model_name: String`, `request_id: String` | `Result<(), String>` | Cancels only that install owner, including a pending lock wait; waits for active work and confirmed Core ML termination before returning. Safe HTTP partials and complete archives are retained for Retry. |
-| `remove_diarization_model` | — | `Result<(), String>` | Cancels active diarization work, waits for model-use ownership, and removes the installed speaker-model directory after acquiring the shared model-cache lease. |
-
-## Personal knowledge (`commands/knowledge.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_knowledge_store_status` | — | `KnowledgeStoreStatus` | Ready / recovered / reinitialized / unavailable, schema version, record count, store revision, privacy-safe recovery info. |
-| `retry_knowledge_store` | — | `KnowledgeStoreStatus` | Re-runs local initialization after an unavailable state. |
-| `list_knowledge` | `request: KnowledgeListRequest` | `Result<KnowledgeListResponse, String>` | Bounded search/filter page (default 50, cap 100), with an optional Voice Command filter. |
-| `get_knowledge` | `id: String` | `Result<KnowledgeEntry, String>` | One record by stable ID. |
-| `upsert_knowledge` | `draft: KnowledgeDraft` | `Result<KnowledgeEntry, String>` | Creates or edits with an expected revision. Voice Commands additionally validate payload/type, scope, built-ins, duplicate phrases, variables, clipboard permission, and vocabulary conflicts. |
-| `set_knowledge_enabled` | `id`, `enabled`, `expected_revision` | `Result<KnowledgeEntry, String>` | Enable/disable with optimistic concurrency. |
-| `delete_knowledge` | `id`, `expected_revision` | `Result<u64, String>` | Deletes one record, returns the new store revision. |
-| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministic exact-trigger resolution using the same scope/provenance precedence that feeds the Smart Correction matcher. |
-| `preview_voice_command` | `request: VoiceCommandPreviewRequest` | `Result<VoiceCommandPreviewResponse, String>` | Runs the real matcher and variable expansion with no clipboard output and no paste. Clipboard input requires both saved permission and an explicit preview request. |
-| `export_knowledge_to_file` | `path: String` | `Result<u64, String>` | Atomic export to versioned JSON. |
-| `inspect_knowledge_import` | `path: String` | `Result<KnowledgeImportSummary, String>` | Validates an import and reports new / duplicate / conflicting records without writing. |
-| `import_knowledge_from_file` | `path: String` | `Result<KnowledgeImportResult, String>` | Atomically imports validated new records; never overwrites local records. |
-| `delete_all_knowledge` | `expected_revision: u64` | `Result<u64, String>` | Deletes all records and in-store recovery artifacts after typed confirmation. |
-
-## Appearance file transport (`commands/theme.rs`)
-
-These commands are strictly gated to the main webview. The native dialog
-plugin selects a path; these commands perform only bounded transport. Theme
-schema validation, preview, resolution, and cache generation stay in the
-frontend.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `read_theme_file` | `path: String` | `Result<String, String>` | Reads at most 256 KiB of UTF-8 from a regular, non-symlink file, enough for bounded VS Code JSON/JSONC themes. Returns clear errors for invalid paths, oversized files, invalid UTF-8, and I/O failure. |
-| `write_theme_file` | `path: String`, `contents: String` | `Result<(), String>` | Rejects content over 64 KiB and symlink/non-regular destinations, writes and fsyncs a unique sibling temporary file, atomically renames it over the destination, then syncs the parent directory. New Unix files use mode `0600`; replacements preserve the existing regular target's permissions. A failed write/publish cleans the temporary file and preserves an existing target. |
-
-## Correct and Teach (`commands/correct_and_teach.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `propose_learned_correction` | `request: CorrectionProposalRequest` | `CorrectionProposalOutcome` | Computes one bounded local diff and stores an ephemeral proposal. Never writes knowledge. Ambiguous alignments fail closed. |
-| `propose_specific_learned_correction` | `request: SpecificCorrectionProposalRequest` | `CorrectionProposalOutcome` | Validates one user-selected whole-term replacement, counts and previews exact matches locally, stores an ephemeral proposal. |
-| `confirm_learned_correction` | `proposal_id: u64`, `scope: KnowledgeScope` | `Result<KnowledgeEntry, String>` | Persists the reviewed replacement with `learned_correction` provenance and refreshes the next matcher generation. |
-| `discard_learned_correction_proposal` | `proposal_id: u64` | `()` | Discards the proposal without persistence. |
-
-## Performance Lab (`commands/benchmark.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_benchmark_models` | — | `Vec<BenchmarkModel>` | Installed models eligible for benchmarking. |
-| `get_benchmark_activity` | — | `BenchmarkActivity` | Whether a run is active, for busy-state isolation against dictation and transform. |
-| `run_benchmark` | `request: BenchmarkRequest` | `Result<BenchmarkReport, String>` | Runs the selected models over the fixture corpus, emitting `benchmark-progress`. Reports raw, normalized, and delivered WER plus latency, realtime factor, and memory, with privacy-safe environment/corpus/execution metadata. |
-| `cancel_benchmark` | — | `bool` | Cancels the active run. |
-| `save_benchmark_report` | `report_json`, `output_dir`, `file_name` | `Result<String, String>` | Writes a report as `benchmark-<version>-<machine>-<createdAt>.json`. |
-| `open_benchmark_output_folder` | `output_dir: String` | `Result<(), String>` | Reveals the report folder in Finder. |
-| `run_microphone_startup_benchmark` | `request: MicrophoneStartupBenchmarkRequest {runId, deviceId, cycles}` | `Result<MicrophoneStartupBenchmarkReport, String>` | Main-window-only bounded production-capture startup diagnostic (1–10 cycles). Uses an exact `MicrophoneBenchmark` owner, preserves the immutable production backend order without training or persisting its per-device backend memo, emits correlated progress, retains no PCM, and resolves only after post-join Idle. |
-| `cancel_microphone_startup_benchmark` | `run_id: String` | `Result<bool, String>` | Cancels only the matching microphone benchmark UUID. Returns false for no owner or a stale run ID and waits through the run command for confirmed teardown. |
-| `save_microphone_startup_benchmark_report` | `report: MicrophoneStartupBenchmarkReport`, `output_dir: String` | `Result<String, String>` | Main-window-only typed export. Revalidates the exact schema/cross-fields and 128 KiB cap, then writes `murmur-microphone-startup-<UTC timestamp>-<run UUID>.json` without accepting a caller-controlled filename. |
-
-## Performance diagnostics (`commands/performance.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `list_performance_runs` | `limit: Option<u32>` | `Result<PerformanceRunListV1, String>` | Completed runs, newest first (cap 200). |
-| `get_performance_run` | `run_id: String` | `Result<Option<PerformanceRunV1>, String>` | One run with stage timings, warm state, RSS deltas, and transform follow-ups. |
-| `get_performance_resource_window` | — | `Result<Vec<ResourceSampleV1>, String>` | The rolling CPU/memory sample window (cap 600). |
-| `get_performance_store_health` | — | `Result<PerformanceStoreHealthV1, String>` | Main/Diagnostics-window-only content-free store availability, skipped-run count, last bounded failure/recovery evidence, and recommended local action. |
-| `recover_performance_store` | `allow_reinitialize: bool` | `Result<PerformanceStoreHealthV1, String>` | Main/Diagnostics-window-only explicit reopen/check. Quarantine/reinitialize additionally requires confirmed caller intent plus fresh corruption or invalid-record evidence; a healthy database is never deleted. |
-| `get_capture_health_history` | — | `CaptureHealthHistoryV1` | The 20 newest finalized dictation startup observations. Each contains only `startupMs`, `usedFallback`, and an optional allowlisted fallback backend enum. |
-| `clear_performance_diagnostics` | — | `Result<(), String>` | Deletes local run history, samples, and capture-startup observations; emits `performance-diagnostics-cleared`. |
-| `show_diagnostics_window` | `tab: String` | `Result<(), String>` | Shows and focuses the persistent Diagnostics window, selecting one of its exact allowlisted tabs. |
-
-## Logging (`commands/logging.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_log_contents` | `lines: usize` | `String` | Last N lines of the pretty log file. |
-| `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
-| `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>`, `event_code: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code, optionally correlated to a transform pass. The main hydration code records native monotonic launch time once. Message contents are discarded. |
-
-## Mode file exchange (`commands/mode_exchange.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `read_modes_file` | `path: String` | `Result<String, String>` | Main-window-only reader for absolute regular non-symlink `.json` files, bounded to 256 KiB of UTF-8. Errors omit paths and contents. Schema validation and preview happen in the frontend before Settings changes. |
-
-## Export (`commands/export.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export (including custom Modes) to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`/`.srt`/`.vtt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
-
-## Durable frontend data store (`commands/settings_store.rs`)
-
-The durable home for frontend-owned settings, bounded transcript history,
-usage statistics, and the saved theme library under the per-bundle app data directory. Blobs are opaque to
-Rust: only their size and top-level JSON container are checked, so schema and
-migration rules stay in TypeScript. Writes are atomic, serialized, and created
-with owner-only permissions on Unix; rejected files are quarantined locally
-without logging their content.
-
-Renderer source writes use a fresh UUID `sourceSession` per webview load and a
-strictly increasing `intentGeneration` for every submission/retry. Native ordering
-is per window/session/key, checked inside the source FIFO before disk access.
-`SourceWrite<T>` serializes as `{ status: "applied", value: T }` or
-`{ status: "superseded" }`; superseded writes acknowledge no content or fields.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `webkit_state_snapshot` | — | `Result<Receipt, String>` | Rust-owned source-state snapshot and independent v1/v2/v3, removal and retirement receipts. No WebKit data directory commits current versions without opening WebKit. |
-| `import_webkit_state` | `source: BTreeMap<String, Option<String>>` | `Result<Receipt, String>` | Main-only versioned importer. Raw JSON strings distinguish corrupt values from missing keys; disk values win. Shares the settings writer lock. |
-| `save_webkit_source` | `key: String`, `value: Value`, `sourceSession: String`, `intentGeneration: u64` | `Result<SourceWrite<()>, String>` | Main-only allow-listed source-state write to the completion actor. Settings/theme retain their dedicated commands. Updater keys are owned by the Rust updater and rejected by this command; retirement is not exposed to React. |
-| `restore_source_backup` | `key: String`, `blob: String` | `Result<(), String>` | Main-only explicit restore of complete current-version settings or theme-library JSON into a missing/quarantined destination. Refuses partial documents and readable destinations; preserves quarantines. No default reset. |
-| `get_dictation_settings_unsaved` | — | `Result<bool, String>` | Main-only read of the retained native enabled/disabled patch, available before hydration and during source recovery. True until that choice is durably published or replaced and published; no private content or disk writes. Subscribe to `dictation-settings-warning-changed` before querying and requery on each notification. |
-| `load_settings_blob` | — | `Result<Option<String>, String>` | Replays any exact pending publication before reading and normalizing settings.json. None means never created. Required missing, quarantined, and future-schema destinations fail visibly across relaunch; quarantines use content-free UUID names and are preserved. |
-| `save_settings_blob` | `blob: String, ownedEdits?: { autoPaste?: bool, disabled?: bool }, ownedEditGenerations?: { autoPaste?: u64, disabled?: u64 }, sourceSession: String, intentGeneration: u64` | `Result<SettingsWrite, String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Returns an applied snapshot receipt or superseded snapshot receipt, plus separate ownedPatchGenerations acknowledging only exact native-owned field IDs. A superseded document still applies fresh owned patches against the current native document. The main-window acknowledgement echoes intentSession, intentGeneration and acknowledgedFields so newer per-field edits survive. Explicit owned-field edits patch the latest revision; incidental full snapshots always preserve native owned fields. Field IDs survive retries so they cannot replay behind a later quick control. Full writes require the main window; overlay quick controls use the field-limited patch command. Concurrent writers are serialized; failed publications retain an exact pending receipt and resume before the next read/merge. |
-| `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool, sourceSession: String` | `Result<String, String>` | Requires the current registered overlay session. Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
-| `load_theme_library_blob` | — | `Result<Option<String>, String>` | Main-only read, serialized with writers and pending recovery. None means never created; missing required or quarantined destinations fail visibly. The 1 MiB object boundary is enforced before data reaches the renderer. |
-| `save_theme_library_blob` | `blob: String`, `sourceSession: String`, `intentGeneration: u64` | `Result<SourceWrite<()>, String>` | Main-only publication up to 1 MiB. Rust normalizes source schema and revisions; the renderer defensively parses presentation state. Exact pending receipt makes first publication restartable. |
-| `clear_theme_library_blob` | — | `Result<(), String>` | Main-window-only, idempotent removal of `theme-library.json`, independent of settings, history, stats, and the active appearance cache. |
-
-## Overlay (`commands/overlay.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_overlay_geometry` | `content?: OverlayContent` | `OverlayGeometry` | Current native activity/placement/content contract from `geometry_for_layout()`, including mandatory island metrics. Never null; a 185pt pretend notch substitutes on flat/unmeasured displays. |
-| `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
-| `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
-| `set_overlay_expanded` | `expanded: bool`, `content?: OverlayContent`, `activity?: OverlayActivity`, `placement?: OverlayPlacement`, `defer_shrink?: bool` | `Result<AppliedSurface, String>` | Single acknowledged native surface writer. Applies layout on the main thread, publishes target `overlay-surface-changed` after successful setters, and returns actual bounds. `defer_shrink` retains larger old bounds during contraction; a later exact request releases the temporary hit area. Activity is idle/recording/processing; placement is notch/floating_pill (legacy `below_menu_bar` deserializes as the pill). |
-| `set_overlay_vertical_offset` | `offset: f64` | `Result<AppliedOverlayPosition, String>` | Clamps calibration to the current display/window's effective range within ±12 logical points, moves the native overlay, retains the session offset across native placement refreshes, and returns requested/applied offsets plus effective bounds. Durable persistence still occurs only on Save and inactive Reset. |
-| `show_main_window` | — | `Result<(), String>` | Shows and focuses the main window — used by the overlay's gear button instead of granting the overlay broad window permissions. |
-
-## Overlay material (`commands/overlay_material.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `set_overlay_material` | `shown: bool`, `expanded: bool`, `content?: OverlayContent`, `floating: bool` | `Result<bool, String>` | Places the floating pill's Bezel material (`NSVisualEffectView` HUD blur plus tint) behind the overlay webview, clipped to the capsule or expanded card that Rust derives from its own geometry, and lifts the Live Words material with it. Semantic state only; all view mutations run on the main thread. `floating: false` removes both materials. Returns whether the overlay material is installed (always `false` off macOS). |
-| `set_live_words_material` | `width: f64`, `height: f64` | `Result<bool, String>` | Clips the Live Words window's Bezel material to the card's laid-out size; Rust owns its position and lift. A zero size fades it out. Removes it unless the pill placement is active. Returns whether it is installed. |
-
-## Dictation preview (`commands/dictation_preview.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `show_dictation_preview` | `recording_id: u64` | `Result<(), String>` | Accepts calls only from the `dictation-preview` webview after it renders non-empty text. Refuses zero, stale, cancelled, or non-recording generations before Rust shows the non-activating native window. |
-
-## Frontmost apps (`frontmost.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `list_running_applications` | — | `Vec<RunningApplication>` | Bounded memory-only list of running apps (bundle ID + name) for the per-app profile picker. Empty on non-macOS. |
-
-## Browser sites (`browser_site.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `probe_browser_site` | — | `Result<BrowserSiteProbe, String>` | After explicit opt-in, waits up to five seconds for an allowlisted browser, reads only its frontmost `AXDocument` URL, and returns only the exact host and browser bundle ID. URL paths and other page content are discarded. |
-
-## Tray (`commands/tray.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `update_tray_icon` | `_icon_state: String` | `Result<(), String>` | No-op; the tray icon is always the static waveform template image, tinted by macOS to match the menu bar. Retained for API compatibility. |
-| `set_tray_update_available` | `version: Option<String>` | `Result<(), String>` | Changes the native menu item between `Check for Updates…` and a bounded, validated `Update Murmur to vX.Y.Z…` label. |
-
-## Native Modes (`commands/mode_runtime.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_mode_runtime_status` | — | `ModeRuntimeStatus` | Resolves the current context using temporary override → exact site binding → app binding → last manual Mode precedence. |
-| `set_next_recording_mode` | `modeId?: string` | `Result<ModeRuntimeStatus>` | Main-window-only: arm an enabled Mode for one real recording, or clear with null. Memory-only; frozen at acceptance. |
-| `cycle_mode` | — | `ModeRuntimeStatus` | Cycles enabled Modes without focusing Murmur; persists a manual selection outside bindings or creates a memory-only bundle override inside a site or app binding. |
-| `clear_temporary_mode_override` | — | `ModeRuntimeStatus` | Clears the app-scoped override and returns to its site binding, app binding, or last manual Mode. |
-
-## Updater (`commands/updater.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_update_install_environment` | — | `Result<{ appTranslocated: bool }, String>` | Reports whether Gatekeeper launched the current executable through its read-only `AppTranslocation` mount. Does not expose the executable path and fails closed if the current executable cannot be resolved. |
-| `updater_snapshot` | — | `Result<UpdaterSnapshot, String>` | Main-only revisioned Rust updater status, dialog and completed notes. |
-| `updater_action` | `action: {kind: "configure", automatic: bool} \| {kind: "check", background: bool} \| {kind: "download" \| "install" \| "show" \| "dismiss" \| "dismissCompleted"}` | `Result<UpdaterSnapshot, String>` | Main-only intent transport. Rust owns scheduling, discovery, policy, signed download, installation and recovery. Install requests coordinated compatible relaunch; no process-plugin restart permission remains. |
-| `updater_canary` | `request: { action: "read" | "write", result?: JSON }` | `Result<{ path: string | null, result: JSON | null }, String>` | Reads the opt-in `MURMUR_UPDATER_CANARY` result path or atomically writes the app's canary result. With no environment marker, returns an inert state. |
-
-## Telemetry (`telemetry.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_event_history` | — | `Vec<AppEvent>` | The in-memory ring buffer (up to 500 events). |
-| `clear_event_history` | — | `()` | Clears the ring buffer. Does not delete the JSONL file. |
-
-## Resource monitor (`resource_monitor.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_resource_usage` | — | `ResourceSampleV1` | Current CPU percentage, process RSS, and separated Rust-heap / FFI-heap figures (the custom malloc zone keeps whisper.cpp's allocations out of the Rust total). |
-
-## Workspace window lifecycle (`window_state.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `sync_window_chrome` | `background: String`, `header_height: f64`, `zoom: f64`, `ready: bool` | `Result<(), String>` | Main/Diagnostics only. Applies an opaque resolved hex background, CSS-measured header height and page zoom (0.5–2), positions native traffic lights on the main thread, and reveals main once after first paint. Diagnostics readiness never opens it. |
-
-## Completion service (`completion.rs`)
-
-History, statistics, reports, clear/reset and v1 import are serialized by the
-host-independent core. Companion windows cannot mutate these destinations.
-All successful mutations return the latest `Snapshot` and publish read-only
-`history-changed` and `statistics-changed` notifications.
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `accept_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window accepts a visible, uncancelled file result into History using the operation's start-time retention. No statistics. |
-| `cancel_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window cancels file History admission, including before native start or after transcription. |
-| `recover_completion_pending` | — | `Result<Snapshot, String>` (async) | Main-only explicit recovery: preserve rejected pending evidence, resume from readable current completion stores, and restore admission across restart. |
-| `completion_snapshot` | — | `Result<Snapshot, String>` | Main/diagnostics read of History, statistics, saved reports, migration notice and per-destination key-removal receipts. |
-| `acknowledge_completion_keys` | `destinations: Destination[]` | `Result<(), String>` | Main-only durable acknowledgement after targeted WebKit key removal. Safe to repeat on later launches. |
-| `import_completion_v1` | `source: LegacyImport` | `Result<Snapshot, String>` | Main-only fill/recovery import of History, statistics and reports. Disk wins when valid; durable markers prevent reimport. |
-| `mutate_history` | `mutation: HistoryMutation` | `Result<Snapshot, String>` | Main-only exact-row edit, pin or delete; held data and deletion records use the same serialized owner. |
-| `clear_completion_destination` | `destination: history \| statistics \| reports` | `Result<Snapshot, String>` | Main-only atomic explicit empty/reset destination, watermark and generation discard. |
-| `store_benchmark_report` | `report: JSON` | `Result<Snapshot, String>` | Main-only schema-validated saved report; newest ten retained. |
-
-## Targeted event subscriptions (`events.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `set_waveform_subscription` | `consumer: WaveformConsumer`, `active: bool` | `Result<(), String>` | Registers main-recording, corpus, or overlay waveform interest. The caller window must own the named consumer; native visibility and minimization also gate delivery. |
-
-## Shutdown transport behavior
-
-Settings/theme and WebKit lifecycle command names and result shapes remain
-unchanged; their wrappers are asynchronous and publish off main. Accepted source
-operations enter a native FIFO before waiting for disk. New source/file/correction
-or Paste Last work is refused during shutdown. The temporary app-owned process
-plugin preserves plugin:process|exit and plugin:process|restart for authorized
-Main callers, routing both through shutdown. process:allow-restart remains until
-#990. Exit code arguments are accepted; coordinated quit uses the common exit
-code zero. The Rust updater requests the same compatible relaunch path through `updater_action`; the process plugin exposes Quit only.
-
-The explicitly enabled shutdown-test-support feature exposes only the isolated
-QA plugin described in [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).
+# Native service requests
+
+The GPUI host calls `murmur_services::native_services::Services` in process.
+There is no JavaScript, IPC bridge, remote caller, or generated command registry.
+The facade dispatches 187 native requests in
+[requests](../../app/crates/murmur-services/src/native_services/commands.rs).
+Main-only mutations retain native sender identity; companions cannot impersonate
+Main. Binary meeting-audio access has its own bounded byte API. Host-owned
+operations (panels, opener, login service, menus, quit) are composed in
+[the GPUI host](../../app/gpui/src/host/services/).
+
+Permanent legacy migration uses dedicated owner methods, not a presentation
+request for broad purge. Retirement is never exposed to a window.
+
+| Request | Implementation |
+|---|---|
+| `accept_file_transcription` | Native service facade and its corresponding operation. |
+| `acknowledge_completion_keys` | Native service facade and its corresponding operation. |
+| `apply_meeting_calendar_event` | Native service facade and its corresponding operation. |
+| `arm_next_dictation_diagnostic_capture` | Native service facade and its corresponding operation. |
+| `cancel_audio_initialization` | Native service facade and its corresponding operation. |
+| `cancel_benchmark` | Native service facade and its corresponding operation. |
+| `cancel_code_vocab_scan` | Native service facade and its corresponding operation. |
+| `cancel_file_transcription` | Native service facade and its corresponding operation. |
+| `cancel_microphone_preview` | Native service facade and its corresponding operation. |
+| `cancel_microphone_startup_benchmark` | Native service facade and its corresponding operation. |
+| `cancel_model_download` | Native service facade and its corresponding operation. |
+| `cancel_native_recording` | Native service facade and its corresponding operation. |
+| `check_accessibility_permission` | Native service facade and its corresponding operation. |
+| `check_microphone_permission` | Native service facade and its corresponding operation. |
+| `check_microphone_permission_status` | Native service facade and its corresponding operation. |
+| `check_model_exists` | Native service facade and its corresponding operation. |
+| `check_smart_turn` | Native service facade and its corresponding operation. |
+| `check_specific_model_exists` | Native service facade and its corresponding operation. |
+| `clear_completion_destination` | Native service facade and its corresponding operation. |
+| `clear_event_history` | Native service facade and its corresponding operation. |
+| `clear_ide_context` | Native service facade and its corresponding operation. |
+| `clear_logs` | Native service facade and its corresponding operation. |
+| `clear_performance_diagnostics` | Native service facade and its corresponding operation. |
+| `clear_temporary_mode_override` | Native service facade and its corresponding operation. |
+| `clear_theme_library_blob` | Native service facade and its corresponding operation. |
+| `completion_snapshot` | Native service facade and its corresponding operation. |
+| `configure_dictation` | Native service facade and its corresponding operation. |
+| `configure_dictation_control` | Native service facade and its corresponding operation. |
+| `configure_meeting_suggestions` | Native service facade and its corresponding operation. |
+| `configure_smart_auto_probe` | Native service facade and its corresponding operation. |
+| `confirm_learned_correction` | Native service facade and its corresponding operation. |
+| `cycle_mode` | Native service facade and its corresponding operation. |
+| `delete_all_knowledge` | Native service facade and its corresponding operation. |
+| `delete_all_meetings` | Native service facade and its corresponding operation. |
+| `delete_dictation_diagnostic_capture` | Native service facade and its corresponding operation. |
+| `delete_knowledge` | Native service facade and its corresponding operation. |
+| `delete_meeting` | Native service facade and its corresponding operation. |
+| `disarm_next_dictation_diagnostic_capture` | Native service facade and its corresponding operation. |
+| `discard_learned_correction_proposal` | Native service facade and its corresponding operation. |
+| `dismiss_meeting_suggestion` | Native service facade and its corresponding operation. |
+| `download_model` | Native service facade and its corresponding operation. |
+| `download_smart_turn_model` | Native service facade and its corresponding operation. |
+| `export_knowledge_to_file` | Native service facade and its corresponding operation. |
+| `get_app_disabled` | Native service facade and its corresponding operation. |
+| `get_audio_input_inventory` | Native service facade and its corresponding operation. |
+| `get_benchmark_activity` | Native service facade and its corresponding operation. |
+| `get_benchmark_models` | Native service facade and its corresponding operation. |
+| `get_calendar_permission_status` | Native service facade and its corresponding operation. |
+| `get_capture_health_history` | Native service facade and its corresponding operation. |
+| `get_diarization_model_status` | Native service facade and its corresponding operation. |
+| `get_dictation_diagnostic_capture` | Native service facade and its corresponding operation. |
+| `get_dictation_diagnostic_capture_status` | Native service facade and its corresponding operation. |
+| `get_dictation_lock` | Native service facade and its corresponding operation. |
+| `get_dictation_settings_unsaved` | Native service facade and its corresponding operation. |
+| `get_event_history` | Native service facade and its corresponding operation. |
+| `get_ide_context_status` | Native service facade and its corresponding operation. |
+| `get_knowledge` | Native service facade and its corresponding operation. |
+| `get_knowledge_store_status` | Native service facade and its corresponding operation. |
+| `get_log_contents` | Native service facade and its corresponding operation. |
+| `get_meeting` | Native service facade and its corresponding operation. |
+| `get_meeting_audio_capture_busy` | Native service facade and its corresponding operation. |
+| `get_meeting_audio_manifest` | Native service facade and its corresponding operation. |
+| `get_meeting_bundle_preview` | Native service facade and its corresponding operation. |
+| `get_meeting_calendar_events` | Native service facade and its corresponding operation. |
+| `get_meeting_review_export` | Native service facade and its corresponding operation. |
+| `get_meeting_status` | Native service facade and its corresponding operation. |
+| `get_meeting_store_status` | Native service facade and its corresponding operation. |
+| `get_meeting_suggestion` | Native service facade and its corresponding operation. |
+| `get_microphone_preview_status` | Native service facade and its corresponding operation. |
+| `get_mode_runtime_status` | Native service facade and its corresponding operation. |
+| `get_model_hardware_guidance` | Native service facade and its corresponding operation. |
+| `get_model_runtime_catalog` | Native service facade and its corresponding operation. |
+| `get_model_runtime_status` | Native service facade and its corresponding operation. |
+| `get_overlay_geometry` | Native service facade and its corresponding operation. |
+| `get_performance_resource_window` | Native service facade and its corresponding operation. |
+| `get_performance_run` | Native service facade and its corresponding operation. |
+| `get_performance_store_health` | Native service facade and its corresponding operation. |
+| `get_resource_usage` | Native service facade and its corresponding operation. |
+| `get_smart_auto_microphone_status` | Native service facade and its corresponding operation. |
+| `get_status` | Native service facade and its corresponding operation. |
+| `get_system_audio_permission_status` | Native service facade and its corresponding operation. |
+| `get_update_install_environment` | Native service facade and its corresponding operation. |
+| `hide_overlay` | Native service facade and its corresponding operation. |
+| `import_completion_v1` | Native service facade and its corresponding operation. |
+| `import_knowledge_from_file` | Native service facade and its corresponding operation. |
+| `import_webkit_state` | Native service facade and its corresponding operation. |
+| `init_dictation` | Native service facade and its corresponding operation. |
+| `inspect_knowledge_import` | Native service facade and its corresponding operation. |
+| `is_notchpill_installed` | Native service facade and its corresponding operation. |
+| `list_audio_devices` | Native service facade and its corresponding operation. |
+| `list_dictation_diagnostic_captures` | Native service facade and its corresponding operation. |
+| `list_knowledge` | Native service facade and its corresponding operation. |
+| `list_meetings` | Native service facade and its corresponding operation. |
+| `list_performance_runs` | Native service facade and its corresponding operation. |
+| `list_running_applications` | Native service facade and its corresponding operation. |
+| `load_settings_blob` | Native service facade and its corresponding operation. |
+| `load_theme_library_blob` | Native service facade and its corresponding operation. |
+| `log_frontend` | Native service facade and its corresponding operation. |
+| `mutate_history` | Native service facade and its corresponding operation. |
+| `open_benchmark_output_folder` | Native service facade and its corresponding operation. |
+| `open_calendar_preferences` | Native service facade and its corresponding operation. |
+| `open_system_audio_preferences` | Native service facade and its corresponding operation. |
+| `open_system_preferences` | Native service facade and its corresponding operation. |
+| `patch_overlay_setting` | Native service facade and its corresponding operation. |
+| `preview_vocabulary_aliases` | Native service facade and its corresponding operation. |
+| `preview_voice_command` | Native service facade and its corresponding operation. |
+| `probe_browser_site` | Native service facade and its corresponding operation. |
+| `process_audio` | Native service facade and its corresponding operation. |
+| `propose_learned_correction` | Native service facade and its corresponding operation. |
+| `propose_specific_learned_correction` | Native service facade and its corresponding operation. |
+| `prune_meetings` | Native service facade and its corresponding operation. |
+| `read_modes_file` | Native service facade and its corresponding operation. |
+| `read_theme_file` | Native service facade and its corresponding operation. |
+| `recover_completion_pending` | Native service facade and its corresponding operation. |
+| `recover_performance_store` | Native service facade and its corresponding operation. |
+| `refresh_ide_context` | Native service facade and its corresponding operation. |
+| `register_source_session` | Native service facade and its corresponding operation. |
+| `remove_diarization_model` | Native service facade and its corresponding operation. |
+| `remove_model` | Native service facade and its corresponding operation. |
+| `remove_smart_turn_model` | Native service facade and its corresponding operation. |
+| `rename_meeting_remote_speaker` | Native service facade and its corresponding operation. |
+| `request_accessibility_permission` | Native service facade and its corresponding operation. |
+| `request_calendar_permission` | Native service facade and its corresponding operation. |
+| `request_microphone_access` | Native service facade and its corresponding operation. |
+| `request_microphone_permission` | Native service facade and its corresponding operation. |
+| `request_system_audio_permission` | Native service facade and its corresponding operation. |
+| `reset_accessibility_permission` | Native service facade and its corresponding operation. |
+| `reset_calendar_permission` | Native service facade and its corresponding operation. |
+| `reset_microphone_permission` | Native service facade and its corresponding operation. |
+| `resolve_knowledge` | Native service facade and its corresponding operation. |
+| `restore_source_backup` | Native service facade and its corresponding operation. |
+| `resume_dictation_after_setup` | Native service facade and its corresponding operation. |
+| `retry_knowledge_store` | Native service facade and its corresponding operation. |
+| `retry_last_delivery` | Native service facade and its corresponding operation. |
+| `retry_smart_auto_probe` | Native service facade and its corresponding operation. |
+| `run_benchmark` | Native service facade and its corresponding operation. |
+| `run_microphone_startup_benchmark` | Native service facade and its corresponding operation. |
+| `save_benchmark_report` | Native service facade and its corresponding operation. |
+| `save_meeting_bundle_export` | Native service facade and its corresponding operation. |
+| `save_meeting_metadata` | Native service facade and its corresponding operation. |
+| `save_meeting_review` | Native service facade and its corresponding operation. |
+| `save_meeting_review_export` | Native service facade and its corresponding operation. |
+| `save_microphone_startup_benchmark_report` | Native service facade and its corresponding operation. |
+| `save_settings_blob` | Native service facade and its corresponding operation. |
+| `save_text_export` | Native service facade and its corresponding operation. |
+| `save_theme_library_blob` | Native service facade and its corresponding operation. |
+| `save_webkit_source` | Native service facade and its corresponding operation. |
+| `scan_code_vocab` | Native service facade and its corresponding operation. |
+| `set_app_disabled` | Native service facade and its corresponding operation. |
+| `set_keyboard_recording` | Native service facade and its corresponding operation. |
+| `set_knowledge_enabled` | Native service facade and its corresponding operation. |
+| `set_live_words_material` | Native service facade and its corresponding operation. |
+| `set_next_recording_mode` | Native service facade and its corresponding operation. |
+| `set_overlay_expanded` | Native service facade and its corresponding operation. |
+| `set_overlay_material` | Native service facade and its corresponding operation. |
+| `set_overlay_vertical_offset` | Native service facade and its corresponding operation. |
+| `set_paste_last_shortcut` | Native service facade and its corresponding operation. |
+| `set_tray_update_available` | Native service facade and its corresponding operation. |
+| `show_diagnostics_window` | Native service facade and its corresponding operation. |
+| `show_dictation_preview` | Native service facade and its corresponding operation. |
+| `show_main_window` | Native service facade and its corresponding operation. |
+| `show_overlay` | Native service facade and its corresponding operation. |
+| `smart_turn_model_status` | Native service facade and its corresponding operation. |
+| `start_keyboard_listener` | Native service facade and its corresponding operation. |
+| `start_meeting` | Native service facade and its corresponding operation. |
+| `start_microphone_preview` | Native service facade and its corresponding operation. |
+| `start_native_recording` | Native service facade and its corresponding operation. |
+| `stop_keyboard_listener` | Native service facade and its corresponding operation. |
+| `stop_meeting` | Native service facade and its corresponding operation. |
+| `stop_microphone_preview` | Native service facade and its corresponding operation. |
+| `stop_native_recording` | Native service facade and its corresponding operation. |
+| `store_benchmark_report` | Native service facade and its corresponding operation. |
+| `suspend_dictation_for_setup` | Native service facade and its corresponding operation. |
+| `sync_window_chrome` | Native service facade and its corresponding operation. |
+| `toggle_dictation_lock` | Native service facade and its corresponding operation. |
+| `transcribe_file` | Native service facade and its corresponding operation. |
+| `update_keyboard_key` | Native service facade and its corresponding operation. |
+| `update_microphone_preview_vad_sensitivity` | Native service facade and its corresponding operation. |
+| `update_tray_icon` | Native service facade and its corresponding operation. |
+| `updater_action` | Native service facade and its corresponding operation. |
+| `updater_canary` | Native service facade and its corresponding operation. |
+| `updater_snapshot` | Native service facade and its corresponding operation. |
+| `upload_dictation_diagnostic_capture` | Native service facade and its corresponding operation. |
+| `upsert_knowledge` | Native service facade and its corresponding operation. |
+| `verify_microphone_preview_signal` | Native service facade and its corresponding operation. |
+| `webkit_state_snapshot` | Native service facade and its corresponding operation. |
+| `write_theme_file` | Native service facade and its corresponding operation. |

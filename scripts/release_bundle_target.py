@@ -4,7 +4,7 @@ import os
 
 
 def validate_target(event: str, target: str) -> str:
-    if target not in {"tauri", "gpui"}:
+    if target != "gpui":
         raise ValueError("unknown bundle_target")
     if target == "gpui" and event != "workflow_dispatch":
         raise ValueError("GPUI is restricted to non-publishing manual rehearsals")

@@ -12,7 +12,7 @@ RECIPE = "a" * 64
 
 class CiRustLibraryTests(unittest.TestCase):
     def test_only_test_outputs_and_cache_identity_change(self) -> None:
-        canonical = (ROOT / "app/src-tauri/Cargo.toml").read_text()
+        canonical = (ROOT / "app/crates/murmur-services/Cargo.toml").read_text()
         before = tomllib.loads(canonical)
         self.assertEqual(before["lib"]["crate-type"], ["lib", "cdylib", "staticlib"])
         self.assertNotIn("murmur-ci-cache", before["package"].get("metadata", {}))

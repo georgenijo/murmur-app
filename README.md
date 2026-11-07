@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/georgenijo/murmur-app/releases/latest"><img alt="Download Murmur for macOS" src="https://img.shields.io/badge/Download_for_macOS-14%2B-92DBFE?style=for-the-badge&amp;logo=apple&amp;logoColor=081015"></a>
-  <a href="#build-from-source"><img alt="Build from source" src="https://img.shields.io/badge/Build_from_source-Rust_%2B_React-B59CFF?style=for-the-badge&amp;logo=rust&amp;logoColor=white"></a>
+  <a href="#build-from-source"><img alt="Build from source" src="https://img.shields.io/badge/Build_from_source-Rust_%2B_GPUI-B59CFF?style=for-the-badge&amp;logo=rust&amp;logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -63,10 +63,7 @@ were already using—cleaned up, copied, and ready to send.
 
 ## The app gets out of your way
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="app/visual-tests/main-window.spec.ts-snapshots/dark-recording-darwin.png">
-  <img src="app/visual-tests/main-window.spec.ts-snapshots/light-recording-darwin.png" alt="Murmur recording in the transcript history workspace" width="100%">
-</picture>
+
 
 The main window is a searchable transcript workspace, not a giant Record
 button. A notch-anchored overlay gives you status, waveform, and quick controls
@@ -167,7 +164,7 @@ with its owner's agreement, and collection is recorded in the local event log.
 Global hotkey
     │
     ▼
-Rust/Tauri coordinator ───────► signed capture worker (CPAL / AUHAL)
+Rust/GPUI coordinator ───────► signed capture worker (CPAL / AUHAL)
     │                                      │
     │ policy + generation ownership        │ 16 kHz mono PCM
     │                                      ▼
@@ -210,7 +207,7 @@ work. [Read the architecture guide →](docs/ARCHITECTURE.md)
 
 - Apple Silicon Mac with macOS 14+ for the full app
 - Xcode Command Line Tools and [CMake](https://cmake.org/)
-- [Node.js](https://nodejs.org/) 18+, [Rust](https://rustup.rs/) stable, Python 3
+- [Rust](https://rustup.rs/) 1.98.1, Python 3, Meson, Ninja and pkg-config
 
 ```bash
 git clone https://github.com/georgenijo/murmur-app.git
@@ -219,29 +216,20 @@ cd murmur-app
 # Required first on Apple Silicon macOS; builds all three capture helpers.
 python3 scripts/build_capture_helpers.py
 
-cd app
-npm ci
-npm run tauri:dev
+cargo build --manifest-path app/gpui/Cargo.toml --features production-host --bin ui
 ```
 
-The helpers are gitignored Tauri `externalBin` files. On macOS, a fresh clone
-cannot run `tauri dev`, `tauri build`, `cargo check`, or `cargo test` until they
-exist. Build a production app and DMG with `npm run tauri:build`.
+The native app uses GPUI and Rust. Helpers stage in ignored `app/binaries`.
+See [Development](docs/DEVELOPMENT.md) to assemble and safely launch a synthetic
+preview bundle, and [Release](docs/release.md) for native packaging/signing.
 
 ### Test
 
 ```bash
-cd app
-npx tsc --noEmit
-npm test
-npx playwright install chromium  # first run only
-npm run test:visual
-
-cd src-tauri
-cargo fmt --all -- --check
-cargo test -- --test-threads=1
-
-cd ../..
+export RUSTUP_TOOLCHAIN=1.98.1
+cargo test --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-webkit -- --test-threads=1
+python3 scripts/test_gpui.py --features production-host -- --test-threads=1
+python3 scripts/check_gpui_goldens.py
 python3 -m pip install -r requirements-test.txt
 python3 -m unittest discover -s tests
 ```
@@ -258,12 +246,10 @@ logs, production builds, and troubleshooting.
 ```text
 murmur-app/
 ├── app/
-│   ├── src/                         React UI, hooks, settings, pure logic
-│   └── src-tauri/
-│       ├── src/                     Rust app, capture policy, ASR, transforms
-│       ├── sidecars/capture/        Signed capture helper/worker
-│       ├── crates/                  Versioned helper protocols
-│       └── tests/                   Rust integration suites
+│   ├── gpui/                        Native views and macOS host
+│   ├── crates/                      Services, core, importer and protocol
+│   ├── macos/                       Bundle metadata and entitlements
+│   └── sidecars/                    Signed capture helper/worker and agent
 ├── bench/                           Speech/accuracy fixtures
 ├── docs/                            Architecture, features, ADRs, references
 ├── infra/log-receiver/              Privacy-bounded diagnostics receiver

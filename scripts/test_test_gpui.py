@@ -86,7 +86,7 @@ class TestSourceTests(unittest.TestCase):
         import json
         root = Path(__file__).resolve().parents[1]
         native = json.loads((root / 'tests/fixtures/overlay-geometry.json').read_text())
-        frontend = json.loads((root / 'app/src/components/overlay/overlay-geometry.fixture.json').read_text())
+        frontend = json.loads((root / 'tests/fixtures/overlay-geometry.fixture.json').read_text())
         self.assertEqual(native, frontend)
 
     def test_accepts_the_patched_production_source_at_the_frozen_revision(self):

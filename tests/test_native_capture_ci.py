@@ -32,12 +32,12 @@ class NativeCaptureCiTests(unittest.TestCase):
                 controller.validate_source(sha,ref)
 
     def test_capture_paths(self):
-        for path in ['app/src-tauri/sidecars/capture/src/production.rs',
-                     'app/src-tauri/crates/capture-helper-protocol/src/lib.rs',
-                     'app/src-tauri/src/audio.rs', 'app/src-tauri/src/audio_lifecycle.rs',
-                     'app/src-tauri/Cargo.lock', 'scripts/smoke_test_capture_first_pcm.py']:
+        for path in ['app/sidecars/capture/src/production.rs',
+                     'app/crates/capture-helper-protocol/src/lib.rs',
+                     'app/crates/murmur-services/src/audio.rs', 'app/crates/murmur-services/src/audio_lifecycle.rs',
+                     'app/crates/murmur-services/Cargo.lock', 'scripts/smoke_test_capture_first_pcm.py']:
             self.assertTrue(poller.capture_path(path), path)
-        for path in ['docs/FEATURES.md','app/src/App.tsx','app/src-tauri/src/history.rs']:
+        for path in ['docs/FEATURES.md','app/src/App.tsx','app/crates/murmur-services/src/history.rs']:
             self.assertFalse(poller.capture_path(path), path)
 
     def test_private_workflow_never_runs_public_pull_requests(self):
@@ -94,13 +94,13 @@ class NativeCaptureCiTests(unittest.TestCase):
         poller.poll(self.state,'fake-gh')
         self.commit('docs/FEATURES.md')
         self.assertFalse(poller.poll(self.state,'fake-gh')['dispatched'])
-        self.commit('app/src-tauri/src/audio.rs')
+        self.commit('app/crates/murmur-services/src/audio.rs')
         self.assertTrue(poller.poll(self.state,'fake-gh')['dispatched'])
 
     def test_failed_dispatch_does_not_advance_state(self):
         poller.poll(self.state,'fake-gh')
         before=(self.state/'state.json').read_text()
-        self.commit('app/src-tauri/src/audio.rs')
+        self.commit('app/crates/murmur-services/src/audio.rs')
         original=poller.run
         def fail(*args,**kwargs):
             if args[0:3]==('fake-gh','workflow','run'):
@@ -111,8 +111,8 @@ class NativeCaptureCiTests(unittest.TestCase):
         self.assertEqual((self.state/'state.json').read_text(),before)
 
     def test_rename_out_of_capture_paths_dispatches(self):
-        watched = 'app/src-tauri/src/audio.rs'
-        destination = 'app/src-tauri/src/renamed_capture.rs'
+        watched = 'app/crates/murmur-services/src/audio.rs'
+        destination = 'app/crates/murmur-services/src/renamed_capture.rs'
         prior = self.commit(watched)
         poller.poll(self.state, 'fake-gh')
         self.git('mv', watched, destination)

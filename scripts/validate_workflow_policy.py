@@ -14,7 +14,7 @@ RELEASE_REHEARSAL_WORKFLOW = ROOT / ".github/workflows/release-rehearsal.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 RELEASE_START_WORKFLOW = ROOT / ".github/workflows/release-start.yml"
 OTA_CANARY_WORKFLOW = ROOT / ".github/workflows/ota-canary.yml"
-CARGO_TOML = ROOT / "app/src-tauri/Cargo.toml"
+CARGO_TOML = ROOT / "app/Cargo.toml"
 
 CI_GUARD = (
     '"${{ github.event_name != \'push\' || '
@@ -102,7 +102,7 @@ def references_secrets(text: str) -> bool:
 
 # Deliberate updates require reviewing the entire job, including shell content.
 GPUI_JOB_SHA256 = {
-    "gpui-build": "6c771424f82f3fc52d7841c04692186def2a0e9e7a59a6f5ed1539b044dceb52",
+    "gpui-build": "4b2015c205c3e33914403fbd2226759f659e450ece5a3f21a13c5a3c70daf6e4",
     "gpui-signer": "eb7ac7e93ae582b2da6df56dbfb205d9053ff8323e3cafe62d42a81b7678760a",
     "gpui-sign": "17727ea273f3d5e5922c31d571fe8d1a7110c43bf8e311101b831750d0841888",
 }
@@ -113,7 +113,7 @@ GPUI_JOB_SHA256 = {
 # any job. Rather than chase each channel, pin the whole file: every edit to
 # release-build.yml must deliberately update this digest after review. It is
 # checked last so semantic failures report their specific cause first.
-RELEASE_BUILD_SHA256 = "8b41a63db43f23b5066f309d26400ccf7c0c231c08a2d004090061c6015b9dae"
+RELEASE_BUILD_SHA256 = "8211bfcaded192c7c7e0e4c5372bf15427afd37f52060e0cad6053914179be52"
 
 
 def validate_gpui_isolation(workflow: str) -> None:
@@ -264,318 +264,70 @@ def tag_action(existing_sha: Optional[str], source_sha: str) -> str:
 
 
 def validate_ci(ci: str) -> int:
-    assert "push:\n    branches: [main]" in ci
-    assert "\n  pull_request:" in ci
-    changes = job_block(ci, "changes")
-    policy = job_block(ci, "policy")
-    rust_lint = job_block(ci, "rust-lint")
-    rust_macos = job_block(ci, "rust-macos")
-    dependency_audit = job_block(ci, "dependency-audit")
-    ci_pass = job_block(ci, "ci-pass")
-    assert scalar(changes, "if") == CI_GUARD
-    # Every build job waits on `changes`; validation belongs in `policy`. The
-    # one exception is the push-only verified-tree lookup, a few API calls.
-    verified = named_step_block(
-        changes, "Check whether this tree already passed on its PR", 6
-    )
-    assert "if: github.event_name == 'push'" in verified
-    assert "run: bash scripts/ci_verified_tree.sh" in verified
-    assert changes.count("run:") == 1, "changes must only filter paths"
-    assert (
-        "verified: ${{ steps.verified.outputs.verified == 'true' }}" in changes
-    )
-    # A verified push skips tests, never `ci-pass` itself.
-    for job_name, job, steps in (
-        ("rust-lint", rust_lint, ("Check Rust formatting",)),
-        ("rust-macos", rust_macos, CI_RUST_TEST_STEPS),
-    ):
-        for step in steps:
-            assert (
-                "if: needs.changes.outputs.verified != 'true'"
-                in named_step_block(job, step, 6)
-            ), f"{job_name}: {step} must skip on a verified push"
-    assert scalar(policy, "if") == CI_GUARD
-    assert "needs:" not in policy, "policy must start without waiting"
-    for job in CI_BUILD_JOBS:
-        assert scalar(job_block(ci, job), "needs") == "changes"
-    assert scalar(dependency_audit, "if") == CI_GUARD
-    assert scalar(ci_pass, "needs") == f"[changes, policy, {', '.join(CI_BUILD_JOBS)}]"
-    assert scalar(ci_pass, "if") == CI_PASS_GUARD
-    ci_pass_step = named_step_block(ci_pass, "Check CI result", 6)
+    assert "push:\n    branches: [main]" in ci and "\n  pull_request:" in ci
+    assert "setup-node" not in ci and "npm " not in ci
+    sentinel = job_block(ci, "ci-pass")
     for job in ("changes", "policy", *CI_BUILD_JOBS):
-        assert f"${{{{ needs.{job}.result }}}}" in ci_pass_step, job
-    rust_filter = re.search(
-        r"^            rust:\n(?P<paths>(?:^              - .+\n)+)",
-        changes,
-        re.MULTILINE,
-    )
-    assert rust_filter, "missing rust paths filter"
-    assert "'rustfmt.toml'" in rust_filter.group("paths")
-    assert "'scripts/configure_ci_rust_library.py'" in rust_filter.group("paths")
-    cache_filter = re.search(
-        r"^            rust-cache:\n(?P<paths>(?:^              - .+\n)+)",
-        changes,
-        re.MULTILINE,
-    )
-    assert cache_filter and "'scripts/configure_ci_rust_library.py'" in cache_filter.group("paths")
-    validation = named_step_block(policy, "Validate workflow policy", 6)
-    for marker in (
-        "python3 -m pip install -r requirements-test.txt",
-        "python3 scripts/validate_workflow_policy.py",
-        "python3 scripts/validate_reference_docs.py",
-        "tests/test_reference_docs.py",
-        "tests/test_release_artifacts.py",
-        "tests/test_release_version.py",
-        "tests/test_workflow_policy.py",
-        "tests/test_ci_rust_library.py",
-        "tests/test_capture_agent_matrix.py",
-        "tests/test_event_store.py",
-    ):
-        assert marker in validation, marker
-    capture_build = named_step_block(
-        rust_macos, "Build capture isolation helpers", 6
-    )
-    assert "uses: dtolnay/rust-toolchain@1.96.0" in named_step_block(
-        rust_macos, "Install Rust", 6
-    )
-    rust_install = named_step_block(rust_lint, "Install Rust", 6)
-    assert "uses: dtolnay/rust-toolchain@1.96.0" in rust_install
-    assert "components: clippy, rustfmt" in rust_install
-    rust_format = named_step_block(rust_lint, "Check Rust formatting", 6)
-    assert "cargo fmt --all -- --check" in rust_format
-    # Clippy's --all-targets pass is the compile check for tests and examples.
-    lint_step = named_step_block(rust_lint, "Lint Rust", 6)
-    assert (
-        "cargo clippy --workspace --all-targets -- -D warnings"
-        in lint_step
-    )
-    assert "cargo clippy" not in capture_build
-    for job_name, job in (("rust-lint", rust_lint), ("rust-macos", rust_macos)):
-        cache = named_step_block(job, "Cache Rust dependencies", 6)
-        assert (
-            "save-if: ${{ github.ref == 'refs/heads/main' }}" in cache
-        ), f"{job_name} must not save PR caches"
-    test_library = named_step_block(rust_macos, "Configure test-only Rust library", 6)
-    assert "python3 scripts/configure_ci_rust_library.py" in test_library
-    assert rust_macos.index("name: Configure test-only Rust library") < rust_macos.index("name: Cache Rust dependencies")
-    assert "configure_ci_rust_library.py" not in rust_lint
-    nextest_install = named_step_block(rust_macos, "Install cargo-nextest", 6)
-    assert "uses: taiki-e/install-action@v2" in nextest_install
-    assert re.search(r"tool: cargo-nextest@[0-9]+\.[0-9]+\.[0-9]+\n", nextest_install)
-    macos_lib_tests = named_step_block(rust_macos, "Run tests", 6)
-    # nextest runs each test in its own process, so shared process state stays
-    # isolated exactly as `cargo test -- --test-threads=1` guaranteed.
-    nextest_reuse = (
-        "cargo nextest run --cargo-metadata target/ci-cargo-metadata.json"
-        " --binaries-metadata target/ci-test-binaries.json"
-    )
-    assert nextest_reuse + " -E 'kind(lib)'" in " ".join(macos_lib_tests.split())
-    # The prebuild must use the run steps' package selection and build the
-    # examples before the test targets, or the run steps recompile the app crate.
-    test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
-    example_build = test_build.find(
-        "cargo build --workspace"
-        " --example murmur-eval"
-    )
-    test_prebuild = test_build.find(
-        "cargo nextest list --workspace --lib"
-        " --bin murmur-capture-helper --test topology_watch"
-        ""
-    )
-    assert 0 <= example_build < test_prebuild, "build examples, then every test target"
-    assert (
-        "--message-format json --list-type binaries-only > target/ci-test-binaries.json"
-        in test_build
-    )
-    assert "cargo metadata --format-version 1 > target/ci-cargo-metadata.json" in test_build
-    assert "swiftc -warnings-as-errors" in capture_build
-    assert "sidecars/capture-agent/main.swift" in capture_build
-    assert "cargo build -p murmur-capture-helper" in capture_build
-    assert "MURMUR_CAPTURE_ROLE=worker" in capture_build
-    assert "CARGO_TARGET_DIR=target/capture-worker-build" in capture_build
-    assert "target/capture-worker-build/debug/murmur-capture-helper" in capture_build
-    assert "binaries/murmur-capture-worker-aarch64-apple-darwin" in capture_build
-    capture_tests = named_step_block(rust_macos, "Run capture worker unit tests", 6)
-    assert (
-        nextest_reuse + " -E 'package(=murmur-capture-helper)'"
-        in " ".join(capture_tests.split())
-    )
-    rust_audit = named_step_block(
-        dependency_audit, "Audit Rust dependencies (advisory)", 6
-    )
-    assert "continue-on-error: true" in rust_audit
-    assert "cargo audit" in rust_audit
-    audit_install = named_step_block(dependency_audit, "Install cargo-audit", 6)
-    assert "uses: taiki-e/install-action@v2" in audit_install
-    assert "tool: cargo-audit@0.22.2" in audit_install
-    npm_audit = named_step_block(
-        dependency_audit, "Audit npm dependencies (advisory)", 6
-    )
-    assert "continue-on-error: true" in npm_audit
-    assert "npm audit --audit-level=high" in npm_audit
-    cases = (
-        ("push", "chore: bump version to 0.17.0", False),
-        ("push", "chore: bump version", False),
-        ("push", "feat: add a normal feature", True),
-        ("pull_request", "chore: bump version to 0.17.0", True),
-        ("pull_request", None, True),
-    )
-    for event_name, message, expected in cases:
-        assert should_run_ci(event_name, message) is expected
-    return len(cases)
+        job_block(ci, job)
+        assert job in scalar(sentinel, "needs"), f"ci-pass must require {job}"
+    assert scalar(sentinel, "if") == "always()"
+    assert "job['result'] != 'success'" in sentinel, "skipped native jobs must not pass"
+    policy = job_block(ci, "policy")
+    for script in ("check_core_dependencies.py", "check_native_only.py", "validate_capture_boundary.py", "validate_workflow_policy.py", "validate_reference_docs.py", "validate_markdown_links.py"):
+        assert f"python3 scripts/{script}" in policy
+    assert "pip install -r requirements-test.txt" in policy
+    lint = job_block(ci, "rust-lint")
+    assert "dtolnay/rust-toolchain@1.98.1" in lint
+    assert "cargo clippy --locked" in lint and "--all-targets --features gallery,production-host -- -D warnings" in lint
+    assert "cargo fmt --manifest-path app/Cargo.toml" in lint and "-- --check" in lint
+    native = job_block(ci, "rust-macos")
+    assert "-p murmur-services -p murmur-core -p murmur-webkit -p murmur-capture-helper-protocol -- --test-threads=1" in native
+    assert "cargo test --locked --manifest-path app/sidecars/capture/Cargo.toml" in native
+    assert "--example murmur-eval -- deterministic" in native
+    assert "scripts/test_gpui.py --features production-host" in job_block(ci, "gpui-macos")
+    for job in ("visual-linux", "visual-regression"):
+        assert "scripts/check_gpui_goldens.py" in job_block(ci, job)
+    audit = job_block(ci, "dependency-audit")
+    assert "cargo-audit@0.22.2" in audit and "continue-on-error: true" in audit
+    assert "cargo audit --file app/Cargo.lock" in audit
+    assert "cargo audit --file app/sidecars/capture/Cargo.lock" in audit
+    return len(CI_BUILD_JOBS)
 
 
 def validate_release_build(workflow: str) -> int:
-    assert "configure_ci_rust_library.py" not in workflow, "release builds must keep all library outputs"
-    assert "push:\n    branches: [main]" in workflow
-    assert "\n  workflow_dispatch:" in workflow
-    assert "pull_request" not in workflow
-    assert "self-hosted" not in workflow
-    assert "contents: write" not in workflow
-    assert "tests/test_release_version.py" in workflow
-    assert (
-        "group: release-build-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}"
-        in workflow
-    )
-    assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
-    assert "options: [tauri, gpui]\n        default: tauri" in workflow
+    assert "\n  workflow_dispatch:" in workflow and "pull_request" not in workflow
+    assert "self-hosted" not in workflow and "contents: write" not in workflow
+    assert "setup-node" not in workflow
+    assert "configure_ci_rust_library.py" not in workflow
+    assert "group: release-build-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}" in workflow
     context = job_block(workflow, "context")
-    assert "BUNDLE_TARGET: ${{ inputs.bundle_target || 'tauri' }}" in context
+    assert scalar(context, "if") == "github.event_name == 'workflow_dispatch'"
+    assert "options: [gpui]\n        default: gpui" in workflow
+    assert '[ "$GITHUB_REF" != "refs/heads/main" ]' in context
+    assert "git merge-base --is-ancestor" in context
     assert 'TARGET=$(python3 scripts/release_bundle_target.py) || exit 1' in context
-    assert 'echo "bundle_target=$TARGET" >> "$GITHUB_OUTPUT"' in context
-    assert "bundle-target: ${{ steps.context.outputs.bundle_target }}" in context
-    assert scalar(job_block(workflow, "release-macos"), "if") == "needs.context.outputs.bundle-target == 'tauri'"
     validate_gpui_isolation(workflow)
-    for job in ("typecheck", "release-macos"):
-        assert scalar(job_block(workflow, job), "needs") == "context"
-
-    # The native build and frontend verification share only `context`, so both
-    # enter the queue concurrently instead of serializing behind typecheck.
-    assert "needs: [typecheck]" not in workflow
-    assert "macos-release-${{ needs.context.outputs.source-sha }}" in workflow
-    assert "capture-helper-tcc-evidence-${{ needs.context.outputs.source-sha }}" in workflow
-    assert (
-        "--capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist"
-        in workflow
-    )
-    assert (
-        "--capture-agent-entitlements app/src-tauri/capture-agent.entitlements.plist"
-        in workflow
-    )
-    assert "--capture-agent-info-plist app/src-tauri/capture-agent-info.plist" in workflow
-    assert (
-        "--capture-helper-info-plist app/src-tauri/sidecars/capture/Info.plist"
-        in workflow
-    )
-    assert (
-        "--capture-worker-info-plist app/src-tauri/sidecars/capture/WorkerInfo.plist"
-        in workflow
-    )
-    assert (
-        "--capture-worker-entitlements app/src-tauri/capture-worker.entitlements.plist"
-        in workflow
-    )
-    worker_smoke = named_step_block(
-        workflow, "Smoke test signed capture worker protocol", 6
-    )
-    assert "scripts/smoke_test_capture_worker.py" in worker_smoke
-    assert '--worker "$CAPTURE_WORKER"' in worker_smoke
-    assert workflow.index("Finalize, notarize, and repackage") < workflow.index(
-        "Smoke test signed capture worker protocol"
-    )
-    assert workflow.index("Smoke test signed capture worker protocol") < workflow.index(
-        "Smoke test signed application"
-    )
-    assert (
-        "--capture-agent-launchd-plist "
-        "app/src-tauri/macos/com.localdictation.capture-agent.plist"
-        in workflow
-    )
-    assert '--capture-helper-sha256 "$CAPTURE_HELPER_SHA"' in workflow
-    assert '--capture-agent-sha256 "$CAPTURE_AGENT_SHA"' in workflow
-    assert '--capture-worker-sha256 "$CAPTURE_WORKER_SHA"' in workflow
-    capture_evidence = named_step_block(
-        workflow, "Record capture-helper signing and non-interactive probe evidence", 6
-    )
-    assert "scripts/capture_helper_evidence.py collect-signature" in capture_evidence
-    assert "--kind capture-agent" in capture_evidence
-    assert "--kind capture-worker" in capture_evidence
-    assert "scripts/capture_helper_evidence.py validate-probe" in capture_evidence
-    assert '--signed-bundle-artifact "macos-release-$SOURCE_SHA"' in capture_evidence
-    assert "signature.json" in capture_evidence
-    assert "codesign.txt" not in capture_evidence
-    assert "designated-requirement.txt" not in capture_evidence
-    assert "shared-key: macos-release-v2" in workflow
-    assert "Print :CFBundleExecutable" in workflow
-    assert '$(ls "$APP/Contents/MacOS/" | head -1)' not in workflow
-    assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") == 1
-
-    cases = (
-        ("push", "chore: bump version to 0.17.0", True),
-        ("push", "feat: normal merge", False),
-        ("pull_request", "chore: bump version to 0.17.0", False),
-        ("workflow_dispatch", None, True),
-    )
-    for event_name, message, expected in cases:
-        assert should_run_release_build(event_name, message) is expected
-    assert hashlib.sha256(workflow.encode()).hexdigest() == RELEASE_BUILD_SHA256, \
-        "release-build.yml must match its reviewed SHA-256 pin"
-    return len(cases)
+    assert hashlib.sha256(workflow.encode()).hexdigest() == RELEASE_BUILD_SHA256, "release workflow must match its reviewed SHA-256 pin"
+    return 3
 
 
 def validate_release_rehearsal(workflow: str) -> int:
-    assert "name: Release Rehearsal" in workflow
-    assert "\n  workflow_dispatch:" in workflow
-    for forbidden_trigger in ("\n  push:", "\n  pull_request:", "\n  workflow_run:"):
-        assert forbidden_trigger not in workflow
-    assert "permissions:\n  contents: read" in workflow
-    assert "tests/test_release_version.py" in workflow
-    for forbidden in (
-        "secrets.",
-        "GITHUB_TOKEN",
-        "contents: write",
-        "actions: write",
-        "id-token: write",
-        "pull-requests: write",
-        "gh release",
-        "git tag",
-        "tauri-action",
-    ):
-        assert forbidden not in workflow
-
+    assert "\n  workflow_dispatch:" in workflow and "pull_request" not in workflow
+    assert "self-hosted" not in workflow and not references_secrets(workflow)
+    assert "contents: write" not in workflow
     context = job_block(workflow, "context")
-    assert "ref: main" in context
-    assert 'if [ "$GITHUB_REF" != "refs/heads/main" ]' in workflow
-    assert "source_sha must be an exact lowercase 40-character commit SHA" in workflow
-    assert 'git fetch --no-tags --depth=1 origin "$SOURCE_SHA"' in workflow
-    assert 'RESOLVED=$(git rev-parse "$SOURCE_SHA^{commit}")' in workflow
-    assert 'echo "source_sha=$RESOLVED" >> "$GITHUB_OUTPUT"' in workflow
-    assert 'echo "workflow_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"' in workflow
-
-    for job in ("typecheck", "rehearse-macos"):
-        assert scalar(job_block(workflow, job), "needs") == "context"
-    assert workflow.count("ref: ${{ needs.context.outputs.source-sha }}") == 2
-    assert workflow.count("persist-credentials: false") == 3
-
-    assert (
-        "shared-key: macos-release-rehearsal-${{ needs.context.outputs.source-sha }}"
-        in workflow
-    )
-    assert "macos-release-v1" not in workflow
-    assert "macos-release-v2" not in workflow
-    assert workflow.count("--no-sign") == 1
-    assert '"proxy": "unsigned-release-build"' in workflow
-    assert '"workflow_sha": os.environ["WORKFLOW_SHA"]' in workflow
-    assert '"source_sha": os.environ["SOURCE_SHA"]' in workflow
-    assert '"build_seconds": int(os.environ["BUILD_SECONDS"])' in workflow
-    assert workflow.count("uses: actions/upload-artifact@v4") == 1
-    return 2
+    assert '[ "$GITHUB_REF" != "refs/heads/main" ]' in context
+    assert 'git rev-parse "$SOURCE_SHA^{commit}"' in context
+    native = job_block(workflow, "rehearse-macos")
+    assert "ref: ${{ needs.context.outputs.source-sha }}" in native
+    assert "scripts/rehearse_gpui_bundle.py" in native
+    assert "setup-node" not in workflow and "npm " not in workflow
+    return 1
 
 
 def validate_release_profile(cargo_toml: str) -> None:
-    profile = cargo_toml.split("[profile.release]", 1)[1]
-    profile = profile.split("\n[", 1)[0]
-    assert re.search(r"^strip\s*=\s*false\s*$", profile, re.MULTILINE)
+    profile = cargo_toml.split("[profile.release]", 1)[1].split("\n[", 1)[0]
+    assert re.search(r'^strip\s*=\s*"symbols"\s*$', profile, re.MULTILINE)
 
 
 def validate_release_start(workflow: str) -> None:

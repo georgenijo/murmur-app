@@ -1,0 +1,1291 @@
+//! Zero-config diagnostic log shipper.
+//!
+//! Tails the telemetry JSONL file (`events.jsonl`, already privacy-stripped by
+//! `telemetry.rs`) and POSTs new lines as NDJSON batches to the central ingest
+//! endpoint. Fire-and-forget: on any failure the persisted byte offset simply
+//! does not advance, so the JSONL file itself is the retry queue. Installs are
+//! identified by a random UUID generated on first run — never by hostname.
+//!
+//! Kill switch: set `MURMUR_LOG_SHIPPER=off` in the environment.
+//! Endpoint override for testing: `MURMUR_LOG_ENDPOINT`.
+
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+const ENDPOINT: &str = "https://georgenijo.com/murmur/ingest";
+pub(crate) const TOKEN: &str = "a1b4068693a1f3868bcf03c01ebcf1e9f000080b3e8bfcb0";
+const TICK_SECS: u64 = 60;
+const STARTUP_DELAY_SECS: u64 = 15;
+/// Max bytes shipped per POST; a batch is always cut at a line boundary.
+const MAX_BATCH_BYTES: usize = 1024 * 1024;
+/// Defensive bound for the aggregate input-device count shipped in `/state`.
+const MAX_AUDIO_INPUT_COUNT: usize = 256;
+static SHIPPER_STATE_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Serialize, Deserialize)]
+struct ShipperState {
+    install_id: String,
+    offset: u64,
+    /// Identity (device, inode, birth time) of the file `offset` points into.
+    /// Rotation renames a file without changing it, so it finds the file
+    /// wherever it now lives (`events.jsonl`, `.1`, or `.2`). Absent in state
+    /// written by older builds, which fall back to comparing `offset` with the
+    /// file length.
+    #[serde(default)]
+    file_id: Option<FileId>,
+}
+
+fn logs_dir() -> Option<PathBuf> {
+    Some(
+        crate::identity::data_dir()?
+            .join("local-dictation")
+            .join("logs"),
+    )
+}
+
+fn state_path() -> Option<PathBuf> {
+    let name = if cfg!(debug_assertions) {
+        "shipper_state.dev.json"
+    } else {
+        "shipper_state.json"
+    };
+    Some(logs_dir()?.join(name))
+}
+
+fn jsonl_path() -> Option<PathBuf> {
+    let name = if cfg!(debug_assertions) {
+        "events.dev.jsonl"
+    } else {
+        "events.jsonl"
+    };
+    Some(logs_dir()?.join(name))
+}
+
+fn load_state(path: &Path) -> ShipperState {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .filter(|state: &ShipperState| {
+            uuid::Uuid::parse_str(&state.install_id)
+                .is_ok_and(|install_id| install_id.to_string() == state.install_id)
+        })
+        .unwrap_or_else(|| ShipperState {
+            install_id: uuid::Uuid::new_v4().to_string(),
+            offset: 0,
+            file_id: None,
+        })
+}
+
+fn load_or_create_state(path: &Path) -> Result<ShipperState, String> {
+    let _guard = SHIPPER_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(state) = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|value| serde_json::from_str::<ShipperState>(&value).ok())
+        .filter(|state| {
+            uuid::Uuid::parse_str(&state.install_id)
+                .is_ok_and(|install_id| install_id.to_string() == state.install_id)
+        })
+    {
+        return Ok(state);
+    }
+    let state = ShipperState {
+        install_id: uuid::Uuid::new_v4().to_string(),
+        offset: 0,
+        file_id: None,
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| "diagnostic identity path unavailable".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|_| "diagnostic identity could not be created".to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    let payload = serde_json::to_vec(&state)
+        .map_err(|_| "diagnostic identity could not be encoded".to_string())?;
+    std::fs::write(&temporary, payload)
+        .and_then(|_| std::fs::rename(&temporary, path))
+        .map_err(|_| "diagnostic identity could not be saved".to_string())?;
+    Ok(state)
+}
+
+pub(crate) fn install_id_for_private_capture() -> Result<String, String> {
+    let path = state_path().ok_or_else(|| "diagnostic identity path unavailable".to_string())?;
+    Ok(load_or_create_state(&path)?.install_id)
+}
+
+fn save_state(path: &Path, state: &ShipperState) {
+    if let Ok(json) = serde_json::to_string(state) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+/// Where the shipper is in the log: a byte offset into the file identified by
+/// `id`. `None` is a position saved before file identities were tracked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Position {
+    offset: u64,
+    id: Option<FileId>,
+}
+
+/// One batch of log bytes to ship, cut at a line boundary. `data` may be empty
+/// when the batch only moves the position (rotation bookkeeping).
+struct Batch {
+    data: Vec<u8>,
+    /// Position to persist once this batch is acknowledged.
+    next: Position,
+}
+
+/// Meeting sessions stay local even though their content-free lifecycle events
+/// remain useful in the on-device log viewer. Malformed JSONL lines are also
+/// dropped fail-closed rather than uploaded verbatim.
+fn shippable_payload(data: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(data.len());
+    for line in data.split_inclusive(|byte| *byte == b'\n') {
+        let body = line.strip_suffix(b"\n").unwrap_or(line);
+        let Ok(body) = std::str::from_utf8(body) else {
+            continue;
+        };
+        // A backlog written before an upgrade predates the current privacy
+        // boundary; only lines that change are re-serialised.
+        let body = crate::telemetry::sanitize_persisted_line(body);
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&body) else {
+            continue;
+        };
+        if value.get("stream").and_then(|stream| stream.as_str()) == Some("meeting") {
+            continue;
+        }
+        if crate::telemetry::strip_private_meeting_metadata(&mut value) {
+            let Ok(sanitized) = serde_json::to_vec(&value) else {
+                continue;
+            };
+            output.extend_from_slice(&sanitized);
+        } else {
+            output.extend_from_slice(body.as_bytes());
+        }
+        output.push(b'\n');
+    }
+    output
+}
+
+/// Identity of one incarnation of a log file. Rotation renames a file without
+/// changing any of these, so it still identifies the file under its new name.
+/// The inode alone is not enough: after a file is deleted the filesystem may
+/// hand the same inode to an unrelated new file, and the saved offset would
+/// then be applied to it. The birth time tells those incarnations apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct FileId {
+    dev: u64,
+    ino: u64,
+    /// Creation time in nanoseconds since the Unix epoch; `None` where the
+    /// filesystem does not record one (identity then rests on `dev` + `ino`).
+    created_ns: Option<u64>,
+}
+
+fn file_id(file: &std::fs::File) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata().ok()?;
+    let created_ns = metadata
+        .created()
+        .ok()
+        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| u64::try_from(elapsed.as_nanos()).ok());
+    Some(FileId {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        created_ns,
+    })
+}
+
+/// Read the next batch, following the log across runtime rotations.
+///
+/// `files` is the current log followed by its rotated generations, newest
+/// first (`events.jsonl`, `.1`, `.2`). `telemetry.rs` renames files on
+/// rotation, which keeps their identity, so the saved `FileId` finds the file
+/// the offset belongs to wherever it now lives. The shipper then drains that file
+/// and walks forward through each newer generation to the current file, so a
+/// second rotation before the first was drained loses and repeats nothing.
+/// If the saved file is gone (more rotations than generations kept, or the logs
+/// were cleared) the oldest surviving file is shipped from the top.
+///
+/// Files are opened once and read through the handle, so a rotation between
+/// the lookup and the read cannot make the offset apply to the wrong file.
+fn next_batch(files: &[PathBuf], position: Position) -> Option<Batch> {
+    let mut opened: Vec<Option<(std::fs::File, FileId)>> = files
+        .iter()
+        .map(|path| {
+            let file = std::fs::File::open(path).ok()?;
+            let id = file_id(&file)?;
+            Some((file, id))
+        })
+        .collect();
+    let id_of = |opened: &[Option<(std::fs::File, FileId)>], index: usize| {
+        opened
+            .get(index)
+            .and_then(|slot| slot.as_ref())
+            .map(|(_, id)| *id)
+    };
+    let current_id = id_of(&opened, 0);
+    let jump = |id: Option<FileId>| Batch {
+        data: Vec::new(),
+        next: Position { offset: 0, id },
+    };
+
+    let index = match position.id {
+        Some(saved) => {
+            match (0..opened.len()).find(|&index| id_of(&opened, index) == Some(saved)) {
+                Some(index) => index,
+                None => {
+                    let oldest = (0..opened.len())
+                        .rev()
+                        .find(|&index| opened[index].is_some());
+                    return Some(jump(oldest.and_then(|index| id_of(&opened, index))));
+                }
+            }
+        }
+        // Saved by a build that did not track file identity: an offset past the end
+        // of the current file means it was renamed to `.1`.
+        None => {
+            let current_len = opened[0]
+                .as_ref()
+                .and_then(|(file, _)| file.metadata().ok())
+                .map_or(0, |metadata| metadata.len());
+            if position.offset <= current_len {
+                0
+            } else if opened.get(1).is_some_and(|slot| slot.is_some()) {
+                1
+            } else {
+                return Some(jump(current_id));
+            }
+        }
+    };
+
+    let (file, id) = opened[index].as_mut()?;
+    let id = *id;
+    let len = file.metadata().ok()?.len();
+    let offset = position.offset;
+    let here = Position {
+        offset,
+        id: Some(id),
+    };
+
+    if index == 0 {
+        if offset > len {
+            // Truncated in place: start over.
+            return Some(jump(Some(id)));
+        }
+        let chunk = read_range(file, offset, MAX_BATCH_BYTES as u64)?;
+        if chunk.is_empty() {
+            // Caught up. Adopt the identity of a legacy position so the next
+            // rotation can be followed exactly.
+            return position.id.is_none().then_some(Batch {
+                data: Vec::new(),
+                next: here,
+            });
+        }
+        return match chunk.iter().rposition(|&b| b == b'\n') {
+            Some(pos) => Some(Batch {
+                next: Position {
+                    offset: offset + pos as u64 + 1,
+                    id: Some(id),
+                },
+                data: chunk[..=pos].to_vec(),
+            }),
+            // No newline in a full-size chunk means a pathological >1 MB line:
+            // skip it rather than stall forever. A partial short chunk is just
+            // a line still being written — wait for the next tick.
+            None if chunk.len() >= MAX_BATCH_BYTES => Some(Batch {
+                next: Position {
+                    offset: offset + chunk.len() as u64,
+                    id: Some(id),
+                },
+                data: Vec::new(),
+            }),
+            None => None,
+        };
+    }
+
+    // A rotated generation is complete, so it is drained in full and the
+    // position then moves to the next-newer file that still exists.
+    let next_file = (0..index)
+        .rev()
+        .find(|&newer| opened[newer].is_some())
+        .and_then(|newer| id_of(&opened, newer));
+    let (file, _) = opened[index].as_mut()?;
+    let chunk = if offset < len {
+        read_range(file, offset, MAX_BATCH_BYTES as u64)?
+    } else {
+        Vec::new()
+    };
+    // With no newer file yet (the writer could not create one), stay at this
+    // file's end rather than forgetting it: if a newer generation appears
+    // later, this identity is what lets the shipper walk forward to it.
+    let exhausted = Position {
+        offset: len,
+        id: Some(id),
+    };
+    if chunk.is_empty() {
+        return match next_file {
+            Some(_) => Some(jump(next_file)),
+            None if offset == len => None,
+            None => Some(Batch {
+                data: Vec::new(),
+                next: exhausted,
+            }),
+        };
+    }
+    if (chunk.len() as u64) < MAX_BATCH_BYTES as u64 {
+        // Reached the end of the file: ship the remainder and move on.
+        return Some(Batch {
+            data: chunk,
+            next: match next_file {
+                Some(_) => Position {
+                    offset: 0,
+                    id: next_file,
+                },
+                None => exhausted,
+            },
+        });
+    }
+    let consumed = chunk
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(chunk.len(), |pos| pos + 1);
+    Some(Batch {
+        data: if consumed == chunk.len() && !chunk.ends_with(b"\n") {
+            Vec::new() // pathological >1 MB line: skip rather than stall
+        } else {
+            chunk[..consumed].to_vec()
+        },
+        next: Position {
+            offset: offset + consumed as u64,
+            id: Some(id),
+        },
+    })
+}
+
+fn read_range(file: &mut std::fs::File, offset: u64, max: u64) -> Option<Vec<u8>> {
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut buf = Vec::new();
+    file.take(max).read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// Device identity shipped alongside every batch so the dashboard can name
+/// the stream ("George's MacBook Pro · macOS 26.0"). Collected once.
+struct DeviceInfo {
+    name: String,
+    os: String,
+    hw: String,
+    specs: String,
+}
+
+fn sanitize_header(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' => '\'',
+            '\u{201C}' | '\u{201D}' => '"',
+            '\u{2013}' | '\u{2014}' => '-',
+            c if c.is_ascii_graphic() || c == ' ' => c,
+            _ => '?',
+        })
+        .collect();
+    cleaned.trim().chars().take(80).collect()
+}
+
+fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(cmd).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+fn collect_device_info() -> DeviceInfo {
+    #[cfg(target_os = "macos")]
+    let name = command_stdout("scutil", &["--get", "ComputerName"]);
+    #[cfg(not(target_os = "macos"))]
+    let name: Option<String> = None;
+    let name = name
+        .or_else(|| command_stdout("hostname", &[]))
+        .unwrap_or_else(|| "unknown".into());
+
+    #[cfg(target_os = "macos")]
+    let os = command_stdout("sw_vers", &["--productVersion"])
+        .map(|v| format!("macOS {}", v))
+        .unwrap_or_else(|| "macOS ?".into());
+    #[cfg(not(target_os = "macos"))]
+    let os = std::env::consts::OS.to_string();
+
+    #[cfg(target_os = "macos")]
+    let hw = command_stdout("sysctl", &["-n", "hw.model"]).unwrap_or_default();
+    #[cfg(not(target_os = "macos"))]
+    let hw = String::new();
+
+    // "Apple M2 · 16 GB · 8 cores" — chip, RAM, core count.
+    #[cfg(target_os = "macos")]
+    let specs = {
+        let chip = command_stdout("sysctl", &["-n", "machdep.cpu.brand_string"])
+            .unwrap_or_else(|| std::env::consts::ARCH.to_string());
+        let ram = command_stdout("sysctl", &["-n", "hw.memsize"])
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|b| format!("{} GB", b >> 30))
+            .unwrap_or_default();
+        let cores = command_stdout("sysctl", &["-n", "hw.ncpu"])
+            .map(|n| format!("{} cores", n))
+            .unwrap_or_default();
+        [chip, ram, cores]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" / ")
+    };
+    #[cfg(not(target_os = "macos"))]
+    let specs = std::env::consts::ARCH.to_string();
+
+    DeviceInfo {
+        name: sanitize_header(&name),
+        os: sanitize_header(&os),
+        hw: sanitize_header(&hw),
+        specs: sanitize_header(&specs),
+    }
+}
+
+async fn ship(
+    client: &reqwest::Client,
+    endpoint: &str,
+    install_id: &str,
+    device: &DeviceInfo,
+    data: Vec<u8>,
+) -> bool {
+    let result = client
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {}", TOKEN))
+        .header("X-Install-Id", install_id)
+        .header("X-App-Version", env!("CARGO_PKG_VERSION"))
+        .header("X-Dev", if cfg!(debug_assertions) { "1" } else { "0" })
+        .header("X-Device-Name", &device.name)
+        .header("X-Os-Version", &device.os)
+        .header("X-Hw-Model", &device.hw)
+        .header("X-Hw-Specs", &device.specs)
+        .header("Content-Type", "application/x-ndjson")
+        .body(data)
+        .send()
+        .await;
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            // The receiver's success body carries the per-install diagnostics
+            // flag; older receivers reply 204 with no body, which reads as
+            // disarmed. The flag can only arm what the server names.
+            let reply = resp
+                .text()
+                .await
+                .ok()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok());
+            let armed = reply
+                .as_ref()
+                .and_then(|value| value.get("diagnostics").and_then(|flag| flag.as_bool()))
+                .unwrap_or(false);
+            let collect_now = reply
+                .as_ref()
+                .and_then(|value| value.get("collect_now").and_then(|epoch| epoch.as_u64()))
+                .unwrap_or(0);
+            crate::hang_diagnostics::configure(
+                install_id,
+                &endpoint.replace("/ingest", "/bundle"),
+                armed,
+                collect_now,
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Serialize only a bounded aggregate of the audio-input picture. The generic
+/// item type is deliberately ignored: neither display labels nor backend UIDs
+/// can enter the serialized state body.
+fn aggregate_audio_state<T>(
+    default_input_available: bool,
+    inputs: impl IntoIterator<Item = T>,
+    enumeration_ok: bool,
+) -> String {
+    let observed = inputs.into_iter().take(MAX_AUDIO_INPUT_COUNT + 1).count();
+    serde_json::json!({
+        "default_input_available": default_input_available,
+        "input_device_count": observed.min(MAX_AUDIO_INPUT_COUNT),
+        "input_device_count_capped": observed > MAX_AUDIO_INPUT_COUNT,
+        "input_enumeration_ok": enumeration_ok,
+        "app_version": env!("CARGO_PKG_VERSION"),
+    })
+    .to_string()
+}
+
+fn cached_audio_inventory_aggregate() -> String {
+    let aggregate = crate::audio_inventory::privacy_aggregate();
+    aggregate_audio_state(
+        aggregate.default_input_available,
+        0..aggregate.input_device_count,
+        aggregate.enumeration_ok,
+    )
+}
+
+async fn ship_state(
+    client: &reqwest::Client,
+    endpoint: &str,
+    install_id: &str,
+    device: &DeviceInfo,
+    body: String,
+) -> bool {
+    let result = client
+        .post(endpoint)
+        .header("Authorization", format!("Bearer {}", TOKEN))
+        .header("X-Install-Id", install_id)
+        .header("X-App-Version", env!("CARGO_PKG_VERSION"))
+        .header("X-Device-Name", &device.name)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await;
+    matches!(result, Ok(resp) if resp.status().is_success())
+}
+
+async fn tick(client: &reqwest::Client, endpoint: &str, device: &DeviceInfo) {
+    let (Some(state_file), Some(log)) = (state_path(), jsonl_path()) else {
+        return;
+    };
+    let mut files = vec![log.clone()];
+    files.extend(crate::telemetry::rotated_paths(
+        &log,
+        crate::telemetry::EVENT_LOG_GENERATIONS,
+    ));
+    let Ok(mut state) = load_or_create_state(&state_file) else {
+        return;
+    };
+
+    // Bounded loop: drain at most a handful of batches per tick so a huge
+    // backlog trickles out instead of hammering the endpoint.
+    for _ in 0..8 {
+        let position = Position {
+            offset: state.offset,
+            id: state.file_id,
+        };
+        let Some(batch) = next_batch(&files, position) else {
+            break;
+        };
+        let outbound = shippable_payload(&batch.data);
+        if !outbound.is_empty()
+            && !ship(client, endpoint, &state.install_id, device, outbound).await
+        {
+            break; // endpoint unreachable — offset stays put, retry next tick
+        }
+        state.offset = batch.next.offset;
+        state.file_id = batch.next.id;
+        save_state(&state_file, &state);
+    }
+}
+
+pub fn start(app_handle: &crate::host::Context) {
+    if std::env::var_os("MURMUR_UPDATER_CANARY").is_some() {
+        tracing::info!(target: "system", "log shipper disabled: updater canary run");
+        return;
+    }
+    if crate::telemetry::is_internal_bundle(app_handle) {
+        tracing::info!(target: "system", "log shipper disabled: internal bundle");
+        return;
+    }
+    if std::env::var("MURMUR_LOG_SHIPPER").is_ok_and(|v| v == "off") {
+        tracing::info!(target: "system", "log shipper disabled via MURMUR_LOG_SHIPPER=off");
+        return;
+    }
+    // Dev builds (native development) stay off the fleet dashboard entirely; set
+    // MURMUR_LOG_ENDPOINT explicitly when the shipper itself is under test.
+    if cfg!(debug_assertions) && std::env::var("MURMUR_LOG_ENDPOINT").is_err() {
+        tracing::info!(target: "system", "log shipper disabled: dev build");
+        return;
+    }
+    // CI smoke tests launch the real bundle; their logs are noise on the
+    // fleet dashboard (GitHub Actions and most CI systems set CI=true).
+    if std::env::var("CI").is_ok_and(|v| !v.is_empty()) {
+        tracing::info!(target: "system", "log shipper disabled: CI environment");
+        return;
+    }
+    let endpoint = std::env::var("MURMUR_LOG_ENDPOINT").unwrap_or_else(|_| ENDPOINT.to_string());
+
+    crate::host::runtime::spawn(async move {
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        tokio::time::sleep(std::time::Duration::from_secs(STARTUP_DELAY_SECS)).await;
+        let device = collect_device_info();
+        let state_endpoint = endpoint.replace("/ingest", "/state");
+        let mut last_snapshot: Option<String> = None;
+        loop {
+            tick(&client, &endpoint, &device).await;
+            // Device/state snapshots come only from the shared backend cache.
+            // Reading this cache must never spawn a capture helper from the
+            // shipper.
+            // The install id is re-read after tick(): the first tick persists
+            // it, so a fresh install reports state under its real identity
+            // instead of a throwaway UUID.
+            let state_install_id = state_path()
+                .filter(|p| p.exists())
+                .map(|p| load_state(&p).install_id);
+            if let Some(install_id) = &state_install_id {
+                let snap = cached_audio_inventory_aggregate();
+                if last_snapshot.as_deref() != Some(snap.as_str())
+                    && ship_state(&client, &state_endpoint, install_id, &device, snap.clone()).await
+                {
+                    last_snapshot = Some(snap);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(TICK_SECS)).await;
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    fn tmp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("murmur_shipper_test_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The current log followed by its rotated generations, as `tick` builds it.
+    fn log_files(dir: &Path) -> Vec<PathBuf> {
+        let log = dir.join("events.jsonl");
+        let mut files = vec![log.clone()];
+        files.extend(crate::telemetry::rotated_paths(
+            &log,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        ));
+        files
+    }
+
+    fn legacy(offset: u64) -> Position {
+        Position { offset, id: None }
+    }
+
+    fn line(n: u32) -> String {
+        format!("{{\"n\":{n}}}\n")
+    }
+
+    /// Ship everything currently available, as repeated ticks would, and
+    /// return the shipped lines in order.
+    fn drain(files: &[PathBuf], position: &mut Position) -> Vec<String> {
+        let mut shipped = Vec::new();
+        for _ in 0..200 {
+            let Some(batch) = next_batch(files, *position) else {
+                break;
+            };
+            shipped.extend(
+                String::from_utf8(batch.data)
+                    .unwrap()
+                    .lines()
+                    .map(str::to_string),
+            );
+            *position = batch.next;
+        }
+        shipped
+    }
+
+    fn numbered(range: std::ops::RangeInclusive<u32>) -> Vec<String> {
+        range.map(|n| line(n).trim_end().to_string()).collect()
+    }
+
+    fn rotating_writer(dir: &Path, max_bytes: u64) -> crate::telemetry::SizeRotatingFile {
+        crate::telemetry::SizeRotatingFile::open(
+            dir.join("events.jsonl"),
+            max_bytes,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn batch_cuts_at_line_boundary() {
+        let dir = tmp_dir("cut");
+        let files = log_files(&dir);
+        std::fs::write(&files[0], b"{\"a\":1}\n{\"b\":2}\n{\"partial").unwrap();
+        let batch = next_batch(&files, legacy(0)).unwrap();
+        assert_eq!(batch.data, b"{\"a\":1}\n{\"b\":2}\n");
+        assert_eq!(batch.next.offset, 16);
+        // The partial trailing line is not shippable yet.
+        assert!(next_batch(&files, batch.next).is_none());
+    }
+
+    #[test]
+    fn batch_resumes_from_offset() {
+        let dir = tmp_dir("resume");
+        let files = log_files(&dir);
+        std::fs::write(&files[0], b"{\"a\":1}\n{\"b\":2}\n").unwrap();
+        let batch = next_batch(&files, legacy(8)).unwrap();
+        assert_eq!(batch.data, b"{\"b\":2}\n");
+        assert_eq!(batch.next.offset, 16);
+        // A position saved without an identity adopts the file's.
+        assert!(batch.next.id.is_some());
+    }
+
+    #[test]
+    fn meeting_sessions_and_malformed_lines_are_excluded_from_shipper_output() {
+        const TRANSCRIPT_SENTINEL: &str = "PRIVATE MEETING TRANSCRIPT SENTINEL";
+        const TITLE_SENTINEL: &str = "PRIVATE MEETING TITLE SENTINEL";
+        const ATTENDEE_SENTINEL: &str = "PRIVATE MEETING ATTENDEE SENTINEL";
+        let input = format!(
+            "{{\"stream\":\"meeting\",\"data\":{{\"transcript\":\"{TRANSCRIPT_SENTINEL}\"}}}}\n{{\"stream\":\"pipeline\",\"data\":{{\"event_code\":\"recording.started\",\"title\":\"{TITLE_SENTINEL}\",\"attendees\":[\"{ATTENDEE_SENTINEL}\"]}}}}\nnot-json\n"
+        );
+        let output = shippable_payload(input.as_bytes());
+        let output = String::from_utf8(output).unwrap();
+        assert!(!output.contains(TRANSCRIPT_SENTINEL));
+        assert!(!output.contains(TITLE_SENTINEL));
+        assert!(!output.contains(ATTENDEE_SENTINEL));
+        assert!(!output.contains("meeting"));
+        assert!(!output.contains("not-json"));
+        assert!(output.contains("pipeline"));
+    }
+
+    #[test]
+    fn legacy_position_drains_rotated_file_then_restarts() {
+        let dir = tmp_dir("rotate");
+        let files = log_files(&dir);
+        // Rotated file holds the full old contents; new file is shorter than
+        // our offset (12) into the old one.
+        std::fs::write(&files[1], b"{\"old\":1}\n{\"old\":2}\n").unwrap();
+        std::fs::write(&files[0], b"{\"new\":1}\n").unwrap();
+        let batch = next_batch(&files, legacy(12)).unwrap();
+        assert_eq!(batch.data, b"old\":2}\n".to_vec());
+        assert_eq!(batch.next.offset, 0);
+        // Next call reads the new file from the top.
+        let batch = next_batch(&files, batch.next).unwrap();
+        assert_eq!(batch.data, b"{\"new\":1}\n");
+    }
+
+    #[test]
+    fn upgraded_backlog_ships_without_typed_key_identity() {
+        // An offline install upgrades with keyboard events from an older build
+        // queued in every rotated generation and the current file.
+        let dir = tmp_dir("legacy_key_identity");
+        let files = log_files(&dir);
+        let legacy_line = |n: u32, key: &str| {
+            format!(
+                "{{\"timestamp\":\"t{n}\",\"stream\":\"keyboard\",\"level\":\"info\",\"summary\":\"Structured event\",\"data\":{{\"reason\":\"combo_cancelled\",\"event_type\":\"KeyPress({key})\",\"key\":\"Some({key})\"}}}}\n"
+            )
+        };
+        let clean = |n: u32| {
+            format!(
+                "{{\"timestamp\":\"t{n}\",\"stream\":\"system\",\"level\":\"info\",\"summary\":\"ok\",\"data\":{{\"elapsed_ms\":{n}}}}}\n"
+            )
+        };
+        let shipped_prefix = clean(0);
+        let oldest = [shipped_prefix.clone(), legacy_line(1, "KeyI"), clean(2)].concat();
+        let rotated = [legacy_line(3, "Slash"), clean(4)].concat();
+        let current = [
+            legacy_line(5, "Num4"),
+            clean(6),
+            legacy_line(7, "SemiColon"),
+        ]
+        .concat();
+        std::fs::write(&files[2], &oldest).unwrap();
+        std::fs::write(&files[1], &rotated).unwrap();
+        std::fs::write(&files[0], &current).unwrap();
+
+        // The acknowledged position is just past the shipped prefix of the
+        // oldest generation.
+        let oldest_id = file_id(&std::fs::File::open(&files[2]).unwrap());
+        let current_id = file_id(&std::fs::File::open(&files[0]).unwrap());
+        let mut position = Position {
+            offset: shipped_prefix.len() as u64,
+            id: oldest_id,
+        };
+        let mut raw = String::new();
+        let mut shipped = Vec::new();
+        for _ in 0..20 {
+            let Some(batch) = next_batch(&files, position) else {
+                break;
+            };
+            let payload = String::from_utf8(shippable_payload(&batch.data)).unwrap();
+            let batch_text = String::from_utf8(batch.data).unwrap();
+            assert_eq!(payload.lines().count(), batch_text.lines().count());
+            raw.push_str(&batch_text);
+            shipped.extend(payload.lines().map(str::to_string));
+            position = batch.next;
+        }
+        // Positions follow the raw bytes, not the rewritten payload.
+        assert_eq!(
+            raw,
+            [&oldest[shipped_prefix.len()..], &rotated, &current].concat()
+        );
+        assert_eq!(position.id, current_id);
+        assert_eq!(position.offset, current.len() as u64);
+
+        let shipped_text = shipped.join("\n");
+        for leak in ["KeyI", "Num4", "Slash", "SemiColon", "KeyPress("] {
+            assert!(
+                !shipped_text.contains(leak),
+                "{leak} shipped: {shipped_text}"
+            );
+        }
+        // Order is intact, sanitized events keep their safe fields, and clean
+        // lines are forwarded byte-for-byte.
+        let timestamps: Vec<String> = shipped
+            .iter()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["timestamp"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(timestamps, ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]);
+        assert!(shipped[0].contains("\"reason\":\"combo_cancelled\""));
+        assert_eq!(format!("{}\n", shipped[1]), clean(2));
+        assert_eq!(format!("{}\n", shipped[3]), clean(4));
+        assert_eq!(format!("{}\n", shipped[5]), clean(6));
+    }
+
+    #[test]
+    fn legacy_position_with_missing_rotated_file_restarts_cleanly() {
+        let dir = tmp_dir("rotate_missing");
+        let files = log_files(&dir);
+        std::fs::write(&files[0], b"{\"new\":1}\n").unwrap();
+        let batch = next_batch(&files, legacy(999)).unwrap();
+        assert!(batch.data.is_empty());
+        assert_eq!(batch.next.offset, 0);
+    }
+
+    #[test]
+    fn rotation_mid_stream_ships_each_line_exactly_once() {
+        let dir = tmp_dir("mid_stream");
+        let files = log_files(&dir);
+        // 8-byte lines; the file rotates once it holds five of them.
+        let mut writer = rotating_writer(&dir, 40);
+        let mut position = legacy(0);
+        let mut shipped = Vec::new();
+
+        for n in 1..=4 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=4));
+
+        // Line 5 is written but not shipped, then line 6 rotates the file.
+        writer.write_all(line(5).as_bytes()).unwrap();
+        writer.write_all(line(6).as_bytes()).unwrap();
+        assert!(files[1].exists());
+        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), line(6));
+
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=6));
+
+        // Nothing is repeated on later ticks, and new lines keep flowing.
+        assert!(drain(&files, &mut position).is_empty());
+        writer.write_all(line(7).as_bytes()).unwrap();
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=7));
+    }
+
+    #[test]
+    fn second_rotation_before_the_first_is_drained_loses_nothing() {
+        let dir = tmp_dir("double_rotation");
+        let files = log_files(&dir);
+        // Two lines per file.
+        let mut writer = rotating_writer(&dir, 16);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        let mut shipped = drain(&files, &mut position);
+        assert_eq!(shipped, numbered(1..=1));
+
+        // Lines 2..5 rotate twice before the shipper ticks again: the file
+        // the shipper was reading is now .2, and .1 is entirely unshipped.
+        for n in 2..=5 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&files[2]).unwrap(),
+            numbered(1..=2).join("\n") + "\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&files[1]).unwrap(),
+            numbered(3..=4).join("\n") + "\n"
+        );
+
+        shipped.extend(drain(&files, &mut position));
+        assert_eq!(shipped, numbered(1..=5));
+        assert!(drain(&files, &mut position).is_empty());
+    }
+
+    #[test]
+    fn rotations_beyond_the_kept_generations_ship_what_survives_without_repeats() {
+        let dir = tmp_dir("triple_rotation");
+        let files = log_files(&dir);
+        let mut writer = rotating_writer(&dir, 16);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        let mut shipped = drain(&files, &mut position);
+
+        // Lines 2..7 rotate three times; the file holding line 1 is deleted
+        // and line 2 is unrecoverable. Everything that survives still ships.
+        for n in 2..=7 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        shipped.extend(drain(&files, &mut position));
+        let mut expected = numbered(1..=1);
+        expected.extend(numbered(3..=7));
+        assert_eq!(shipped, expected);
+        assert!(drain(&files, &mut position).is_empty());
+    }
+
+    #[test]
+    fn cleared_logs_restart_from_the_new_file() {
+        let dir = tmp_dir("cleared");
+        let files = log_files(&dir);
+        let mut writer = rotating_writer(&dir, 1024);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(1..=1));
+
+        // Holding the old file open keeps its inode from being reused here;
+        // reuse itself is covered by `reused_inode_with_a_new_birth_time_is_a_different_file`.
+        let _held = std::fs::File::open(&files[0]).unwrap();
+        std::fs::remove_file(&files[0]).unwrap();
+        std::fs::write(&files[0], line(2)).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(2..=2));
+    }
+
+    #[test]
+    fn reused_inode_with_a_new_birth_time_is_a_different_file() {
+        let dir = tmp_dir("inode_reuse");
+        let files = log_files(&dir);
+        // An older generation holds lines the saved position never reached.
+        std::fs::write(&files[1], line(1) + &line(2)).unwrap();
+        std::fs::write(&files[0], line(3)).unwrap();
+        let current = file_id(&std::fs::File::open(&files[0]).unwrap()).unwrap();
+
+        // The saved file was deleted and the filesystem handed its inode (same
+        // device, same inode number) to the current file, which is a new
+        // incarnation with a different birth time.
+        let stale = FileId {
+            created_ns: Some(current.created_ns.map_or(1, |created| created + 1)),
+            ..current
+        };
+        let mut position = Position {
+            offset: 8,
+            id: Some(stale),
+        };
+        // The offset is not applied to the unrelated file, and the surviving
+        // older generation is not bypassed: everything ships from the oldest.
+        assert_eq!(drain(&files, &mut position), numbered(1..=3));
+    }
+
+    #[test]
+    fn matching_identity_still_resumes_at_the_saved_offset() {
+        let dir = tmp_dir("inode_same");
+        let files = log_files(&dir);
+        std::fs::write(&files[0], line(1) + &line(2)).unwrap();
+        let id = file_id(&std::fs::File::open(&files[0]).unwrap());
+        let mut position = Position { offset: 8, id };
+        assert_eq!(drain(&files, &mut position), numbered(2..=2));
+    }
+
+    #[test]
+    fn state_without_file_identity_loads_with_the_legacy_fallback() {
+        let dir = tmp_dir("legacy_state");
+        let path = dir.join("shipper_state.json");
+        let install_id = uuid::Uuid::new_v4().to_string();
+        std::fs::write(
+            &path,
+            format!("{{\"install_id\":\"{install_id}\",\"offset\":5}}"),
+        )
+        .unwrap();
+        let state = load_state(&path);
+        assert_eq!(state.install_id, install_id);
+        assert_eq!(state.offset, 5);
+        assert!(state.file_id.is_none());
+
+        let id = FileId {
+            dev: 1,
+            ino: 2,
+            created_ns: Some(3),
+        };
+        save_state(
+            &path,
+            &ShipperState {
+                install_id,
+                offset: 9,
+                file_id: Some(id),
+            },
+        );
+        assert_eq!(load_state(&path).file_id, Some(id));
+    }
+
+    #[test]
+    fn failed_recreate_after_rotation_is_not_skipped_or_repeated_by_the_shipper() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tmp_dir("recreate_fails");
+        let files = log_files(&dir);
+        let fs = std::sync::Arc::new(crate::telemetry::FailingFs::default());
+        let mut writer = crate::telemetry::SizeRotatingFile::open_with(
+            fs.clone(),
+            files[0].clone(),
+            16,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        )
+        .unwrap()
+        .with_create_retry(std::time::Duration::ZERO);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        writer.write_all(line(2).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(1..=2));
+
+        // Line 3 rotates the file, but the fresh file cannot be created. The
+        // shipper sees a complete .1 and no current file.
+        fs.fail_create.store(true, SeqCst);
+        assert!(writer.write_all(line(3).as_bytes()).is_err());
+        assert!(drain(&files, &mut position).is_empty());
+        assert!(writer.write_all(line(3).as_bytes()).is_err());
+        assert!(drain(&files, &mut position).is_empty());
+
+        // Nothing was appended to .1 behind the shipper's back; once the file
+        // can be created, new lines are shipped exactly once.
+        fs.fail_create.store(false, SeqCst);
+        writer.write_all(line(3).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(3..=3));
+        writer.write_all(line(4).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(4..=4));
+        assert!(drain(&files, &mut position).is_empty());
+    }
+
+    #[test]
+    fn rotating_again_before_shipping_resumes_after_a_failed_recreate_loses_nothing() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let dir = tmp_dir("recreate_then_rotate");
+        let files = log_files(&dir);
+        let fs = std::sync::Arc::new(crate::telemetry::FailingFs::default());
+        let mut writer = crate::telemetry::SizeRotatingFile::open_with(
+            fs.clone(),
+            files[0].clone(),
+            16,
+            crate::telemetry::EVENT_LOG_GENERATIONS,
+        )
+        .unwrap()
+        .with_create_retry(std::time::Duration::ZERO);
+        let mut position = legacy(0);
+
+        writer.write_all(line(1).as_bytes()).unwrap();
+        writer.write_all(line(2).as_bytes()).unwrap();
+        assert_eq!(drain(&files, &mut position), numbered(1..=2));
+
+        // Rotation succeeds but the fresh file cannot be created. The shipper
+        // drains .1 to its end and has no newer file to move to.
+        fs.fail_create.store(true, SeqCst);
+        assert!(writer.write_all(line(3).as_bytes()).is_err());
+        assert!(drain(&files, &mut position).is_empty());
+        assert!(position.id.is_some(), "the exhausted file stays tracked");
+
+        // Creation recovers and the file rotates again before the shipper
+        // runs: the file it was on is now .2 and .1 is entirely new.
+        fs.fail_create.store(false, SeqCst);
+        for n in 4..=7 {
+            writer.write_all(line(n).as_bytes()).unwrap();
+        }
+        assert_eq!(drain(&files, &mut position), numbered(4..=7));
+        assert!(drain(&files, &mut position).is_empty());
+    }
+
+    #[test]
+    fn large_rotated_generation_drains_in_bounded_batches() {
+        let dir = tmp_dir("large_rotated");
+        let files = log_files(&dir);
+        let entry = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(90));
+        let total = 25_000;
+        std::fs::write(&files[1], entry.repeat(total)).unwrap();
+        std::fs::write(&files[0], line(1)).unwrap();
+        let rotated_id = file_id(&std::fs::File::open(&files[1]).unwrap());
+
+        let mut position = Position {
+            offset: 0,
+            id: rotated_id,
+        };
+        let mut count = 0;
+        for _ in 0..50 {
+            let Some(batch) = next_batch(&files, position) else {
+                break;
+            };
+            assert!(batch.data.len() <= MAX_BATCH_BYTES);
+            count += batch.data.iter().filter(|&&b| b == b'\n').count();
+            position = batch.next;
+        }
+        assert_eq!(count, total + 1);
+    }
+
+    #[test]
+    fn device_info_is_sanitized_and_present() {
+        let d = collect_device_info();
+        assert!(!d.name.is_empty());
+        assert!(d.name.len() <= 80);
+        assert!(d.name.chars().all(|c| c.is_ascii_graphic() || c == ' '));
+        assert!(d.os.starts_with("macOS") || !d.os.is_empty());
+    }
+
+    #[test]
+    fn sanitize_strips_control_and_truncates() {
+        assert_eq!(sanitize_header("Bob\u{7f}s\nMac"), "Bob?s?Mac");
+        assert_eq!(
+            sanitize_header("George\u{2019}s MacBook \u{2014} M4"),
+            "George's MacBook - M4"
+        );
+        assert_eq!(sanitize_header(&"x".repeat(200)).len(), 80);
+        assert_eq!(sanitize_header("  padded  "), "padded");
+    }
+
+    #[test]
+    fn state_roundtrip_and_fresh_install_id() {
+        let dir = tmp_dir("state");
+        let path = dir.join("shipper_state.json");
+        let fresh = load_state(&path);
+        assert_eq!(fresh.offset, 0);
+        assert_eq!(fresh.install_id.len(), 36);
+        save_state(&path, &fresh);
+        let reloaded = load_state(&path);
+        assert_eq!(reloaded.install_id, fresh.install_id);
+        // A second fresh load (different path) gets a different UUID.
+        let other = load_state(&dir.join("nope.json"));
+        assert_ne!(other.install_id, fresh.install_id);
+    }
+
+    #[test]
+    fn private_upload_and_first_tick_share_one_persisted_install_id() {
+        let dir = tmp_dir("private_identity");
+        let path = dir.join("shipper_state.json");
+
+        let private_upload = load_or_create_state(&path).unwrap();
+        let first_tick = load_or_create_state(&path).unwrap();
+
+        assert_eq!(private_upload.install_id, first_tick.install_id);
+        assert_eq!(load_state(&path).install_id, private_upload.install_id);
+    }
+
+    #[test]
+    fn audio_inventory_aggregate_tracks_only_bounded_enumeration_results() {
+        let success: serde_json::Value =
+            serde_json::from_str(&aggregate_audio_state(true, 0..3, true)).unwrap();
+        assert_eq!(success["default_input_available"], true);
+        assert_eq!(success["input_device_count"], 3);
+        assert_eq!(success["input_enumeration_ok"], true);
+
+        let failure: serde_json::Value = serde_json::from_str(&aggregate_audio_state(
+            false,
+            std::iter::empty::<()>(),
+            false,
+        ))
+        .unwrap();
+        assert_eq!(failure["default_input_available"], false);
+        assert_eq!(failure["input_device_count"], 0);
+        assert_eq!(failure["input_enumeration_ok"], false);
+    }
+
+    #[tokio::test]
+    async fn state_http_body_never_contains_audio_labels_or_uids() {
+        const SENTINEL_LABEL: &str = "PRIVATE STUDIO MICROPHONE LABEL";
+        const SENTINEL_UID: &str = "CoreAudio-UID-private-123";
+        let snapshot = aggregate_audio_state(
+            true,
+            [
+                (SENTINEL_LABEL, SENTINEL_UID),
+                ("Second label", "Second UID"),
+            ],
+            true,
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/state", listener.local_addr().unwrap());
+        let (request_sender, request_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let expected_len = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    })
+                    .unwrap();
+                break header_end + 4 + content_length;
+            };
+            while request.len() < expected_len {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+            }
+            request_sender.send(request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let device = DeviceInfo {
+            name: "test-host".to_string(),
+            os: "test-os".to_string(),
+            hw: "test-hw".to_string(),
+            specs: "test-specs".to_string(),
+        };
+        assert!(
+            ship_state(&client, &endpoint, "test-install", &device, snapshot).await,
+            "sentinel server should acknowledge the state POST"
+        );
+        let request = request_receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        server.join().unwrap();
+        let request = String::from_utf8(request).unwrap();
+        let body = request.split_once("\r\n\r\n").unwrap().1;
+
+        assert!(!body.contains(SENTINEL_LABEL));
+        assert!(!body.contains(SENTINEL_UID));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            serde_json::json!({
+                "default_input_available": true,
+                "input_device_count": 2,
+                "input_device_count_capped": false,
+                "input_enumeration_ok": true,
+                "app_version": env!("CARGO_PKG_VERSION"),
+            })
+        );
+    }
+}

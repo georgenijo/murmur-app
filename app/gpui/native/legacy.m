@@ -9,6 +9,9 @@
 @protocol MurmurLegacyAPI
 + (id)defaultDataStore;
 + (id)nonPersistentDataStore;
++ (id)allWebsiteDataTypes;
+- (void)removeDataOfTypes:(id)types modifiedSince:(NSDate *)date completionHandler:(void(^)(void))done;
+- (void)fetchDataRecordsOfTypes:(id)types completionHandler:(void(^)(NSArray *))done;
 - (id)initWithFrame:(NSRect)frame configuration:(id)configuration;
 - (void)setWebsiteDataStore:(id)store;
 - (id)websiteDataStore;
@@ -95,4 +98,24 @@ void murmur_legacy_stop(void) {
     [legacy.view setNavigationDelegate:nil];[legacy.view stopLoading];
     [(id<MurmurLegacyAPI>)legacy.configuration.userContentController removeScriptMessageHandlerForName:@"migration"];
     legacy.view=nil;legacy.configuration=nil;legacy=nil;
+}
+
+// Called only after the parent durably prepared retirement. Release every view
+// before purging; retain only this exact store until its empty-record receipt.
+bool murmur_legacy_retire(void) {
+    if (!NSThread.isMainThread || !legacy || legacy.failed) return false;
+    id<MurmurLegacyAPI> store = legacy.configuration.websiteDataStore;
+    murmur_legacy_stop();
+    if (!store) return false;
+    __block BOOL done = NO, empty = NO;
+    id types = [(id<MurmurLegacyAPI>)NSClassFromString(@"WKWebsiteDataStore") allWebsiteDataTypes];
+    [store removeDataOfTypes:types modifiedSince:NSDate.distantPast completionHandler:^{
+        [store fetchDataRecordsOfTypes:types completionHandler:^(NSArray *records) {
+            empty = records.count == 0;
+            done = YES;
+        }];
+    }];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20];
+    while (!done && deadline.timeIntervalSinceNow > 0) murmur_legacy_pump();
+    return done && empty;
 }

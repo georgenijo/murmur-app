@@ -13,8 +13,8 @@ class RestartPolicy(unittest.TestCase):
         for source in ['// app.restart()\nlet x=1;', 'let s = r###"app.request_restart()"###;', '/* outer /* app.restart() */ end */', 'let c = \'r\';']:
             self.assertFalse(violations(source))
     def test_only_exact_adapter_call(self):
-        self.assertFalse(violations('app.request_restart()', adapter=True))
-        for source in ['other.request_restart()', 'let f=AppHandle::request_restart;', 'app.restart()', 'app.request_restart(); app.request_restart();', '']:
+        self.assertTrue(violations('app.request_restart()', adapter=True))
+        for source in ['other.request_restart()', 'let f=AppHandle::request_restart;', 'app.restart()', 'app.request_restart(); app.request_restart();']:
             self.assertTrue(violations(source, adapter=True))
     def test_compatibility_definition_is_not_an_api_permit(self):
         self.assertFalse(violations('fn restart() {} tauri::generate_handler![exit, restart]', plugin=True))
@@ -65,7 +65,7 @@ class RestartPolicy(unittest.TestCase):
 
     def test_lint_allowances_are_exact_function_scopes(self):
         sanctioned = '#[allow(clippy::disallowed_methods)] fn terminal(app: &tauri::AppHandle) { app.exit(0); }'
-        scopes, failures = method_allow_scopes(sanctioned, Path('app/src-tauri/src/shutdown.rs'))
+        scopes, failures = method_allow_scopes(sanctioned, Path('app/crates/murmur-services/src/shutdown.rs'))
         self.assertFalse(failures)
         self.assertEqual(len(scopes), 1)
         for source in [
@@ -80,12 +80,12 @@ class RestartPolicy(unittest.TestCase):
             'fn unrelated() { #[allow(clippy::disallowed_methods)] fn terminal() {} }',
         ]:
             with self.subTest(source=source):
-                self.assertTrue(method_allow_scopes(source, Path('app/src-tauri/src/shutdown.rs'))[1])
+                self.assertTrue(method_allow_scopes(source, Path('app/crates/murmur-services/src/shutdown.rs'))[1])
         self.assertTrue(method_allow_scopes(sanctioned, Path('other.rs'))[1])
 
     def test_process_exit_allowance_does_not_spill_outside_function(self):
         source = '#[allow(clippy::disallowed_methods)] fn terminal() { std::process::exit(0); } fn bypass() { std::process::exit(0); }'
-        scopes, _ = method_allow_scopes(source, Path('app/src-tauri/src/shutdown.rs'))
+        scopes, _ = method_allow_scopes(source, Path('app/crates/murmur-services/src/shutdown.rs'))
         failures = violations(source, method_scopes=scopes)
         self.assertEqual(len(failures), 1)
         self.assertGreater(failures[0], scopes[0][1])
@@ -194,7 +194,7 @@ class RestartPolicy(unittest.TestCase):
                 let symbol = "exit";
             }
         }'''
-        path = Path('app/src-tauri/src/shutdown.rs')
+        path = Path('app/crates/murmur-services/src/shutdown.rs')
         allowances = symbol_literal_allowances(source, path)
         self.assertEqual(allowances, {source.index('"exit"')})
         self.assertEqual(violations(source, symbol_allowances=allowances), [source.rindex('"exit"')])

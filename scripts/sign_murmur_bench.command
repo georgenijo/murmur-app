@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 REPO="${SCRIPT_DIR:h}"
-APP="${1:-$REPO/app/src-tauri/target/release/bundle/macos/Murmur Bench.app}"
+APP="${1:-$REPO/app/crates/murmur-services/target/release/bundle/macos/Murmur Bench.app}"
 IDENTITY="${MURMUR_SIGNING_IDENTITY:-Developer ID Application: George Nijo (P2U3P8B923)}"
 TEAM_ID="${MURMUR_SIGNING_TEAM_ID:-P2U3P8B923}"
 STATUS_FILE="/tmp/murmur-bench-sign.status"
@@ -22,14 +22,14 @@ print -- "[2/3] Signing helpers and app"
 python3 scripts/finalize_macos_bundle.py \
   --app "$APP" \
   --identity "$IDENTITY" \
-  --main-entitlements app/src-tauri/entitlements.plist \
-  --capture-agent-entitlements app/src-tauri/capture-agent.entitlements.plist \
-  --capture-agent-info-plist app/src-tauri/capture-agent-info.plist \
-  --capture-helper-info-plist app/src-tauri/sidecars/capture/Info.plist \
-  --capture-worker-info-plist app/src-tauri/sidecars/capture/WorkerInfo.plist \
-  --capture-agent-launchd-plist app/src-tauri/macos/com.localdictation.capture-agent.plist \
-  --capture-helper-entitlements app/src-tauri/capture-helper.entitlements.plist \
-  --capture-worker-entitlements app/src-tauri/capture-worker.entitlements.plist \
+  --main-entitlements app/macos/entitlements.plist \
+  --capture-agent-entitlements app/macos/capture-agent.entitlements.plist \
+  --capture-agent-info-plist app/macos/capture-agent-info.plist \
+  --capture-helper-info-plist app/sidecars/capture/Info.plist \
+  --capture-worker-info-plist app/sidecars/capture/WorkerInfo.plist \
+  --capture-agent-launchd-plist app/macos/macos/com.localdictation.capture-agent.plist \
+  --capture-helper-entitlements app/macos/capture-helper.entitlements.plist \
+  --capture-worker-entitlements app/macos/capture-worker.entitlements.plist \
   --expected-team-id "$TEAM_ID"
 
 print -- "[3/3] Verifying signed app"

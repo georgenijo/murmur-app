@@ -1,149 +1,25 @@
 from pathlib import Path
-import re
 import tempfile
 import unittest
-
-from scripts.validate_reference_docs import (
-    command_count_mentions,
-    documented_commands,
-    registered_commands,
-    validate_reference_docs,
-)
-
-
+from scripts.validate_reference_docs import registered_commands, documented_commands, validate_reference_docs
 ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_FILES = (
-    "CLAUDE.md",
-    "app/src-tauri/src/lib.rs",
-    "docs/reference/commands.md",
-    "docs/ARCHITECTURE.md",
-    "docs/FEATURES.md",
-)
-
-
-def copy_reference_fixture(root: Path) -> None:
-    for relative in REFERENCE_FILES:
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text((ROOT / relative).read_text())
-
-
+SOURCE = "app/crates/murmur-services/src/native_services/commands.rs"
 class ReferenceDocsTests(unittest.TestCase):
-    def test_repository_reference_docs_match_registered_commands(self) -> None:
-        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
-        self.assertEqual(validate_reference_docs(), len(commands))
-        for relative in (
-            "CLAUDE.md",
-            "docs/reference/commands.md",
-            "docs/ARCHITECTURE.md",
-            "docs/FEATURES.md",
-        ):
-            with self.subTest(relative=relative):
-                mentions = command_count_mentions((ROOT / relative).read_text())
-                self.assertTrue(mentions)
-                self.assertEqual(set(mentions), {len(commands)})
-
-    def test_model_hardware_guidance_command_is_registered_and_documented(self) -> None:
-        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
-        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
-
-        self.assertIn("get_model_hardware_guidance", commands)
-        self.assertIn("get_model_hardware_guidance", documented)
-
-    def test_mode_file_reader_is_registered_and_documented(self) -> None:
-        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
-        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
-        self.assertIn("read_modes_file", commands)
-        self.assertIn("read_modes_file", documented)
-
-    def test_remove_model_command_is_registered_and_documented(self) -> None:
-        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
-        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
-        self.assertIn("remove_model", commands)
-        self.assertIn("remove_model", documented)
-
-    def test_missing_command_row_fails_even_when_prose_count_is_current(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            copy_reference_fixture(root)
-            commands_doc = root / "docs/reference/commands.md"
-            commands_doc.write_text(
-                commands_doc.read_text().replace(
-                    "| `set_overlay_vertical_offset`",
-                    "| `not_a_registered_command`",
-                    1,
-                )
-            )
-            with self.assertRaisesRegex(
-                AssertionError, r"missing=.*set_overlay_vertical_offset.*extra="
-            ):
-                validate_reference_docs(root)
-
-    def test_calendar_commands_are_part_of_the_checked_reference(self) -> None:
-        commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
-        documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
-        for command in (
-            "get_calendar_permission_status",
-            "request_calendar_permission",
-            "reset_calendar_permission",
-            "open_calendar_preferences",
-            "get_meeting_calendar_events",
-            "apply_meeting_calendar_event",
-            "configure_meeting_suggestions",
-            "get_meeting_suggestion",
-            "dismiss_meeting_suggestion",
-            "get_meeting_audio_manifest",
-            "read_meeting_audio_range",
-            "get_meeting_audio_capture_busy",
-        ):
-            with self.subTest(command=command):
-                self.assertIn(command, commands)
-                self.assertIn(command, documented)
-
-    def test_stale_human_facing_count_fails(self) -> None:
-        for relative in (
-            "CLAUDE.md",
-            "docs/reference/commands.md",
-            "docs/ARCHITECTURE.md",
-            "docs/FEATURES.md",
-        ):
-            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                copy_reference_fixture(root)
-                document = root / relative
-                original = document.read_text()
-                stale = re.sub(
-                    r"\b\d+ registered commands\b",
-                    "0 registered commands",
-                    original,
-                    count=1,
-                )
-                self.assertNotEqual(original, stale)
-                document.write_text(stale)
-
-                with self.assertRaisesRegex(AssertionError, r"stale command count"):
-                    validate_reference_docs(root)
-
-    def test_duplicate_handler_or_documentation_entries_fail(self) -> None:
-        lib_rs = (ROOT / "app/src-tauri/src/lib.rs").read_text()
-        duplicated_handler = lib_rs.replace(
-            "            commands::recording::init_dictation,\n",
-            "            commands::recording::init_dictation,\n"
-            "            commands::recording::init_dictation,\n",
-            1,
-        )
-        with self.assertRaisesRegex(AssertionError, "duplicate command names"):
-            registered_commands(duplicated_handler)
-
-        commands_doc = (ROOT / "docs/reference/commands.md").read_text()
-        duplicated_doc = commands_doc.replace(
-            "| `init_dictation`",
-            "| `init_dictation` | — | duplicate | duplicate |\n| `init_dictation`",
-            1,
-        )
-        with self.assertRaisesRegex(AssertionError, "duplicate command rows"):
-            documented_commands(duplicated_doc)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_native_reference_matches_the_actual_request_surface(self):
+        names = registered_commands((ROOT / SOURCE).read_text())
+        self.assertEqual(validate_reference_docs(), len(names))
+        for required in ["get_model_hardware_guidance", "remove_model", "read_modes_file", "clear_event_history"]:
+            self.assertIn(required, names)
+    def test_missing_request_row_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in [SOURCE, "docs/reference/commands.md"]:
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((ROOT / name).read_text())
+            doc = root / "docs/reference/commands.md"
+            doc.write_text("\n".join(line for line in doc.read_text().splitlines() if not line.startswith("| `clear_event_history`")))
+            with self.assertRaises(AssertionError): validate_reference_docs(root)
+    def test_duplicate_dispatch_or_documentation_is_rejected(self):
+        with self.assertRaises(AssertionError): registered_commands('"same"=>a(), "same"=>b()')
+        with self.assertRaises(AssertionError): documented_commands('| `same` | one |\n| `same` | two |')

@@ -1,7 +1,0 @@
-{
-  "productName": "Murmur Bench",
-  "identifier": "com.localdictation.bench",
-  "bundle": {
-    "createUpdaterArtifacts": false
-  }
-}

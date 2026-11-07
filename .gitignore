@@ -72,3 +72,6 @@ agents.sh
 
 # Root-level scratch screenshots (icon PNGs elsewhere stay tracked)
 /*.png
+
+# Native workspace helper staging
+app/binaries/

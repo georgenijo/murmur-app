@@ -11,31 +11,28 @@ import os
 import tomllib
 from check_targeted_events import ROOT, IDENTIFIER, mask_literals, rust_sources, excluded, opaque_spans, rust_string
 
-ADAPTER = Path('app/src-tauri/src/shutdown.rs')
-PLUGIN = Path('app/src-tauri/src/process_plugin.rs')
+ADAPTER = Path('app/crates/murmur-services/src/shutdown.rs')
+PLUGIN = Path('app/crates/murmur-services/src/process_plugin.rs')
 # Exact function scopes only. No crate/module/impl/block-level lint exceptions.
 METHOD_ALLOWLIST = {
-    ('app/src-tauri/src/lib.rs', 'generated_context'),
-    ('app/src-tauri/src/main.rs', 'main'),
-    ('app/src-tauri/examples/murmur-eval.rs', 'main'),
-    ('app/src-tauri/tests/shutdown_appkit.rs', 'main'),
-    ('app/src-tauri/src/shutdown.rs', 'terminal'),
-    ('app/src-tauri/src/shutdown.rs', 'test_support::shutdown_test_action'),
-    ('app/src-tauri/src/coreml_installer.rs', 'start_parent_watchdog'),
-    ('app/src-tauri/src/meeting_diarization.rs', 'run_cli_if_requested'),
-    ('app/src-tauri/sidecars/capture/src/main.rs', 'main'),
-    ('app/src-tauri/sidecars/capture/src/main.rs', 'supported::run'),
-    ('app/src-tauri/sidecars/capture/src/production.rs', 'spawn_automatic_probe_watchdog'),
-    ('app/src-tauri/sidecars/capture/src/production.rs', 'spawn_parent_watchdog'),
-    ('app/src-tauri/sidecars/capture/src/production.rs', 'run'),
+    ('app/crates/murmur-services/src/lib.rs', 'generated_context'),
+    ('app/crates/murmur-services/src/main.rs', 'main'),
+    ('app/crates/murmur-services/examples/murmur-eval.rs', 'main'),
+    ('app/crates/murmur-services/tests/shutdown_appkit.rs', 'main'),
+    ('app/crates/murmur-services/src/shutdown.rs', 'terminal'),
+    ('app/crates/murmur-services/src/shutdown.rs', 'test_support::shutdown_test_action'),
+    ('app/crates/murmur-services/src/coreml_installer.rs', 'start_parent_watchdog'),
+    ('app/crates/murmur-services/src/meeting_diarization.rs', 'run_cli_if_requested'),
+    ('app/sidecars/capture/src/main.rs', 'main'),
+    ('app/sidecars/capture/src/main.rs', 'supported::run'),
+    ('app/sidecars/capture/src/production.rs', 'spawn_automatic_probe_watchdog'),
+    ('app/sidecars/capture/src/production.rs', 'spawn_parent_watchdog'),
+    ('app/sidecars/capture/src/production.rs', 'run'),
 }
 REQUIRED_METHODS = {
     'std::process::exit', 'std::process::abort', 'libc::exit', 'libc::_exit',
     'libc::abort', 'std::os::unix::process::CommandExt::exec',
-    'tauri::AppHandle::exit', 'tauri::AppHandle::restart', 'tauri::AppHandle::request_restart',
-    'tauri::process::restart', 'tauri_plugin_process::init',
-    'tauri_plugin_process::commands::exit', 'tauri_plugin_process::commands::restart',
-    'tauri_plugin_process::exit', 'tauri_plugin_process::restart',
+
 }
 
 def method_allow_scopes(source, relative, *, allowlist=METHOD_ALLOWLIST):
@@ -231,7 +228,7 @@ def violations(source, *, adapter=False, plugin=False, process_aliases=(), cli_e
             handler = re.search(r'tauri\s*::\s*generate_handler\s*!\s*\[\s*exit\s*,\s*$', code[:token.start()])
             if not plugin or not (definition or handler):
                 failures.append(token.start())
-    if adapter and len(list(re.finditer(r'\brequest_restart\b', code))) != 1:
+    if adapter and re.search(r'\brequest_restart\b', code):
         failures.append(0)
     return failures
 
@@ -281,7 +278,7 @@ def check_repository(root):
             failures.append(f'{relative}:{source.count(chr(10), 0, offset)+1}: forbidden process lint allowance')
         for offset in violations(source, adapter=relative == ADAPTER, plugin=relative == PLUGIN,
                                  process_aliases=aliases,
-                                 cli_entry=relative == Path('app/src-tauri/src/main.rs'), method_scopes=scopes,
+                                 cli_entry=relative == Path('app/crates/murmur-services/src/main.rs'), method_scopes=scopes,
                                  symbol_allowances=symbol_literal_allowances(source, relative)):
             failures.append(f'{relative}:{source.count(chr(10), 0, offset)+1}: forbidden process restart bypass')
     return failures
