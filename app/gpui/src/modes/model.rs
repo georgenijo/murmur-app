@@ -1,9 +1,144 @@
-use crate::{section,workspace::Projection};use serde_json::{Value,json};pub use crate::workspace::{Event,Problem,Session,Ticket};
-pub const BROWSERS:[(&str,&str);6]=[("com.apple.Safari","Safari"),("com.google.Chrome","Google Chrome"),("com.microsoft.edgemac","Microsoft Edge"),("com.brave.Browser","Brave"),("company.thebrowser.Browser","Arc"),("org.chromium.Chromium","Chromium")];
-pub fn blank(id:&str,name:&str)->Value{json!({"id":id,"name":name,"builtIn":false,"enabled":true,"writingStyle":null,"cleanupEnabled":null,"smartFormattingEnabled":null,"cliFormattingEnabled":null,"vocabularyPolicy":"inherit","contextPolicy":"none","modelId":null,"language":null,"autoPaste":null})}
-pub fn builtins()->Vec<Value>{[("everyday","Everyday",None),("messages","Messages",Some("conversational")),("email","Email",Some("polished")),("notes","Notes",Some("notes")),("technical","Technical",Some("code_technical")),("terminal","Terminal",Some("code_technical")),("verbatim","Verbatim",Some("verbatim"))].into_iter().map(|(id,name,style)|{let mut m=blank(&format!("builtin.{id}"),name);m["builtIn"]=json!(true);m["writingStyle"]=json!(style);if ["technical","terminal"].contains(&id){m["vocabularyPolicy"]=json!("technical")}if id=="terminal"{m["cliFormattingEnabled"]=json!(true)}m}).collect()}
-pub fn normalize_host(s:&str)->Option<String>{let s=s.trim().trim_end_matches('.').to_ascii_lowercase();if s.is_empty()||s.len()>253||s.contains(':'){return None}if s=="localhost"{return Some(s)}let labels:Vec<_>=s.split('.').collect();if labels.len()<2||labels.iter().any(|l|l.is_empty()||l.len()>63||!l.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)||!l.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)||!l.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-')){return None}Some(s)}
-pub fn preview(text:&str,mode:&Value)->String{if mode["writingStyle"]=="verbatim"||text.trim().is_empty(){return text.into()}let mut words:Vec<_>=text.split_whitespace().collect();if mode["writingStyle"]!="code_technical"{words.retain(|w|!["um","uh"].contains(&w.trim_matches([',']).to_lowercase().as_str()));}let s=words.join(" ");if mode["writingStyle"]=="notes"{return s.replace("new line","\n")}let mut c=s.chars();match c.next(){None=>s,Some(f)=>f.to_uppercase().collect::<String>()+c.as_str()}}
-#[derive(Clone)]pub struct Snapshot{pub revision:u64,pub settings:Value,pub import_preview:Option<super::exchange::Preview>,pub probe:Option<String>,pub notice:Option<String>}
-impl Snapshot{pub fn all(&self)->Vec<Value>{builtins().into_iter().chain(self.settings["modes"].as_array().into_iter().flatten().cloned()).collect()}pub fn patch_without(&self,id:&str)->Value{let mut patch=json!({"modes":self.settings["modes"],"appProfiles":self.settings["appProfiles"],"browserSiteRules":self.settings["browserSiteRules"],"siteModeLookupEnabled":self.settings["siteModeLookupEnabled"]});patch["modes"].as_array_mut().unwrap().retain(|m|m["id"]!=id);for p in patch["appProfiles"].as_array_mut().unwrap(){if p["modeId"]==id{p["modeId"]=Value::Null}}patch["browserSiteRules"].as_array_mut().unwrap().retain(|r|r["modeId"]!=id);patch}}
-impl Projection for Snapshot{fn revision(&self)->u64{self.revision}fn bytes(&self)->usize{section::bytes(&self.settings).saturating_add(self.import_preview.as_ref().map_or(0,|p|section::bytes(&p.next))).saturating_add(8192)}fn valid(&self)->bool{murmur_core::state::normalize("dictation-settings",self.settings.clone()).is_ok_and(|s|s==self.settings)&&self.bytes()<=2*murmur_core::state::source_size_limit("dictation-settings")+8192&&self.probe.as_ref().is_none_or(|s|section::text(s,512))&&self.notice.as_ref().is_none_or(|s|section::text(s,512))}}
+pub use crate::workspace::{Event, Problem, Session, Ticket};
+use crate::{section, workspace::Projection};
+use serde_json::{Value, json};
+pub const BROWSERS: [(&str, &str); 6] = [
+    ("com.apple.Safari", "Safari"),
+    ("com.google.Chrome", "Google Chrome"),
+    ("com.microsoft.edgemac", "Microsoft Edge"),
+    ("com.brave.Browser", "Brave"),
+    ("company.thebrowser.Browser", "Arc"),
+    ("org.chromium.Chromium", "Chromium"),
+];
+pub fn blank(id: &str, name: &str) -> Value {
+    json!({"id":id,"name":name,"builtIn":false,"enabled":true,"writingStyle":null,"cleanupEnabled":null,"smartFormattingEnabled":null,"cliFormattingEnabled":null,"vocabularyPolicy":"inherit","contextPolicy":"none","modelId":null,"language":null,"autoPaste":null})
+}
+pub fn builtins() -> Vec<Value> {
+    [
+        ("everyday", "Everyday", None),
+        ("messages", "Messages", Some("conversational")),
+        ("email", "Email", Some("polished")),
+        ("notes", "Notes", Some("notes")),
+        ("technical", "Technical", Some("code_technical")),
+        ("terminal", "Terminal", Some("code_technical")),
+        ("verbatim", "Verbatim", Some("verbatim")),
+    ]
+    .into_iter()
+    .map(|(id, name, style)| {
+        let mut m = blank(&format!("builtin.{id}"), name);
+        m["builtIn"] = json!(true);
+        m["writingStyle"] = json!(style);
+        if ["technical", "terminal"].contains(&id) {
+            m["vocabularyPolicy"] = json!("technical")
+        }
+        if id == "terminal" {
+            m["cliFormattingEnabled"] = json!(true)
+        }
+        m
+    })
+    .collect()
+}
+pub fn normalize_host(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    let s = trimmed
+        .strip_suffix('.')
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    if s.is_empty() || s.len() > 253 || s.contains(':') {
+        return None;
+    }
+    if s == "localhost" {
+        return Some(s);
+    }
+    let labels: Vec<_> = s.split('.').collect();
+    if labels.len() < 2
+        || labels.iter().any(|l| {
+            l.is_empty()
+                || l.len() > 63
+                || !l.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+                || !l.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
+                || !l.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        })
+    {
+        return None;
+    }
+    Some(s)
+}
+pub fn preview(text: &str, mode: &Value) -> String {
+    if mode["writingStyle"] == "verbatim" || text.trim().is_empty() {
+        return text.into();
+    }
+    let mut words: Vec<_> = text.split_whitespace().collect();
+    if mode["writingStyle"] != "code_technical" {
+        words.retain(|w| !["um", "uh"].contains(&w.trim_matches([',']).to_lowercase().as_str()));
+    }
+    let s = words.join(" ");
+    if mode["writingStyle"] == "notes" {
+        return s.replace("new line", "\n");
+    }
+    let mut c = s.chars();
+    match c.next() {
+        None => s,
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+#[derive(Clone)]
+pub struct Snapshot {
+    pub revision: u64,
+    pub settings: Value,
+    pub import_preview: Option<super::exchange::Preview>,
+    pub probe: Option<String>,
+    pub notice: Option<String>,
+}
+impl Snapshot {
+    pub fn all(&self) -> Vec<Value> {
+        builtins()
+            .into_iter()
+            .chain(
+                self.settings["modes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            )
+            .collect()
+    }
+    pub fn patch_without(&self, id: &str) -> Value {
+        let mut patch = json!({"modes":self.settings["modes"],"appProfiles":self.settings["appProfiles"],"browserSiteRules":self.settings["browserSiteRules"],"siteModeLookupEnabled":self.settings["siteModeLookupEnabled"]});
+        patch["modes"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["id"] != id);
+        for p in patch["appProfiles"].as_array_mut().unwrap() {
+            if p["modeId"] == id {
+                p["modeId"] = Value::Null
+            }
+        }
+        patch["browserSiteRules"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|r| r["modeId"] != id);
+        patch
+    }
+}
+impl Projection for Snapshot {
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+    fn bytes(&self) -> usize {
+        section::bytes(&self.settings)
+            .saturating_add(
+                self.import_preview
+                    .as_ref()
+                    .map_or(0, |p| section::bytes(&p.next)),
+            )
+            .saturating_add(8192)
+    }
+    fn valid(&self) -> bool {
+        murmur_core::state::normalize("dictation-settings", self.settings.clone())
+            .is_ok_and(|s| s == self.settings)
+            && self.bytes()
+                <= 2 * murmur_core::state::source_size_limit("dictation-settings") + 8192
+            && self.probe.as_ref().is_none_or(|s| section::text(s, 512))
+            && self.notice.as_ref().is_none_or(|s| section::text(s, 512))
+    }
+}

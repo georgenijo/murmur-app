@@ -780,7 +780,15 @@ pub struct ChartPoint {
     pub label: SharedString,
     pub value: Option<f64>,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChartKind {
+    #[default]
+    Bars,
+    Heatmap,
+    Line,
+}
 pub struct Chart {
+    pub kind: ChartKind,
     pub(crate) scroll_parent: Option<ScrollHandle>,
     label: SharedString,
     unit: SharedString,
@@ -808,6 +816,7 @@ impl Chart {
             cx.notify();
         });
         Self {
+            kind: ChartKind::Bars,
             scroll_parent: None,
             label: label.into(),
             unit: unit.into(),
@@ -915,9 +924,14 @@ impl Render for Chart {
                         "Arrow keys or hover to inspect exact values".into()
                     }),
             )
-            .child(div().h(px(100.)).flex().items_end().gap(px(1.)).children(
-                self.points.iter().enumerate().map(|(i, point)| {
-                    let measured = point.value.filter(|v| v.is_finite());
+            .child(div().h(px(if self.kind==ChartKind::Heatmap{126.}else{108.})).relative().flex().items_end().gap(px(1.)).when(self.kind==ChartKind::Line, |d| {
+                let values:Vec<_>=self.points.iter().map(|p|p.value).collect();
+                d.child(canvas(|b,_,_|b,move|b,_,w,_|{
+                    let mut path=PathBuilder::stroke(px(2.));let mut started=false;
+                    for(i,v)in values.iter().enumerate(){if let Some(v)=v.filter(|v|v.is_finite()) {let p=point(b.left()+b.size.width*(i as f32/values.len().max(1) as f32)+px(5.),b.top()+px(101.-v.max(0.) as f32/max as f32*88.));if started{path.line_to(p)}else{path.move_to(p);started=true}}else{started=false}}
+                    if let Ok(path)=path.build(){w.paint_path(path,p.accent);}
+                }).absolute().size_full())
+            }).children(self.points.iter().enumerate().map(|(i,point)|{let measured=point.value.filter(|v|v.is_finite());
                     div()
                         .id(i)
                         .role(Role::Button)
@@ -925,7 +939,7 @@ impl Render for Chart {
                         .when(i == self.active, |d| {
                             d.aria_active_descendant().border_1().border_color(p.focus)
                         })
-                        .flex_1()
+                        .when(self.kind==ChartKind::Bars, |d| d.flex_1())
                         .h(px(measured
                             .map(|v| (v.max(0.) / max * 96.).max(2.) as f32)
                             .unwrap_or(2.)))
@@ -934,6 +948,8 @@ impl Render for Chart {
                         } else {
                             p.muted
                         })
+                        .when(self.kind==ChartKind::Heatmap,|d|d.absolute().left(px((i/7) as f32*22.)).top(px((i%7) as f32*18.)).w(px(18.)).h(px(14.)).rounded(px(3.)).bg(if measured.is_some(){p.accent.opacity(0.12+0.88*measured.unwrap_or(0.).max(0.) as f32/max as f32)}else{p.surface}))
+                        .when(self.kind==ChartKind::Line,|d|d.absolute().left(relative(i as f32/self.points.len().max(1) as f32)).top(px(96.-measured.unwrap_or(0.).max(0.) as f32/max as f32*88.)).w(px(10.)).h(px(10.)).rounded(px(5.)))
                         .on_mouse_move(cx.listener(move |s, _, _, cx| {
                             s.active = i;
                             s.shown = true;
@@ -956,8 +972,7 @@ impl Render for Chart {
                                 })
                             }
                         })
-                }),
-            ))
+            })))
     }
 }
 

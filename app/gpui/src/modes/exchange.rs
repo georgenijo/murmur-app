@@ -1,13 +1,207 @@
-use super::model::*;use serde_json::{Value,json};use std::collections::BTreeSet;
-fn exact(v:&Value,keys:&[&str])->bool{v.as_object().is_some_and(|m|m.len()==keys.len()&&keys.iter().all(|k|m.contains_key(*k)))}
-fn text(v:&Value,max:usize)->bool{v.as_str().is_some_and(|s|!s.is_empty()&&s.trim()==s&&s.len()<=max&&!s.chars().any(char::is_control))}
-pub fn parse(text_source:&str)->Result<Value,Problem>{let v=crate::json::parse(text_source,256*1024,8)?;if !exact(&v,&["format","version","modes","appBindings","browserSiteRules"])||v["format"]!="murmur-modes"||v["version"]!=1{return Err(Problem::Invalid)}let modes=v["modes"].as_array().filter(|a|a.len()<=100).ok_or(Problem::Invalid)?;let mut ids=BTreeSet::new();for m in modes{let id=m["id"].as_str().ok_or(Problem::Invalid)?;if !exact(m,&["id","name","builtIn","enabled","writingStyle","cleanupEnabled","smartFormattingEnabled","cliFormattingEnabled","vocabularyPolicy","contextPolicy","modelId","language","autoPaste"])||!text(&m["id"],128)||!text(&m["name"],128)||m["builtIn"]!=false||id.starts_with("builtin.")||!ids.insert(id){return Err(Problem::Invalid)}let mut settings=murmur_core::state::settings_defaults();settings["modes"]=json!([m]);let normalized=murmur_core::state::normalize("dictation-settings",settings).map_err(|_|Problem::Invalid)?;if normalized["modes"]!=json!([m]){return Err(Problem::Invalid)}}
-let bindings=v["appBindings"].as_array().filter(|a|a.len()<=100).ok_or(Problem::Invalid)?;let mut apps=BTreeSet::new();for b in bindings{let bundle=b["bundleId"].as_str().ok_or(Problem::Invalid)?;if !exact(b,&["bundleId","modeId"])||!text(&b["bundleId"],255)||!bundle.contains('.')||!bundle.bytes().all(|c|c.is_ascii_alphanumeric()||matches!(c,b'-'|b'.'))||!ids.contains(b["modeId"].as_str().unwrap_or(""))||!apps.insert(bundle){return Err(Problem::Invalid)}}let rules=v["browserSiteRules"].as_array().filter(|a|a.len()<=128).ok_or(Problem::Invalid)?;let mut rule_ids=BTreeSet::new();let mut pairs=BTreeSet::new();for r in rules{if !exact(r,&["id","browserBundleId","host","modeId","enabled"])||!text(&r["id"],128)||!r["enabled"].is_boolean()||!BROWSERS.iter().any(|(b,_)|r["browserBundleId"]==*b)||normalize_host(r["host"].as_str().unwrap_or("")).as_deref()!=r["host"].as_str()||!ids.contains(r["modeId"].as_str().unwrap_or(""))||!rule_ids.insert(r["id"].to_string())||!pairs.insert((r["browserBundleId"].to_string(),r["host"].to_string())){return Err(Problem::Invalid)}}Ok(v)}
-pub fn subset(settings:&Value)->Value{json!({"modes":settings["modes"],"appProfiles":settings["appProfiles"],"browserSiteRules":settings["browserSiteRules"],"siteModeLookupEnabled":settings["siteModeLookupEnabled"]})}
-#[derive(Clone)]pub struct Preview{pub baseline:Value,pub next:Value,pub additions:usize,pub duplicates:usize,pub missing_apps:usize,pub conflicts:usize}
-pub fn preview(file:&Value,settings:&Value)->Result<Preview,Problem>{let mut p=Preview{baseline:subset(settings),next:subset(settings),additions:0,duplicates:0,missing_apps:0,conflicts:0};for m in file["modes"].as_array().ok_or(Problem::Invalid)?{let modes=p.next["modes"].as_array_mut().ok_or(Problem::Invalid)?;if let Some(old)=modes.iter().find(|v|v["id"]==m["id"]){if old==m{p.duplicates+=1}else{p.conflicts+=1}}else{modes.push(m.clone());p.additions+=1}}
-for b in file["appBindings"].as_array().ok_or(Problem::Invalid)?{let profiles=p.next["appProfiles"].as_array_mut().ok_or(Problem::Invalid)?;let count=profiles.iter().filter(|v|v["bundleId"]==b["bundleId"]).count();if count==0{p.missing_apps+=1;continue}if count>1{p.conflicts+=1;continue}let profile=profiles.iter_mut().find(|v|v["bundleId"]==b["bundleId"]).unwrap();if !profile["modeId"].is_null()&&profile["modeId"]!=b["modeId"]{p.conflicts+=1}else{profile["modeId"]=b["modeId"].clone()}}
-for r in file["browserSiteRules"].as_array().ok_or(Problem::Invalid)?{let rules=p.next["browserSiteRules"].as_array_mut().ok_or(Problem::Invalid)?;if rules.contains(r){p.duplicates+=1}else if rules.iter().any(|v|v["id"]==r["id"]||(v["browserBundleId"]==r["browserBundleId"]&&v["host"]==r["host"])){p.conflicts+=1}else{rules.push(r.clone())}}
-if p.next["modes"].as_array().unwrap().len()>100||p.next["browserSiteRules"].as_array().unwrap().len()>128{p.conflicts+=1}Ok(p)}
-pub fn commit(p:&Preview,current:&Value)->Result<Value,Problem>{if p.conflicts>0||p.baseline!=subset(current){return Err(Problem::Conflict)}Ok(p.next.clone())}
-pub fn export(settings:&Value)->Result<String,Problem>{let modes=settings["modes"].as_array().ok_or(Problem::Invalid)?;let ids:BTreeSet<_>=modes.iter().filter_map(|m|m["id"].as_str()).collect();let file=json!({"format":"murmur-modes","version":1,"modes":modes,"appBindings":settings["appProfiles"].as_array().ok_or(Problem::Invalid)?.iter().filter(|p|ids.contains(p["modeId"].as_str().unwrap_or(""))).map(|p|json!({"bundleId":p["bundleId"],"modeId":p["modeId"]})).collect::<Vec<_>>(),"browserSiteRules":settings["browserSiteRules"].as_array().ok_or(Problem::Invalid)?.iter().filter(|r|ids.contains(r["modeId"].as_str().unwrap_or(""))).collect::<Vec<_>>()});let text=serde_json::to_string_pretty(&file).map_err(|_|Problem::Invalid)?;parse(&text)?;Ok(text)}
+use super::model::*;
+use serde_json::{Value, json};
+use std::collections::BTreeSet;
+fn exact(v: &Value, keys: &[&str]) -> bool {
+    v.as_object()
+        .is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k)))
+}
+fn text(v: &Value, max: usize) -> bool {
+    v.as_str().is_some_and(|s| {
+        !s.is_empty() && s.trim() == s && s.len() <= max && !s.chars().any(char::is_control)
+    })
+}
+pub fn parse(text_source: &str) -> Result<Value, Problem> {
+    let v = crate::json::parse(text_source, 256 * 1024, 8)?;
+    if !exact(
+        &v,
+        &[
+            "format",
+            "version",
+            "modes",
+            "appBindings",
+            "browserSiteRules",
+        ],
+    ) || v["format"] != "murmur-modes"
+        || v["version"] != 1
+    {
+        return Err(Problem::Invalid);
+    }
+    let modes = v["modes"]
+        .as_array()
+        .filter(|a| a.len() <= 100)
+        .ok_or(Problem::Invalid)?;
+    let mut ids = BTreeSet::new();
+    for m in modes {
+        let id = m["id"].as_str().ok_or(Problem::Invalid)?;
+        if !exact(
+            m,
+            &[
+                "id",
+                "name",
+                "builtIn",
+                "enabled",
+                "writingStyle",
+                "cleanupEnabled",
+                "smartFormattingEnabled",
+                "cliFormattingEnabled",
+                "vocabularyPolicy",
+                "contextPolicy",
+                "modelId",
+                "language",
+                "autoPaste",
+            ],
+        ) || !text(&m["id"], 128)
+            || !text(&m["name"], 128)
+            || m["builtIn"] != false
+            || id.starts_with("builtin.")
+            || !ids.insert(id)
+        {
+            return Err(Problem::Invalid);
+        }
+        let mut settings = murmur_core::state::settings_defaults();
+        settings["modes"] = json!([m]);
+        let normalized = murmur_core::state::normalize("dictation-settings", settings)
+            .map_err(|_| Problem::Invalid)?;
+        if normalized["modes"] != json!([m]) {
+            return Err(Problem::Invalid);
+        }
+    }
+    let bindings = v["appBindings"]
+        .as_array()
+        .filter(|a| a.len() <= 100)
+        .ok_or(Problem::Invalid)?;
+    let mut apps = BTreeSet::new();
+    for b in bindings {
+        let bundle = b["bundleId"].as_str().ok_or(Problem::Invalid)?;
+        if !exact(b, &["bundleId", "modeId"])
+            || !text(&b["bundleId"], 255)
+            || !bundle.contains('.')
+            || !bundle
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.'))
+            || !ids.contains(b["modeId"].as_str().unwrap_or(""))
+            || !apps.insert(bundle)
+        {
+            return Err(Problem::Invalid);
+        }
+    }
+    let rules = v["browserSiteRules"]
+        .as_array()
+        .filter(|a| a.len() <= 128)
+        .ok_or(Problem::Invalid)?;
+    let mut rule_ids = BTreeSet::new();
+    let mut pairs = BTreeSet::new();
+    for r in rules {
+        if !exact(r, &["id", "browserBundleId", "host", "modeId", "enabled"])
+            || !text(&r["id"], 128)
+            || !r["enabled"].is_boolean()
+            || !BROWSERS.iter().any(|(b, _)| r["browserBundleId"] == *b)
+            || normalize_host(r["host"].as_str().unwrap_or("")).as_deref() != r["host"].as_str()
+            || !ids.contains(r["modeId"].as_str().unwrap_or(""))
+            || !rule_ids.insert(r["id"].to_string())
+            || !pairs.insert((r["browserBundleId"].to_string(), r["host"].to_string()))
+        {
+            return Err(Problem::Invalid);
+        }
+    }
+    Ok(v)
+}
+pub fn subset(settings: &Value) -> Value {
+    json!({"modes":settings["modes"],"appProfiles":settings["appProfiles"],"browserSiteRules":settings["browserSiteRules"],"siteModeLookupEnabled":settings["siteModeLookupEnabled"]})
+}
+#[derive(Clone)]
+pub struct Preview {
+    pub baseline: Value,
+    pub next: Value,
+    pub additions: usize,
+    pub duplicates: usize,
+    pub missing_apps: usize,
+    pub conflicts: usize,
+}
+pub fn preview(file: &Value, settings: &Value) -> Result<Preview, Problem> {
+    let mut p = Preview {
+        baseline: subset(settings),
+        next: subset(settings),
+        additions: 0,
+        duplicates: 0,
+        missing_apps: 0,
+        conflicts: 0,
+    };
+    for m in file["modes"].as_array().ok_or(Problem::Invalid)? {
+        let modes = p.next["modes"].as_array_mut().ok_or(Problem::Invalid)?;
+        if let Some(old) = modes.iter().find(|v| v["id"] == m["id"]) {
+            if old == m {
+                p.duplicates += 1
+            } else {
+                p.conflicts += 1
+            }
+        } else {
+            modes.push(m.clone());
+            p.additions += 1
+        }
+    }
+    for b in file["appBindings"].as_array().ok_or(Problem::Invalid)? {
+        let profiles = p.next["appProfiles"]
+            .as_array_mut()
+            .ok_or(Problem::Invalid)?;
+        let count = profiles
+            .iter()
+            .filter(|v| v["bundleId"] == b["bundleId"])
+            .count();
+        if count == 0 {
+            p.missing_apps += 1;
+            continue;
+        }
+        if count > 1 {
+            p.conflicts += 1;
+            continue;
+        }
+        let profile = profiles
+            .iter_mut()
+            .find(|v| v["bundleId"] == b["bundleId"])
+            .unwrap();
+        if !profile["modeId"].is_null() && profile["modeId"] != b["modeId"] {
+            p.conflicts += 1
+        } else {
+            profile["modeId"] = b["modeId"].clone()
+        }
+    }
+    for r in file["browserSiteRules"]
+        .as_array()
+        .ok_or(Problem::Invalid)?
+    {
+        let rules = p.next["browserSiteRules"]
+            .as_array_mut()
+            .ok_or(Problem::Invalid)?;
+        if rules.contains(r) {
+            p.duplicates += 1
+        } else if rules.iter().any(|v| {
+            v["id"] == r["id"]
+                || (v["browserBundleId"] == r["browserBundleId"] && v["host"] == r["host"])
+        }) {
+            p.conflicts += 1
+        } else {
+            rules.push(r.clone())
+        }
+    }
+    if p.next["modes"].as_array().unwrap().len() > 100
+        || p.next["browserSiteRules"].as_array().unwrap().len() > 128
+    {
+        p.conflicts += 1
+    }
+    Ok(p)
+}
+pub fn commit(p: &Preview, current: &Value) -> Result<Value, Problem> {
+    if p.conflicts > 0 || p.baseline != subset(current) {
+        return Err(Problem::Conflict);
+    }
+    Ok(p.next.clone())
+}
+pub fn export(settings: &Value) -> Result<String, Problem> {
+    let modes = settings["modes"].as_array().ok_or(Problem::Invalid)?;
+    let ids: BTreeSet<_> = modes.iter().filter_map(|m| m["id"].as_str()).collect();
+    let file = json!({"format":"murmur-modes","version":1,"modes":modes,"appBindings":settings["appProfiles"].as_array().ok_or(Problem::Invalid)?.iter().filter(|p|ids.contains(p["modeId"].as_str().unwrap_or(""))).map(|p|json!({"bundleId":p["bundleId"],"modeId":p["modeId"]})).collect::<Vec<_>>(),"browserSiteRules":settings["browserSiteRules"].as_array().ok_or(Problem::Invalid)?.iter().filter(|r|ids.contains(r["modeId"].as_str().unwrap_or(""))).collect::<Vec<_>>()});
+    let text = serde_json::to_string_pretty(&file).map_err(|_| Problem::Invalid)?;
+    parse(&text)?;
+    Ok(text)
+}
