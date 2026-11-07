@@ -42,6 +42,7 @@ pub struct Settings {
     numbers: BTreeMap<&'static str, Entity<TextFieldState>>,
     focus: BTreeMap<String, FocusHandle>,
     scroll: ScrollHandle,
+    nav_scroll: ScrollHandle,
     back: Vec<(Page, String)>,
     editor_return: Option<String>,
     reveal: Option<&'static str>,
@@ -52,6 +53,12 @@ pub struct Settings {
     synced_pending: bool,
     synced_values: BTreeMap<&'static str, Value>,
     pub fixture: bool,
+    #[cfg(any(test, feature = "gallery"))]
+    pub fixture_shortcuts: bool,
+    #[cfg(any(test, feature = "gallery"))]
+    fixture_capture: Option<&'static str>,
+    #[cfg(any(test, feature = "gallery"))]
+    fixture_capture_message: Option<&'static str>,
     compact_search: bool,
     operation: Option<(Action, Ticket)>,
     restore_focus: Option<&'static str>,
@@ -76,6 +83,8 @@ impl Settings {
         });
         navigation.update(cx, |s, cx| s.set_value("general", cx));
         let scroll = ScrollHandle::new();
+        let nav_scroll = ScrollHandle::new();
+        navigation.update(cx, |n, _| n.scroll_parent = Some(nav_scroll.clone()));
         let mut s = Self {
             model: Model::default(),
             host,
@@ -94,6 +103,7 @@ impl Settings {
             reveal_scroll: false,
             was_compact: None,
             scroll,
+            nav_scroll,
             back: vec![],
             editor_return: None,
             reveal: None,
@@ -104,6 +114,12 @@ impl Settings {
             synced_pending: false,
             synced_values: BTreeMap::new(),
             fixture: false,
+            #[cfg(any(test, feature = "gallery"))]
+            fixture_shortcuts: false,
+            #[cfg(any(test, feature = "gallery"))]
+            fixture_capture: None,
+            #[cfg(any(test, feature = "gallery"))]
+            fixture_capture_message: None,
             compact_search: false,
             operation: None,
             restore_focus: None,
@@ -133,6 +149,7 @@ impl Settings {
                             cx,
                         )
                     });
+                    picker.update(cx, |p, _| p.scroll_parent = Some(s.scroll.clone()));
                     s.subscriptions.push(cx.subscribe_in(
                         &picker,
                         w,
@@ -152,6 +169,7 @@ impl Settings {
                 Kind::Range(min, max, step, unit) => {
                     let range =
                         cx.new(|cx| range::Range::new(row.label, unit, min, max, step, w, cx));
+                    range.update(cx, |r, _| r.scroll_parent = Some(s.scroll.clone()));
                     s.subscriptions.push(cx.subscribe_in(
                         &range,
                         w,
@@ -219,6 +237,11 @@ impl Settings {
         self.reveal = None;
         self.confirmation = None;
         self.calibration = None;
+        #[cfg(any(test, feature = "gallery"))]
+        {
+            self.fixture_capture = None;
+            self.fixture_capture_message = None;
+        }
         self.lab_selection.clear();
         self.synced_revision = None;
         self.synced_values.clear();
@@ -528,6 +551,11 @@ impl Settings {
         self.reveal_scroll = false;
         self.back = back.into_iter().collect();
         self.editor_return = None;
+        #[cfg(any(test, feature = "gallery"))]
+        {
+            self.fixture_capture = None;
+            self.fixture_capture_message = None;
+        }
         self.model.page = page;
         self.model.query.clear();
         self.search.update(cx, |s, cx| s.set_value("", w, cx));
@@ -673,6 +701,12 @@ impl Settings {
         if e.prefer_character_input || e.is_held {
             return;
         }
+        #[cfg(any(test, feature = "gallery"))]
+        if self.fixture_capture_key(e, w, cx) {
+            w.prevent_default();
+            cx.stop_propagation();
+            return;
+        }
         let k = &e.keystroke;
         if k.modifiers.platform && !k.modifiers.alt && !k.modifiers.shift {
             match k.key.as_str() {
@@ -725,6 +759,7 @@ impl Settings {
                 label.into()
             },
         )
+        .with_scroll_parent(Some(&self.scroll))
         .track_focus(&self.focus_for(id, cx))
         .disabled(
             disabled
@@ -749,6 +784,7 @@ impl Settings {
         let e = cx.entity();
         let key = id.to_string();
         Button::new(SharedString::from(id.to_string()), label.to_string())
+            .with_scroll_parent(Some(&self.scroll))
             .track_focus(&self.focus_for(id, cx))
             .disabled(self.model.pending || self.model.snapshot.is_none())
             .on_click(move |_, _, cx| e.update(cx, |s, cx| s.open_editor(destination, &key, cx)))
@@ -763,6 +799,7 @@ impl Settings {
         let e = cx.entity();
         let key = id.to_string();
         Button::new(SharedString::from(id.to_string()), label.to_string())
+            .with_scroll_parent(Some(&self.scroll))
             .track_focus(&self.focus_for(id, cx))
             .on_click(move |_, w, cx| e.update(cx, |s, cx| s.open_detail(page, &key, w, cx)))
     }
@@ -790,6 +827,7 @@ impl Settings {
                 controls.child(
                     Toggle::new(row.key, row.label, value == true)
                         .disabled(disabled)
+                        .with_scroll_parent(&self.scroll)
                         .track_focus(&self.focus_for(row.key, cx))
                         .on_change(move |v, w, cx| {
                             e.update(cx, |s, cx| s.edit(row, json!(v), w, cx))
@@ -803,14 +841,19 @@ impl Settings {
             Kind::Number(_, _) => {
                 let e = cx.entity();
                 controls
-                    .child(div().w(px(120.)).child(
-                        TextField::new(&self.numbers[row.key], row.label).disabled(disabled),
-                    ))
+                    .child(
+                        div().w(px(120.)).child(
+                            TextField::new(&self.numbers[row.key], row.label)
+                                .with_scroll_parent(&self.scroll)
+                                .disabled(disabled),
+                        ),
+                    )
                     .child(
                         Button::new(
                             SharedString::from(format!("apply-{}", row.key)),
                             format!("Save {}", row.label),
                         )
+                        .with_scroll_parent(Some(&self.scroll))
                         .caption("Save")
                         .size(ButtonSize::Compact)
                         .disabled(disabled)
@@ -852,6 +895,7 @@ impl Settings {
                     SharedString::from(format!("reset-{}", row.key)),
                     format!("Reset {} to default", row.label),
                 )
+                .with_scroll_parent(Some(&self.scroll))
                 .caption("↶")
                 .size(ButtonSize::ExtraSmall)
                 .disabled(disabled)
@@ -979,6 +1023,7 @@ impl Render for Settings {
             let e = cx.entity();
             content = content.child(
                 Button::new("back", format!("Back to {}", page.label()))
+                    .with_scroll_parent(Some(&self.scroll))
                     .track_focus(&self.focus_for("back", cx))
                     .on_click(move |_, w, cx| e.update(cx, |s, cx| s.go_back(w, cx))),
             );
@@ -1006,6 +1051,7 @@ impl Render for Settings {
                 )
                 .child(
                     Button::new("reload", "Reload settings")
+                        .with_scroll_parent(Some(&self.scroll))
                         .disabled(self.model.pending)
                         .on_click(move |_, _, cx| {
                             e.update(cx, |s, cx| s.request(RequestKind::Read, cx))
@@ -1053,15 +1099,18 @@ impl Render for Settings {
             for row in matches {
                 let e = cx.entity();
                 content = content.child(
-                    Button::new(row.key, format!("{} · {}", row.label, row.page.label())).on_click(
-                        move |_, w, cx| e.update(cx, |s, cx| s.search_result(row, w, cx)),
-                    ),
+                    Button::new(row.key, format!("{} · {}", row.label, row.page.label()))
+                        .with_scroll_parent(Some(&self.scroll))
+                        .on_click(move |_, w, cx| {
+                            e.update(cx, |s, cx| s.search_result(row, w, cx))
+                        }),
                 );
             }
             for link in link_matches {
                 let e = cx.entity();
                 content = content.child(
                     Button::new(link.id, format!("{} · {}", link.label, link.page.label()))
+                        .with_scroll_parent(Some(&self.scroll))
                         .on_click(move |_, w, cx| e.update(cx, |s, cx| s.search_link(link, w, cx))),
                 );
             }
@@ -1106,6 +1155,7 @@ impl Render for Settings {
                             "Advanced"
                         },
                     )
+                    .with_scroll_parent(Some(&self.scroll))
                     .track_focus(&self.focus_for("advanced", cx))
                     .toggled(self.model.advanced())
                     .intent(ButtonIntent::Ghost)
@@ -1117,6 +1167,7 @@ impl Render for Settings {
         }
         let mut nav = div()
             .id("settings-nav")
+            .track_scroll(&self.nav_scroll)
             .w(px(if compact { 56. } else { 240. }))
             .h_full()
             .overflow_y_scroll()
@@ -1130,6 +1181,7 @@ impl Render for Settings {
             let e = cx.entity();
             nav = nav.child(
                 Button::new("open-search", "Search settings")
+                    .with_scroll_parent(Some(&self.nav_scroll))
                     .caption("⌕")
                     .on_click(move |_, w, cx| {
                         e.update(cx, |s, cx| {
@@ -1146,6 +1198,7 @@ impl Render for Settings {
                         SharedString::from(format!("nav-{}", page.id())),
                         page.label(),
                     )
+                    .with_scroll_parent(Some(&self.nav_scroll))
                     .caption(["G", "R", "C", "D", "M", "T", "AI", "Mo", "A", "P", "Dx"][i])
                     .toggled(self.model.page == page)
                     .track_focus(&self.focus_for(format!("nav-{}", page.id()), cx))
@@ -1165,7 +1218,10 @@ impl Render for Settings {
             }
         } else {
             nav = nav
-                .child(TextField::new(&self.search, "Search settings"))
+                .child(
+                    TextField::new(&self.search, "Search settings")
+                        .with_scroll_parent(&self.nav_scroll),
+                )
                 .child(self.navigation.clone());
         }
 

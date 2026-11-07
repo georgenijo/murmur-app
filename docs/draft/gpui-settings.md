@@ -92,7 +92,14 @@ remain independent of disclosure. Reduce Motion introduces no delayed motion.
   async continuations recheck ownership before applying geometry. Native applied bounds
   and the acknowledged preview position drive the visible one-point controls. Page exit/hide restores the durable
   placement through the host's page-lifetime teardown. Rust/native code owns
-  geometry and queues all NSWindow mutations on the main thread.
+  geometry and queues all NSWindow mutations on the main thread. Opening the
+  calibration mount focuses its always-available Cancel control, including while
+  a preview is pending; successful Save/Cancel restores the Calibrate opener.
+- All focusable pane controls reveal through their own scroll handle using the
+  shared paint-time `focus_reveal` helper: pickers, ranges, switches, number
+  inputs, resets, search results, and extra actions/editor routes. Navigation
+  has a separate scroll handle. Focus entry reveals immediately; ordinary
+  scrolling while a control remains focused is left under user control.
 
 The only vendored delta is `settings-slider.patch`, applied after the existing
 component patches. It adds opt-in keyboard focus/arrow handling to the base
@@ -110,7 +117,14 @@ range keys/AX/gesture commits, destructive confirmation, calibration and
 revision/lifetime fencing. The isolated fixture host never invokes OS services.
 No existing React, Tauri or native-control suite is retired.
 
-`settings-qa` uses only synthetic state. `scripts/check_gpui_goldens.py` includes
+`settings-qa` uses only synthetic state. Its source header documents launch
+parameters for one preview failure, delayed preview replies, and fixture-only
+shortcut capture/registration conflicts. These controls are compiled only for
+tests/gallery builds; they neither register OS shortcuts nor access the real
+pasteboard. Delayed replies retain their original lease and must be rejected
+after Escape cancels a pending preview.
+
+`scripts/check_gpui_goldens.py` includes
 all 11 destinations, drill-ins, six Advanced panes, compact/search/loading/error
 states in light, dark and Increase Contrast. Midnight is not implemented in this
 GPUI layer: `tokens::apply_appearance(dark: bool, cx)` selects Sonic light/dark
