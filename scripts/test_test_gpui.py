@@ -51,17 +51,25 @@ class TestSourceTests(unittest.TestCase):
         root = test_gpui.UI
         patch_file = root / 'patches/gpui-hover-source.patch'
         original = root / 'vendor/gpui/src/elements/div.rs'
+        input_patch = root / 'patches/gpui-input-active-descendant.patch'
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             (target / 'src/elements').mkdir(parents=True)
             (target / 'src/elements/div.rs').write_bytes(original.read_bytes())
+            (target / 'src/window').mkdir()
+            a11y = root / 'vendor/gpui/src/window/a11y.rs'
+            (target / 'src/window/a11y.rs').write_bytes(a11y.read_bytes())
             env = {**os.environ, 'GIT_CEILING_DIRECTORIES': str(target.parent)}
+            subprocess.run(['git', 'apply', '--reverse', str(input_patch)],
+                           cwd=target, env=env, check=True)
             subprocess.run(['git', 'apply', '--reverse', str(patch_file)],
                            cwd=target, env=env, check=True)
             self.assertEqual(hashlib.sha256((target / 'src/elements/div.rs').read_bytes()).hexdigest(),
                              '73b930227fe8f3c1fb703c2e7529d16a3f372cf52ec2afe95397ed0ff63f65d7')
             subprocess.run(['git', 'apply', str(patch_file)], cwd=target, env=env, check=True)
+            subprocess.run(['git', 'apply', str(input_patch)], cwd=target, env=env, check=True)
             self.assertEqual((target / 'src/elements/div.rs').read_bytes(), original.read_bytes())
+            self.assertEqual((target / 'src/window/a11y.rs').read_bytes(), a11y.read_bytes())
 
     def source(self, root, relative='vendor/gpui', revision=test_gpui.REV):
         source = root / relative

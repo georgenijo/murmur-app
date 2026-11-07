@@ -12,8 +12,10 @@ pub mod meetings;
 pub mod motion;
 pub mod onboarding;
 pub mod overlay;
+pub mod palette;
 pub mod preferences;
 pub mod preview;
+mod section;
 pub mod settings;
 pub mod toggle;
 pub mod tokens;
@@ -57,5 +59,17 @@ unsafe extern "C" {
     fn murmur_install_focus_hook();
 }
 
+pub mod customize;
+mod form;
+pub mod insights;
+mod json;
+pub mod knowledge;
+pub mod models;
+pub mod modes;
+#[cfg(any(test, feature = "gallery"))]
+pub mod remaining;
+#[cfg(test)]
+mod remaining_tests;
 #[cfg(test)]
 mod tests;
+pub mod themes;

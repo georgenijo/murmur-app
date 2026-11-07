@@ -154,6 +154,65 @@ def render_meetings(target, output, policy_log):
     return results
 
 
+def render_remaining(target, output, policy_log):
+    """Whole remaining-section views, including the full appearance owner."""
+    binary = str(target / 'debug/remaining-qa')
+    prefix = 'MURMUR_REMAINING_INVENTORY'
+    states = {
+        'palette': ('ready', 'search', 'empty', 'text-input', 'compact', 'loading', 'error'),
+        'insights': ('ready', 'empty', 'compact', 'loading', 'error'),
+        'models': ('ready', 'busy', 'download', 'confirm', 'compact', 'loading', 'error'),
+        'knowledge': ('ready', 'empty', 'edit', 'delete', 'unavailable', 'compact', 'loading', 'error'),
+        'modes': ('ready', 'custom', 'sites', 'compact', 'loading', 'error'),
+        'themes': ('ready', 'edit', 'community', 'import', 'unavailable', 'compact', 'loading', 'error'),
+        'spellings': ('ready', 'edit', 'preview', 'compact', 'loading', 'error'),
+        'commands': ('ready', 'edit', 'preview', 'compact', 'loading', 'error'),
+        'apps': ('ready', 'edit', 'compact', 'loading', 'error'),
+        'scan': ('ready', 'scanning', 'compact', 'loading', 'error'),
+    }
+    clean = {k: v for k, v in os.environ.items() if not k.startswith('MURMUR_')}
+    baseline = subprocess.check_output([binary], env={**clean,
+        'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(baseline, prefix)['webkitImages'] != 0:
+        raise AssertionError('nonzero remaining-sections launch-only baseline')
+    policy_log.extend(baseline.splitlines())
+    results = {}
+    try:
+        for section, cases in states.items():
+            for mode in ('light', 'dark', 'contrast', 'midnight', 'imported'):
+                for state in cases:
+                    case = f'{section}-{mode}-{state}'
+                    paths = [output / f'{case}-{i}.png' for i in (1, 2)]
+                    for path in paths:
+                        env = {**clean, 'MURMUR_SECTION': section,
+                               'MURMUR_REMAINING_STATE': state, 'MURMUR_GOLDEN': str(path), 'TZ': 'UTC'}
+                        if mode in ('dark', 'midnight', 'imported'):
+                            env['MURMUR_DARK'] = '1'
+                        if mode == 'contrast':
+                            env['MURMUR_CONTRAST'] = '1'
+                        if mode == 'midnight':
+                            env['MURMUR_MIDNIGHT'] = '1'
+                        if mode == 'imported':
+                            env['MURMUR_IMPORTED'] = '1'
+                        run = subprocess.run([binary], env=env, cwd=UI, timeout=60, text=True,
+                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                        policy_log.extend(line for line in run.stdout.splitlines() if line.startswith('MURMUR_'))
+                        if run.returncode:
+                            (output / f'{case}-failure.log').write_text(run.stdout)
+                        check_inventory(run.stdout, prefix)
+                        run.check_returncode()
+                    if paths[0].read_bytes() != paths[1].read_bytes():
+                        raise AssertionError(f'non-deterministic {case}')
+                    results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+                    print(f'PASS {case}: identical offscreen Metal images', flush=True)
+            if len({results[f'{section}-{mode}-ready'] for mode in
+                    ('light', 'dark', 'contrast', 'midnight', 'imported')}) != 5:
+                raise AssertionError(f'{section} appearance variants rendered identically')
+    finally:
+        (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')
+    return results
+
+
 def check_inventory(stdout, prefix):
     inventories = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
                    if line.startswith(prefix + '=')]
@@ -207,8 +266,13 @@ def main():
         (output / 'receipt.json').write_text(json.dumps({'comparison': 'same-host strict byte equality',
             'sha256': results}, indent=2) + '\n')
         return
+    if sys.argv[1:] == ['--remaining-only']:
+        results = render_remaining(target, output, policy_log)
+        (output / 'remaining-receipt.json').write_text(json.dumps({'comparison': 'same-host strict byte equality',
+            'sha256': results}, indent=2) + '\n')
+        return
     if sys.argv[1:]:
-        raise SystemExit('usage: check_gpui_goldens.py [--settings-only|--onboarding-home-only|--meetings-only]')
+        raise SystemExit('usage: check_gpui_goldens.py [--settings-only|--onboarding-home-only|--meetings-only|--remaining-only]')
     cases = [(mode, state) for mode in ('light', 'dark', 'contrast')
              for state in ('rest', 'hover', 'pressed', 'button', 'toggle', 'field', 'dropdown', 'popup', 'list', 'navigation')]
     for mode, state in cases:
@@ -362,6 +426,7 @@ def main():
     results.update(render_settings(target, output, policy_log))
     results.update(render_onboarding_home(target, output, policy_log))
     results.update(render_meetings(target, output, policy_log))
+    results.update(render_remaining(target, output, policy_log))
 
 
     (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')

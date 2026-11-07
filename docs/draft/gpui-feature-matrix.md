@@ -291,3 +291,16 @@ interactive/VoiceOver and real service/permission flows above remain with the
 lead's separate QA pass and the Phase 2 adapters. The unused legacy
 `UsageDashboard` and personalization components are not mounted by React Home;
 the Insights/chart/manager work stays with 3.5e. No React or Tauri test is retired.
+
+## Layer 17 native-parity evidence
+
+[Remaining sections and acceptance handoff](gpui-remaining-sections.md) maps
+U02–U03, U05, T01–T02, K01–K05, K07–K16 and A01–A05 presentation to the native
+palette, Insights, models, knowledge/customization, Modes and appearance modules.
+`remaining_tests.rs` exercises the actual Root/AX controls; module tests cover
+source generations, import/bulk conflicts, clipboard consent, Mode/spelling
+exchange and bounded theme transport/archive compilation. `remaining-qa` and
+`check_gpui_remaining_native.py` use synthetic data and task-owned processes.
+These development checks do not retire React tests or establish production host,
+real permissions, VoiceOver, signed installed migration or whole-window flip
+acceptance. Those gates stay with their matrix rows and Phase 2.

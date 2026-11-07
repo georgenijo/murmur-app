@@ -1,0 +1,73 @@
+use super::{host::*, model::*};
+use crate::section;
+use std::{cell::RefCell, rc::Rc};
+pub fn snapshot() -> Snapshot {
+    let mut stats = murmur_core::completion::Stats {
+        total_words: 1280,
+        total_recordings: 32,
+        total_duration_seconds: 640.,
+        wpm_samples: vec![110., 130.],
+        ..Default::default()
+    };
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+    stats.apply(&murmur_core::completion::StatisticsEvent::Dictation {
+        words: 120,
+        seconds: 60.,
+        mode: Some("builtin.everyday".into()),
+        day: today.to_string(),
+    });
+    Snapshot {
+        revision: 1,
+        stats,
+        today,
+        mode_names: std::collections::BTreeMap::from([(
+            "builtin.everyday".into(),
+            "Everyday".into(),
+        )]),
+    }
+}
+#[derive(Default)]
+pub struct FixtureHost {
+    pub actions: RefCell<Vec<Action>>,
+}
+struct Stop;
+impl Subscription for Stop {
+    fn stop(&mut self) {}
+}
+impl SectionHost<Snapshot, Action> for FixtureHost {
+    fn subscribe(
+        &self,
+        _: murmur_core::events::Consumer,
+        _: u64,
+        _: crate::workspace::Inbox<Snapshot>,
+    ) -> Box<dyn Subscription> {
+        Box::new(Stop)
+    }
+    fn request(&self, r: Request, i: crate::workspace::Inbox<Snapshot>) {
+        if r.lease.is_current() {
+            self.actions.borrow_mut().push(r.action);
+            section::reply(&i, r.ticket, Ok(snapshot()));
+        }
+    }
+}
+pub fn host() -> Rc<Host> {
+    Rc::new(FixtureHost::default())
+}
+impl super::Insights {
+    pub fn fixture_state(
+        &mut self,
+        state: &str,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) {
+        if state == "empty" {
+            self.controller.model.snapshot.as_mut().unwrap().stats = Default::default();
+        }
+        if state == "loading" {
+            self.controller.model.snapshot = None;
+        }
+        if state == "error" {
+            self.controller.model.problem = Some(Problem::Unavailable);
+        }
+    }
+}

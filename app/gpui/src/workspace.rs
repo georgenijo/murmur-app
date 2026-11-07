@@ -11,6 +11,9 @@ pub struct Ticket {
     pub revision: u64,
 }
 pub trait Projection: Clone {
+    fn inbox_limit() -> usize {
+        4 * murmur_core::state::source_size_limit("dictation-settings") + 32768
+    }
     fn revision(&self) -> u64;
     fn valid(&self) -> bool;
     fn bytes(&self) -> usize;
@@ -87,11 +90,7 @@ impl<S: Projection> Inbox<S> {
             _ => 128,
         };
         let mut p = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        if p.closed
-            || p.queue.len() >= 8
-            || p.bytes.saturating_add(size)
-                > 4 * murmur_core::state::source_size_limit("dictation-settings") + 32768
-        {
+        if p.closed || p.queue.len() >= 8 || p.bytes.saturating_add(size) > S::inbox_limit() {
             return Err(Box::new(event));
         }
         p.bytes += size;
