@@ -50,7 +50,9 @@ fn main() {
                     focus: false,
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(0.), px(0.)),
-                        if compact {
+                        if matches!(state.as_str(), "compact-model" | "compact-hotkey") {
+                            size(px(480.), px(360.))
+                        } else if compact {
                             size(px(720.), px(560.))
                         } else {
                             size(px(880.), px(720.))
@@ -173,8 +175,15 @@ fn main() {
                         .to_platform_input(),
                         cx,
                     );
-                    if let Ok(keys) = std::env::var("MURMUR_QA_KEYS") {
-                        for key in keys.split_whitespace() {
+                    w.draw(cx).clear(cx);
+                })
+                .expect("settle Onboarding controls");
+                // Process each key in its own application turn so deferred Tab
+                // actions settle before the next key. This targets only this
+                // task's offscreen window and never sends desktop HID input.
+                if let Ok(keys) = std::env::var("MURMUR_QA_KEYS") {
+                    for key in keys.split_whitespace() {
+                        cx.update_window(handle.into(), |_, w, cx| {
                             let keystroke = Keystroke::parse_with_os(key, cx.platform_info().os)
                                 .expect("synthetic QA key");
                             w.dispatch_event(
@@ -188,11 +197,13 @@ fn main() {
                             );
                             w.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
                             w.draw(cx).clear(cx);
-                        }
+                        })
+                        .expect("synthetic QA keyboard interaction");
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(32))
+                            .await;
                     }
-                    w.draw(cx).clear(cx);
-                })
-                .expect("settle Onboarding controls");
+                }
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(32))
                     .await;
@@ -203,9 +214,8 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank Onboarding capture"
                     );
-                    // Preserve the rendered frame even when a separate native-policy check fails.
-                    image.save(path).expect("synthetic capture");
                     murmur_ui::overlay::native::assert_webkit_policy("MURMUR_ONBOARDING_INVENTORY");
+                    image.save(path).expect("synthetic capture");
                     cx.quit();
                 })
                 .expect("Onboarding capture");
