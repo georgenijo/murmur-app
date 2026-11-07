@@ -109,3 +109,22 @@ Exact test results, remaining CI state, native evidence and build provenance
 belong in the draft PR and immutable Fleet artifact. This implementation child
 starts no delegates, does not watch the PR and never merges. Independent Sol high
 review remains the lead's gate.
+
+## Observed packaged-app WebKit blocker
+
+At product revision `da2cbbad`, unbundled native AX/input/audio checks and all 75
+headless golden cases pass with zero WebKit images. The ad hoc `.app` bundle has
+a zero-image launch-only baseline, but its actual AppKit run loads **seven
+unattributed WebKit images** from `WritingToolsUILibraryCore` →
+`+[NSWritingToolsCoordinator isWritingToolsAvailable]` →
+`-[NSApplication(NSMenuUpdating) _addTextInputMenuItems:]` during
+`finishLaunching`. Its unchanged strict policy asserts at shutdown. This is a
+failed packaged-app gate, consistent with the known sibling-layer Writing Tools
+work; it is not an accessibility-attributed exception. The fixture flow and
+native output still run, and the artifact retains the exact failing inventory.
+
+Use `check_gpui_meetings_native.py --binary <review.app>/Contents/MacOS/meetings-qa
+--evidence <separate-directory>` for the packaged gate as well as the default
+unbundled gate. Repeat it after the shared AppKit fix reaches this stack. No
+policy allowance, production identity or OS setting was changed. This dependency
+and the user-reserved interactive/VoiceOver pass remain explicit gates.

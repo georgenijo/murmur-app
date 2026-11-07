@@ -6,6 +6,7 @@ and entry use the QA app's internal hook, never synthetic OS keyboard input.
 """
 from pathlib import Path
 import json
+import argparse
 import os
 import platform
 import subprocess
@@ -22,7 +23,11 @@ def main():
     ui = ROOT / 'app/gpui'
     target = Path(json.loads(subprocess.check_output(
         ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=ui))['target_directory'])
-    evidence = target / 'meetings-native'
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--binary', type=Path, help='Exact gallery QA binary, including one inside a review app bundle')
+    parser.add_argument('--evidence', type=Path, help='Separate output directory for packaged/unbundled receipts')
+    args = parser.parse_args()
+    evidence = args.evidence or target / 'meetings-native' 
     evidence.mkdir(parents=True, exist_ok=True)
     source = evidence / 'observer.m'
     source.write_text(OBSERVER)
@@ -30,7 +35,7 @@ def main():
     subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
                     '-framework', 'ApplicationServices', str(source), '-o', str(observer)], check=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith('MURMUR_')}
-    binary = str(target / 'debug/meetings-qa')
+    binary = str((args.binary or target / 'debug/meetings-qa').resolve())
     observations = []
     # Synthetic Calendar candidates only; selection remains explicit, including
     # the one-event case. Naming, speaker edits and export never touch real data.
