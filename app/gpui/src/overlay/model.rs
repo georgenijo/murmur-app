@@ -719,6 +719,21 @@ impl Model {
     }
 }
 
+/// Reconcile delivered tracking events with watchdog samples. Only transitions
+/// generate hover intent: repeated samples cannot postpone leave, restart a
+/// cancelled dwell, or close an AX-opened panel before a pointer has entered it.
+#[derive(Default)]
+pub struct PointerPresence {
+    inside: bool,
+}
+impl PointerPresence {
+    pub fn observe(&mut self, inside: bool) -> bool {
+        let changed = self.inside != inside;
+        self.inside = inside;
+        changed
+    }
+}
+
 /// Retain only the previous visual's native bounds during a contraction; a
 /// later exact-size transaction releases the temporary transparent hit area.
 /// Main-thread synchronous writes cannot produce late IPC acknowledgements.

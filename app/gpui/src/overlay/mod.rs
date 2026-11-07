@@ -34,6 +34,7 @@ pub struct Overlay {
     applied: Option<native::Surface>,
     last_indicator: Option<Indicator>,
     interested: bool,
+    pointer: PointerPresence,
 }
 impl Overlay {
     pub fn new(snapshot: Snapshot, host: Rc<dyn Host>) -> Self {
@@ -48,6 +49,7 @@ impl Overlay {
             applied: None,
             last_indicator: None,
             interested: false,
+            pointer: PointerPresence::default(),
         }
     }
     pub fn receive(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
@@ -73,6 +75,26 @@ impl Overlay {
             self.host.submit(intent);
         }
     }
+    fn toggle_quick_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.now = self.epoch.elapsed().as_millis() as u64;
+        if self.model.phase == Phase::Open {
+            self.model.close(self.now);
+        } else {
+            self.model.expand(self.now);
+        }
+        self.advance(window, cx);
+    }
+    /// Tracking events and watchdog samples share transition ownership. A
+    /// delivered exit cancels dwell immediately, even between two inside
+    /// samples; repeated inside observations never move the deadline.
+    fn observe_pointer(&mut self, inside: bool, now: u64) -> bool {
+        if self.pointer.observe(inside) {
+            self.model.hover(inside, now);
+            true
+        } else {
+            false
+        }
+    }
     pub fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.now = self.epoch.elapsed().as_millis() as u64;
         let prefs = preferences::current(cx);
@@ -93,10 +115,12 @@ impl Overlay {
                         floating,
                         hidden,
                         reduce_transparency: prefs.reduce_transparency,
+                        increase_contrast: prefs.increase_contrast,
                         dark,
                         surface_height: frame.height,
                         radius: if frame.height <= 34. { 17. } else { 12. },
                     },
+                    cx,
                 )
             });
         self.send(intent);
@@ -114,6 +138,7 @@ impl Overlay {
             floating,
             hidden: self.model.hidden(self.now),
             reduce_transparency: prefs.reduce_transparency,
+            increase_contrast: prefs.increase_contrast,
             dark,
             surface_height: visual.height,
             radius: if self.model.phase == Phase::Open {
@@ -122,7 +147,7 @@ impl Overlay {
                 17.
             },
         };
-        if self.applied != Some(surface) && native::apply(window, surface) {
+        if self.applied != Some(surface) && native::apply(window, surface, cx) {
             self.applied = Some(surface);
             self.host.preview_anchor(
                 self.model.frame(false, self.now),
@@ -178,6 +203,7 @@ impl Overlay {
                                 || level.is_some()
                                 || s.applied.is_some_and(|a| {
                                     a.reduce_transparency != prefs.reduce_transparency
+                                        || a.increase_contrast != prefs.increase_contrast
                                         || a.dark != dark
                                 });
                             for event in events {
@@ -185,6 +211,11 @@ impl Overlay {
                             }
                             if let Some((generation, level)) = level {
                                 s.model.sample(generation, level, s.now);
+                            }
+                            if let Some(inside) = native::pointer_inside(w)
+                                && s.observe_pointer(inside, s.now)
+                            {
+                                changed = true;
                             }
                             if s.now >= s.screen_poll {
                                 s.screen_poll = s.now + 500;
@@ -290,7 +321,7 @@ impl Render for Overlay {
         } else {
             12.
         };
-        native::refit_material(window, width, height, radius);
+        native::refit_material(window, width, height, radius, g.floating);
         let mut card = div()
             .id("overlay-surface")
             .relative()
@@ -304,53 +335,67 @@ impl Render for Overlay {
             .text_size(tokens::CAPTION_SIZE)
             .line_height(tokens::CAPTION_LEADING)
             .text_color(p.text)
-            .bg(
-                if g.floating && native::has_native_window(window) && self.applied.is_some() {
-                    p.surface.opacity(0.)
-                } else if g.floating {
-                    p.surface
-                        .opacity(if preferences::current(cx).reduce_transparency {
-                            1.
-                        } else {
-                            0.76
-                        })
-                } else {
-                    tokens::overlay_surface()
-                },
-            )
+            // Tint belongs above the AppKit effect in the same Metal scene as
+            // the foreground. NSVisualEffectView's backing color is not a tint.
+            .bg(if g.floating {
+                p.surface.opacity(
+                    if preferences::current(cx).reduce_transparency
+                        || preferences::current(cx).increase_contrast
+                    {
+                        1.
+                    } else {
+                        0.76
+                    },
+                )
+            } else {
+                tokens::overlay_surface()
+            })
+            .when(g.floating, |s| {
+                s.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(px(radius))
+                        .border_1()
+                        .border_color(p.border),
+                )
+            })
             .on_hover(cx.listener(|s, inside, w, cx| {
-                s.model.hover(*inside, s.now);
-                s.advance(w, cx);
+                let now = s.epoch.elapsed().as_millis() as u64;
+                if s.observe_pointer(*inside, now) {
+                    s.advance(w, cx);
+                }
             }));
-        // This never-key panel cannot receive keyboard disclosure commands.
-        // Keep a nonvisual AX button present even in the idle notch cutout.
-        // No pointer hitbox or focus owner: status clicks keep their existing
-        // recording behavior, while AXPress exclusively toggles quick settings.
-        let disclosure = cx.entity().downgrade();
-        card = card.child(
-            div()
-                .id("overlay-quick-settings-disclosure")
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .role(Role::Button)
-                .aria_label(if expanded {
-                    "Quick settings, expanded"
-                } else {
-                    "Quick settings, collapsed"
-                })
-                .on_a11y_action(AccessibleAction::Click, move |_, w, cx| {
-                    let _ = disclosure.update(cx, |s, cx| {
-                        if s.model.phase == Phase::Open {
-                            s.model.close(s.now);
-                        } else {
-                            s.model.expand(s.now);
-                        }
-                        s.advance(w, cx);
-                    });
-                }),
-        );
+        // A separate bounded affordance keeps recording/status clicks and
+        // child quick controls independent. AX and pointer input share its
+        // exact laid-out rectangle and action, without taking key focus.
+        let disclosure_owner = cx.entity().downgrade();
+        let disclosure = div()
+            .id("overlay-quick-settings-disclosure")
+            .debug_selector(|| "overlay-quick-settings-disclosure".into())
+            .role(Role::Button)
+            .aria_label(if expanded {
+                "Quick settings, expanded"
+            } else {
+                "Quick settings, collapsed"
+            })
+            .w(px(12.))
+            .h(px(24.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .text_size(px(8.))
+            .child(if expanded { "⌃" } else { "⌄" })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|s, _, w, cx| {
+                cx.stop_propagation();
+                s.toggle_quick_settings(w, cx);
+            }))
+            .on_a11y_action(AccessibleAction::Click, move |_, w, cx| {
+                let _ = disclosure_owner.update(cx, |s, cx| s.toggle_quick_settings(w, cx));
+            });
         let accessible = cx.entity().downgrade();
         let mut status = div()
             .id("overlay-status")
@@ -370,7 +415,9 @@ impl Render for Overlay {
             .flex()
             .items_center()
             .flex_shrink_0()
-            .when(g.floating, |s| s.justify_center().gap(px(8.)).px(px(8.)))
+            // Reserve the disclosure inside the existing fixed-width pill;
+            // its width replaces padding/gap, never the waveform or retry.
+            .when(g.floating, |s| s.justify_center().gap(px(2.)).px(px(4.)))
             .on_click(cx.listener(|s, e: &ClickEvent, w, cx| {
                 let action = if matches!(e, ClickEvent::Keyboard(_)) {
                     s.model.accessible_activate(s.now)
@@ -409,6 +456,7 @@ impl Render for Overlay {
             .justify_center()
             .when(!g.floating, |s| s.w(px(g.wing_w as f32)));
         let state_glyph = div()
+            .debug_selector(|| "overlay-state-glyph".into())
             .text_color(if indicator == Indicator::Recording {
                 p.danger
             } else {
@@ -422,41 +470,47 @@ impl Render for Overlay {
                 })
             })
             .child(glyph);
-        if matches!(
-            indicator,
-            Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing
-        ) {
-            leading = leading.child(
-                gpui_component::Icon::default()
-                    .data(include_bytes!(
-                        "../../vendor/gpui-component/crates/assets/assets/icons/loader.svg"
-                    ))
-                    .size(px(14.))
-                    .text_color(p.text)
-                    .with_animation(
-                        "processing-spinner",
-                        Animation::new(std::time::Duration::from_millis(900))
+        let show_status = g.floating || expanded || indicator != Indicator::Idle;
+        if show_status {
+            if matches!(
+                indicator,
+                Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing
+            ) {
+                leading = leading.child(
+                    gpui_component::Icon::default()
+                        .data(include_bytes!(
+                            "../../vendor/gpui-component/crates/assets/assets/icons/loader.svg"
+                        ))
+                        .size(px(14.))
+                        .text_color(p.text)
+                        .with_animation(
+                            "processing-spinner",
+                            Animation::new(std::time::Duration::from_millis(900))
+                                .repeat()
+                                .with_max_fps(30.),
+                            |s, delta| s.transform(Transformation::rotate(percentage(delta))),
+                        ),
+                );
+            } else if matches!(
+                indicator,
+                Indicator::Starting | Indicator::Slow | Indicator::Recording
+            ) {
+                leading = leading.child(
+                    state_glyph.with_animation(
+                        "recording-pulse",
+                        Animation::new(std::time::Duration::from_millis(1200))
                             .repeat()
                             .with_max_fps(30.),
-                        |s, delta| s.transform(Transformation::rotate(percentage(delta))),
+                        |s, delta| {
+                            s.opacity(0.65 + 0.35 * (delta * std::f32::consts::TAU).cos().abs())
+                        },
                     ),
-            );
-        } else if matches!(
-            indicator,
-            Indicator::Starting | Indicator::Slow | Indicator::Recording
-        ) {
-            leading = leading.child(
-                state_glyph.with_animation(
-                    "recording-pulse",
-                    Animation::new(std::time::Duration::from_millis(1200))
-                        .repeat()
-                        .with_max_fps(30.),
-                    |s, delta| s.opacity(0.65 + 0.35 * (delta * std::f32::consts::TAU).cos().abs()),
-                ),
-            );
-        } else {
-            leading = leading.child(state_glyph);
+                );
+            } else {
+                leading = leading.child(state_glyph);
+            }
         }
+        leading = leading.child(disclosure);
         if g.floating
             && !matches!(indicator, Indicator::Recording)
             && !matches!(indicator, Indicator::Delivery(d) if d.retryable())
@@ -527,14 +581,10 @@ impl Render for Overlay {
         // The shared geometry reserves a fixed wing on each side of the
         // physical (or pretend) notch. Never pad a full-width row: even a few
         // points would push the waveform behind the hardware cutout.
-        status = status.when(
-            g.floating || expanded || indicator != Indicator::Idle,
-            |s| {
-                s.child(leading)
-                    .when(!g.floating, |s| s.child(div().flex_1()))
-                    .child(trailing)
-            },
-        );
+        status = status
+            .child(leading)
+            .when(!g.floating, |s| s.child(div().flex_1()))
+            .when(show_status, |s| s.child(trailing));
         let controls = if expanded {
             let mut group = div()
                 .id("overlay-quick-settings")
