@@ -208,7 +208,3 @@ pub(crate) fn send_str<R: Runtime>(
 }
 #[cfg(feature = "tauri-host")]
 pub type BinaryResponse = tauri::ipc::Response;
-#[cfg(all(test, feature = "tauri-host"))]
-pub type Position = tauri::Position;
-#[cfg(all(test, feature = "tauri-host"))]
-pub type Size = tauri::Size;

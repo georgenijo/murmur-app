@@ -125,6 +125,7 @@ pub fn run_with(
                 WindowOptions {
                     show: false,
                     focus: false,
+                    window_min_size: Some(size(px(720.), px(560.))),
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
                         size(px(1040.), px(760.)),

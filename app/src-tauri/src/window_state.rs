@@ -14,6 +14,12 @@ use tauri::Manager;
 
 const LABELS: [&str; 2] = ["main", "diagnostics"];
 pub(crate) const TRAFFIC_LIGHT_X: f64 = 16.0;
+// The native shell has a supported compact layout. Keep Tauri's existing
+// minimum while accepting the content size that GPUI actually allows saving.
+#[cfg(feature = "tauri-host")]
+const MIN_INNER_SIZE: (f64, f64) = (840.0, 620.0);
+#[cfg(not(feature = "tauri-host"))]
+const MIN_INNER_SIZE: (f64, f64) = (720.0, 560.0);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Rect {
@@ -128,8 +134,8 @@ fn restore_geometry(saved: &SavedWindow, displays: &[Display]) -> Option<Restore
             (saved.inner_width as f64 / saved_scale * target_scale).round() / target_scale,
             (saved.inner_height as f64 / saved_scale * target_scale).round() / target_scale,
         );
-        (inner_size.width >= 840.0
-            && inner_size.height >= 620.0
+        (inner_size.width >= MIN_INNER_SIZE.0
+            && inner_size.height >= MIN_INNER_SIZE.1
             && inner_size.width <= bounds.width
             && inner_size.height <= bounds.height
             && window_fits_within_display(bounds, &[display.bounds]))
@@ -696,11 +702,32 @@ mod tests {
         let restored = restore_geometry(&saved, &displays).unwrap();
         assert_eq!(restored.bounds, rect(-1701.0, -100.0, 1101.0, 781.0));
         assert_eq!(restored.inner_size, LogicalSize::new(1101.0, 781.0));
-        let undersized = saved_window(rect(-1700.0, 0.0, 839.0, 780.0), 2.0, false);
+        let undersized = saved_window(
+            rect(-1700.0, 0.0, MIN_INNER_SIZE.0 - 1.0, 780.0),
+            2.0,
+            false,
+        );
         assert!(restore_geometry(&undersized, &displays).is_none());
         let mut oversized_inner = saved;
         oversized_inner.inner_width = 4000;
         assert!(restore_geometry(&oversized_inner, &displays).is_none());
+    }
+
+    #[test]
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    fn native_compact_window_restores_instead_of_resetting_to_default() {
+        let mut saved = saved_window(rect(100.0, 100.0, 760.0, 632.0), 1.0, false);
+        saved.inner_height = 600;
+        let displays = [display(rect(0.0, 0.0, 1920.0, 1080.0), 1.0)];
+        let restored =
+            restore_geometry(&saved, &displays).expect("supported compact native bounds");
+        assert_eq!(restored.inner_size, LogicalSize::new(760.0, 600.0));
+        assert_eq!(restored.bounds, saved.bounds);
+        saved.inner_width = 719;
+        assert!(restore_geometry(&saved, &displays).is_none());
+        saved.inner_width = 760;
+        saved.inner_height = 559;
+        assert!(restore_geometry(&saved, &displays).is_none());
     }
 
     #[test]
