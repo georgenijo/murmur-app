@@ -277,6 +277,10 @@ def validate_ci(ci: str) -> int:
     for script in ("check_core_dependencies.py", "check_native_only.py", "validate_capture_boundary.py", "validate_workflow_policy.py", "validate_reference_docs.py", "validate_markdown_links.py"):
         assert f"python3 scripts/{script}" in policy
     assert "pip install -r requirements-test.txt" in policy
+    # Preserve unrelated privacy, receiver, release and capture coverage while
+    # replacing the frontend; removal of a UI runtime cannot skip these suites.
+    for module in ("test_release_start.py", "test_capture_agent_matrix.py", "test_capture_worker_smoke.py", "test_capture_first_pcm.py", "test_native_capture_ci.py", "test_event_store.py", "test_log_receiver.py", "test_murmur_bench.py", "test_murmur_accuracy.py", "test_murmur_bench_remote.py", "test_capture_regression_watch.py", "test_dictation_lifecycle.py", "test_receiver_hang_diagnostics.py", "test_receiver_key_scrub.py", "test_reliability_slo.py", "test_murmur_canary.py"):
+        assert "tests/" + module in policy, f"native CI must retain {module}"
     lint = job_block(ci, "rust-lint")
     assert "dtolnay/rust-toolchain@1.98.1" in lint
     assert "cargo clippy --locked" in lint and "--all-targets --features gallery,production-host -- -D warnings" in lint

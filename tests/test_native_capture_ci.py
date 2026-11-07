@@ -35,7 +35,7 @@ class NativeCaptureCiTests(unittest.TestCase):
         for path in ['app/sidecars/capture/src/production.rs',
                      'app/crates/capture-helper-protocol/src/lib.rs',
                      'app/crates/murmur-services/src/audio.rs', 'app/crates/murmur-services/src/audio_lifecycle.rs',
-                     'app/crates/murmur-services/Cargo.lock', 'scripts/smoke_test_capture_first_pcm.py']:
+                     'app/Cargo.lock', 'scripts/smoke_test_capture_first_pcm.py']:
             self.assertTrue(poller.capture_path(path), path)
         for path in ['docs/FEATURES.md','app/src/App.tsx','app/crates/murmur-services/src/history.rs']:
             self.assertFalse(poller.capture_path(path), path)

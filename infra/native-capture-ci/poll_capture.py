@@ -16,11 +16,11 @@ SOURCE = "https://github.com/georgenijo/murmur-app.git"
 
 def capture_path(path: str) -> bool:
     return (
-        path.startswith("app/src-tauri/sidecars/capture/")
-        or path.startswith("app/src-tauri/crates/capture-helper-protocol/")
-        or bool(re.fullmatch(r"app/src-tauri/src/audio[^/]*\.rs", path))
+        path.startswith("app/sidecars/capture/")
+        or path.startswith("app/crates/capture-helper-protocol/")
+        or bool(re.fullmatch(r"app/crates/murmur-services/src/audio[^/]*\.rs", path))
         or path in {
-            "app/src-tauri/Cargo.lock", "app/src-tauri/Cargo.toml",
+            "app/Cargo.lock", "app/Cargo.toml", "app/crates/murmur-services/Cargo.toml",
             "scripts/smoke_test_capture_first_pcm.py",
             "scripts/smoke_test_capture_worker.py", "tests/test_capture_first_pcm.py",
         }

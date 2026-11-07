@@ -34,7 +34,7 @@ def main() -> None:
         command("git", "checkout", "--quiet", "--detach", sha, cwd=source)
         command("python3", "-m", "unittest", "tests/test_capture_worker_smoke.py",
                 "tests/test_capture_first_pcm.py", cwd=source)
-        tauri = source / "app/src-tauri"
+        capture = source / "app/sidecars/capture"
         # Cache outside the checkout, but only this private owner-only job writes it.
         target = Path(os.environ["RUNNER_TEMP"]) / "murmur-capture-worker-build"
         empty = source / "empty-pkgconfig"
@@ -43,11 +43,11 @@ def main() -> None:
         env.pop("PKG_CONFIG_PATH", None)
         env.update(
             MURMUR_CAPTURE_ROLE="worker", CARGO_TARGET_DIR=str(target),
-            MURMUR_APP_VERSION=str(json.loads((tauri / "tauri.conf.json").read_text())["version"]),
+            MURMUR_APP_VERSION=str(json.loads((source / "app/macos/bundle.json").read_text())["version"]),
             PKG_CONFIG_LIBDIR=str(empty), MACOSX_DEPLOYMENT_TARGET="14.0",
             CMAKE_OSX_DEPLOYMENT_TARGET="14.0",
         )
-        command("cargo", "build", "--locked", "-p", "murmur-capture-helper", "-j", "2", cwd=tauri, env=env)
+        command("cargo", "build", "--locked", "-p", "murmur-capture-helper", "-j", "2", cwd=capture, env=env)
         worker = target / "debug/murmur-capture-helper"
         print(json.dumps({"source_sha": sha, "source_ref": ref}), flush=True)
         command("python3", "scripts/smoke_test_capture_first_pcm.py", "--worker", str(worker),
