@@ -1,0 +1,141 @@
+//! Decorative Lucide glyphs. Accessible names belong to the owning control.
+use gpui::{Styled, px};
+use gpui_component::Icon;
+#[derive(Clone, Copy)]
+pub enum Glyph {
+    House,
+    Calendar,
+    Chart,
+    Mic,
+    Stop,
+    Spinner,
+    Settings,
+    PanelLeft,
+    Search,
+    Filter,
+    More,
+    Copy,
+    ChevronRight,
+    ChevronLeft,
+    ChevronDown,
+    Download,
+    Refresh,
+    Close,
+    Check,
+    Keyboard,
+    Palette,
+    Sliders,
+    Type,
+    Cpu,
+    Audio,
+    Send,
+    Wand,
+    Gauge,
+    Bug,
+    Message,
+}
+pub fn icon(glyph: Glyph) -> Icon {
+    let bytes: &'static [u8] = match glyph {
+        Glyph::House => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/house.svg")
+        }
+        Glyph::Calendar => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/calendar.svg")
+        }
+        Glyph::Chart => include_bytes!(
+            "../vendor/gpui-component/crates/assets/assets/icons/chart-no-axes-column.svg"
+        ),
+        Glyph::Mic => include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/mic.svg"),
+        Glyph::Stop => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/square.svg")
+        }
+        Glyph::Spinner => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/loader.svg")
+        }
+        Glyph::Settings => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/settings.svg")
+        }
+        Glyph::PanelLeft => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/panel-left.svg")
+        }
+        Glyph::Search => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/search.svg")
+        }
+        Glyph::Filter => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/list-filter.svg")
+        }
+        Glyph::More => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/ellipsis.svg")
+        }
+        Glyph::Copy => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/copy.svg")
+        }
+        Glyph::ChevronRight => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/chevron-right.svg")
+        }
+        Glyph::ChevronLeft => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/chevron-left.svg")
+        }
+        Glyph::ChevronDown => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/chevron-down.svg")
+        }
+        Glyph::Download => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/download.svg")
+        }
+        Glyph::Refresh => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/refresh-cw.svg")
+        }
+        Glyph::Close => include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/x.svg"),
+        Glyph::Check => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/check.svg")
+        }
+        Glyph::Keyboard => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/keyboard.svg")
+        }
+        Glyph::Palette => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/palette.svg")
+        }
+        Glyph::Sliders => include_bytes!(
+            "../vendor/gpui-component/crates/assets/assets/icons/sliders-horizontal.svg"
+        ),
+        Glyph::Type => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/type.svg")
+        }
+        Glyph::Cpu => include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/cpu.svg"),
+        Glyph::Audio => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/audio-lines.svg")
+        }
+        Glyph::Send => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/send.svg")
+        }
+        Glyph::Wand => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/wand-sparkles.svg")
+        }
+        Glyph::Gauge => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/gauge.svg")
+        }
+        Glyph::Bug => include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/bug.svg"),
+        Glyph::Message => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/message-square.svg")
+        }
+    };
+    Icon::default().data(bytes).size(px(16.))
+}
+
+pub fn settings_glyph(label: &str) -> Glyph {
+    match label {
+        "General" => Glyph::Settings,
+        "Recording" => Glyph::Mic,
+        "Customize" => Glyph::Wand,
+        "Delivery" => Glyph::Send,
+        "Meetings" => Glyph::Calendar,
+        "Text & vocabulary" => Glyph::Type,
+        "AI & models" => Glyph::Cpu,
+        "Modes" => Glyph::Sliders,
+        "Appearance" => Glyph::Palette,
+        "Performance Lab" => Glyph::Gauge,
+        "Diagnostics" => Glyph::Bug,
+        "Keyboard shortcuts" => Glyph::Keyboard,
+        _ => Glyph::Audio,
+    }
+}

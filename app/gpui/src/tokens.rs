@@ -12,7 +12,14 @@ pub const STANDARD_HEIGHT: Pixels = px(32.);
 pub const COMPACT_HEIGHT: Pixels = px(28.);
 pub const XS_HEIGHT: Pixels = px(24.);
 pub const CONTROL_INSET: Pixels = px(11.);
-pub const CAPTION_SIZE: Pixels = px(11.);
+pub const MICRO_SIZE: Pixels = px(11.);
+pub const CAPTION_SIZE: Pixels = px(12.);
+pub const LABEL_SIZE: Pixels = px(13.);
+pub const STAT_SIZE: Pixels = px(26.);
+pub const MONO_FONT: &str = "Menlo";
+pub fn tabular_numbers() -> gpui::FontFeatures {
+    gpui::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+}
 pub const CAPTION_LEADING: Pixels = px(16.);
 pub const BODY_SIZE: Pixels = px(14.);
 pub const BODY_LEADING: Pixels = px(20.);
@@ -29,6 +36,11 @@ pub const SWITCH_THUMB: Pixels = px(14.);
 pub struct Palette {
     pub surface: Hsla,
     pub raised: Hsla,
+    pub hairline: Hsla,
+    pub hairline_strong: Hsla,
+    pub tint_raised: Hsla,
+    pub surface_container_low: Hsla,
+    pub success: Hsla,
     pub text: Hsla,
     pub muted: Hsla,
     pub border: Hsla,
@@ -51,6 +63,11 @@ impl Palette {
         Self {
             surface,
             raised: surface.blend(text.opacity(0.08)),
+            hairline: text.opacity(if high { 1. } else { 0.22 }),
+            hairline_strong: text.opacity(if high { 1. } else { 0.3 }),
+            tint_raised: surface,
+            surface_container_low: surface,
+            success: color(0x2d9d63),
             text,
             muted: text.opacity(if high { 1. } else { 0.85 }),
             border: text.opacity(if high { 1. } else { 0.2 }),
@@ -67,6 +84,11 @@ impl Palette {
         Self {
             surface: theme.background,
             raised: theme.secondary,
+            hairline: theme.border.opacity(if high_contrast { 1. } else { 0.22 }),
+            hairline_strong: theme.border.opacity(if high_contrast { 1. } else { 0.3 }),
+            tint_raised: theme.popover,
+            surface_container_low: theme.sidebar,
+            success: theme.success,
             text: theme.foreground,
             muted: if high_contrast {
                 theme.foreground
@@ -83,6 +105,15 @@ impl Palette {
             danger: theme.danger,
             focus: theme.ring,
         }
+    }
+    pub fn card_shadow(self) -> Vec<gpui::BoxShadow> {
+        vec![gpui::BoxShadow {
+            inset: false,
+            color: gpui::black().opacity(0.05),
+            offset: gpui::point(px(0.), px(1.)),
+            blur_radius: px(2.),
+            spread_radius: px(0.),
+        }]
     }
     pub fn popover(self, cx: &App) -> Hsla {
         if preferences::current(cx).reduce_transparency {
@@ -124,6 +155,8 @@ pub fn apply_appearance(dark: bool, cx: &mut App) {
         let c = &mut theme.colors;
         c.background = rgb(colors[0]).into();
         c.secondary = rgb(colors[1]).into();
+        c.sidebar = rgb(if dark { 0x151a1e } else { 0xeff4f8 }).into();
+        c.success = rgb(if dark { 0x70db9b } else { 0x146c3b }).into();
         c.foreground = rgb(colors[2]).into();
         c.muted_foreground = rgb(colors[3]).into();
         c.border = rgb(colors[4]).into();

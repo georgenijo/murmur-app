@@ -42,6 +42,7 @@ pub struct Choices {
     pub(crate) scroll_parent: Option<ScrollHandle>,
     pub(crate) focus: FocusHandle,
     label: SharedString,
+    trigger_icon: Option<crate::icons::Glyph>,
     kind: ChoiceKind,
     choices: Vec<Choice>,
     selected: Option<usize>,
@@ -86,6 +87,7 @@ impl Choices {
             focus,
             _blur: blur,
             label,
+            trigger_icon: None,
             kind,
             choices,
             selected: None,
@@ -114,6 +116,11 @@ impl Choices {
                 .position(|c| c.value == v && !c.disabled)
         });
         self.cancel();
+        cx.notify();
+    }
+    /// Compact menu trigger; the popup keeps its readable width and AX name.
+    pub fn set_trigger_icon(&mut self, glyph: crate::icons::Glyph, cx: &mut Context<Self>) {
+        self.trigger_icon = Some(glyph);
         cx.notify();
     }
     pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
@@ -295,9 +302,19 @@ impl Render for Choices {
                 window,
                 cx,
             ))
-            .w(self.width)
+            .w(if self.trigger_icon.is_some() {
+                tokens::COMPACT_HEIGHT
+            } else {
+                self.width
+            })
             .role(role)
-            .when(popup, |s| s.h(tokens::STANDARD_HEIGHT))
+            .when(popup, |s| {
+                s.h(if self.trigger_icon.is_some() {
+                    tokens::COMPACT_HEIGHT
+                } else {
+                    tokens::STANDARD_HEIGHT
+                })
+            })
             .aria_label(self.label.clone())
             .aria_value(
                 self.selected
@@ -320,7 +337,11 @@ impl Render for Choices {
             .bg(p.surface)
             .rounded(tokens::CONTROL_RADIUS)
             .border_1()
-            .border_color(p.border)
+            .border_color(if self.trigger_icon.is_some() {
+                transparent_black()
+            } else {
+                p.hairline_strong
+            })
             .focus_visible(|s| {
                 s.border_color(p.focus).shadow(vec![BoxShadow {
                     inset: false,
@@ -399,6 +420,18 @@ impl Render for Choices {
                                 move |_, w, cx| entity.update(cx, |s, cx| s.activate(i, w, cx))
                             })
                     })
+                    .gap(px(8.))
+                    .when(
+                        self.kind == ChoiceKind::Navigation && self.label == "Settings pages",
+                        |s| {
+                            s.child(crate::icons::icon(crate::icons::settings_glyph(
+                                &choice.label,
+                            )))
+                        },
+                    )
+                    .when(choice.label.starts_with("Delete"), |s| {
+                        s.text_color(p.danger)
+                    })
                     .child(choice.label.clone());
                 list = list.child(row);
             }
@@ -408,17 +441,26 @@ impl Render for Choices {
         }
         if popup {
             let trigger = div()
-                .h(tokens::STANDARD_HEIGHT)
-                .px(tokens::CONTROL_INSET)
+                .h(if self.trigger_icon.is_some() {
+                    tokens::COMPACT_HEIGHT
+                } else {
+                    tokens::STANDARD_HEIGHT
+                })
+                .px(px(if self.trigger_icon.is_some() { 6. } else { 11. }))
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(
-                    self.selected
-                        .map(|i| self.choices[i].label.clone())
-                        .unwrap_or_else(|| "Choose…".into()),
-                )
-                .child("⌄");
+                .when_some(self.trigger_icon, |s, glyph| {
+                    s.child(crate::icons::icon(glyph))
+                })
+                .when(self.trigger_icon.is_none(), |s| {
+                    s.child(
+                        self.selected
+                            .map(|i| self.choices[i].label.clone())
+                            .unwrap_or_else(|| "Choose…".into()),
+                    )
+                    .child(crate::icons::icon(crate::icons::Glyph::ChevronDown))
+                });
             root = root
                 .child(
                     gpui_base::Popup::new("picker-position", trigger)

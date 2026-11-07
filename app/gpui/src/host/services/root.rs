@@ -1,8 +1,6 @@
 //! Main window composition. Only the active section holds a presentation lease.
 use super::backend::{Backend, Route};
-use crate::{
-    Button, ButtonSize, TextField, field::TextFieldState, settings::schema::Page, tokens::Palette,
-};
+use crate::{Button, TextField, field::TextFieldState, settings::schema::Page, tokens::Palette};
 use gpui::{prelude::*, *};
 use serde_json::{Value, json};
 use std::{
@@ -529,50 +527,6 @@ impl Render for Main {
         }
 
         let p = Palette::get(cx);
-        let mut nav = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .w(px(176.))
-            .flex_shrink_0()
-            .border_r_1()
-            .border_color(p.border)
-            .child(div().text_size(px(20.)).child(gpui::text!("Murmur")));
-        for (id, label, section) in [
-            ("home", "Home", Section::Home),
-            ("meetings", "Meetings", Section::Meetings),
-            ("insights", "Insights", Section::Insights),
-            ("models", "Models", Section::Models),
-            ("knowledge", "Knowledge", Section::Knowledge),
-            ("modes", "Modes", Section::Modes),
-            ("customize", "Customize", Section::Customize),
-            ("themes", "Appearance", Section::Themes),
-            ("settings", "Settings", Section::Settings),
-        ] {
-            nav = nav.child(
-                Button::new(id, label)
-                    .size(ButtonSize::Compact)
-                    .on_click(cx.listener(move |s, _, w, cx| s.select(section, w, cx))),
-            );
-        }
-        nav = nav.child(
-            Button::new("palette", "Search commands ⌘K")
-                .size(ButtonSize::Compact)
-                .on_click(cx.listener(|s, _, w, cx| s.route(Route::Palette, w, cx))),
-        );
-        nav = nav.child(
-            Button::new(
-                "update-details",
-                match &self.updater.update_status {
-                    murmur_core::updater::Status::Available { .. }
-                    | murmur_core::updater::Status::Ready { .. } => "Update available",
-                    _ => "Updates",
-                },
-            )
-            .size(ButtonSize::Compact)
-            .on_click(cx.listener(|s, _, w, cx| s.route(Route::Updates, w, cx))),
-        );
         let mut root = div()
             .id("native-workspace")
             .key_context("MurmurWorkspace")
@@ -621,7 +575,6 @@ impl Render for Main {
                 div()
                     .flex()
                     .size_full()
-                    .child(nav)
                     .child(div().flex_1().min_w_0().h_full().child(self.body())),
             )
             .when(self.palette.read(cx).open, |root| {

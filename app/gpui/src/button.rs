@@ -48,6 +48,11 @@ pub struct Button {
     disabled: bool,
     palette: Option<Palette>,
     default_confirm: bool,
+    selected: bool,
+    icon: Option<crate::icons::Glyph>,
+    icon_only: bool,
+    pill: bool,
+    nav: bool,
 }
 impl Button {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
@@ -69,6 +74,11 @@ impl Button {
             disabled: false,
             palette: None,
             default_confirm: false,
+            selected: false,
+            icon: None,
+            icon_only: false,
+            pill: false,
+            nav: false,
         }
     }
     /// Change visible copy while retaining the constructor's accessible name.
@@ -78,9 +88,28 @@ impl Button {
     }
     /// Persistent filter state, exposed independently from its visible caption.
     pub fn toggled(mut self, value: bool) -> Self {
+        self.selected = value;
         self.base = self
             .base
             .aria_toggled(if value { Toggled::True } else { Toggled::False });
+        self
+    }
+    pub fn icon(mut self, glyph: crate::icons::Glyph) -> Self {
+        self.icon = Some(glyph);
+        self
+    }
+    pub fn icon_only(mut self, glyph: crate::icons::Glyph) -> Self {
+        self.icon = Some(glyph);
+        self.icon_only = true;
+        self
+    }
+    pub fn pill(mut self) -> Self {
+        self.pill = true;
+        self
+    }
+    pub fn nav_row(mut self) -> Self {
+        self.nav = true;
+        self.intent = ButtonIntent::Ghost;
         self
     }
     pub fn intent(mut self, intent: ButtonIntent) -> Self {
@@ -152,32 +181,84 @@ impl RenderOnce for Button {
         } else {
             None
         };
+        let tooltip_label = self.label.clone();
         let p = self.palette.unwrap_or_else(|| Palette::get(cx));
         let (bg, fg) = match self.intent {
             ButtonIntent::Primary => (p.accent, p.on_accent),
             ButtonIntent::Danger => (p.danger, p.on_accent),
-            ButtonIntent::Ghost => (p.surface, p.text),
-            ButtonIntent::Secondary => (p.raised, p.text),
+            ButtonIntent::Ghost => (gpui::transparent_black(), p.text),
+            ButtonIntent::Secondary => (p.tint_raised, p.text),
+        };
+        let bg = if self.selected {
+            if self.nav {
+                p.tint_raised
+            } else if self.intent == ButtonIntent::Primary {
+                p.accent.blend(p.on_accent.opacity(0.08))
+            } else {
+                p.raised
+            }
+        } else {
+            bg
         };
         let allow_return =
             self.default_confirm && self.intent != ButtonIntent::Danger && !self.disabled;
         self.base
             .relative()
+            .when(self.icon_only, |s| {
+                s.tooltip(move |w, cx| {
+                    gpui_component::tooltip::Tooltip::new(tooltip_label.clone()).build(w, cx)
+                })
+            })
             .children(reveal)
             .disabled(self.disabled)
+            .flex_shrink_0()
+            .max_w_full()
+            .min_w_0()
+            .overflow_hidden()
+            .self_start()
             .h(self.size.height())
-            .px(self.size.inset())
-            .rounded(tokens::CONTROL_RADIUS)
-            .border_1()
-            .border_color(p.border)
+            .px(if self.nav { px(8.) } else { self.size.inset() })
+            .rounded(if self.pill {
+                px(999.)
+            } else {
+                tokens::CONTROL_RADIUS
+            })
+            .when(self.intent != ButtonIntent::Ghost, |s| {
+                s.border_1().border_color(p.hairline_strong)
+            })
+            .when(self.intent == ButtonIntent::Secondary, |s| {
+                s.shadow(p.card_shadow())
+            })
+            .when(
+                matches!(self.intent, ButtonIntent::Primary | ButtonIntent::Danger),
+                |s| {
+                    s.shadow(vec![BoxShadow {
+                        inset: true,
+                        color: white().opacity(0.16),
+                        offset: point(px(0.), px(1.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(0.),
+                    }])
+                },
+            )
+            .when(self.icon_only, |s| s.w(self.size.height()).px(px(0.)))
+            .when(self.nav, |s| s.w_full().text_size(tokens::LABEL_SIZE))
             .bg(bg)
             .text_color(fg)
-            .text_size(tokens::BODY_SIZE)
+            .text_size(if self.nav {
+                tokens::LABEL_SIZE
+            } else {
+                match self.size {
+                    ButtonSize::Standard => tokens::BODY_SIZE,
+                    ButtonSize::Compact => tokens::LABEL_SIZE,
+                    ButtonSize::ExtraSmall => tokens::CAPTION_SIZE,
+                }
+            })
             .line_height(tokens::BODY_LEADING)
             .font_weight(FontWeight::MEDIUM)
             .when(self.disabled, |s| s.opacity(tokens::DISABLED_OPACITY))
             .when(!self.disabled, |s| {
-                s.hover(|s| s.bg(bg.blend(fg.opacity(0.08))))
+                s.hover(|s| s.bg(bg.blend(fg.opacity(0.05))))
                     .active(|s| s.bg(bg.blend(fg.opacity(0.12))))
             })
             .focus_visible(|s| {
@@ -200,6 +281,38 @@ impl RenderOnce for Button {
                     cx.stop_propagation();
                 }
             })
-            .child(self.label)
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .max_w_full()
+                    .items_center()
+                    .gap(px(8.))
+                    .when(self.nav, |s| s.w_full())
+                    .when(self.icon_only, |s| s.justify_center())
+                    .when(self.nav && self.selected && !self.icon_only, |s| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .w(px(3.))
+                                .h(px(16.))
+                                .rounded(px(2.))
+                                .bg(p.accent),
+                        )
+                    })
+                    .when_some(self.icon, |s, glyph| {
+                        s.child(crate::icons::icon(glyph).text_color(
+                            if self.nav && self.selected {
+                                p.accent
+                            } else {
+                                fg
+                            },
+                        ))
+                    })
+                    .when(!self.icon_only, |s| {
+                        s.child(div().min_w_0().truncate().child(self.label))
+                    }),
+            )
     }
 }

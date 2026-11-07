@@ -284,6 +284,8 @@ pub fn apply(tokens: &Tokens, dark: bool, cx: &mut gpui::App) {
         t.background = c("background");
         t.foreground = c("on-surface");
         t.secondary = c("surface-container");
+        t.sidebar = c("surface-container-low");
+        t.success = c("success");
         t.muted_foreground = c("on-surface-variant");
         t.border = c("outline-variant");
         t.input = t.border;

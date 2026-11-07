@@ -42,6 +42,12 @@ fn main() {
         }
         let state = std::env::var("MURMUR_HOME_STATE").unwrap_or_else(|_| "checklist".into());
         let compact = state.starts_with("compact");
+        let qa_size = std::env::var("MURMUR_QA_SIZE").ok().and_then(|value| {
+            let (width, height) = value.split_once('x')?;
+            let (width, height): (f32, f32) = (width.parse().ok()?, height.parse().ok()?);
+            (width.is_finite() && height.is_finite() && width >= 720. && height >= 560.)
+                .then_some(size(px(width), px(height)))
+        });
         let mut entity = None;
         let handle = cx
             .open_window(
@@ -50,20 +56,23 @@ fn main() {
                     focus: false,
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(0.), px(0.)),
-                        if compact {
-                            size(px(720.), px(560.))
-                        } else {
-                            size(px(880.), px(720.))
-                        },
+                        qa_size.unwrap_or_else(|| {
+                            if compact {
+                                size(px(720.), px(560.))
+                            } else {
+                                size(px(880.), px(720.))
+                            }
+                        }),
                     ))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Murmur Home (synthetic)".into()),
-                        ..Default::default()
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(12.), px(12.))),
                     }),
                     ..Default::default()
                 },
                 |w, cx| {
-                    if !headless {
+                    if !headless && std::env::var_os("MURMUR_DARK").is_none() {
                         let apply = |w: &mut Window, cx: &mut App| {
                             murmur_ui::tokens::apply_appearance(
                                 matches!(

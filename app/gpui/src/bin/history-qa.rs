@@ -95,12 +95,13 @@ fn main() {
                     ))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Murmur History (synthetic)".into()),
-                        ..Default::default()
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(12.), px(12.))),
                     }),
                     ..Default::default()
                 },
                 |w, cx| {
-                    if !headless {
+                    if !headless && std::env::var_os("MURMUR_DARK").is_none() {
                         let apply = |w: &mut Window, cx: &mut App| {
                             murmur_ui::tokens::apply_appearance(
                                 matches!(

@@ -365,7 +365,7 @@ impl Render for Overlay {
             .h(height)
             .rounded(px(radius))
             .overflow_hidden()
-            .text_size(tokens::CAPTION_SIZE)
+            .text_size(tokens::MICRO_SIZE)
             .line_height(tokens::CAPTION_LEADING)
             .text_color(p.text)
             // Tint belongs above the AppKit effect in the same Metal scene as

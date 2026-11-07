@@ -1212,7 +1212,7 @@ impl Render for Settings {
                         })
                     }),
             );
-            for (i, page) in Page::NAV.into_iter().enumerate() {
+            for page in Page::NAV {
                 let e = cx.entity();
                 nav = nav.child(
                     Button::new(
@@ -1220,7 +1220,7 @@ impl Render for Settings {
                         page.label(),
                     )
                     .with_scroll_parent(Some(&self.nav_scroll))
-                    .caption(["G", "R", "C", "D", "M", "T", "AI", "Mo", "A", "P", "Dx"][i])
+                    .icon_only(crate::icons::settings_glyph(page.label()))
                     .toggled(self.model.page == page)
                     .track_focus(&self.focus_for(format!("nav-{}", page.id()), cx))
                     .on_click(move |_, w, cx| e.update(cx, |s, cx| s.navigate(page, None, w, cx))),

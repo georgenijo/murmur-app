@@ -13,6 +13,7 @@ pub struct TextField {
     label: SharedString,
     disabled: bool,
     readonly: bool,
+    search_chrome: bool,
 }
 impl TextField {
     pub fn new(state: &Entity<InputState>, label: impl Into<SharedString>) -> Self {
@@ -27,10 +28,15 @@ impl TextField {
             label,
             disabled: false,
             readonly: false,
+            search_chrome: false,
         }
     }
     pub fn with_scroll_parent(mut self, parent: &ScrollHandle) -> Self {
         self.scroll_parent = Some(parent.clone());
+        self
+    }
+    pub fn search_chrome(mut self) -> Self {
+        self.search_chrome = true;
         self
     }
     pub fn disabled(mut self, value: bool) -> Self {
@@ -55,6 +61,7 @@ impl RenderOnce for TextField {
                 .readonly(self.readonly)
                 .h(tokens::INPUT_HEIGHT)
                 .px(tokens::CONTROL_INSET)
+                .when(self.search_chrome, |s| s.pl(px(28.)).pr(px(28.)))
                 .rounded(tokens::CONTROL_RADIUS)
                 .text_size(tokens::BODY_SIZE)
                 .line_height(tokens::BODY_LEADING)

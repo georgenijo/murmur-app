@@ -106,7 +106,8 @@ pub fn run_with(
                     window_min_size: Some(size(px(720.), px(560.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Murmur".into()),
-                        ..Default::default()
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(12.), px(12.))),
                     }),
                     ..Default::default()
                 },
