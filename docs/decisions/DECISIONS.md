@@ -1,5 +1,30 @@
 # Decisions Log
 
+## 2026-11-06: Patch deferred GPUI accessibility in production (#998)
+
+**Decision:** Vendor only the Apache-2.0 GPUI crate at the unchanged Phase 0
+revision `654efae441bc8eb117d0042bb28cd7cf3570bdc9`. The native workspace's
+Cargo git-source patch applies the recorded deferred-AX ancestry fix to
+ordinary library/gallery builds. Keep the test transport patch separate.
+
+**Rationale:** Pinned deferred rendering restores dispatch ancestry but loses
+AX ancestry, rejecting dropdown active descendants. Deferring the entire
+combobox also changes Tab order; inline rendering loses popup paint/hitbox
+stacking. The engine fix preserves these existing contracts together. Record
+the self-contained manifest and source changes as reproducible patch hunks.
+Single-line range geometry uses shaped, scrolled editor layout; unsupported
+multi-line/nonmonotonic layouts retain AXValue without advertising range APIs.
+
+**Status:** active (draft stack; native acceptance remains open). This refines
+the dependency source in the earlier isolated-workspace decision; its revision,
+UI/core boundary and test-transport isolation remain in force.
+
+**References:** #998, PR #1027,
+[component contract](../draft/gpui-accessible-components.md),
+`app/gpui/patches/gpui-deferred-accessibility.patch`
+
+---
+
 ## 2026-11-06: Distinguish typed GPUI events from Tauri transport tokens (#998)
 
 **Decision:** Authored GPUI code remains in the repository-wide transport and

@@ -79,6 +79,8 @@ jobs:
               - 'app/gpui/**'
               - 'app/src-tauri/crates/murmur-core/**'
               - 'scripts/test_gpui.py'
+              - 'scripts/test_gpui_native.py'
+              - 'scripts/test_test_gpui.py'
               - 'scripts/check_gpui_goldens.py'
               - '.github/workflows/ci.yml'
             rust-cache:
@@ -435,7 +437,9 @@ jobs:
           cargo clippy --locked -p murmur-ui --all-targets --features gallery -- -D warnings
           cargo fmt -p murmur-ui -- --check
       - name: Keyboard, focus, AX tree and action tests (no live windows)
-        run: python3 scripts/test_gpui.py -- --test-threads=1
+        run: |
+          python3 -m unittest scripts/test_test_gpui.py scripts/test_gpui_native.py
+          python3 scripts/test_gpui.py -- --test-threads=1
       - name: Deterministic offscreen Metal goldens
         run: python3 scripts/check_gpui_goldens.py
       - name: Preserve rendered goldens

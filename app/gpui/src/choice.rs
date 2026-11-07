@@ -74,8 +74,7 @@ impl Choices {
         let focus = cx.focus_handle();
         let blur = cx.on_blur(&focus, window, |s, _, cx| {
             if s.open {
-                s.open = false;
-                s.active = s.selected;
+                s.cancel();
                 cx.notify();
             }
         });
@@ -101,15 +100,42 @@ impl Choices {
     }
     pub fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.kind == ChoiceKind::Dropdown && !self.disabled {
-            self.open = true;
+            self.begin_open();
             window.focus(&self.focus, cx);
             cx.notify();
         }
     }
+    fn reset_active(&mut self) {
+        self.active = self
+            .selected
+            .or_else(|| self.choices.iter().position(|c| !c.disabled));
+    }
+    fn begin_open(&mut self) {
+        self.reset_active();
+        self.open = true;
+        self.popup_bounds.set(None);
+        if let Some(i) = self.active {
+            self.scroll.scroll_to_item(i);
+        }
+    }
+    fn cancel(&mut self) {
+        self.open = false;
+        self.reset_active();
+        self.popup_bounds.set(None);
+    }
+    fn toggle_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open {
+            self.cancel();
+        } else {
+            self.begin_open();
+        }
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         self.disabled = disabled;
         if disabled {
-            self.open = false;
+            self.cancel();
         }
         cx.notify();
     }
@@ -156,6 +182,11 @@ impl Choices {
         self.active = Some(enabled[next]);
     }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "tab" && self.open {
+            self.cancel();
+            cx.notify();
+            return;
+        }
         if self.disabled
             || event.prefer_character_input
             || event.keystroke.modifiers.number_of_modifiers() != 0
@@ -164,28 +195,19 @@ impl Choices {
         }
         let popup = self.kind == ChoiceKind::Dropdown;
         match event.keystroke.key.as_str() {
-            "tab" => {
-                self.open = false;
-                cx.notify();
-                return;
-            }
             "escape" if popup && self.open => {
-                self.open = false;
-                self.active = self.selected;
+                self.cancel();
             }
             "space" | "enter" if !event.is_held => {
                 if popup && !self.open {
-                    self.open = true;
+                    self.begin_open();
                 } else if let Some(i) = self.active {
                     self.activate(i, window, cx);
                 }
             }
             "down" | "up" | "left" | "right" => {
                 if popup && !self.open {
-                    self.open = true;
-                    if event.keystroke.key == "up" {
-                        self.active = self.choices.iter().rposition(|c| !c.disabled);
-                    }
+                    self.begin_open();
                 } else {
                     self.move_active(matches!(event.keystroke.key.as_str(), "up" | "left"));
                 }
@@ -207,8 +229,7 @@ impl Render for Choices {
         // Also close during a focus-triggered redraw: the pinned engine can
         // coalesce a Root Tab action and its blur notification into one frame.
         if self.open && !self.focus.is_focused(window) {
-            self.open = false;
-            self.active = self.selected;
+            self.cancel();
         }
         let p = Palette::get(cx);
         let popup = self.kind == ChoiceKind::Dropdown;
@@ -354,9 +375,7 @@ impl Render for Choices {
                 )
                 .when(!disabled, |s| {
                     s.on_click(cx.listener(|s, _, w, cx| {
-                        s.open = !s.open;
-                        w.focus(&s.focus, cx);
-                        cx.notify();
+                        s.toggle_open(w, cx);
                     }))
                 })
                 .when(!disabled, |s| {
@@ -364,9 +383,7 @@ impl Render for Choices {
                         let entity = cx.entity();
                         move |_, w, cx| {
                             entity.update(cx, |s, cx| {
-                                s.open = !s.open;
-                                w.focus(&s.focus, cx);
-                                cx.notify();
+                                s.toggle_open(w, cx);
                             })
                         }
                     })
@@ -378,7 +395,7 @@ impl Render for Choices {
                             .get()
                             .is_some_and(|b| b.contains(&event.position))
                         {
-                            s.open = false;
+                            s.cancel();
                             cx.notify();
                         }
                     }))

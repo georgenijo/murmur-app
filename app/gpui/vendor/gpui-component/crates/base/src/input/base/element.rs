@@ -3036,6 +3036,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
             (&text, fg)
         };
 
+        #[cfg(feature = "test-support")]
+        state
+            .painted_placeholder_color
+            .set(is_empty.then_some(text_color));
+
         // Calculate the width of the line numbers
         let (line_number_width, line_number_len) =
             Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
@@ -3516,6 +3521,25 @@ impl<M: InputModeKind> Element for TextElement<M> {
         );
 
         let token_elements = self.prepaint_tokens(&last_layout, bounds, token_elements, window, cx);
+        let state = self.state.read(cx);
+        *state.accessibility_run.borrow_mut() = if window.is_a11y_active()
+            && state.is_single_line()
+            && !state.masked
+            && state
+                .accessibility
+                .as_ref()
+                .is_some_and(|a| a.value_exposed())
+        {
+            single_line_accessibility_run(
+                &text.to_string(),
+                &last_layout,
+                bounds,
+                scroll_size,
+                window.scale_factor(),
+            )
+        } else {
+            None
+        };
         PrepaintState {
             token_elements,
             hitbox,
@@ -6154,4 +6178,62 @@ mod tests {
             offset
         );
     }
+}
+
+// AccessKit uses physical window coordinates, just like GPUI's real AX nodes.
+// Use the very same shaped positions, alignment and scrolled origin as paint.
+fn single_line_accessibility_run(
+    text: &str,
+    layout: &LastLayout,
+    bounds: Bounds<Pixels>,
+    scroll_size: Size<Pixels>,
+    scale: f32,
+) -> Option<gpui::accesskit::Node> {
+    let line = layout.lines.first()?;
+    let offsets = super::state::murmur_character_offsets(text);
+    let positions = offsets
+        .iter()
+        .map(|&offset| line.position_for_index(offset, layout, false).map(|p| p.x))
+        .collect::<Option<Vec<_>>>()?;
+    // A single AccessKit run has one direction. Do not advertise an incorrect
+    // range for bidirectional text or visual lines we cannot represent yet.
+    if positions.windows(2).any(|p| p[1] < p[0]) {
+        return None;
+    }
+    let alignment_scroll = match layout.text_align {
+        TextAlign::Right => (scroll_size.width - bounds.size.width).max(px(0.)),
+        TextAlign::Center => (scroll_size.width - bounds.size.width).half().max(px(0.)),
+        TextAlign::Left => px(0.),
+    };
+    let x = bounds.origin.x + layout.line_number_width + alignment_scroll + positions[0];
+    let y = bounds.origin.y + layout.visible_top;
+    let physical = |p: Pixels| f32::from(p) * scale;
+    let mut run = gpui::accesskit::Node::new(gpui::Role::TextRun);
+    run.set_value(text.to_owned());
+    run.set_character_lengths(
+        offsets
+            .windows(2)
+            .map(|w| (w[1] - w[0]) as u8)
+            .collect::<Vec<_>>(),
+    );
+    run.set_bounds(gpui::accesskit::Rect {
+        x0: physical(x) as f64,
+        y0: physical(y) as f64,
+        x1: physical(x + *positions.last()? - positions[0]) as f64,
+        y1: physical(y + layout.line_height) as f64,
+    });
+    run.set_text_direction(gpui::accesskit::TextDirection::LeftToRight);
+    run.set_character_positions(
+        positions[..positions.len() - 1]
+            .iter()
+            .map(|p| physical(*p - positions[0]))
+            .collect::<Vec<_>>(),
+    );
+    run.set_character_widths(
+        positions
+            .windows(2)
+            .map(|p| physical(p[1] - p[0]))
+            .collect::<Vec<_>>(),
+    );
+    Some(run)
 }

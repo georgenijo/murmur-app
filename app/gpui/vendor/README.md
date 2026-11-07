@@ -23,4 +23,10 @@ supports ranges, is editable and advertises ReplaceSelectedText.
 
 Patch history and maintenance instructions are in
 `../../../../docs/draft/gpui-accessible-components.md`. No Zed GPL UI/editor
-crate or GPL source has been copied. GPUI itself remains an exact git dependency.
+crate or GPL source has been copied. The GPUI revision remains frozen. Its Apache-2.0 crate is now also vendored
+under `gpui/` so the recorded deferred-AX fix applies in ordinary production
+builds through Cargo's git-source patch. All other Zed dependencies retain
+the exact git revision. `gpui-manifest.patch` and
+`gpui-deferred-accessibility.patch` reproduce this crate from the pin.
+Only `src/`, `resources/`, the build script, README and Apache license are copied;
+no Zed GPL crate, examples, benchmark or upstream test asset is included.

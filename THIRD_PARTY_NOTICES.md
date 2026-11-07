@@ -523,7 +523,9 @@ SOFTWARE.
 ## GPUI native component workspace (draft stack #998)
 
 `app/gpui` uses the Apache-2.0 GPUI framework at Zed revision
-`654efae441bc8eb117d0042bb28cd7cf3570bdc9` and vendors GPUI Kit / gpui-component
+`654efae441bc8eb117d0042bb28cd7cf3570bdc9`. Its Apache-2.0 crate is vendored
+under `app/gpui/vendor/gpui` with its Apache license and README retained, plus
+recorded manifest and deferred-accessibility patches. The workspace also vendors GPUI Kit / gpui-component
 v0.9.0 (copyright its contributors, Apache-2.0). The vendored base, component,
 component-macros and assets crates retain their license files. Lucide's ISC
 license is retained with its icons. Upstream documentation is credited to

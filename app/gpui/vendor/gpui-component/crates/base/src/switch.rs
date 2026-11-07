@@ -373,11 +373,11 @@ impl RenderOnce for Switch {
             .when_some(self.accessibility_label, |this, label| {
                 this.aria_label(label)
             })
-            .when(!disabled, |this| {
+            .when(!disabled || focus_handle.is_focused(window), |this| {
                 this.track_focus(
                     &focus_handle
                         .tab_index(self.tab_index)
-                        .tab_stop(self.tab_stop),
+                        .tab_stop(self.tab_stop && !disabled),
                 )
             })
             .when(disabled, |this| {

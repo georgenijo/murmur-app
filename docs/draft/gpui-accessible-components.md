@@ -16,7 +16,8 @@ dependency. Core stays GPUI-free and Tauri-free; the all-target/feature dependen
 guard checks both families. The shipping Tauri workspace and its toolchain do
 not acquire GPUI dependencies.
 
-GPUI, gpui_platform, gpui_macros and sum_tree resolve to exactly
+GPUI is vendored from the same frozen revision; gpui_platform, gpui_macros
+and sum_tree still resolve to exactly
 `654efae441bc8eb117d0042bb28cd7cf3570bdc9`; Rust **1.98.1** is pinned in
 `app/gpui/rust-toolchain.toml`. Preserve this pin until a separate decision
 changes it. The matching Zed reqwest fork is pinned to
@@ -31,7 +32,7 @@ The starting point is the successful Phase 0 Mac mini port, copied read-only
 from `~/Builds/gpui-phase0/0b-settings-history`. Its scratch directory is not
 modified. Four Apache-2.0 GPUI Kit v0.9.0 crates are included: `gpui-base`,
 `gpui-component`, `gpui-component-macros`, `gpui-kit-assets`. The upstream tag
-commit is `7591a35eced761e3613c01e71ff04c10129dae1a`. Only those crates and
+commit is `7591a35eced761e3613c01e71ff04c10129dae1a`. Only those GPUI Kit crates and
 required assets/locales are vendored; no shell, story, webview, examples or
 benchmark implementation is included. Zed's GPL `ui`, `editor`, `ui_input`
 crates are neither dependencies nor copied source. Upstream Apache licenses,
@@ -42,9 +43,12 @@ attribution are retained. See [third-party notices](../../THIRD_PARTY_NOTICES.md
 |---|---|
 | `app/gpui/patches/component-port.patch` | Original proven dependency rewiring (21 errors) and the one macro resolver line recognizing the real `gpui` package. The ported dependency tables now live in the native workspace manifest. |
 | `app/gpui/patches/phase0-accessibility.patch` | Original 89-line focus hook, scratch input bridge and AccessKit patch. Kept as provenance, not a script to apply wholesale to gpui-component. |
-| `app/gpui/native/ax_focus_fix.m` | Production hook forwards GPUIApplication and GPUIWindow's `accessibilityFocusedUIElement` to the window content view's AccessKit adapter, with the original application fallback. Called idempotently on GPUI's main thread after platform initialization. No Tauri process installs it. |
+| `app/gpui/native/ax_focus_fix.m` | Production hook forwards GPUIApplication and both GPUIWindow/GPUIPanel's `accessibilityFocusedUIElement` to the window content view's AccessKit adapter, with the original application fallback. Called idempotently on GPUI's main thread after platform initialization. No Tauri process installs it. |
 | `app/gpui/vendor/accesskit_macos/src/node.rs` | Phase 0 selected-text setter bridge; exposes `setAccessibilitySelectedText:` only for an editable text-range node advertising ReplaceSelectedText. |
 | `app/gpui/patches/component-accessibility.patch` | Ports the scratch text-range bridge to the component's existing editor; adds TextRun, UTF-8 grapheme lengths, directed selection, SetTextSelection and ReplaceSelectedText. Disabled editor focus remains dispatchable but is excluded from Tab order. |
+| `app/gpui/patches/component-review-fixes.patch` | Additive patch after `component-port.patch` and `component-accessibility.patch`: disabled-switch dispatch binding, current-layout single-line AX range geometry, and explicit placeholder color. |
+| `app/gpui/patches/gpui-manifest.patch` | Makes only the Apache GPUI crate self-contained, resolving inherited workspace dependency tables against the unchanged upstream revision. Examples, benches and upstream test-only assets are not vendored. |
+| `app/gpui/patches/gpui-deferred-accessibility.patch` | Production fix: deferred draws capture their AX ancestry, append children to the finalized parent, and retain the focused-ancestor check. Ordinary builds use it through the workspace Cargo git-source patch. |
 | `app/gpui/patches/test-accessibility.patch` | Test transport only: retain TestWindow AX callbacks/tree updates, expose activation, tree retrieval and action dispatch on TestAppContext. Production tree building, focus calculation and action handlers remain unchanged. |
 
 The component editor already owns UTF-16 conversion, IME composition, clipboard,
@@ -56,8 +60,21 @@ control became disabled. Read-only fields allow selection; masked fields never
 publish their text, runs or selections. Graphemes exceeding AccessKit's u8 length
 limit split at Unicode scalar boundaries instead of overflowing a byte length.
 
-To refresh the component patch, diff those two files against the Phase 0
-ported v0.9.0 source. Do not edit shared Cargo git checkouts. A pin update must
+Single-line text ranges use the current frame's shaped character boundaries,
+line height, alignment and horizontally scrolled paint origin, scaled into
+AccessKit's physical window coordinates. The editor fills that geometry during
+prepaint before its parent's synthetic AX children are emitted, including on
+first layout and after text/scroll changes. Consumer tests exercise non-ASCII
+substring and caret bounds and compare the caret to the painted editor layout.
+Multi-line and nonmonotonic bidirectional layouts require multiple visual runs;
+until supported, they expose AXValue without TextRun, TextSelection,
+SetTextSelection or ReplaceSelectedText. They do not advertise zero-geometry
+range APIs. Masked fields continue to expose none of these values.
+
+The review-fixes patch applies after the existing port and accessibility patches;
+it records every additional GPUI Kit change. To refresh it, diff the changed
+files against the recorded pre-review vendored tree. Preserve the earlier patch
+records rather than silently absorbing new hunks into their provenance. Do not edit shared Cargo git checkouts. A pin update must
 re-run the tree/action tests, the offscreen captures and the native focus and
 VoiceOver pass before discarding any patch.
 
@@ -74,7 +91,7 @@ they retain subscriptions for the screen's lifetime.
 | `Button` | `FormControls` / `.ui-form-button`: Primary, Secondary, Ghost, Danger; 32/28/24px, 8px corners, border-compensated 11/9/7px insets, 14/20px medium labels; enabled, hover, focus, disabled states. Space activates on release. Return is opt-in for a recoverable confirming button; Danger can never become a Return default. Held, modified and composing Return are rejected. |
 | `Toggle` | `SettingToggle` / `--ui-switch-*`: 30×18px track, 14px knob, 2px inset, 12px travel; controlled on/off, disabled, visible focus, 150ms positional transition. |
 | `TextField`, `TextFieldState`, `InputEvent` | `FormControls` / `--ui-input-*`: real component editor, 30px height, 11px inset, 8px corners, input border; empty placeholder, populated, read-only, disabled and focused states. |
-| `Choices(ChoiceKind::Dropdown)` | `Select`: named combobox, selected display value, bounded scrollable popup, disabled options, explicit selection, Escape cancellation, outside dismissal and focus restoration. Placement uses the ported Base Popup positioner. |
+| `Choices(ChoiceKind::Dropdown)` | `Select`: named combobox, selected display value, bounded scrollable popup, disabled options, explicit selection, Escape cancellation, outside dismissal and focus restoration. Placement uses the unchanged ported Base Popup positioner and deferred popup surface. |
 | `Choices(ChoiceKind::List)` | `.history-list`: one Tab stop, 5px gap, named options, visible active and selected states, scrolling to the active row, Home/End and wrapping arrows skipping disabled options. This is a selection primitive, not the later History transcript model or virtualized screen. |
 | `Choices(ChoiceKind::Navigation)` | Settings navigation: 32px rows, 8px radius, 10px inset, 14/20px medium type; selected surface without a shadow; manual selection with arrows plus Space/Return and a Tab exit. Layout-specific 240/56px rails belong to the main-window port. |
 | `Motion`, `DisplayPreferences`, `Palette` | Shared fast/standard, switch, popup and search-pulse policies; Reduce Motion collapses scale, travel and duration to the final state. Increase Contrast strengthens borders and secondary text; Reduce Transparency makes popup surfaces opaque. |
@@ -83,7 +100,7 @@ they retain subscriptions for the screen's lifetime.
 The repository's Tauri transport guard permits only that exact UFCS call there;
 a method call, Tauri Emitter, extra payload argument or different receiver is
 still rejected. Authored native code, manifests and source inclusions remain
-scanned. Only the exact vendored GPUI Kit/AccessKit roots and native Cargo target
+scanned. Only the exact vendored GPUI/GPUI Kit/AccessKit roots and native Cargo target
 output are added to the existing third-party/build-output inventory exclusions.
 Rust inclusion from maintained code into an excluded tree remains forbidden.
 The new guard tests exercise these rejection paths as well as the local event
@@ -95,6 +112,10 @@ injection boundary for the future appearance port, not a new persistence owner.
 Components never select literal colors. A changed theme can replace semantic
 roles without rewriting screen code. No imported-theme parser, downloader or
 appearance-document migration is introduced here.
+
+TextField passes the preference-aware secondary text color directly to the
+component editor's placeholder style. Tests inspect the color used to shape an
+empty field across preference changes.
 
 Focused controls show an accent border and ring; disabled opacity is 64%.
 Normal switch motion uses Base transitions, whose engine also reads
@@ -114,9 +135,22 @@ switch state is a value, not an extra “on/off” phrase in the name.
 | Button | Button; mandatory name; Focus and Click when enabled; disabled flag and no activation when disabled. One focus owner; Tab skips disabled controls and can leave a newly disabled focused control. |
 | Toggle | Switch; name and true/false toggled value; Focus and Click change the owner value exactly once; disabled excludes activation and traversal. |
 | TextField | TextInput; name, text value, placeholder, TextRun and directed TextSelection; Focus, SetValue, SetTextSelection and ReplaceSelectedText as permitted by current state. Keyboard selection and AX selection use the same editor. Masked text is not exposed. |
-| Dropdown | ComboBox with name, display value and expanded state; named ListBox/ListBoxOption children while open; Click opens and option Click selects; focused combobox reports the active option as the AX focused descendant while open. Escape and Tab close without committing an unselected option. |
+| Dropdown | ComboBox with name, display value and expanded state; named ListBox/ListBoxOption children while open; Click opens and option Click selects; focused combobox reports the active option as the AX focused descendant while open. Escape, Tab/Shift-Tab, blur and outside dismissal cancel without committing; reopening resets active state to the selected or first enabled option. |
 | List | ListBox and ListBoxOption; named options, selected value and disabled flags; Click selects enabled options; focused composite reports active descendant. |
 | Navigation | TabList and Tab; names and selected state; Click activates an enabled destination; arrows/Home/End move active focus and Space/Return commit. One Tab stop and visible active focus. |
+
+The production GPUI patch retains the AX ancestor IDs when scheduling deferred
+content. During deferred prepaint it appends new AX children to that already
+finalized parent and uses the captured ancestors when validating active focus.
+The dropdown keeps Base Popup's existing drawing, hitbox stacking and Tab order.
+Deferring the entire combobox changes traversal order; rendering its popup inline
+loses overlay stacking. These UI-only alternatives cannot preserve all three
+contracts at the pinned revision. Tests assert the descendant path and
+TreeUpdate.focus before and after arrowing, plus normal forward/reverse Tab.
+No GPUI revision is changed. Only its Apache crate is copied under
+`app/gpui/vendor/gpui`; the manifest and source patches reproduce that tree from
+the pinned source. The production workspace's `[patch]` applies it to library,
+gallery and future hosts. No shared Cargo checkout is edited.
 
 The tests assert the real emitted AccessKit nodes, supported actions and
 focused node, then dispatch actions back through the engine. They do not assert
@@ -132,6 +166,7 @@ From the repository root, on macOS with Rust 1.98.1 and Python 3.11+:
 export RUSTUP_TOOLCHAIN=1.98.1
 (cd app/gpui && cargo check --locked -p murmur-ui --features gallery)
 (cd app/gpui && cargo test --locked -p murmur-ui)
+python3 scripts/test_gpui_native.py
 python3 scripts/test_gpui.py -- --test-threads=1
 python3 scripts/check_gpui_goldens.py
 (cd app/gpui && cargo clippy --locked -p murmur-ui --all-targets --features gallery -- -D warnings)
@@ -139,11 +174,17 @@ python3 scripts/check_gpui_goldens.py
 python3 scripts/check_core_dependencies.py
 ```
 
-The AX runner materializes only GPUI's Apache-2.0 crate under the task's target
-directory, resolves its manifest's workspace inheritance against the pinned
-source and adds the test transport patch. Cargo's git source is patched only
-for that test invocation. The original lockfile is restored in `finally`, even
-on failure. Ordinary library and gallery builds use unmodified pinned GPUI;
+The native shim test compiles the production Objective-C source against inert
+NSObject-based GPUIWindow/GPUIPanel/GPUIApplication doubles. It asserts both
+window classes forward to the content adapter and retain window/application
+fallbacks. It creates no AppKit windows and does not drive any native UI.
+
+The AX runner validates the production vendored source path and revision marker,
+then copies that Apache-2.0 crate to the task target directory and adds only the
+test transport patch. The production ancestry fix is already present in that
+copy. Cargo's source patch is redirected to the private copy only for the test
+invocation. The original lockfile is restored in `finally`, even on failure.
+Ordinary library and gallery builds use the production vendored GPUI;
 `a11y-tests` is a harness-only feature and should be run through that script.
 
 Goldens render every button variant/size and disabled state, switches on/off,
@@ -199,6 +240,41 @@ so its preparation command used `env -u CARGO_TARGET_DIR`; subsequent Cargo
 checks used the requested private `~/Builds/gpui-stack-37-target` directory.
 Generated Tauri schemas are restored rather than committed. No live app window,
 VoiceOver session or production profile is used by this verification.
+
+## Review-fix verification receipt (Mac mini, checkout 38)
+
+On 2026-11-06, Rust 1.98.1, an isolated checkout and private target directory:
+
+- `cargo fmt --check`: pass.
+- `cargo check --locked -p murmur-ui --features gallery`: pass.
+- `cargo clippy --locked -p murmur-ui --features gallery --all-targets -- -D warnings`: pass.
+- `python3 scripts/test_gpui.py -- --test-threads=1`: **31 passed**, zero
+  failures/ignored; doc tests: zero. Includes emitted ancestry/focus while
+  arrowing, nested deferred popups, disabled focused-switch traversal,
+  consumer substring/caret geometry with horizontal scrolling, cancellation
+  reopening, actual shaped placeholder color and unsupported multiline APIs.
+- `python3 -m unittest scripts/test_test_gpui.py scripts/test_gpui_native.py`:
+  **4 passed** (three runner-source checks, one compiled native shim test).
+- `python3 scripts/check_gpui_goldens.py`: **30 cases / 60 captures** pass
+  byte equality, nonblank and interaction-state distinction checks. The added
+  nested-popup case subsequently changed test code only; all 31 tests and
+  compile/lint/format gates passed on that revision.
+- Python workflow, Markdown, runner-source and transport-guard suites:
+  **87 passed / 260 subtests passed** on Linux. Maintained Markdown links
+  (72 docs), reference docs, workflow policy, core dependency and transport /
+  restart boundary checks pass.
+- Reconstructed all **102 included GPUI files** byte-for-byte from the frozen
+  upstream source plus the manifest and production AX patches. Reconstructed
+  the **four additionally changed GPUI Kit files** from the pre-review vendor
+  tree plus `component-review-fixes.patch`; forward/reverse patch checks pass.
+
+The new standalone GPUI manifest reports upstream's `rust_analyzer` cfg warning;
+the existing test transport methods also retain their missing-doc warnings.
+Strict Clippy for `murmur-ui` passes; no root lint suppression is added.
+No live GUI interaction was performed. Native window/panel AX focus,
+VoiceOver, real text-range frames (including Retina), popup edge placement and
+preference changes remain in the native QA handoff below. The task checkout
+and target directory are removed after these headless gates.
 
 ## Dependency audit receipt
 

@@ -14,6 +14,7 @@ struct Harness {
     disabled: bool,
     readonly: bool,
     default_confirm: bool,
+    outer_deferred: bool,
     intent: ButtonIntent,
     clicks: usize,
     changes: usize,
@@ -42,6 +43,7 @@ impl Harness {
             disabled: false,
             readonly: false,
             default_confirm: false,
+            outer_deferred: false,
             intent: ButtonIntent::Secondary,
             clicks: 0,
             changes: 0,
@@ -51,7 +53,7 @@ impl Harness {
 }
 impl Render for Harness {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let content = div()
             .id("test-root")
             .tab_group()
             .flex()
@@ -82,7 +84,12 @@ impl Render for Harness {
                     .readonly(self.readonly),
             )
             .child(self.choices.clone())
-            .child(Button::new("after", "After composite").track_focus(&self.after))
+            .child(Button::new("after", "After composite").track_focus(&self.after));
+        if self.outer_deferred {
+            gpui::deferred(content).into_any_element()
+        } else {
+            content.into_any_element()
+        }
     }
 }
 fn harness(cx: &mut TestAppContext, kind: ChoiceKind) -> (Entity<Harness>, &mut VisualTestContext) {
@@ -202,6 +209,58 @@ fn disabled_button_keeps_traversal_but_rejects_activation(cx: &mut TestAppContex
     cx.update(|w, _| assert!(expected.is_focused(w)));
 }
 #[gpui::test]
+fn disabled_focused_toggle_keeps_forward_and_reverse_traversal(cx: &mut TestAppContext) {
+    let (h, cx) = harness(cx, ChoiceKind::List);
+    for key in ["tab", "shift-tab"] {
+        h.update(cx, |h, cx| {
+            h.disabled = false;
+            cx.notify();
+        });
+        focus(&h, cx, 1);
+        h.update(cx, |h, cx| {
+            h.disabled = true;
+            cx.notify();
+        });
+        draw(cx);
+        keys(cx, key);
+        let expected = h.read_with(cx, |h, cx| {
+            if key == "tab" {
+                h.choices.read(cx).focus_handle(cx)
+            } else {
+                h.after.clone()
+            }
+        });
+        cx.update(|w, _| assert!(expected.is_focused(w), "{key} must leave disabled toggle"));
+    }
+}
+#[gpui::test]
+fn placeholder_uses_preference_color_in_the_editor_layout(cx: &mut TestAppContext) {
+    let (h, cx) = harness(cx, ChoiceKind::List);
+    cx.update(|w, cx| {
+        h.update(cx, |h, cx| {
+            h.field.update(cx, |f, cx| {
+                f.set_value("", w, cx);
+                f.set_placeholder("Synthetic placeholder", w, cx);
+            })
+        })
+    });
+    for high_contrast in [false, true, false] {
+        cx.update(|_, cx| {
+            preferences::apply(
+                preferences::DisplayPreferences {
+                    increase_contrast: high_contrast,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        draw(cx);
+        let actual = h.read_with(cx, |h, cx| h.field.read(cx).painted_placeholder_color());
+        let expected = cx.update(|_, cx| tokens::Palette::get(cx).muted);
+        assert_eq!(actual, Some(expected));
+    }
+}
+#[gpui::test]
 fn focus_order_and_reverse_traversal(cx: &mut TestAppContext) {
     let (h, cx) = harness(cx, ChoiceKind::List);
     focus(&h, cx, 0);
@@ -276,14 +335,52 @@ fn dropdown_escape_and_tab_leave_selection_unchanged(cx: &mut TestAppContext) {
     assert!(h.read_with(cx, |h, cx| !h.choices.read(cx).is_open()));
 }
 #[gpui::test]
+fn dropdown_reopen_resets_active_after_every_cancellation(cx: &mut TestAppContext) {
+    let (h, cx) = harness(cx, ChoiceKind::Dropdown);
+    let choices = h.read_with(cx, |h, _| h.choices.clone());
+    focus(&h, cx, 3);
+    keys(cx, "space down escape space enter");
+    assert_eq!(
+        choices.read_with(cx, |c, _| c.value().cloned()),
+        Some("a".into())
+    );
+    for cancel in ["tab", "shift-tab", "outside"] {
+        focus(&h, cx, 3);
+        keys(cx, "space down");
+        if cancel == "outside" {
+            cx.simulate_click(gpui::point(px(900.), px(600.)), gpui::Modifiers::default());
+            draw(cx);
+        } else {
+            keys(cx, cancel);
+        }
+        assert!(!choices.read_with(cx, |c, _| c.is_open()));
+        focus(&h, cx, 3);
+        keys(cx, "space enter");
+        assert_eq!(
+            choices.read_with(cx, |c, _| c.value().cloned()),
+            Some("a".into()),
+            "{cancel}"
+        );
+    }
+}
+#[gpui::test]
 fn composites_handle_empty_and_all_disabled(cx: &mut TestAppContext) {
     cx.update(crate::init);
-    let (c, cx) =
-        cx.add_window_view(|w, cx| Choices::new("Empty", ChoiceKind::List, vec![], w, cx));
-    cx.update(|w, cx| w.focus(&c.read(cx).focus_handle(cx), cx));
-    draw(cx);
-    cx.simulate_keystrokes("down up home end enter space");
-    assert!(c.read_with(cx, |c, _| c.value().is_none()));
+    for choices in [
+        vec![],
+        vec![
+            Choice::new("a", "Alpha").disabled(true),
+            Choice::new("b", "Beta").disabled(true),
+        ],
+    ] {
+        let (c, window) = cx.add_window_view(|w, cx| {
+            Choices::new("Empty or disabled", ChoiceKind::List, choices, w, cx)
+        });
+        window.update(|w, cx| w.focus(&c.read(cx).focus_handle(cx), cx));
+        draw(window);
+        keys(window, "down up home end enter space");
+        assert!(c.read_with(window, |c, _| c.value().is_none()));
+    }
 }
 #[gpui::test]
 fn field_keyboard_selection_edit_and_undo(cx: &mut TestAppContext) {
@@ -400,7 +497,10 @@ mod accessibility {
     #[gpui::test]
     fn button_role_name_action_focus_and_disabled(cx: &mut TestAppContext) {
         let (h, cx) = harness(cx, ChoiceKind::List);
-        focus(&h, cx, 0);
+        focus(&h, cx, 2);
+        let t = tree(cx);
+        let (id, _) = named(&t, "Save example");
+        action(cx, id, AccessibleAction::Focus, None);
         let t = tree(cx);
         let (id, n) = named(&t, "Save example");
         assert_eq!(n.role(), Role::Button);
@@ -432,6 +532,16 @@ mod accessibility {
         let t = tree(cx);
         assert_eq!(named(&t, "Keep examples").1.toggled(), Some(Toggled::True));
         assert_eq!(h.read_with(cx, |h, _| h.changes), 1);
+        h.update(cx, |h, cx| {
+            h.disabled = true;
+            cx.notify();
+        });
+        let t = tree(cx);
+        let (id, n) = named(&t, "Keep examples");
+        assert!(n.is_disabled());
+        assert!(!n.supports_action(AccessibleAction::Click));
+        action(cx, id, AccessibleAction::Click, None);
+        assert_eq!(h.read_with(cx, |h, _| h.changes), 1);
     }
     fn composite_tree(cx: &mut TestAppContext, kind: ChoiceKind, role: Role, child_role: Role) {
         let (h, cx) = harness(cx, kind);
@@ -445,7 +555,32 @@ mod accessibility {
                 .iter()
                 .any(|(_, n)| n.label() == Some("Examples") && n.role() == role)
         );
+        let owner = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == role && n.label() == Some("Examples"))
+            .unwrap();
+        if kind == ChoiceKind::Dropdown {
+            assert_eq!(owner.1.is_expanded(), Some(true));
+        }
+        let alpha = named(&t, "Alpha").0;
+        assert_eq!(t.focus, alpha);
+        fn descendant(t: &TreeUpdate, parent: NodeId, child: NodeId) -> bool {
+            t.nodes
+                .iter()
+                .find(|(id, _)| *id == parent)
+                .unwrap()
+                .1
+                .children()
+                .iter()
+                .any(|id| *id == child || descendant(t, *id, child))
+        }
+        assert!(descendant(&t, owner.0, alpha));
+        keys(cx, "down");
+        let t = tree(cx);
         let (id, n) = named(&t, "Charlie");
+        assert!(descendant(&t, owner.0, id));
+        assert_eq!(t.focus, id);
         assert_eq!(n.role(), child_role);
         assert!(n.supports_action(AccessibleAction::Click));
         let (_, n) = named(&t, "Unavailable");
@@ -473,6 +608,36 @@ mod accessibility {
             Role::ComboBox,
             Role::ListBoxOption,
         );
+    }
+    #[gpui::test]
+    fn nested_deferred_popup_retains_ancestry_and_active_focus(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, ChoiceKind::Dropdown);
+        h.update(cx, |h, cx| {
+            h.outer_deferred = true;
+            cx.notify();
+        });
+        focus(&h, cx, 3);
+        keys(cx, "space");
+        for label in ["Alpha", "Charlie", "Alpha"] {
+            let t = tree(cx);
+            let (option, _) = named(&t, label);
+            assert_eq!(t.focus, option);
+            let combo = t
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == Role::ComboBox)
+                .unwrap();
+            let list = t
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == Role::ListBox)
+                .unwrap();
+            assert!(combo.1.children().contains(&list.0));
+            assert!(list.1.children().contains(&option));
+            let consumer = accesskit_consumer::Tree::new(t, true);
+            assert!(consumer.state().focus().unwrap().is_focused());
+            keys(cx, "down");
+        }
     }
     #[gpui::test]
     fn list_tree_and_actions(cx: &mut TestAppContext) {
@@ -607,6 +772,86 @@ mod accessibility {
         );
     }
     #[gpui::test]
+    fn field_range_bounds_follow_shaping_and_horizontal_scroll(cx: &mut TestAppContext) {
+        let (h, cx) = harness(cx, ChoiceKind::List);
+        focus(&h, cx, 2);
+        let sample = "A日👩‍💻e\u{301}Z".repeat(80);
+        cx.update(|w, cx| {
+            h.update(cx, |h, cx| {
+                h.field
+                    .update(cx, |f, cx| f.set_value(sample.clone(), w, cx))
+            })
+        });
+        let mut boxes = Vec::new();
+        let mut scrolls = Vec::new();
+        for key in ["cmd-left", "cmd-right"] {
+            keys(cx, key);
+            let t = tree(cx);
+            let (id, _) = named(&t, "Example text");
+            let consumer = accesskit_consumer::Tree::new(t, true);
+            let node = consumer
+                .state()
+                .node_by_tree_local_id(id, TreeId::ROOT)
+                .unwrap();
+            let mut selected = node.document_range();
+            selected.set_start(node.text_position_from_global_utf16_index(1).unwrap());
+            selected.set_end(node.text_position_from_global_utf16_index(7).unwrap());
+            let caret = node.text_selection().unwrap().bounding_boxes();
+            let painted = h.read_with(cx, |h, cx| h.field.read(cx).cursor_layout().unwrap().0);
+            let scale = cx.update(|w, _| w.scale_factor());
+            assert_eq!(caret.len(), 1);
+            assert!((caret[0].x0 - f64::from(f32::from(painted.origin.x) * scale)).abs() < 1.);
+            assert_eq!(selected.text(), "日👩‍💻");
+            let rects = selected.bounding_boxes();
+            assert_eq!(
+                rects.len(),
+                1,
+                "AXFrameForRange requires usable consumer geometry"
+            );
+            assert!(rects[0].width() > 0. && rects[0].height() > 0.);
+            boxes.push(rects[0]);
+            scrolls.push(h.read_with(cx, |h, cx| h.field.read(cx).scroll_offset().x));
+        }
+        let scale = cx.update(|w, _| w.scale_factor());
+        assert!(scrolls[1] < scrolls[0], "long field must actually scroll");
+        let expected = f32::from(scrolls[1] - scrolls[0]) * scale;
+        assert!(((boxes[1].x0 - boxes[0].x0) - f64::from(expected)).abs() < 1.);
+        assert!((boxes[1].width() - boxes[0].width()).abs() < 1.);
+    }
+    #[gpui::test]
+    fn multiline_value_does_not_advertise_unimplemented_range_geometry(cx: &mut TestAppContext) {
+        struct Multiline {
+            field: Entity<gpui_component::input::TextareaState>,
+        }
+        impl Render for Multiline {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                gpui_component::input::Textarea::new(&self.field).aria_label("Multiline example")
+            }
+        }
+        cx.update(crate::init);
+        let (_, cx) = cx.add_window_view(|w, cx| {
+            let field = cx.new(|cx| {
+                gpui_component::input::TextareaState::new(w, cx).default_value("First\nSecond")
+            });
+            let content = cx.new(|_| Multiline { field });
+            gpui_base::Root::new(content, w, cx)
+        });
+        let t = tree(cx);
+        let (id, n) = named(&t, "Multiline example");
+        assert_eq!(n.value(), Some("First\nSecond"));
+        assert!(n.text_selection().is_none());
+        assert!(!n.supports_action(AccessibleAction::SetTextSelection));
+        assert!(!n.supports_action(AccessibleAction::ReplaceSelectedText));
+        let consumer = accesskit_consumer::Tree::new(t, true);
+        assert!(
+            !consumer
+                .state()
+                .node_by_tree_local_id(id, TreeId::ROOT)
+                .unwrap()
+                .supports_text_ranges()
+        );
+    }
+    #[gpui::test]
     fn field_readonly_disabled_and_masked_keep_ax_boundaries(cx: &mut TestAppContext) {
         let (h, cx) = harness(cx, ChoiceKind::List);
         focus(&h, cx, 2);
@@ -617,6 +862,27 @@ mod accessibility {
         let t = tree(cx);
         let (id, n) = named(&t, "Example text");
         assert!(n.is_read_only());
+        assert!(n.supports_action(AccessibleAction::SetTextSelection));
+        let run = n.text_selection().unwrap().anchor.node;
+        action(
+            cx,
+            id,
+            AccessibleAction::SetTextSelection,
+            Some(ActionData::SetTextSelection(TextSelection {
+                anchor: TextPosition {
+                    node: run,
+                    character_index: 1,
+                },
+                focus: TextPosition {
+                    node: run,
+                    character_index: 3,
+                },
+            })),
+        );
+        assert_eq!(
+            h.read_with(cx, |h, cx| h.field.read(cx).selected_range()),
+            1..15
+        );
         assert!(!n.supports_action(AccessibleAction::SetValue));
         assert!(!n.supports_action(AccessibleAction::ReplaceSelectedText));
         action(

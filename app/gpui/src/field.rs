@@ -41,6 +41,7 @@ impl RenderOnce for TextField {
         let p = Palette::get(cx);
         Input::new(&self.state)
             .aria_label(self.label)
+            .placeholder_color(p.muted)
             .disabled(self.disabled)
             .readonly(self.readonly)
             .h(tokens::INPUT_HEIGHT)

@@ -118,6 +118,18 @@ class TargetedEventsGuardTests(unittest.TestCase):
                     (root / 'src/lib.rs').write_text('mod ' + source.parent.name + ';')
                 self.assertTrue(any(failure.startswith(module + ':') for failure in check_repository(root)))
 
+    def test_patched_gpui_is_excluded_but_authored_inclusions_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'app/gpui/vendor/gpui/src/gpui.rs'
+            source.parent.mkdir(parents=True)
+            source.write_text('fn f() { app.emit("event", ()); }')
+            self.assertEqual(check_repository(root), [])
+            maintained = root / 'app/gpui/src/lib.rs'
+            maintained.parent.mkdir(parents=True)
+            maintained.write_text('include!("../vendor/gpui/src/gpui.rs");')
+            self.assertTrue(check_repository(root))
+
     def test_path_escape_outside_repository_and_excluded_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)
@@ -267,13 +279,13 @@ class TargetedEventsGuardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for prefix in ['app/gpui/vendor/gpui-component',
-                           'app/gpui/vendor/accesskit_macos', 'app/gpui/target']:
+                           'app/gpui/vendor/accesskit_macos', 'app/gpui/vendor/gpui', 'app/gpui/target']:
                 path = root / prefix / 'nested/example.rs'
                 path.parent.mkdir(parents=True)
                 path.write_text('cx.emit(event);')
             self.assertEqual(check_repository(root), [])
             for prefix in ['app/gpui/src', 'app/gpui/vendor/maintained',
-                           'nested/app/gpui/vendor/gpui-component']:
+                           'nested/app/gpui/vendor/gpui-component', 'nested/app/gpui/vendor/gpui']:
                 path = root / prefix / 'example.rs'
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('app.emit("event", ());')

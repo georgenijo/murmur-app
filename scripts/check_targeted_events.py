@@ -21,7 +21,7 @@ GPUI_ADAPTER = Path('app/gpui/src/events.rs')
 EXCLUDED = {Path('.git'), Path('app/node_modules'), Path('node_modules'),
             Path('app/src-tauri/target'), Path('target'), Path('app/src-tauri/patches/tao'),
             Path('app/gpui/target'), Path('app/gpui/vendor/gpui-component'),
-            Path('app/gpui/vendor/accesskit_macos')}
+            Path('app/gpui/vendor/accesskit_macos'), Path('app/gpui/vendor/gpui')}
 
 
 def excluded(path: Path, root: Path) -> bool:

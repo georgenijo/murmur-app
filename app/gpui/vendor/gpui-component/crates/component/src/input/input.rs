@@ -153,6 +153,7 @@ pub struct Input {
     role: RoleOverride,
     accessibility_id: Option<SharedString>,
     aria_label: Option<SharedString>,
+    placeholder_color: Option<Hsla>,
 
     /// An optional context menu builder to allow a custom context menu on the input.
     ///
@@ -265,12 +266,19 @@ impl Input {
             role: RoleOverride::default(),
             accessibility_id: None,
             aria_label: None,
+            placeholder_color: None,
             context_menu_builder: None,
             paste_handler: None,
             token_renderer: None,
             token_click_listener: None,
             token_hover_listener: None,
         }
+    }
+
+    /// Override the editor's placeholder and secondary text color.
+    pub fn placeholder_color(mut self, color: impl Into<Hsla>) -> Self {
+        self.placeholder_color = Some(color.into());
+        self
     }
 
     /// Set the developer-assigned identifier exposed to accessibility clients.
@@ -562,7 +570,9 @@ impl RenderOnce for Input {
         state.set_editor_style(
             gpui_base::input::InputEditorStyle {
                 foreground: cx.theme().foreground,
-                muted_foreground: cx.theme().muted_foreground,
+                muted_foreground: self
+                    .placeholder_color
+                    .unwrap_or(cx.theme().muted_foreground),
                 background: cx.theme().editor_background(),
                 border: cx.theme().border,
                 selection: cx.theme().selection,
