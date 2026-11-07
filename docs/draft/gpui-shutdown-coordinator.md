@@ -1184,7 +1184,7 @@ PR #1025 remains draft, stacked on its original base, unmerged and unretargeted.
 
 QA terminal evidence now gets one dedicated worker and one shared 100 ms wait
 budget across the queued callback and permitted runtime event. Disk writes,
-all four fsyncs, evidence locking, and diagnostics run off main. Timeout, spawn
+all three fsyncs, evidence locking, and diagnostics run off main. Timeout, spawn
 failure, I/O failure, and evidence panics all continue to the existing terminal
 action; the coordinator still issues that action exactly once. Evidence
 preparation is also protected by `catch_unwind`. Diagnostics use ignored
@@ -1219,7 +1219,7 @@ file-transcription preflight, including active dictation; Idle/no-history alone
 cannot satisfy retention assertions. No additional QA hook or production
 permission, identity, path, or capability change is needed.
 
-Regression coverage injects 3 s into each of the four real fsync sites and
+Regression coverage injects 3 s into each of the three real fsync sites and
 checks the terminal continuation runs once within 250 ms, repeated evidence
 entry cannot wait again, and late completion preserves the timeout result.
 A subprocess uses an unwritable destination and an actually broken stderr
@@ -1244,3 +1244,44 @@ changed native sources match their Mac-verified SHA-256 values. Generated schema
 were restored; synthetic logs were preserved; the `gpui-stack-33` checkout and
 external target were removed. No GUI or app launch was used. PR #1025 remains
 draft on its original stack base, unmerged and unretargeted.
+
+
+### Atomic terminal evidence publication
+
+A native QA run found a complete JSON receipt beside its `.pending` hard link;
+termination could interrupt the old post-link directory sync before cleanup.
+Publication now uses a single exclusive rename: `renamex_np(RENAME_EXCL)` on
+macOS and `renameat2(RENAME_NOREPLACE)` on Linux. Other platforms and unsupported
+filesystems fail closed, with no clobbering or link/unlink fallback. The synced
+staging file becomes JSON and loses its staging name in the same operation.
+The final directory sync still establishes publication durability; if it fails,
+the visible complete receipt remains immutable and retry returns AlreadyExists.
+
+The terminal wait remains 100 ms and cannot join blocked I/O. Removing the
+cleanup sync reduces the total sync count from four to three without relying
+on fsync completing within a real-time limit. A timeout before rename can still
+leave staging alone, and a timeout during the final sync can leave JSON without
+an in-budget success diagnostic; both remain evidence failures. Once rename
+publishes JSON, no staging cleanup remains for process termination to interrupt.
+The external receipt enumerator and its strict `.pending` check are unchanged.
+
+Windowless regressions cover pre-publication hook failure, each sync failure,
+a competing final name created at the publish boundary, pre-existing staging,
+retry after uncertain directory durability, and the terminal deadline expiring
+while the post-rename directory sync is deliberately blocked. The latter checks
+that JSON is complete and staging is already absent before releasing the worker.
+
+
+Verification on Mac mini / Rust 1.98.1: the original publisher fails a windowless
+probe asserting staging is absent at the first post-publication directory sync.
+The fixed source passes all 21 scoped shutdown unit tests, including four new
+regressions, and full `cargo check --locked` in both default and
+`shutdown-test-support` configurations. Workspace/all-target Clippy passes in
+both configurations with `-D warnings -A clippy::chunks_exact_to_as_chunks
+-A clippy::byte_char_slices`, the stack's existing command-line allowances.
+The unmodified strict invocation stops on the pre-existing constant-chunk lint
+in `capture-helper-protocol/src/lib.rs:790`; no source lint suppression was added.
+Formatting, all 22 restart-policy tests, core-dependency and reference checks
+pass. The tested native source SHA-256 is
+`a510b53f601269f1bc20bd5721ef2ca2692ccf1bc030dc8bd7003ebaf3960c6f`.
+No GUI or application was launched. Independent review remains with the parent.
