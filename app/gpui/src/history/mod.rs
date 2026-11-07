@@ -949,7 +949,7 @@ impl History {
                                 )
                             })
                             .bg(if copied {
-                                p.tint_raised.blend(p.accent.opacity(0.08))
+                                p.tint_raised.blend(p.success.opacity(0.08))
                             } else {
                                 p.tint_raised
                             })
@@ -965,7 +965,11 @@ impl History {
                                     .flex()
                                     .items_center()
                                     .gap(px(4.))
-                                    .bg(p.tint_raised)
+                                    .bg(if copied {
+                                        p.tint_raised.blend(p.success.opacity(0.08))
+                                    } else {
+                                        p.tint_raised
+                                    })
                                     .opacity(
                                         if copied
                                             || action_focus.is_focused(w)
@@ -982,7 +986,7 @@ impl History {
                                         d.child(
                                             div()
                                                 .text_size(tokens::CAPTION_SIZE)
-                                                .text_color(p.accent)
+                                                .text_color(p.muted)
                                                 .child("Copied"),
                                         )
                                     })

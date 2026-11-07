@@ -649,7 +649,7 @@ impl Render for Home {
                         .w(px(2.))
                         .h(px(((0.15 + level * envelope) * 16.).round().max(3.)))
                         .rounded(px(1.))
-                        .bg(p.accent)
+                        .bg(p.danger)
                 }),
             );
             let record_focus = self.focus_for("home-record", cx);
@@ -680,13 +680,14 @@ impl Render for Home {
                                 |i, delta| i.transform(Transformation::rotate(percentage(delta))),
                             )
                             .into_any_element()
+                    } else if s.capturing() {
+                        div()
+                            .size(px(10.))
+                            .rounded(px(1.))
+                            .bg(p.on_accent)
+                            .into_any_element()
                     } else {
-                        icon(if s.capturing() {
-                            Glyph::Stop
-                        } else {
-                            Glyph::Mic
-                        })
-                        .into_any_element()
+                        icon(Glyph::Mic).into_any_element()
                     },
                 );
             let hint_view = div()

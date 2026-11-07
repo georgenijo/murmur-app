@@ -50,7 +50,7 @@ pub fn icon(glyph: Glyph) -> Icon {
             include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/square.svg")
         }
         Glyph::Spinner => {
-            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/loader.svg")
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/loader-circle.svg")
         }
         Glyph::Settings => {
             include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/settings.svg")

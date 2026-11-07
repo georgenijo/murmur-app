@@ -86,7 +86,11 @@ impl Palette {
             raised: theme.secondary,
             hairline: theme.border.opacity(if high_contrast { 1. } else { 0.22 }),
             hairline_strong: theme.border.opacity(if high_contrast { 1. } else { 0.3 }),
-            tint_raised: theme.popover,
+            tint_raised: if theme.is_dark() {
+                theme.secondary
+            } else {
+                theme.popover
+            },
             surface_container_low: theme.sidebar,
             success: theme.success,
             text: theme.foreground,
@@ -109,7 +113,7 @@ impl Palette {
     pub fn card_shadow(self) -> Vec<gpui::BoxShadow> {
         vec![gpui::BoxShadow {
             inset: false,
-            color: gpui::black().opacity(0.05),
+            color: gpui::black().opacity(if self.surface.l < 0.5 { 0.24 } else { 0.08 }),
             offset: gpui::point(px(0.), px(1.)),
             blur_radius: px(2.),
             spread_radius: px(0.),
