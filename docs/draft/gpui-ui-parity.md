@@ -317,3 +317,15 @@ Deferred polish (not in round 5): meeting glyphs/dots/seek track/selection edge/
 size; Home checklist × and ⇧ glyph, default-selected row edge, hover actions in still captures;
 Settings search placeholder/border and General glyph; Appearance segmented chip; Insights gap/baseline;
 onboarding wrapping and centred reset link; update dialog autofocus/backdrop/shadow; search surfaces.
+
+## Round 5 result (council at 4bbf9271)
+
+Claude 8.1/10 and Sol 8.5/10. B1-B5 are resolved, no screen is below 7, and nothing is blocking. The council loop stops here.
+
+Deferred polish, in addition to the round-4 list:
+- Theme card names: the OLD render reads as about 14px regular, while the NEW is 16px/400 from the measured React styles. Recheck against the render.
+- Theme orbs: the white rim and shadow; the export glyph.
+- Pill waveform: the bar gap measures 1px against React's 1.5px; the dot's left inset.
+- Site rules: the Browser sites description needs a max width.
+- Modes: section top padding; the Duplicate button size.
+- The vertical gap before the theme grid; Settings search chrome.
