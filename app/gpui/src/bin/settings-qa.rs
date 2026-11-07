@@ -77,7 +77,7 @@ fn main() {
             .expect("synthetic Settings window");
         let entity = entity.unwrap();
         handle
-            .update(cx, |_, _, cx| {
+            .update(cx, |_, w, cx| {
                 entity.update(cx, |s, cx| {
                     s.fixture = true;
                     s.attach(cx);
@@ -88,9 +88,15 @@ fn main() {
                             s.model.pending = true;
                         }
                         "error" => s.model.problem = Some(Problem::Unavailable),
-                        "search" => s.model.query = "silence".into(),
+                        "search" => {
+                            s.model.query = "silence".into();
+                            s.search
+                                .update(cx, |field, cx| field.set_value("silence", w, cx));
+                        }
                         "compact" => (),
-                        id => s.model.page = Page::resolve(id.trim_end_matches("-advanced")),
+                        id => {
+                            s.navigate(Page::resolve(id.trim_end_matches("-advanced")), None, w, cx)
+                        }
                     }
                     if let Some(snapshot) = s.model.snapshot.as_mut() {
                         if state.ends_with("-advanced") {
