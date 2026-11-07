@@ -350,6 +350,21 @@ mod ax {
         click(cx, named(&t, "Name from calendar…"));
         let t = tree(cx);
         named(&t, "Choose an overlapping event");
+        if let Calendar::Choosing(events) = &h.state.borrow().calendar {
+            let event = &events[0];
+            named(
+                &t,
+                &format!(
+                    "{} · {} – {} · Attendees: {}",
+                    event.title,
+                    super::super::view::local_datetime(event.start_ms),
+                    super::super::view::local_datetime(event.end_ms),
+                    event.attendees.join(", ")
+                ),
+            );
+        } else {
+            panic!("expected calendar candidates");
+        }
         let apply = named(&t, "Apply event");
         assert!(
             t.nodes
@@ -461,4 +476,191 @@ fn live_segment_rechecks_recording_generation_and_session_before_mutating() {
     state.phase = Phase::Idle;
     let segment = state.detail.as_ref().unwrap().segments[0].clone();
     assert!(!state.live_segment(42, segment));
+}
+
+#[gpui::test]
+fn playback_progress_preserves_pointer_seek_until_release(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    let seek = e.read_with(cx, |s, _| s.seek.clone());
+    let slider = seek.read_with(cx, |r, _| r.state.clone());
+    cx.update(|w, cx| {
+        slider.update(cx, |s, cx| {
+            let bounds = s.bounds();
+            assert!(
+                bounds.size.width > gpui::px(0.),
+                "seek track must record pointer mapping bounds"
+            );
+            s.update_value_by_position(
+                gpui::Axis::Horizontal,
+                gpui::point(bounds.left() + bounds.size.width * 0.8, bounds.top()),
+                false,
+                w,
+                cx,
+            );
+        })
+    });
+    e.update(cx, |s, cx| {
+        s.model.snapshot.as_mut().unwrap().audio.position_ms = 1200;
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(seek.read_with(cx, |r, cx| r.value(cx)), 52000);
+    slider.update(cx, |s, cx| s.handle_release(cx));
+    draw(cx);
+    assert!(matches!(
+        h.actions.borrow().last(),
+        Some(Action::Playback {
+            action: PlaybackAction::Seek(52000),
+            ..
+        })
+    ));
+}
+
+#[gpui::test]
+fn playback_progress_keeps_delete_armed_but_owner_changes_disarm(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    e.update(cx, |s, cx| {
+        s.delete(false, cx);
+        let mut snapshot = s.model.snapshot.clone().unwrap();
+        snapshot.audio.state = AudioState::Playing;
+        snapshot.audio.position_ms += 32;
+        snapshot.revision += 1;
+        h.state.replace(snapshot.clone());
+        assert!(
+            s.inbox
+                .publish(Event::Changed {
+                    attachment: s.model.attachment,
+                    snapshot
+                })
+                .is_ok()
+        );
+        s.drain(cx);
+        assert!(s.confirmation.is_some());
+        s.delete(false, cx);
+    });
+    draw(cx);
+    assert!(matches!(h.actions.borrow().last(), Some(Action::Delete(id)) if id == "fixture-1"));
+    e.update(cx, |s, cx| {
+        s.delete(true, cx);
+        let mut snapshot = s.model.snapshot.clone().unwrap();
+        snapshot.capture_busy = true;
+        snapshot.revision += 1;
+        assert!(
+            s.inbox
+                .publish(Event::Changed {
+                    attachment: s.model.attachment,
+                    snapshot
+                })
+                .is_ok()
+        );
+        s.drain(cx);
+        assert!(s.confirmation.is_none());
+    });
+}
+
+#[gpui::test]
+fn list_navigation_reaches_offscreen_rows_and_retains_row_focus(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    let mut snapshot = h.state.borrow().clone();
+    snapshot.meetings = (0..80)
+        .map(|i| fixtures::meeting(&format!("row-{i}")))
+        .collect();
+    snapshot.total = 80;
+    h.state.replace(snapshot.clone());
+    e.update(cx, |s, cx| {
+        s.model.snapshot = Some(snapshot);
+        cx.notify();
+    });
+    draw(cx);
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            let focus = s.focus_for("meeting-row-0", cx);
+            w.focus(&focus, cx);
+        })
+    });
+    for (key, expected) in [("end", 79), ("up", 78), ("home", 0), ("down", 1)] {
+        cx.simulate_keystrokes(key);
+        draw(cx);
+        assert!(
+            matches!(h.actions.borrow().last(), Some(Action::Select(id)) if id == &format!("row-{expected}"))
+        );
+        if key == "end" {
+            assert!(
+                e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset().y)
+                    < gpui::px(0.)
+            );
+        } else if key == "home" {
+            assert_eq!(
+                e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset().y),
+                gpui::px(0.)
+            );
+        }
+        cx.update(|w, cx| e.read(cx).focus[&format!("meeting-row-{expected}")].is_focused(w))
+            .then_some(())
+            .expect("new row owns focus");
+    }
+}
+
+#[gpui::test]
+fn detail_fields_and_playback_controls_reveal_in_their_scroll_parent(cx: &mut TestAppContext) {
+    use gpui::Focusable;
+    let (e, _, cx) = harness(cx);
+    cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
+    e.update(cx, |s, cx| {
+        s.speakers = true;
+        cx.notify();
+    });
+    draw(cx);
+    cx.update(|w, cx| w.simulate_next_frame(cx));
+    draw(cx);
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            w.focus(&s.fields["remote-1"].read(cx).focus_handle(cx), cx);
+        })
+    });
+    draw(cx);
+    cx.update(|w, cx| w.simulate_next_frame(cx));
+    draw(cx);
+    let scrolled = e.read_with(cx, |s, _| s.detail_scroll.offset().y);
+    assert!(
+        scrolled < gpui::px(0.),
+        "offscreen speaker field must scroll into view: {:?}",
+        e.read_with(cx, |s, _| (
+            s.detail_scroll.bounds(),
+            s.detail_scroll.max_offset()
+        ))
+    );
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            w.focus(&s.channel_control.read(cx).focus_handle(cx), cx)
+        })
+    });
+    draw(cx);
+    cx.update(|w, cx| w.simulate_next_frame(cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.detail_scroll.offset().y) > scrolled);
+    cx.update(|w, cx| e.update(cx, |s, cx| w.focus(&s.seek.read(cx).focus_handle(cx), cx)));
+    draw(cx);
+    cx.update(|w, cx| w.simulate_next_frame(cx));
+    draw(cx);
+    e.read_with(cx, |s, cx| {
+        let bounds = s.seek.read(cx).state.read(cx).bounds();
+        let viewport = s.detail_scroll.bounds();
+        assert!(
+            bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom(),
+            "focused seek track {bounds:?} outside detail viewport {viewport:?}"
+        );
+    });
+}
+
+#[test]
+fn calendar_and_detail_labels_use_local_wall_clock() {
+    let ms = 1700000000000;
+    let expected = chrono::DateTime::from_timestamp_millis(ms)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%a, %b %e, %Y %H:%M")
+        .to_string();
+    assert_eq!(super::view::local_datetime(ms), expected);
+    assert!(!super::view::local_datetime(ms).contains(&ms.to_string()));
 }

@@ -37,6 +37,10 @@ impl Sink for FakeSink {
         s.blocks.push(b.to_vec());
         Ok(())
     }
+    fn healthy(&self, g: u64) -> bool {
+        let s = self.0.lock().unwrap();
+        s.started && s.generation == g
+    }
     fn queued_frames(&self) -> u64 {
         self.0.lock().unwrap().queued
     }
@@ -270,4 +274,21 @@ fn pause_keeps_consumed_position_and_drops_decoded_audio() {
     assert_eq!(p.position_ms(), 1100);
     assert!(p.tracks.iter().all(|t| t.decoded.is_empty()));
     assert_eq!(sink.queued_frames(), 0);
+}
+
+#[test]
+fn stopped_output_is_detected_even_with_a_full_queue_and_can_restart() {
+    let sink = Arc::new(FakeSink::default());
+    let control = Control::new(sink.clone());
+    let mut player = Player::new(Arc::new(AudioSource::default()), control, "fixture".into());
+    assert!(player.play(0, Channel::All).is_ok());
+    for _ in 0..3 {
+        assert!(player.pump().unwrap_or_else(|_| panic!("pump failed")));
+    }
+    assert_eq!(sink.0.lock().unwrap().queued, 4800);
+    sink.0.lock().unwrap().started = false;
+    assert!(matches!(player.pump(), Err(Error::Output)));
+    assert!(!player.pump().unwrap_or_else(|_| panic!("pump failed")));
+    assert!(player.play(100, Channel::All).is_ok());
+    assert!(player.pump().unwrap_or_else(|_| panic!("pump failed")));
 }

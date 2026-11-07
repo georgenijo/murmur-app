@@ -828,5 +828,16 @@ int main(int argc, char **argv) {
                 self.assertEqual(result.returncode, 86, schedule)
 
 
+@unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
+class MeetingPlaybackTests(unittest.TestCase):
+    def test_cancel_never_waits_for_start_and_configuration_change_invalidates_output(self):
+        with tempfile.TemporaryDirectory(prefix='murmur-meeting-output-') as directory:
+            executable = Path(directory) / 'test'
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AVFoundation',
+                            str(ROOT / 'scripts/fixtures/meeting_playback_test.m'),
+                            '-o', str(executable)], check=True)
+            subprocess.run([str(executable)], check=True, timeout=20)
+
+
 if __name__ == '__main__':
     unittest.main()

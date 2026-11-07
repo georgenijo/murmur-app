@@ -61,11 +61,12 @@ pub trait Source: Send + Sync {
     ) -> Result<Vec<u8>, Error>;
 }
 pub trait Sink: Send + Sync {
-    /// Atomically stop/clear output for a newer generation. Older resets cannot
-    /// resurrect a paused sink. enqueue/start check the same generation lock.
+    /// Fence a newer generation immediately; perform engine teardown on its worker.
+    /// Must never wait on engine startup or shutdown (callable from the UI).
     fn reset(&self, generation: u64);
     fn start(&self, generation: u64) -> Result<(), Error>;
     fn enqueue(&self, generation: u64, mono: &[f32]) -> Result<(), Error>;
+    fn healthy(&self, generation: u64) -> bool;
     fn queued_frames(&self) -> u64;
     fn played_frames(&self) -> u64;
 }
@@ -187,6 +188,9 @@ impl Player {
     }
     fn pump_inner(&mut self) -> Result<bool, Error> {
         self.check()?;
+        if !self.control.sink.healthy(self.generation) {
+            return Err(Error::Output);
+        }
         if self.control.sink.queued_frames() >= 3 * BLOCK as u64 {
             return Ok(true);
         }
@@ -403,6 +407,9 @@ impl Sink for NativeSink {
             Err(Error::Revoked)
         }
     }
+    fn healthy(&self, g: u64) -> bool {
+        unsafe { murmur_meeting_output_healthy(self.0.as_ptr(), g) }
+    }
     fn queued_frames(&self) -> u64 {
         unsafe { murmur_meeting_output_queued(self.0.as_ptr()) }
     }
@@ -427,6 +434,7 @@ unsafe extern "C" {
         s: *const f32,
         len: usize,
     ) -> bool;
+    fn murmur_meeting_output_healthy(output: *mut std::ffi::c_void, g: u64) -> bool;
     fn murmur_meeting_output_queued(output: *mut std::ffi::c_void) -> u64;
     fn murmur_meeting_output_played(output: *mut std::ffi::c_void) -> u64;
     fn murmur_meeting_output_free(output: *mut std::ffi::c_void);
