@@ -287,3 +287,33 @@ Q11. Pill (`G/overlay/mod.rs:~373-384`): solid fills rgb(246,246,248) light and 
 (no early clamp), keeping 18 bars / 2px / 1.5px gaps / 10px dot.
 Q12. Polish: setup-assistant row padding (`G/settings/panes.rs:~58`); updater header/body insets and
 shadow (`G/update_dialog.rs:~38,82`).
+
+## Round 4 findings (council at 5dca1f1a)
+
+Scores: Claude Opus 5.5 7.7/10, Sol 8.3/10; every screen 7+ from both. George chose a fifth round
+limited to Claude's five blocking items (Sol lists the first, third and fifth as polish). Other polish
+from both seats is deferred; it stays below for later.
+
+B1. Theme card structure (`G/themes/mod.rs:~630-760`, ref `ThemeLibrary.tsx:~300-372,545`): the name is
+a left-aligned 14px/500 truncating label, not a centred caption button. Actions: built-in Sonic gets
+only "Create theme from Sonic" (copy icon); other built-ins get Export then Duplicate; Remove for user
+themes only; Edit only on the Custom card. Orbs 44px, centred ±36px in a 68px preview, 16px mode badge.
+B2. Create/Import theme (`G/themes/mod.rs:~586-606`): fresh React measurement
+(`old/settings-appearance-light.json`) is 32px tall, 14px/500, 11px horizontal padding, 8px radius,
+1px rgb(171,179,185) border. This supersedes Q6's 28px/12px.
+B3. Settings Tools pinned to the bottom (`G/choice.rs:~409`, `G/settings/mod.rs:~1293-1300`): the
+`flex_1()` spacer is inside a scroll container that doesn't fill the sidebar height. Make the nav fill
+the height so Tools sits at the bottom like React's `.settings-nav-tools` (`SettingsPanel.tsx:~959`);
+keep the fixed header/search and independent content scroll.
+B4. Pill waveform rhythm (`G/overlay/model.rs:~732-743`): `level * 16` saturates and variation is
+0.07, so bars are uniform. Port the per-bar scale profile from `R/lib/hooks/useWaveform.ts` (fixtures
+measure ~4.8/8.8/12.8/16/11.2px against a 16px cap: ~0.3-1.0 by index × unsaturated level). Keep
+18 bars / 2px / 1.5px gaps / 10px dot and deterministic offscreen fixtures.
+B5. Modes (`G/modes/mod.rs:~504-524`): tile titles regular 14px (React 400), "Library"/"Selected mode"
+headings 500, tile height ~54px and gap ~8px, hairline above the "Custom mode" row. Don't change
+unrelated description buttons.
+
+Deferred polish (not in round 5): meeting glyphs/dots/seek track/selection edge/select chevrons/title
+size; Home checklist × and ⇧ glyph, default-selected row edge, hover actions in still captures;
+Settings search placeholder/border and General glyph; Appearance segmented chip; Insights gap/baseline;
+onboarding wrapping and centred reset link; update dialog autofocus/backdrop/shadow; search surfaces.
