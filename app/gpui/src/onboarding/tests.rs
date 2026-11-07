@@ -510,3 +510,32 @@ fn leaving_microphone_clears_its_wait_without_reprompting(cx: &mut TestAppContex
     keys(cx, "enter");
     assert_eq!(e.read_with(cx, |s, _| s.step), Step::Microphone);
 }
+
+#[gpui::test]
+fn grandfathered_install_with_a_different_installed_model_keeps_the_model_gate(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::init);
+    let host = Rc::new(FixtureHost::default());
+    host.state.borrow_mut().permissions = [Access::Granted; 4];
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let e = cx.new(|cx| Onboarding::new(host.clone(), w, cx));
+        entity = Some(e.clone());
+        gpui_base::Root::new(e, w, cx)
+    });
+    let e = entity.unwrap();
+    e.update(cx, |s, cx| s.attach(cx));
+    draw(cx);
+    assert!(host.state.borrow().complete);
+    assert_eq!(e.read_with(cx, |s, _| s.step), Step::Model);
+    assert!(!e.read_with(cx, |s, _| s.finished));
+    assert_eq!(
+        *host.actions.borrow(),
+        vec![Action::Read, Action::Grandfather]
+    );
+    e.update(cx, |s, cx| s.activate(cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.finished));
+    assert_eq!(host.state.borrow().settings["model"], "tiny.en");
+}

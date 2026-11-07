@@ -276,11 +276,13 @@ impl Onboarding {
                     .into();
                 self.seeded = true;
                 if !self.replay && (snapshot.complete || snapshot.grandfathered()) {
-                    if snapshot.complete
-                        && !snapshot.installed(snapshot.settings["model"].as_str().unwrap_or(""))
-                    {
+                    if !snapshot.installed(snapshot.settings["model"].as_str().unwrap_or("")) {
+                        let grandfather = !snapshot.complete;
                         self.standalone = true;
                         self.step = Step::Model;
+                        if grandfather {
+                            self.request(Action::Grandfather, cx);
+                        }
                     } else {
                         self.request(Action::ResumeExisting, cx);
                     }

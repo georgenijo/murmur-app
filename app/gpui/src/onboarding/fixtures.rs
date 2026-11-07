@@ -165,7 +165,10 @@ impl Host for FixtureHost {
                     s.settings["launchOnboardingComplete"] = serde_json::json!(true);
                     s.complete = true;
                 }
-                Action::ResumeExisting => s.complete = true,
+                Action::ResumeExisting | Action::Grandfather => {
+                    s.complete = true;
+                    s.settings["launchOnboardingComplete"] = serde_json::json!(true);
+                }
                 _ => (),
             }
             if let Some(root) = &self.root

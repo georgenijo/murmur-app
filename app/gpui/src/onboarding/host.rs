@@ -17,6 +17,7 @@ pub enum Action {
         trigger_key: String,
     },
     ResumeExisting,
+    Grandfather,
 }
 impl Action {
     pub fn command(&self) -> &'static str {
@@ -49,7 +50,8 @@ impl Action {
             Self::Download(_) => "download_model",
             Self::CancelDownload(_) => "cancel_model_download",
             Self::Complete { .. } | Self::ResumeExisting => "resume_dictation_after_setup",
-            Self::Read => "load_source_state",
+            Self::Read => "webkit_state_snapshot",
+            Self::Grandfather => "save_webkit_source",
         }
     }
 }
@@ -85,6 +87,9 @@ pub trait Host {
     /// Failure must not mark setup complete. Accepted intent belongs to the durable
     /// owner across hide; its UI response remains revocable. ResumeExisting preserves
     /// saved choices and existing discovery, seeding grandfathered evidence if absent.
+    /// Grandfather persists only the completed launch/onboarding gate and the
+    /// existing-install discovery baseline. It NEVER configures or resumes a
+    /// missing selected model; the separate Model gate must complete that first.
     /// Blocking work stays off the main thread. No payload/error text is logged.
     fn request(&self, request: Request, inbox: Inbox);
     fn detach(&self, attachment: u64);
