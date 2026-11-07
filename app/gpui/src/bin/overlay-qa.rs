@@ -107,7 +107,9 @@ fn main() {
         let mut model = Model::new(snapshot.clone());
         model.screen.notch = Some(NotchInfo {
             width: 185.,
-            height: if std::env::var_os("MURMUR_PRETEND_NOTCH").is_some() {
+            height: if state == "delivery-min-height" {
+                24.
+            } else if std::env::var_os("MURMUR_PRETEND_NOTCH").is_some() {
                 30.
             } else {
                 37.
@@ -122,7 +124,7 @@ fn main() {
         match state.as_str() {
             "cancelled" => model.event(Event::Cancelled(1), 0),
             "failure" => model.event(Event::Failure(1, Failure::ChooseInput), 0),
-            "delivery" => {
+            "delivery" | "delivery-min-height" => {
                 model.snapshot.status = Status::Idle;
                 model.event(Event::Delivery(1, Delivery::Clipboard), 0);
             }

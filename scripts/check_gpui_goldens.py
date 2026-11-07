@@ -55,6 +55,8 @@ def main():
                      for state in ('idle', 'starting', 'recording', 'processing', 'recovering',
                                    'cancelled', 'failure', 'delivery', 'expanded', 'suggestion', 'disabled', 'disabled-expanded')
                      if not (placement == 'pill' and state in ('idle', 'disabled', 'disabled-expanded'))]
+    overlay_cases += [(placement, 'delivery-min-height')
+                      for placement in ('notch', 'pretend-notch')]
     for placement, state in overlay_cases:
         case = f'overlay-{placement}-{state}'
         paths = [output / f'{case}-{i}.png' for i in (1, 2)]

@@ -324,6 +324,7 @@ impl Render for Overlay {
         native::refit_material(window, width, height, radius, g.floating);
         let mut card = div()
             .id("overlay-surface")
+            .debug_selector(|| "overlay-surface".into())
             .relative()
             .flex()
             .flex_col()
@@ -379,7 +380,7 @@ impl Render for Overlay {
             } else {
                 "Quick settings, collapsed"
             })
-            .w(px(12.))
+            .w(px(20.))
             .h(px(24.))
             .flex_shrink_0()
             .flex()
@@ -412,6 +413,13 @@ impl Render for Overlay {
             })
             .w_full()
             .h(px(g.collapsed_h as f32))
+            // Keep the status row within the painted card at every transition
+            // frame. Quick controls retain their minimum content height while
+            // growing, so they must never participate in this row's placement.
+            .absolute()
+            .left_0()
+            .when(g.floating, |s| s.bottom_0())
+            .when(!g.floating, |s| s.top_0())
             .flex()
             .items_center()
             .flex_shrink_0()
@@ -434,6 +442,9 @@ impl Render for Overlay {
             Indicator::TapMissed | Indicator::Failure(_) => "⚠",
             Indicator::Starting | Indicator::Slow => "◯",
             Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing => "◌",
+            // The notch leaves 8 pt beside its 20 pt disclosure. Use the
+            // single copy symbol there; the pill has room for the shortcut.
+            Indicator::Delivery(Delivery::Clipboard) if !g.floating => "⎘",
             Indicator::Delivery(Delivery::Clipboard) => "⌘V",
             Indicator::Delivery(Delivery::Retry | Delivery::Retrying) => "↻",
             Indicator::Delivery(Delivery::Nothing) => "−",
@@ -452,11 +463,15 @@ impl Render for Overlay {
             .debug_selector(|| "overlay-trailing".into())
             .flex()
             .flex_shrink_0()
+            .whitespace_nowrap()
             .items_center()
             .justify_center()
             .when(!g.floating, |s| s.w(px(g.wing_w as f32)));
         let state_glyph = div()
             .debug_selector(|| "overlay-state-glyph".into())
+            .flex()
+            .whitespace_nowrap()
+            .when(!g.floating, |s| s.w(px(8.)).flex_shrink_0())
             .text_color(if indicator == Indicator::Recording {
                 p.danger
             } else {
@@ -469,7 +484,12 @@ impl Render for Overlay {
                     0.4
                 })
             })
-            .child(glyph);
+            .child(
+                div()
+                    .debug_selector(|| "overlay-state-symbol".into())
+                    .flex_shrink_0()
+                    .child(glyph),
+            );
         let show_status = g.floating || expanded || indicator != Indicator::Idle;
         if show_status {
             if matches!(
@@ -481,7 +501,7 @@ impl Render for Overlay {
                         .data(include_bytes!(
                             "../../vendor/gpui-component/crates/assets/assets/icons/loader.svg"
                         ))
-                        .size(px(14.))
+                        .size(px(if g.floating { 14. } else { 8. }))
                         .text_color(p.text)
                         .with_animation(
                             "processing-spinner",
@@ -517,6 +537,7 @@ impl Render for Overlay {
         {
             let word = match indicator {
                 Indicator::Failure(_) => "Error",
+                Indicator::Recovering => "Recovering",
                 Indicator::Calibrating => "Position",
                 Indicator::Meeting => "Meeting",
                 Indicator::MeetingProcessing => "Finishing",
@@ -566,7 +587,7 @@ impl Render for Overlay {
                     }))
                     .child(
                         Button::new("retry-delivery", "Try again")
-                            .caption(if g.floating { "Try again" } else { "↻" })
+                            .caption(if g.floating { "Retry" } else { "↻" })
                             .palette(p)
                             .size(ButtonSize::ExtraSmall)
                             .on_click(cx.listener(|s, _, w, cx| {
@@ -597,6 +618,10 @@ impl Render for Overlay {
                 .gap(px(4.))
                 .w_full()
                 .h(px(g.dropdown_h as f32))
+                .absolute()
+                .left_0()
+                .when(g.floating, |s| s.bottom(px(g.collapsed_h as f32)))
+                .when(!g.floating, |s| s.top(px(g.collapsed_h as f32)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             if let Some(suggestion) = &self.model.suggestion {
                 let accept = suggestion.token.clone();
@@ -715,11 +740,9 @@ impl Render for Overlay {
         } else {
             None
         };
-        if g.floating {
-            card = card.children(controls).child(status);
-        } else {
-            card = card.child(status).children(controls);
-        }
+        // AX traversal follows child order, independently of top/bottom visual
+        // anchoring. Encounter disclosure before the controls it reveals.
+        card = card.child(status).children(controls);
         root.child(card).into_any_element()
     }
 }

@@ -141,15 +141,33 @@ commits. `OverlayPill` and its tests reserve independent notch wings and center
 the floating row. Native status uses those same content slots: seven bars occupy
 23 pt centered in the right 28 pt wing; eighteen bars occupy 61.5 pt in the pill.
 The idle, collapsed notch has no exposed wings and omits the recording status
-content. A 12×24 pt chevron in the leading status slot toggles Quick settings;
-the active state glyph retains its separate recording/status click behavior.
-The disclosure fits beside that glyph inside the fixed 28 pt notch wing and
-inside the existing floating pill, without changing native geometry. Disabled
+content. A 20×24 pt disclosure target with a small chevron in the leading status
+slot toggles Quick settings; the active state glyph retains its separate
+recording/status click behavior.
+The notch reserves an 8 pt state slot (including an 8 pt spinner) beside the
+20 pt disclosure inside its fixed 28 pt wing. Clipboard-only delivery uses the
+single copy symbol “⎘” in that slot; the floating pill keeps “⌘V”. Both retain
+the status AX label “Copied. Paste manually or try again”. State symbols and
+floating status text do not wrap. The pill's compact “Recovering” caption keeps
+the full “Audio recovering” AX label. A CoreText-backed layout test audits all
+indicators in physical/pretend notches at the 24 pt minimum row height and in
+floating pills, collapsed and expanded, including intrinsic symbol bounds,
+card containment, disclosure separation and meaningful status AX labels.
+The floating pill retains its
+120×34 pt collapsed geometry and its waveform/retry room. Its compact retry
+caption is “Retry”, retaining the accessible name “Try again”. Disabled
 state gates recording starts, never access to the Enable control.
 
-The disclosure's AX frame is its actual pointer hitbox; it does not cover the
-status row or quick controls. Pointer clicks and AXPress use the same toggle
-and acknowledged resize path, with no focus owner. Its adapter-exported title
+The status row is absolutely anchored to the card's bottom edge for pills and
+top edge for notches; controls occupy the opposite side of that row. Their
+content minimum height cannot displace the disclosure during growth/shrink.
+The status row precedes the controls in AX child order regardless of visual
+position, so the disclosure is encountered before Mode, power, Auto-paste and
+Settings. The disclosure's AX frame is its actual pointer hitbox; it does not
+cover the status row or quick controls. Hovering any part of its enlarged
+target counts as inside the painted card and uses the same dwell/leave reducer.
+Pointer clicks and AXPress use the same toggle and acknowledged resize path,
+with no focus owner. Its adapter-exported title
 is “Quick settings, collapsed” or “Quick settings, expanded”. Mouse-down and
 click propagation stop at the chevron so it cannot start/stop dictation. The
 status retains its recording activation and the panel remains never-key.
@@ -160,6 +178,12 @@ each click through the macOS adapter's AXPress route. It covers both placements,
 disabled state, repeated growth/shrink, unchanged focus, no delayed recording
 intent, the adjacent recording action and hidden-surface exclusion. Removing the
 pointer handler makes the regression fail while AXPress remains available.
+`disclosure_stays_hittable_and_precedes_controls_during_motion` enables real
+360 ms transitions and samples both endpoints plus 16/60/120/180/240/270 ms
+frames in both placements and disabled states. It checks full target containment
+in the card clip, the 20×24 pt AX/hit bounds, near-corner and center clicks,
+AXPress reversal, unchanged focus/intents and traversal of actual AX child
+links before all four quick controls.
 The windowless adapter probe shares the production press target resolution and
 dispatch function; it creates no NSView/NSWindow and makes no AX client calls.
 It establishes adapter mapping/action handling, not VoiceOver spoken behavior.
@@ -176,8 +200,9 @@ Use Rust 1.98.1 and the isolated target directory. The existing `gpui-macos`
 job checks both gallery-gated binaries, strict all-target Clippy, rustfmt,
 `scripts/test_gpui.py` (real emitted AX tree/actions without native windows),
 Objective-C inert shims, and `scripts/check_gpui_goldens.py`. The latter now
-renders 33 overlay cases twice in addition to the 30 component cases: 63 cases,
-126 captures. Physical and pretend notches each cover 12 states, including
+renders 35 overlay cases twice in addition to the 30 component cases: 65 cases,
+130 captures. Physical and pretend notches each cover 13 states, including
+clipboard delivery at the minimum 24 pt row height and
 collapsed/expanded disabled states; the pill covers nine visible states. It
 rejects blank/non-deterministic captures and missing/nonzero own-process WebKit
 inventories. The native workspace and core remain within
