@@ -104,6 +104,9 @@ pub fn footer(p: Palette) -> Div {
 pub fn scrim() -> Stateful<Div> {
     div()
         .id("update-dialog-scrim")
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(|_, _, cx| cx.stop_propagation())
         .absolute()
         .inset_0()
         .p(px(24.))
@@ -111,4 +114,73 @@ pub fn scrim() -> Stateful<Div> {
         .items_center()
         .justify_center()
         .bg(black().opacity(0.36))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{card, footer, scrim};
+    use crate::{Button, tokens::Palette};
+    use gpui::{Context, IntoElement, Modifiers, Render, TestAppContext, Window, div, prelude::*};
+    use std::{cell::Cell, rc::Rc};
+    struct Review {
+        open: bool,
+        background_clicks: Rc<Cell<usize>>,
+    }
+    impl Render for Review {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let clicks = self.background_clicks.clone();
+            let p = Palette::get(cx);
+            div()
+                .size_full()
+                .relative()
+                .child(
+                    div()
+                        .id("workspace-hit-target")
+                        .size_full()
+                        .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+                )
+                .when(self.open, |d| {
+                    d.child(
+                        scrim().child(card(p).child(div().flex_1()).child(footer(p).child(
+                            div().debug_selector(|| "updater-test-later".into()).child(
+                                Button::new("later", "Later").on_click(cx.listener(
+                                    |s, _, _, cx| {
+                                        s.open = false;
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                        ))),
+                    )
+                })
+        }
+    }
+    #[gpui::test]
+    fn dismiss_does_not_activate_the_workspace_underneath(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let clicks = Rc::new(Cell::new(0));
+        let mut owner = None;
+        let (_, cx) = cx.add_window_view(|w, cx| {
+            let view = cx.new(|_| Review {
+                open: true,
+                background_clicks: clicks.clone(),
+            });
+            owner = Some(view.clone());
+            gpui_base::Root::new(view, w, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|w, cx| w.draw(cx).clear(cx));
+        let button = cx.debug_bounds("updater-test-later").unwrap();
+        cx.simulate_click(button.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            !owner.unwrap().read_with(cx, |s, _| s.open),
+            "Later must dismiss the dialog"
+        );
+        assert_eq!(
+            clicks.get(),
+            0,
+            "modal dismissal must not click the workspace"
+        );
+    }
 }
