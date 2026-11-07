@@ -35,6 +35,7 @@ pub struct Overlay {
     last_indicator: Option<Indicator>,
     interested: bool,
     pointer: PointerPresence,
+    closed_pointer: Option<Point<Pixels>>,
 }
 impl Overlay {
     pub fn new(snapshot: Snapshot, host: Rc<dyn Host>) -> Self {
@@ -50,6 +51,7 @@ impl Overlay {
             last_indicator: None,
             interested: false,
             pointer: PointerPresence::default(),
+            closed_pointer: None,
         }
     }
     pub fn receive(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
@@ -80,6 +82,7 @@ impl Overlay {
         if self.model.phase == Phase::Open {
             self.close_quick_settings(window);
         } else {
+            self.closed_pointer = None;
             self.model.expand(self.now);
         }
         self.advance(window, cx);
@@ -89,7 +92,25 @@ impl Overlay {
         // Only the visit actually present at close belongs to this action.
         let inside = native::pointer_inside(window).unwrap_or(self.pointer.inside());
         self.pointer.observe(inside);
+        self.closed_pointer = inside.then(|| self.pointer_position(window));
         self.model.close(self.now, inside);
+    }
+    fn pointer_position(&self, window: &Window) -> Point<Pixels> {
+        native::pointer_position().unwrap_or(window.bounds().origin + window.mouse_position())
+    }
+    fn observe_pointer_at(&mut self, inside: bool, position: Point<Pixels>, now: u64) -> bool {
+        if !self.model.hover_suppressed() {
+            self.closed_pointer = None;
+        }
+        if let Some(previous) = self.closed_pointer {
+            // Resizing/tracking-area reconciliation can report an exit without
+            // cursor movement. It cannot end an explicitly closed pointer visit.
+            if !inside && position == previous {
+                return false;
+            }
+            self.closed_pointer = inside.then_some(position);
+        }
+        self.observe_pointer(inside, now)
     }
     /// Tracking events and watchdog samples share transition ownership. A
     /// delivered exit cancels dwell immediately, even between two inside
@@ -223,7 +244,7 @@ impl Overlay {
                                 s.model.sample(generation, level, s.now);
                             }
                             if let Some(inside) = native::pointer_inside(w)
-                                && s.observe_pointer(inside, s.now)
+                                && s.observe_pointer_at(inside, s.pointer_position(w), s.now)
                             {
                                 changed = true;
                             }
@@ -380,13 +401,16 @@ impl Render for Overlay {
                         // Recheck deferred layout snapshots, but retain delivered
                         // pointer history: a real exit releases close ownership even
                         // when the pointer is already back inside at dispatch time.
-                        let inside = match source {
-                            HoverEventSource::Layout => {
-                                native::pointer_inside(w).unwrap_or(*inside)
+                        let (inside, position) = match source {
+                            HoverEventSource::Layout => (
+                                native::pointer_inside(w).unwrap_or(*inside),
+                                s.pointer_position(w),
+                            ),
+                            HoverEventSource::Pointer(position) => {
+                                (*inside, w.bounds().origin + *position)
                             }
-                            HoverEventSource::Pointer => *inside,
                         };
-                        if s.observe_pointer(inside, now) {
+                        if s.observe_pointer_at(inside, position, now) {
                             s.advance(w, cx);
                         }
                     });

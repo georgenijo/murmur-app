@@ -74,7 +74,33 @@ pub fn apply(window: &mut Window, surface: Surface, cx: &mut gpui::App) -> bool 
 thread_local! {
     // Exercise native-sample decisions in TestWindow; real native query/geometry
     // is additionally exercised by the isolated NSWindow regression probe.
+    pub(super) static TEST_POINTER_POSITION: std::cell::Cell<Option<gpui::Point<gpui::Pixels>>> = const { std::cell::Cell::new(None) };
     pub(super) static TEST_POINTER_SAMPLE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Global logical top-left coordinates, independent of a resizing window.
+pub fn pointer_position() -> Option<gpui::Point<gpui::Pixels>> {
+    #[cfg(all(test, feature = "a11y-tests"))]
+    {
+        if let Some(position) = TEST_POINTER_POSITION.get() {
+            return Some(position);
+        }
+        if TEST_POINTER_SAMPLE.get().is_some() {
+            return None;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut position = [0.; 2];
+        // SAFETY: main-thread, read-only cursor query with a two-double buffer.
+        unsafe { murmur_overlay_pointer_position(position.as_mut_ptr()) };
+        Some(gpui::point(
+            gpui::px(position[0] as f32),
+            gpui::px(position[1] as f32),
+        ))
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 pub fn pointer_inside(window: &Window) -> Option<bool> {
@@ -144,6 +170,7 @@ unsafe extern "C" {
         surface_height: f64,
     ) -> bool;
     fn murmur_overlay_screen(out: *mut f64) -> bool;
+    fn murmur_overlay_pointer_position(out: *mut f64);
     fn murmur_overlay_pointer_inside(view: *mut std::ffi::c_void) -> bool;
     fn murmur_overlay_announce(view: *mut std::ffi::c_void, message: *const std::ffi::c_char);
 }

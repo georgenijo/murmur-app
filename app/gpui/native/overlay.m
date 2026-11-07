@@ -199,3 +199,12 @@ bool murmur_overlay_pointer_inside(void *raw) {
     point = [view convertPoint:point fromView:nil];
     return murmur_overlay_surface_contains(raw, point);
 }
+
+// Global top-left logical coordinates match GPUI window bounds. Read only;
+// never posts an event, monitors another app, or moves the system pointer.
+void murmur_overlay_pointer_position(double *out) {
+    assert([NSThread isMainThread]);
+    NSPoint point = NSEvent.mouseLocation;
+    out[0] = point.x;
+    out[1] = NSMaxY(NSScreen.screens.firstObject.frame) - point.y;
+}
