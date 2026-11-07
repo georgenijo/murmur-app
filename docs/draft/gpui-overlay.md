@@ -145,7 +145,15 @@ content. A 20×24 pt disclosure target with a small chevron in the leading statu
 slot toggles Quick settings; the active state glyph retains its separate
 recording/status click behavior.
 The notch reserves an 8 pt state slot (including an 8 pt spinner) beside the
-20 pt disclosure inside its fixed 28 pt wing. The floating pill retains its
+20 pt disclosure inside its fixed 28 pt wing. Clipboard-only delivery uses the
+single copy symbol “⎘” in that slot; the floating pill keeps “⌘V”. Both retain
+the status AX label “Copied. Paste manually or try again”. State symbols and
+floating status text do not wrap. The pill's compact “Recovering” caption keeps
+the full “Audio recovering” AX label. A CoreText-backed layout test audits all
+indicators in physical/pretend notches at the 24 pt minimum row height and in
+floating pills, collapsed and expanded, including intrinsic symbol bounds,
+card containment, disclosure separation and meaningful status AX labels.
+The floating pill retains its
 120×34 pt collapsed geometry and its waveform/retry room. Its compact retry
 caption is “Retry”, retaining the accessible name “Try again”. Disabled
 state gates recording starts, never access to the Enable control.
@@ -192,8 +200,9 @@ Use Rust 1.98.1 and the isolated target directory. The existing `gpui-macos`
 job checks both gallery-gated binaries, strict all-target Clippy, rustfmt,
 `scripts/test_gpui.py` (real emitted AX tree/actions without native windows),
 Objective-C inert shims, and `scripts/check_gpui_goldens.py`. The latter now
-renders 33 overlay cases twice in addition to the 30 component cases: 63 cases,
-126 captures. Physical and pretend notches each cover 12 states, including
+renders 35 overlay cases twice in addition to the 30 component cases: 65 cases,
+130 captures. Physical and pretend notches each cover 13 states, including
+clipboard delivery at the minimum 24 pt row height and
 collapsed/expanded disabled states; the pill covers nine visible states. It
 rejects blank/non-deterministic captures and missing/nonzero own-process WebKit
 inventories. The native workspace and core remain within

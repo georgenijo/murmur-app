@@ -442,6 +442,9 @@ impl Render for Overlay {
             Indicator::TapMissed | Indicator::Failure(_) => "⚠",
             Indicator::Starting | Indicator::Slow => "◯",
             Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing => "◌",
+            // The notch leaves 8 pt beside its 20 pt disclosure. Use the
+            // single copy symbol there; the pill has room for the shortcut.
+            Indicator::Delivery(Delivery::Clipboard) if !g.floating => "⎘",
             Indicator::Delivery(Delivery::Clipboard) => "⌘V",
             Indicator::Delivery(Delivery::Retry | Delivery::Retrying) => "↻",
             Indicator::Delivery(Delivery::Nothing) => "−",
@@ -460,11 +463,14 @@ impl Render for Overlay {
             .debug_selector(|| "overlay-trailing".into())
             .flex()
             .flex_shrink_0()
+            .whitespace_nowrap()
             .items_center()
             .justify_center()
             .when(!g.floating, |s| s.w(px(g.wing_w as f32)));
         let state_glyph = div()
             .debug_selector(|| "overlay-state-glyph".into())
+            .flex()
+            .whitespace_nowrap()
             .when(!g.floating, |s| s.w(px(8.)).flex_shrink_0())
             .text_color(if indicator == Indicator::Recording {
                 p.danger
@@ -478,7 +484,12 @@ impl Render for Overlay {
                     0.4
                 })
             })
-            .child(glyph);
+            .child(
+                div()
+                    .debug_selector(|| "overlay-state-symbol".into())
+                    .flex_shrink_0()
+                    .child(glyph),
+            );
         let show_status = g.floating || expanded || indicator != Indicator::Idle;
         if show_status {
             if matches!(
@@ -526,6 +537,7 @@ impl Render for Overlay {
         {
             let word = match indicator {
                 Indicator::Failure(_) => "Error",
+                Indicator::Recovering => "Recovering",
                 Indicator::Calibrating => "Position",
                 Indicator::Meeting => "Meeting",
                 Indicator::MeetingProcessing => "Finishing",
