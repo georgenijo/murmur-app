@@ -426,7 +426,7 @@ mod ax {
                     true,
                 ))
             });
-            activate(cx, "Edit colors…");
+            activate(cx, "Create theme from Sonic");
             let editor = themes.read_with(cx, |s, _| s.editor.clone());
             assert_eq!(
                 editor.read_with(cx, |f, _| f.value("background").to_string()),
@@ -490,6 +490,38 @@ mod ax {
                 old["primary"]
             );
         }
+    }
+    #[gpui::test]
+    fn regression_theme_card_actions_match_react(cx: &mut TestAppContext) {
+        let (_, cx) = harness(cx, 5);
+        let t = tree(cx);
+        let labels: Vec<_> = t.nodes.iter().filter_map(|(_, n)| n.label()).collect();
+        assert!(labels.contains(&"Create theme from Sonic"));
+        assert!(!labels.contains(&"Duplicate Sonic"));
+        assert!(!labels.contains(&"Export Sonic…"));
+        assert!(!labels.contains(&"Edit colors…"));
+        let export = labels
+            .iter()
+            .position(|n| *n == "Export OpenCode…")
+            .unwrap();
+        let duplicate = labels
+            .iter()
+            .position(|n| *n == "Duplicate OpenCode")
+            .unwrap();
+        assert!(export < duplicate);
+        assert!(labels.contains(&"Sonic dark variant"));
+        activate(cx, "Create theme from Sonic");
+        let t = tree(cx);
+        assert!(
+            t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Export current…"))
+        );
+        assert!(
+            t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Reset to Sonic"))
+        );
     }
     #[gpui::test]
     fn regression_import_theme_focuses_visible_first_action(cx: &mut TestAppContext) {

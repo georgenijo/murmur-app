@@ -585,10 +585,14 @@ impl Render for Themes {
                     .child(
                         Button::new("theme-create", "Create theme…")
                             .caption("Create theme")
-                            .size(crate::ButtonSize::Compact)
-                            .text_size(tokens::CAPTION_SIZE)
+                            .size(crate::ButtonSize::Standard)
+                            .text_size(tokens::BODY_SIZE)
+                            .palette(Palette {
+                                hairline_strong: p.border,
+                                ..p
+                            })
                             .bordered()
-                            .intent(crate::ButtonIntent::Ghost)
+                            .intent(crate::ButtonIntent::Secondary)
                             .icon(crate::icons::Glyph::Plus)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
@@ -600,10 +604,14 @@ impl Render for Themes {
                     .child(
                         Button::new("theme-import", "Import theme…")
                             .caption("Import theme")
-                            .size(crate::ButtonSize::Compact)
-                            .text_size(tokens::CAPTION_SIZE)
+                            .size(crate::ButtonSize::Standard)
+                            .text_size(tokens::BODY_SIZE)
+                            .palette(Palette {
+                                hairline_strong: p.border,
+                                ..p
+                            })
                             .bordered()
-                            .intent(crate::ButtonIntent::Ghost)
+                            .intent(crate::ButtonIntent::Secondary)
                             .icon(crate::icons::Glyph::Download)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
@@ -629,10 +637,11 @@ impl Render for Themes {
                 }] == id;
                 let mut orbs = div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .justify_center()
-                    .gap(px(32.))
-                    .h(px(56.));
+                    .gap(px(28.))
+                    .pt(px(4.))
+                    .h(px(68.));
                 for mode in entry["modes"].as_array().unwrap() {
                     let mode = mode.as_str().unwrap();
                     if let Ok(doc) = library::selection(&s.appearance, &s.library, &id, Some(mode))
@@ -665,9 +674,9 @@ impl Render for Themes {
                             .child(
                                 div()
                                     .absolute()
-                                    .right(px(-3.))
-                                    .bottom(px(-3.))
-                                    .size(px(15.))
+                                    .right(px(-4.))
+                                    .bottom(px(-4.))
+                                    .size(px(16.))
                                     .rounded_full()
                                     .bg(p.tint_raised)
                                     .border_1()
@@ -693,41 +702,84 @@ impl Render for Themes {
                                 cx,
                             )
                             .intent(crate::ButtonIntent::Ghost)
+                            .padding_x(px(0.))
                             .padding_y(px(0.))
-                            .content(orb),
+                            .content(
+                                div()
+                                    .size(px(44.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(orb),
+                            ),
                         );
                     }
                 }
-                let mut actions = div().flex().items_center().gap(px(2.));
+                let mut footer = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(36.))
+                    .px(px(10.))
+                    .pt(px(4.))
+                    .pb(px(8.));
                 if let Ok(doc) = library::selection(&s.appearance, &s.library, &id, None) {
-                    actions = actions.child(
-                        div().flex_1().min_w_0().overflow_hidden().child(
+                    footer = footer.child(
+                        div().flex_1().min_w_0().child(
                             self.button(
                                 format!("theme-{id}-pair"),
                                 format!("Use {label} theme"),
                                 Action::Appearance(doc),
                                 cx,
                             )
-                            .caption(label.to_string())
-                            .intent(crate::ButtonIntent::Ghost),
+                            .size(crate::ButtonSize::ExtraSmall)
+                            .text_size(tokens::BODY_SIZE)
+                            .padding_x(px(0.))
+                            .padding_y(px(0.))
+                            .intent(crate::ButtonIntent::Ghost)
+                            .content(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight::NORMAL)
+                                    .child(label.to_string()),
+                            ),
                         ),
                     );
                 }
-
-                if id != "custom" {
-                    actions = actions
-                        .child(
-                            self.button(
-                                format!("theme-{id}-duplicate"),
-                                format!("Duplicate {label}"),
-                                Action::Duplicate(id.clone()),
-                                cx,
-                            )
-                            .icon_only(crate::icons::Glyph::Copy)
-                            .palette(Palette { text: p.muted, ..p })
-                            .size(crate::ButtonSize::ExtraSmall)
-                            .intent(crate::ButtonIntent::Ghost),
+                let mut actions = div().flex().flex_shrink_0().items_center().gap(px(2.));
+                if id == "sonic" || id == "custom" {
+                    let edit = cx.entity();
+                    let sonic = id == "sonic";
+                    actions = actions.child(
+                        Button::new(
+                            if sonic {
+                                "theme-sonic-create"
+                            } else {
+                                "theme-edit"
+                            },
+                            if sonic {
+                                "Create theme from Sonic"
+                            } else {
+                                "Edit colors…"
+                            },
                         )
+                        .icon_only(if sonic {
+                            crate::icons::Glyph::Copy
+                        } else {
+                            crate::icons::Glyph::Palette
+                        })
+                        .palette(Palette { text: p.muted, ..p })
+                        .size(crate::ButtonSize::ExtraSmall)
+                        .intent(crate::ButtonIntent::Ghost)
+                        .with_scroll_parent(Some(&self.scroll))
+                        .on_click(move |_, w, cx| {
+                            edit.update(cx, |s, cx| s.dialog(Dialog::Edit { create: false }, w, cx))
+                        }),
+                    );
+                } else {
+                    actions = actions
                         .child(
                             self.button(
                                 format!("theme-{id}-export"),
@@ -736,6 +788,18 @@ impl Render for Themes {
                                 cx,
                             )
                             .icon_only(crate::icons::Glyph::Upload)
+                            .palette(Palette { text: p.muted, ..p })
+                            .size(crate::ButtonSize::ExtraSmall)
+                            .intent(crate::ButtonIntent::Ghost),
+                        )
+                        .child(
+                            self.button(
+                                format!("theme-{id}-duplicate"),
+                                format!("Duplicate {label}"),
+                                Action::Duplicate(id.clone()),
+                                cx,
+                            )
+                            .icon_only(crate::icons::Glyph::Copy)
                             .palette(Palette { text: p.muted, ..p })
                             .size(crate::ButtonSize::ExtraSmall)
                             .intent(crate::ButtonIntent::Ghost),
@@ -761,33 +825,7 @@ impl Render for Themes {
                         }),
                     );
                 }
-                if selected {
-                    let edit = cx.entity();
-                    actions = actions.child(
-                        Button::new("theme-edit", "Edit colors…")
-                            .icon_only(crate::icons::Glyph::Palette)
-                            .size(crate::ButtonSize::ExtraSmall)
-                            .intent(crate::ButtonIntent::Ghost)
-                            .with_scroll_parent(Some(&self.scroll))
-                            .on_click(move |_, w, cx| {
-                                edit.update(cx, |s, cx| {
-                                    s.dialog(Dialog::Edit { create: false }, w, cx)
-                                })
-                            }),
-                    );
-                }
-                if let Some(url) = entry["source"]["sourceUrl"].as_str() {
-                    actions = actions.child(
-                        self.button(
-                            format!("source-{id}"),
-                            "Source…".into(),
-                            Action::OpenSource(url.into()),
-                            cx,
-                        )
-                        .icon_only(crate::icons::Glyph::Download)
-                        .intent(crate::ButtonIntent::Ghost),
-                    );
-                }
+                footer = footer.child(actions);
                 let resolved = compile::resolve(
                     &s.appearance["theme"],
                     appearance::is_dark(&s.appearance, cx),
@@ -799,7 +837,6 @@ impl Render for Themes {
                     div()
                         .id(SharedString::from(format!("theme-{id}")))
                         .w(px(208.))
-                        .p(px(8.))
                         .border_1()
                         .border_color(if selected {
                             p.accent
@@ -820,7 +857,7 @@ impl Render for Themes {
                             p.card_shadow()
                         })
                         .child(orbs)
-                        .child(actions),
+                        .child(footer),
                 );
             }
             body = body.child(grid);
