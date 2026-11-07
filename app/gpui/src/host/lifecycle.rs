@@ -5,6 +5,13 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
+/// The production host implements this gate with the shared #992 driver. The
+/// isolated Lifecycle below is retained for reducer tests and standalone hosts.
+pub trait ProcessLifecycle: Send + Sync + 'static {
+    fn request(&self, request: Request);
+    fn permitted(&self) -> bool;
+    fn exited(&self);
+}
 pub trait DrainOwners: Send + Sync + 'static {
     /// Synchronous, memory-only admission fence, before returning to AppKit.
     fn close_admission(&self);
@@ -105,6 +112,18 @@ impl Lifecycle {
     }
     pub fn exited(&self) {
         self.core.lock().unwrap_or_else(|p| p.into_inner()).exited();
+    }
+}
+
+impl ProcessLifecycle for Lifecycle {
+    fn request(&self, request: Request) {
+        Lifecycle::request(self, request);
+    }
+    fn permitted(&self) -> bool {
+        Lifecycle::permitted(self)
+    }
+    fn exited(&self) {
+        Lifecycle::exited(self)
     }
 }
 

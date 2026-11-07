@@ -130,6 +130,13 @@ pub(crate) fn permitted(app: &crate::host::Context) -> bool {
     app.try_shutdown_owner()
         .is_some_and(|s| s.core.lock_or_recover().termination_permitted())
 }
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn restart_permitted(app: &crate::host::Context) -> bool {
+    app.try_shutdown_owner().is_some_and(|s| {
+        let core = s.core.lock_or_recover();
+        core.termination_permitted() && core.action() == Action::Restart
+    })
+}
 pub(crate) fn receipt(app: &crate::host::Context) {
     let logs = crate::telemetry::shutdown_receipt();
     if let Some(shutdown) = app.try_shutdown_owner() {
@@ -390,6 +397,13 @@ fn wait_accepted_producers() {
 pub(crate) async fn source_call<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ()> {
+    submit_source(work)?.await.map_err(|_| ())
+}
+/// Synchronously enqueue an admitted intent; dropping its UI result cannot
+/// discard its writer permit or reorder it behind a later accepted intent.
+pub(crate) fn submit_source<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<tokio::sync::oneshot::Receiver<T>, ()> {
     type Job = Box<dyn FnOnce() + Send>;
     static SOURCE: std::sync::OnceLock<mpsc::Sender<Job>> = std::sync::OnceLock::new();
     let source = SOURCE.get_or_init(|| {
@@ -410,7 +424,7 @@ pub(crate) async fn source_call<T: Send + 'static>(
             let _ = send.send(work());
         }))
         .map_err(|_| ())?;
-    receive.await.map_err(|_| ())
+    Ok(receive)
 }
 
 fn source_order() -> &'static Mutex<murmur_core::source_order::SourceOrder> {

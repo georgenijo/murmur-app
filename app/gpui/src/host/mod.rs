@@ -9,3 +9,6 @@ pub mod native;
 
 #[cfg(target_os = "macos")]
 pub mod shell;
+
+#[cfg(all(target_os = "macos", feature = "production-host"))]
+pub mod services;

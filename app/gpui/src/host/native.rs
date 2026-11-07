@@ -1,6 +1,6 @@
 //! Main-thread-only AppKit capabilities. No private user content is logged.
 use super::{
-    lifecycle::Lifecycle,
+    lifecycle::ProcessLifecycle,
     menu::{Intent, TrayState},
 };
 use objc2::{MainThreadMarker, class, msg_send, rc::Retained, runtime::AnyObject};
@@ -8,8 +8,10 @@ use objc2_app_kit::{NSStatusBar, NSStatusItem};
 use objc2_foundation::NSString;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{
+    cell::Cell,
     ffi::{CStr, CString, c_char, c_void},
-    sync::mpsc,
+    rc::Rc,
+    sync::{Arc, mpsc},
 };
 unsafe extern "C" {
     fn murmur_host_install_termination(
@@ -22,6 +24,7 @@ unsafe extern "C" {
         callback: extern "C" fn(*mut c_void, *const c_char),
         context: *mut c_void,
     ) -> *mut AnyObject;
+    fn murmur_host_disable_target(target: *mut c_void);
     fn murmur_host_menu(json: *const c_char, target: *mut AnyObject) -> *mut AnyObject;
     fn murmur_host_attach_tray(item: *mut c_void, menu: *mut AnyObject, target: *mut AnyObject);
     fn murmur_host_window_visible(view: *mut c_void, visible: bool);
@@ -32,38 +35,52 @@ fn main_thread() {
 }
 extern "C" fn termination(context: *mut c_void) -> isize {
     // SAFETY: the installation retains this box until the native hook is removed.
-    let lifecycle = unsafe { &*(context as *const Lifecycle) };
-    if lifecycle.permitted() {
+    let admission = unsafe { &*(context as *const Admission) };
+    if admission.lifecycle.permitted() && admission.ready.get() {
         1
     } else {
-        lifecycle.request(murmur_core::shutdown::Request::System);
+        if !admission.lifecycle.permitted() {
+            admission
+                .lifecycle
+                .request(murmur_core::shutdown::Request::System);
+        }
         2
     }
 }
-pub struct Termination {
-    context: Box<Lifecycle>,
+struct Admission {
+    lifecycle: Arc<dyn ProcessLifecycle>,
+    ready: Cell<bool>,
 }
+struct TerminationInner {
+    context: Box<Admission>,
+}
+#[derive(Clone)]
+pub struct Termination(Rc<TerminationInner>);
 impl Termination {
-    pub fn install(lifecycle: Lifecycle) -> Result<Self, &'static str> {
+    pub fn install(lifecycle: Arc<dyn ProcessLifecycle>) -> Result<Self, &'static str> {
         main_thread();
-        let mut context = Box::new(lifecycle);
+        let mut context = Box::new(Admission {
+            lifecycle,
+            ready: Cell::new(false),
+        });
         // SAFETY: native adds one missing selector, never replaces the delegate.
         if !unsafe {
-            murmur_host_install_termination(termination, (&mut *context as *mut Lifecycle).cast())
+            murmur_host_install_termination(termination, (&mut *context as *mut Admission).cast())
         } {
             return Err("Native termination admission hook unavailable");
         }
-        Ok(Self { context })
+        Ok(Self(Rc::new(TerminationInner { context })))
     }
     pub fn reply(&self) -> bool {
         main_thread();
+        self.0.context.ready.set(true);
         unsafe { murmur_host_reply_termination() }
     }
 }
-impl Drop for Termination {
+impl Drop for TerminationInner {
     fn drop(&mut self) {
         main_thread();
-        unsafe { murmur_host_remove_termination((&mut *self.context as *mut Lifecycle).cast()) };
+        unsafe { murmur_host_remove_termination((&mut *self.context as *mut Admission).cast()) };
     }
 }
 extern "C" fn menu_action(context: *mut c_void, id: *const c_char) {
@@ -155,6 +172,9 @@ impl Drop for Tray {
     fn drop(&mut self) {
         main_thread();
         unsafe {
+            // A menu tracking session may retain its target beyond removal of
+            // the status item. Revoke the raw sender before its Box is dropped.
+            murmur_host_disable_target(Retained::as_ptr(&self.target).cast_mut().cast());
             let _: () = msg_send![&*NSStatusBar::systemStatusBar(),removeStatusItem:&*self.item];
         }
     }

@@ -109,7 +109,7 @@ mod vocabulary_alias;
 mod voice_commands;
 mod window_state;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "tauri-host"))]
 #[global_allocator]
 static ALLOCATOR: alloc::RustZoneAllocator = alloc::RustZoneAllocator;
 

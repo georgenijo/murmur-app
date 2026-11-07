@@ -375,6 +375,59 @@ pub(crate) fn acknowledge_completion_keys(
         .map_err(|e| e.to_string())
 }
 
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) async fn native_history_snapshot(
+    app: crate::host::Context,
+) -> Result<(u64, Snapshot), String> {
+    wait_ready(&app).await?;
+    let permit = crate::shutdown::WriterPermit::acquire()?;
+    crate::host::runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let _observer = SourcePublicationObserver(&app);
+        ready(&app)?
+            .service
+            .history_snapshot()
+            .map_err(|_| "History unavailable".into())
+    })
+    .await
+    .map_err(|_| "History unavailable")?
+}
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_compare_source(
+    app: &crate::host::Context,
+    key: String,
+    expected: serde_json::Value,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    ready(app)?
+        .service
+        .compare_source(key, expected, value)
+        .map(|_| ())
+        .map_err(|_| "Source changed or unavailable".into())
+}
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_copy_history(
+    app: &crate::host::Context,
+    revision: u64,
+    targets: Vec<serde_json::Value>,
+    text: String,
+) -> Result<(), String> {
+    let _permit = crate::shutdown::WriterPermit::acquire()?;
+    ready(app)?
+        .service
+        .with_current_snapshot(revision, move |snapshot| {
+            if !targets
+                .iter()
+                .all(|target| snapshot.history.contains(target))
+            {
+                return Err(murmur_core::completion::Error::IdentityConflict);
+            }
+            crate::injector::write_clipboard_text(&text)
+                .map_err(|_| murmur_core::completion::Error::Io)
+        })
+        .map_err(|_| "History changed or clipboard unavailable".into())
+}
+
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;

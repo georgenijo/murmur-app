@@ -1,11 +1,15 @@
 //! Persistent native windows, menu dispatch and coordinated process lifetime.
 use super::{
-    lifecycle::Lifecycle,
+    lifecycle::{Lifecycle, ProcessLifecycle},
     menu::{Intent, TrayState},
     native,
 };
 use gpui::*;
-use std::{rc::Rc, sync::mpsc, time::Duration};
+use std::{
+    rc::Rc,
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 actions!(
     murmur_host,
     [
@@ -25,17 +29,20 @@ actions!(
 pub trait ApplicationHost {
     fn main_view(&self, window: &mut Window, cx: &mut App) -> AnyView;
     fn diagnostics_view(&self, window: &mut Window, cx: &mut App) -> AnyView;
-    fn main_hidden(&self);
+    /// Revoke UI leases synchronously before ordering a persistent window out.
+    /// Accepted durable owner work remains admitted; capture keeps running.
+    fn window_hidden(&self, label: &'static str, window: &mut Window, cx: &mut App);
+    fn tick(&self, _cx: &mut App) {}
     fn intent(&self, intent: Intent);
     fn tray(&self) -> TrayState;
     /// The coordinator alone may call this after committing its restart permit.
-    fn relaunch(&self) -> Result<(), &'static str>;
+    fn relaunch(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), &'static str>>>>;
 }
 fn persistent(window: &mut Window, cx: &App, host: Rc<dyn ApplicationHost>, main: bool) {
-    window.on_window_should_close(cx, move |window, _| {
-        if main {
-            host.main_hidden();
-        }
+    window.on_window_should_close(cx, move |window, cx| {
+        host.window_hidden(if main { "main" } else { "diagnostics" }, window, cx);
         native::show(window, false);
         false
     });
@@ -48,6 +55,20 @@ pub fn run(
     host: Rc<dyn ApplicationHost>,
     lifecycle: Lifecycle,
     terminal: mpsc::Receiver<murmur_core::shutdown::Action>,
+) {
+    run_with(move |_| (host, Arc::new(lifecycle), terminal));
+}
+/// Services are composed inside the GPUI launch callback. No duplicate drain
+/// driver is created: production supplies the same service-owned gate used by
+/// process commands, signals, update restart and AppKit termination.
+pub fn run_with(
+    factory: impl FnOnce(
+        &mut App,
+    ) -> (
+        Rc<dyn ApplicationHost>,
+        Arc<dyn ProcessLifecycle>,
+        mpsc::Receiver<murmur_core::shutdown::Action>,
+    ) + 'static,
 ) {
     let app = gpui_platform::application();
     let reopen = Rc::new(std::cell::Cell::new(None::<AnyWindowHandle>));
@@ -65,6 +86,7 @@ pub fn run(
     app.run(move |cx| {
         cx.set_quit_mode(QuitMode::Explicit);
         crate::init(cx);
+        let (host, lifecycle, terminal) = factory(cx);
         let termination = native::Termination::install(lifecycle.clone())
             .expect("coordinated native termination");
         let (mut tray, tray_intents) = native::Tray::new();
@@ -145,7 +167,13 @@ pub fn run(
         });
         let l = lifecycle.clone();
         cx.on_action(move |_: &Quit, _| l.request(murmur_core::shutdown::Request::Quit));
-        cx.on_action(|_: &Hide, cx| cx.hide());
+        let h = host.clone();
+        cx.on_action(move |_: &Hide, cx| {
+            let h = h.clone();
+            let _ = main.update(cx, |_, w, cx| h.window_hidden("main", w, cx));
+            let _ = diagnostics.update(cx, |_, w, cx| h.window_hidden("diagnostics", w, cx));
+            cx.hide();
+        });
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
@@ -192,6 +220,7 @@ pub fn run(
                     .timer(Duration::from_millis(16))
                     .await;
                 cx.update(|cx| {
+                    host.tick(cx);
                     let snapshot = host.tray();
                     while let Ok(intent) = tray_intents.try_recv() {
                         if !snapshot.accepts(&intent) {
@@ -214,10 +243,20 @@ pub fn run(
                             return;
                         }
                         if action == murmur_core::shutdown::Action::Restart {
-                            // A failed launch never authorizes another restart path.
-                            let _ = host.relaunch();
-                        }
-                        if !termination.reply() {
+                            let launch = host.relaunch();
+                            let termination = termination.clone();
+                            cx.spawn(async move |cx| {
+                                // Keep AppKit termination deferred until the
+                                // parent-exit launcher acknowledges readiness.
+                                let _ = launch.await;
+                                cx.update(|cx| {
+                                    if !termination.reply() {
+                                        cx.quit();
+                                    }
+                                });
+                            })
+                            .detach();
+                        } else if !termination.reply() {
                             cx.quit();
                         }
                     }

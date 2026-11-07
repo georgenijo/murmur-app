@@ -3625,7 +3625,15 @@ pub async fn configure_dictation(
     app_handle: crate::host::Context,
     state: crate::host::StateRef<'_, State>,
 ) -> Result<serde_json::Value, String> {
-    configure_dictation_with_effects(options, &state, Some(&app_handle), |model, guard| {
+    configure_dictation_for_host(options, &state, &app_handle)
+}
+
+pub(crate) fn configure_dictation_for_host(
+    options: serde_json::Value,
+    state: &State,
+    app_handle: &crate::host::Context,
+) -> Result<serde_json::Value, String> {
+    configure_dictation_with_effects(options, state, Some(app_handle), |model, guard| {
         spawn_idle_model_preparation(app_handle.clone(), model, Some(guard));
     })
 }

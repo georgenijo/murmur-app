@@ -2554,3 +2554,132 @@ mod warning_reconciliation_tests {
         assert!(!dir.path().join("settings.json.pending").exists());
     }
 }
+
+/// A native presentation owns a field intent, never a hydrated full document.
+/// The shared source FIFO retains admission across hide and shutdown.
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn patch_native_settings_worker(
+    app: crate::host::Context,
+    patch: serde_json::Value,
+    expected_revision: u64,
+) -> Result<serde_json::Value, String> {
+    use crate::host::ServiceAccess;
+    use std::sync::atomic::Ordering;
+    let _warning = SettingsWarningNotification(&app);
+    let _guard = WRITE_LOCK.lock_or_recover();
+    if app
+        .services()
+        .app_state
+        .settings_revision
+        .load(Ordering::SeqCst)
+        != expected_revision
+    {
+        return Err("Settings changed elsewhere".into());
+    }
+    let dir = source_dir(&app)?;
+    let current = load_settings_blob_locked(&dir)?;
+    let previous = murmur_core::state::settings(
+        current
+            .map(|s| {
+                serde_json::from_str::<serde_json::Value>(&s).map_err(|_| "Settings unavailable")
+            })
+            .transpose()?
+            .unwrap_or_else(|| serde_json::json!({})),
+    )
+    .map_err(|_| "Settings unavailable")?;
+    let settings = merge_native_settings_intent(previous.clone(), patch)?;
+    // This is the same staging/alias/model validation and immutable-start owner
+    // used by Tauri. Shortcut/control registration must succeed before saving.
+    crate::commands::recording::configure_dictation_for_host(
+        settings.clone(),
+        &app.services(),
+        &app,
+    )?;
+    let configured = crate::dictation_control::configure_accepted(
+        &app,
+        settings.clone(),
+        crate::dictation_control::accept_configuration(&app),
+    );
+    if !matches!(configured, Ok(true)) {
+        restore_native_configuration(&app, previous);
+        return Err("Configuration unavailable".into());
+    }
+    let published = murmur_core::completion::save_source(
+        &dir,
+        "dictation-settings",
+        &serde_json::to_string(&settings).map_err(|_| "Invalid settings intent")?,
+    );
+    match published {
+        Ok(published) => {
+            reconcile_owned_publication(&dir, &published);
+            notify_settings_committed(&app, &published);
+            Ok(settings)
+        }
+        Err(_) => {
+            restore_native_configuration(&app, previous);
+            Err("Settings publication unavailable".into())
+        }
+    }
+}
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+fn restore_native_configuration(app: &crate::host::Context, previous: serde_json::Value) {
+    use crate::host::ServiceAccess;
+    let _ = crate::commands::recording::configure_dictation_for_host(
+        previous.clone(),
+        &app.services(),
+        app,
+    );
+    let _ = crate::dictation_control::configure_accepted(
+        app,
+        previous,
+        crate::dictation_control::accept_configuration(app),
+    );
+}
+#[cfg(any(test, all(feature = "native-host", not(feature = "tauri-host"))))]
+fn merge_native_settings_intent(
+    mut current: serde_json::Value,
+    patch: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let fields = patch.as_object().ok_or("Invalid settings intent")?;
+    for (key, value) in fields {
+        current[key] = value.clone();
+    }
+    let normalized =
+        murmur_core::state::settings(current).map_err(|_| "Invalid settings intent")?;
+    if fields
+        .iter()
+        .any(|(key, value)| normalized.get(key) != Some(value))
+    {
+        return Err("Invalid settings intent".into());
+    }
+    Ok(normalized)
+}
+#[cfg(test)]
+mod native_intent_tests {
+    use super::merge_native_settings_intent;
+    use serde_json::json;
+    #[test]
+    fn native_field_merge_preserves_unrelated_and_future_sources() {
+        let current = json!({"language":"fr","futureOwner":{"opaque":[1,2]},"autoPaste":true});
+        let next = merge_native_settings_intent(current.clone(), json!({"language":"es"})).unwrap();
+        assert_eq!(next["language"], "es");
+        assert_eq!(next["futureOwner"], current["futureOwner"]);
+        assert_eq!(next["autoPaste"], true);
+        assert_eq!(current["language"], "fr");
+    }
+    #[test]
+    fn invalid_native_field_does_not_silently_select_a_default() {
+        let current = murmur_core::state::settings_defaults();
+        assert!(
+            merge_native_settings_intent(current.clone(), json!({"autoPaste":"invalid"})).is_err()
+        );
+    }
+    #[test]
+    fn manual_microphone_is_one_merged_configuration() {
+        let next=merge_native_settings_intent(json!({"smartAutoMicrophoneEnabled":true}),json!({"microphone":"synthetic-device","microphoneIdMigrationComplete":true,"smartAutoMicrophoneEnabled":false})).unwrap();
+        assert_eq!(next["microphone"], "synthetic-device");
+        assert_eq!(next["microphoneIdMigrationComplete"], true);
+        assert_eq!(next["smartAutoMicrophoneEnabled"], false);
+        assert!(merge_native_settings_intent(json!({}), json!([])).is_err());
+    }
+}

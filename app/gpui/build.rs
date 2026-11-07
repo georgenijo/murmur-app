@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/host.m");
+    println!("cargo:rerun-if-changed=native/services.m");
     println!("cargo:rerun-if-changed=native/ax_focus_fix.m");
     println!("cargo:rerun-if-changed=native/preferences.m");
     println!("cargo:rerun-if-changed=native/overlay.m");
@@ -16,6 +17,29 @@ fn main() {
             ])
             .flag("-fobjc-arc")
             .compile("murmur_accessibility");
+        if std::env::var_os("CARGO_FEATURE_PRODUCTION_HOST").is_some() {
+            // ui_lib's Swift archive is a dependency here. Final-link arguments
+            // from its build script do not propagate to this executable/test.
+            let sdk = std::process::Command::new("xcrun")
+                .args(["--sdk", "macosx", "--show-sdk-path"])
+                .output()
+                .expect("macOS SDK");
+            if sdk.status.success()
+                && std::path::Path::new(String::from_utf8_lossy(&sdk.stdout).trim())
+                    .join("System/Library/Frameworks/FoundationModels.framework")
+                    .exists()
+            {
+                println!("cargo:rustc-link-arg=-Wl,-weak_framework,FoundationModels");
+            }
+
+            cc::Build::new()
+                .file("native/services.m")
+                .flag("-fobjc-arc")
+                .compile("murmur_host_services");
+            println!("cargo:rustc-link-lib=framework=ServiceManagement");
+            println!("cargo:rustc-link-lib=framework=UserNotifications");
+            println!("cargo:rustc-link-lib=framework=UniformTypeIdentifiers");
+        }
         // Backtraces and policy storage exist only in explicit QA builds.
         if std::env::var_os("CARGO_FEATURE_GALLERY").is_some() {
             cc::Build::new()

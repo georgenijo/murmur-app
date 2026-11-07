@@ -13,6 +13,8 @@ fn uninitialized_engine(root: &std::path::Path, webkit: bool) -> Engine {
         webkit_exists: webkit,
         seen: HashSet::new(),
         revision: 0,
+        history_epoch: 0,
+        history_digest: None,
         initialized: false,
     }
 }
@@ -305,6 +307,8 @@ fn state_first_creation_failure_blocks_all_writes_and_arming() {
         webkit_exists: true,
         seen: HashSet::new(),
         revision: 0,
+        history_epoch: 0,
+        history_digest: None,
         initialized: false,
     };
     assert!(e.initialize().is_err());

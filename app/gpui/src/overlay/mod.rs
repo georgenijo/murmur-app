@@ -629,7 +629,7 @@ impl Render for Overlay {
                         MouseButton::Left,
                         cx.listener(|s, _, _, _| s.model.pause_delivery(s.now)),
                     )
-                    .on_hover(cx.listener(|s, inside, _, _| {
+                    .on_hover(cx.listener(|s, inside: &bool, _, _| {
                         if !inside {
                             s.model.resume_delivery(s.now)
                         }

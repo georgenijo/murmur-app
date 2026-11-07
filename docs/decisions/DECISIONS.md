@@ -1,5 +1,25 @@
 # Decisions Log
 
+## 2026-11-07: Separate native services from production view composition (#996)
+
+**Decision:** Keep the authorized complete #996 scope, with one further draft
+layer: 19 host shell → 20 shared service extraction → 21 native OS services
+and native service-admission seams → 22 production adapters and executable.
+Layer 22 must compose all production views and the shared service owners; no
+integration gaps are handed back as blockers. Each layer must build and pass
+CI independently. The production binary remains named `ui`.
+
+**Rationale:** Native OS registration/migration and per-view generation, lease,
+file/export and snapshot adapters are substantial independent review domains.
+The extra layer keeps the final app composition reviewable without changing
+scope or the native-parity acceptance requirement.
+
+**Status:** active
+
+**References:** #996, [host-services contract](../draft/gpui-host-services.md)
+
+---
+
 ## 2026-11-07: Include production service extraction in the native host stack (#996)
 
 **Decision:** Split #996 into stacked draft layers 19 (native shell), 20

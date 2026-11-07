@@ -444,6 +444,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
       RUSTUP_TOOLCHAIN: 1.98.1
       CARGO_TARGET_DIR: ${{ github.workspace }}/app/gpui/target
     steps:
@@ -454,16 +456,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Build native service capture helpers
+        run: |
+          brew install meson ninja pkg-config
+          # The helper builder resolves its outputs through src-tauri/target.
+          # Keep every Cargo output inside this job's dedicated native target.
+          mkdir -p "$CARGO_TARGET_DIR"
+          ln -s "$CARGO_TARGET_DIR" app/src-tauri/target
+          python3 scripts/build_capture_helpers.py
       - name: Check and lint the separate native workspace
         working-directory: app/gpui
         run: |
-          cargo check --locked -p murmur-ui --features gallery
-          cargo clippy --locked -p murmur-ui --all-targets --features gallery -- -D warnings
+          cargo check --locked -p murmur-ui --features gallery,production-host
+          cargo clippy --locked -p murmur-ui --all-targets --features gallery,production-host -- -D warnings
           cargo fmt -p murmur-ui -- --check
       - name: Keyboard, focus, AX tree and action tests (no live windows)
         run: |
           python3 -m unittest scripts/test_test_gpui.py scripts/test_gpui_native.py
-          python3 scripts/test_gpui.py -- --test-threads=1
+          python3 scripts/test_gpui.py --features production-host -- --test-threads=1
       - name: Deterministic offscreen Metal goldens
         run: python3 scripts/check_gpui_goldens.py
       - name: Preserve rendered goldens

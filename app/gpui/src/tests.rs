@@ -1190,3 +1190,32 @@ fn actual_transition_finishes_immediately_when_motion_is_reduced(cx: &mut TestAp
     draw(cx);
     assert_eq!(result.get(), 12.);
 }
+
+#[gpui::test]
+fn app_clipboard_provider_never_falls_back_to_platform(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+    struct Isolated(RefCell<Option<String>>);
+    impl gpui::ClipboardProvider for Isolated {
+        fn read(&self) -> Option<ClipboardItem> {
+            self.0.borrow().clone().map(ClipboardItem::new_string)
+        }
+        fn write(&self, item: ClipboardItem) {
+            *self.0.borrow_mut() = item.text();
+        }
+    }
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string("synthetic-platform-value".into()));
+        cx.set_clipboard_provider(Rc::new(Isolated(RefCell::new(None))));
+        assert!(cx.read_from_clipboard().is_none());
+        assert!(
+            futures::executor::block_on(cx.read_from_clipboard_async())
+                .unwrap()
+                .is_none()
+        );
+        cx.write_to_clipboard(ClipboardItem::new_string("synthetic-private-value".into()));
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|v| v.text()).as_deref(),
+            Some("synthetic-private-value")
+        );
+    });
+}

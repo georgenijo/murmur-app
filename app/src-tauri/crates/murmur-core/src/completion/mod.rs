@@ -266,6 +266,8 @@ impl CompletionService {
                     webkit_exists,
                     seen: HashSet::new(),
                     revision: 0,
+                    history_epoch: 0,
+                    history_digest: None,
                     initialized: false,
                 };
                 if engine.initialize().is_err() {
@@ -357,6 +359,96 @@ impl CompletionService {
         drop(admission);
         receive.recv().map_err(|_| Error::Stopped)?
     }
+    /// Compare a UI source and retain its replacement in one owner turn. A
+    /// stale view cannot overwrite a newer source between a read and Save.
+    /// File-backed settings/themes belong to their host merge owners.
+    pub fn compare_source(
+        &self,
+        key: String,
+        expected: Value,
+        value: Value,
+    ) -> Result<lifecycle::Receipt> {
+        let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
+        self.owner
+            .send
+            .as_ref()
+            .ok_or(Error::Stopped)?
+            .send(Box::new(move |engine| {
+                let result = (|| {
+                    if crate::state::file(&key).is_some() {
+                        return Err(Error::Invalid);
+                    }
+                    let current = engine.lifecycle(lifecycle::Operation::Status)?;
+                    let current = current.values.get(&key).cloned().unwrap_or(Value::Null);
+                    if !expected.is_null() {
+                        crate::state::normalize(&key, expected.clone())?;
+                    }
+                    if current != expected {
+                        return Err(Error::IdentityConflict);
+                    }
+                    engine.lifecycle(lifecycle::Operation::Save { key, value })
+                })();
+                let _ = send.send(result);
+            }))
+            .map_err(|_| Error::Stopped)?;
+        drop(admission);
+        receive.recv().map_err(|_| Error::Stopped)?
+    }
+    /// A native History view needs a content epoch, independent of the
+    /// presentation sequence advanced by other clients' Snapshot reads.
+    pub fn history_snapshot(&self) -> Result<(u64, Snapshot)> {
+        let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
+        self.owner
+            .send
+            .as_ref()
+            .ok_or(Error::Stopped)?
+            .send(Box::new(move |engine| {
+                let _ = send.send(engine.history_snapshot());
+            }))
+            .map_err(|_| Error::Stopped)?;
+        drop(admission);
+        receive.recv().map_err(|_| Error::Stopped)?
+    }
+    /// Run a bounded final clipboard/rename effect in the same owner turn as
+    /// the revision check. Clear/delete cannot race between checking and using
+    /// a snapshot. `revision` is the epoch returned by `history_snapshot`, not
+    /// the presentation-only `Snapshot::revision`. Never wait on another service or reenter this owner here;
+    /// prepare/encode long exports before admission, then commit only at the end.
+    pub fn with_current_snapshot<T: Send + 'static>(
+        &self,
+        revision: u64,
+        effect: impl FnOnce(Snapshot) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
+        self.owner
+            .send
+            .as_ref()
+            .ok_or(Error::Stopped)?
+            .send(Box::new(move |engine| {
+                let result = engine.history_snapshot().and_then(|(epoch, snapshot)| {
+                    if epoch != revision {
+                        return Err(Error::IdentityConflict);
+                    }
+                    effect(snapshot)
+                });
+                let _ = send.send(result);
+            }))
+            .map_err(|_| Error::Stopped)?;
+        drop(admission);
+        receive.recv().map_err(|_| Error::Stopped)?
+    }
     pub fn execute(&self, command: Command) -> Result<Snapshot> {
         let (send, receive) = mpsc::sync_channel(1);
         let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
@@ -398,6 +490,8 @@ struct Engine {
     failed_content: Option<(Destination, Value)>,
     initialized: bool,
     revision: u64,
+    history_epoch: u64,
+    history_digest: Option<[u8; 32]>,
     storage: Storage,
     webkit_exists: bool,
     seen: HashSet<String>,
@@ -805,7 +899,31 @@ impl Engine {
         self.snapshot()?;
         Ok(())
     }
+    fn history_snapshot(&mut self) -> Result<(u64, Snapshot)> {
+        let snapshot = self.execute(Command::Snapshot)?;
+        let digest: [u8; 32] =
+            Sha256::digest(serde_json::to_vec(&snapshot.history).map_err(|_| Error::Invalid)?)
+                .into();
+        if self.history_digest.is_some_and(|prior| prior != digest) {
+            self.history_epoch = self.history_epoch.checked_add(1).ok_or(Error::Invalid)?;
+        }
+        self.history_digest = Some(digest);
+        Ok((self.history_epoch, snapshot))
+    }
     fn apply_command(&mut self, command: Command) -> Result<()> {
+        if matches!(
+            &command,
+            Command::Clear {
+                destination: Destination::History,
+                ..
+            } | Command::History(_)
+                | Command::Complete { entry: Some(_), .. }
+                | Command::AcceptFile { .. }
+                | Command::Import(_)
+        ) {
+            self.history_epoch = self.history_epoch.checked_add(1).ok_or(Error::Invalid)?;
+        }
+
         if matches!(&command, Command::Complete { entry: None, .. }) {
             // Non-retaining producers do not prolong resolved private evidence.
             self.storage.remove_evidence(PENDING)?;
@@ -2056,3 +2174,60 @@ fn valid_pending(v: &Value) -> bool {
 
 #[cfg(test)]
 mod lifecycle_publication_tests;
+
+#[cfg(test)]
+mod native_effect_tests {
+    use super::*;
+    #[test]
+    fn ui_compare_save_rejects_a_stale_source_before_retaining_it() {
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        service.lifecycle(lifecycle::Operation::Status).unwrap();
+        let key = "usage-dashboard-collapsed".to_string();
+        service
+            .compare_source(key.clone(), Value::Null, json!(true))
+            .unwrap();
+        assert!(matches!(
+            service.compare_source(key.clone(), json!(false), json!(false)),
+            Err(Error::IdentityConflict)
+        ));
+        assert_eq!(
+            service
+                .lifecycle(lifecycle::Operation::Status)
+                .unwrap()
+                .values[&key],
+            true
+        );
+        assert!(matches!(
+            service.compare_source("dictation-settings".into(), json!({}), json!({})),
+            Err(Error::Invalid)
+        ));
+    }
+    #[test]
+    fn clear_revokes_a_queued_export_revision_before_its_effect() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        let (before, _) = service.history_snapshot().unwrap();
+        service
+            .execute(Command::Clear {
+                destination: Destination::History,
+                at: 1,
+            })
+            .unwrap();
+        let happened = Arc::new(AtomicBool::new(false));
+        let flag = happened.clone();
+        assert!(matches!(
+            service.with_current_snapshot(before, move |_| {
+                flag.store(true, Ordering::Release);
+                Ok(())
+            }),
+            Err(Error::IdentityConflict)
+        ));
+        assert!(!happened.load(Ordering::Acquire));
+        let (current, _) = service.history_snapshot().unwrap();
+        // Unrelated readers cannot invalidate a current content epoch.
+        service.execute(Command::Snapshot).unwrap();
+        service.with_current_snapshot(current, |_| Ok(())).unwrap();
+    }
+}

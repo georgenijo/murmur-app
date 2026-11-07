@@ -42,8 +42,9 @@ bool murmur_host_reply_termination(void) {
 @property(nonatomic, strong) NSMenu *menu;
 @end
 @implementation MurmurHostTarget
-- (void)perform:(NSMenuItem *)item { self.callback(self.context, [item.representedObject UTF8String]); }
+- (void)perform:(NSMenuItem *)item { if(self.callback && self.context) self.callback(self.context, [item.representedObject UTF8String]); }
 - (void)statusClick:(id)sender {
+    if (!self.callback || !self.context) return;
     if (NSApp.currentEvent.type == NSEventTypeRightMouseUp) [self.menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:self.statusItem.button];
     else self.callback(self.context, "show");
 }
@@ -53,6 +54,11 @@ void *murmur_host_target(void (*callback)(void *, const char *), void *context) 
     MurmurHostTarget *target = [MurmurHostTarget new];
     target.callback = callback; target.context = context;
     return (__bridge_retained void *)target;
+}
+void murmur_host_disable_target(void *pointer) {
+    NSCAssert(NSThread.isMainThread,@"tray target removal requires main");
+    MurmurHostTarget *target=(__bridge MurmurHostTarget *)pointer;
+    target.callback=NULL;target.context=NULL;
 }
 static NSMenu *buildMenu(NSArray *items, id target) {
     NSMenu *menu = [NSMenu new];

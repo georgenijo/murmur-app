@@ -14,6 +14,10 @@ default-members = ["."]
 exclude = ["vendor/accesskit_macos", "vendor/gpui"]
 
 [dependencies]
+plist = { version = "1", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+murmur-services = { package = "ui", path = "../src-tauri", default-features = false, features = ["native-host"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"], optional = true }
 chrono = "0.4"
 chrono-tz = { version = "0.10", optional = true }
 sha2 = "0.10.9"
@@ -48,6 +52,7 @@ objc2-foundation = { version = "0.3", features = ["NSString"] }
 accesskit_macos = { version = "=0.26.3", optional = true }
 
 [features]
+production-host = ["dep:murmur-services", "dep:tokio", "dep:plist", "dep:uuid"]
 a11y-tests = ["dep:accesskit_macos", "accesskit_macos/test-support"]
 gallery = ["dep:chrono-tz", "gpui/test-support", "gpui_platform/test-support"]
 

@@ -1,5 +1,6 @@
 //! Production service composition for the GPUI executable. Tauri is an optional
 //! host adapter; these are the same recording, meeting and delivery owners.
+pub use crate::alloc::RustZoneAllocator;
 use crate::host::{self, ServiceAccess};
 pub use crate::host::{
     Error, Monitor, NativePaths, NativePorts, WindowCommand, WindowEvent, WindowPort,
@@ -13,7 +14,7 @@ mod commands;
 mod main_thread_queue;
 pub use crate::dock_watch::PillDisplay as DockDisplay;
 pub use crate::host::window::Color;
-pub use dpi::{PhysicalPosition, PhysicalSize};
+pub use dpi::{PhysicalPosition, PhysicalSize, Position, Size};
 pub use main_thread_queue::MainThreadQueue;
 #[derive(Clone)]
 pub struct Services {
@@ -102,6 +103,9 @@ impl Services {
     }
     pub fn termination_permitted(&self) -> bool {
         crate::shutdown::permitted(&self.context)
+    }
+    pub fn restart_permitted(&self) -> bool {
+        crate::shutdown::restart_permitted(&self.context)
     }
     pub fn terminal_receipt(&self) {
         crate::shutdown::receipt(&self.context)
@@ -206,9 +210,13 @@ impl Services {
 
 impl Services {
     pub fn clipboard_text(&self) -> Result<String, String> {
+        if crate::shutdown::closing() {
+            return Err("Application is closing".into());
+        }
         crate::injector::read_clipboard_text()
     }
     pub fn copy_text(&self, text: &str) -> Result<(), String> {
+        let _permit = crate::shutdown::WriterPermit::acquire()?;
         crate::injector::write_clipboard_text(text)
     }
 }
@@ -237,5 +245,69 @@ impl Services {
         {
             crate::commands::native_window::hide_titlebar_separator(&window);
         }
+    }
+}
+
+impl Services {
+    /// Admission is synchronous, before returning to the view. The caller may
+    /// drop the receiver on hide; the source owner retains the job and permit.
+    pub fn accept_settings(
+        &self,
+        patch: Value,
+        expected_revision: u64,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<Value, String>>, String> {
+        let permit = crate::shutdown::WriterPermit::acquire()?;
+        let app = self.context.clone();
+        crate::shutdown::submit_source(move || {
+            let _permit = permit;
+            crate::commands::settings_store::patch_native_settings_worker(
+                app,
+                patch,
+                expected_revision,
+            )
+        })
+        .map_err(|_| "Source writer unavailable".into())
+    }
+}
+
+impl Services {
+    pub fn accept_source(
+        &self,
+        key: String,
+        expected: Value,
+        value: Value,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        if ![
+            "murmur-appearance",
+            "murmur_discovery_v1",
+            "murmur.settings-disclosure.v1",
+            "usage-dashboard-collapsed",
+            "murmur_onboarding_complete",
+        ]
+        .contains(&key.as_str())
+        {
+            return Err("Source is owned by another service".into());
+        }
+        let permit = crate::shutdown::WriterPermit::acquire()?;
+        let app = self.context.clone();
+        crate::shutdown::submit_source(move || {
+            let _permit = permit;
+            crate::completion::native_compare_source(&app, key, expected, value)
+        })
+        .map_err(|_| "Source writer unavailable".into())
+    }
+    pub async fn history_snapshot(
+        &self,
+    ) -> Result<(u64, murmur_core::completion::Snapshot), String> {
+        crate::completion::native_history_snapshot(self.context.clone()).await
+    }
+    /// The shared owner serializes the content epoch check with Clear/Delete.
+    pub fn copy_history(
+        &self,
+        revision: u64,
+        targets: Vec<Value>,
+        text: String,
+    ) -> Result<(), String> {
+        crate::completion::native_copy_history(&self.context, revision, targets, text)
     }
 }

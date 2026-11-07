@@ -878,12 +878,23 @@ enum PlatformOwnedDragState {
     RestoredInSourceWindow,
 }
 
+/// An application-owned clipboard boundary. Installing one replaces platform
+/// access entirely, including asynchronous reads; an empty result never falls
+/// through to the system pasteboard. Useful for isolated app identities.
+pub trait ClipboardProvider {
+    /// Read the application's clipboard, without logging its contents.
+    fn read(&self) -> Option<ClipboardItem>;
+    /// Write to the application's clipboard.
+    fn write(&self, item: ClipboardItem);
+}
+
 /// Contains the state of the full application, and passed as a reference to a variety of callbacks.
 /// Other [Context] derefs to this type.
 /// You need a reference to an `App` to access the state of a [Entity].
 pub struct App {
     pub(crate) this: Weak<AppCell>,
     pub(crate) platform: Rc<dyn Platform>,
+    clipboard_provider: Option<Rc<dyn ClipboardProvider>>,
     text_system: Arc<TextSystem>,
 
     pub(crate) actions: Rc<ActionRegistry>,
@@ -1022,6 +1033,7 @@ impl App {
             app: RefCell::new(App {
                 this: this.clone(),
                 platform: platform.clone(),
+                clipboard_provider: None,
                 text_system,
                 text_rendering_mode: Rc::new(Cell::new(TextRenderingMode::default())),
                 mode: GpuiMode::Production,
@@ -1830,9 +1842,18 @@ impl App {
         self.platform.button_layout()
     }
 
+    /// Replace platform clipboard access for this application. The caller owns
+    /// identity selection and any text/file policy. No fallback is performed.
+    pub fn set_clipboard_provider(&mut self, provider: Rc<dyn ClipboardProvider>) {
+        self.clipboard_provider = Some(provider);
+    }
+
     /// Reads data from the platform clipboard.
     pub fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        self.platform.read_from_clipboard()
+        match &self.clipboard_provider {
+            Some(provider) => provider.read(),
+            None => self.platform.read_from_clipboard(),
+        }
     }
 
     /// Reads data from the platform clipboard, resolving once the contents
@@ -1845,7 +1866,10 @@ impl App {
     pub fn read_from_clipboard_async(
         &self,
     ) -> Task<Result<Option<ClipboardItem>, ClipboardReadError>> {
-        self.platform.read_from_clipboard_async()
+        match &self.clipboard_provider {
+            Some(provider) => Task::ready(Ok(provider.read())),
+            None => self.platform.read_from_clipboard_async(),
+        }
     }
 
     /// Sets the text rendering mode for the application.
@@ -1866,7 +1890,10 @@ impl App {
 
     /// Writes data to the platform clipboard.
     pub fn write_to_clipboard(&self, item: ClipboardItem) {
-        self.platform.write_to_clipboard(item)
+        match &self.clipboard_provider {
+            Some(provider) => provider.write(item),
+            None => self.platform.write_to_clipboard(item),
+        }
     }
 
     /// Reads data from the primary selection buffer.
