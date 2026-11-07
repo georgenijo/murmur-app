@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-changed=native/host.m");
     println!("cargo:rerun-if-changed=native/ax_focus_fix.m");
     println!("cargo:rerun-if-changed=native/preferences.m");
     println!("cargo:rerun-if-changed=native/overlay.m");
@@ -8,6 +9,7 @@ fn main() {
         cc::Build::new()
             .files([
                 "native/ax_focus_fix.m",
+                "native/host.m",
                 "native/preferences.m",
                 "native/overlay.m",
                 "native/meeting_playback.m",

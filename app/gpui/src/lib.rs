@@ -8,6 +8,7 @@ pub mod field;
 pub mod gallery;
 pub mod history;
 pub mod home;
+pub mod host;
 pub mod meetings;
 pub mod motion;
 pub mod onboarding;

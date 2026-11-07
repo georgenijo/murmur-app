@@ -1,5 +1,25 @@
 # Decisions Log
 
+## 2026-11-07: Include production service extraction in the native host stack (#996)
+
+**Decision:** Split #996 into stacked draft layers 19 (native shell), 20
+(service extraction), and 21 (native OS services and production composition).
+Extract the remaining recording, meeting, delivery and shutdown owners instead
+of leaving adapter injection as an integration blocker. Keep the shipping
+Tauri behavior and its tests until Phase 4. Packaging layer 18 remains separate;
+the lead will integrate it and retarget the stack. Never target main or merge
+these implementation drafts.
+
+**Rationale:** The accepted native-parity route needs a working GPUI app for
+MacBook acceptance; gallery-only injection traits cannot deliver that outcome.
+Separating ownership extraction makes each executable behavior change reviewable.
+
+**Status:** active
+
+**References:** #996, #994, [native host contract](../draft/gpui-native-host.md)
+
+---
+
 ## 2026-11-06: Keep Live Words ephemeral behind a generation-checked native adapter (#1000)
 
 **Decision:** Build the GPUI dictation preview as a separate murmur-ui consumer
