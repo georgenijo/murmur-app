@@ -56,7 +56,7 @@ The Phase 2 host (#994/#996/#997) must implement `history::host::Host`:
    Only typed, fixed errors reach presentation; never format transcripts, paths,
    JSON/parser errors or payloads into logs. Backpressure must be retried without
    logging content; terminal inbox closure stops producers. Eight messages and
-   32 MiB total inbox bytes are the maximum, with a 16 MiB retained snapshot.
+   192 MiB total inbox bytes are the maximum, with a 96 MiB retained snapshot.
 5. Row copy uses the full delivered text. Markdown and plain export use only
    delivered text. Explicit JSON export alone includes raw recognition and the
    whitelisted recording/derived metadata. All exports exclude teaching scope,
@@ -78,6 +78,12 @@ The Phase 2 host (#994/#996/#997) must implement `history::host::Host`:
    main webview and every other owner, and verify its destruction. This isolated
    QA process loading zero WebKit images is not evidence of production retirement.
    Keep React/Vitest/visual/backend suites until integrated replacements pass.
+
+The projection admits transcript text up to the completion store's existing
+32 MiB document bound rather than imposing a smaller per-row limit. The snapshot
+budget includes both exact-target originals and delivered-text projections;
+rendering limits remain independent of retained text size. Oversized exports
+return a typed failure rather than silently truncating.
 
 ## Bounded rendering and accessibility
 

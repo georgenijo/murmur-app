@@ -5,8 +5,11 @@ use std::ops::Range;
 
 pub const MAX_ENTRIES: usize = 200;
 pub const MAX_PINS: usize = 20;
-pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
-pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+// Completion documents already have a 32 MiB durable read bound. Do not
+// reject a valid long legacy transcript merely because its preview is short.
+pub const MAX_TEXT_BYTES: usize = 32 * 1024 * 1024;
+// Includes the exact-target original and delivered-text projection.
+pub const MAX_SNAPSHOT_BYTES: usize = 96 * 1024 * 1024;
 pub const MAX_EXPORT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
@@ -442,7 +445,7 @@ mod tests {
             json!({"id":{"private":"synthetic"},"text":"synthetic","timestamp":1,"duration":1})
         )
         .is_none());
-        let e = entry(1, &"x".repeat(MAX_TEXT_BYTES), 1);
+        let e = entry(1, &"x".repeat(MAX_EXPORT_BYTES), 1);
         assert!(
             export(&vec![&e; MAX_ENTRIES], Format::Text, "synthetic", |_| {
                 "synthetic".into()
