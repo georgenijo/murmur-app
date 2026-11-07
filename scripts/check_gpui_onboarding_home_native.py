@@ -11,6 +11,7 @@ import os
 import platform
 import subprocess
 import time
+from check_gpui_goldens import check_inventory
 
 ROOT = Path(__file__).resolve().parents[1]
 OBSERVER = r'''
@@ -139,6 +140,7 @@ def main():
                     host.wait(timeout=15)
                     if host.returncode != 0:
                         raise RuntimeError(f'{family}: window close did not exit cleanly: {host.returncode}')
+                    check_inventory((evidence / f'{family}-host.log').read_text(), f'MURMUR_{family.upper()}_INVENTORY')
                     observations.append(dict(family=family, pid=host.pid, action='close', label='own test window'))
                 finally:
                     if host.poll() is None:

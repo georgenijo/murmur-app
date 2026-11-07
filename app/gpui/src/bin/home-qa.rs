@@ -184,10 +184,9 @@ fn main() {
             })
             .detach();
         } else {
-            cx.spawn(async move |cx| {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs(1))
-                    .await;
+            // Inventory closes observation. Keep it open for the complete native
+            // AX review flow, then enforce the same policy at terminal shutdown.
+            cx.on_app_quit(|_| async {
                 murmur_ui::overlay::native::assert_webkit_policy("MURMUR_HOME_INVENTORY");
             })
             .detach();
