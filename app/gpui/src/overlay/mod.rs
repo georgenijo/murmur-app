@@ -88,6 +88,9 @@ impl Overlay {
     /// delivered exit cancels dwell immediately, even between two inside
     /// samples; repeated inside observations never move the deadline.
     fn observe_pointer(&mut self, inside: bool, now: u64) -> bool {
+        if !inside {
+            self.model.rearm_hover();
+        }
         if self.pointer.observe(inside) {
             self.model.hover(inside, now);
             true
@@ -363,7 +366,13 @@ impl Render for Overlay {
             })
             .on_hover(cx.listener(|s, inside, w, cx| {
                 let now = s.epoch.elapsed().as_millis() as u64;
-                if s.observe_pointer(*inside, now) {
+                // GPUI defers layout-derived hover callbacks. A centered
+                // resize can invalidate their local hit-test snapshot while
+                // the screen pointer remains over the painted surface. Query
+                // the current native presentation before changing ownership;
+                // a stale exit must not rearm an explicitly closed visit.
+                let inside = native::pointer_inside(w).unwrap_or(*inside);
+                if s.observe_pointer(inside, now) {
                     s.advance(w, cx);
                 }
             }));
