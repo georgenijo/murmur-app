@@ -294,6 +294,18 @@ impl Meetings {
         if !self.allowed(&action) {
             return;
         }
+        if matches!(
+            action,
+            Action::Back
+                | Action::Playback {
+                    action: PlaybackAction::Pause,
+                    ..
+                }
+        ) {
+            // Pause and navigation remain immediate while startup is pending.
+            self.host.pause_playback();
+            self.model.invalidate();
+        }
         let Some(ticket) = self.model.begin() else {
             return;
         };
@@ -586,7 +598,15 @@ impl Meetings {
     ) -> Button {
         let id = id.into();
         let f = self.focus_for(&id, cx);
-        let disabled = self.model.pending || !self.allowed(&action);
+        let cancels_playback = matches!(
+            action,
+            Action::Back
+                | Action::Playback {
+                    action: PlaybackAction::Pause,
+                    ..
+                }
+        );
+        let disabled = (self.model.pending && !cancels_playback) || !self.allowed(&action);
         Button::new(id.clone(), label)
             .when(
                 !matches!(

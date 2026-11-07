@@ -91,6 +91,11 @@ pub fn snapshot() -> Snapshot {
         notice: None,
     }
 }
+struct AudioRequest {
+    ticket: Ticket,
+    lease: crate::workspace::Lease,
+    inbox: Inbox,
+}
 pub struct FixtureHost {
     pub state: RefCell<Snapshot>,
     pub actions: RefCell<Vec<Action>>,
@@ -101,8 +106,8 @@ pub struct FixtureHost {
     pub native_audio: Cell<bool>,
     pub held: RefCell<Vec<(Request, Inbox)>>,
     pub hold: Cell<bool>,
-    player: RefCell<Option<playback::Player>>,
-    control: RefCell<Option<playback::Control>>,
+    player: RefCell<Option<playback::Worker>>,
+    pending_audio: RefCell<Option<AudioRequest>>,
 }
 impl Default for FixtureHost {
     fn default() -> Self {
@@ -117,7 +122,7 @@ impl Default for FixtureHost {
             held: Default::default(),
             hold: Cell::new(false),
             player: Default::default(),
-            control: Default::default(),
+            pending_audio: Default::default(),
         }
     }
 }
@@ -144,14 +149,16 @@ impl Host for FixtureHost {
             .player
             .borrow()
             .as_ref()
-            .map(playback::Player::position_ms);
+            .map(playback::Worker::position_ms);
         if let Some(p) = self.player.borrow_mut().as_mut() {
             p.pause();
-        } else if let Some(c) = self.control.borrow().as_ref() {
-            c.pause();
         }
+        self.pending_audio.borrow_mut().take();
         let mut state = self.state.borrow_mut();
-        if state.audio.state == AudioState::Playing {
+        if matches!(
+            state.audio.state,
+            AudioState::Playing | AudioState::Buffering
+        ) {
             state.audio.state = AudioState::Paused;
             if let Some(p) = position {
                 state.audio.position_ms = p.min(state.audio.duration_ms);
@@ -171,6 +178,7 @@ impl Host for FixtureHost {
             self.held.borrow_mut().push((r, inbox));
             return;
         }
+        let mut asynchronous_audio = false;
         let result = (|| {
             if self.fail.replace(false) {
                 return Err(Problem::Unavailable);
@@ -387,10 +395,11 @@ impl Host for FixtureHost {
                         }
                         _ => s.audio.channel,
                     };
-                    let playing = matches!(
-                        action,
-                        PlaybackAction::Play | PlaybackAction::Segment { .. }
-                    ) || s.audio.state == AudioState::Playing;
+                    let playing =
+                        matches!(
+                            action,
+                            PlaybackAction::Play | PlaybackAction::Segment { .. }
+                        ) || matches!(s.audio.state, AudioState::Playing | AudioState::Buffering);
                     s.audio.position_ms = position.min(s.audio.duration_ms);
                     s.audio.channel = channel;
                     if matches!(action, PlaybackAction::Pause) {
@@ -400,28 +409,26 @@ impl Host for FixtureHost {
                     } else if playing {
                         #[cfg(target_os = "macos")]
                         if self.native_audio.get() {
-                            if self.control.borrow().is_none() {
+                            if self.player.borrow().is_none() {
                                 let output = Arc::new(
                                     playback::NativeSink::new()
                                         .map_err(|_| Problem::Unavailable)?,
                                 );
-                                let control = playback::Control::new(output);
-                                *self.player.borrow_mut() = Some(playback::Player::new(
-                                    Arc::new(SyntheticAudio),
-                                    control.clone(),
-                                    "fixture-1".into(),
-                                ));
-                                *self.control.borrow_mut() = Some(control);
+                                self.install_audio_sink(output);
                             }
-                            let mut player = self.player.borrow_mut();
-                            let p = player.as_mut().unwrap();
-                            p.play(position, channel)
+                            self.player
+                                .borrow_mut()
+                                .as_mut()
+                                .unwrap()
+                                .play(position, channel)
                                 .map_err(|_| Problem::Unavailable)?;
-                            for _ in 0..3 {
-                                p.pump().map_err(|_| Problem::Unavailable)?;
-                            }
+                            asynchronous_audio = true;
                         }
-                        s.audio.state = AudioState::Playing;
+                        s.audio.state = if asynchronous_audio {
+                            AudioState::Buffering
+                        } else {
+                            AudioState::Playing
+                        };
                     } else {
                         s.audio.state = AudioState::Ready;
                     }
@@ -433,38 +440,97 @@ impl Host for FixtureHost {
             {
                 *row = d.session.clone();
             }
-            s.revision += 1;
+            if !asynchronous_audio {
+                s.revision += 1;
+            }
             *self.state.borrow_mut() = s.clone();
             Ok(s)
         })();
-        let _ = inbox.publish(Event::Reply {
-            ticket: r.ticket,
-            result,
-        });
+        if asynchronous_audio && let Ok(snapshot) = result {
+            let _ = inbox.publish(Event::Progress {
+                ticket: r.ticket,
+                snapshot,
+            });
+            *self.pending_audio.borrow_mut() = Some(AudioRequest {
+                ticket: r.ticket,
+                lease: r.lease,
+                inbox,
+            });
+        } else {
+            let _ = inbox.publish(Event::Reply {
+                ticket: r.ticket,
+                result,
+            });
+        }
     }
     fn tick(&self, attachment: u64, inbox: Inbox) {
-        let mut player = self.player.borrow_mut();
-        let Some(p) = player.as_mut() else {
+        if self
+            .pending_audio
+            .borrow()
+            .as_ref()
+            .is_some_and(|r| !r.lease.is_current() || r.inbox.is_closed())
+        {
+            self.pause_playback();
+            return;
+        }
+        let update = self
+            .player
+            .borrow_mut()
+            .as_mut()
+            .and_then(playback::Worker::poll);
+        let Some(update) = update else {
             return;
         };
-        if self.state.borrow().audio.state != AudioState::Playing {
-            return;
-        }
-        let result = p.pump();
         let mut s = self.state.borrow_mut();
-        s.audio.position_ms = p.position_ms().min(s.audio.duration_ms);
-        if !matches!(result, Ok(true)) {
-            s.audio.state = if result.is_err() {
-                AudioState::Error
-            } else {
-                AudioState::Ready
-            };
+        match update {
+            Ok(progress) => {
+                s.audio.position_ms = progress.position_ms.min(s.audio.duration_ms);
+                s.audio.state = if progress.playing {
+                    AudioState::Playing
+                } else {
+                    AudioState::Ready
+                };
+            }
+            Err(_) => s.audio.state = AudioState::Error,
         }
-        s.revision += 1;
-        let _ = inbox.publish(Event::Changed {
-            attachment,
-            snapshot: s.clone(),
-        });
+        if let Some(r) = self.pending_audio.borrow_mut().take() {
+            if update.is_err() {
+                // Keep the failed audio state and report the start failure using
+                // its original request ticket. Never reticket a late result.
+                let _ = r.inbox.publish(Event::Progress {
+                    ticket: r.ticket,
+                    snapshot: s.clone(),
+                });
+                let _ = r.inbox.publish(Event::Reply {
+                    ticket: r.ticket,
+                    result: Err(Problem::Unavailable),
+                });
+            } else {
+                s.revision += 1;
+                let _ = r.inbox.publish(Event::Reply {
+                    ticket: r.ticket,
+                    result: Ok(s.clone()),
+                });
+            }
+        } else {
+            s.revision += 1;
+            let _ = inbox.publish(Event::Changed {
+                attachment,
+                snapshot: s.clone(),
+            });
+        }
+    }
+}
+impl FixtureHost {
+    /// The GUI and regression seam use the identical worker/admission path.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn install_audio_sink(&self, output: Arc<dyn playback::Sink>) {
+        let control = playback::Control::new(output);
+        *self.player.borrow_mut() = Some(playback::Worker::new(
+            Arc::new(SyntheticAudio),
+            control,
+            "fixture-1".into(),
+        ));
     }
 }
 /// Three short PCM16 tones on a 65-second two-channel timeline, never real audio.
@@ -592,4 +658,37 @@ impl super::Meetings {
             s.replace_text_in_range(None, "Synthetic typed meeting", w, cx)
         });
     }
+}
+
+/// The headless QA entry point uses synthetic PCM through the same worker as
+/// the GUI. It constructs no window, capture input, or production data owner.
+pub fn audio_self_test(output: Arc<dyn playback::Sink>) -> Result<(), playback::Error> {
+    use std::time::{Duration, Instant};
+    let control = playback::Control::new(output.clone());
+    let mut player = playback::Worker::new(Arc::new(SyntheticAudio), control, "fixture-1".into());
+    for (position, channel) in [
+        (0, Channel::All),
+        (1000, Channel::Them),
+        (62000, Channel::Me),
+    ] {
+        player.play(position, channel)?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(update) = player.poll() {
+                update?;
+            }
+            if output.played_frames() >= 1600 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(playback::Error::Output);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        player.pause();
+        if output.queued_frames() != 0 {
+            return Err(playback::Error::Output);
+        }
+    }
+    Ok(())
 }

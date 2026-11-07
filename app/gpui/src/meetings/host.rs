@@ -174,7 +174,7 @@ pub trait Host {
     /// Export/BundleExport obtain a native save panel path before calling the
     /// named atomic writer. Cancel is silent. BundlePreview discloses omissions
     /// and size before the panel. Captions require finished capture.
-    /// Playback uses playback::Player with the validated manifest/range/busy
+    /// Playback uses playback::Worker with the validated manifest/range/busy
     /// service adapter; never Web Audio or paths. It pauses on busy/deletion/hide.
     /// Accepted durable writes survive hide; unaccepted effects and late replies
     /// do not. Window geometry is owned by Rust on the main thread.

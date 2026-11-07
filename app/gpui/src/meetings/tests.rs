@@ -664,3 +664,7 @@ fn calendar_and_detail_labels_use_local_wall_clock() {
     assert_eq!(super::view::local_datetime(ms), expected);
     assert!(!super::view::local_datetime(ms).contains(&ms.to_string()));
 }
+
+#[cfg(target_os = "macos")]
+#[path = "tests/native_playback.rs"]
+mod native_playback;

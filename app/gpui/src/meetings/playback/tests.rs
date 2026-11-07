@@ -292,3 +292,17 @@ fn stopped_output_is_detected_even_with_a_full_queue_and_can_restart() {
     assert!(player.play(100, Channel::All).is_ok());
     assert!(player.pump().unwrap_or_else(|_| panic!("pump failed")));
 }
+
+#[test]
+fn retired_worker_teardown_cannot_revoke_a_new_play_generation() {
+    let sink = Arc::new(FakeSink::default());
+    let control = Control::new(sink.clone());
+    let retired = control.next();
+    let current = control.next();
+    assert!(sink.start(current).is_ok());
+    control.pause_if_current(retired);
+    assert!(control.current(current));
+    assert!(sink.healthy(current));
+    control.pause_if_current(current);
+    assert!(!sink.healthy(current));
+}
