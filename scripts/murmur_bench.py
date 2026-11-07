@@ -57,7 +57,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
     output = (args.output or default_output(repo)).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    command = ["cargo", "test", "--release"]
+    command = ["cargo", "test", "-p", "murmur-services", "--release"]
     if args.corpus in ("personal", "accuracy"):
         command.extend(["--features", "internal-benchmark"])
     command.extend(
@@ -91,7 +91,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
     started_at = dt.datetime.now(dt.timezone.utc)
     print(f"Running {args.corpus} {args.preset} benchmark -> {output}", flush=True)
-    subprocess.run(command, cwd=repo / "app" / "src-tauri", env=environment, check=True)
+    subprocess.run(command, cwd=repo / "app", env=environment, check=True)
     finished_at = dt.datetime.now(dt.timezone.utc)
 
     # Parse before publishing metadata so an interrupted/invalid run never

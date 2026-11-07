@@ -121,3 +121,39 @@ pub(crate) fn initialize(app: &crate::host::Context) -> Result<(), String> {
     })?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn quit_dispatch_remains_available_while_startup_reader_is_stalled() {
+        use murmur_core::shutdown::{Action, Coordinator, Request};
+        use std::{
+            sync::{mpsc, Mutex},
+            time::Duration,
+        };
+        let app = crate::events::native_tests::Deferred::new().app;
+        let (entered, reading) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        super::spawn(&app, "synthetic-stalled-startup", move |_| {
+            #[cfg(target_os = "macos")]
+            assert!(objc2::MainThreadMarker::new().is_none());
+            entered.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(5)).unwrap();
+            done.send(()).unwrap();
+        })
+        .unwrap();
+        reading.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Setup already returned; the same dispatcher can accept Quit and
+        // the independent deadline adapter can issue its terminal callback.
+        let core = Mutex::new(Coordinator::default());
+        let (send, receive) = mpsc::channel();
+        crate::shutdown::adapter::accept(&core, &send, Request::Quit, 0);
+        crate::shutdown::adapter::reduce(&core, Ok(receive.recv().unwrap()), 0);
+        crate::shutdown::adapter::reduce(&core, Err(mpsc::RecvTimeoutError::Timeout), 10_000);
+        assert_eq!(core.lock().unwrap().issue(), Some(Action::Quit));
+        assert!(finished.try_recv().is_err());
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+}

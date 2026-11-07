@@ -31,7 +31,6 @@ EXTERNAL_BINARIES = (
     "murmur-capture-agent-aarch64-apple-darwin",
     "murmur-capture-helper-aarch64-apple-darwin",
     "murmur-capture-worker-aarch64-apple-darwin",
-    "murmur-llm-sidecar-aarch64-apple-darwin",
 )
 CACHE_POLICY = "conditioned-timed-path-v4"
 CONDITIONING_PRESET = "quick"
@@ -264,7 +263,7 @@ def wait_for_stable_host(
 
 
 def seed_external_binaries(source: Path, worktree: Path) -> None:
-    destination = worktree / "app" / "src-tauri" / "binaries"
+    destination = worktree / "app" / "binaries"
     destination.mkdir(parents=True, exist_ok=True)
     for name in EXTERNAL_BINARIES:
         source_file = source / name
@@ -274,7 +273,7 @@ def seed_external_binaries(source: Path, worktree: Path) -> None:
         if target.exists():
             raise ValueError(f"temporary worktree unexpectedly contains helper: {target}")
         # These helpers are gitignored local build prerequisites. Copying the
-        # four exact files keeps detached refs self-contained without exposing
+        # three exact files keeps detached refs self-contained without exposing
         # or mutating the source checkout's helper directory.
         shutil.copy2(source_file, target)
 
@@ -311,7 +310,7 @@ def run_benchmark(
     print("+", " ".join(command), flush=True)
     started_at = dt.datetime.now(dt.timezone.utc)
     process = subprocess.Popen(
-        command, cwd=worktree / "app" / "src-tauri", env=benchmark_environment,
+        command, cwd=worktree / "app", env=benchmark_environment,
         start_new_session=True,
     )
     try:
@@ -361,13 +360,13 @@ def prepare_benchmark_binary(
     *, worktree: Path, environment: dict[str, str]
 ) -> Path:
     command = [
-        "cargo", "test", "--release", "--features", "internal-benchmark",
+        "cargo", "test", "-p", "murmur-services", "--release", "--features", "internal-benchmark",
         "--test", "headless_benchmark", "--no-run", "--message-format=json",
     ]
     print("+", " ".join(command), flush=True)
     completed = subprocess.run(
         command,
-        cwd=worktree / "app" / "src-tauri",
+        cwd=worktree / "app",
         env=environment,
         check=True,
         stdout=subprocess.PIPE,
@@ -613,7 +612,7 @@ def run_ref(
     try:
         seed_external_binaries(binary_source, worktree)
         environment = benchmark_environment(
-            cache_root, worktree / "app" / "src-tauri" / "Cargo.lock", sha
+            cache_root, worktree / "app" / "Cargo.lock", sha
         )
         benchmark_binary = prepare_benchmark_binary(
             worktree=worktree, environment=environment
@@ -655,7 +654,7 @@ def main() -> int:
     parser.add_argument(
         "--binary-source",
         type=Path,
-        help="directory containing the four gitignored aarch64 helper binaries",
+        help="directory containing the three gitignored aarch64 helper binaries",
     )
     parser.add_argument("--preset", choices=("quick", "standard", "thorough"), default="standard")
     parser.add_argument("--models", help="comma-separated model IDs")
@@ -681,7 +680,7 @@ def main() -> int:
     binary_source = (
         args.binary_source.expanduser().resolve()
         if args.binary_source
-        else repo / "app" / "src-tauri" / "binaries"
+        else repo / "app" / "binaries"
     )
     if not (repo / ".git").exists():
         parser.error(f"--repo is not a Git repository: {repo}")

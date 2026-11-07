@@ -281,12 +281,54 @@ pub(crate) fn set_waveform_subscription<R: crate::host::Runtime>(
 // capability facade forwards here; it cannot expose Emitter or EventTarget.
 
 #[cfg(test)]
-mod native_tests {
+pub(crate) fn observe_for_test<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
+    event: EventKind,
+    callback: impl Fn(&str) + Send + Sync + 'static,
+) {
+    let _ = app.events();
+    app.event_owner()
+        .observers
+        .lock_or_recover()
+        .push((event, Arc::new(callback)));
+}
+
+#[cfg(test)]
+pub(crate) mod native_tests {
     use super::*;
     use crate::host::{Monitor, NativePaths, NativePorts, Result as HostResult, WindowPort};
     use murmur_core::context::*;
     use std::path::PathBuf;
-    struct NoIo;
+    struct TestWindow(String);
+    impl WindowPort for TestWindow {
+        fn label(&self) -> &str {
+            &self.0
+        }
+        fn snapshot(&self) -> crate::host::WindowSnapshot {
+            crate::host::WindowSnapshot {
+                visible: true,
+                minimized: false,
+                fullscreen: false,
+                maximized: false,
+                size: dpi::PhysicalSize::new(100, 100),
+                inner_position: dpi::PhysicalPosition::new(0, 0),
+                outer_size: dpi::PhysicalSize::new(100, 100),
+                position: dpi::PhysicalPosition::new(0, 0),
+                scale: 1.,
+                monitor: None,
+            }
+        }
+        fn command(&self, _: crate::host::WindowCommand) -> HostResult<()> {
+            panic!("no window effects")
+        }
+        fn ns_window(&self) -> HostResult<*mut std::ffi::c_void> {
+            Err("no native window".into())
+        }
+    }
+    struct NoIo {
+        main: bool,
+        deliveries: Arc<Mutex<Vec<(String, String, String)>>>,
+    }
     impl Paths for NoIo {
         fn app_data_dir(&self) -> Result<PathBuf, ContextError> {
             Err(ContextError::PathUnavailable)
@@ -314,8 +356,9 @@ mod native_tests {
         }
     }
     impl NativePorts for NoIo {
-        fn window(&self, _: &str) -> Option<Arc<dyn WindowPort>> {
-            None
+        fn window(&self, label: &str) -> Option<Arc<dyn WindowPort>> {
+            (label != "main" || self.main)
+                .then(|| Arc::new(TestWindow(label.into())) as Arc<dyn WindowPort>)
         }
         fn monitors(&self) -> Vec<Monitor> {
             vec![]
@@ -323,7 +366,10 @@ mod native_tests {
         fn primary_monitor(&self) -> Option<Monitor> {
             None
         }
-        fn send(&self, _: &str, _: &str, _: &str) -> HostResult<()> {
+        fn send(&self, label: &str, event: &str, payload: &str) -> HostResult<()> {
+            self.deliveries
+                .lock_or_recover()
+                .push((label.into(), event.into(), payload.into()));
             Ok(())
         }
         fn terminal(&self, _: murmur_core::shutdown::Action) {
@@ -342,14 +388,22 @@ mod native_tests {
             Ok(())
         }
     }
-    struct Deferred {
-        app: crate::host::Context,
+    pub(crate) struct Deferred {
+        pub(crate) app: crate::host::Context,
         tasks: Arc<Mutex<Vec<MainTask>>>,
-        received: Arc<Mutex<Vec<String>>>,
+        deliveries: Arc<Mutex<Vec<(String, String, String)>>>,
+        pub(crate) received: Arc<Mutex<Vec<String>>>,
     }
     impl Deferred {
-        fn new() -> Self {
-            let ports = Arc::new(NoIo);
+        pub(crate) fn new() -> Self {
+            Self::with_main(false)
+        }
+        pub(crate) fn with_main(main: bool) -> Self {
+            let deliveries = Arc::new(Mutex::new(Vec::new()));
+            let ports = Arc::new(NoIo {
+                main,
+                deliveries: deliveries.clone(),
+            });
             let context = AppContext {
                 paths: ports.clone(),
                 permissions: ports.clone(),
@@ -368,6 +422,10 @@ mod native_tests {
                 ports,
             );
             initialize(&app);
+            app.event_owner()
+                .router
+                .lock_or_recover()
+                .set_waveform(WaveformConsumer::Overlay, true);
             let tasks = Arc::new(Mutex::new(Vec::new()));
             let queue = tasks.clone();
             *app.event_owner().dispatch.lock_or_recover() = Some(Arc::new(move |task| {
@@ -375,27 +433,330 @@ mod native_tests {
                 Ok(())
             }));
             let received = Arc::new(Mutex::new(Vec::new()));
-            let receipts = received.clone();
-            app.event_owner().observers.lock_or_recover().push((
-                EventKind::AudioLevel,
-                Arc::new(move |payload| receipts.lock_or_recover().push(payload.into())),
-            ));
             Self {
                 app,
                 tasks,
+                deliveries,
                 received,
             }
         }
-        fn publish(&self, activity: &Arc<crate::audio::CaptureActivity>, level: f32) {
+        pub(crate) fn publish(&self, activity: &Arc<crate::audio::CaptureActivity>, level: f32) {
             crate::audio::publish_waveform(&self.app, activity.generation().unwrap(), level)
                 .unwrap();
         }
-        fn drain(&self) {
+        pub(crate) fn drain(&self) {
             for task in std::mem::take(&mut *self.tasks.lock_or_recover()) {
                 task();
             }
+            self.received.lock_or_recover().extend(
+                std::mem::take(&mut *self.deliveries.lock_or_recover())
+                    .into_iter()
+                    .filter(|(label, event, _)| label == "overlay" && event == "audio-level")
+                    .map(|(_, _, payload)| payload),
+            );
         }
     }
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    #[test]
+    fn standby_reactivation_cannot_revive_a_queued_waveform() {
+        let levels = Deferred::new();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
+        levels.publish(&activity, 0.25);
+        activity.set_active(false);
+        activity.set_active(true);
+        levels.drain();
+        assert!(levels.received.lock_or_recover().is_empty());
+        levels.publish(&activity, 0.75);
+        levels.drain();
+        assert_eq!(*levels.received.lock_or_recover(), vec!["0.75"]);
+    }
+    #[test]
+    fn capture_revoked_during_visibility_query_is_dropped_before_delivery() {
+        let levels = Deferred::new();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
+        let revoked = activity.clone();
+        *levels.app.event_owner().visibility.lock_or_recover() = Some(Arc::new(move |_| {
+            revoked.set_active(false);
+            true
+        }));
+        levels.publish(&activity, 0.25);
+        levels.drain();
+        assert!(levels.received.lock_or_recover().is_empty());
+    }
+    #[test]
+    fn revocation_waits_between_final_check_and_transport_or_callback_entry() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for callback_path in [false, true] {
+            let levels = Deferred::new();
+            let activity = Arc::new(crate::audio::CaptureActivity::default());
+            activity.set_active(true);
+            let callback_count = Arc::new(AtomicUsize::new(0));
+            if callback_path {
+                let count = callback_count.clone();
+                observe_for_test(&levels.app, EventKind::AudioLevel, move |_| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+            let (go, start) = mpsc::channel();
+            let (attempting, attempted) = mpsc::channel();
+            let (done, finished) = mpsc::channel();
+            let revoked = activity.clone();
+            let worker = std::thread::spawn(move || {
+                start.recv().unwrap();
+                attempting.send(()).unwrap();
+                revoked.set_active(false);
+                done.send(()).unwrap();
+            });
+            let first = AtomicBool::new(true);
+            let blocked = Arc::new(AtomicBool::new(false));
+            let held = blocked.clone();
+            let attempted = Mutex::new(attempted);
+            let finished = Mutex::new(finished);
+            *levels
+                .app
+                .event_owner()
+                .before_level_transport
+                .lock_or_recover() = Some(Arc::new(move || {
+                if first.swap(false, Ordering::SeqCst) {
+                    // This hook is after the final check, before transport
+                    // entry, while the production delivery permit is alive.
+                    go.send(()).unwrap();
+                    attempted.lock_or_recover().recv().unwrap();
+                    held.store(
+                        matches!(
+                            finished
+                                .lock_or_recover()
+                                .recv_timeout(Duration::from_millis(50)),
+                            Err(mpsc::RecvTimeoutError::Timeout)
+                        ),
+                        Ordering::SeqCst,
+                    );
+                }
+            }));
+            levels.publish(&activity, 0.25);
+            levels.drain();
+            worker.join().unwrap();
+            assert!(
+                blocked.load(Ordering::SeqCst),
+                "revocation acknowledged before transport entry"
+            );
+            if callback_path {
+                assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+            } else {
+                assert_eq!(*levels.received.lock_or_recover(), vec!["0.25"]);
+            }
+            // A stale token cannot enter either path after revocation returns.
+            assert!(activity.generation().is_none());
+        }
+    }
+    #[test]
+    fn production_subscriptions_and_producers_deliver_headlessly_with_synthetic_state() {
+        use murmur_core::completion::{Command, CompletionService};
+        use murmur_core::dictation::{Controller, Effect, Input, LaunchGate, Origin, Status};
+        let fixture = Deferred::new();
+        let app = &fixture.app;
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        crate::completion::initialize_with_service(app, service.clone());
+        let overlay = app.get_window("overlay").unwrap();
+        set_waveform_subscription(
+            app.clone(),
+            overlay.clone(),
+            WaveformConsumer::Overlay,
+            true,
+        )
+        .unwrap();
+        // Initialize the production subscription registrations, substituting only
+        // their OS/worker effects. No fabricated router, routes or manual emits.
+        let receipts = Arc::new(Mutex::new(Vec::new()));
+        let r = receipts.clone();
+        crate::dictation_control::initialize_event_subscription(app, move |payload| {
+            r.lock_or_recover()
+                .push((Consumer::DictationControl, payload.to_owned()))
+        });
+        let r = receipts.clone();
+        crate::dictation_cues::initialize_event_subscriptions(app, move |_, payload| {
+            r.lock_or_recover()
+                .push((Consumer::SoundCues, payload.to_owned()))
+        });
+        let r = receipts.clone();
+        crate::smart_auto_probe::initialize_event_subscriptions(app, move || {
+            r.lock_or_recover()
+                .push((Consumer::SmartAuto, String::new()))
+        });
+        let r = receipts.clone();
+        crate::meeting_suggestions::initialize_event_subscriptions(app, move || {
+            r.lock_or_recover()
+                .push((Consumer::MeetingSuggestions, String::new()))
+        });
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        for event in ["history-changed", "statistics-changed"] {
+            let r = notifications.clone();
+            let kind = if event == "history-changed" {
+                EventKind::HistoryChanged
+            } else {
+                EventKind::StatisticsChanged
+            };
+            observe_for_test(app, kind, move |payload| {
+                assert_eq!(payload, "null");
+                r.lock_or_recover().push(event);
+            });
+        }
+        let mut controller = Controller::default();
+        controller.gate = LaunchGate {
+            shutdown: false,
+            configured: true,
+            onboarding_complete: true,
+            model_installed: true,
+            accessibility: true,
+            disabled: false,
+        };
+        assert!(matches!(
+            controller.input(Input::Toggle(None)),
+            Some(Effect::Start { .. })
+        ));
+        controller.observe(1, Status::Recording, Origin::Toggle);
+        crate::commands::recording::publish_status(app, "recording").unwrap();
+        crate::audio::publish_waveform(app, activity.generation().unwrap(), 0.25).unwrap();
+        fixture.drain();
+        assert_eq!(*fixture.received.lock_or_recover(), vec!["0.25"]);
+        assert!(matches!(
+            controller.input(Input::Toggle(None)),
+            Some(Effect::Stop { generation: 1, .. })
+        ));
+        // Production completion adapter publishes notifications as part of the
+        // producer operation, including duplicate attachment and retention paths.
+        for (generation, retain) in [(1, true), (1, true), (2, false)] {
+            crate::completion::produce(app, |producer| {
+                producer.dictation(generation,
+                serde_json::json!({"id":generation.to_string(), "text":"synthetic", "duration":1,"timestamp":0}), retain, None, "2026-11-06".into())
+            });
+        }
+        crate::commands::recording::publish_status(app, "idle").unwrap();
+        controller.observe(1, Status::Idle, Origin::Toggle);
+        for consumer in [
+            Consumer::DictationControl,
+            Consumer::SoundCues,
+            Consumer::SmartAuto,
+            Consumer::MeetingSuggestions,
+        ] {
+            assert_eq!(
+                receipts
+                    .lock_or_recover()
+                    .iter()
+                    .filter(|(c, _)| *c == consumer)
+                    .count(),
+                2,
+                "missing/duplicate production subscription {consumer:?}"
+            );
+        }
+        assert_eq!(
+            notifications
+                .lock_or_recover()
+                .iter()
+                .filter(|e| **e == "history-changed")
+                .count(),
+            3
+        );
+        assert_eq!(
+            notifications
+                .lock_or_recover()
+                .iter()
+                .filter(|e| **e == "statistics-changed")
+                .count(),
+            3
+        );
+        let snapshot = service.execute(Command::Snapshot).unwrap();
+        assert_eq!(snapshot.history.len(), 1);
+        assert_eq!(snapshot.statistics.total_recordings, 2);
+        assert!(app.get_window("main").is_none());
+    }
+
+    #[test]
+    fn adapter_delivers_only_to_named_windows_and_native_consumers_without_main() {
+        let fixture = Deferred::new();
+        let app = &fixture.app;
+        app.events().publish(EventKind::AppEvent, ()).unwrap();
+        let deliveries = fixture.deliveries.lock_or_recover();
+        assert!(!deliveries.is_empty());
+        assert!(deliveries
+            .iter()
+            .all(|(label, _, _)| label == "diagnostics"));
+        drop(deliveries);
+        let count = Arc::new(AtomicUsize::new(0));
+        let received = count.clone();
+        subscribe(
+            app,
+            Consumer::DictationControl,
+            EventKind::RecordingStatusChanged,
+            move |payload| {
+                assert_eq!(payload, "\"recording\"");
+                received.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        app.events()
+            .publish(EventKind::RecordingStatusChanged, "recording")
+            .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert!(app.get_window("main").is_none());
+    }
+
+    #[test]
+    fn capture_publication_never_queries_windows_and_coalesces_a_busy_main_thread() {
+        let fixture = Deferred::new();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
+        *fixture.app.event_owner().visibility.lock_or_recover() =
+            Some(Arc::new(|_| panic!("capture queried a window")));
+        for sample in 0..5000 {
+            fixture.publish(&activity, sample as f32);
+        }
+        assert_eq!(fixture.tasks.lock_or_recover().len(), 1);
+        assert!(fixture.deliveries.lock_or_recover().is_empty());
+        *fixture.app.event_owner().visibility.lock_or_recover() = Some(Arc::new(|_| true));
+        fixture.drain();
+        assert_eq!(*fixture.received.lock_or_recover(), vec!["4999.0"]);
+        for visible in [false, true, false, true] {
+            *fixture.app.event_owner().visibility.lock_or_recover() =
+                Some(Arc::new(move |_| visible));
+            fixture.publish(&activity, 0.25);
+            fixture.drain();
+        }
+        assert_eq!(
+            *fixture.received.lock_or_recover(),
+            vec!["4999.0", "0.25", "0.25"]
+        );
+        assert!(!fixture.app.event_owner().levels.lock_or_recover().scheduled);
+    }
+
+    #[test]
+    fn failed_native_dispatch_can_retry() {
+        let fixture = Deferred::new();
+        let activity = Arc::new(crate::audio::CaptureActivity::default());
+        activity.set_active(true);
+        assert!(fixture
+            .app
+            .events()
+            .queue_level_with(
+                QueuedLevel {
+                    payload: "0.1".into(),
+                    generation: activity.generation().unwrap(),
+                },
+                |_| Err("closed".into())
+            )
+            .is_err());
+        assert!(!fixture.app.event_owner().levels.lock_or_recover().scheduled);
+        fixture.publish(&activity, 0.2);
+        assert_eq!(fixture.tasks.lock_or_recover().len(), 1);
+        fixture.drain();
+        assert_eq!(*fixture.received.lock_or_recover(), vec!["0.2"]);
+    }
+
     #[test]
     fn native_mailbox_coalesces_and_never_delivers_a_revoked_generation() {
         let fixture = Deferred::new();

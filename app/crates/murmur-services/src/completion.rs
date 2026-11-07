@@ -764,3 +764,90 @@ mod source_ordering_tests {
         assert_eq!(disk["language"], "fr");
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use std::{
+        io::Write,
+        sync::{mpsc, Arc},
+        time::Duration,
+    };
+    // The native accept adapter blocks on a synthetic FIFO while cancellation stays responsive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn file_cancel_ipc_completes_while_accept_owner_is_blocked() {
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        service.execute(Command::Snapshot).unwrap();
+        let path = root.path().join("completion-holding.json");
+        let holding = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: synthetic temporary path, valid nul-terminated string.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let (blocked, observed) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let writer_released = released.clone();
+        let writer = std::thread::spawn(move || {
+            let mut fifo = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            // The in-flight read owns the FIFO; later reads use this regular file.
+            let replacement = path.with_extension("synthetic-replacement");
+            std::fs::write(&replacement, &holding).unwrap();
+            std::fs::rename(replacement, &path).unwrap();
+            blocked.send(()).unwrap();
+            // Watchdog releases even if the old synchronous handler deadlocks
+            // this test's dispatcher, making the regression fail without hanging.
+            let _ = resume.recv_timeout(Duration::from_secs(5));
+            writer_released.store(true, Ordering::SeqCst);
+            fifo.write_all(&holding).unwrap();
+        });
+        let producers = Producers::new(service.clone(), "synthetic-ipc".into());
+        producers.begin_file("synthetic-operation").unwrap();
+        producers.finish_file(
+            "synthetic-operation",
+            Some(entry("synthetic", 1., "file")),
+            true,
+        );
+        let fixture = crate::events::native_tests::Deferred::with_main(true);
+        let app = fixture.app;
+        app.install_completion_owner(Completion {
+            service,
+            producers,
+            admitted: AtomicBool::new(true),
+        });
+        let window = app.get_window("main").unwrap();
+        let worker_app = app.clone();
+        let worker_window = window.clone();
+        let acceptance = tokio::spawn(async move {
+            accept_file_transcription(worker_window, worker_app, "synthetic-operation".into()).await
+        });
+        // The owner opened the FIFO while processing this acceptance, so the
+        // production adapter now holds files and is waiting for the owner.
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            cancel_file_transcription(window, app.clone(), "synthetic-operation".into())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "cancel queued behind acceptance"
+        );
+        release.send(()).unwrap();
+        writer.join().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), acceptance)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(app
+            .completion_owner()
+            .service
+            .execute(Command::Snapshot)
+            .unwrap()
+            .history
+            .is_empty());
+    }
+}

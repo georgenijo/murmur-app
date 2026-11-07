@@ -737,31 +737,23 @@ fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
     Some(sorted[index])
 }
 
-// Generic over `R: crate::host::Runtime` (rather than the default `Wry`) so the
-// headless benchmark runner (tests/headless_benchmark.rs) can drive `run`
-// with the injected native service context -- no path resolution in this
-// module goes through AppHandle (models_dir uses `dirs::` directly), so the
-// only thing that needs a real runtime is `Emitter::emit` below, which is
-// implemented for `AppHandle<R>` for any `R: Runtime`.
-fn publish_progress<R: crate::host::Runtime>(
-    app: &crate::host::Context<R>,
+// Headless runs use the same pipeline with a silent progress callback.
+fn publish_progress(
+    publish: &impl Fn(BenchmarkProgress),
     completed: usize,
     total: usize,
     model: &BenchmarkModel,
     fixture: Option<&str>,
     phase: &'static str,
 ) {
-    let _ = app.events().publish(
-        EventKind::BenchmarkProgress,
-        BenchmarkProgress {
-            completed,
-            total,
-            model_name: model.model_name.clone(),
-            model_label: model.label.clone(),
-            fixture: fixture.map(ToString::to_string),
-            phase,
-        },
-    );
+    publish(BenchmarkProgress {
+        completed,
+        total,
+        model_name: model.model_name.clone(),
+        model_label: model.label.clone(),
+        fixture: fixture.map(ToString::to_string),
+        phase,
+    });
 }
 
 fn error_result(model: &BenchmarkModel, error: String) -> ModelResult {
@@ -1277,6 +1269,24 @@ pub fn run<R: crate::host::Runtime>(
     coordinator: &BenchmarkCoordinator,
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {
+    run_with_progress(coordinator, request, |progress| {
+        let _ = app.events().publish(EventKind::BenchmarkProgress, progress);
+    })
+}
+
+/// Run the native pipeline without initializing any application/UI host.
+pub fn run_headless(
+    coordinator: &BenchmarkCoordinator,
+    request: BenchmarkRequest,
+) -> Result<BenchmarkReport, String> {
+    run_with_progress(coordinator, request, |_| {})
+}
+
+fn run_with_progress(
+    coordinator: &BenchmarkCoordinator,
+    request: BenchmarkRequest,
+    progress: impl Fn(BenchmarkProgress),
+) -> Result<BenchmarkReport, String> {
     if request.model_names.is_empty() {
         return Err("Select at least one installed model".to_string());
     }
@@ -1347,7 +1357,7 @@ pub fn run<R: crate::host::Runtime>(
             .iter()
             .find(|candidate| candidate.model_name == *target)
         {
-            publish_progress(app, completed, total_steps, model, None, "priming");
+            publish_progress(&progress, completed, total_steps, model, None, "priming");
         }
         if let Ok(mut backend) = backend_for(target) {
             let warmup_started = Instant::now();
@@ -1364,13 +1374,13 @@ pub fn run<R: crate::host::Runtime>(
         if coordinator.is_cancelled() {
             return Err("Benchmark cancelled".to_string());
         }
-        publish_progress(app, completed, total_steps, &model, None, "loading");
+        publish_progress(&progress, completed, total_steps, &model, None, "loading");
         let mut backend = match backend_for(&model.model_name) {
             Ok(backend) => backend,
             Err(error) => {
                 results.push(error_result(&model, error));
                 completed = model_start + steps_per_model;
-                publish_progress(app, completed, total_steps, &model, None, "complete");
+                publish_progress(&progress, completed, total_steps, &model, None, "complete");
                 continue;
             }
         };
@@ -1379,7 +1389,7 @@ pub fn run<R: crate::host::Runtime>(
         if let Err(error) = backend.load_model(&model.model_name) {
             results.push(error_result(&model, error));
             completed = model_start + steps_per_model;
-            publish_progress(app, completed, total_steps, &model, None, "complete");
+            publish_progress(&progress, completed, total_steps, &model, None, "complete");
             continue;
         }
         let model_load_ms = load_started.elapsed().as_secs_f64() * 1000.0;
@@ -1412,7 +1422,7 @@ pub fn run<R: crate::host::Runtime>(
             let samples = &prepared.samples;
             let audio_seconds = prepared.audio_seconds;
             publish_progress(
-                app,
+                &progress,
                 completed,
                 total_steps,
                 &model,
@@ -1441,7 +1451,7 @@ pub fn run<R: crate::host::Runtime>(
                     return Err("Benchmark cancelled".to_string());
                 }
                 publish_progress(
-                    app,
+                    &progress,
                     completed,
                     total_steps,
                     &model,
@@ -1551,7 +1561,7 @@ pub fn run<R: crate::host::Runtime>(
         if let Some(error) = failed {
             results.push(error_result(&model, error));
             completed = model_start + steps_per_model;
-            publish_progress(app, completed, total_steps, &model, None, "complete");
+            publish_progress(&progress, completed, total_steps, &model, None, "complete");
             continue;
         }
         results.push(ModelResult {
@@ -1582,7 +1592,7 @@ pub fn run<R: crate::host::Runtime>(
     }
 
     publish_progress(
-        app,
+        &progress,
         total_steps,
         total_steps,
         results

@@ -7073,6 +7073,19 @@ pub(crate) mod tests {
         assert_eq!(warmups, ["parakeet-tdt-0.6b-v3-coreml"]);
     }
 
+    pub(crate) fn partial_lease_fixture() -> (crate::host::Context, impl Send) {
+        let app = crate::events::native_tests::Deferred::new().app;
+        let state = app.services();
+        state.app_state.recording_id.store(41, Ordering::SeqCst);
+        state.app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(try_begin_dictation_partial(&state.app_state, 41));
+        let lease = DictationPartialLease {
+            app: app.clone(),
+            recording_id: 41,
+        };
+        (app, lease)
+    }
+
     #[test]
     fn stopped_partial_cannot_publish_or_release_a_new_recording_lease() {
         let app_state = AppState::default();
@@ -9032,6 +9045,188 @@ pub(crate) mod tests {
                 .expect("total processing stage present")
                 .duration_ms,
             crate::performance_metrics::MeasurementV1::measured(100)
+        );
+    }
+    #[test]
+    fn idle_after_a_timed_out_stop_clears_processing_for_the_current_recording() {
+        let recording_id = 384;
+        let app_handle = crate::events::native_tests::Deferred::new().app;
+        app_handle
+            .services()
+            .app_state
+            .recording_id
+            .store(recording_id, Ordering::SeqCst);
+        app_handle
+            .services()
+            .app_state
+            .dictation
+            .lock_or_recover()
+            .status = DictationStatus::Processing;
+        keyboard::set_processing(true);
+
+        let emitted_idle = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let emitted_idle = Arc::clone(&emitted_idle);
+            crate::events::observe_for_test(
+                &app_handle,
+                EventKind::RecordingStatusChanged,
+                move |payload| {
+                    if payload == "\"idle\"" {
+                        emitted_idle.store(true, Ordering::SeqCst);
+                    }
+                },
+            );
+        }
+
+        handle_audio_lifecycle_with(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::Accepted,
+            |_, _| {},
+        );
+        handle_audio_lifecycle_with(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::Idle,
+            |_, _| {},
+        );
+
+        let state = app_handle.services();
+        assert_eq!(
+            state.app_state.dictation.lock_or_recover().status,
+            DictationStatus::Idle
+        );
+        assert!(!keyboard::is_processing());
+        assert!(emitted_idle.load(Ordering::SeqCst));
+        assert_eq!(
+            state
+                .app_state
+                .dictation_telemetry
+                .terminal_for_test(recording_id),
+            Some((
+                DictationTerminalOutcome::PipelineFailure,
+                DictationErrorCode::RuntimeFailure,
+            ))
+        );
+    }
+
+    #[test]
+    fn runtime_failure_bridge_emits_recovery_before_failure_and_records_one_failed_run() {
+        let root = tempfile::tempdir().expect("performance diagnostics temp dir");
+        let app_handle = crate::events::native_tests::Deferred::new().app;
+        let performance = app_handle.services().performance.clone();
+        performance
+            .initialize(root.path().to_path_buf(), None)
+            .expect("initialize performance diagnostics");
+
+        let recording_id = 406;
+        performance
+            .begin_dictation(recording_id, Vec::new())
+            .expect("begin dictation diagnostic");
+
+        app_handle
+            .services()
+            .app_state
+            .recording_id
+            .store(recording_id, Ordering::SeqCst);
+        app_handle
+            .services()
+            .app_state
+            .dictation
+            .lock_or_recover()
+            .status = DictationStatus::Recording;
+
+        let emitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for (event_kind, event_name) in [
+            (EventKind::AudioRecoveryStarted, "audio-recovery-started"),
+            (
+                EventKind::RecordingInitializationFailed,
+                "recording-initialization-failed",
+            ),
+        ] {
+            let emitted = Arc::clone(&emitted);
+            crate::events::observe_for_test(&app_handle, event_kind, move |_| {
+                emitted
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(event_name);
+            });
+        }
+
+        handle_audio_lifecycle_with(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::Accepted,
+            |_, _| {},
+        );
+        handle_audio_lifecycle_with(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::Recovering {
+                reason: AudioCancelReason::RuntimeFailure,
+            },
+            |_, _| {},
+        );
+        assert!(
+            performance
+                .list(10)
+                .expect("list runs after recovery")
+                .runs
+                .is_empty(),
+            "runtime recovery must not prematurely persist a cancelled terminal"
+        );
+        assert_eq!(
+            app_handle
+                .services()
+                .app_state
+                .dictation_telemetry
+                .terminal_for_test(recording_id),
+            None,
+            "recovery alone is not terminal until the typed worker failure arrives"
+        );
+
+        handle_audio_lifecycle_with(
+            app_handle.clone(),
+            recording_id,
+            AudioLifecycleEvent::InitializationFailed {
+                error: "typed runtime failure".to_string(),
+                kind: audio::AudioFailureKind::StreamInvalidated,
+                recovery_reason: Some(AudioCancelReason::RuntimeFailure),
+            },
+            |_, _| {},
+        );
+
+        assert_eq!(
+            *emitted
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec!["audio-recovery-started", "recording-initialization-failed"],
+            "the production bridge must preserve recovery-before-failure order"
+        );
+        let runs = wait_for_completed_runs(&performance, 1);
+        assert_eq!(
+            runs.len(),
+            1,
+            "exactly one terminal diagnostic is persisted"
+        );
+        assert_eq!(
+            runs[0].outcome,
+            RunOutcomeV1::Failed {
+                stage: PerformanceStageV1::CaptureFinalization,
+                error_code: StableRunErrorV1::AudioCaptureFailed,
+            }
+        );
+        assert_eq!(
+            app_handle
+                .services()
+                .app_state
+                .dictation_telemetry
+                .terminal_for_test(recording_id),
+            Some((
+                DictationTerminalOutcome::RuntimeInterruption,
+                DictationErrorCode::StreamInvalidated,
+            )),
+            "a later failure callback must not overwrite the first terminal"
         );
     }
 }

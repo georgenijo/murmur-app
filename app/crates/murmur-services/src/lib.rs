@@ -15,7 +15,7 @@ mod audio_inventory;
 mod audio_lifecycle;
 mod events;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
-// call `benchmark::run` directly with a mock AppHandle; not part of any
+// call `benchmark::run_headless` without a UI host; not part of any
 // stable external API.
 pub mod benchmark;
 mod browser_site;

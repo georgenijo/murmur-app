@@ -164,11 +164,11 @@ class MurmurBenchRemoteTests(unittest.TestCase):
             self.assertEqual(result, executable)
             run.assert_called_once_with(
                 [
-                    "cargo", "test", "--release", "--features",
+                    "cargo", "test", "-p", "murmur-services", "--release", "--features",
                     "internal-benchmark", "--test", "headless_benchmark",
                     "--no-run", "--message-format=json",
                 ],
-                cwd=root / "app" / "src-tauri",
+                cwd=root / "app",
                 env={"CARGO_TARGET_DIR": "/tmp/target"},
                 check=True,
                 stdout=remote.subprocess.PIPE,

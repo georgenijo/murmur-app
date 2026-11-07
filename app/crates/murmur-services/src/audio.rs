@@ -5188,4 +5188,51 @@ mod tests {
             ]
         ));
     }
+    #[test]
+    fn terminal_teardown_retires_samples_before_it_can_block() {
+        let levels = crate::events::native_tests::Deferred::new();
+        let activity = Arc::new(CaptureActivity::default());
+        activity.set_active(true);
+        levels.publish(&activity, 0.25);
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let (entry, resume) = (entered.clone(), release.clone());
+        *activity.before_teardown.lock_or_recover() = Some(Arc::new(move || {
+            entry.wait();
+            resume.wait();
+        }));
+        let worker_activity = activity.clone();
+        let worker = thread::spawn(move || {
+            let (child, input, _output) =
+                ManagedChild::spawn(Path::new("/usr/bin/true"), &[]).unwrap();
+            terminate_or_quarantine(
+                &worker_activity,
+                child,
+                Some(input),
+                42,
+                [0; 16],
+                None,
+                crate::audio_lifecycle::AudioOwner::Preview(42),
+                &AudioWorkerEventSender::new(|_| Ok(())),
+                AudioInitPhase::Runtime,
+            )
+        });
+        entered.wait();
+        // Production termination is paused before its blocking helper teardown.
+        // Drain the actual production mailbox while it is paused.
+        levels.drain();
+        let received = levels.received.lock_or_recover().clone();
+        let retired = activity.generation().is_none();
+        release.wait();
+        assert!(worker.join().unwrap());
+        assert!(retired);
+        assert!(received.is_empty());
+        // A retry can obtain fresh ownership, but a supervisor stop cannot be
+        // undone by an attempt starting after it.
+        activity.begin_waveform_attempt();
+        assert!(activity.generation().is_some());
+        activity.set_active(false);
+        activity.begin_waveform_attempt();
+        assert!(activity.generation().is_none());
+    }
 }

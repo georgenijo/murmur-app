@@ -4600,6 +4600,128 @@ mod tests {
         shutdown(&supervisor);
     }
 
+    struct WaveformFactory(Sender<Arc<audio::CaptureActivity>>);
+
+    impl WorkerFactory for WaveformFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            events: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            self.0.send(spec.active.clone()).unwrap();
+            Ok(std::thread::spawn(move || {
+                let owner = spec.owner;
+                spec.shared.lock().unwrap().push(0.25);
+                let _ = events.send(AudioWorkerEvent::FirstBuffer {
+                    owner,
+                    sample_rate: WHISPER_SAMPLE_RATE,
+                    sent_at: Instant::now(),
+                });
+                let _ = spec.command_receiver.recv();
+                let _ = events.send(AudioWorkerEvent::StreamStopped { owner });
+                let _ = events.send(AudioWorkerEvent::ThreadExited { owner });
+            }))
+        }
+    }
+
+    fn waveform_supervisor() -> (AudioSupervisor, Receiver<Arc<audio::CaptureActivity>>) {
+        let (sender, receiver) = mpsc::channel();
+        (
+            spawn_supervisor(
+                Arc::new(WaveformFactory(sender)),
+                Arc::new(RecordingSink::default()),
+                SupervisorConfig::default(),
+            ),
+            receiver,
+        )
+    }
+
+    fn start_waveform(
+        supervisor: &AudioSupervisor,
+        activities: &Receiver<Arc<audio::CaptureActivity>>,
+        generation: u64,
+    ) -> Arc<audio::CaptureActivity> {
+        let owner = AudioOwner::Dictation(generation);
+        assert_eq!(
+            start(supervisor, owner)
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            Ok(())
+        );
+        let activity = activities.recv_timeout(Duration::from_secs(1)).unwrap();
+        wait_until("capture never became recording", || {
+            supervisor.public.is_recording_for(owner)
+        });
+        assert!(activity.is_active());
+        activity
+    }
+
+    fn stop_waveform(supervisor: &AudioSupervisor, generation: u64) {
+        let (sender, receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Toggle,
+                owner: Some(AudioOwner::Dictation(generation)),
+                response: sender,
+            })
+            .unwrap();
+        assert!(receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_ok());
+        wait_until("capture did not stop", || !supervisor.public.is_active());
+    }
+
+    #[test]
+    fn stop_before_main_drain_drops_queued_waveform() {
+        let levels = crate::events::native_tests::Deferred::new();
+        let (supervisor, activities) = waveform_supervisor();
+        let activity = start_waveform(&supervisor, &activities, 101);
+        levels.publish(&activity, 0.25);
+        stop_waveform(&supervisor, 101);
+        assert!(!activity.is_active());
+        levels.drain();
+        assert!(levels.received.lock().unwrap().is_empty());
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn cancel_before_main_drain_drops_queued_waveform() {
+        let levels = crate::events::native_tests::Deferred::new();
+        let (supervisor, activities) = waveform_supervisor();
+        let activity = start_waveform(&supervisor, &activities, 101);
+        levels.publish(&activity, 0.25);
+        assert_eq!(
+            cancel_any_phase(&supervisor, AudioOwner::Dictation(101))
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap(),
+            Ok(true)
+        );
+        wait_until("cancel did not finish", || !supervisor.public.is_active());
+        assert!(!activity.is_active());
+        levels.drain();
+        assert!(levels.received.lock().unwrap().is_empty());
+        shutdown(&supervisor);
+    }
+
+    #[test]
+    fn replacement_before_main_drain_drops_old_waveform_and_delivers_new_generation() {
+        let levels = crate::events::native_tests::Deferred::new();
+        let (supervisor, activities) = waveform_supervisor();
+        let old = start_waveform(&supervisor, &activities, 101);
+        levels.publish(&old, 0.25);
+        stop_waveform(&supervisor, 101);
+        let new = start_waveform(&supervisor, &activities, 102);
+        levels.drain();
+        assert!(levels.received.lock().unwrap().is_empty());
+        levels.publish(&new, 0.75);
+        levels.drain();
+        assert_eq!(*levels.received.lock().unwrap(), vec!["0.75"]);
+        stop_waveform(&supervisor, 102);
+        shutdown(&supervisor);
+    }
+
     #[test]
     fn first_buffer_enqueued_before_stop_returns_retained_pcm_exactly_once() {
         let release_spawn = Gate::closed();

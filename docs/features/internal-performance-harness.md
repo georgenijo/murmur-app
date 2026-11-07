@@ -9,18 +9,20 @@ or memory on the same Apple Silicon hardware and the same recorded speech?
 It is not a consumer feature. A normal build does not enable the Cargo feature,
 does not register the corpus recorder IPC commands, cannot deserialize the
 `personal` corpus source, and does not show the recorder or personal replay UI.
-The internal flavor is built explicitly with both controls:
+The retained harness lives in `app/crates/murmur-services/tests/headless_benchmark.rs`.
+It runs the native pipeline without creating a GPUI application, window or event
+transport. Private corpus replay requires `internal-benchmark` explicitly:
 
 ```bash
 cd app
-npm run tauri:bench:build
+cargo test -p murmur-services --release --features internal-benchmark \
+  --test headless_benchmark --no-run
 ```
 
-That produces **Murmur Bench** with bundle ID `com.localdictation.bench`. It has
-its own webview data, app data, and `local-dictation-bench/logs` directory.
-Launch-at-login, the updater plugin, updater UI/menu activity, and central log
-shipping are disabled. It can coexist with production Murmur and Murmur
-Refactor Test.
+This compiles the harness without running inference. The benchmark itself is
+ignored by ordinary tests; run it only when explicitly requested. The former
+Tauri Bench app flavor and webview are retired. Corpus recording/replay remains
+an internal service capability rather than a separately bundled Tauri app.
 
 ## Private corpus
 
@@ -182,10 +184,11 @@ meaningful only on the same hardware, OS, power state, model set, and corpus.
 The remote helper accepts explicit paths so it cannot infer or delete a broad
 home/workspace target. It fetches refs in a clean source repository, creates
 detached temporary worktrees under the supplied cache root, shares one Cargo
-release cache per immutable ref, copies the four exact gitignored helper build
+release cache per immutable ref, copies the three exact gitignored capture helper build
 prerequisites from the clean source checkout, runs both commits, compares their
 reports, then removes only those temporary worktrees. It never modifies the
-source helpers.
+source helpers. Helpers live in `app/binaries`; cache identity hashes
+`app/Cargo.lock`, and Cargo runs from `app` with `-p murmur-services`.
 
 Fleet comparisons use the `conditioned-timed-path-v4` cache policy. Each
 immutable ref is compiled once into its own Cargo target cache, and that exact

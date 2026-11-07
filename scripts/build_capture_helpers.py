@@ -134,6 +134,7 @@ def main() -> int:
     app_version = str(json.loads((APP_ROOT / "macos/bundle.json").read_text())["version"])
     env = {
         **os.environ,
+        "CARGO_TARGET_DIR": str(TARGET_ROOT),
         "MACOSX_DEPLOYMENT_TARGET": "14.0",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "14.0",
         "MURMUR_APP_VERSION": app_version,
