@@ -1661,8 +1661,11 @@ fn manual_check_joins_gated_background_discovery_including_setup_restart() {
                 setup.join().unwrap().unwrap();
             }
             let view = updater.snapshot();
-            assert!(
+            // UpToDate is presented by the indicator, which consumes the
+            // dialog intent; every other joined result opens the dialog.
+            assert_eq!(
                 view.is_update_dialog_open,
+                outcome != "current",
                 "{outcome}, setup={setup_restarts}"
             );
             match outcome {
@@ -1685,6 +1688,21 @@ fn manual_check_joins_gated_background_discovery_including_setup_restart() {
                 notifications.load(Ordering::Acquire),
                 usize::from(!setup_restarts && matches!(outcome, "optional" | "forced"))
             );
+            if outcome == "current" {
+                // Dismiss clears an explicitly shown UpToDate dialog, and the
+                // consumed manual intent never leaks into a later background
+                // failure as an unsolicited recovery dialog.
+                updater.act(Action::Show).unwrap();
+                updater.act(Action::Dismiss).unwrap();
+                assert!(!updater.snapshot().is_update_dialog_open);
+                server.routes.lock().unwrap().remove("/feed");
+                updater.act(Action::Configure { automatic: true }).unwrap();
+                updater.save("updater-last-check", json!(0)).unwrap();
+                assert!(updater.act(Action::Check { background: true }).is_err());
+                let view = updater.snapshot();
+                assert!(matches!(view.update_status, Status::Error { .. }));
+                assert!(!view.is_update_dialog_open, "setup={setup_restarts}");
+            }
         }
     }
 }

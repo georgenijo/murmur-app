@@ -548,16 +548,20 @@ impl Updater {
                 Action::Dismiss => self.update(|s| {
                     if matches!(
                         s.update_status,
-                        Status::Available {
-                            is_forced: false,
-                            ..
-                        } | Status::Ready {
-                            is_forced: false,
-                            ..
-                        } | Status::Error {
-                            is_forced: false,
-                            ..
-                        }
+                        Status::Idle
+                            | Status::UpToDate
+                            | Status::Available {
+                                is_forced: false,
+                                ..
+                            }
+                            | Status::Ready {
+                                is_forced: false,
+                                ..
+                            }
+                            | Status::Error {
+                                is_forced: false,
+                                ..
+                            }
                     ) {
                         s.is_update_dialog_open = false;
                     }
@@ -624,7 +628,10 @@ impl Updater {
                 {
                     s.update_status = Status::UpToDate;
                 }
-                s.is_update_dialog_open = true;
+                // The indicator presents UpToDate, so the dialog intent is
+                // consumed here; a lingering flag would let a later background
+                // failure open an unsolicited recovery dialog.
+                s.is_update_dialog_open = s.update_status != Status::UpToDate;
             });
             return Ok(false);
         }
