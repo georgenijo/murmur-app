@@ -1,0 +1,125 @@
+{
+  "source": "macOS 27.0.1 (26A434), diagnostics-qa 2f7b2955; application paths sanitized; symbol names unchanged",
+  "chain": [
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "dyld-internal"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "dyld-internal"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "dyld-internal"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "dyld-internal"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "dyld-internal"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "dyld-internal"
+    },
+    {
+      "image": "/System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking",
+      "symbol": "_sl_dlopen"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "WritingToolsUILibraryCore"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "+[NSWritingToolsCoordinator isWritingToolsAvailable]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication(NSMenuUpdating) _addTextInputMenuItems:]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication(NSMenuUpdating) _customizeMainMenu]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication finishLaunching]"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "_NSApplicationBeginRunning"
+    },
+    {
+      "image": "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+      "symbol": "-[NSApplication run]"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvXsh_NtCsdb5Gt6HMwVB_5objc26encodeuNtB6_15EncodeArguments8___invokeuECseLDAo9Xqdry_16objc2_foundation"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvNtNtNtCsdb5Gt6HMwVB_5objc27runtime16message_receiver18msg_send_primitive4senduuECseLDAo9Xqdry_16objc2_foundation"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvYONtNtCsdb5Gt6HMwVB_5objc27runtime9AnyObjectNtNtB6_16message_receiver15MessageReceiver12send_messageuuECseLDAo9Xqdry_16objc2_foundation"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvXNtNtCsdb5Gt6HMwVB_5objc215___macro_helpers17msg_send_retainedINtNtB5_13method_family12MethodFamilyKh6_EINtB3_7MsgSendONtNtB7_7runtime9AnyObjectuE12send_messageuECs1uTlRWW2dCe_10gpui_macos"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RNCNvXs_NtCs1uTlRWW2dCe_10gpui_macos8platformNtB6_11MacPlatformNtNtCs1ASA0QRCrFV_4gpui8platform8Platform3run0B8_"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvNtNtCsdb5Gt6HMwVB_5objc22rc11autorelease15autoreleasepooluNCNvXs_NtCs1uTlRWW2dCe_10gpui_macos8platformNtB15_11MacPlatformNtNtCs1ASA0QRCrFV_4gpui8platform8Platform3run0EB17_"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RNvXs_NtCs1uTlRWW2dCe_10gpui_macos8platformNtB4_11MacPlatformNtNtCs1ASA0QRCrFV_4gpui8platform8Platform3run"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvMs5_NtCs1ASA0QRCrFV_4gpui3appNtB6_11Application3runNCNvCs40ctCmqIfqH_14diagnostics_qa4main0EBV_"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RNvCs40ctCmqIfqH_14diagnostics_qa4main"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RNvYFEuINtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_onceCs40ctCmqIfqH_14diagnostics_qa"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvNtNtCs82bWklYMk3w_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECs40ctCmqIfqH_14diagnostics_qa"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RNCINvNtCs82bWklYMk3w_3std2rt10lang_startuE0Cs40ctCmqIfqH_14diagnostics_qa"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RNvNtCs82bWklYMk3w_3std2rt19lang_start_internal"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "_RINvNtCs82bWklYMk3w_3std2rt10lang_startuECs40ctCmqIfqH_14diagnostics_qa"
+    },
+    {
+      "image": "/synthetic/Diagnostics QA.app/Contents/MacOS/diagnostics-qa",
+      "symbol": "main"
+    },
+    {
+      "image": "/usr/lib/dyld",
+      "symbol": "start"
+    }
+  ]
+}
