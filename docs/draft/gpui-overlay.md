@@ -93,8 +93,9 @@ the pill follows system window appearance, independently of the main theme.
 Shared buttons/toggles receive window-local semantic roles and keep their AX
 names when their visible captions are compact glyphs.
 
-The native UI links no WebKit. Every offscreen overlay capture inventories its
-own loaded images using dyld and requires zero WebKit images. It records only
+The native UI links no WebKit. Every offscreen overlay capture checks the
+[attributed QA policy](#qa-webkit-attribution-policy): zero images before AX
+exposure, then only proven Apple AX bundle loads. It records only
 its PID and that count. This proves the native process's dependency/runtime
 absence, not destruction of another process's Tauri window.
 
@@ -133,7 +134,7 @@ All fixtures and rendered captures are synthetic. Native acceptance is separate.
 | O08/O09 Live Words consent, generation, click-through and hover lift | Existing preview owner retained; anchor/lift interface only | Moved preview fitting/collapsed-anchor tests; text/rendering port belongs to #1000, with native click-through and consent checks retained |
 | M01/M13 meeting states/suggestions, accept/dismiss | Idle-only prompt, token recheck and single-flight action | `suggestion_requires_idle_and_retains_expanded_bounds_until_dismissal`, `suggestion_actions_recheck_current_token_and_are_single_flight`; live capture/token authority stays in meeting service |
 | A01 accessible names, roles, state changes, inactive announcements | Shared controls/AccessKit plus native content-free announcement notification | Emitted tree/actions test and component suite; VoiceOver spoken output cannot be established headlessly |
-| Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero WebKit images; production host replacement remains pending |
+| Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero unattributed WebKit-family images; production host replacement remains pending |
 
 The shipping `useOverlayExpansion` and its disabled-hover/re-entry tests define
 pointer timing, including keeping the close shrink armed until a re-entry dwell
@@ -204,7 +205,7 @@ renders 35 overlay cases twice in addition to the 30 component cases: 65 cases,
 130 captures. Physical and pretend notches each cover 13 states, including
 clipboard delivery at the minimum 24 pt row height and
 collapsed/expanded disabled states; the pill covers nine visible states. It
-rejects blank/non-deterministic captures and missing/nonzero own-process WebKit
+rejects blank/non-deterministic captures and missing or unattributed own-process WebKit
 inventories. The native workspace and core remain within
 the existing source/transport/restart dependency guards. The WebKit lifecycle
 target already runs under the existing `rust-macos` job; no new CI job is needed.
