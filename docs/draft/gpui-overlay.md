@@ -461,9 +461,11 @@ our GPUI source gate also forbids web-view class construction references.
 After launch, a WebKit-family load is allowed only when its captured image/symbol
 chain contains Apple's AccessibilityBundles/AXBBundleManager activation and
 HIServices bundle loading followed by an incoming `_AXXMIG` request and Apple
-Mach/source-1 runloop dispatch. Unknown,
-non-system or app frames before that dispatch boundary, any web-view frame, truncated
-records, and inventory overflow fail closed. Ordinary app event-loop frames below
+Mach/source-1 runloop dispatch and continues to a recognized dyld process or
+libsystem_pthread thread root. Every captured frame must have a nonempty image
+and a resolved, non-redacted symbol, including frames below dispatch. Unknown,
+non-system or app frames before that dispatch boundary, any web-view frame,
+incomplete/truncated records, and inventory overflow fail closed. Ordinary app event-loop frames below
 the incoming dispatch boundary are not the initiator. No AX clients, text, audio,
 clipboard contents or other process data are collected. QA stores only bounded
 image paths/symbol names; production builds contain no observer or backtraces.
@@ -474,5 +476,14 @@ image paths/symbol names; production builds contain no observer or backtraces.
 loads do not mean Murmur constructs a web view. The policy is attribution to an
 incoming AX request, not proof of a particular client's identity. The golden
 script checks this policy and a separate deterministic zero-image launch run.
+Inventory waits for callbacks counted at entry (before capture/symbolication),
+then serializes records and rechecks both arrivals and published counters. The
+last stable check closes observation under the policy mutex. Any later dyld
+callback exits the QA process with status 86, including during summary output,
+after flush, or after inventory returns; callers must check process status as
+well as inventory JSON. Callbacks never wait for finalization or hold the policy
+mutex across loader/symbol/serialization calls. The shared C/Rust policy API
+and inventory fields are unchanged; inventory is terminal and runs once per QA
+host process.
 A bounded native diagnostic (`MURMUR_WEBKIT_QA_SECONDS=3 overlay-qa`) checks the
 same policy before quitting, without HID input or altering accessibility.
