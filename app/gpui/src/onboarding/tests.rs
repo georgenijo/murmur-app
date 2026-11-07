@@ -336,6 +336,134 @@ mod ax {
         draw(cx);
     }
     #[gpui::test]
+    fn failed_initial_read_has_keyboard_retry_and_recovers(cx: &mut TestAppContext) {
+        let (e, h, cx) = harness(cx);
+        e.update(cx, |s, cx| s.hide(cx));
+        h.fail.set(true);
+        e.update(cx, |s, cx| s.attach(cx));
+        draw(cx);
+        let t = tree(cx);
+        let retry = named(&t, "Retry");
+        assert!(
+            !t.nodes
+                .iter()
+                .find(|(id, _)| *id == retry)
+                .unwrap()
+                .1
+                .is_disabled()
+        );
+        keys(cx, "enter");
+        assert_eq!(e.read_with(cx, |s, _| s.step), Step::Welcome);
+        // Welcome's first enabled tab stop must offer recovery.
+        keys(cx, "tab space");
+        draw(cx);
+        assert_eq!(h.actions.borrow().last(), Some(&Action::Read));
+        assert!(e.read_with(cx, |s, _| s.model.snapshot.is_some()
+            && s.model.problem.is_none()));
+        assert_eq!(e.read_with(cx, |s, _| s.step), Step::Welcome);
+        let t = tree(cx);
+        click(cx, named(&t, "Get started"));
+        assert_eq!(e.read_with(cx, |s, _| s.step), Step::Microphone);
+    }
+    #[gpui::test]
+    fn failed_cancel_disables_both_fallback_actions_until_terminal(cx: &mut TestAppContext) {
+        let (e, h, cx) = harness(cx);
+        e.update(cx, |s, cx| s.visit(Step::Model, cx));
+        draw(cx);
+        h.hold.set(true);
+        e.update(cx, |s, cx| {
+            s.selected_model = CURATED[0].into();
+            s.activate(cx);
+            s.cancel_download(cx);
+        });
+        let (cancel, inbox) = h.held.borrow_mut().pop().unwrap();
+        inbox
+            .publish(Event::Reply {
+                ticket: cancel.ticket,
+                result: Err(Problem::Unavailable),
+            })
+            .unwrap_or_else(|_| panic!("reply"));
+        let t = tree(cx);
+        for label in ["Use Whisper base", "Use CPU Parakeet"] {
+            let id = named(&t, label);
+            assert!(
+                t.nodes
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .unwrap()
+                    .1
+                    .is_disabled(),
+                "{label} enabled while download is active"
+            );
+            click(cx, id);
+        }
+        assert_eq!(e.read_with(cx, |s, _| s.selected_model.clone()), CURATED[0]);
+        let t = tree(cx);
+        click(cx, named(&t, "Cancel download"));
+        let (retry, inbox) = h.held.borrow_mut().pop().unwrap();
+        let mut state = fixtures::snapshot();
+        state.revision = retry.ticket.revision;
+        inbox
+            .publish(Event::Reply {
+                ticket: retry.ticket,
+                result: Ok(state),
+            })
+            .unwrap_or_else(|_| panic!("reply"));
+        draw(cx);
+        assert!(!e.read_with(cx, |s, _| s.downloading()));
+    }
+    #[gpui::test]
+    fn compact_onboarding_tabs_reveal_model_buttons_and_hotkey_choices(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness(cx);
+        cx.simulate_resize(gpui::size(gpui::px(480.), gpui::px(360.)));
+        for reduce_motion in [false, true] {
+            cx.update(|_, cx| {
+                crate::preferences::apply(
+                    crate::preferences::DisplayPreferences {
+                        reduce_motion,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            for step in [Step::Model, Step::Hotkey] {
+                e.update(cx, |s, cx| s.visit(step, cx));
+                draw(cx);
+                for key in ["tab", "shift-tab"] {
+                    for _ in 0..16 {
+                        keys(cx, key);
+                        cx.update(|w, cx| w.simulate_next_frame(cx));
+                        draw(cx);
+                        let t = tree(cx);
+                        let node = &t
+                            .nodes
+                            .iter()
+                            .find(|(id, _)| *id == t.focus)
+                            .expect("focused control")
+                            .1;
+                        let bounds = node.bounds().unwrap();
+                        let scale = cx.update(|w, _| f64::from(w.scale_factor()));
+                        let viewport = e.read_with(cx, |s, _| s.scroll.bounds());
+                        // Footer actions sit outside the scrolling body.
+                        if node.label().is_some_and(|l| {
+                            l == "Back" || l == "Continue" || l == "Download model"
+                        }) {
+                            continue;
+                        }
+                        assert!(
+                            bounds.y0 >= scale * f64::from(f32::from(viewport.top()))
+                                && bounds.y1 <= scale * f64::from(f32::from(viewport.bottom())),
+                            "{:?} {:?} outside {:?}",
+                            node.label(),
+                            bounds,
+                            viewport
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[gpui::test]
     fn actual_ax_navigation_optional_skip_and_no_hidden_controls(cx: &mut TestAppContext) {
         let (e, h, cx) = harness(cx);
         let t = tree(cx);
@@ -538,4 +666,43 @@ fn grandfathered_install_with_a_different_installed_model_keeps_the_model_gate(
     draw(cx);
     assert!(e.read_with(cx, |s, _| s.finished));
     assert_eq!(host.state.borrow().settings["model"], "tiny.en");
+}
+
+#[gpui::test]
+fn cancellation_retry_uses_retained_download_identity(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    e.update(cx, |s, cx| s.visit(Step::Model, cx));
+    draw(cx);
+    h.hold.set(true);
+    e.update(cx, |s, cx| {
+        s.selected_model = CURATED[0].into();
+        s.activate(cx);
+        s.cancel_download(cx);
+    });
+    let (cancel, inbox) = h.held.borrow_mut().pop().unwrap();
+    inbox
+        .publish(Event::Reply {
+            ticket: cancel.ticket,
+            result: Err(Problem::Unavailable),
+        })
+        .unwrap_or_else(|_| panic!("reply"));
+    draw(cx);
+    e.update(cx, |s, cx| {
+        // Even an independently changed selection cannot redirect cancellation.
+        s.selected_model = "base.en".into();
+        s.cancel_download(cx);
+    });
+    let (retry, _) = h.held.borrow_mut().pop().unwrap();
+    assert_eq!(retry.action, Action::CancelDownload(CURATED[0].into()));
+    // A reply from the failed attempt cannot release the retry's owner.
+    inbox
+        .publish(Event::Reply {
+            ticket: cancel.ticket,
+            result: Ok(fixtures::snapshot()),
+        })
+        .unwrap_or_else(|_| panic!("reply"));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.cancelling
+        && s.downloading()
+        && s.model.pending));
 }

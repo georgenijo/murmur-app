@@ -41,7 +41,7 @@ fn main() {
             murmur_ui::gallery::apply_midnight(cx);
         }
         let state = std::env::var("MURMUR_ONBOARDING_STATE").unwrap_or_else(|_| "welcome".into());
-        let compact = state == "compact";
+        let compact = state.starts_with("compact");
         let mut entity = None;
         let handle = cx
             .open_window(
@@ -97,8 +97,9 @@ fn main() {
                         "accessibility" => Step::Accessibility,
                         "system-audio" | "unsupported" | "relaunch" => Step::SystemAudio,
                         "calendar" | "restricted" => Step::Calendar,
-                        "model" | "catalog-error" | "download" => Step::Model,
-                        "hotkey" => Step::Hotkey,
+                        "model" | "catalog-error" | "download" | "cancel-error"
+                        | "compact-model" => Step::Model,
+                        "hotkey" | "compact-hotkey" => Step::Hotkey,
                         "done" | "error" => Step::Done,
                         _ => Step::Welcome,
                     };
@@ -134,9 +135,18 @@ fn main() {
                     if state == "error" {
                         s.model.problem = Some(Problem::Unavailable);
                     }
-                    if state == "download" {
+                    if state == "download" || state == "cancel-error" {
                         s.selected_model = CURATED[0].into();
                         s.fixture_download(cx);
+                        if state == "cancel-error" {
+                            s.model.pending = false;
+                            s.model.problem = Some(Problem::Unavailable);
+                        }
+                    }
+                    if state == "read-error" {
+                        s.model.snapshot = None;
+                        s.model.pending = false;
+                        s.model.problem = Some(Problem::Unavailable);
                     }
                     if !headless {
                         s.follow(cx);
@@ -163,6 +173,23 @@ fn main() {
                         .to_platform_input(),
                         cx,
                     );
+                    if let Ok(keys) = std::env::var("MURMUR_QA_KEYS") {
+                        for key in keys.split_whitespace() {
+                            let keystroke = Keystroke::parse_with_os(key, cx.platform_info().os)
+                                .expect("synthetic QA key");
+                            w.dispatch_event(
+                                KeyDownEvent {
+                                    keystroke: keystroke.clone(),
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                }
+                                .to_platform_input(),
+                                cx,
+                            );
+                            w.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+                            w.draw(cx).clear(cx);
+                        }
+                    }
                     w.draw(cx).clear(cx);
                 })
                 .expect("settle Onboarding controls");
@@ -176,8 +203,9 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank Onboarding capture"
                     );
-                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_ONBOARDING_INVENTORY");
+                    // Preserve the rendered frame even when a separate native-policy check fails.
                     image.save(path).expect("synthetic capture");
+                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_ONBOARDING_INVENTORY");
                     cx.quit();
                 })
                 .expect("Onboarding capture");

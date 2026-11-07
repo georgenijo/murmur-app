@@ -41,7 +41,7 @@ fn main() {
             murmur_ui::gallery::apply_midnight(cx);
         }
         let state = std::env::var("MURMUR_HOME_STATE").unwrap_or_else(|_| "checklist".into());
-        let compact = state == "compact";
+        let compact = state.starts_with("compact");
         let mut entity = None;
         let handle = cx
             .open_window(
@@ -98,7 +98,7 @@ fn main() {
                     s.drain(cx);
                     if let Some(snapshot) = s.model.snapshot.as_mut() {
                         snapshot.discovery["checklistDismissed"] =
-                            serde_json::json!(state != "checklist");
+                            serde_json::json!(state != "checklist" && state != "compact-checklist");
                         match state.as_str() {
                             "starting" => {
                                 snapshot.status = Status::Starting;
@@ -163,6 +163,23 @@ fn main() {
                         .to_platform_input(),
                         cx,
                     );
+                    if let Ok(keys) = std::env::var("MURMUR_QA_KEYS") {
+                        for key in keys.split_whitespace() {
+                            let keystroke = Keystroke::parse_with_os(key, cx.platform_info().os)
+                                .expect("synthetic QA key");
+                            w.dispatch_event(
+                                KeyDownEvent {
+                                    keystroke: keystroke.clone(),
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                }
+                                .to_platform_input(),
+                                cx,
+                            );
+                            w.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+                            w.draw(cx).clear(cx);
+                        }
+                    }
                     w.draw(cx).clear(cx);
                 })
                 .expect("settle Home controls");
@@ -176,8 +193,9 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank Home capture"
                     );
-                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_HOME_INVENTORY");
+                    // Preserve the rendered frame even when a separate native-policy check fails.
                     image.save(path).expect("synthetic capture");
+                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_HOME_INVENTORY");
                     cx.quit();
                 })
                 .expect("Home capture");

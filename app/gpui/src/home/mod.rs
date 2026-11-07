@@ -390,6 +390,17 @@ impl Render for Home {
             .h_full()
             .cursor_col_resize()
             .bg(p.border.opacity(0.4))
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .focus_visible(|s| {
+                s.border_color(p.focus).shadow(vec![BoxShadow {
+                    inset: false,
+                    color: p.focus.opacity(0.24),
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: tokens::FOCUS_WIDTH,
+                }])
+            })
             .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
                 let step = if e.keystroke.modifiers.shift {
                     32.
@@ -695,6 +706,7 @@ impl Render for Home {
                             .child(format!("Get more from Murmur · {count}/5"))
                             .child(
                                 Button::new("dismiss-checklist", "Dismiss Get more from Murmur")
+                                    .with_scroll_parent(Some(&self.scroll))
                                     .size(ButtonSize::Compact)
                                     .on_click(move |_, _, cx| {
                                         e.update(cx, |s, cx| {
@@ -736,6 +748,7 @@ impl Render for Home {
                                 )
                                 .caption(if done { "Open again" } else { action })
                                 .track_focus(&focus)
+                                .with_scroll_parent(Some(&self.scroll))
                                 .size(ButtonSize::Compact)
                                 .disabled(self.model.pending)
                                 .on_click(move |_, _, cx| {

@@ -57,10 +57,11 @@ def render_onboarding_home(target, output, policy_log):
     families = {
         'onboarding': ('welcome', 'microphone', 'accessibility', 'system-audio', 'calendar',
                        'model', 'hotkey', 'done', 'denied', 'waiting', 'restricted',
-                       'unsupported', 'relaunch', 'catalog-error', 'download', 'compact', 'loading', 'error'),
+                       'unsupported', 'relaunch', 'catalog-error', 'download', 'compact', 'loading', 'error',
+                       'read-error', 'cancel-error', 'compact-model', 'compact-hotkey'),
         'home': ('idle', 'starting', 'recording', 'processing', 'recovering', 'meeting',
                  'initializing', 'destination', 'denied', 'checklist', 'collapsed', 'compact', 'loading', 'error',
-                 'hint-double_tap_timing', 'hint-correct_and_teach', 'hint-browser_modes'),
+                 'hint-double_tap_timing', 'hint-correct_and_teach', 'hint-browser_modes', 'compact-checklist'),
     }
     for family, states in families.items():
         prefix = f'MURMUR_{family.upper()}_INVENTORY'
