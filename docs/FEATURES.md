@@ -298,7 +298,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 - macOS 14+ on Apple Silicon. App builds fail explicitly for non-macOS targets.
 - Developer ID signed and notarized; hardened runtime; capture helpers ship with dedicated entitlements; release finalization fails closed on any unexpected bundle executable.
-- Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so native host can patch the updater bundle-type marker.
+- Native release builds use the workspace release profile and strip symbols; the updater archive uses the native minisign-compatible signer.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
 - **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained, apart from disclosed bounded temporary system audio for opted-in speaker refinement.
 - All local data is inspectable and deletable from within the app.
@@ -310,11 +310,11 @@ headless runner, and regression gate are excluded from normal distribution.
 | Area | Location |
 |------|----------|
 | Rust backend | `app/crates/murmur-services/src/` — 187 native requests |
-| Frontend | `app/gpui/src/` — GPUI 18 + TypeScript + Tailwind 4 |
-| Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
+| Native UI | `app/gpui/src/` — GPUI, Rust, AccessKit and AppKit ports |
+| Capture worker | `app/sidecars/capture/`, protocol in `app/crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
 | Benchmark fixtures | `bench/` |
 | Release/packaging scripts | `scripts/` |
 | Workflow/artifact policy tests | `tests/` |
 
-Tests: Rust unit and integration (`cargo test -- --test-threads=1`), frontend vitest (`npm test`), TypeScript (`npx tsc --noEmit`). CI runs all of these plus Omen code-quality analysis and automated PR review.
+Tests: Rust unit/integration suites, GPUI keyboard/focus/AccessKit interaction tests, repeated offscreen Metal goldens, and packaging/identity/privacy policy tests. Native smoke tests exercise the running macOS app. See [Development](DEVELOPMENT.md) for commands.

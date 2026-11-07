@@ -4,7 +4,7 @@
 //! when models are not present. They are intended for local development,
 //! not CI.
 //!
-//! Run: cd app/src-tauri && cargo test --test transcription_integration -- --test-threads=1
+//! Run: cargo test --manifest-path app/Cargo.toml -p murmur-services --test transcription_integration -- --test-threads=1
 
 use murmur_services::transcriber::{parse_wav_to_samples, TranscriptionBackend, WhisperBackend};
 

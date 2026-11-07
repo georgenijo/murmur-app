@@ -125,7 +125,13 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
-      - run: python3 scripts/check_gpui_goldens.py
+      - run: |
+          case "${{ matrix.shard }}" in
+            1) python3 scripts/check_gpui_goldens.py --settings-only ;;
+            2) python3 scripts/check_gpui_goldens.py --onboarding-home-only ;;
+            3) python3 scripts/check_gpui_goldens.py --meetings-only
+               python3 scripts/check_gpui_goldens.py --remaining-only ;;
+          esac
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -141,7 +147,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
-      - run: python3 scripts/check_gpui_goldens.py
+      - run: python3 scripts/check_gpui_goldens.py --core-only
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,4 +1,4 @@
-//! Tauri transport for the core's named event protocol. No broadcast target is
+//! Native transport for the core's named event protocol. No broadcast target is
 //! used: view labels and native consumer registrations are separate routes.
 use crate::host::ServiceAccess;
 use crate::MutexExt;

@@ -1243,7 +1243,9 @@ async fn contract(b: &Backend) {
                 settings["language"] == "es"
                     && snapshot.history.len() == 1
                     && b.call("webkit_state_snapshot", json!({})).await?["transcriptKeysRemoved"]
-                        == true,
+                        == true
+                    && b.call("webkit_state_snapshot", json!({})).await?["retired"] == true
+                    && !b.services.legacy_store_present(),
             )
         }
         .await

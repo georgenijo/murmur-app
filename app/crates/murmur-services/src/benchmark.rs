@@ -739,7 +739,7 @@ fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
 
 // Generic over `R: crate::host::Runtime` (rather than the default `Wry`) so the
 // headless benchmark runner (tests/headless_benchmark.rs) can drive `run`
-// with a `tauri::test::MockRuntime` AppHandle -- no path resolution in this
+// with the injected native service context -- no path resolution in this
 // module goes through AppHandle (models_dir uses `dirs::` directly), so the
 // only thing that needs a real runtime is `Emitter::emit` below, which is
 // implemented for `AppHandle<R>` for any `R: Runtime`.

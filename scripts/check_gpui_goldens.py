@@ -271,8 +271,9 @@ def main():
         (output / 'remaining-receipt.json').write_text(json.dumps({'comparison': 'same-host strict byte equality',
             'sha256': results}, indent=2) + '\n')
         return
-    if sys.argv[1:]:
-        raise SystemExit('usage: check_gpui_goldens.py [--settings-only|--onboarding-home-only|--meetings-only|--remaining-only]')
+    core_only = sys.argv[1:] == ['--core-only']
+    if sys.argv[1:] and not core_only:
+        raise SystemExit('usage: check_gpui_goldens.py [--core-only|--settings-only|--onboarding-home-only|--meetings-only|--remaining-only]')
     cases = [(mode, state) for mode in ('light', 'dark', 'contrast')
              for state in ('rest', 'hover', 'pressed', 'button', 'toggle', 'field', 'dropdown', 'popup', 'list', 'navigation')]
     for mode, state in cases:
@@ -423,10 +424,11 @@ def main():
             raise AssertionError('History states rendered identically')
     if len({results[f'history-{mode}-list'] for mode in ('light', 'dark', 'contrast')}) != 3:
         raise AssertionError('History appearance variants rendered identically')
-    results.update(render_settings(target, output, policy_log))
-    results.update(render_onboarding_home(target, output, policy_log))
-    results.update(render_meetings(target, output, policy_log))
-    results.update(render_remaining(target, output, policy_log))
+    if not core_only:
+        results.update(render_settings(target, output, policy_log))
+        results.update(render_onboarding_home(target, output, policy_log))
+        results.update(render_meetings(target, output, policy_log))
+        results.update(render_remaining(target, output, policy_log))
 
 
     (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')

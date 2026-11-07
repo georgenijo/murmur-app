@@ -67,7 +67,7 @@ pub fn bundle(executable: &Path) -> Result<PathBuf> {
     }
     Ok(canonical)
 }
-// Keep aligned with tauri.macos.conf.json and finalize_macos_bundle.py. These
+// Keep aligned with the native bundle manifest and finalize_macos_bundle.py. These
 // helpers are required even if an accidentally incomplete old bundle omitted one.
 pub(super) const EXECUTABLES: &[&str] = &[
     "ui",

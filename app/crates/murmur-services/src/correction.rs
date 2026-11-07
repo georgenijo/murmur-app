@@ -235,7 +235,7 @@ const MAIN_CHANGES: &[&str] = &["change", "changes"];
 
 /// Words near `Tori` / `Tory` that establish the Tauri framework.
 const TAURI_CUE_WORDS: &[&str] = &[
-    "rust", "cargo", "crate", "crates", "plugin", "plugins", "tauri", "view", "npm", "pnpm",
+    "rust", "cargo", "crate", "crates", "plugin", "plugins", "tauri", "webview", "npm", "pnpm",
     "yarn", "ipc", "sidecar", "app", "apps", "build", "builds", "bundle", "desktop", "frontend",
     "backend",
 ];
