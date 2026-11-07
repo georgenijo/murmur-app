@@ -504,44 +504,58 @@ impl Render for Modes {
             let mut list = div().grid().grid_cols(3).gap(px(8.)).p(px(12.));
             for m in all {
                 let id = m["id"].as_str().unwrap().to_string();
+                let name = m["name"].as_str().unwrap_or("Untitled mode").to_string();
+                let status = if m["builtIn"] == true {
+                    "Built-in"
+                } else if m["enabled"] == true {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                };
                 let e = cx.entity();
                 list = list.child(
-                    Button::new(
-                        SharedString::from(format!("mode-{id}")),
-                        m["name"].as_str().unwrap_or("Untitled mode").to_string(),
-                    )
-                    .intent(crate::ButtonIntent::Ghost)
-                    .palette(Palette {
-                        hairline_strong: if id == self.selected {
-                            p.accent
-                        } else {
-                            p.hairline_strong
-                        },
-                        raised: p.surface.blend(p.accent.opacity(0.06)),
-                        tint_raised: p.surface.blend(p.accent.opacity(0.06)),
-                        ..p
-                    })
-                    .padding_y(px(10.))
-                    .padding_x(px(12.))
-                    .bordered()
-                    .description(if m["builtIn"] == true {
-                        "Built-in"
-                    } else if m["enabled"] == true {
-                        "Enabled"
-                    } else {
-                        "Disabled"
-                    })
-                    .toggled(id == self.selected)
-                    .with_scroll_parent(Some(&self.scroll))
-                    .on_click(move |_, _, cx| {
-                        e.update(cx, |s, cx| {
-                            s.selected = id.clone();
-                            s.editing = None;
-                            s.confirm = None;
-
-                            cx.notify()
+                    Button::new(SharedString::from(format!("mode-{id}")), name.clone())
+                        .intent(crate::ButtonIntent::Ghost)
+                        .palette(Palette {
+                            hairline_strong: if id == self.selected {
+                                p.accent
+                            } else {
+                                p.hairline_strong
+                            },
+                            raised: p.surface.blend(p.accent.opacity(0.06)),
+                            tint_raised: p.surface.blend(p.accent.opacity(0.06)),
+                            ..p
                         })
-                    }),
+                        .padding_y(px(8.))
+                        .padding_x(px(12.))
+                        .bordered()
+                        .description(status)
+                        .content(
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(div().truncate().child(name))
+                                .child(
+                                    div()
+                                        .text_size(tokens::CAPTION_SIZE)
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight::NORMAL)
+                                        .text_color(p.muted)
+                                        .child(status),
+                                ),
+                        )
+                        .toggled(id == self.selected)
+                        .with_scroll_parent(Some(&self.scroll))
+                        .on_click(move |_, _, cx| {
+                            e.update(cx, |s, cx| {
+                                s.selected = id.clone();
+                                s.editing = None;
+                                s.confirm = None;
+                                cx.notify()
+                            })
+                        }),
                 );
             }
             let mut library = card(p).child(list);
@@ -551,6 +565,7 @@ impl Render for Modes {
             library = library
                 .child(
                     row(p)
+                        .border_t_1()
                         .child(copy(
                             "custom-mode",
                             "Custom mode",
