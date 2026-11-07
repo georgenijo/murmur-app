@@ -16,6 +16,20 @@ fn dark(doc: &Value, system: bool) -> bool {
         _ => system,
     }
 }
+pub fn is_dark(document: &Value, cx: &App) -> bool {
+    dark(
+        document,
+        cx.try_global::<Appearance>().map_or_else(
+            || {
+                matches!(
+                    cx.window_appearance(),
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark
+                )
+            },
+            |a| a.system_dark,
+        ),
+    )
+}
 pub fn install(document: Value, cx: &mut App) {
     let system = cx.try_global::<Appearance>().map_or(
         matches!(

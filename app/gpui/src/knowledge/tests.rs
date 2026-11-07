@@ -37,3 +37,23 @@ fn drafts_preserve_scope_and_require_content() {
     v["payload"]["replacement"] = json!("");
     assert!(valid_draft(&v).is_err());
 }
+
+#[test]
+fn editor_details_round_trip_empty_and_comma_containing_aliases() {
+    for aliases in [json!([]), json!(["Tori", "Tory", "Tor, ee"])] {
+        let entry =
+            json!({"payload":{"kind":"vocabulary_term","written":"Tori","aliases":aliases}});
+        assert_eq!(
+            json!(editor_detail(&entry).lines().collect::<Vec<_>>()),
+            aliases
+        );
+    }
+    for (kind, key) in [
+        ("replacement_rule", "replacement"),
+        ("snippet", "body"),
+        ("transform", "instruction"),
+    ] {
+        let entry = json!({"payload":{"kind":kind,key:"First\nSecond"}});
+        assert_eq!(editor_detail(&entry), detail(&entry));
+    }
+}

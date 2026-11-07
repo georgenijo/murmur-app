@@ -24,6 +24,7 @@ pub struct Modes {
     pub site: Entity<Form>,
     pub sample: Entity<Form>,
     editing: Option<Value>,
+    edit_focus: FocusHandle,
     site_edit: Option<Value>,
     confirm: Option<String>,
     scroll: ScrollHandle,
@@ -136,6 +137,7 @@ impl Modes {
             site,
             sample,
             editing: None,
+            edit_focus: cx.focus_handle(),
             site_edit: None,
             confirm: None,
             scroll: ScrollHandle::new(),
@@ -193,6 +195,13 @@ impl Modes {
         modes.push(mode);
         self.selected = id;
         self.patch(json!({"modes":modes}), cx);
+    }
+    fn cancel_edit(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        self.editing = None;
+        self.saving = false;
+        self.notice = None;
+        w.focus(&self.edit_focus, cx);
+        cx.notify();
     }
     fn save(&mut self, cx: &mut Context<Self>) {
         if self
@@ -430,6 +439,7 @@ impl Render for Modes {
                     let m = selected.clone();
                     body = body.child(
                         Button::new("mode-edit", "Edit mode…")
+                            .track_focus(&self.edit_focus)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
                                 e.update(cx, |s, cx| {
@@ -469,11 +479,8 @@ impl Render for Modes {
                         .child(
                             Button::new("mode-cancel", "Cancel edit")
                                 .with_scroll_parent(Some(&self.scroll))
-                                .on_click(move |_, _, cx| {
-                                    cancel.update(cx, |s, cx| {
-                                        s.editing = None;
-                                        cx.notify()
-                                    })
+                                .on_click(move |_, w, cx| {
+                                    cancel.update(cx, |s, cx| s.cancel_edit(w, cx))
                                 }),
                         );
                 }
@@ -629,6 +636,13 @@ impl Render for Modes {
         }
         div()
             .id("modes")
+            .capture_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
+                if e.keystroke.key == "escape" && s.editing.is_some() && !e.prefer_character_input {
+                    s.cancel_edit(w, cx);
+                    w.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)

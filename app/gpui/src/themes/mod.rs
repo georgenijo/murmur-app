@@ -44,6 +44,24 @@ pub struct Themes {
     confirming: bool,
     notice: Option<&'static str>,
     restore: Option<FocusHandle>,
+    import_focus: FocusHandle,
+}
+/// React's updateTheme drops compiled overrides/library ownership before editing.
+fn editable_theme(document: &Value, dark: bool) -> Value {
+    let theme = &document["theme"];
+    let compiled = theme.get("light").is_some() || theme.get("dark").is_some();
+    let library_owned = ["light", "dark"]
+        .iter()
+        .any(|mode| document["selection"][mode] != "custom");
+    if !compiled && !library_owned {
+        return theme.clone();
+    }
+    let rendered = compile::value(&compile::resolve(theme, dark));
+    let mut base = json!({"version":1,"presetId":"custom","accent":rendered["primary"],"background":rendered["background"],"foreground":rendered["on-surface"]});
+    if let Some(contrast) = theme.get("contrast") {
+        base["contrast"] = contrast.clone();
+    }
+    base
 }
 impl Themes {
     pub fn new(host: Rc<host::Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -99,6 +117,7 @@ impl Themes {
             confirming: false,
             notice: None,
             restore: None,
+            import_focus: cx.focus_handle(),
         }
     }
     pub fn attach(&mut self, cx: &mut Context<Self>) {
@@ -130,20 +149,24 @@ impl Themes {
         self.restore = w.focused(cx);
         self.notice = None;
         if let Dialog::Edit { create } = &d {
-            let theme = self
+            let document = self
                 .controller
                 .model
                 .snapshot
                 .as_ref()
-                .map(|s| s.appearance["theme"].clone())
-                .unwrap_or(json!({"version":1,"presetId":"sonic"}));
+                .map(|s| s.appearance.clone())
+                .unwrap_or(json!({"theme":{"version":1,"presetId":"sonic"}}));
+            let theme = editable_theme(&document, appearance::is_dark(&document, cx));
             self.base_theme = theme.clone();
             self.editor_revision = self.controller.model.revision;
             self.editor.update(cx,|f,cx|f.set(json!({"label":if *create{"New theme"}else{"Custom"},"accent":theme["accent"].as_str().unwrap_or(""),"background":theme["background"].as_str().unwrap_or(""),"foreground":theme["foreground"].as_str().unwrap_or(""),"contrast":theme["contrast"].as_i64().unwrap_or(0).to_string()}),w,cx));
             self.editor.update(cx, |f, cx| f.focus_first(w, cx));
         }
-        if matches!(d, Dialog::Community | Dialog::Import) {
+        if matches!(d, Dialog::Community) {
             self.search.update(cx, |f, cx| f.focus_first(w, cx));
+        }
+        if matches!(d, Dialog::Import) {
+            w.focus(&self.import_focus, cx);
         }
         self.dialog = Some(d);
         cx.notify();
@@ -292,12 +315,15 @@ impl Render for Themes {
                     let e = cx.entity();
                     let local = e.clone();
                     content = content
-                        .child(self.button(
-                            "theme-local-import".into(),
-                            "Choose local file…".into(),
-                            Action::InspectLocal,
-                            cx,
-                        ))
+                        .child(
+                            self.button(
+                                "theme-local-import".into(),
+                                "Choose local file…".into(),
+                                Action::InspectLocal,
+                                cx,
+                            )
+                            .track_focus(&self.import_focus),
+                        )
                         .child(
                             Button::new("theme-community", "Browse community…")
                                 .with_scroll_parent(Some(&self.scroll))

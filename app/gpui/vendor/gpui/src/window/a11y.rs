@@ -271,6 +271,18 @@ impl A11y {
         }
     }
 
+    /// Explicit input-to-popup association. Only the actual keyboard/AX focus
+    /// owner can nominate a node, and both nodes must exist in this frame.
+    pub(crate) fn set_active_descendant_for(&mut self, node_id: NodeId, owner: FocusId) {
+        if self.nodes.has_node(node_id)
+            && let Some(focus) = self.nodes.focus
+            && focus != node_id
+            && self.focus_ids.get(&focus) == Some(&owner)
+        {
+            self.nodes.set_active_descendant(node_id);
+        }
+    }
+
     /// Clear per-frame state and push the root node to start a new frame.
     pub(crate) fn begin_frame(&mut self) {
         self.focus_ids.clear();

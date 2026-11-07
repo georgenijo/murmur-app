@@ -63,6 +63,20 @@ pub fn detail(v: &Value) -> String {
                 })
         })
 }
+/// The editor accepts one alias per line; row summaries retain comma separators.
+pub fn editor_detail(v: &Value) -> String {
+    if v["payload"]["kind"] == "vocabulary_term" {
+        v["payload"]["aliases"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        detail(v)
+    }
+}
 pub fn valid_record(v: &Value) -> bool {
     v["id"]
         .as_str()

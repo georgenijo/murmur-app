@@ -34,6 +34,7 @@ pub struct Knowledge {
     scroll: ScrollHandle,
     notice: Option<&'static str>,
     restore: Option<FocusHandle>,
+    save_focus: FocusHandle,
     _filters: Subscription,
 }
 impl Knowledge {
@@ -147,6 +148,7 @@ impl Knowledge {
             scroll: ScrollHandle::new(),
             notice: None,
             restore: None,
+            save_focus: cx.focus_handle(),
             _filters: sub,
         }
     }
@@ -205,7 +207,7 @@ impl Knowledge {
         if let Dialog::Edit(entry) = &d {
             let blank = json!({"payload":{"kind":"replacement_rule","source":"","replacement":""},"scope":{"kind":"global"},"enabled":true});
             let v = entry.as_ref().unwrap_or(&blank);
-            self.editor.update(cx,|s,cx|s.set(json!({"kind":v["payload"]["kind"],"title":title(v),"detail":detail(v),"scope":v["scope"]["kind"],"bundleId":v["scope"]["bundleId"],"root":v["scope"]["root"],"enabled":v["enabled"].as_bool().unwrap_or(true).to_string()}),w,cx));
+            self.editor.update(cx,|s,cx|s.set(json!({"kind":v["payload"]["kind"],"title":title(v),"detail":editor_detail(v),"scope":v["scope"]["kind"],"bundleId":v["scope"]["bundleId"],"root":v["scope"]["root"],"enabled":v["enabled"].as_bool().unwrap_or(true).to_string()}),w,cx));
             self.editor.update(cx, |s, cx| {
                 s.disabled_keys.clear();
                 if entry.is_some() {
@@ -355,6 +357,8 @@ impl Render for Knowledge {
                 .flex_col()
                 .gap(px(12.))
                 .child(label);
+            self.phrase
+                .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
             match dialog {
                 Dialog::Edit(_) => {
                     self.editor
@@ -400,6 +404,8 @@ impl Render for Knowledge {
                         },
                     )
                     .disabled(self.controller.model.pending)
+                    .track_focus(&self.save_focus)
+                    .default_confirm(matches!(dialog, Dialog::Edit(_)))
                     .with_scroll_parent(Some(&self.scroll))
                     .on_click(move |_, w, cx| e.update(cx, |s, cx| s.confirm(w, cx))),
                 )
@@ -609,6 +615,16 @@ impl Render for Knowledge {
             .capture_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
                 if e.keystroke.key == "escape" && s.dialog.is_some() {
                     s.cancel(w, cx);
+                    w.prevent_default();
+                    cx.stop_propagation();
+                } else if e.keystroke.key == "enter"
+                    && e.keystroke.modifiers.number_of_modifiers() == 0
+                    && !e.is_held
+                    && !e.prefer_character_input
+                    && matches!(s.dialog, Some(Dialog::Edit(_)))
+                    && (s.save_focus.is_focused(w) || s.editor.read(cx).single_line_focused(w, cx))
+                {
+                    s.confirm(w, cx);
                     w.prevent_default();
                     cx.stop_propagation();
                 }

@@ -696,6 +696,8 @@ impl Render for Customize {
                         }
                     }
                     Page::Commands => {
+                        self.search
+                            .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                         if snapshot.settings["voiceCommandsEnabled"] != true {
                             body=body.child("Voice commands are saved but do not run while Voice commands & spoken formatting is off.").child(self.button("voice-command-settings","Open voice command settings",Action::VoiceCommandSettings,cx));
                         }

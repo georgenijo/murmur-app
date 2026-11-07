@@ -167,7 +167,8 @@ impl Render for CommandPalette {
                         .aria_label(c.title.clone())
                         .aria_selected(row == self.selected)
                         .when(row == self.selected, |d| {
-                            d.aria_active_descendant().bg(p.raised)
+                            d.aria_active_descendant_for(&self.search.read(cx).focus_handle(cx))
+                                .bg(p.raised)
                         })
                         .p(px(10.))
                         .flex()

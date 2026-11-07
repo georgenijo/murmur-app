@@ -1434,6 +1434,15 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Associate an active descendant with an explicit keyboard focus owner.
+    /// Like aria-activedescendant on an input, this also supports a popup that
+    /// is a sibling of that input. The owner must hold focus and be exposed in
+    /// this frame's accessibility tree; unrelated controls cannot claim focus.
+    fn aria_active_descendant_for(mut self, owner: &FocusHandle) -> Self {
+        self.interactivity().active_descendant_owner = Some(owner.clone());
+        self
+    }
+
     /// Contribute synthetic accessibility nodes — nodes that don't correspond
     /// to any element — as children of this element's a11y node. For example,
     /// text runs describing an editor's text content.
@@ -2283,6 +2292,7 @@ pub struct Interactivity {
         Vec<(accesskit::Action, crate::window::a11y::A11yActionListener)>,
     pub(crate) a11y_synthetic_children: Option<Box<dyn FnOnce(&mut crate::A11ySubtreeBuilder)>>,
     pub(crate) report_active_descendant_focus: bool,
+    pub(crate) active_descendant_owner: Option<FocusHandle>,
     pub(crate) override_role: Option<accesskit::Role>,
     pub(crate) aria: AriaProperties,
 
@@ -2439,6 +2449,15 @@ impl Interactivity {
                     .a11y
                     .set_active_descendant(global_id.accesskit_node_id());
             }
+        }
+        if window.a11y.is_active()
+            && let Some(owner) = &self.active_descendant_owner
+            && owner.is_focused(window)
+            && let Some(global_id) = global_id
+        {
+            window
+                .a11y
+                .set_active_descendant_for(global_id.accesskit_node_id(), owner.id);
         }
         window.with_optional_element_state::<InteractiveElementState, _>(
             global_id,

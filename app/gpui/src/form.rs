@@ -150,6 +150,13 @@ impl Form {
     pub fn value(&self, key: &str) -> &str {
         self.values[key].as_str().unwrap_or("")
     }
+    /// Dialog defaults must leave multiline editing and choice selection alone.
+    pub fn single_line_focused(&self, w: &Window, cx: &App) -> bool {
+        !self.disabled
+            && self.texts.iter().any(|(key, input)| {
+                !self.disabled_keys.contains(key) && input.read(cx).focus_handle(cx).is_focused(w)
+            })
+    }
     pub fn focus_first(&self, w: &mut Window, cx: &mut App) {
         if let Some(spec) = self.specs.first() {
             if let Some(e) = self.areas.get(spec.key) {
@@ -172,7 +179,7 @@ impl Render for Form {
                     e.read(cx).focus_handle(cx),
                     gpui_component::input::Textarea::new(e)
                         .aria_label(spec.label)
-                        .disabled(self.disabled)
+                        .disabled(self.disabled || self.disabled_keys.contains(spec.key))
                         .h(px(100.))
                         .into_any_element(),
                 )
@@ -180,7 +187,7 @@ impl Render for Form {
                 (
                     e.read(cx).focus_handle(cx),
                     TextField::new(e, spec.label)
-                        .disabled(self.disabled)
+                        .disabled(self.disabled || self.disabled_keys.contains(spec.key))
                         .into_any_element(),
                 )
             } else {
