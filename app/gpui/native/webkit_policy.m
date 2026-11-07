@@ -24,7 +24,7 @@ typedef struct {
     char image[PATH_SIZE];
     WebkitFrame frames[MAX_FRAMES];
     unsigned count;
-    bool ax;
+    bool ax, writing_tools;
 } WebkitLoad;
 static WebkitLoad loads[MAX_IMAGES];
 static unsigned load_count, baseline, linkage, overflow;
@@ -100,6 +100,46 @@ bool murmur_webkit_ax_chain(const WebkitFrame *frames, unsigned count, bool trun
     return false;
 }
 
+// AppKit probes Writing Tools while customizing a bundled app's main menu,
+// even without an Edit menu or text input. This is not a web-view construction.
+// Accept only the complete, adjacent system call chain through finishLaunching
+// and run; named markers in an app frame or a partial unwind are not evidence.
+bool murmur_webkit_writing_tools_chain(const WebkitFrame *frames, unsigned count, bool truncated) {
+    if (!frames || !count || count>MAX_FRAMES || truncated) return false;
+    for (unsigned i=0; i<count; i++) {
+        const char *s=frames[i].symbol;
+        if (!frames[i].image[0] || !s[0] || strstr(s,"<redacted>") ||
+            !strcmp(s,"???") || !strcmp(s,"<unknown>")) return false;
+        if (strstr(s,"WKWebView") || strstr(s,"WebView") || strstr(s,"webkit")) return false;
+    }
+    const WebkitFrame *root=&frames[count-1];
+    if (strcmp(root->image,"/usr/lib/dyld") || strcmp(root->symbol,"start")) return false;
+    unsigned i=0;
+    // dyld may expose its internal frames under the literal dyld-internal
+    // symbol. Preserve those names as returned by dladdr; never fill gaps.
+    while (i<count && !strcmp(frames[i].image,"/usr/lib/dyld")) i++;
+    static const char *symbols[]={
+        "_sl_dlopen",
+        "WritingToolsUILibraryCore",
+        "+[NSWritingToolsCoordinator isWritingToolsAvailable]",
+        "-[NSApplication(NSMenuUpdating) _addTextInputMenuItems:]",
+        "-[NSApplication(NSMenuUpdating) _customizeMainMenu]",
+        "-[NSApplication finishLaunching]",
+        "_NSApplicationBeginRunning",
+        "-[NSApplication run]",
+    };
+    unsigned n=sizeof(symbols)/sizeof(*symbols);
+    if (i+n>=count) return false;
+    for (unsigned j=0; j<n; j++) {
+        const WebkitFrame *f=&frames[i+j];
+        const char *image=j==0 ?
+            "/System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking" :
+            "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit";
+        if (strcmp(f->image,image) || strcmp(f->symbol,symbols[j])) return false;
+    }
+    return true;
+}
+
 // Check every load command of the executable and non-system dylibs, including
 // late dlopen dependencies. Apple frameworks may themselves depend on WebKit.
 static bool links_webkit(const struct mach_header *header) {
@@ -156,6 +196,8 @@ __attribute__((noinline)) static void image_added(const struct mach_header *head
         truncated|=strlcpy(frame->symbol,f.dli_sname ?: "",SYMBOL_SIZE)>=SYMBOL_SIZE;
     }
     load.ax=!initial && murmur_webkit_ax_chain(load.frames,load.count,truncated);
+    load.writing_tools=!initial && !load.ax &&
+        murmur_webkit_writing_tools_chain(load.frames,load.count,truncated);
     pthread_mutex_lock(&lock);
     linkage+=bad_link;
     baseline+=initial;
@@ -188,7 +230,7 @@ bool murmur_webkit_inventory(const char *prefix) {
     // it may itself load a framework. Storage is bounded and QA-only.
     WebkitLoad *snapshot=calloc(MAX_IMAGES,sizeof(WebkitLoad));
     if (!snapshot) return false;
-    unsigned count=0, extra=0, base=0, linked=0, printed=0, ax=0;
+    unsigned count=0, extra=0, base=0, linked=0, printed=0, ax=0, writing_tools=0;
     uint64_t observed=0;
     bool stable=false;
     // A valid AX load arriving during JSON emission must be included, not
@@ -216,12 +258,16 @@ bool murmur_webkit_inventory(const char *prefix) {
             for (unsigned i=printed; i<count; i++) {
                 WebkitLoad *load=&snapshot[i];
                 ax+=load->ax;
+                writing_tools+=load->writing_tools;
                 NSMutableArray *chain=[NSMutableArray array];
                 for (unsigned j=0; j<load->count; j++) {
                     WebkitFrame *f=&load->frames[j];
                     [chain addObject:@{@"image": @(f->image), @"symbol": @(f->symbol)}];
                 }
-                NSDictionary *event=@{@"image": @(load->image), @"axAttributed": @(load->ax), @"chain": chain};
+                NSDictionary *event=@{@"image": @(load->image), @"axAttributed": @(load->ax),
+                    @"writingToolsAttributed": @(load->writing_tools),
+                    @"attribution": load->writing_tools ? @"AppKit Writing Tools availability probe" :
+                        load->ax ? @"Accessibility bundle activation" : @"unattributed", @"chain": chain};
                 NSData *json=[NSJSONSerialization dataWithJSONObject:event options:NSJSONWritingSortedKeys error:NULL];
                 printf("MURMUR_WEBKIT_LOAD=%s\n",[[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] UTF8String]);
             }
@@ -240,8 +286,8 @@ bool murmur_webkit_inventory(const char *prefix) {
     MURMUR_WEBKIT_OUTPUT_HOOK();
 #endif
     free(snapshot);
-    printf("%s={\"pid\":%d,\"webkitImages\":%u,\"axAttributed\":%u,\"unattributed\":%u,\"startupWebkitImages\":%u,\"linkageViolations\":%u}\n",
-        prefix,getpid(),count+extra,ax,count+extra-ax,base,linked);
+    printf("%s={\"pid\":%d,\"webkitImages\":%u,\"axAttributed\":%u,\"writingToolsAttributed\":%u,\"unattributed\":%u,\"startupWebkitImages\":%u,\"linkageViolations\":%u}\n",
+        prefix,getpid(),count+extra,ax,writing_tools,count+extra-ax-writing_tools,base,linked);
     bool flushed=fflush(stdout)==0;
 #ifdef MURMUR_WEBKIT_FLUSH_HOOK
     MURMUR_WEBKIT_FLUSH_HOOK();
@@ -249,5 +295,5 @@ bool murmur_webkit_inventory(const char *prefix) {
     pthread_mutex_lock(&lock);
     bool ok=stable && !late_load && in_flight==0 && observed==arrivals;
     pthread_mutex_unlock(&lock);
-    return flushed && ok && base==0 && linked==0 && extra==0 && count==ax;
+    return flushed && ok && base==0 && linked==0 && extra==0 && count==ax+writing_tools;
 }
