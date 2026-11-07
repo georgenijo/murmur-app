@@ -129,7 +129,7 @@ class BundleTests(unittest.TestCase):
             return f'designated => identifier "{HELPERS[name]}" and anchor apple generic and certificate leaf[subject.OU] = "ABCDEFGHIJ"'
 
         with patch.dict("os.environ", environment, clear=True), \
-             patch("sys.argv", ["release_gpui.py", "--target-dir", str(self.root / "target"), "--output", str(output)]), \
+             patch("sys.argv", ["release_gpui.py", "sign", "--target-dir", str(self.root / "target"), "--output", str(output)]), \
              patch("release_gpui.bundle", side_effect=lambda binary, app: bundle(self.binary, app, self.tauri)), \
              patch("release_gpui.check_links"), patch("release_gpui.finalize") as finalize, \
              patch("release_gpui.subprocess.run", side_effect=process) as commands, \
@@ -138,6 +138,8 @@ class BundleTests(unittest.TestCase):
              patch("release_gpui.entitlements", return_value={}):
             release_gpui.main()
         finalize.assert_called_once_with(output / "bundle/Murmur.app", "synthetic identity", "ABCDEFGHIJ")
+        self.assertFalse(any(call.args[0][0] == "cargo" for call in commands.call_args_list),
+                         "the credentialed sign phase must not compile")
         notarize = next(call.args[0] for call in commands.call_args_list
                         if "scripts/notarize_and_repackage_macos.py" in call.args[0])
         self.assertIn("--native-signer", notarize)
@@ -222,19 +224,63 @@ minos 14.0
                     else:
                         self.assertEqual(check_links(Path("/synthetic/ui"))["foundation_models"], "weak")
 
+    def test_build_phase_compiles_without_credentials(self):
+        import release_gpui
+        environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+                       "PATH": "/usr/bin", "HOME": "/synthetic/home"}
+        with patch.dict("os.environ", environment, clear=True), \
+             patch("sys.argv", ["release_gpui.py", "build", "--target-dir", "/synthetic/target"]), \
+             patch("release_gpui.subprocess.run") as process:
+            release_gpui.main()
+        self.assertEqual([call.args[0][0] for call in process.call_args_list], ["cargo", "cargo"])
+        for call in process.call_args_list:
+            env = call.kwargs["env"]
+            self.assertEqual(env["CARGO_TARGET_DIR"], "/synthetic/target")
+            self.assertEqual(env["PATH"], "/usr/bin")
+            self.assertFalse([name for name in env if release_gpui.is_credential(name)])
+
+    def test_build_phase_refuses_any_credential_before_compiling(self):
+        # Synthetic values only; the names mirror the signing secrets the
+        # workflow injects into the later sign step.
+        import release_gpui
+        for name in ("APPLE_SIGNING_IDENTITY", "APPLE_ID", "APPLE_PASSWORD", "APPLE_TEAM_ID",
+                     "APPLE_CERTIFICATE", "APPLE_CERTIFICATE_PASSWORD", "TAURI_SIGNING_PRIVATE_KEY",
+                     "TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "SIGNING_KEYCHAIN", "GITHUB_TOKEN"):
+            with self.subTest(name=name), \
+                 patch.dict("os.environ", {"GITHUB_EVENT_NAME": "workflow_dispatch",
+                                           "GITHUB_REF": "refs/heads/main", name: "synthetic"}, clear=True), \
+                 patch("sys.argv", ["release_gpui.py", "build", "--target-dir", "/synthetic/target"]), \
+                 patch("release_gpui.subprocess.run") as process:
+                with self.assertRaisesRegex(ValueError, "without credentials"):
+                    release_gpui.main()
+                process.assert_not_called()
+
+    def test_workflow_rejects_credentials_or_keychain_before_the_build(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        validate_release_build(workflow)
+        build = "      - name: Build GPUI rehearsal binaries without credentials\n"
+        gpui = job_block(workflow, "gpui-macos")
+        self.assertLess(gpui.index(build), gpui.index("      - name: Import Developer ID certificate\n"))
+        with_secret = workflow.replace(
+            build + "        run: >-\n",
+            build + "        env:\n          APPLE_ID: ${{ secrets.APPLE_ID }}\n        run: >-\n")
+        with self.assertRaises(AssertionError):
+            validate_release_build(with_secret)
+
     def test_signed_script_rejects_non_manual_or_non_main_before_work(self):
         import release_gpui
-        for event, ref, error in (("push", "refs/heads/main", ValueError),
-                                  ("workflow_dispatch", "refs/heads/gpui/18-packaging", SystemExit)):
-            with self.subTest(event=event, ref=ref), \
-                 patch.dict("os.environ", {"GITHUB_EVENT_NAME": event, "GITHUB_REF": ref}, clear=True), \
-                 patch("sys.argv", ["release_gpui.py", "--target-dir", "/synthetic/target", "--output", "/synthetic/output"]), \
-                 patch("release_gpui.bundle") as bundle_mock, \
-                 patch("release_gpui.subprocess.run") as process:
-                with self.assertRaises(error):
-                    release_gpui.main()
-                bundle_mock.assert_not_called()
-                process.assert_not_called()
+        for phase in ("build", "sign"):
+            for event, ref, error in (("push", "refs/heads/main", ValueError),
+                                      ("workflow_dispatch", "refs/heads/gpui/18-packaging", SystemExit)):
+                with self.subTest(phase=phase, event=event, ref=ref), \
+                     patch.dict("os.environ", {"GITHUB_EVENT_NAME": event, "GITHUB_REF": ref}, clear=True), \
+                     patch("sys.argv", ["release_gpui.py", phase, "--target-dir", "/synthetic/target", "--output", "/synthetic/output"]), \
+                     patch("release_gpui.bundle") as bundle_mock, \
+                     patch("release_gpui.subprocess.run") as process:
+                    with self.assertRaises(error):
+                        release_gpui.main()
+                    bundle_mock.assert_not_called()
+                    process.assert_not_called()
 
 
 if __name__ == "__main__":

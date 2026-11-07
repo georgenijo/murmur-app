@@ -454,6 +454,13 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
         run: python3 scripts/build_capture_helpers.py --release
 
+      # Compile before any credential or signing keychain exists in the job,
+      # so dependency build scripts and proc macros cannot reach them.
+      - name: Build GPUI rehearsal binaries without credentials
+        run: >-
+          python3 scripts/release_gpui.py build
+          --target-dir "$RUNNER_TEMP/gpui-release-target"
+
       - name: Import Developer ID certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -476,7 +483,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
           rm -f "$CERT"
 
-      - name: Build, sign, notarize and record GPUI rehearsal
+      - name: Sign, notarize and record GPUI rehearsal
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -486,7 +493,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           SIGNING_KEYCHAIN: ${{ runner.temp }}/murmur-signing.keychain-db
         run: >-
-          python3 scripts/release_gpui.py
+          python3 scripts/release_gpui.py sign
           --target-dir "$RUNNER_TEMP/gpui-release-target"
           --output "$RUNNER_TEMP/gpui-release"
 

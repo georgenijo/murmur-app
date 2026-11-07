@@ -18,21 +18,48 @@ from release_artifacts import create_provenance
 from release_bundle_target import validate_target
 
 
+CREDENTIAL_PREFIXES = ("APPLE_", "TAURI_SIGNING_")
+CREDENTIAL_MARKERS = ("PASSWORD", "SECRET", "TOKEN", "PRIVATE_KEY", "KEYCHAIN")
+
+
+def is_credential(name: str) -> bool:
+    upper = name.upper()
+    return upper.startswith(CREDENTIAL_PREFIXES) or any(marker in upper for marker in CREDENTIAL_MARKERS)
+
+
+def build(target: Path) -> None:
+    """Compile with no credentials, so dependency build code never sees them."""
+    present = sorted(name for name in os.environ if is_credential(name))
+    if present:
+        raise ValueError(f"build phase must run without credentials: {', '.join(present)}")
+    env = {name: value for name, value in os.environ.items() if not is_credential(name)}
+    env.update({"CARGO_TARGET_DIR": str(target), "RUSTUP_TOOLCHAIN": "1.98.1",
+                "MACOSX_DEPLOYMENT_TARGET": "14.0"})
+    subprocess.run(["cargo", "build", "--locked", "--release", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
+    subprocess.run(["cargo", "build", "--locked", "--release", "--manifest-path", str(ROOT / "scripts/updater-signer/Cargo.toml")], env=env, check=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("phase", choices=("build", "sign"))
     parser.add_argument("--target-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     validate_target(os.environ["GITHUB_EVENT_NAME"], "gpui")
     if os.environ["GITHUB_REF"] != "refs/heads/main":
         parser.error("signed rehearsals require trusted main")
-    output = args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
     target = args.target_dir.resolve()
-    env = {**os.environ, "CARGO_TARGET_DIR": str(target), "RUSTUP_TOOLCHAIN": "1.98.1",
-           "MACOSX_DEPLOYMENT_TARGET": "14.0"}
-    subprocess.run(["cargo", "build", "--locked", "--release", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
-    subprocess.run(["cargo", "build", "--locked", "--release", "--manifest-path", str(ROOT / "scripts/updater-signer/Cargo.toml")], env=env, check=True)
+    if args.phase == "build":
+        build(target)
+        return
+    if args.output is None:
+        parser.error("sign requires --output")
+    sign(target, args.output.resolve())
+
+
+def sign(target: Path, output: Path) -> None:
+    """Package, sign and notarize the binaries the credential-free build made."""
+    output.mkdir(parents=True, exist_ok=False)
     app = bundle(target / "release/ui", output / "bundle/Murmur.app")
     check_links(app / "Contents/MacOS/ui")
     finalize(app, os.environ["APPLE_SIGNING_IDENTITY"], os.environ["APPLE_TEAM_ID"])

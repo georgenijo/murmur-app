@@ -330,6 +330,14 @@ def validate_release_build(workflow: str) -> int:
     assert "name: gpui-rehearsal-${{ needs.context.outputs.source-sha }}" in gpui
     assert "macos-release-" not in gpui
     assert "scripts/release_gpui.py" in gpui
+    build = named_step_block(gpui, "Build GPUI rehearsal binaries without credentials", 6)
+    assert "python3 scripts/release_gpui.py build" in build
+    assert "secrets." not in build and "env:" not in build
+    sign = named_step_block(gpui, "Sign, notarize and record GPUI rehearsal", 6)
+    assert "python3 scripts/release_gpui.py sign" in sign
+    # Compilation precedes every credential and the signing keychain.
+    assert gpui.index("secrets.") > gpui.index("- name: Build GPUI rehearsal binaries without credentials")
+    assert gpui.index("security create-keychain") > gpui.index("python3 scripts/release_gpui.py build")
     assert "save-if:" not in gpui  # no writes to trusted Tauri caches
     for job in ("typecheck", "release-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"

@@ -249,8 +249,12 @@ The [Mac mini receipt](draft/gpui-packaging-rehearsal.json) at source
 successful native-shell launch. It establishes packaging at that revision,
 not the deferred signed gate.
 
-The future signed lane invokes `scripts/release_gpui.py`: it builds the native
-app and independent `scripts/updater-signer` Rust tool, uses the same finalizer,
+The future signed lane invokes `scripts/release_gpui.py` in two steps. The
+`build` phase compiles the native app and independent `scripts/updater-signer`
+Rust tool before the job imports the certificate or receives any secret, and
+refuses to run if a credential-like variable is present, so dependency build
+scripts and proc macros never see signing material. The `sign` phase compiles
+nothing: it uses the same finalizer,
 notarizes and staples the app and DMG, checks Gatekeeper, signs the updater
 archive, and records hashes, sizes and helper designated requirements/Team IDs
 in provenance. `--native-signer` opts into the new signer; the default
