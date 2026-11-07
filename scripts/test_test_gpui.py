@@ -27,6 +27,9 @@ class TestSourceTests(unittest.TestCase):
             patch_file = root / 'patches/accesskit-expanded.patch'
             # Layer 10 adds the separately recorded press probe to node.rs.
             # Remove the table and press layers before comparing layer 9's pin.
+            heading_patch = root / 'patches/accesskit-heading-role.patch'
+            subprocess.run(['git', 'apply', '--reverse', str(heading_patch)],
+                           cwd=target, env=env, check=True)
             press_patch = root / 'patches/accesskit-press-probe.patch'
             tables_patch = root / 'patches/accesskit-tables.patch'
             subprocess.run(['git', 'apply', '--reverse', str(tables_patch)],
@@ -42,6 +45,7 @@ class TestSourceTests(unittest.TestCase):
             subprocess.run(['git', 'apply', str(patch_file)], cwd=target, env=env, check=True)
             subprocess.run(['git', 'apply', str(press_patch)], cwd=target, env=env, check=True)
             subprocess.run(['git', 'apply', str(tables_patch)], cwd=target, env=env, check=True)
+            subprocess.run(['git', 'apply', str(heading_patch)], cwd=target, env=env, check=True)
             for path in (root / 'vendor/accesskit_macos').rglob('*'):
                 if path.is_file():
                     self.assertEqual((target / path.relative_to(root / 'vendor/accesskit_macos')).read_bytes(),

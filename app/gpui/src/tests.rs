@@ -495,6 +495,22 @@ mod accessibility {
         ActionData, ActionRequest, Node, NodeId, TextPosition, TextSelection, TreeId, TreeUpdate,
     };
     use gpui::{AccessibleAction, Role, Toggled};
+    #[test]
+    fn native_heading_exposes_the_standard_ax_role() {
+        let id = NodeId(1);
+        let mut heading = Node::new(Role::Heading);
+        heading.set_label("Synthetic heading");
+        let update = TreeUpdate {
+            nodes: vec![(id, heading)],
+            tree: Some(gpui::accesskit::Tree::new(id)),
+            tree_id: TreeId::ROOT,
+            focus: id,
+        };
+        let (role, _, pressable, _) = accesskit_macos::test_press(update, id);
+        assert_eq!(role, "AXHeading");
+        assert!(!pressable);
+    }
+
     fn tree(cx: &mut VisualTestContext) -> TreeUpdate {
         let w = cx.update(|w, _| w.window_handle());
         cx.activate_accessibility(w);
