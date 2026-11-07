@@ -371,6 +371,10 @@ jobs:
       - name: Check native service host without Tauri
         working-directory: app/src-tauri
         run: |
+          # rust-cache restores build-script link directives but not this
+          # dependency's target-root prebuilt archive. Refresh only its adapter
+          # so native test linking cannot reuse a missing static-library path.
+          cargo clean -p sherpa-onnx-sys
           cargo check --locked --lib --no-default-features --features native-host
           cargo clippy --locked --lib --no-default-features --features native-host -- -D warnings
           cargo test --locked --no-default-features --features native-host --test native_host_contract -- --test-threads=1
