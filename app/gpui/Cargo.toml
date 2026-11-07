@@ -14,6 +14,7 @@ default-members = ["."]
 exclude = ["vendor/accesskit_macos", "vendor/gpui"]
 
 [dependencies]
+raw-window-handle = "0.6.2"
 murmur-core = { path = "../src-tauri/crates/murmur-core" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", default-features = false }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", default-features = false, features = ["font-kit", "runtime_shaders"] }
@@ -30,9 +31,17 @@ gpui-component = { path = "vendor/gpui-component/crates/component", features = [
 # Real CoreText shaping in test windows; no MacPlatform or native window.
 gpui_apple = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", features = ["font-kit"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = { version = "=0.26.3", optional = true }
+
 [features]
-a11y-tests = []
+a11y-tests = ["dep:accesskit_macos", "accesskit_macos/test-support"]
 gallery = ["gpui/test-support", "gpui_platform/test-support"]
+
+[[bin]]
+name = "overlay-qa"
+path = "src/bin/overlay-qa.rs"
+required-features = ["gallery"]
 
 [[bin]]
 name = "control-gallery"

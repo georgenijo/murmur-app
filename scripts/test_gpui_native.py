@@ -1,4 +1,4 @@
-"""Compile the focus shim against inert classes; never create AppKit windows."""
+"""Exercise native glue and own-process AppKit policy with synthetic fixtures."""
 from pathlib import Path
 import platform
 import subprocess
@@ -10,6 +10,72 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
 class FocusHookTests(unittest.TestCase):
+    def test_overlay_contraction_and_reentry_sample_the_painted_band_in_both_placements(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+#include <stdbool.h>
+@interface FlippedView : NSView
+@end
+@implementation FlippedView
+- (BOOL)isFlipped { return YES; }
+@end
+extern void murmur_overlay_refit_hud(void *, double, double, double, bool);
+extern bool murmur_overlay_surface_contains(void *, NSPoint);
+static NSPoint from_top(NSView *view, double x, double y) {
+    return NSMakePoint(x, view.isFlipped ? y : view.bounds.size.height-y);
+}
+int main(void) {
+    @autoreleasepool {
+        for (Class cls in @[NSView.class, FlippedView.class]) {
+            for (int floating = 0; floating <= 1; floating++) {
+                // No HUD is installed for a notch. Presence still tracks its
+                // painted rectangle, not the retained expanded window bounds.
+                NSView *view = [[cls alloc] initWithFrame:NSMakeRect(0, 0, 241, 101)];
+                void *raw = (__bridge void *)view;
+                NSPoint top = from_top(view, 120.5, 10);
+                NSPoint bottom = from_top(view, 120.5, 90);
+                NSPoint persistent = floating ? bottom : top;
+                NSPoint disappearing = floating ? top : bottom;
+                double collapsed = floating ? 34 : 37;
+                assert(!murmur_overlay_surface_contains(raw, persistent));
+                murmur_overlay_refit_hud(raw, 241, 101, 12, floating);
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                assert(murmur_overlay_surface_contains(raw, disappearing));
+                // About 100 ms into contraction: 61 pt painted in 101 pt.
+                murmur_overlay_refit_hud(raw, 200, 61, 12, floating);
+                assert(!murmur_overlay_surface_contains(raw, disappearing));
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                // Leaving through the transparent band, then re-entering the
+                // persistent band, must produce outside -> inside in either
+                // coordinate system. Horizontal transparent margins stay out.
+                assert(!murmur_overlay_surface_contains(raw, from_top(view, 5, 50)));
+                murmur_overlay_refit_hud(raw, 120, collapsed, 17, floating);
+                assert(!murmur_overlay_surface_contains(raw, disappearing));
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                // Commit the native shrink, then grow again. Both anchors
+                // keep the persistent band at the window edge throughout.
+                view.frame = NSMakeRect(0, 0, 120, collapsed);
+                murmur_overlay_refit_hud(raw, 120, collapsed, 17, floating);
+                assert(murmur_overlay_surface_contains(raw, from_top(view, 60, collapsed/2)));
+                view.frame = NSMakeRect(0, 0, 241, 101);
+                murmur_overlay_refit_hud(raw, 241, 101, 12, floating);
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                assert(murmur_overlay_surface_contains(raw, disappearing));
+            }
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-presence-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_effective_appearance_selects_light_dark_and_accessible_variants(self):
         source = r'''
 #import <AppKit/AppKit.h>
@@ -110,6 +176,466 @@ int main(void) {
                             str(ROOT / 'app/gpui/native/ax_focus_fix.m'),
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
             subprocess.run([str(path / 'test')], check=True)
+
+    def test_overlay_material_is_a_sibling_below_metal_and_never_takes_hits(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
+#include <assert.h>
+#include <stdbool.h>
+extern void *murmur_overlay_material(void *view);
+extern void murmur_overlay_refit_hud(void *view, double width, double height, double radius, bool floating);
+int main(void) {
+    @autoreleasepool {
+        NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 241, 98)];
+        NSView *metal = [[NSView alloc] initWithFrame:container.bounds];
+        metal.wantsLayer = YES;
+        CALayer *layer = metal.layer;
+        [container addSubview:metal];
+        void *raw = (__bridge void *)metal;
+        NSVisualEffectView *hud = (__bridge NSVisualEffectView *)murmur_overlay_material(raw);
+        assert(hud && hud.superview == metal.superview);
+        assert(container.subviews.count == 2 && container.subviews[0] == hud && container.subviews[1] == metal);
+        assert(metal.subviews.count == 0 && metal.layer == layer);
+        assert(murmur_overlay_material(raw) == (__bridge void *)hud);
+        assert([hud hitTest:NSMakePoint(10, 10)] == nil);
+        murmur_overlay_refit_hud(raw, 241, 98, 12, true);
+        assert(NSEqualRects(hud.frame, metal.frame));
+        // A shrink retains a centered bottom-anchored material, then exact bounds.
+        murmur_overlay_refit_hud(raw, 120, 34, 17, true);
+        assert(NSEqualRects(hud.frame, NSMakeRect(60.5, 0, 120, 34)));
+        metal.frame = NSMakeRect(0, 0, 120, 34);
+        murmur_overlay_refit_hud(raw, 120, 34, 17, true);
+        assert(NSEqualRects(hud.frame, metal.frame));
+        // Reparenting/placement changes must preserve ordering and conversion.
+        NSView *other = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 200)];
+        [metal removeFromSuperview];
+        metal.frame = NSMakeRect(25, 30, 241, 98);
+        [other addSubview:metal];
+        murmur_overlay_refit_hud(raw, 241, 98, 12, true);
+        assert(hud.superview == other && other.subviews[0] == hud && other.subviews[1] == metal);
+        assert(NSEqualRects(hud.frame, metal.frame));
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-hierarchy-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
+    def test_overlay_never_key_hook_is_instance_local_and_idempotent(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#import <objc/runtime.h>
+#include <assert.h>
+#include <stdbool.h>
+@interface SyntheticPanel : NSObject
+@end
+@implementation SyntheticPanel
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+extern bool murmur_overlay_never_key(void *object);
+int main(void) {
+    @autoreleasepool {
+        SyntheticPanel *overlay = [SyntheticPanel new];
+        SyntheticPanel *other = [SyntheticPanel new];
+        Class original = object_getClass(overlay);
+        assert(murmur_overlay_never_key((__bridge void *)overlay));
+        assert(murmur_overlay_never_key((__bridge void *)overlay));
+        assert(!overlay.canBecomeKeyWindow && !overlay.canBecomeMainWindow);
+        assert(other.canBecomeKeyWindow && other.canBecomeMainWindow);
+        assert(object_getClass(other) == original);
+        assert(!murmur_overlay_never_key(NULL));
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-hook-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
+
+class WebkitSourcePolicyTests(unittest.TestCase):
+    def test_attributed_inventory_parser(self):
+        from scripts.check_gpui_goldens import check_inventory
+        import json
+        valid = dict(pid=1, webkitImages=5, axAttributed=5, writingToolsAttributed=0, unattributed=0,
+                     startupWebkitImages=0, linkageViolations=0)
+        def parse(value):
+            return check_inventory('MURMUR_TEST_INVENTORY=' + json.dumps(value),
+                                   'MURMUR_TEST_INVENTORY')
+        self.assertEqual(parse(valid), valid)
+        mixed = {**valid, 'axAttributed': 2, 'writingToolsAttributed': 3}
+        self.assertEqual(parse(mixed), mixed)
+        for field, value in [('unattributed', 1), ('axAttributed', 4),
+                             ('startupWebkitImages', 1), ('linkageViolations', 1),
+                             ('writingToolsAttributed', 1), ('writingToolsAttributed', True),
+                             ('webkitImages', -1), ('pid', True)]:
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                parse({**valid, field: value})
+        with self.assertRaises(AssertionError):
+            check_inventory('', 'MURMUR_TEST_INVENTORY')
+
+    def test_gpui_sources_do_not_construct_web_views(self):
+        # No linked class reference, dynamic named lookup, or message dispatch
+        # to a web-view class is allowed in our GPUI sources. The policy's own
+        # classifier strings are evidence matching, not class construction.
+        root = ROOT / 'app/gpui'
+        for directory in ('src', 'native'):
+            for path in (root / directory).rglob('*'):
+                if path.suffix not in ('.rs', '.m', '.h') or path.name == 'webkit_policy.m':
+                    continue
+                self.assertNotRegex(path.read_text(), r'WKWebView|\bWebView\b', str(path))
+
+
+@unittest.skipUnless(platform.system() == 'Darwin', 'dyld policy requires macOS')
+class WebkitPolicyTests(unittest.TestCase):
+    def test_recorded_writing_tools_chain_is_narrow_and_counted(self):
+        self.check_recorded_writing_tools_chain('webkit-appkit-writing-tools.json')
+
+    def test_recorded_macos26_writing_tools_chain_is_narrow_and_counted(self):
+        self.check_recorded_writing_tools_chain('webkit-appkit-writing-tools-macos26.json')
+
+    def check_recorded_writing_tools_chain(self, fixture):
+        import json
+        from scripts.check_gpui_goldens import check_inventory
+        recorded = json.loads((ROOT / 'tests/fixtures/gpui' / fixture).read_text())
+        text_input = json.loads((ROOT / 'tests/fixtures/gpui/webkit-appkit-writing-tools.json').read_text())
+        frames = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
+                             for f in recorded['chain'])
+        negative = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
+                               for f in text_input['negativeChain'])
+        source = r'''
+#include "webkit_policy.m"
+#include <assert.h>
+int main(int argc, char **argv) {
+    (void)argv;
+    assert(murmur_webkit_start());
+    WebkitFrame chain[] = { FRAMES };
+    unsigned n=sizeof(chain)/sizeof(*chain);
+    assert(murmur_webkit_writing_tools_chain(chain,n,false));
+    assert(!murmur_webkit_ax_chain(chain,n,false));
+    assert(!murmur_webkit_writing_tools_chain(chain,n,true));
+    assert(!murmur_webkit_writing_tools_chain(NULL,n,false));
+    // Every prefix, unresolved frame, path spoof, and symbol change fails,
+    // including missing symbols below AppKit in the Rust entry-point frames.
+    for (unsigned i=0; i<n; i++) {
+        assert(!murmur_webkit_writing_tools_chain(chain,i,false));
+        WebkitFrame saved=chain[i];
+        for (unsigned j=0; j<4; j++) {
+            strcpy(chain[i].symbol,((const char *[]){"","<redacted>","???","<unknown>"})[j]);
+            assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        }
+        chain[i]=saved; chain[i].image[0]=0;
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+        strcpy(chain[i].symbol,"-[WKWebView initWithFrame:]");
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+    }
+    for (unsigned i=0; i<n; i++) {
+        if (strcmp(chain[i].image,"/usr/lib/dyld") &&
+            !strstr(chain[i].image,"/AppKit.framework/") &&
+            !strstr(chain[i].image,"/SoftLinking.framework/")) continue;
+        WebkitFrame saved=chain[i];
+        strcpy(chain[i].image,"/synthetic/AppKit.framework/AppKit");
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+        if (!strcmp(chain[i].image,"/usr/lib/dyld")) continue;
+        strcpy(chain[i].symbol,"unrelated_probe");
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+        // Each probe/launch frame is required, in its recorded position.
+        memmove(&chain[i],&chain[i+1],(n-i-1)*sizeof(*chain));
+        assert(!murmur_webkit_writing_tools_chain(chain,n-1,false));
+        memmove(&chain[i+1],&chain[i],(n-i-1)*sizeof(*chain));
+        chain[i]=saved;
+        WebkitFrame next=chain[i+1];
+        chain[i]=next; chain[i+1]=saved;
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved; chain[i+1]=next;
+    }
+    WebkitFrame text_input[]={ NEGATIVE_FRAMES };
+    assert(!murmur_webkit_writing_tools_chain(text_input,sizeof(text_input)/sizeof(*text_input),false));
+    WebkitFrame partial[]={
+        {"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+            "+[NSWritingToolsCoordinator isWritingToolsAvailable]"},
+        {"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+            "-[NSApplication(NSMenuUpdating) _addTextInputMenuItems:]"},
+        {"/usr/lib/dyld","start"},
+    };
+    assert(!murmur_webkit_writing_tools_chain(partial,3,false));
+    // A correctly named marker in dyld's place cannot impersonate AppKit.
+    WebkitFrame saved=chain[0];
+    strcpy(chain[0].image,"/synthetic/Murmur");
+    strcpy(chain[0].symbol,"WritingToolsUILibraryCore");
+    assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+    chain[0]=saved;
+    WebkitLoad *load=&loads[load_count++];
+    strcpy(load->image,"/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit");
+    memcpy(load->frames,chain,sizeof(chain)); load->count=n;
+    load->writing_tools=murmur_webkit_writing_tools_chain(chain,n,false);
+    assert(murmur_webkit_inventory("MURMUR_TEST_WRITING_TOOLS_INVENTORY"));
+    if (argc>1) image_added(NULL,0); // Even an attributed inventory closes observation.
+}
+'''.replace('NEGATIVE_FRAMES', negative).replace('FRAMES', frames)
+        with tempfile.TemporaryDirectory(prefix='murmur-writing-tools-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
+                            '-framework', 'Foundation', '-I', str(ROOT / 'app/gpui/native'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            output = subprocess.check_output([str(path / 'test')], text=True, timeout=30)
+            inventory = check_inventory(output, 'MURMUR_TEST_WRITING_TOOLS_INVENTORY')
+            self.assertEqual(inventory['writingToolsAttributed'], 1)
+            self.assertEqual(inventory['axAttributed'], 0)
+            late = subprocess.run([str(path / 'test'), 'late'], capture_output=True, timeout=30)
+            self.assertEqual(late.returncode, 86)
+
+    def test_appkit_main_menu_launch_inventory(self):
+        # A real AppKit startup regression: no HID, clipboard, text view, or
+        # production data. Context-menu opt-out must not disguise this probe.
+        from scripts.check_gpui_goldens import check_inventory
+        source = r'''
+#import <AppKit/AppKit.h>
+#include "webkit_policy.m"
+#include <assert.h>
+int main(void) { @autoreleasepool {
+    assert(murmur_webkit_start());
+    NSApplication *app=NSApplication.sharedApplication;
+    NSMenu *menu=[[NSMenu alloc] initWithTitle:@"Synthetic QA"];
+    NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:@"Edit" action:NULL keyEquivalent:@""];
+    item.submenu=[[NSMenu alloc] initWithTitle:@"Edit"];
+    for (NSString *s in @[@"cut:",@"copy:",@"paste:",@"undo:"]) {
+        [item.submenu addItem:[[NSMenuItem alloc] initWithTitle:s action:NSSelectorFromString(s) keyEquivalent:@""]];
+    }
+    [menu addItem:item]; app.mainMenu=menu;
+    [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:NO block:^(NSTimer *timer) {
+        (void)timer;
+        bool ok=murmur_webkit_inventory("MURMUR_TEST_APPKIT_INVENTORY");
+        _exit(ok?0:1);
+    }];
+    [app run];
+} }
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-appkit-menu-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
+                            '-framework', 'AppKit', '-I', str(ROOT / 'app/gpui/native'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            result = subprocess.run([str(path / 'test')], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0,
+                             f'AppKit launch exited {result.returncode}\n'
+                             f'stdout:\n{result.stdout}\nstderr:\n{result.stderr}')
+            check_inventory(result.stdout, 'MURMUR_TEST_APPKIT_INVENTORY')
+
+    def test_classifier_linkage_and_zero_baseline(self):
+        source = r'''
+#include <pthread.h>
+#include <stdbool.h>
+#include <assert.h>
+static void snapshot_hook(void);
+static void capture_hook(void);
+static void wait_hook(void);
+static void output_hook(void);
+static void flush_hook(void);
+#define MURMUR_WEBKIT_SNAPSHOT_HOOK snapshot_hook
+#define MURMUR_WEBKIT_CAPTURE_HOOK capture_hook
+#define MURMUR_WEBKIT_WAIT_HOOK wait_hook
+#define MURMUR_WEBKIT_OUTPUT_HOOK output_hook
+#define MURMUR_WEBKIT_FLUSH_HOOK flush_hook
+#include "webkit_policy.m"
+#include <assert.h>
+static WebkitLoad pending;
+static bool inject, pause_capture, capture_entered, resume_capture, waited, join_loader;
+static int late_stage;
+static pthread_t loader;
+static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
+static void capture_hook(void) {
+    pthread_mutex_lock(&gate);
+    if (pause_capture) {
+        pause_capture=false;
+        capture_entered=true;
+        pthread_cond_broadcast(&ready);
+        while (!resume_capture) pthread_cond_wait(&ready,&gate);
+    }
+    pthread_mutex_unlock(&gate);
+}
+static void wait_hook(void) {
+    assert(in_flight && !observation_closed);
+    pthread_mutex_lock(&gate);
+    waited=true;
+    resume_capture=true;
+    pthread_cond_broadcast(&ready);
+    pthread_mutex_unlock(&gate);
+}
+static void output_hook(void) {
+    if (late_stage==1) image_added(NULL,0);
+}
+static void flush_hook(void) {
+    if (late_stage==2) image_added(NULL,0);
+}
+static void *background_load(void *unused) {
+    (void)unused;
+    assert(dlopen("/System/Library/Frameworks/WebKit.framework/WebKit",RTLD_LAZY|RTLD_LOCAL));
+    return NULL;
+}
+static void reopen_test_observation(void) {
+    // Tests run several isolated inventories in one process. QA hosts finalize
+    // once; their terminal boundary is intentionally never reopened.
+    assert(!in_flight && !late_load);
+    observation_closed=false;
+}
+static void snapshot_hook(void) {
+    if (join_loader) {
+        join_loader=false;
+        assert(!pthread_join(loader,NULL));
+    }
+    if (!inject) return;
+    inject=false;
+    pthread_mutex_lock(&lock);
+    loads[load_count++]=pending;
+    pthread_mutex_unlock(&lock);
+}
+int main(int argc, char **argv) {
+    assert(murmur_webkit_start());
+    if (argc==2 && !strcmp(argv[1],"mid-capture")) {
+        pause_capture=true;
+        assert(!pthread_create(&loader,NULL,background_load,NULL));
+        pthread_mutex_lock(&gate);
+        while (!capture_entered) pthread_cond_wait(&ready,&gate);
+        pthread_mutex_unlock(&gate);
+        join_loader=true;
+        assert(!murmur_webkit_inventory("MURMUR_TEST_MID_CAPTURE_INVENTORY"));
+        assert(waited && load_count && !in_flight);
+        return 0;
+    }
+    if (argc==2) {
+        late_stage=!strcmp(argv[1],"during-output") ? 1 :
+            !strcmp(argv[1],"after-flush") ? 2 : 0;
+        assert(murmur_webkit_inventory("MURMUR_TEST_TERMINAL_INVENTORY"));
+        image_added(NULL,0); // Must also fail after inventory has returned.
+        return 1;
+    }
+    assert(murmur_webkit_inventory("MURMUR_TEST_INVENTORY"));
+    reopen_test_observation();
+    // Synthetic chain follows the captured VoiceOver/Apple AX bundle stack.
+    WebkitFrame ax[] = {
+        {"/usr/lib/dyld", "dlopen"},
+        {"/System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking", "_sl_dlopen"},
+        {"/System/Library/PrivateFrameworks/AccessibilityBundles.framework/AccessibilityBundles",
+            "-[AXBBundleManager _loadCoreAccessibilityAdditionsForBundle:]"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "loadAccessibilityBundles"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "_AXXMIGSetAttributeValue"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "mshMIGPerform"},
+        {"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+            "__CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__"},
+        {"/System/Library/Frameworks/AppKit.framework/AppKit", "-[NSApplication run]"},
+        {"/synthetic/Murmur", "main"},
+        {"/usr/lib/dyld", "start"},
+    };
+    unsigned n=sizeof(ax)/sizeof(*ax);
+    assert(murmur_webkit_ax_chain(ax,n,false));
+    // Deterministically arrive after snapshot copy, before serialization.
+    strcpy(pending.image,"/System/Library/Frameworks/WebKit.framework/WebKit");
+    memcpy(pending.frames,ax,sizeof(ax)); pending.count=n;
+    pending.ax=murmur_webkit_ax_chain(ax,n,false);
+    inject=true;
+    assert(murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_AX_INVENTORY"));
+    assert(load_count==1); load_count=0; reopen_test_observation();
+    pending.ax=false; inject=true;
+    assert(!murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_UNKNOWN_INVENTORY"));
+    assert(load_count==1); load_count=0; reopen_test_observation();
+    // Every frame must resolve, including those below dispatch. A missing
+    // constructor symbol must never be hidden by surviving AX markers.
+    for (unsigned i=0; i<n; i++) {
+        WebkitFrame frame=ax[i];
+        ax[i].symbol[0]=0;
+        assert(!murmur_webkit_ax_chain(ax,n,false));
+        strcpy(ax[i].symbol,"<redacted>");
+        assert(!murmur_webkit_ax_chain(ax,n,false));
+        ax[i]=frame;
+        ax[i].image[0]=0;
+        assert(!murmur_webkit_ax_chain(ax,n,false));
+        ax[i]=frame;
+    }
+    assert(!murmur_webkit_ax_chain(ax,7,false)); // Ends exactly at dispatch.
+    assert(!murmur_webkit_ax_chain(ax,n-1,false)); // No recognized unwind root.
+    WebkitFrame root=ax[n-1];
+    strcpy(ax[n-1].image,"/synthetic/Murmur");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Root symbol path spoof.
+    ax[n-1]=root;
+    assert(!murmur_webkit_ax_chain(ax,n,true)); // Truncated evidence.
+    assert(!murmur_webkit_ax_chain(ax,0,false));
+    assert(!murmur_webkit_ax_chain(ax,4,false)); // No incoming AX IPC.
+    assert(!murmur_webkit_ax_chain(ax,5,false)); // No Mach/runloop dispatch.
+    WebkitFrame dispatch=ax[5];
+    strcpy(ax[5].image,"/synthetic/Murmur");
+    strcpy(ax[5].symbol,"direct_AX_call");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // App invoking the AX handler itself.
+    ax[5]=dispatch;
+    WebkitFrame saved=ax[1];
+    strcpy(ax[1].image,"/synthetic/Murmur");
+    strcpy(ax[1].symbol,"create_web_view");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // App initiated, even with AX frames.
+    ax[1]=saved;
+    ax[1].image[0]=0;
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Unknown origin.
+    ax[1]=saved;
+    strcpy(ax[1].image,"/tmp/AccessibilityBundles.framework/AccessibilityBundles");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Untrusted path spoof.
+    ax[1]=saved;
+    strcpy(ax[n-1].symbol,"-[WKWebView initWithFrame:]");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Web view anywhere in chain.
+    assert(murmur_webkit_family("/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit"));
+    assert(murmur_webkit_family("@rpath/JavaScriptCore.framework/JavaScriptCore"));
+    assert(!murmur_webkit_family("/System/Library/Frameworks/AppKit.framework/AppKit"));
+    struct { struct mach_header_64 h; struct dylib_command d; char name[128]; } image={0};
+    image.h.magic=MH_MAGIC_64; image.h.ncmds=1;
+    image.h.sizeofcmds=sizeof(image)-sizeof(image.h);
+    image.d.cmd=LC_LOAD_DYLIB; image.d.cmdsize=image.h.sizeofcmds;
+    image.d.dylib.name.offset=sizeof(image.d);
+    strcpy(image.name,"/System/Library/Frameworks/AppKit.framework/AppKit");
+    assert(!links_webkit((void *)&image));
+    strcpy(image.name,"@rpath/WebKit.framework/WebKit");
+    assert(links_webkit((void *)&image));
+    image.d.cmd=LC_LOAD_WEAK_DYLIB;
+    assert(links_webkit((void *)&image));
+    image.d.cmd=LC_REEXPORT_DYLIB;
+    assert(links_webkit((void *)&image));
+    image.d.dylib.name.offset=image.d.cmdsize;
+    assert(links_webkit((void *)&image)); // Malformed linkage fails closed.
+    // A real app-owned load must fail despite a clean startup. No web view,
+    // NSApplication, persistent store or accessibility client is constructed.
+    assert(dlopen("/System/Library/Frameworks/WebKit.framework/WebKit",RTLD_LAZY|RTLD_LOCAL));
+    assert(!murmur_webkit_inventory("MURMUR_TEST_APP_LOAD_INVENTORY"));
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-webkit-policy-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
+                            '-framework', 'Foundation', '-I', str(ROOT / 'app/gpui/native'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True, timeout=30)
+            subprocess.run([str(path / 'test'), 'mid-capture'], check=True, timeout=30)
+            for schedule in ('during-output', 'after-flush', 'after-return'):
+                result = subprocess.run([str(path / 'test'), schedule], timeout=30)
+                self.assertEqual(result.returncode, 86, schedule)
 
 
 if __name__ == '__main__':

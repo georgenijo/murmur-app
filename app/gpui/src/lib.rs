@@ -5,6 +5,7 @@ mod events;
 pub mod field;
 pub mod gallery;
 pub mod motion;
+pub mod overlay;
 pub mod preferences;
 pub mod toggle;
 pub mod tokens;
