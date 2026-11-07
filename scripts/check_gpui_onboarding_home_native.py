@@ -131,7 +131,11 @@ def main():
                                 subprocess.run(['screencapture', '-x', '-o', '-l', window.stdout.strip(), str(image)],
                                                check=True, timeout=10)
                         time.sleep(0.15)
-                    subprocess.run([str(observer), str(host.pid), 'close', '-'], check=True, timeout=8)
+                    close = subprocess.run([str(observer), str(host.pid), 'close', '-'], timeout=8)
+                    # AX may lose its reply when LastWindowClosed terminates the
+                    # exact test process. Only its observed clean exit proves close.
+                    if close.returncode not in (0, 4):
+                        raise RuntimeError(f'{family}: AX close failed: {close.returncode}')
                     host.wait(timeout=15)
                     if host.returncode != 0:
                         raise RuntimeError(f'{family}: window close did not exit cleanly: {host.returncode}')
