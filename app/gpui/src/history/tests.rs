@@ -1,62 +1,12 @@
+use super::fixtures::allocation_probe::{RenderAllocator, count_large_render_allocations};
 use super::{History, fixtures::*, host::Authority, inbox::Inbox, model::*};
 use gpui::{Entity, Focusable, TestAppContext, VisualTestContext, prelude::*};
 use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
-// Test-only allocator forwarding. The scoped, thread-local probe detects a
-// transcript-sized clone in the real renderer without sampling process memory.
-struct RenderAllocator;
 #[global_allocator]
 static RENDER_ALLOCATOR: RenderAllocator = RenderAllocator;
-std::thread_local! {
-    static LARGE_RENDER_ALLOCATIONS: std::cell::Cell<Option<(usize, usize)>> = const {
-        std::cell::Cell::new(None)
-    };
-}
-fn record_allocation(bytes: usize) {
-    if bytes < 1024 * 1024 {
-        return;
-    }
-    let _ = LARGE_RENDER_ALLOCATIONS.try_with(|probe| {
-        if let Some((minimum, count)) = probe.get()
-            && bytes >= minimum
-        {
-            probe.set(Some((minimum, count + 1)));
-        }
-    });
-}
-// SAFETY: every operation delegates the original pointer/layout to System;
-// the probe uses only non-allocating, const-initialized thread-local Cells.
-unsafe impl std::alloc::GlobalAlloc for RenderAllocator {
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        record_allocation(layout.size());
-        unsafe { std::alloc::System.alloc(layout) }
-    }
-    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-        record_allocation(layout.size());
-        unsafe { std::alloc::System.alloc_zeroed(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        unsafe { std::alloc::System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, bytes: usize) -> *mut u8 {
-        record_allocation(bytes);
-        unsafe { std::alloc::System.realloc(ptr, layout, bytes) }
-    }
-}
-fn count_large_render_allocations(minimum: usize, render: impl FnOnce()) -> usize {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            LARGE_RENDER_ALLOCATIONS.with(|probe| probe.set(None));
-        }
-    }
-    let _reset = Reset;
-    LARGE_RENDER_ALLOCATIONS.with(|probe| probe.set(Some((minimum, 0))));
-    render();
-    LARGE_RENDER_ALLOCATIONS.with(|probe| probe.get().unwrap().1)
-}
 fn active() -> Model {
     let mut m = Model::default();
     m.attach();
@@ -856,4 +806,223 @@ fn multi_megabyte_detail_redraws_only_shape_one_cached_slice(cx: &mut TestAppCon
     );
     cx.update(|w, cx| e.update(cx, |s, cx| s.hide(w, cx)));
     assert!(e.read_with(cx, |s, _| s.detail_pages.boundaries.is_empty()));
+}
+
+/// Reproduce H10 at the native QA viewport, then continue beyond every initially
+/// rendered row. Inspect real scroll geometry, not merely the rendered range.
+#[gpui::test]
+fn tab_row_actions_reveal_forward_reverse_and_unrendered_rows(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| {
+        w.resize(gpui::size(gpui::px(880.), gpui::px(720.)));
+        w.bounds_changed(cx);
+        w.focus(&e.read(cx).search.read(cx).focus_handle(cx), cx);
+    });
+    draw(cx);
+    let initial_end = e.read_with(cx, |s, _| s.rendered.end);
+    let mut visited = Vec::new();
+    for _ in 0..215 {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let position = cx.update(|w, cx| {
+            e.read_with(cx, |s, _| {
+                s.row_focus.iter().find_map(|(key, f)| {
+                    f.is_focused(w).then(|| {
+                        s.model
+                            .matches
+                            .iter()
+                            .position(|&i| s.model.entries[i].key == *key)
+                            .unwrap()
+                    })
+                })
+            })
+        });
+        if let Some(position) = position {
+            e.read_with(cx, |s, _| {
+                let scroll = s.scroll.0.borrow();
+                let top = super::ROW_HEIGHT * position as f32 + scroll.base_handle.offset().y;
+                assert!(top >= -gpui::px(1.), "row {position} above viewport: {top:?}");
+                assert!(top + super::ROW_HEIGHT <= scroll.base_handle.bounds().size.height + gpui::px(1.),
+                    "focused row {position} below viewport: top={top:?} bounds={:?} item={:?} offset={:?}", scroll.base_handle.bounds(), scroll.last_item_size, scroll.base_handle.offset());
+            });
+            visited.push(position);
+            if position == 199 {
+                break;
+            }
+        }
+    }
+    assert_eq!(visited, (0..200).collect::<Vec<_>>());
+    assert!(initial_end < 199);
+    for position in (0..199).rev() {
+        cx.simulate_keystrokes("shift-tab");
+        draw(cx);
+        cx.update(|w, cx| {
+            e.read_with(cx, |s, _| {
+                let key = s.model.entries[s.model.matches[position]].key;
+                assert!(s.row_focus[&key].is_focused(w));
+                let scroll = s.scroll.0.borrow();
+                let top = super::ROW_HEIGHT * position as f32 + scroll.base_handle.offset().y;
+                assert!(top >= -gpui::px(1.));
+                assert!(
+                    top + super::ROW_HEIGHT
+                        <= scroll.base_handle.bounds().size.height + gpui::px(1.)
+                );
+            })
+        });
+    }
+}
+
+/// No explicit drain/receive after setup: every response must travel through
+/// the gallery's attach/follow loop, including owner snapshots and action acks.
+#[gpui::test]
+fn gallery_follow_delivers_pin_copy_save_delete_import_and_reopen(cx: &mut TestAppContext) {
+    let (e, host, cx) = harness(cx);
+    cx.update(|w, cx| e.update(cx, |s, cx| s.hide(w, cx)));
+    host.retry_import.set(true);
+    e.update(cx, |s, cx| {
+        s.fixture_clock = Some(clock());
+        super::fixtures::attach(s, cx);
+    });
+    let tick = |cx: &mut VisualTestContext| {
+        draw(cx);
+        cx.executor().advance_clock(Duration::from_millis(64));
+        draw(cx);
+    };
+    e.update(cx, |s, _| {
+        s.request(super::RequestKind::Pin { entry: entry(200) })
+    });
+    tick(cx);
+    assert!(!host.rows.borrow()[199].pinned);
+    assert!(!e.read_with(cx, |s, _| s.model.entries[199].pinned));
+    e.update(cx, |s, _| s.copy(200, false));
+    tick(cx);
+    assert_eq!(*host.clipboard.borrow(), entry(200).text);
+    assert_eq!(e.read_with(cx, |s, _| s.model.notice), Some("Copied"));
+    for format in 0..3 {
+        cx.update(|w, cx| e.update(cx, |s, cx| s.action(&format!("save-{format}"), w, cx)));
+        tick(cx);
+        assert_eq!(e.read_with(cx, |s, _| s.model.notice), Some("Export saved"));
+    }
+    assert_eq!(host.saved.borrow().len(), 3);
+    let exported: serde_json::Value = serde_json::from_str(&host.saved.borrow()[2].1).unwrap();
+    assert_eq!(exported["entries"].as_array().unwrap().len(), 200);
+    host.cancel_save.set(true);
+    cx.update(|w, cx| e.update(cx, |s, cx| s.action("save-2", w, cx)));
+    tick(cx);
+    assert_eq!(host.saved.borrow().len(), 3);
+    assert_eq!(e.read_with(cx, |s, _| s.model.notice), None);
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.delete(DeleteScope::Row(200), w, cx);
+            s.delete(DeleteScope::Row(200), w, cx);
+        })
+    });
+    tick(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.entries.len()), 199);
+    e.update(cx, |s, _| s.request(super::RequestKind::RetryImport));
+    tick(cx);
+    assert!(!e.read_with(cx, |s, _| s.model.retry_import));
+    assert!(e.read_with(cx, |s, _| s.model.entries.iter().any(|e| e.key == 201)));
+    cx.update(|w, cx| e.update(cx, |s, cx| s.hide(w, cx)));
+    e.update(cx, super::fixtures::attach);
+    e.update(cx, |s, _| s.copy(201, false));
+    tick(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.notice), Some("Copied"));
+    assert_eq!(host.stops.get(), 2);
+    e.update(cx, |s, cx| {
+        s.query(
+            Query {
+                text: "transcript 199:".into(),
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.delete(DeleteScope::Shown, w, cx);
+            s.delete(DeleteScope::Shown, w, cx);
+        })
+    });
+    tick(cx);
+    assert!(e.read_with(cx, |s, _| s.model.matches.is_empty()));
+    assert!(!host.rows.borrow().iter().any(|e| e.key == 199));
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.delete(DeleteScope::All, w, cx);
+            s.delete(DeleteScope::All, w, cx);
+        })
+    });
+    tick(cx);
+    assert!(host.rows.borrow().is_empty());
+    assert!(e.read_with(cx, |s, _| s.model.entries.is_empty()));
+    assert!(e.read_with(cx, |s, _| s.model.ticket().clear_epoch > 0));
+}
+
+#[test]
+fn calendar_gallery_fixtures_straddle_real_local_day_boundaries() {
+    use chrono::TimeZone;
+    for (name, hour, zone_name) in [
+        ("santiago", 1, "-03"),
+        ("havana", 0, "CDT"),
+        ("tokyo", 0, "JST"),
+    ] {
+        let (zone, clock, rows) = super::fixtures::calendar(name);
+        let start = zone.timestamp_millis_opt(clock.today).unwrap();
+        assert_eq!(start.format("%H").to_string(), format!("{hour:02}"));
+        assert_eq!(start.format("%Z").to_string(), zone_name);
+        let q = Query {
+            date: Date::Today,
+            ..Default::default()
+        };
+        assert_eq!(q.matching(&rows, clock).len(), 3);
+        assert_eq!(Query::default().matching(&rows, clock).len(), 4);
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn ax_focus_reveals_partially_clipped_row_action(cx: &mut TestAppContext) {
+    use gpui::{
+        AccessibleAction,
+        accesskit::{ActionRequest, TreeId},
+    };
+    let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| {
+        w.resize(gpui::size(gpui::px(880.), gpui::px(720.)));
+        w.bounds_changed(cx);
+    });
+    let tree = ax::tree(cx);
+    let id = ax::named(&tree, "Show more for transcript 6");
+    let window = cx.update(|w, _| w.window_handle());
+    assert_eq!(
+        e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y),
+        gpui::px(0.)
+    );
+    cx.dispatch_accessibility_action(
+        window,
+        ActionRequest {
+            action: AccessibleAction::Focus,
+            target_tree: TreeId::ROOT,
+            target_node: id,
+            data: None,
+        },
+    );
+    draw(cx);
+    draw(cx);
+    let tree = ax::tree(cx);
+    let node = tree
+        .nodes
+        .iter()
+        .find(|(node, _)| *node == id)
+        .unwrap()
+        .1
+        .clone();
+    let bounds = node.bounds().unwrap();
+    let scale = cx.update(|w, _| w.scale_factor()) as f64;
+    assert!(
+        bounds.y1 <= 704. * scale,
+        "AX-focused action below list viewport: {bounds:?}"
+    );
+    assert!(e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y) < gpui::px(0.));
 }

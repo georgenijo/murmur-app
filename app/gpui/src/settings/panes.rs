@@ -58,6 +58,8 @@ impl Settings {
                             let e = cx.entity();
                             out.push(
                                 Button::new(id, label)
+                                    .with_scroll_parent(Some(&self.scroll))
+                                    .track_focus(&self.focus_for(id, cx))
                                     .disabled(self.model.pending || !(min..=max).contains(&next))
                                     .on_click(move |_, _, cx| {
                                         e.update(cx, |s, cx| {
@@ -95,6 +97,7 @@ impl Settings {
                         let e = cx.entity();
                         out.push(
                             Button::new("calibrate", "Calibrate overlay position…")
+                                .with_scroll_parent(Some(&self.scroll))
                                 .track_focus(&self.focus_for("calibrate", cx))
                                 .disabled(self.model.pending)
                                 .on_click(move |_, _, cx| {
@@ -103,6 +106,9 @@ impl Settings {
                                             .as_i64()
                                             .unwrap_or(0);
                                         s.calibration = Some(offset);
+                                        // The opener is unmounted. Cancel stays enabled even
+                                        // while a preview reply is pending.
+                                        s.restore_focus = Some("cal-cancel");
                                         s.action(
                                             Action::Calibration {
                                                 offset,
@@ -161,6 +167,8 @@ impl Settings {
                 }
             }
             Page::Shortcuts => {
+                #[cfg(any(test, feature = "gallery"))]
+                out.extend(self.fixture_capture_buttons(cx));
                 let [recording, paste] = shortcut_reference(&settings);
                 text!(recording);
                 out.push(
@@ -280,7 +288,7 @@ impl Settings {
                                 .is_some_and(|a| a.contains(&json!(id)));
                             let label = format!("Approve {} for Smart Auto", device.label);
                             let e = cx.entity();
-                            out.push(div().flex().items_center().justify_between().gap(px(12.)).child(label.clone()).child(Toggle::new(SharedString::from(format!("approve-{}",id)),label,approved).disabled(self.model.pending||r.recording||r.inventory_stale).on_change(move|v,_,cx|e.update(cx,|s,cx|{let mut ids=s.model.settings()["smartAutoApprovedDeviceIds"].as_array().cloned().unwrap_or_default();ids.retain(|x|x!=&json!(id));if *v {ids.push(json!(id));}s.request(RequestKind::Patch{key:"smartAutoApprovedDeviceIds",value:json!(ids)},cx);}))).into_any_element());
+                            out.push(div().flex().items_center().justify_between().gap(px(12.)).child(label.clone()).child(Toggle::new(SharedString::from(format!("approve-{}",id)),label,approved).with_scroll_parent(&self.scroll).disabled(self.model.pending||r.recording||r.inventory_stale).on_change(move|v,_,cx|e.update(cx,|s,cx|{let mut ids=s.model.settings()["smartAutoApprovedDeviceIds"].as_array().cloned().unwrap_or_default();ids.retain(|x|x!=&json!(id));if *v {ids.push(json!(id));}s.request(RequestKind::Patch{key:"smartAutoApprovedDeviceIds",value:json!(ids)},cx);}))).into_any_element());
                             if approved {
                                 let id = device.id.clone();
                                 let preferred = settings["smartAutoPreferredDeviceIds"]
@@ -297,6 +305,7 @@ impl Settings {
                                         .child(label.clone())
                                         .child(
                                             Button::new(SharedString::from(format!("prefer-{id}")), label)
+                                                .with_scroll_parent(Some(&self.scroll))
                                                 .caption(if preferred { "Preferred" } else { "Prefer" })
                                                 .toggled(preferred)
                                                 .disabled(self.model.pending || r.recording)
@@ -423,6 +432,7 @@ impl Settings {
                             .child(model)
                             .child(
                                 Toggle::new(model, format!("Include {model}"), selected)
+                                    .with_scroll_parent(&self.scroll)
                                     .disabled(
                                         r.lab_running
                                             || self.model.pending
@@ -506,6 +516,7 @@ impl Settings {
             let e = cx.entity();
             out.push(
                 Button::new("cancel-confirmation", "Cancel confirmation")
+                    .with_scroll_parent(Some(&self.scroll))
                     .on_click(move |_, _, cx| {
                         e.update(cx, |s, cx| {
                             s.confirmation = None;
