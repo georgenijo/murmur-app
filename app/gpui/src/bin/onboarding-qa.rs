@@ -47,6 +47,11 @@ fn main() {
         let state = std::env::var("MURMUR_ONBOARDING_STATE").unwrap_or_else(|_| "welcome".into());
         let compact = state.starts_with("compact");
         let fixture = Rc::new(fixtures::FixtureHost::default());
+        // Keep native polling on the same Denied state as the offscreen capture.
+        // Mutating only the view snapshot is overwritten by the next fixture Probe.
+        if state == "denied" {
+            fixture.state.borrow_mut().permissions[0] = Access::Denied;
+        }
         let mut entity = None;
         let handle = cx
             .open_window(
