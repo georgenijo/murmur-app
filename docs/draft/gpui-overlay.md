@@ -93,10 +93,12 @@ the pill follows system window appearance, independently of the main theme.
 Shared buttons/toggles receive window-local semantic roles and keep their AX
 names when their visible captions are compact glyphs.
 
-The native UI links no WebKit. Every offscreen overlay capture inventories its
-own loaded images using dyld and requires zero WebKit images. It records only
-its PID and that count. This proves the native process's dependency/runtime
-absence, not destruction of another process's Tauri window.
+The native UI links no WebKit. Every offscreen overlay capture checks the
+[attributed QA policy](#qa-webkit-attribution-policy): zero images before AX
+exposure, then only proven Apple AX bundle loads. Inventory records contain the
+PID and attribution counts; supporting load records contain image paths and
+symbols only. This checks the native process's linkage and load attribution;
+destruction of another process's Tauri window remains a separate lifetime check.
 
 `murmur-webkit::OverlayRetirement::destroy` separately consumes the legacy
 host's retained view on main, stops navigation, disconnects delegates, removes
@@ -133,7 +135,7 @@ All fixtures and rendered captures are synthetic. Native acceptance is separate.
 | O08/O09 Live Words consent, generation, click-through and hover lift | Existing preview owner retained; anchor/lift interface only | Moved preview fitting/collapsed-anchor tests; text/rendering port belongs to #1000, with native click-through and consent checks retained |
 | M01/M13 meeting states/suggestions, accept/dismiss | Idle-only prompt, token recheck and single-flight action | `suggestion_requires_idle_and_retains_expanded_bounds_until_dismissal`, `suggestion_actions_recheck_current_token_and_are_single_flight`; live capture/token authority stays in meeting service |
 | A01 accessible names, roles, state changes, inactive announcements | Shared controls/AccessKit plus native content-free announcement notification | Emitted tree/actions test and component suite; VoiceOver spoken output cannot be established headlessly |
-| Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero WebKit images; production host replacement remains pending |
+| Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero unattributed WebKit-family images; production host replacement remains pending |
 
 The shipping `useOverlayExpansion` and its disabled-hover/re-entry tests define
 pointer timing, including keeping the close shrink armed until a re-entry dwell
@@ -204,7 +206,7 @@ renders 35 overlay cases twice in addition to the 30 component cases: 65 cases,
 130 captures. Physical and pretend notches each cover 13 states, including
 clipboard delivery at the minimum 24 pt row height and
 collapsed/expanded disabled states; the pill covers nine visible states. It
-rejects blank/non-deterministic captures and missing/nonzero own-process WebKit
+rejects blank/non-deterministic captures and missing or unattributed own-process WebKit
 inventories. The native workspace and core remain within
 the existing source/transport/restart dependency guards. The WebKit lifecycle
 target already runs under the existing `rust-macos` job; no new CI job is needed.
@@ -422,3 +424,30 @@ its private `target48` directory:
 Captures and gate logs are preserved before deleting the task checkout and its
 target. The live HID recheck and independent review remain with the lead; this
 stack layer is still draft and unmerged.
+
+### QA WebKit attribution policy
+
+`gallery` builds install the shared `overlay::native` dyld observer before main.
+The launch-only `MURMUR_WEBKIT_BASELINE_ONLY=1 overlay-qa` run exits before
+NSApplication/window/AX exposure and requires zero WebKit-family images. Every
+loaded executable or non-system dylib is checked for WebKit-family load commands;
+our GPUI source gate also forbids web-view class construction references.
+
+After launch, a WebKit-family load is allowed only when its captured image/symbol
+chain contains Apple's AccessibilityBundles/AXBBundleManager activation and
+HIServices bundle loading followed by an incoming `_AXXMIG` request and Apple
+Mach/source-1 runloop dispatch. Unknown,
+non-system or app frames before that dispatch boundary, any web-view frame, truncated
+records, and inventory overflow fail closed. Ordinary app event-loop frames below
+the incoming dispatch boundary are not the initiator. No AX clients, text, audio,
+clipboard contents or other process data are collected. QA stores only bounded
+image paths/symbol names; production builds contain no observer or backtraces.
+
+`MURMUR_*_INVENTORY` retains numeric `pid` and `webkitImages`, adding numeric
+`axAttributed`, `unattributed`, `startupWebkitImages`, and `linkageViolations`.
+`MURMUR_WEBKIT_LOAD` records the supporting chain. Accessibility-induced system
+loads do not mean Murmur constructs a web view. The policy is attribution to an
+incoming AX request, not proof of a particular client's identity. The golden
+script checks this policy and a separate deterministic zero-image launch run.
+A bounded native diagnostic (`MURMUR_WEBKIT_QA_SECONDS=3 overlay-qa`) checks the
+same policy before quitting, without HID input or altering accessibility.

@@ -10,6 +10,11 @@ impl Host for Current {
     }
 }
 fn main() {
+    murmur_ui::overlay::native::start_webkit_policy();
+    if std::env::var_os("MURMUR_WEBKIT_BASELINE_ONLY").is_some() {
+        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_PREVIEW_INVENTORY");
+        return;
+    }
     let output = std::env::var_os("MURMUR_GOLDEN");
     let headless = output.is_some();
     let native_smoke = std::env::var_os("MURMUR_PREVIEW_NATIVE_SMOKE").is_some();
@@ -55,15 +60,10 @@ fn main() {
         let host = Rc::new(Current(Cell::new(Some(1))));
         let owner = host.clone();
         let mut entity = None;
-        let handle = cx.open_window(WindowOptions {
-            kind: WindowKind::PopUp, show: false, focus: false,
-            window_background: WindowBackgroundAppearance::Transparent,
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(0.),px(0.)),size(px(frame.width as f32),px(frame.height as f32))))),
-            ..Default::default()
-        }, |w, cx| {
+        let handle = cx.open_window(Preview::window_options(Bounds::new(point(px(0.),px(0.)),size(px(frame.width as f32),px(frame.height as f32)))), |w, cx| {
             let preview = cx.new(|_| {let mut p = Preview::new(host); p.model = model; p.fixture_dark = headless.then_some(dark); p});
             entity = Some(preview.clone());
-            cx.new(|cx| gpui_base::Root::new(preview, w, cx))
+            cx.new(|cx| Preview::root(preview, w, cx))
         }).expect("synthetic preview window");
         let preview = entity.unwrap();
         handle.update(cx, |_, w, cx| preview.update(cx, |s, cx| {
@@ -98,6 +98,7 @@ fn main() {
                     println!("MURMUR_PREVIEW_STAGE=stopped-{generation}");
                     cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
                 }
+                murmur_ui::overlay::native::assert_webkit_policy("MURMUR_PREVIEW_INVENTORY");
                 cx.update(|cx| cx.quit());
             }).detach();
         }
@@ -109,9 +110,12 @@ fn main() {
                         w.draw(cx).clear(cx);
                         let image = w.render_to_image().expect("offscreen preview");
                         assert!(image.pixels().any(|p| *p != *image.get_pixel(0,0)), "blank synthetic preview");
-                        let images = murmur_ui::overlay::native::webkit_images();
-                        assert_eq!(images,0);
-                        println!("MURMUR_PREVIEW_INVENTORY={{\"pid\":{},\"webkitImages\":{}}}",std::process::id(),images);
+                        // The card is inset by at least twelve points. Theme
+                        // background paint must never cover its reserved room.
+                        assert!(image.enumerate_pixels().all(|(x, _, p)|
+                            (8..image.width()-8).contains(&x) || p[3] == 0),
+                            "preview root painted over the transparent reservation");
+                        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_PREVIEW_INVENTORY");
                         image.save(path).expect("synthetic capture"); cx.quit();
                     }).expect("capture preview");
                 }).detach();

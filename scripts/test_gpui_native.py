@@ -1,4 +1,4 @@
-"""Compile the focus shim against inert classes; never create AppKit windows."""
+"""Compile native shims against synthetic views/panels; never show windows."""
 from pathlib import Path
 import platform
 import subprocess
@@ -10,6 +10,51 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
 class FocusHookTests(unittest.TestCase):
+    def test_preview_normalizes_a_default_resizable_panel_before_presentation(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+@interface SyntheticPreviewPanel : NSPanel
+@property NSUInteger styleWrites;
+@end
+@implementation SyntheticPreviewPanel
+- (void)setStyleMask:(NSWindowStyleMask)mask { self.styleWrites++; [super setStyleMask:mask]; }
+@end
+extern void murmur_preview_refit(void *, double, double, double, double);
+int main(void) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskResizable |
+            NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskNonactivatingPanel;
+        SyntheticPreviewPanel *panel = [[SyntheticPreviewPanel alloc] initWithContentRect:NSMakeRect(0,0,460,168)
+            styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+        NSPanel *other = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,460,168)
+            styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+        panel.styleWrites = 0;
+        NSView *view = panel.contentView;
+        murmur_preview_refit((__bridge void *)view, 120,0,220,42);
+        assert(!(panel.styleMask & NSWindowStyleMaskResizable));
+        assert(!(panel.styleMask & (NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)));
+        assert(panel.styleMask & NSWindowStyleMaskFullSizeContentView);
+        assert(panel.styleMask & NSWindowStyleMaskNonactivatingPanel);
+        assert(panel.titlebarAppearsTransparent && panel.titleVisibility == NSWindowTitleHidden);
+        assert(!panel.movable && panel.ignoresMouseEvents && !panel.visible);
+        assert(panel.contentView == view);
+        assert(NSEqualSizes(view.frame.size, panel.frame.size));
+        murmur_preview_refit((__bridge void *)view, 120,64,220,42);
+        assert(panel.styleWrites == 1);
+        assert(other.styleMask == mask && !other.ignoresMouseEvents && !other.visible);
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-preview-panel-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore', str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_overlay_contraction_and_reentry_sample_the_painted_band_in_both_placements(self):
         source = r'''
 #import <AppKit/AppKit.h>
@@ -430,6 +475,140 @@ int main(void) {
             subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
                             '-framework', 'QuartzCore',
                             str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
+
+class WebkitSourcePolicyTests(unittest.TestCase):
+    def test_attributed_inventory_parser(self):
+        from scripts.check_gpui_goldens import check_inventory
+        import json
+        valid = dict(pid=1, webkitImages=5, axAttributed=5, unattributed=0,
+                     startupWebkitImages=0, linkageViolations=0)
+        def parse(value):
+            return check_inventory('MURMUR_TEST_INVENTORY=' + json.dumps(value),
+                                   'MURMUR_TEST_INVENTORY')
+        self.assertEqual(parse(valid), valid)
+        for field, value in [('unattributed', 1), ('axAttributed', 4),
+                             ('startupWebkitImages', 1), ('linkageViolations', 1),
+                             ('webkitImages', -1), ('pid', True)]:
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                parse({**valid, field: value})
+        with self.assertRaises(AssertionError):
+            check_inventory('', 'MURMUR_TEST_INVENTORY')
+
+    def test_gpui_sources_do_not_construct_web_views(self):
+        # No linked class reference, dynamic named lookup, or message dispatch
+        # to a web-view class is allowed in our GPUI sources. The policy's own
+        # classifier strings are evidence matching, not class construction.
+        root = ROOT / 'app/gpui'
+        for directory in ('src', 'native'):
+            for path in (root / directory).rglob('*'):
+                if path.suffix not in ('.rs', '.m', '.h') or path.name == 'webkit_policy.m':
+                    continue
+                self.assertNotRegex(path.read_text(), r'WKWebView|\bWebView\b', str(path))
+
+
+@unittest.skipUnless(platform.system() == 'Darwin', 'dyld policy requires macOS')
+class WebkitPolicyTests(unittest.TestCase):
+    def test_classifier_linkage_and_zero_baseline(self):
+        source = r'''
+static void snapshot_hook(void);
+#define MURMUR_WEBKIT_SNAPSHOT_HOOK snapshot_hook
+#include "webkit_policy.m"
+#include <assert.h>
+static WebkitLoad pending;
+static bool inject;
+static void snapshot_hook(void) {
+    if (!inject) return;
+    inject=false;
+    pthread_mutex_lock(&lock);
+    loads[load_count++]=pending;
+    pthread_mutex_unlock(&lock);
+}
+int main(void) {
+    assert(murmur_webkit_start());
+    assert(murmur_webkit_inventory("MURMUR_TEST_INVENTORY"));
+    // Synthetic chain follows the captured VoiceOver/Apple AX bundle stack.
+    WebkitFrame ax[] = {
+        {"/usr/lib/dyld", "dlopen"},
+        {"/System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking", "_sl_dlopen"},
+        {"/System/Library/PrivateFrameworks/AccessibilityBundles.framework/AccessibilityBundles",
+            "-[AXBBundleManager _loadCoreAccessibilityAdditionsForBundle:]"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "loadAccessibilityBundles"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "_AXXMIGSetAttributeValue"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "mshMIGPerform"},
+        {"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+            "__CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__"},
+        {"/System/Library/Frameworks/AppKit.framework/AppKit", "-[NSApplication run]"},
+        {"/synthetic/Murmur", "main"},
+    };
+    unsigned n=sizeof(ax)/sizeof(*ax);
+    assert(murmur_webkit_ax_chain(ax,n,false));
+    // Deterministically arrive after snapshot copy, before serialization.
+    strcpy(pending.image,"/System/Library/Frameworks/WebKit.framework/WebKit");
+    memcpy(pending.frames,ax,sizeof(ax)); pending.count=n;
+    pending.ax=murmur_webkit_ax_chain(ax,n,false);
+    inject=true;
+    assert(murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_AX_INVENTORY"));
+    assert(load_count==1); load_count=0;
+    pending.ax=false; inject=true;
+    assert(!murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_UNKNOWN_INVENTORY"));
+    assert(load_count==1); load_count=0;
+    assert(!murmur_webkit_ax_chain(ax,n,true)); // Truncated evidence.
+    assert(!murmur_webkit_ax_chain(ax,0,false));
+    assert(!murmur_webkit_ax_chain(ax,4,false)); // No incoming AX IPC.
+    assert(!murmur_webkit_ax_chain(ax,5,false)); // No Mach/runloop dispatch.
+    WebkitFrame dispatch=ax[5];
+    strcpy(ax[5].image,"/synthetic/Murmur");
+    strcpy(ax[5].symbol,"direct_AX_call");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // App invoking the AX handler itself.
+    ax[5]=dispatch;
+    WebkitFrame saved=ax[1];
+    strcpy(ax[1].image,"/synthetic/Murmur");
+    strcpy(ax[1].symbol,"create_web_view");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // App initiated, even with AX frames.
+    ax[1]=saved;
+    ax[1].image[0]=0;
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Unknown origin.
+    ax[1]=saved;
+    strcpy(ax[1].image,"/tmp/AccessibilityBundles.framework/AccessibilityBundles");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Untrusted path spoof.
+    ax[1]=saved;
+    strcpy(ax[n-1].symbol,"-[WKWebView initWithFrame:]");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Web view anywhere in chain.
+    assert(murmur_webkit_family("/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit"));
+    assert(murmur_webkit_family("@rpath/JavaScriptCore.framework/JavaScriptCore"));
+    assert(!murmur_webkit_family("/System/Library/Frameworks/AppKit.framework/AppKit"));
+    struct { struct mach_header_64 h; struct dylib_command d; char name[128]; } image={0};
+    image.h.magic=MH_MAGIC_64; image.h.ncmds=1;
+    image.h.sizeofcmds=sizeof(image)-sizeof(image.h);
+    image.d.cmd=LC_LOAD_DYLIB; image.d.cmdsize=image.h.sizeofcmds;
+    image.d.dylib.name.offset=sizeof(image.d);
+    strcpy(image.name,"/System/Library/Frameworks/AppKit.framework/AppKit");
+    assert(!links_webkit((void *)&image));
+    strcpy(image.name,"@rpath/WebKit.framework/WebKit");
+    assert(links_webkit((void *)&image));
+    image.d.cmd=LC_LOAD_WEAK_DYLIB;
+    assert(links_webkit((void *)&image));
+    image.d.cmd=LC_REEXPORT_DYLIB;
+    assert(links_webkit((void *)&image));
+    image.d.dylib.name.offset=image.d.cmdsize;
+    assert(links_webkit((void *)&image)); // Malformed linkage fails closed.
+    // A real app-owned load must fail despite a clean startup. No web view,
+    // NSApplication, persistent store or accessibility client is constructed.
+    assert(dlopen("/System/Library/Frameworks/WebKit.framework/WebKit",RTLD_LAZY|RTLD_LOCAL));
+    assert(!murmur_webkit_inventory("MURMUR_TEST_APP_LOAD_INVENTORY"));
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-webkit-policy-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
+                            '-framework', 'Foundation', '-I', str(ROOT / 'app/gpui/native'),
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
             subprocess.run([str(path / 'test')], check=True)
 

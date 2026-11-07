@@ -38,7 +38,7 @@ bool murmur_overlay_never_key(void *object) {
 @implementation MurmurOverlayMaterial
 - (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
 @end
-static char hud_key, surface_key, panel_setup_key, preview_key;
+static char hud_key, surface_key, panel_setup_key, preview_key, preview_setup_key;
 
 // Shared by the native transaction and the windowless hierarchy regression.
 void *murmur_overlay_material(void *raw) {
@@ -216,7 +216,22 @@ bool murmur_overlay_pointer_inside(void *raw) {
 void murmur_preview_refit(void *raw, double x, double y, double width, double height) {
     assert([NSThread isMainThread]);
     NSView *view=(__bridge NSView *)raw;
-    view.window.ignoresMouseEvents=YES;
+    NSWindow *window=view.window;
+    // A host may supply the default titled/resizable GPUI popup. On macOS,
+    // its resize tracking region can exceed CGRegion's integer range;
+    // CGRegionCreateWithRect returns NULL and AppKit unconditionally releases
+    // it. Enforce the preview contract before its first resize/orderFront,
+    // independently of whether the host used Preview::window_options.
+    if ([window isKindOfClass:NSWindow.class] &&
+        !objc_getAssociatedObject(window, &preview_setup_key)) {
+        window.styleMask = (window.styleMask | NSWindowStyleMaskFullSizeContentView) &
+            ~(NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskClosable);
+        window.titlebarAppearsTransparent = YES;
+        window.titleVisibility = NSWindowTitleHidden;
+        window.movable = NO;
+        objc_setAssociatedObject(window, &preview_setup_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    window.ignoresMouseEvents=YES;
     objc_setAssociatedObject(view, &preview_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     NSRect surface = NSMakeRect(NSMinX(view.bounds)+x,
         NSMinY(view.bounds)+(view.isFlipped ? y : view.bounds.size.height-y-height), width, height);
