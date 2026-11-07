@@ -18,6 +18,31 @@ Separating ownership extraction makes each executable behavior change reviewable
 
 **References:** #996, #994, [native host contract](../draft/gpui-native-host.md)
 
+## 2026-11-07: Reuse the release contract for native packaging; defer signed acceptance (#994)
+
+**Decision:** Use a repository-owned Python packager for GPUI with the existing
+Tauri config as the shared application identity/version source, and a standalone
+Minisign-compatible Rust signer. Keep the original Tauri release job unchanged
+except target selection. GPUI requires a trusted-main manual dispatch and uses
+an artifact namespace that promotion cannot consume.
+
+**Rationale:** A fixed four-executable layout does not justify a second package
+manager/configuration. Reusing finalization, entitlements, notarization and
+provenance preserves the release trust contract. Secretless rehearsal compares
+both real bundlers independently with the same native payload. The native-parity
+route prohibits a packaging-only main landing, so signed/notarized acceptance
+cannot run during the draft rewrite stack.
+
+**Status:** active for packaging; signed rehearsal, exact signed-artifact Mac
+mini acceptance, production host wiring and real OTA proof remain deferred.
+Issue #994 stays open until its signed gate passes after the authorized stack
+landing. No release dispatch or signing-secret access is authorized here.
+
+**References:** #994, #996, #997,
+[Phase 0 route](2026-11-05-gpui-phase-0-exit.md),
+[rehearsal trust boundary](2026-07-21-secure-release-rehearsal.md),
+[release runbook](../release.md)
+
 ---
 
 ## 2026-11-06: Keep Live Words ephemeral behind a generation-checked native adapter (#1000)

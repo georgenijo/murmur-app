@@ -1,0 +1,15 @@
+[package]
+name = "murmur-updater-signer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+base64 = "0.22"
+minisign = "=0.9.1"
+
+[dev-dependencies]
+minisign-verify = "=0.3.0"
+installed-client-verifier = { package = "minisign-verify", version = "=0.2.4" }

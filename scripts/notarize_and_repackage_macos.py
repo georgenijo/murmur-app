@@ -206,6 +206,17 @@ def tauri_sign(tarball: Path, app_dir: Path) -> Path:
     return signature
 
 
+def native_sign(tarball: Path, app_dir: Path, signer: Path) -> Path:
+    env = os.environ.copy()
+    config = json.loads((app_dir / "src-tauri/tauri.conf.json").read_text())
+    env["MURMUR_SIGNING_PUBLIC_KEY"] = config["plugins"]["updater"]["pubkey"]
+    run([str(signer), str(tarball)], env=env)
+    signature = Path(f"{tarball}.sig")
+    if not signature.is_file():
+        raise SystemExit("native updater signature was not produced")
+    return signature
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name, "")
     if not value:
@@ -221,6 +232,7 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--arch", default="aarch64")
     parser.add_argument("--dmg-out", type=Path, required=True)
+    parser.add_argument("--native-signer", type=Path, help="GPUI-only minisign signer; default remains Tauri")
     args = parser.parse_args()
 
     # Secrets come from the environment, never argv.
@@ -253,7 +265,10 @@ def main() -> int:
 
     # 3. Updater archive + Ed25519 signature from the stapled app.
     tarball = build_updater_archive(app)
-    signature = tauri_sign(tarball, args.app_dir.resolve())
+    if args.native_signer:
+        signature = native_sign(tarball, args.app_dir.resolve(), args.native_signer.resolve())
+    else:
+        signature = tauri_sign(tarball, args.app_dir.resolve())
 
     print(
         json.dumps(
