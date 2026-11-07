@@ -961,6 +961,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             activity: Default::default(),
             booting: Default::default(),
             booted: Default::default(),
+            startup_stage: Default::default(),
             theme_snapshot: Default::default(),
             scan: scan.clone(),
             calendar_access: Arc::new(Mutex::new(crate::onboarding::model::Access::Unknown)),
@@ -1030,6 +1031,12 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
                     };
                     b.navigate(Route::Notice(message));
                 }
+                if event == "audio-input-inventory-changed" && b.booted.load(Ordering::Acquire) {
+                    let pending = b.clone();
+                    b.spawn(async move {
+                        let _ = migrate_microphone(&pending).await;
+                    });
+                }
                 if event == "updater-state-changed"
                     && let Ok(snapshot) = serde_json::from_str(payload)
                 {
@@ -1086,24 +1093,33 @@ pub(super) fn bootstrap(b: Backend) {
     b.spawn(async move {
         let b = task;
         let result = async {
+            b.startup_stage.store(10, Ordering::Release);
             b.services.retry_initialization().await?;
             let synthetic = cfg!(feature = "native-host-qa")
                 && std::env::args_os().any(|a| a == "--native-host-legacy-fixture")
                 && os::identity() == "com.localdictation.gpui-host-qa110";
+            b.startup_stage.store(20, Ordering::Release);
             super::legacy::migrate(&b, synthetic).await?;
+            b.startup_stage.store(30, Ordering::Release);
             let sources = b.sources().await?;
             b.navigate(Route::Sources(sources.clone()));
+            b.startup_stage.store(40, Ordering::Release);
             let settings = migrate_microphone(&b).await?;
+            b.startup_stage.store(50, Ordering::Release);
             let models = super::projections::models(b.clone()).await?;
             let installed = models
                 .model(&models.selected)
                 .is_some_and(|m| m.install == crate::models::model::Install::Installed);
             let complete = sources["murmur_onboarding_complete"] == true && installed;
+            b.startup_stage.store(60, Ordering::Release);
             b.call("init_dictation", json!({})).await?;
+            b.startup_stage.store(70, Ordering::Release);
             b.call("configure_dictation", json!({"options":settings}))
                 .await?;
+            b.startup_stage.store(80, Ordering::Release);
             b.call("configure_dictation_control", json!({"settings":settings}))
                 .await?;
+            b.startup_stage.store(90, Ordering::Release);
             configure_background(&b, &settings, complete).await;
             if b.login
                 .migrate(settings["launchAtLogin"].as_bool())
@@ -1120,7 +1136,11 @@ pub(super) fn bootstrap(b: Backend) {
         b.booting.store(false, Ordering::Release);
         match result {
             Ok(setup) => {
+                b.startup_stage.store(110, Ordering::Release);
                 b.booted.store(true, Ordering::Release);
+                // Close the inventory-event race between the initial passive
+                // read and publishing readiness. Later updates retry via listener.
+                let _ = migrate_microphone(&b).await;
                 b.navigate(Route::BootstrapReady(setup));
             }
             Err(_) => b.navigate(Route::BootstrapFailed),
@@ -1208,6 +1228,10 @@ async fn contract(b: &Backend) {
     results.insert("identity".into(), json!(os::identity()));
     results.insert("nsApplication".into(), json!(true));
     results.insert(
+        "startupStage".into(),
+        json!(b.startup_stage.load(Ordering::Acquire)),
+    );
+    results.insert(
         "startupReady".into(),
         json!(b.booted.load(Ordering::Acquire)),
     );
@@ -1245,19 +1269,21 @@ async fn migrate_microphone(b: &Backend) -> Result<Value, String> {
     let (revision, mut settings) = b.services.settings_snapshot().await?;
     if settings["microphoneIdMigrationComplete"] != true {
         let inventory = b.call("get_audio_input_inventory", json!({})).await?;
-        if inventory["status"] == "available" {
-            let current = settings["microphone"].as_str().unwrap_or("system_default");
-            if let Some(id) = legacy_microphone(current, &inventory["devices"]) {
-                b.patch(
-                    json!({"microphone":id,"microphoneIdMigrationComplete":true}),
-                    revision,
-                )
-                .await?;
-                settings = super::projections::settings(b).await?;
-            }
+        if let Some(patch) = pending_microphone_patch(&settings, &inventory) {
+            // The revision captured before the inventory await must still own
+            // the setting when the source FIFO admits this field intent.
+            b.patch(patch, revision).await?;
+            settings = super::projections::settings(b).await?;
         }
     }
     Ok(settings)
+}
+fn pending_microphone_patch(settings: &Value, inventory: &Value) -> Option<Value> {
+    if settings["microphoneIdMigrationComplete"] == true || inventory["status"] != "available" {
+        return None;
+    }
+    let id = legacy_microphone(settings["microphone"].as_str()?, &inventory["devices"])?;
+    Some(json!({"microphone":id,"microphoneIdMigrationComplete":true}))
 }
 fn legacy_microphone(current: &str, devices: &Value) -> Option<String> {
     let devices = devices.as_array()?;
@@ -1273,8 +1299,33 @@ fn legacy_microphone(current: &str, devices: &Value) -> Option<String> {
 }
 #[cfg(test)]
 mod startup_tests {
-    use super::legacy_microphone;
+    use super::{legacy_microphone, pending_microphone_patch};
     use serde_json::json;
+    #[test]
+    fn pending_migration_retries_available_inventory_without_overriding_manual_choice() {
+        let pending = json!({"microphone":"Synthetic mic","microphoneIdMigrationComplete":false});
+        let available =
+            json!({"status":"available","devices":[{"id":"uid-a","name":"Synthetic mic"}]});
+        assert_eq!(
+            pending_microphone_patch(&pending, &json!({"status":"initializing"})),
+            None
+        );
+        assert_eq!(
+            pending_microphone_patch(&pending, &json!({"status":"available","devices":[]})),
+            None
+        );
+        assert_eq!(
+            pending_microphone_patch(&pending, &available),
+            Some(json!({"microphone":"uid-a","microphoneIdMigrationComplete":true}))
+        );
+        assert_eq!(
+            pending_microphone_patch(
+                &json!({"microphone":"uid-b","microphoneIdMigrationComplete":true}),
+                &available
+            ),
+            None
+        );
+    }
     #[test]
     fn microphone_migration_requires_an_existing_uid_or_unique_name() {
         let devices = json!([{"id":"uid-a","name":"Synthetic mic"},{"id":"uid-b","name":"Repeated"},{"id":"uid-c","name":"Repeated"}]);

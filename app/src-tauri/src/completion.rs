@@ -826,6 +826,7 @@ pub(crate) async fn native_acknowledge(
 
 #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
 pub(crate) async fn native_retry_initialization(app: crate::host::Context) -> Result<(), String> {
+    let permit = crate::shutdown::WriterPermit::acquire()?;
     if app
         .completion_initialization()
         .failed
@@ -834,7 +835,6 @@ pub(crate) async fn native_retry_initialization(app: crate::host::Context) -> Re
     {
         return Ok(());
     }
-    let permit = crate::shutdown::WriterPermit::acquire()?;
     let worker = app.clone();
     let result = crate::host::runtime::spawn_blocking(move || {
         let _permit = permit;
@@ -847,7 +847,7 @@ pub(crate) async fn native_retry_initialization(app: crate::host::Context) -> Re
         }
     })
     .await
-    .map_err(|_| "Storage initializer unavailable".to_owned())?;
+    .unwrap_or_else(|_| Err("Storage initializer unavailable".to_owned()));
     if result.is_ok() {
         start_gate(app);
     } else {

@@ -233,11 +233,48 @@ pub async fn migrate(b: &Backend, synthetic: bool) -> Result<(), String> {
     result.map_err(|_| "Legacy import preserved for retry".into())
 }
 fn fixture_seed() -> Value {
-    json!({"dictation-history":json!([{"schemaVersion":2,"id":"synthetic-legacy-110","text":"Synthetic migration fixture.","duration":1.0,"source":"dictation","timestamp":1,"pinned":false}]).to_string(),"dictation-settings":json!({"settingsVersion":7,"model":"parakeet-tdt-0.6b-v3-coreml","microphone":"system_default","launchAtLogin":false,"language":"es","launchOnboardingComplete":false}).to_string()})
+    json!({"dictation-history":json!([{"schemaVersion":2,"id":"synthetic-legacy-110","text":"Synthetic migration fixture.","duration":1.0,"source":"recording","timestamp":1,"pinned":false}]).to_string(),"dictation-settings":json!({"settingsVersion":7,"model":"parakeet-tdt-0.6b-v3-coreml","microphone":"system_default","launchAtLogin":false,"language":"es","launchOnboardingComplete":false}).to_string()})
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn worker_fixture_commits_through_the_actual_core_protocol() {
+        let root = std::env::temp_dir().join(format!(
+            "murmur-gpui-test-worker-seed-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let service =
+            murmur_core::completion::CompletionService::start(root.clone(), true).unwrap();
+        let mut source = serde_json::Map::new();
+        for key in TRANSCRIPT_KEYS.iter().chain(V2_KEYS).chain(UPDATER_V3_KEYS) {
+            source.insert((*key).into(), Value::Null);
+        }
+        source.extend(fixture_seed().as_object().unwrap().clone());
+        let removal =
+            murmur_core::completion::transport::import(&service, Value::Object(source)).unwrap();
+        assert!(removal.committed);
+        murmur_core::completion::transport::acknowledge(&service, &json!({"removed":removal.keys}))
+            .unwrap();
+        assert_eq!(
+            service
+                .execute(murmur_core::completion::Command::Snapshot)
+                .unwrap()
+                .history
+                .len(),
+            1
+        );
+        assert!(
+            service
+                .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
+                .unwrap()
+                .transcript_keys_removed
+        );
+        let _ = futures::executor::block_on(service.shutdown_receipt());
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn bounded_worker_protocol_never_accepts_an_arbitrary_removal_key() {
         assert!(approved("dictation-history"));

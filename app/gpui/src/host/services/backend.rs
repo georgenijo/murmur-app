@@ -150,6 +150,7 @@ pub struct Backend {
     pub activity: Arc<Activity>,
     pub booting: Arc<AtomicBool>,
     pub booted: Arc<AtomicBool>,
+    pub startup_stage: Arc<AtomicU64>,
     pub scan: Arc<Mutex<Option<(String, Value)>>>,
     pub theme_snapshot: Arc<Mutex<Option<(crate::themes::model::Snapshot, Value)>>>,
     pub calendar_access: Arc<Mutex<crate::onboarding::model::Access>>,

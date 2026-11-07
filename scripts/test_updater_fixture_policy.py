@@ -9,13 +9,18 @@ TAURI = ROOT / 'app/src-tauri'
 class UpdaterFixturePolicy(unittest.TestCase):
     def test_fixture_trust_seams_are_feature_gated_and_identity_checked(self):
         source = (TAURI / 'src/commands/updater.rs').read_text()
-        self.assertIn('#[cfg(feature = "shutdown-test-support")]\nmod fixture {', source)
-        self.assertIn('#[cfg(feature = "shutdown-test-support")]\n    let updater = fixture::configure(app, updater)?;', source)
+        self.assertIn('#[cfg(any(feature = "shutdown-test-support", feature = "native-host-qa"))]\nmod fixture {', source)
+        self.assertIn('#[cfg(any(feature = "shutdown-test-support", feature = "native-host-qa"))]\n    let updater = fixture::configure(app, updater)?;', source)
         self.assertIn('app.config().identifier == "com.localdictation.shutdown-test"', source)
         self.assertIn('if !enabled(app) { return Ok(updater); }', re.sub(r'\s+', ' ', source))
         core = (TAURI / 'crates/murmur-core/src/updater/mod.rs').read_text()
         self.assertIn('#[cfg(feature = "updater-test-support")]\n    pub fn isolated_fixture', core)
-        self.assertIn('self.identifier != "com.localdictation.shutdown-test"', core)
+        self.assertIn('"com.localdictation.shutdown-test" | "com.localdictation.gpui-host-qa110"', re.sub(r'\s+', ' ', core))
+        self.assertIn('cfg!(feature = "shutdown-test-support")', source)
+        self.assertIn('cfg!(feature = "native-host-qa")', source)
+        self.assertIn('app.config().identifier == "com.localdictation.gpui-host-qa110"', source)
+        self.assertIn('Native updater fixture must use loopback HTTP', core)
+        self.assertIn('take(65537)', source)
         self.assertNotIn('MURMUR_UPDATER_FIXTURE', core)
         self.assertIn('feed: FEED.into(), key: PUBLIC_KEY.into(), local_fixture: false', re.sub(r'\s+', ' ', core))
 
