@@ -167,6 +167,40 @@ def main():
             raise AssertionError('diagnostics screens rendered identically')
     if len({results[f'diagnostics-{mode}-events'] for mode in ('light', 'dark', 'contrast')}) != 3:
         raise AssertionError('diagnostics appearance variants rendered identically')
+    history_baseline = subprocess.check_output([str(target / 'debug/history-qa')],
+        env={**os.environ, 'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(history_baseline, 'MURMUR_HISTORY_INVENTORY')['webkitImages'] != 0:
+        raise AssertionError('nonzero History launch-only baseline')
+    policy_log.extend(history_baseline.splitlines())
+    print('PASS zero-image History launch baseline and native linkage policy')
+    # History: native production view, complete synthetic 200-row snapshot.
+    # No native interaction, user history, pasteboard or memory measurement.
+    for mode in ('light', 'dark', 'contrast'):
+        for state in ('list', 'compact', 'detail', 'detail-last-page', 'search', 'empty', 'no-matches',
+                      'loading', 'retention-off', 'migration', 'error', 'confirm'):
+            case = f'history-{mode}-{state}'
+            paths = [output / f'{case}-{i}.png' for i in (1, 2)]
+            for path in paths:
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ('MURMUR_DARK', 'MURMUR_CONTRAST', 'MURMUR_HISTORY_STATE')}
+                env.update(MURMUR_GOLDEN=str(path), MURMUR_HISTORY_STATE=state, TZ='UTC')
+                if mode == 'dark':
+                    env['MURMUR_DARK'] = '1'
+                if mode == 'contrast':
+                    env['MURMUR_CONTRAST'] = '1'
+                stdout = subprocess.check_output([str(target / 'debug/history-qa')],
+                                                 env=env, cwd=UI, timeout=60, text=True)
+                check_inventory(stdout, 'MURMUR_HISTORY_INVENTORY')
+                policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
+            if paths[0].read_bytes() != paths[1].read_bytes():
+                raise AssertionError(f'non-deterministic {case}')
+            results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+            print(f'PASS {case}: identical offscreen Metal images')
+        if len({results[f'history-{mode}-{state}'] for state in
+                ('list', 'detail', 'search', 'empty', 'no-matches', 'loading', 'confirm')}) != 7:
+            raise AssertionError('History states rendered identically')
+    if len({results[f'history-{mode}-list'] for mode in ('light', 'dark', 'contrast')}) != 3:
+        raise AssertionError('History appearance variants rendered identically')
     (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')
     (output / 'receipt.json').write_text(json.dumps({
         'os': platform.platform(), 'gpui': '654efae441bc8eb117d0042bb28cd7cf3570bdc9',

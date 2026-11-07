@@ -15,6 +15,7 @@ exclude = ["vendor/accesskit_macos", "vendor/gpui"]
 
 [dependencies]
 chrono = "0.4"
+chrono-tz = { version = "0.10", optional = true }
 sha2 = "0.10.9"
 serde_json = "1"
 raw-window-handle = "0.6.2"
@@ -25,6 +26,7 @@ gpui-base = { path = "vendor/gpui-component/crates/base" }
 gpui-component = { path = "vendor/gpui-component/crates/component" }
 
 [dev-dependencies]
+chrono-tz = "0.10"
 accesskit_consumer = "=0.38.0"
 serde_json = "1"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", default-features = false, features = ["test-support"] }
@@ -39,7 +41,7 @@ accesskit_macos = { version = "=0.26.3", optional = true }
 
 [features]
 a11y-tests = ["dep:accesskit_macos", "accesskit_macos/test-support"]
-gallery = ["gpui/test-support", "gpui_platform/test-support"]
+gallery = ["dep:chrono-tz", "gpui/test-support", "gpui_platform/test-support"]
 
 [[bin]]
 name = "overlay-qa"
@@ -168,6 +170,11 @@ required-features = ["gallery"]
 [[bin]]
 name = "diagnostics-qa"
 path = "src/bin/diagnostics-qa.rs"
+required-features = ["gallery"]
+
+[[bin]]
+name = "history-qa"
+path = "src/bin/history-qa.rs"
 required-features = ["gallery"]
 
 [[test]]

@@ -4,6 +4,7 @@ pub mod completion;
 pub mod context;
 pub mod dictation;
 pub mod events;
+pub mod history;
 pub mod hold_promotion;
 pub mod keyboard;
 pub mod memory;
