@@ -550,6 +550,55 @@ mod ax {
         );
     }
     #[gpui::test]
+    fn regression_calibration_preview_failure_then_save_keeps_acknowledged_requested_offset(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.disclosure["panes"]["general"] = json!(true);
+        });
+        for acknowledged in [0, 1] {
+            let t = tree(cx);
+            click(cx, named(&t, "Calibrate overlay position…"));
+            if acknowledged == 1 {
+                let t = tree(cx);
+                click(cx, named(&t, "Move overlay down one point"));
+            }
+            assert_eq!(
+                host.state.borrow().runtime.calibration.unwrap().applied,
+                acknowledged
+            );
+
+            host.fail.set(Some(Problem::Unavailable));
+            let t = tree(cx);
+            click(cx, named(&t, "Move overlay down one point"));
+            assert_eq!(
+                e.read_with(cx, |s, _| s.model.problem),
+                Some(Problem::Unavailable)
+            );
+            assert!(e.read_with(cx, |s, _| !s.model.pending));
+            assert_eq!(
+                host.state.borrow().runtime.calibration.unwrap().applied,
+                acknowledged
+            );
+
+            let t = tree(cx);
+            click(cx, named(&t, "Save position"));
+            assert_eq!(
+                host.actions.borrow().last(),
+                Some(&Action::Calibration {
+                    offset: acknowledged,
+                    finish: true,
+                })
+            );
+            assert_eq!(
+                host.state.borrow().settings["overlayVerticalOffset"],
+                acknowledged
+            );
+            assert!(e.read_with(cx, |s, _| s.calibration.is_none()));
+        }
+    }
+    #[gpui::test]
     fn regression_calibration_save_preserves_requested_display_clamped_offset(
         cx: &mut TestAppContext,
     ) {

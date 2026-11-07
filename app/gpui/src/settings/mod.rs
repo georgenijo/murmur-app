@@ -284,6 +284,16 @@ impl Settings {
                 self.invalidate_changed_drafts();
                 self.synced_revision = None;
                 self.authority.sync(&self.model);
+                // Save the acknowledged request, not a failed preview or the
+                // display-clamped applied position. The model fences stale replies.
+                if self.model.problem.is_none()
+                    && let Some(Action::Calibration {
+                        offset,
+                        finish: false,
+                    }) = &completion
+                {
+                    self.calibration = Some(*offset);
+                }
                 if matches!(
                     completion,
                     Some(Action::CancelCalibration | Action::Calibration { finish: true, .. })

@@ -61,7 +61,6 @@ impl Settings {
                                     .disabled(self.model.pending || !(min..=max).contains(&next))
                                     .on_click(move |_, _, cx| {
                                         e.update(cx, |s, cx| {
-                                            s.calibration = Some(next);
                                             s.action(
                                                 Action::Calibration {
                                                     offset: next,
