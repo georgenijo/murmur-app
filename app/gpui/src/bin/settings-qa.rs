@@ -146,7 +146,7 @@ fn main() {
                     );
                     w.draw(cx).clear(cx);
                 })
-                    .expect("settle Settings controls");
+                .expect("settle Settings controls");
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(32))
                     .await;
