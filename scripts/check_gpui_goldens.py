@@ -131,6 +131,12 @@ def main():
             raise AssertionError('preview lift did not move the painted card')
     if results['preview-pill-light-short'] == results['preview-pill-dark-short']:
         raise AssertionError('preview system appearance fixtures did not differ')
+    diagnostics_baseline = subprocess.check_output([str(target / 'debug/diagnostics-qa')],
+        env={**os.environ, 'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(diagnostics_baseline, 'MURMUR_DIAGNOSTICS_INVENTORY')['webkitImages'] != 0:
+        raise AssertionError('nonzero diagnostics launch-only baseline')
+    policy_log.extend(diagnostics_baseline.splitlines())
+    print('PASS zero-image diagnostics launch baseline and native linkage policy')
     # Diagnostics uses only the synthetic adapter, with no visible AppKit window.
     for mode in ('light', 'dark', 'contrast'):
         for state in ('events', 'events-expanded', 'empty', 'loading', 'runs', 'run-detail',
@@ -148,10 +154,8 @@ def main():
                     env['MURMUR_CONTRAST'] = '1'
                 stdout = subprocess.check_output([str(target / 'debug/diagnostics-qa')],
                                                  env=env, cwd=UI, timeout=60, text=True)
-                inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
-                             if line.startswith('MURMUR_DIAGNOSTICS_INVENTORY=')]
-                if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
-                    raise AssertionError('missing or nonempty Diagnostics WebKit inventory')
+                check_inventory(stdout, 'MURMUR_DIAGNOSTICS_INVENTORY')
+                policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
             if paths[0].read_bytes() != paths[1].read_bytes():
                 raise AssertionError(f'non-deterministic {case}')
             results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()

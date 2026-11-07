@@ -6,6 +6,11 @@ use murmur_ui::{
 };
 use std::rc::Rc;
 fn main() {
+    murmur_ui::overlay::native::start_webkit_policy();
+    if std::env::var_os("MURMUR_WEBKIT_BASELINE_ONLY").is_some() {
+        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
+        return;
+    }
     println!(
         "MURMUR_DIAGNOSTICS_REVISION={}",
         option_env!("MURMUR_QA_REVISION").unwrap_or("development")
@@ -135,8 +140,11 @@ fn main() {
         if !headless && std::env::var_os("MURMUR_DIAGNOSTICS_NATIVE_SMOKE").is_some() {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(std::time::Duration::from_secs(20)).await;
+                murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
                 cx.update(|cx| cx.quit());
             }).detach();
+        } else if !headless {
+            murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
         }
         if let Some(path) = output {
             cx.spawn(async move |cx| {
@@ -150,12 +158,7 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank synthetic diagnostics"
                     );
-                    let images = murmur_ui::overlay::native::webkit_images();
-                    assert_eq!(images, 0);
-                    println!(
-                        "MURMUR_DIAGNOSTICS_INVENTORY={{\"pid\":{},\"webkitImages\":{images}}}",
-                        std::process::id()
-                    );
+                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
                     image.save(path).expect("synthetic capture");
                     cx.quit();
                 })

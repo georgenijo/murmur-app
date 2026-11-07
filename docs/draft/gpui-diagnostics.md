@@ -127,8 +127,12 @@ production view with the synthetic adapter, rendered to offscreen Metal.
 The four portable-report fixtures now live in `tests/fixtures/diagnostic-reports`;
 Rust/core and React use the same unchanged synthetic files. CI watches that
 neutral directory for all three consumers.
-Every Diagnostics capture inventories only its own loaded images and requires
-zero WebKit images. Tests and fixtures never inspect production app data.
+Every Diagnostics capture inventories only its own loaded images through the
+shared overlay/preview WebKit attribution policy. Launch-only baselines require
+zero WebKit images and clean native linkage; later accessibility-attributed
+loads are allowed, while app-owned and unknown loads fail closed. The golden
+policy log preserves each inventory. Tests and fixtures never inspect
+production app data.
 
 | Rows | This layer | Native acceptance still required with the integrated host |
 |---|---|---|
