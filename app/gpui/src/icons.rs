@@ -46,9 +46,18 @@ pub enum Glyph {
     CircleDot,
     Panels,
     Alert,
+    SettingsDelivery,
+    SettingsText,
+    SettingsModes,
+    SettingsDiagnostics,
 }
 pub fn icon(glyph: Glyph) -> Icon {
     let bytes: &'static [u8] = match glyph {
+        Glyph::SettingsDelivery => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="m9 12 2 2 4-5"/></svg>"#,
+        Glyph::SettingsText => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 5h14M8 5v14M5 19h6M15 10h4M15 14h4"/></svg>"#,
+        Glyph::SettingsModes => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="5" width="11" height="7" rx="1.5"/><rect x="9" y="12" width="11" height="7" rx="1.5"/><path d="M7 8.5h5M12 15.5h5"/></svg>"#,
+        Glyph::SettingsDiagnostics => br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 4h16v16H4zM8 9h8M8 13h5M8 17h3"/></svg>"#,
+
         Glyph::Alert => {
             include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/circle-alert.svg")
         }
@@ -177,14 +186,14 @@ pub fn settings_glyph(label: &str) -> Glyph {
         "General" => Glyph::CircleDot,
         "Recording" => Glyph::Mic,
         "Customize" => Glyph::Pencil,
-        "Delivery" => Glyph::ClipboardCheck,
+        "Delivery" => Glyph::SettingsDelivery,
         "Meetings" => Glyph::Calendar,
-        "Text & vocabulary" => Glyph::Type,
+        "Text & vocabulary" => Glyph::SettingsText,
         "AI & models" => Glyph::Sun,
-        "Modes" => Glyph::Panels,
+        "Modes" => Glyph::SettingsModes,
         "Appearance" => Glyph::Palette,
         "Performance Lab" => Glyph::Chart,
-        "Diagnostics" => Glyph::File,
+        "Diagnostics" => Glyph::SettingsDiagnostics,
         "Keyboard shortcuts" => Glyph::Keyboard,
         _ => Glyph::Audio,
     }
