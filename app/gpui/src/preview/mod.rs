@@ -44,13 +44,17 @@ impl Preview {
     /// All worker callbacks publish into Inbox; only this main-thread turn
     /// changes the model or NSWindow. Subscribe before reading durable consent.
     pub fn receive(&mut self, event: Event, window: &mut Window, cx: &mut Context<Self>) {
+        self.drain();
         self.model.event(event);
         self.advance(window, cx);
     }
-    pub fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn drain(&mut self) {
         for event in self.inbox.drain() {
             self.model.event(event);
         }
+    }
+    pub fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.drain();
         if let Some(ticket) = self.model.ticket()
             && !self.host.is_current(ticket.generation)
         {
@@ -116,6 +120,35 @@ impl Preview {
             self.announced = Some(ticket);
         }
         cx.notify();
+        if let Some(ticket) = self.model.ticket()
+            && self.presented != Some(ticket)
+            && self.scheduled != Some(ticket)
+        {
+            self.scheduled = Some(ticket);
+            let weak = cx.entity().downgrade();
+            // An ordered-out macOS window has no running display link. Defer
+            // outside the entity borrow, then explicitly paint and present its
+            // hidden backing layer before admitting it on this main turn.
+            window.defer(cx, move |w, cx| {
+                let ready = weak.update(cx, |s, cx| {
+                    s.advance(w, cx);
+                    s.model.owns(ticket) && s.host.is_current(ticket.generation)
+                });
+                if ready.is_ok_and(|ready| ready) {
+                    w.refresh();
+                    w.draw(cx).clear(cx);
+                    w.present_if_needed();
+                    let _ = weak.update(cx, |s, cx| s.admit_frame(ticket, w, cx));
+                } else {
+                    let _ = weak.update(cx, |s, cx| {
+                        if s.scheduled == Some(ticket) {
+                            s.scheduled = None;
+                        }
+                        s.advance(w, cx);
+                    });
+                }
+            });
+        }
     }
     fn offscreen(&self) -> bool {
         #[cfg(feature = "gallery")]
@@ -139,9 +172,7 @@ impl Preview {
 
     fn admit_frame(&mut self, ticket: Ticket, window: &mut Window, cx: &mut Context<Self>) {
         // First-frame continuation revalidates every queued privacy boundary.
-        for event in self.inbox.drain() {
-            self.model.event(event);
-        }
+        self.drain();
         if self.model.owns(ticket) {
             if self.host.is_current(ticket.generation) {
                 self.presented = Some(ticket);
@@ -241,7 +272,6 @@ impl Render for Preview {
         let dark = self.dark(window);
         let palette = tokens::Palette::overlay(anchor.above, dark, cx);
         let ticket = self.model.ticket();
-        let hidden = ticket.is_none() || ticket != self.presented;
         let (width, height) = card_size(self.model.text(), frame.width as f32, window);
         let lift = gpui_base::transition(
             "preview-lift",
@@ -263,18 +293,9 @@ impl Render for Preview {
         if !self.offscreen() {
             native::refit_preview_material(window, card);
         }
-        let Some(ticket) = ticket else {
+        let Some(_) = ticket else {
             return root.into_any_element();
         };
-        if hidden && self.scheduled != Some(ticket) {
-            self.scheduled = Some(ticket);
-            let weak = cx.entity().downgrade();
-            window.on_next_frame(move |w, cx| {
-                let _ = weak.update(cx, |s, cx| {
-                    s.admit_frame(ticket, w, cx);
-                });
-            });
-        }
         let stable = self.model.stable_bytes();
         let tentative = if prefs.increase_contrast {
             palette.text

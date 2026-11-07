@@ -83,6 +83,20 @@ pub struct Ticket {
     revision: u64,
 }
 
+/// Authoritative host revisions are strictly increasing per input stream,
+/// including initial reads. A recording generation alone does not order status.
+#[derive(Clone, Copy)]
+pub struct LifecycleSnapshot {
+    pub revision: u64,
+    pub generation: u64,
+    pub status: Status,
+}
+#[derive(Clone, Copy)]
+pub struct AnchorSnapshot {
+    pub revision: u64,
+    pub anchor: Anchor,
+}
+
 pub enum Event {
     /// The host subscribes first, then starts a durable settings read. A true
     /// notification alone is never consent. Opt-out revokes before that read.
@@ -93,9 +107,10 @@ pub enum Event {
         epoch: u64,
         enabled: bool,
     },
-    Lifecycle {
-        generation: u64,
-        status: Status,
+    Lifecycle(LifecycleSnapshot),
+    HydrateLifecycle {
+        snapshot: LifecycleSnapshot,
+        observed_epoch: u64,
     },
     Cancelled(u64),
     Partial {
@@ -109,7 +124,11 @@ pub enum Event {
         stable: String,
         tentative: String,
     },
-    Anchor(Anchor),
+    Anchor(AnchorSnapshot),
+    HydrateAnchor {
+        snapshot: AnchorSnapshot,
+        observed_epoch: u64,
+    },
     /// Detach/display loss empties content and invalidates pending frame work.
     Detached,
 }
@@ -120,6 +139,10 @@ pub struct Model {
     recording: bool,
     enabled: bool,
     consent_epoch: u64,
+    lifecycle_epoch: u64,
+    lifecycle_revision: u64,
+    anchor_epoch: u64,
+    anchor_revision: u64,
     revision: u64,
     text: String,
     stable_bytes: usize,
@@ -135,6 +158,10 @@ impl Default for Model {
             recording: false,
             enabled: false,
             consent_epoch: 0,
+            lifecycle_epoch: 0,
+            lifecycle_revision: 0,
+            anchor_epoch: 0,
+            anchor_revision: 0,
             revision: 0,
             text: String::new(),
             stable_bytes: 0,
@@ -146,6 +173,15 @@ impl Default for Model {
 impl Model {
     pub fn consent_epoch(&self) -> u64 {
         self.consent_epoch
+    }
+    /// Capture after subscribing and draining earlier notifications, before
+    /// starting the corresponding asynchronous read. Retry rejected hydration
+    /// with a fresh epoch and a strictly newer authoritative revision.
+    pub fn lifecycle_epoch(&self) -> u64 {
+        self.lifecycle_epoch
+    }
+    pub fn anchor_epoch(&self) -> u64 {
+        self.anchor_epoch
     }
     pub fn text(&self) -> &str {
         &self.text
@@ -185,7 +221,24 @@ impl Model {
         }
     }
     pub fn event(&mut self, event: Event) {
+        match &event {
+            Event::Lifecycle(_) | Event::Cancelled(_) | Event::Detached => {
+                self.lifecycle_epoch = self.lifecycle_epoch.saturating_add(1);
+            }
+            _ => {}
+        }
+        if matches!(&event, Event::Anchor(_) | Event::Detached) {
+            self.anchor_epoch = self.anchor_epoch.saturating_add(1);
+        }
         match event {
+            Event::HydrateLifecycle {
+                snapshot,
+                observed_epoch,
+            } if observed_epoch == self.lifecycle_epoch => self.event(Event::Lifecycle(snapshot)),
+            Event::HydrateAnchor {
+                snapshot,
+                observed_epoch,
+            } if observed_epoch == self.anchor_epoch => self.event(Event::Anchor(snapshot)),
             Event::ConsentChanged { opted_out } => {
                 self.consent_epoch = self.consent_epoch.wrapping_add(1);
                 if opted_out {
@@ -199,9 +252,15 @@ impl Model {
                     self.clear();
                 }
             }
-            Event::Lifecycle { generation, status }
-                if generation > 0 && generation >= self.generation =>
+            Event::Lifecycle(LifecycleSnapshot {
+                revision,
+                generation,
+                status,
+            }) if revision > self.lifecycle_revision
+                && generation > 0
+                && generation >= self.generation =>
             {
+                self.lifecycle_revision = revision;
                 if generation > self.generation {
                     self.clear();
                     self.generation = generation;
@@ -259,11 +318,20 @@ impl Model {
                 }
                 self.text.push_str(&tail);
             }
-            Event::Anchor(anchor) if anchor.valid() => {
-                self.reserve = self.reserve.max(anchor.lift);
-                self.anchor = Some(anchor);
+            Event::Anchor(AnchorSnapshot { revision, anchor })
+                if revision > self.anchor_revision =>
+            {
+                self.anchor_revision = revision;
+                if anchor.valid() {
+                    self.reserve = self.reserve.max(anchor.lift);
+                    self.anchor = Some(anchor);
+                } else {
+                    self.anchor = None;
+                    self.recording = false;
+                    self.clear();
+                }
             }
-            Event::Anchor(_) | Event::Detached => {
+            Event::Detached => {
                 self.anchor = None;
                 self.recording = false;
                 self.clear();

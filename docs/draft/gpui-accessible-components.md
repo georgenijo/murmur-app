@@ -50,6 +50,7 @@ attribution are retained. See [third-party notices](../../THIRD_PARTY_NOTICES.md
 | `app/gpui/patches/gpui-manifest.patch` | Makes only the Apache GPUI crate self-contained, resolving inherited workspace dependency tables against the unchanged upstream revision. Examples, benches and upstream test-only assets are not vendored. |
 | `app/gpui/patches/gpui-deferred-accessibility.patch` | Production fix: deferred draws capture their AX ancestry, append children to the finalized parent, and retain the focused-ancestor check. Ordinary builds use it through the workspace Cargo git-source patch. |
 | `app/gpui/patches/accesskit-press-probe.patch` | Additive after the AccessKit section of `phase0-accessibility.patch`: extracts the existing native AXPress dispatch into a shared handler and adds a feature-gated windowless role/title/press probe. Production action behavior is unchanged. |
+| `app/gpui/patches/gpui-hidden-presentation.patch` | Additive production API after the existing GPUI patches: expose pending-scene presentation so an ordered-out preview can paint before admission without its paused display link. |
 | `app/gpui/patches/test-accessibility.patch` | Test transport only: retain TestWindow AX callbacks/tree updates, expose activation, tree retrieval and action dispatch on TestAppContext. Production tree building, focus calculation and action handlers remain unchanged. |
 
 The component editor already owns UTF-16 conversion, IME composition, clipboard,

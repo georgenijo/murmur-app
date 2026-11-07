@@ -20,15 +20,19 @@ fn anchor(above: bool) -> Anchor {
 }
 fn active() -> Model {
     let mut m = Model::default();
-    m.event(Event::Anchor(anchor(false)));
+    m.event(Event::Anchor(AnchorSnapshot {
+        revision: 1,
+        anchor: anchor(false),
+    }));
     m.event(Event::ConsentRead {
         epoch: 0,
         enabled: true,
     });
-    m.event(Event::Lifecycle {
+    m.event(Event::Lifecycle(LifecycleSnapshot {
+        revision: 1,
         generation: 7,
         status: Status::Recording,
-    });
+    }));
     m.event(Event::Partial {
         generation: 7,
         text: "Synthetic sample words".into(),
@@ -60,10 +64,11 @@ fn consent_is_durable_latest_read_only_and_opt_out_clears_before_reply() {
     assert!(m.text().is_empty());
     let mut fresh = Model::default();
     fresh.event(Event::ConsentChanged { opted_out: false });
-    fresh.event(Event::Lifecycle {
+    fresh.event(Event::Lifecycle(LifecycleSnapshot {
+        revision: 2,
         generation: 9,
         status: Status::Recording,
-    });
+    }));
     fresh.event(Event::Partial {
         generation: 9,
         text: "Synthetic forged consent".into(),
@@ -75,18 +80,20 @@ fn disabled_lifecycle_floor_survives_reenable_and_status_reordering() {
     for status in [Status::Idle, Status::Processing, Status::Recovering] {
         let mut m = active();
         m.event(Event::ConsentChanged { opted_out: true });
-        m.event(Event::Lifecycle {
+        m.event(Event::Lifecycle(LifecycleSnapshot {
+            revision: 3,
             generation: 7,
             status,
-        });
+        }));
         m.event(Event::ConsentRead {
             epoch: m.consent_epoch(),
             enabled: true,
         });
-        m.event(Event::Lifecycle {
+        m.event(Event::Lifecycle(LifecycleSnapshot {
+            revision: 4,
             generation: 7,
             status: Status::Recording,
-        });
+        }));
         m.event(Event::Partial {
             generation: 7,
             text: "Synthetic stale".into(),
@@ -99,10 +106,11 @@ fn disabled_lifecycle_floor_survives_reenable_and_status_reordering() {
 fn cancellation_and_new_generations_reject_old_text_and_presentation_callbacks() {
     let mut m = active();
     let old = m.ticket().unwrap();
-    m.event(Event::Lifecycle {
+    m.event(Event::Lifecycle(LifecycleSnapshot {
+        revision: 5,
         generation: 8,
         status: Status::Recording,
-    });
+    }));
     m.event(Event::Partial {
         generation: 8,
         text: "Synthetic successor".into(),
@@ -132,16 +140,18 @@ fn newer_partial_can_precede_generation_notice_but_not_stop_or_cancel_floor() {
         generation: 8,
         text: "Synthetic new".into(),
     });
-    m.event(Event::Lifecycle {
+    m.event(Event::Lifecycle(LifecycleSnapshot {
+        revision: 6,
         generation: 8,
         status: Status::Recording,
-    });
+    }));
     assert_eq!(m.text(), "Synthetic new");
     m.event(Event::Cancelled(9));
-    m.event(Event::Lifecycle {
+    m.event(Event::Lifecycle(LifecycleSnapshot {
+        revision: 7,
         generation: 9,
         status: Status::Recording,
-    });
+    }));
     m.event(Event::Partial {
         generation: 9,
         text: "Synthetic late".into(),
@@ -455,10 +465,11 @@ fn first_frame_callback_cannot_show_after_queued_opt_out_or_clear_successor(
             assert!(s.model.text().is_empty());
             s.model = active();
             let old = s.model.ticket().unwrap();
-            s.model.event(Event::Lifecycle {
+            s.model.event(Event::Lifecycle(LifecycleSnapshot {
+                revision: 8,
                 generation: 8,
                 status: Status::Recording,
-            });
+            }));
             s.model.event(Event::Partial {
                 generation: 8,
                 text: "Synthetic successor".into(),
@@ -522,7 +533,10 @@ fn overlay_applied_anchor_interface_drives_preview_lift_without_moving_window(
         lift,
         ..anchor(above)
     };
-    preview.event(Event::Anchor(a));
+    preview.event(Event::Anchor(AnchorSnapshot {
+        revision: 2,
+        anchor: a,
+    }));
     let initial = preview.anchor.unwrap().window(preview.reserve);
     cx.update(|w, cx| {
         entity.update(cx, |s, cx| {
@@ -532,11 +546,14 @@ fn overlay_applied_anchor_interface_drives_preview_lift_without_moving_window(
     });
     let (frame, above, lift) = bridge.0.get().expect("acknowledged hover anchor");
     assert_eq!(lift, 64.);
-    preview.event(Event::Anchor(super::model::Anchor {
-        frame,
-        above,
-        lift,
-        ..a
+    preview.event(Event::Anchor(AnchorSnapshot {
+        revision: 3,
+        anchor: super::model::Anchor {
+            frame,
+            above,
+            lift,
+            ..a
+        },
     }));
     assert_eq!(preview.anchor.unwrap().window(preview.reserve), initial);
 }
@@ -555,4 +572,325 @@ fn identical_partial_does_not_repeat_speech_or_invalidate_its_painted_ticket() {
         text: "Synthetic revised words".into(),
     });
     assert_ne!(m.ticket(), ticket);
+}
+
+#[test]
+fn initial_replies_cannot_overwrite_lifecycle_or_hover_notifications() {
+    let mut m = Model::default();
+    let lifecycle_epoch = m.lifecycle_epoch();
+    let anchor_epoch = m.anchor_epoch();
+    m.event(Event::Lifecycle(LifecycleSnapshot {
+        revision: 2,
+        generation: 7,
+        status: Status::Recording,
+    }));
+    let lifted = Anchor {
+        lift: 64.,
+        ..anchor(false)
+    };
+    m.event(Event::Anchor(AnchorSnapshot {
+        revision: 2,
+        anchor: lifted,
+    }));
+    // Even a newer revision cannot rescue a read started before notification.
+    for revision in [1, 3] {
+        m.event(Event::HydrateLifecycle {
+            snapshot: LifecycleSnapshot {
+                revision,
+                generation: 7,
+                status: Status::Starting,
+            },
+            observed_epoch: lifecycle_epoch,
+        });
+        m.event(Event::HydrateAnchor {
+            snapshot: AnchorSnapshot {
+                revision,
+                anchor: anchor(false),
+            },
+            observed_epoch: anchor_epoch,
+        });
+    }
+    m.event(Event::ConsentRead {
+        epoch: 0,
+        enabled: true,
+    });
+    m.event(Event::Partial {
+        generation: 7,
+        text: "Synthetic admitted".into(),
+    });
+    assert!(m.visible());
+    assert_eq!(m.anchor.unwrap().lift, 64.);
+    let ticket = m.ticket();
+    // The current epoch does not make duplicate or older snapshots new.
+    for revision in [1, 2] {
+        m.event(Event::HydrateLifecycle {
+            snapshot: LifecycleSnapshot {
+                revision,
+                generation: 7,
+                status: Status::Starting,
+            },
+            observed_epoch: m.lifecycle_epoch(),
+        });
+        m.event(Event::HydrateAnchor {
+            snapshot: AnchorSnapshot {
+                revision,
+                anchor: anchor(false),
+            },
+            observed_epoch: m.anchor_epoch(),
+        });
+    }
+    assert_eq!(m.ticket(), ticket);
+    assert_eq!(m.anchor.unwrap().lift, 64.);
+    // A fresh, strictly newer read remains useful for both streams.
+    m.event(Event::HydrateLifecycle {
+        snapshot: LifecycleSnapshot {
+            revision: 3,
+            generation: 7,
+            status: Status::Processing,
+        },
+        observed_epoch: m.lifecycle_epoch(),
+    });
+    m.event(Event::HydrateAnchor {
+        snapshot: AnchorSnapshot {
+            revision: 3,
+            anchor: anchor(false),
+        },
+        observed_epoch: m.anchor_epoch(),
+    });
+    assert!(m.text().is_empty());
+    assert_eq!(m.anchor.unwrap().lift, 0.);
+}
+
+#[test]
+fn hydration_accepts_initial_state_but_not_replies_from_before_detach_or_cancel() {
+    let mut m = Model::default();
+    m.event(Event::HydrateLifecycle {
+        snapshot: LifecycleSnapshot {
+            revision: 1,
+            generation: 7,
+            status: Status::Recording,
+        },
+        observed_epoch: m.lifecycle_epoch(),
+    });
+    m.event(Event::HydrateAnchor {
+        snapshot: AnchorSnapshot {
+            revision: 1,
+            anchor: anchor(false),
+        },
+        observed_epoch: m.anchor_epoch(),
+    });
+    m.event(Event::ConsentRead {
+        epoch: 0,
+        enabled: true,
+    });
+    m.event(Event::Partial {
+        generation: 7,
+        text: "Synthetic initial".into(),
+    });
+    assert!(m.visible());
+    let old_lifecycle_epoch = m.lifecycle_epoch();
+    let old_anchor_epoch = m.anchor_epoch();
+    m.event(Event::Cancelled(7));
+    m.event(Event::HydrateLifecycle {
+        snapshot: LifecycleSnapshot {
+            revision: 2,
+            generation: 8,
+            status: Status::Recording,
+        },
+        observed_epoch: old_lifecycle_epoch,
+    });
+    m.event(Event::Partial {
+        generation: 8,
+        text: "Synthetic cancelled reply".into(),
+    });
+    assert!(m.text().is_empty());
+    m.event(Event::Detached);
+    m.event(Event::HydrateAnchor {
+        snapshot: AnchorSnapshot {
+            revision: 2,
+            anchor: anchor(false),
+        },
+        observed_epoch: old_anchor_epoch,
+    });
+    assert!(m.anchor.is_none());
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn direct_receive_follows_queued_lifecycle_anchor_and_consent(cx: &mut gpui::TestAppContext) {
+    use gpui::{prelude::*, *};
+    use std::rc::Rc;
+    struct Current;
+    impl super::Host for Current {
+        fn is_current(&self, _: u64) -> bool {
+            true
+        }
+    }
+    cx.update(|cx| crate::init_with_preferences(cx, Some(Default::default())));
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let p = cx.new(|_| super::Preview::new(Rc::new(Current)));
+        entity = Some(p.clone());
+        gpui_base::Root::new(p, w, cx)
+    });
+    let entity = entity.unwrap();
+    cx.update(|w, cx| {
+        entity.update(cx, |s, cx| {
+            assert!(
+                s.inbox
+                    .publish(Event::Lifecycle(LifecycleSnapshot {
+                        revision: 1,
+                        generation: 7,
+                        status: Status::Starting,
+                    }))
+                    .is_ok()
+            );
+            s.receive(
+                Event::Lifecycle(LifecycleSnapshot {
+                    revision: 2,
+                    generation: 7,
+                    status: Status::Recording,
+                }),
+                w,
+                cx,
+            );
+            assert!(
+                s.inbox
+                    .publish(Event::Anchor(AnchorSnapshot {
+                        revision: 1,
+                        anchor: anchor(false),
+                    }))
+                    .is_ok()
+            );
+            s.receive(
+                Event::Anchor(AnchorSnapshot {
+                    revision: 2,
+                    anchor: super::model::Anchor {
+                        lift: 64.,
+                        ..anchor(false)
+                    },
+                }),
+                w,
+                cx,
+            );
+            assert_eq!(s.model.anchor.unwrap().lift, 64.);
+            assert!(
+                s.inbox
+                    .publish(Event::ConsentChanged { opted_out: true })
+                    .is_ok()
+            );
+            // The earlier notification must advance the epoch before this read.
+            s.receive(
+                Event::ConsentRead {
+                    epoch: 1,
+                    enabled: true,
+                },
+                w,
+                cx,
+            );
+            s.receive(
+                Event::Partial {
+                    generation: 7,
+                    text: "Synthetic ordered".into(),
+                },
+                w,
+                cx,
+            );
+            assert!(s.model.visible());
+            // Invert the entry points, including a queued partial before a direct stop.
+            assert!(
+                s.inbox
+                    .publish(Event::Partial {
+                        generation: 7,
+                        text: "Synthetic queued".into(),
+                    })
+                    .is_ok()
+            );
+            s.receive(
+                Event::Lifecycle(LifecycleSnapshot {
+                    revision: 3,
+                    generation: 7,
+                    status: Status::Processing,
+                }),
+                w,
+                cx,
+            );
+            assert!(s.model.text().is_empty());
+            assert!(s.presented.is_none());
+        })
+    });
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn hidden_paint_admits_without_next_frame_callbacks_and_restarts(cx: &mut gpui::TestAppContext) {
+    use gpui::{prelude::*, *};
+    use std::{cell::Cell, rc::Rc};
+    struct Current(Cell<usize>);
+    impl super::Host for Current {
+        fn is_current(&self, _: u64) -> bool {
+            let turn = self.0.get() + 1;
+            self.0.set(turn);
+            // Ownership may change between the preflight and paint check.
+            // Retry must paint before admitting even if ownership returns.
+            turn != 3
+        }
+    }
+    cx.update(|cx| crate::init_with_preferences(cx, Some(Default::default())));
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let p = cx.new(|_| {
+            let mut p = super::Preview::new(Rc::new(Current(Cell::new(0))));
+            p.model = active();
+            p.model.clear();
+            p
+        });
+        entity = Some(p.clone());
+        gpui_base::Root::new(p, w, cx)
+    });
+    let entity = entity.unwrap();
+    for generation in 7..11 {
+        cx.update(|w, cx| {
+            entity.update(cx, |s, cx| {
+                s.receive(
+                    Event::Lifecycle(LifecycleSnapshot {
+                        revision: generation * 2,
+                        generation,
+                        status: Status::Recording,
+                    }),
+                    w,
+                    cx,
+                );
+                assert!(s.presented.is_none());
+                s.receive(
+                    Event::Partial {
+                        generation,
+                        text: "Synthetic first frame".into(),
+                    },
+                    w,
+                    cx,
+                );
+                assert!(s.presented.is_none());
+            })
+        });
+        // Effect-cycle defer is sufficient; no draw/frame pump drives admission.
+        assert!(entity.read_with(cx, |s, _| {
+            s.presented == s.model.ticket() && s.presented.is_some() && s.painted_card.is_some()
+        }));
+        cx.update(|w, cx| {
+            entity.update(cx, |s, cx| {
+                s.receive(
+                    Event::Lifecycle(LifecycleSnapshot {
+                        revision: generation * 2 + 1,
+                        generation,
+                        status: Status::Idle,
+                    }),
+                    w,
+                    cx,
+                );
+                assert!(s.presented.is_none());
+                assert!(s.model.text().is_empty());
+            })
+        });
+    }
 }

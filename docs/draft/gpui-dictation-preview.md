@@ -22,8 +22,17 @@ wraps Preview in `gpui_base::Root`, invokes `advance` after window creation and
 `follow` once, and supplies the following adapters:
 
 1. Subscribe to committed consent, generation, status, cancellation, partial
-   and overlay anchor changes **before** the initial reads. Feed `Lifecycle`
-   with the current generation/status at attachment. The initial model fails
+   and overlay anchor changes **before** the initial reads. Feed revisioned
+   `LifecycleSnapshot`
+   values with the current generation/status at attachment. Capture
+   `Model::lifecycle_epoch()` before the asynchronous initial read and return
+   `HydrateLifecycle { snapshot, observed_epoch }`; notifications use
+   `Lifecycle(snapshot)`. Revisions must be positive and strictly increasing
+   across reads and notifications, including same-generation status changes.
+   A stale epoch rejects even a newer revision; a current epoch does not admit
+   duplicate/older revisions. Subscribe and drain queued notifications before
+   capturing the epoch, and retry rejected reads with a fresh epoch/revision.
+   The initial model fails
    closed until durable consent and Recording ownership have been observed.
    Use the existing version-7 settings migration/default and owned-field writer;
    no duplicate settings parser or persistence owner is introduced here.
@@ -51,7 +60,14 @@ wraps Preview in `gpui_base::Root`, invokes `advance` after window creation and
    revisions prevent a stale show failure/callback from clearing successor text.
 6. Forward the overlay's **acknowledged collapsed frame**, `above` and `lift`
    from `Host::preview_anchor`, together with the selected menu-bar display's
-   logical work area, in `Event::Anchor`. Connect the existing display/Dock
+   logical work area, in revisioned
+   `AnchorSnapshot` values through `Event::Anchor`. Capture
+   `Model::anchor_epoch()` for the initial asynchronous read, then return
+   `HydrateAnchor { snapshot, observed_epoch }`. The independent anchor stream
+   uses the same positive, strictly increasing revision and epoch rules as
+   lifecycle hydration. Hover notifications invalidate an outstanding anchor
+   read; lifecycle/cancel/detach notifications invalidate lifecycle reads, and
+   detach also invalidates anchor reads. Connect the existing display/Dock
    watcher; do not infer geometry from the main window's display. Register the
    preview before requesting the current anchor, so a missed hover event cannot
    strand its lift. Feed `Detached` on display loss/host detach. Primary-display
@@ -72,8 +88,13 @@ AX client, capture agent or pasteboard is read to position it.
 Geometry and visibility change only in the main-thread update transaction;
 render only refits the HUD clip to the painted card. Panel setup is applied once
 per native instance so opacity/style setters cannot reenter a frame callback.
-The first nonempty card is rendered hidden before a generation-bound next-frame
-continuation admits native display. Subsequent partials replace the visible
+The first nonempty card is explicitly drawn and presented to its hidden backing
+layer in a deferred main-thread effect cycle before generation-bound admission
+orders it onto the screen. This does not wait for the macOS display link, which
+is stopped while the native window is ordered out. Both the paint turn and
+admission drain queued events and recheck the current host owner. Direct
+`receive` drains earlier inbox entries before applying its own event.
+Subsequent partials replace the visible
 card without hiding it. Empty, stopped, cancelled, opted-out, detached or rejected
 presentations clear the text allocation and remove AX content. Dropping the view closes and empties its inbox; retained producer clones reject
 late events (`is_closed` is terminal). The host must also stop its subscriptions.
@@ -114,11 +135,19 @@ WebKit images in **each** preview process. It does not inspect other apps.
 The offscreen fixture explicitly bypasses native panel mutation and announcements,
 as the overlay QA host does; it never orders a window onto the GUI owner’s screen.
 The standalone WebKit lifecycle test is already wired into `rust-macos`.
-No new dependency pin or vendor patch is required.
+No dependency pin changes. The additive
+`app/gpui/patches/gpui-hidden-presentation.patch` exposes the existing
+`Window::present_if_needed` outside its profiler-test gate; apply it after the
+existing GPUI patches. The recorded patch reproduces the vendor edit exactly.
 
-The Mac mini GUI belongs to another worker. Only headless test windows,
-offscreen Metal textures, inert Objective-C doubles and nonpersistent windowless
-WKWebViews may be used for this task. No production profile/store, installed
+The Mac mini GUI belongs to another worker. The review-correction task
+additionally permits a task-owned background native
+preview host, own-PID CGWindow visibility/alpha observations and noninteractive
+own-window captures. `MURMUR_PREVIEW_NATIVE_SMOKE=1` runs an empty recording
+followed by three partial/stop cycles at unchanged geometry, with content-free
+stage markers. It neither activates a window nor drives HID. Other tests use
+headless windows, offscreen Metal textures, inert Objective-C doubles and
+nonpersistent windowless WKWebViews. No production profile/store, installed
 Murmur, signing key, permission setting or clipboard is accessed.
 
 The lead must build the exact head in an isolated synthetic host when the GUI
