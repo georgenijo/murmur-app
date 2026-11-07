@@ -60,6 +60,7 @@ pub struct Button {
     bordered: bool,
     height: Option<Pixels>,
     padding_y: Option<Pixels>,
+    padding_x: Option<Pixels>,
 }
 impl Button {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
@@ -93,6 +94,7 @@ impl Button {
             bordered: false,
             height: None,
             padding_y: None,
+            padding_x: None,
         }
     }
     /// Custom visual layout; the button still owns its name, state, focus and actions.
@@ -124,6 +126,10 @@ impl Button {
     }
     pub fn pill(mut self) -> Self {
         self.pill = true;
+        self
+    }
+    pub fn padding_x(mut self, inset: Pixels) -> Self {
+        self.padding_x = Some(inset);
         self
     }
     pub fn padding_y(mut self, inset: Pixels) -> Self {
@@ -272,13 +278,15 @@ impl RenderOnce for Button {
                     .min_h(self.size.height())
                     .py(self.padding_y.unwrap_or(px(12.)))
             })
-            .px(if card {
-                px(16.)
-            } else if self.nav {
-                px(8.)
-            } else {
-                self.size.inset()
-            })
+            .px(self.padding_x.unwrap_or_else(|| {
+                if card {
+                    px(16.)
+                } else if self.nav {
+                    px(8.)
+                } else {
+                    self.size.inset()
+                }
+            }))
             .rounded(if self.pill {
                 px(999.)
             } else {
@@ -373,7 +381,11 @@ impl RenderOnce for Button {
                         s.child(
                             div()
                                 .absolute()
-                                .left(px(-8.))
+                                .left(-self.padding_x.unwrap_or(if card {
+                                    px(16.)
+                                } else {
+                                    px(8.)
+                                }))
                                 .top(px(8.))
                                 .w(px(3.))
                                 .h(px(16.))

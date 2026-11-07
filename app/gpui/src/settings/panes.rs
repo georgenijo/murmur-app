@@ -20,6 +20,7 @@ impl Settings {
         card = card.child(
             self.route_button("shortcuts", "Keyboard shortcuts", Page::Shortcuts, cx)
                 .full_width()
+                .padding_x(px(16.))
                 .content(
                     div()
                         .w_full()

@@ -511,6 +511,7 @@ impl Render for Modes {
                         ..p
                     })
                     .padding_y(px(8.))
+                    .padding_x(px(12.))
                     .bordered()
                     .description(if m["builtIn"] == true {
                         "Built-in"
