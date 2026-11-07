@@ -275,7 +275,10 @@ impl Model {
         self.event_epoch
     }
     pub fn event(&mut self, event: Event, now: u64) {
-        if !matches!(&event, Event::Snapshot(_) | Event::Hydrate { .. }) {
+        if !matches!(
+            &event,
+            Event::Snapshot(_) | Event::Hydrate { .. } | Event::Dock(_) | Event::Screen(_)
+        ) {
             self.event_epoch = self.event_epoch.saturating_add(1);
         }
         match event {

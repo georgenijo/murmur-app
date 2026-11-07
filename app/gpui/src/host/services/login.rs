@@ -322,6 +322,23 @@ impl Login {
         }
     }
 }
+
+impl Login {
+    pub fn restoration(
+        &self,
+        enabled: bool,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let login = self.clone();
+        let epoch = self.intent.current();
+        async move {
+            let _gate = login.gate.lock().await;
+            if login.intent.ensure(epoch).is_ok() {
+                let _ = login.os.login_set(enabled, login.intent.live(epoch)).await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod intent_tests {
     use super::*;

@@ -87,12 +87,19 @@ pub trait NativePorts: Send + Sync + 'static {
     /// System primary display, independent of the active/Main window screen.
     fn primary_monitor(&self) -> Option<Monitor>;
     fn send(&self, label: &str, event: &str, payload: &str) -> Result<()>;
+    /// Off-main drain of native presentation-owned workers (for example playback).
+    fn quiesce(&self, _deadline: std::time::Instant) -> bool {
+        true
+    }
     fn terminal(&self, action: murmur_core::shutdown::Action);
     fn notify_update(&self, version: &str);
     fn dock_context(&self) -> Option<(crate::dock_watch::PillDisplay, bool)>;
     fn dock_changed(&self);
     fn mode_status(&self, status: serde_json::Value);
     fn open_path(&self, path: PathBuf) -> Result<()>;
+    fn open_url(&self, _url: String, _lease: crate::native_services::EffectLease) -> Result<()> {
+        Err(Error("Native opener unavailable".into()))
+    }
     fn tray_update(&self, version: Option<String>) -> Result<()>;
 }
 pub trait WindowPort: Send + Sync + 'static {
@@ -299,6 +306,7 @@ impl Context {
         ports: Arc<dyn NativePorts>,
     ) -> Self {
         crate::commands::tray::install(ports.clone());
+        crate::native_services::install_ports(ports.clone());
         Self {
             inner: Arc::new(Owners {
                 services: crate::State::default(),
@@ -360,6 +368,9 @@ impl<R: Runtime> Context<R> {
     }
     pub fn open_path(&self, path: PathBuf) -> Result<()> {
         self.inner.ports.open_path(path)
+    }
+    pub fn quiesce_native(&self, deadline: std::time::Instant) -> bool {
+        self.inner.ports.quiesce(deadline)
     }
     pub fn terminal(&self, action: murmur_core::shutdown::Action) {
         self.inner.ports.terminal(action)

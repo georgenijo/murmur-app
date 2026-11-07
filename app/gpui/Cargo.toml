@@ -52,6 +52,7 @@ objc2-foundation = { version = "0.3", features = ["NSString"] }
 accesskit_macos = { version = "=0.26.3", optional = true }
 
 [features]
+native-host-qa = ["production-host"]
 production-host = ["dep:murmur-services", "dep:tokio", "dep:plist", "dep:uuid"]
 a11y-tests = ["dep:accesskit_macos", "accesskit_macos/test-support"]
 gallery = ["dep:chrono-tz", "gpui/test-support", "gpui_platform/test-support"]
@@ -220,3 +221,8 @@ required-features = ["gallery"]
 name = "remaining-qa"
 path = "src/bin/remaining-qa.rs"
 required-features = ["gallery"]
+
+[[bin]]
+name = "ui"
+path = "src/main.rs"
+required-features = ["production-host"]

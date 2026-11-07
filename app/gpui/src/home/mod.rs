@@ -844,3 +844,20 @@ impl Render for Home {
             )
     }
 }
+
+#[cfg(feature = "production-host")]
+impl Home {
+    pub(crate) fn production_history_ready(&self, cx: &App) -> bool {
+        let h = self.history.read(cx);
+        !h.model.loading && h.model.problem.is_none()
+    }
+    pub(crate) fn production_history_action(
+        &mut self,
+        action: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.history
+            .update(cx, |h, cx| h.production_action(action, w, cx));
+    }
+}

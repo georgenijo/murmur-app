@@ -14,6 +14,8 @@ use std::{
 };
 
 struct Queued {
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    native_active: Option<bool>,
     input: Input,
     generation: u64,
     at: Instant,
@@ -136,6 +138,19 @@ pub(crate) fn initialize(app: &crate::host::Context) {
                 // controller. No stale snapshot can roll a newer owner back.
                 let dictation = state.app_state.dictation.lock_or_recover();
                 let generation = state.app_state.recording_id.load(Ordering::SeqCst);
+                #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+                if let Some(active) = queued.native_active {
+                    let phase = status(dictation.status);
+                    if generation != queued.generation
+                        || if active {
+                            !matches!(phase, Status::Starting | Status::Recording)
+                        } else {
+                            phase != Status::Idle
+                        }
+                    {
+                        continue;
+                    }
+                }
                 let Some(input) =
                     input_guard.route(queued.generation, generation, queued.at, input)
                 else {
@@ -205,6 +220,8 @@ pub(crate) fn send(app: &crate::host::Context, input: Input) {
     if let Some(control) = app.try_control() {
         let generation = app.services().app_state.recording_id.load(Ordering::SeqCst);
         let _ = control.send.send(Queued {
+            #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+            native_active: None,
             input,
             generation,
             at: Instant::now(),
@@ -227,6 +244,8 @@ pub(crate) fn started(app: &crate::host::Context, generation: u64, origin: &str)
 pub(crate) fn level(app: &crate::host::Context, generation: u64, level: f32) {
     if let Some(control) = app.try_control() {
         let _ = control.send.send(Queued {
+            #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+            native_active: None,
             generation,
             at: Instant::now(),
             input: Input::Level {
@@ -876,4 +895,57 @@ mod tests {
             assert_eq!(probe_policy(&disabled)["enabled"], false);
         }
     }
+}
+
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_start_idle(app: &crate::host::Context) -> Result<(), String> {
+    let state = app.services();
+    let dictation = state.app_state.dictation.lock_or_recover();
+    if dictation.status != crate::state::DictationStatus::Idle {
+        return Err("Recording ownership changed".into());
+    }
+    let generation = state.app_state.recording_id.load(Ordering::SeqCst);
+    app.control()
+        .send
+        .send(Queued {
+            #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+            native_active: Some(false),
+            input: Input::Toggle(None),
+            generation,
+            at: Instant::now(),
+        })
+        .map_err(|_| "Recording controller unavailable".into())
+}
+
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_setup_suspension(app: &crate::host::Context, value: Option<bool>) -> bool {
+    let control = app.control();
+    if let Some(value) = value {
+        control.setup_suspended.swap(value, Ordering::SeqCst)
+    } else {
+        control.setup_suspended.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_control(
+    app: &crate::host::Context,
+    generation: u64,
+    input: Input,
+) -> Result<(), String> {
+    if !matches!(input, Input::Lock | Input::HoldStop | Input::Escape) {
+        return Err("Unsupported recording control".into());
+    }
+    if app.services().app_state.recording_id.load(Ordering::SeqCst) != generation {
+        return Err("Recording ownership changed".into());
+    }
+    app.control()
+        .send
+        .send(Queued {
+            native_active: Some(true),
+            input,
+            generation,
+            at: Instant::now(),
+        })
+        .map_err(|_| "Recording controller unavailable".into())
 }

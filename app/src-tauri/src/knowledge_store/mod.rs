@@ -188,6 +188,21 @@ impl KnowledgeStore {
         Ok(result)
     }
 
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    pub fn inspect_bytes(&self, bytes: &[u8]) -> Result<(KnowledgeImportSummary, u64), String> {
+        self.with_repository(|repository| repository.inspect_bytes(bytes))
+    }
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    pub fn import_bytes(
+        &self,
+        bytes: &[u8],
+        expected: u64,
+    ) -> Result<KnowledgeImportResult, String> {
+        let result = self.with_repository(|repository| repository.import_bytes(bytes, expected))?;
+        self.refresh_status();
+        Ok(result)
+    }
+
     pub fn delete_all(&self, expected_revision: u64) -> Result<u64, String> {
         let revision =
             self.with_repository(|repository| repository.delete_all(expected_revision))?;

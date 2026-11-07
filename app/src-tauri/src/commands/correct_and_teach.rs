@@ -128,6 +128,15 @@ pub fn confirm_learned_correction(
 ) -> Result<KnowledgeEntry, String> {
     let _producer = crate::shutdown::WriterPermit::acquire()?;
     let pending = state.correct_and_teach.confirmed(proposal_id, &scope)?;
+    commit_confirmation(app, proposal_id, pending, scope, state)
+}
+pub(crate) fn commit_confirmation(
+    app: crate::host::Context,
+    proposal_id: u64,
+    pending: crate::correct_and_teach::PendingCorrection,
+    scope: KnowledgeScope,
+    state: crate::host::StateRef<'_, State>,
+) -> Result<KnowledgeEntry, String> {
     let entry =
         state
             .knowledge

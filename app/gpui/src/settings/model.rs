@@ -91,6 +91,8 @@ pub struct Calibration {
 #[derive(Clone, Default)]
 pub struct Runtime {
     pub calibration: Option<Calibration>,
+    pub login_requires_approval: bool,
+    pub login_enabled: Option<bool>,
     pub recording: bool,
     pub internal_build: bool,
     pub english_only: bool,
@@ -175,6 +177,10 @@ pub fn valid(s: &Snapshot) -> bool {
 }
 
 pub enum Event {
+    Runtime {
+        attachment: u64,
+        runtime: Box<Runtime>,
+    },
     Changed {
         attachment: u64,
         snapshot: Snapshot,
@@ -276,10 +282,33 @@ impl Model {
         Some(self.ticket())
     }
     pub fn event(&mut self, e: Event) -> bool {
+        if let Event::Runtime {
+            attachment,
+            runtime,
+        } = e
+        {
+            if !self.attached || attachment != self.attachment {
+                return false;
+            }
+            if let Some(snapshot) = self.snapshot.as_mut() {
+                let candidate = Snapshot {
+                    revision: snapshot.revision,
+                    settings: snapshot.settings.clone(),
+                    disclosure: snapshot.disclosure.clone(),
+                    runtime: *runtime,
+                };
+                if valid(&candidate) {
+                    snapshot.runtime = candidate.runtime;
+                    return true;
+                }
+            }
+            return false;
+        }
         if !self.attached {
             return false;
         }
         let (snapshot, reply) = match e {
+            Event::Runtime { .. } => return false,
             Event::Changed {
                 attachment,
                 snapshot,

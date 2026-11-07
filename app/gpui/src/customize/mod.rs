@@ -38,6 +38,10 @@ pub struct Customize {
     pub return_to: Option<FocusHandle>,
     _subscriptions: Vec<Subscription>,
     editor_subscription: Subscription,
+    #[cfg(feature = "production-host")]
+    pending_mode: Option<String>,
+    #[cfg(feature = "production-host")]
+    return_mode: bool,
 }
 impl EventEmitter<Back> for Customize {}
 fn specs(page: Page) -> Vec<Spec> {
@@ -120,6 +124,13 @@ fn edit_source(page: Page, s: &Snapshot) -> Value {
     }
 }
 impl Customize {
+    #[cfg(feature = "production-host")]
+    pub fn bind_app(&mut self, mode: String, w: &mut Window, cx: &mut Context<Self>) {
+        self.set_page(Page::Apps, w, cx);
+        self.pending_mode = Some(mode);
+        self.return_mode = true;
+        cx.notify();
+    }
     pub fn new(host: Rc<host::Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| Form::new(specs(Page::Spellings), w, cx));
         let tester = cx.new(|cx| {
@@ -185,6 +196,10 @@ impl Customize {
             return_to: None,
             _subscriptions: subscriptions,
             editor_subscription,
+            #[cfg(feature = "production-host")]
+            pending_mode: None,
+            #[cfg(feature = "production-host")]
+            return_mode: false,
         }
     }
     pub fn attach(&mut self, cx: &mut Context<Self>) {
@@ -265,7 +280,8 @@ impl Customize {
         self.baseline = values.clone();
         self.editor.update(cx, |f, cx| {
             f.set(values, w, cx);
-            if self.page == Page::Apps && entry["bundleId"].is_string() {
+            if self.page == Page::Apps && entry["bundleId"].as_str().is_some_and(|s| !s.is_empty())
+            {
                 f.disabled_keys.insert("bundleId");
             }
             // A save that finished while the editor was closed leaves the
@@ -295,6 +311,11 @@ impl Customize {
             return;
         }
         self.editing = None;
+        #[cfg(feature = "production-host")]
+        if self.return_mode {
+            self.return_mode = false;
+            cx.emit(Back);
+        }
         self.discard = false;
         self.controller.invalidate();
         if let Some(f) = self.return_focus.take() {
@@ -471,10 +492,23 @@ impl Render for Customize {
             self.saving = false;
             if self.controller.model.problem.is_none() {
                 self.editing = None;
+                #[cfg(feature = "production-host")]
+                if self.return_mode {
+                    self.return_mode = false;
+                    cx.emit(Back);
+                }
                 if let Some(f) = self.return_focus.take() {
                     w.focus(&f, cx)
                 }
             }
+        }
+        #[cfg(feature = "production-host")]
+        if self.controller.model.snapshot.is_some()
+            && let Some(mode) = self.pending_mode.take()
+        {
+            let mut entry = profile("", "");
+            entry["modeId"] = json!(mode);
+            self.open(entry, w, cx);
         }
         let p = Palette::get(cx);
         let e = cx.entity();

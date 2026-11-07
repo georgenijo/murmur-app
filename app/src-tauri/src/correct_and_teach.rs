@@ -214,6 +214,24 @@ impl CorrectAndTeachState {
         Ok(pending)
     }
 
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    pub(crate) fn take_confirmed(
+        &self,
+        proposal_id: u64,
+        scope: &KnowledgeScope,
+    ) -> Result<PendingCorrection, String> {
+        let mut pending = self.pending.lock_or_recover();
+        if !pending
+            .as_ref()
+            .is_some_and(|p| p.proposal_id == proposal_id && p.scopes.contains(scope))
+        {
+            return Err("Correction review changed".into());
+        }
+        pending
+            .take()
+            .ok_or_else(|| "Correction review changed".into())
+    }
+
     pub fn discard(&self, proposal_id: u64) {
         let mut pending = self.pending.lock_or_recover();
         if pending

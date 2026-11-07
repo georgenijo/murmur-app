@@ -2,14 +2,23 @@ use crate::{audio, injector};
 
 #[cfg(target_os = "macos")]
 pub(crate) fn open_system_preference_pane(pane: &str) -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg(format!(
-            "x-apple.systempreferences:com.apple.preference.security?{}",
-            pane
-        ))
-        .spawn()
-        .map_err(|e| format!("Failed to open System Settings: {}", e))?;
-    Ok(())
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    {
+        return crate::native_services::open_system_url(format!(
+            "x-apple.systempreferences:com.apple.preference.security?{pane}"
+        ));
+    }
+    #[cfg(feature = "tauri-host")]
+    {
+        std::process::Command::new("open")
+            .arg(format!(
+                "x-apple.systempreferences:com.apple.preference.security?{}",
+                pane
+            ))
+            .spawn()
+            .map_err(|e| format!("Failed to open System Settings: {}", e))?;
+        Ok(())
+    }
 }
 
 #[cfg_attr(feature = "tauri-host", tauri::command)]

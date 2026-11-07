@@ -214,8 +214,21 @@ pub(crate) fn select_next_recording_mode(
     state: &State,
     mode_id: Option<&str>,
 ) -> Result<ModeRuntimeStatus, String> {
+    select_next_recording_mode_at(app, state, mode_id, None)
+}
+pub(crate) fn select_next_recording_mode_at(
+    app: &crate::host::Context,
+    state: &State,
+    mode_id: Option<&str>,
+    expected_revision: Option<u64>,
+) -> Result<ModeRuntimeStatus, String> {
     {
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        if expected_revision
+            .is_some_and(|revision| revision != dictation.next_recording_mode.revision)
+        {
+            return Err("Next recording selection changed".into());
+        }
         let mode = mode_id
             .map(|id| {
                 mode_by_id(&dictation, id)

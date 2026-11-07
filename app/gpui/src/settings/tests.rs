@@ -1282,3 +1282,38 @@ fn regression_enabled_smart_stop_can_be_disabled_without_dependencies() {
         }
     }
 }
+
+#[test]
+fn live_runtime_updates_keep_an_admitted_preference_ticket_current() {
+    let mut model = Model::default();
+    model.attach();
+    assert!(model.event(Event::Changed {
+        attachment: model.attachment,
+        snapshot: fixtures::snapshot()
+    }));
+    let ticket = model.begin().unwrap();
+    let mut runtime = model.runtime();
+    runtime.meter = Some((0.1, 0.2));
+    runtime.login_requires_approval = true;
+    assert!(model.event(Event::Runtime {
+        attachment: model.attachment,
+        runtime: Box::new(runtime)
+    }));
+    assert!(model.pending);
+    assert_eq!(model.ticket(), ticket);
+    assert!(model.event(Event::Reply {
+        ticket,
+        result: Ok(fixtures::snapshot())
+    }));
+    let mut bad = model.runtime();
+    bad.meter = Some((f32::NAN, 0.));
+    assert!(!model.event(Event::Runtime {
+        attachment: model.attachment,
+        runtime: Box::new(bad)
+    }));
+    model.detach();
+    assert!(!model.event(Event::Runtime {
+        attachment: ticket.attachment,
+        runtime: Box::default()
+    }));
+}

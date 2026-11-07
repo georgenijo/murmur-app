@@ -45,6 +45,14 @@ impl Inbox {
         queue.push_back(event);
         Ok(())
     }
+    /// Backpressure must revoke provisional content before any retry.
+    pub fn invalidate(&self) {
+        let mut pending = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        pending.queue.clear();
+        if !pending.closed {
+            pending.queue.push_back(Event::Detached);
+        }
+    }
     /// A dropped consumer is terminal; do not retry rejected events on it.
     pub fn is_closed(&self) -> bool {
         self.0.lock().unwrap_or_else(|p| p.into_inner()).closed

@@ -40,3 +40,24 @@ pub fn install_clipboard(services: murmur_services::native_services::Services, c
     }
     cx.set_clipboard_provider(std::rc::Rc::new(Clipboard(services)));
 }
+
+pub mod backend;
+pub mod projections;
+
+pub mod adapters;
+pub mod downloads;
+pub mod microphone;
+
+pub mod history;
+
+pub mod knowledge;
+
+pub mod meetings;
+
+pub mod diagnostics;
+
+mod application;
+pub mod root;
+pub use application::run;
+
+mod notes;

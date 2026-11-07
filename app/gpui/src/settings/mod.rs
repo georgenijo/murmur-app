@@ -805,7 +805,14 @@ impl Settings {
     }
     fn row(&mut self, row: Row, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let p = Palette::get(cx);
-        let value = self.model.settings()[row.key].clone();
+        let value = if row.key == "launchAtLogin" {
+            self.model.runtime().login_enabled.map_or_else(
+                || self.model.settings()[row.key].clone(),
+                serde_json::Value::Bool,
+            )
+        } else {
+            self.model.settings()[row.key].clone()
+        };
         let disabled = self.model.disabled(row);
         let file = self.model.settings()["saveTranscript"] == true
             || self.model.settings()["saveAudio"] == true;
@@ -1143,6 +1150,20 @@ impl Render for Settings {
             }
             if has_rows {
                 content = content.child(rows);
+            }
+            if self.model.page == Page::General && self.model.runtime().login_requires_approval {
+                content = content
+                    .child(gpui::text!(
+                        "Launch at login needs your approval in System Settings."
+                    ))
+                    .child(self.action_button(
+                        "login-approval",
+                        "Open Login Items…",
+                        Action::LoginSettings,
+                        false,
+                        false,
+                        cx,
+                    ));
             }
             if self.model.page.has_advanced() {
                 let e = cx.entity();

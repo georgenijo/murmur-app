@@ -147,3 +147,7 @@ mod tests {
         assert_eq!(cue_for("delivery", "invalid"), None);
     }
 }
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn preview(cue: &str, volume: f64) {
+    play(cue, volume)
+}

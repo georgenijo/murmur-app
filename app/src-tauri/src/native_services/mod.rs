@@ -307,7 +307,251 @@ impl Services {
         revision: u64,
         targets: Vec<Value>,
         text: String,
+        live: EffectLease,
     ) -> Result<(), String> {
-        crate::completion::native_copy_history(&self.context, revision, targets, text)
+        crate::completion::native_copy_history(&self.context, revision, targets, text, live)
+    }
+}
+
+/// Retains a producer's shutdown admission across an asynchronous OS operation.
+/// The producer must hand it to the runtime before returning to presentation.
+pub struct AcceptedWork {
+    _permit: crate::shutdown::WriterPermit,
+}
+impl Services {
+    pub fn accept_work(&self) -> Result<AcceptedWork, String> {
+        crate::shutdown::WriterPermit::acquire().map(|permit| AcceptedWork { _permit: permit })
+    }
+    pub async fn settings_snapshot(&self) -> Result<(u64, Value), String> {
+        let app = self.context.clone();
+        crate::shutdown::source_call(move || {
+            crate::commands::settings_store::native_settings_snapshot(&app)
+        })
+        .await
+        .map_err(|_| "Source reader unavailable".to_owned())?
+    }
+    pub fn recording_generation(&self) -> u64 {
+        self.context
+            .services()
+            .app_state
+            .recording_id
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn start_idle(&self) -> Result<(), String> {
+        crate::dictation_control::native_start_idle(&self.context)
+    }
+    pub fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+}
+
+pub type EffectLease = Arc<dyn Fn() -> bool + Send + Sync>;
+tokio::task_local! { static EFFECT_LEASE: EffectLease; }
+static OPEN_PORTS: std::sync::OnceLock<Arc<dyn NativePorts>> = std::sync::OnceLock::new();
+pub(crate) fn install_ports(ports: Arc<dyn NativePorts>) {
+    let _ = OPEN_PORTS.set(ports);
+}
+pub(crate) fn open_system_url(value: String) -> Result<(), String> {
+    let lease = EFFECT_LEASE
+        .try_with(Clone::clone)
+        .unwrap_or_else(|_| Arc::new(|| !crate::shutdown::closing()));
+    OPEN_PORTS
+        .get()
+        .ok_or("Native opener unavailable")?
+        .open_url(value, lease)
+        .map_err(|_| "Native opener unavailable".into())
+}
+impl Services {
+    pub async fn request_guarded(
+        &self,
+        consumer: Consumer,
+        command: &str,
+        args: Value,
+        lease: EffectLease,
+    ) -> Result<Value, String> {
+        if !lease() {
+            return Err("Presentation changed".into());
+        }
+        EFFECT_LEASE
+            .scope(lease, self.request(consumer, command, args))
+            .await
+    }
+}
+impl Services {
+    pub fn mutate_history(
+        &self,
+        epoch: u64,
+        command: murmur_core::completion::Command,
+    ) -> Result<(), String> {
+        crate::completion::native_history_mutate(&self.context, epoch, command)
+    }
+    /// Prepare export bytes and a sibling staging file before this call. The
+    /// owner admits only bounded final publication, never encoding or a panel.
+    pub fn publish_history(
+        &self,
+        epoch: u64,
+        targets: Vec<Value>,
+        effect: impl FnOnce() -> Result<(), murmur_core::completion::Error> + Send + 'static,
+    ) -> Result<(), String> {
+        crate::completion::native_history_publish(&self.context, epoch, targets, effect)
+    }
+}
+impl Services {
+    pub fn inspect_knowledge(&self, bytes: &[u8]) -> Result<(Value, u64), String> {
+        let (summary, revision) = self.context.services().knowledge.inspect_bytes(bytes)?;
+        Ok((
+            serde_json::to_value(summary).map_err(|_| "Import review unavailable")?,
+            revision,
+        ))
+    }
+    pub fn import_knowledge(&self, bytes: &[u8], expected: u64) -> Result<(), String> {
+        let _permit = crate::shutdown::WriterPermit::acquire()?;
+        self.context
+            .services()
+            .knowledge
+            .import_bytes(bytes, expected)?;
+        crate::commands::knowledge::refresh_correction_rules(&self.context.services())
+    }
+}
+impl Services {
+    pub fn accept_theme_library(
+        &self,
+        expected: Value,
+        value: Value,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        let permit = crate::shutdown::WriterPermit::acquire()?;
+        let app = self.context.clone();
+        crate::shutdown::submit_source(move || {
+            let _permit = permit;
+            crate::commands::settings_store::native_theme_library(&app, expected, value)
+        })
+        .map_err(|_| "Theme owner unavailable".into())
+    }
+    pub async fn install_speakers(&self) -> Result<(), String> {
+        crate::diarization_model::download(&self.context).await
+    }
+    pub fn preview_cue(&self, cue: &str) -> Result<(), String> {
+        if !["start", "stop", "success", "failure"].contains(&cue) {
+            return Err("Invalid cue".into());
+        }
+        let cue = cue.to_owned();
+        let control = self.context.control();
+        let volume = control.settings.lock().unwrap_or_else(|p| p.into_inner())["soundCueVolume"]
+            .as_f64()
+            .unwrap_or(45.)
+            .clamp(0., 100.);
+        crate::host::runtime::spawn_blocking(move || crate::dictation_cues::preview(&cue, volume));
+        Ok(())
+    }
+}
+impl Services {
+    pub async fn stop_meeting(&self, expected: u64) -> Result<(), String> {
+        let state = self.context.services();
+        let _transition = state.app_state.recording_transition.lock().await;
+        if state.meetings.status().generation != expected {
+            return Err("Meeting ownership changed".into());
+        }
+        state.meetings.stop(&self.context)
+    }
+}
+
+impl Services {
+    pub fn next_mode(&self, revision: u64, id: Option<&str>) -> Result<(), String> {
+        crate::commands::mode_runtime::select_next_recording_mode_at(
+            &self.context,
+            &self.context.services(),
+            id,
+            Some(revision),
+        )
+        .map(|_| ())
+    }
+}
+impl Services {
+    /// The source FIFO owns OS registration, runtime admission and publication
+    /// as one accepted preference. An OS failure never publishes its checkbox.
+    pub fn accept_settings_effect(
+        &self,
+        patch: Value,
+        revision: u64,
+        setup: bool,
+        before: impl std::future::Future<Output = Result<(), String>> + Send + 'static,
+        rollback: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<Value, String>>, String> {
+        let permit = crate::shutdown::WriterPermit::acquire()?;
+        let app = self.context.clone();
+        crate::shutdown::submit_source(move || {
+            let _permit = permit;
+            crate::commands::settings_store::patch_native_settings_effect_worker(
+                app,
+                patch,
+                revision,
+                setup,
+                || crate::host::runtime::block_on(before),
+                || crate::host::runtime::block_on(rollback),
+            )
+        })
+        .map_err(|_| "Settings owner unavailable".into())
+    }
+}
+impl Services {
+    pub fn recording_clock(&self) -> Option<(u64, u64)> {
+        let state = self.context.services();
+        let dictation = state.app_state.dictation.try_lock().ok()?;
+        if dictation.status != crate::state::DictationStatus::Recording {
+            return None;
+        }
+        let started = dictation.recording_started_at_ms?;
+        let elapsed = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_sub(started)
+            .max(0) as u64
+            / 1000;
+        Some((
+            state
+                .app_state
+                .recording_id
+                .load(std::sync::atomic::Ordering::SeqCst),
+            elapsed,
+        ))
+    }
+}
+
+impl Services {
+    pub fn recording_control(
+        &self,
+        generation: u64,
+        input: murmur_core::dictation::Input,
+    ) -> Result<(), String> {
+        crate::dictation_control::native_control(&self.context, generation, input)
+    }
+}
+
+impl Services {
+    /// Freeze the reviewed proposal and scope before returning to presentation.
+    /// Hide cannot revoke it or discard the confirmation queued for this ID.
+    pub fn accept_correction(
+        &self,
+        proposal: u64,
+        scope: Value,
+    ) -> Result<tokio::task::JoinHandle<Result<Value, String>>, String> {
+        let permit = crate::shutdown::WriterPermit::acquire()?;
+        let scope = serde_json::from_value(scope).map_err(|_| "Invalid correction scope")?;
+        let pending = self
+            .context
+            .services()
+            .correct_and_teach
+            .take_confirmed(proposal, &scope)?;
+        let app = self.context.clone();
+        Ok(crate::host::runtime::spawn_blocking(move || {
+            let _permit = permit;
+            let entry = crate::commands::correct_and_teach::commit_confirmation(
+                app.clone(),
+                proposal,
+                pending,
+                scope,
+                app.services(),
+            )?;
+            serde_json::to_value(entry).map_err(|_| "Correction result unavailable".into())
+        }))
     }
 }

@@ -166,6 +166,9 @@ async fn run_owner(app: &crate::host::Context, effect: Effect, deadline: Instant
                 crate::smart_auto_probe::preempt();
                 crate::smart_destination::set_enabled(false);
                 worker_app.services().meeting_suggestions.shutdown();
+                #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+                return worker_app.quiesce_native(deadline);
+                #[cfg(feature = "tauri-host")]
                 true
             })
             .await

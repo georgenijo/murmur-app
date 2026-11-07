@@ -551,9 +551,20 @@ impl KnowledgeRepository {
 
     pub fn import_from_file(&self, path: &Path) -> Result<KnowledgeImportResult, String> {
         let bundle = read_import(path)?;
+        self.import_bundle(bundle, None)
+    }
+
+    fn import_bundle(
+        &self,
+        bundle: KnowledgeExport,
+        expected: Option<u64>,
+    ) -> Result<KnowledgeImportResult, String> {
         let summary = self.summarize_import(&bundle)?;
         let mut connection = self.open_checked()?;
         let transaction = connection.transaction().map_err(db_error)?;
+        if expected.is_some_and(|revision| store_revision_tx(&transaction).ok() != Some(revision)) {
+            return Err("Knowledge changed after import review".into());
+        }
         let mut imported = 0_u64;
         for entry in bundle.entries {
             if semantic_duplicate_tx(&transaction, &entry)? {
@@ -589,6 +600,25 @@ impl KnowledgeRepository {
             duplicates: summary.duplicates,
             store_revision: revision,
         })
+    }
+
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    pub fn inspect_bytes(&self, bytes: &[u8]) -> Result<(KnowledgeImportSummary, u64), String> {
+        let bundle = parse_import(bytes)?;
+        let before = store_revision(&self.open_checked()?)?;
+        let summary = self.summarize_import(&bundle)?;
+        if store_revision(&self.open_checked()?)? != before {
+            return Err("Knowledge changed during import review".into());
+        }
+        Ok((summary, before))
+    }
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    pub fn import_bytes(
+        &self,
+        bytes: &[u8],
+        expected: u64,
+    ) -> Result<KnowledgeImportResult, String> {
+        self.import_bundle(parse_import(bytes)?, Some(expected))
     }
 
     pub fn delete_all(&self, expected_revision: u64) -> Result<u64, String> {
@@ -1151,7 +1181,14 @@ fn read_import(path: &Path) -> Result<KnowledgeExport, String> {
     }
     let bytes = fs::read(path)
         .map_err(|_| "Murmur could not read the selected knowledge import.".to_string())?;
-    let bundle: KnowledgeExport = serde_json::from_slice(&bytes)
+    parse_import(&bytes)
+}
+
+fn parse_import(bytes: &[u8]) -> Result<KnowledgeExport, String> {
+    if bytes.len() as u64 > MAX_IMPORT_BYTES {
+        return Err("Knowledge imports are limited to 8 MiB.".into());
+    }
+    let bundle: KnowledgeExport = serde_json::from_slice(bytes)
         .map_err(|_| "The selected file is not a valid Murmur knowledge export.".to_string())?;
     if bundle.format != EXPORT_FORMAT || !matches!(bundle.version, 1..=3) {
         return Err(

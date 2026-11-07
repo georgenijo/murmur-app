@@ -411,14 +411,16 @@ pub(crate) fn native_copy_history(
     revision: u64,
     targets: Vec<serde_json::Value>,
     text: String,
+    live: crate::native_services::EffectLease,
 ) -> Result<(), String> {
     let _permit = crate::shutdown::WriterPermit::acquire()?;
     ready(app)?
         .service
         .with_current_snapshot(revision, move |snapshot| {
-            if !targets
-                .iter()
-                .all(|target| snapshot.history.contains(target))
+            if !live()
+                || !targets
+                    .iter()
+                    .all(|target| snapshot.history.contains(target))
             {
                 return Err(murmur_core::completion::Error::IdentityConflict);
             }
@@ -746,4 +748,38 @@ pub(crate) async fn save_webkit_source(
         },
     )
     .await
+}
+
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_history_mutate(
+    app: &crate::host::Context,
+    epoch: u64,
+    command: Command,
+) -> Result<(), String> {
+    let _permit = crate::shutdown::WriterPermit::acquire()?;
+    let _observer = SourcePublicationObserver(app);
+    ready(app)?
+        .service
+        .execute_history_if_current(epoch, command)
+        .map_err(|_| "History changed or unavailable")?;
+    let _ = app.events().publish(EventKind::HistoryChanged, ());
+    Ok(())
+}
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_history_publish(
+    app: &crate::host::Context,
+    epoch: u64,
+    targets: Vec<serde_json::Value>,
+    effect: impl FnOnce() -> Result<(), murmur_core::completion::Error> + Send + 'static,
+) -> Result<(), String> {
+    let _permit = crate::shutdown::WriterPermit::acquire()?;
+    ready(app)?
+        .service
+        .with_current_snapshot(epoch, move |snapshot| {
+            if !targets.iter().all(|t| snapshot.history.contains(t)) {
+                return Err(murmur_core::completion::Error::IdentityConflict);
+            }
+            effect()
+        })
+        .map_err(|_| "History changed or unavailable".into())
 }

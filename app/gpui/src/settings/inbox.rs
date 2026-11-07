@@ -22,7 +22,21 @@ impl Inbox {
             } => Some(snapshot),
             _ => None,
         };
-        let bytes = if let Some(s) = snapshot {
+        let runtime_snapshot = if let Event::Runtime { runtime, .. } = &e {
+            let candidate = Snapshot {
+                revision: 0,
+                settings: murmur_core::state::settings_defaults(),
+                disclosure: serde_json::json!({"version":1,"panes":{}}),
+                runtime: (**runtime).clone(),
+            };
+            if !valid(&candidate) {
+                return Err(Box::new(e));
+            }
+            Some(candidate)
+        } else {
+            None
+        };
+        let bytes = if let Some(s) = snapshot.or(runtime_snapshot.as_ref()) {
             if !valid(s) {
                 return Err(Box::new(e));
             }

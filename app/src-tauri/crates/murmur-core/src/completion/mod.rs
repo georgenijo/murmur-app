@@ -449,6 +449,41 @@ impl CompletionService {
         drop(admission);
         receive.recv().map_err(|_| Error::Stopped)?
     }
+    /// Native History admission: compare the content epoch and apply in one
+    /// owner turn. Only History mutations may enter this boundary.
+    pub fn execute_history_if_current(&self, epoch: u64, command: Command) -> Result<Snapshot> {
+        if !matches!(
+            &command,
+            Command::History(_)
+                | Command::Clear {
+                    destination: Destination::History,
+                    ..
+                }
+        ) {
+            return Err(Error::IdentityConflict);
+        }
+        let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
+        self.owner
+            .send
+            .as_ref()
+            .ok_or(Error::Stopped)?
+            .send(Box::new(move |engine| {
+                let result = engine.history_snapshot().and_then(|(current, _)| {
+                    if current != epoch {
+                        return Err(Error::IdentityConflict);
+                    }
+                    engine.execute(command)
+                });
+                let _ = send.send(result);
+            }))
+            .map_err(|_| Error::Stopped)?;
+        drop(admission);
+        receive.recv().map_err(|_| Error::Stopped)?
+    }
     pub fn execute(&self, command: Command) -> Result<Snapshot> {
         let (send, receive) = mpsc::sync_channel(1);
         let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;

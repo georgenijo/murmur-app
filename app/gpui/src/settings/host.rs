@@ -30,6 +30,7 @@ pub enum Action {
     Open(Destination),
     ChooseFolder(&'static str),
     CalendarSettings,
+    LoginSettings,
     Accessibility,
     CheckUpdate,
     DownloadUpdate,

@@ -1248,3 +1248,37 @@ fn calendar_start<T: chrono::TimeZone>(zone: &T, date: chrono::NaiveDate) -> Opt
             .map(|d| d.timestamp_millis())
     })
 }
+
+#[cfg(feature = "production-host")]
+impl History {
+    pub(crate) fn production_action(
+        &mut self,
+        action: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            "history-search" => self.focus_search(w, cx),
+            "teach-latest" => {
+                if let Some(entry) = self.model.entries.last().cloned() {
+                    self.request(RequestKind::CorrectAndTeach { entry });
+                }
+            }
+            "history-copy-last" => {
+                if let Some(entry) = self.model.entries.last().cloned() {
+                    self.request(RequestKind::CopyRow {
+                        entry,
+                        markdown: false,
+                    });
+                }
+            }
+            "history-export" => self.request(RequestKind::Export {
+                entries: self.model.entries.clone(),
+                format: Format::Markdown,
+                save: true,
+            }),
+            _ => {}
+        }
+        cx.notify();
+    }
+}

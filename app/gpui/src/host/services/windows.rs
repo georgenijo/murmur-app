@@ -117,6 +117,20 @@ impl WindowPort for Port {
             .clone()
     }
     fn command(&self, command: WindowCommand) -> Result<(), service::Error> {
+        if matches!(self.label.as_str(), "overlay" | "dictation-preview")
+            && matches!(
+                command,
+                WindowCommand::Size(_)
+                    | WindowCommand::Position(_)
+                    | WindowCommand::Show
+                    | WindowCommand::Hide
+                    | WindowCommand::Background(_)
+            )
+        {
+            // The native Overlay/Live Words owners apply Rust geometry and
+            // visibility from generation-fenced events on the main thread.
+            return Ok(());
+        }
         self.send
             .try_send(Command {
                 label: self.label.clone(),

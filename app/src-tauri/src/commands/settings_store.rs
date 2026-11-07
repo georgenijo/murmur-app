@@ -518,6 +518,12 @@ fn commit_settings_intent_with_publisher<T>(
 fn notify_settings_committed(app: &crate::host::Context, blob: &str) {
     // Hidden WKWebViews can observe settings-changed before their localStorage
     // cache updates. Notify only after the authoritative file was committed.
+    #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+    let _ = app.events().send_to(
+        murmur_core::events::Consumer::Main,
+        "dictation-settings-changed",
+        (),
+    );
     let enabled = serde_json::from_str::<serde_json::Value>(blob)
         .ok()
         .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
@@ -2563,6 +2569,17 @@ pub(crate) fn patch_native_settings_worker(
     patch: serde_json::Value,
     expected_revision: u64,
 ) -> Result<serde_json::Value, String> {
+    patch_native_settings_effect_worker(app, patch, expected_revision, false, || Ok(()), || {})
+}
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn patch_native_settings_effect_worker(
+    app: crate::host::Context,
+    patch: serde_json::Value,
+    expected_revision: u64,
+    setup: bool,
+    before: impl FnOnce() -> Result<(), String>,
+    rollback: impl FnOnce(),
+) -> Result<serde_json::Value, String> {
     use crate::host::ServiceAccess;
     use std::sync::atomic::Ordering;
     let _warning = SettingsWarningNotification(&app);
@@ -2584,23 +2601,45 @@ pub(crate) fn patch_native_settings_worker(
                 serde_json::from_str::<serde_json::Value>(&s).map_err(|_| "Settings unavailable")
             })
             .transpose()?
-            .unwrap_or_else(|| serde_json::json!({})),
+            .unwrap_or_else(murmur_core::state::settings_defaults),
     )
     .map_err(|_| "Settings unavailable")?;
     let settings = merge_native_settings_intent(previous.clone(), patch)?;
+    if let Err(error) = before() {
+        rollback();
+        return Err(error);
+    }
+    let suspended = crate::dictation_control::native_setup_suspension(&app, None);
+    if setup {
+        crate::dictation_control::native_setup_suspension(&app, Some(false));
+    }
+    let mut rollback = Some(rollback);
     // This is the same staging/alias/model validation and immutable-start owner
     // used by Tauri. Shortcut/control registration must succeed before saving.
-    crate::commands::recording::configure_dictation_for_host(
+    if crate::commands::recording::configure_dictation_for_host(
         settings.clone(),
         &app.services(),
         &app,
-    )?;
+    )
+    .is_err()
+    {
+        crate::dictation_control::native_setup_suspension(&app, Some(suspended));
+        if let Some(rollback) = rollback.take() {
+            rollback();
+        }
+        restore_native_configuration(&app, previous);
+        return Err("Configuration unavailable".into());
+    }
     let configured = crate::dictation_control::configure_accepted(
         &app,
         settings.clone(),
         crate::dictation_control::accept_configuration(&app),
     );
     if !matches!(configured, Ok(true)) {
+        crate::dictation_control::native_setup_suspension(&app, Some(suspended));
+        if let Some(rollback) = rollback.take() {
+            rollback();
+        }
         restore_native_configuration(&app, previous);
         return Err("Configuration unavailable".into());
     }
@@ -2616,6 +2655,10 @@ pub(crate) fn patch_native_settings_worker(
             Ok(settings)
         }
         Err(_) => {
+            crate::dictation_control::native_setup_suspension(&app, Some(suspended));
+            if let Some(rollback) = rollback.take() {
+                rollback();
+            }
             restore_native_configuration(&app, previous);
             Err("Settings publication unavailable".into())
         }
@@ -2682,4 +2725,48 @@ mod native_intent_tests {
         assert_eq!(next["smartAutoMicrophoneEnabled"], false);
         assert!(merge_native_settings_intent(json!({}), json!([])).is_err());
     }
+}
+
+/// One coherent document/revision observation for native editors. The FIFO
+/// orders this read with accepted intents and the lock covers recovery too.
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_settings_snapshot(
+    app: &crate::host::Context,
+) -> Result<(u64, serde_json::Value), String> {
+    use crate::host::ServiceAccess;
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let dir = source_dir(app)?;
+    let value = load_settings_blob_locked(&dir)?
+        .map(|text| serde_json::from_str(&text).map_err(|_| "Settings unavailable"))
+        .transpose()?
+        .unwrap_or_else(murmur_core::state::settings_defaults);
+    let settings = murmur_core::state::settings(value).map_err(|_| "Settings unavailable")?;
+    let revision = app
+        .services()
+        .app_state
+        .settings_revision
+        .load(std::sync::atomic::Ordering::SeqCst);
+    Ok((revision, settings))
+}
+
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn native_theme_library(
+    app: &crate::host::Context,
+    expected: serde_json::Value,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let dir = data_dir(app)?;
+    let current = read_blob(&dir, THEME_LIBRARY)?
+        .map(|s| serde_json::from_str(&s).map_err(|_| "Theme library unavailable"))
+        .transpose()?
+        .unwrap_or_else(|| serde_json::json!({"version":1,"themes":[]}));
+    let current = murmur_core::state::normalize("murmur-theme-library", current)
+        .map_err(|_| "Theme library unavailable")?;
+    if current != expected {
+        return Err("Theme library changed".into());
+    }
+    let value = murmur_core::state::normalize("murmur-theme-library", value)
+        .map_err(|_| "Invalid theme library")?;
+    write_blob_locked(&dir, THEME_LIBRARY, &value.to_string())
 }

@@ -524,6 +524,34 @@ impl Worker {
         self.pending.1.notify_one();
     }
 }
+impl Worker {
+    /// Nonblocking hide fence; keep this owner until its exact thread settles.
+    pub fn terminate(&mut self) {
+        self.pause();
+        self.pending
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .shutdown = true;
+        self.pending.1.notify_one();
+    }
+    pub fn finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
+    }
+    /// Coordinator only, on a blocking worker. A deadline failure is reported
+    /// instead of treating a detached Core Audio call as confirmed teardown.
+    pub fn drain(&mut self, deadline: std::time::Instant) -> bool {
+        self.terminate();
+        while !self.finished() {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        self.thread.take().is_none_or(|t| t.join().is_ok())
+    }
+}
+
 impl Drop for Worker {
     fn drop(&mut self) {
         self.pause();
