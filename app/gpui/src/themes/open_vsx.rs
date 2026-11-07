@@ -42,6 +42,7 @@ impl Network {
     pub fn new() -> Result<Self, Problem> {
         Ok(Self {
             client: reqwest::blocking::Client::builder()
+                .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(10))
                 .connect_timeout(Duration::from_secs(5))
