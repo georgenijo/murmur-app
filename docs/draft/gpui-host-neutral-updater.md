@@ -239,7 +239,10 @@ An already-open dialog is never closed by a quiet error. Optional background
 availability remains quiet and notifies once per version; forced availability
 opens only while setup/automatic checks remain enabled. Suppression is checked
 again after discovery. Setup transitions do not repeat startup checks. Manual
-checks remain available during setup and can join an in-flight owner. A
+checks remain available during setup and can join an in-flight owner. A joined
+manual Check promotes a quiet current-version result to UpToDate and opens
+availability or recovery errors without another fetch, even if setup restarts.
+Readiness-only Configure actions preserve the joined discovery identity. A
 background request never competes with a current download. A withdrawn offer
 removes stale availability and closes its dialog. Stable diagnostic event
 codes for current version, download start/ready, and failures are retained.
@@ -295,13 +298,16 @@ Test key:
 | X | `frontend: forwards setup gating to Rust and keeps manual checks available` |
 | Y | `frontend: does not forward hidden visibility and removes lifecycle listeners during setup and unmount` |
 | Z | `rust_owner_requires_v3_before_network_and_generic_sources_cannot_seed_invalid_updater_values` |
+| AA | `manual_check_joins_gated_background_discovery_including_setup_restart` |
+| AB | `concurrent_downloads_share_owner_while_environment_verification_is_pending` |
+| AC | `download_click_presents_dialog_while_waiting_for_background_discovery` |
 
 **useAutoUpdater.test.tsx**
 
 | Old test | Replacement |
 |---|---|
 | refreshes a stale update and downloads and installs the newer version with its cumulative notes | A, D |
-| forces and downloads the fresh update when the installed version is unavailable | A, M |
+| forces and downloads the fresh update when the installed version is unavailable | Retired: fallible WebView version lookup is gone; the host supplies an immutable package version. A asserts forced stale-refresh selection with that version; M covers invalid policy comparisons. |
 | uses the retained update if a stale update refresh fails | B |
 | uses the retained update when a stale refresh returns no newer version | A |
 | does not refresh a recently discovered update or an already downloaded update | A, C |
@@ -315,17 +321,17 @@ Test key:
 | logs the stable current-version event code when no update is available | U |
 | leaves the canary path inert when the launch marker is absent | L |
 | uses the Rust command boundary schema for canary reads and writes | J, I |
-| canary uses the real download, install, and relaunch path | G |
+| canary uses the real download, install, and relaunch path | G asserts HTTP download, filesystem installation, a host relaunch request signal, and confirmation by a synthetic new-version owner. Actual process relaunch/OTA remains separate native acceptance. |
 | canary dry-run launches discovery and policy but never downloads or relaunches | G |
 | records production stages as pending until install evidence is available | G |
 | records policy failure without fabricating production stages | H |
 | records a canary download failure at the download stage | H |
-| records a canary relaunch failure after install evidence | H |
+| records a canary relaunch failure after install evidence | H asserts the core failure-reporting seam after install evidence using an injected host-refusal message; it does not execute or fail an OS relaunch. |
 | recovers a pending canary only after the installed version matches | I, G |
 | opens a recovery modal after a failed manual check | K |
 | recovers from a transient updater-feed failure before showing an error | L, U |
 | offers a verified update as optional when policy cannot be verified | M, R |
-| uses an absent policy from the native response without a webview fetch | M, X |
+| uses an absent policy from the native response without a webview fetch | Retired: the separate WebView policy fetch no longer exists. M asserts absent policy parsing in the single native feed; X asserts intent forwarding only. |
 | opens a required update when the verified policy is above the installed version | R |
 | blocks installation before download when Gatekeeper translocated the app | N |
 | downloads to a ready state and waits for explicit restart before installing | N, C, U |
@@ -335,11 +341,11 @@ Test key:
 | reports a download failure and permits a retry | C, U |
 | allows only one restart owner | P |
 | retries installation without downloading again | C, Q |
-| retries only relaunch after the update has installed | Q, G |
-| allows only one download owner while environment verification is pending | P |
-| waits out an in-flight check instead of dropping the download click | P |
-| keeps the download dialog open when a background check finishes first | P |
-| ignores a manual check while download owns the updater | P, T |
+| retries only relaunch after the update has installed | Retired: the fallible WebView relaunch/retry action is replaced by one terminal shutdown-coordinator request. P and `rust_owner_retains_ready_bytes_and_serializes_install_retry_and_relaunch` assert repeated Install emits only one request; Q covers receipt adoption, not failed host relaunch retry. No retry after accepted terminal ownership is promised. |
+| allows only one download owner while environment verification is pending | AB gates Preparing under the owner lock before synchronous bundle/environment verification; the second Download genuinely queues, and exactly one archive is fetched. N separately asserts translocation refusal before transfer. |
+| waits out an in-flight check instead of dropping the download click | AC holds discovery until the queued Download publishes its dialog intent, then asserts Ready and one archive transfer. |
+| keeps the download dialog open when a background check finishes first | AC |
+| ignores a manual check while download owns the updater | P (archive response gated; manual Check returns while download is held). T only covers contention after completed discovery. |
 | ignores a due native wake check while download owns the updater | P, O |
 | removes withdrawn availability after an authoritative background check | R |
 
@@ -351,8 +357,8 @@ Test key:
 | preserves explicit manual update checks while setup defers background work | X, K |
 | keeps an in-flight background result quiet after setup restarts (forced: %s) | S |
 | notifies a previously suppressed update after setup completes, once per version (forced: %s) | S, R |
-| rechecks readiness after waiting for native notification permission | S (permission continuation removed; synchronous native boundary) |
-| honors a manual request joining a background check after setup restarts | S, T |
+| rechecks readiness after waiting for native notification permission | Retired: permission continuation removed; native notification dispatch is synchronous. S asserts suppression after setup readiness changes during gated discovery, not a permission wait. |
+| honors a manual request joining a background check after setup restarts | AA holds startup HTTP until manual Check enters the busy-owner join, with setup enabled or restarted; asserts UpToDate, optional/forced availability, and check/reinstall recovery errors without a second discovery. |
 | resumes due checks after setup is run again without repeating the startup check | S, O, Y |
 
 **updater.test.ts**
@@ -377,10 +383,10 @@ Test key:
 | isDueForCheck returns true when timestamp is old enough | O |
 | returns the saved notes for the exact installed version | V, D |
 | accepts an equivalent v-prefixed installed version | M |
-| removes stale notes when the installed version does not match | F |
+| removes stale notes when the installed version does not match | F asserts obsolete notes cleared and future/build-distinct notes preserved. Blanket mismatch deletion is retired because future pending notes belong to the not-yet-relaunched update. |
 | does not confuse prerelease and final builds with the same core semver | M, V |
 | rejects invalid versions even when both strings match | M, Z |
-| fails closed and removes malformed storage | M, Z |
+| fails closed and removes malformed storage | WebView localStorage deletion retired: Rust owns typed durable values. M rejects malformed pending notes; Z rejects invalid generic-source values before saving. Neither claims a malformed localStorage deletion assertion. |
 | can be dismissed permanently | D |
 | distinguishes an intentionally absent policy | M |
 | returns a present policy | M |
@@ -400,3 +406,15 @@ The native timer and startup use the same background action tested by K.
 asserts the immediate dialog intent in P before the network gate is released.
 `scripts/test_updater_fixture_policy.py::test_installer_requires_every_packaged_executable`
 keeps required executables aligned with the actual packaged helper list.
+
+### Re-check corrections
+
+The parity table was re-audited against assertions, not test names. AA proves
+manual intent joins live startup discovery before releasing its HTTP gate,
+including setup restarting and all current/available/error outcomes. AB gates
+the synchronous pre-environment-verification boundary rather than an HTTP
+response. AC supplies the actual queued Download assertion. O now explicitly
+asserts a missing timestamp defaults to zero and a saved timestamp round-trips;
+Z explicitly rejects malformed pending-note values through the generic source
+normalizer. Retired WebView scenarios above state their replacement guarantees;
+core canary coverage does not claim an OS relaunch or real OTA acceptance.

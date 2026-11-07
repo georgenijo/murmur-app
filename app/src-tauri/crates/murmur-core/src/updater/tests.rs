@@ -359,6 +359,11 @@ fn rust_owner_requires_v3_before_network_and_generic_sources_cannot_seed_invalid
         .unwrap_err()
         .contains("migration"));
     assert!(crate::state::normalize("updater-last-check", json!(-1)).is_err());
+    assert!(crate::state::normalize(
+        "pending-update-release-notes",
+        json!({"version":"bad","notes":"Synthetic"})
+    )
+    .is_err());
 }
 
 fn read_request(socket: &mut impl std::io::Read) -> std::io::Result<String> {
@@ -611,11 +616,29 @@ fn rust_schedule_gates_setup_six_hours_ready_and_forced_dismissal() {
     let temp = scratch();
     let server = Server::new();
     let (updater, store, _) = network_owner(temp.path(), &server, true);
+    assert_eq!(
+        updater
+            .source()
+            .unwrap()
+            .values
+            .get("updater-last-check")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        0
+    );
     updater.act(Action::Configure { automatic: false }).unwrap();
     updater.act(Action::Check { background: true }).unwrap();
     assert_eq!(server.count(), 0);
     updater.act(Action::Configure { automatic: true }).unwrap();
     assert_eq!(server.count(), 1);
+    let timestamp = updater.source().unwrap().values["updater-last-check"]
+        .as_u64()
+        .unwrap();
+    assert!(timestamp > 0 && timestamp <= now());
+    assert_eq!(
+        store.lifecycle(Operation::Status).unwrap().values["updater-last-check"],
+        json!(timestamp)
+    );
     updater.act(Action::Check { background: true }).unwrap();
     assert_eq!(server.count(), 1);
     updater.act(Action::Dismiss).unwrap();
@@ -1559,6 +1582,143 @@ fn manual_check_joins_busy_owner_without_another_fetch() {
     owner.join().unwrap();
     assert_eq!(server.count(), 1);
     assert!(updater.snapshot().is_update_dialog_open);
+}
+
+#[test]
+fn manual_check_joins_gated_background_discovery_including_setup_restart() {
+    for setup_restarts in [false, true] {
+        for outcome in ["current", "optional", "forced", "failure", "reinstall"] {
+            let temp = scratch();
+            let server = Server::new();
+            let (mut updater, _, _) = network_owner(temp.path(), &server, outcome == "forced");
+            if outcome == "current" {
+                let mut manifest = feed_value(&server);
+                manifest["version"] = json!("1.0.0");
+                publish(&server, &manifest);
+            } else if matches!(outcome, "failure" | "reinstall") {
+                server.routes.lock().unwrap().remove("/feed");
+                if outcome == "reinstall" {
+                    updater.executable = PathBuf::from(
+                        "/private/AppTranslocation/fixture/Murmur.app/Contents/MacOS/ui",
+                    );
+                }
+            }
+            let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let copy = notifications.clone();
+            updater.notify = Arc::new(move |_| {
+                copy.fetch_add(1, Ordering::AcqRel);
+            });
+            let (presented, waiting) = std::sync::mpsc::channel();
+            updater.changed = Arc::new(move |s| {
+                if s.is_update_dialog_open {
+                    let _ = presented.send(());
+                }
+            });
+            let updater = Arc::new(updater);
+            let (arrived, resume) = server.hold("/feed");
+            let copy = updater.clone();
+            let background =
+                std::thread::spawn(move || copy.act(Action::Configure { automatic: true }));
+            arrived.recv_timeout(Duration::from_secs(2)).unwrap();
+            let setup = setup_restarts.then(|| {
+                let copy = updater.clone();
+                std::thread::spawn(move || copy.act(Action::Configure { automatic: false }))
+            });
+            if setup_restarts {
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while updater.automatic.load(Ordering::Acquire) {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+            }
+            let copy = updater.clone();
+            let manual = std::thread::spawn(move || copy.act(Action::Check { background: false }));
+            // The manual path publishes only after try_lock found the actual
+            // discovery owner. Keep HTTP gated until that path is reached.
+            waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(!background.is_finished());
+            assert!(!manual.is_finished());
+            assert!(!updater.drained());
+            assert_eq!(server.count(), 1);
+            assert_eq!(updater.snapshot().update_status, Status::Idle);
+            resume.send(()).unwrap();
+            let result = background.join().unwrap();
+            assert_eq!(result.is_err(), matches!(outcome, "failure" | "reinstall"));
+            manual.join().unwrap().unwrap();
+            if let Some(setup) = setup {
+                setup.join().unwrap().unwrap();
+            }
+            let view = updater.snapshot();
+            assert!(
+                view.is_update_dialog_open,
+                "{outcome}, setup={setup_restarts}"
+            );
+            match outcome {
+                "current" => assert_eq!(view.update_status, Status::UpToDate),
+                "optional" | "forced" => assert!(matches!(
+                    view.update_status,
+                    Status::Available { version, notes, is_forced }
+                        if version == "1.2.0" && notes == "Synthetic upgrade"
+                            && is_forced == (outcome == "forced")
+                )),
+                _ => assert!(matches!(
+                    view.update_status,
+                    Status::Error { stage, message, is_forced: false, recovery }
+                        if stage == "check" && message == "Update feed unavailable"
+                            && recovery.as_deref() == (outcome == "reinstall").then_some("reinstall")
+                )),
+            }
+            assert_eq!(server.count(), if result.is_err() { 2 } else { 1 });
+            assert_eq!(
+                notifications.load(Ordering::Acquire),
+                usize::from(!setup_restarts && matches!(outcome, "optional" | "forced"))
+            );
+        }
+    }
+}
+
+#[test]
+fn concurrent_downloads_share_owner_while_environment_verification_is_pending() {
+    let temp = scratch();
+    let server = Server::new();
+    let (mut updater, _, _) = network_owner(temp.path(), &server, false);
+    updater.act(Action::Check { background: false }).unwrap();
+    let (arrived, waiting) = std::sync::mpsc::channel();
+    let (resume, held) = std::sync::mpsc::channel();
+    let held = Mutex::new(held);
+    let first = AtomicBool::new(true);
+    updater.changed = Arc::new(move |s| {
+        if matches!(s.update_status, Status::Preparing { .. }) {
+            let block = first.swap(false, Ordering::AcqRel);
+            arrived.send(()).unwrap();
+            if block {
+                held.lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            }
+        }
+    });
+    let updater = Arc::new(updater);
+    let copy = updater.clone();
+    let first = std::thread::spawn(move || copy.act(Action::Download));
+    // Preparing is emitted under the owner lock before bundle/environment
+    // verification. Neither an environment check nor a transfer has begun.
+    waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+    let copy = updater.clone();
+    let second = std::thread::spawn(move || copy.act(Action::Download));
+    waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(!first.is_finished());
+    assert!(!second.is_finished());
+    assert_eq!(server.count(), 1);
+    resume.send(()).unwrap();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    assert_eq!(server.count(), 2);
+    assert!(matches!(
+        updater.snapshot().update_status,
+        Status::Ready { .. }
+    ));
 }
 
 #[derive(Clone)]

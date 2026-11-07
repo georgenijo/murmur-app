@@ -593,6 +593,9 @@ impl Updater {
                         return Ok(false);
                     }
                     joined_manual_check = true;
+                    // Publish the explicit intent before waiting for discovery.
+                    // Its quiet result is promoted once the owner releases it.
+                    self.update(|s| s.is_update_dialog_open = true);
                     self.engine.lock().unwrap_or_else(|p| p.into_inner())
                 }
                 Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
@@ -615,10 +618,21 @@ impl Updater {
         {
             // The active owner already produced the authoritative result. A
             // manual join presents it without a second network transaction.
-            self.update(|s| s.is_update_dialog_open = true);
+            self.update(|s| {
+                if matches!(engine.last_action, Some(Action::Check { .. }))
+                    && s.update_status == Status::Idle
+                {
+                    s.update_status = Status::UpToDate;
+                }
+                s.is_update_dialog_open = true;
+            });
             return Ok(false);
         }
-        engine.last_action = Some(action.clone());
+        // Readiness-only reconfiguration must not erase the discovery result
+        // that a waiting manual Check joined. Startup below records its check.
+        if !matches!(action, Action::Configure { .. }) {
+            engine.last_action = Some(action.clone());
+        }
         let surface_error = matches!(
             action,
             Action::Check { background: false } | Action::Download | Action::Install
