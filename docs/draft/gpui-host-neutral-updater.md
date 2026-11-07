@@ -240,11 +240,13 @@ availability remains quiet and notifies once per version; forced availability
 opens only while setup/automatic checks remain enabled. Suppression is checked
 again after discovery. Setup transitions do not repeat startup checks. Manual
 checks remain available during setup and can join an in-flight owner. A joined
-manual Check promotes a quiet current-version result to UpToDate, which the
-indicator presents, so the dialog intent is consumed rather than left open for a
-later background failure to surface. It opens availability or recovery errors
-without another fetch, even if setup restarts. Dismiss also clears an explicitly
-shown Idle or UpToDate dialog.
+manual Check promotes a quiet current-version result to UpToDate and opens
+availability or recovery errors without another fetch, even if setup restarts.
+UpToDate is presented by the indicator, never the modal, so every snapshot
+publication with UpToDate consumes the dialog intent, whether it came from a
+joined check, a Retry from the recovery modal, or Show. No lingering flag can let
+a later background failure surface an unsolicited recovery dialog. Dismiss also
+clears an explicitly shown Idle dialog.
 Readiness-only Configure actions preserve the joined discovery identity. A
 background request never competes with a current download. A withdrawn offer
 removes stale availability and closes its dialog. Stable diagnostic event
@@ -361,7 +363,7 @@ Test key:
 | keeps an in-flight background result quiet after setup restarts (forced: %s) | S |
 | notifies a previously suppressed update after setup completes, once per version (forced: %s) | S, R |
 | rechecks readiness after waiting for native notification permission | Retired: permission continuation removed; native notification dispatch is synchronous. S asserts suppression after setup readiness changes during gated discovery, not a permission wait. |
-| honors a manual request joining a background check after setup restarts | AA holds startup HTTP until manual Check enters the busy-owner join, with setup enabled or restarted; asserts UpToDate with the dialog intent consumed, optional/forced availability, and check/reinstall recovery errors without a second discovery; after UpToDate, Show/Dismiss closes the dialog and a later due background failure stays quiet. |
+| honors a manual request joining a background check after setup restarts | AA holds startup HTTP until manual Check enters the busy-owner join, with setup enabled or restarted; asserts UpToDate with the dialog intent consumed, optional/forced availability, and check/reinstall recovery errors without a second discovery; after UpToDate, Show/Dismiss closes the dialog and a later due background failure stays quiet. `retry_to_up_to_date_consumes_dialog_before_background_failure` covers the non-joined Retry → UpToDate → background failure path without a Dismiss. |
 | resumes due checks after setup is run again without repeating the startup check | S, O, Y |
 
 **updater.test.ts**

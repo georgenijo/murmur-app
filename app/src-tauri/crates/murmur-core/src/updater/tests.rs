@@ -1708,6 +1708,36 @@ fn manual_check_joins_gated_background_discovery_including_setup_restart() {
 }
 
 #[test]
+fn retry_to_up_to_date_consumes_dialog_before_background_failure() {
+    let temp = scratch();
+    let server = Server::new();
+    let (updater, _, _) = network_owner(temp.path(), &server, false);
+    let feed = feed_value(&server);
+    server.routes.lock().unwrap().remove("/feed");
+    assert!(updater.act(Action::Check { background: false }).is_err());
+    assert!(updater.snapshot().is_update_dialog_open);
+    // Retry from the recovery modal finds no update; no Dismiss follows.
+    let mut current = feed;
+    current["version"] = json!("1.0.0");
+    publish(&server, &current);
+    updater.act(Action::Check { background: false }).unwrap();
+    let view = updater.snapshot();
+    assert_eq!(view.update_status, Status::UpToDate);
+    assert!(!view.is_update_dialog_open);
+    updater.act(Action::Show).unwrap();
+    assert!(!updater.snapshot().is_update_dialog_open);
+    server.routes.lock().unwrap().remove("/feed");
+    // Enabling automatic checks may run the quiet startup discovery itself.
+    let _ = updater.act(Action::Configure { automatic: true });
+    assert!(!updater.snapshot().is_update_dialog_open);
+    updater.save("updater-last-check", json!(0)).unwrap();
+    assert!(updater.act(Action::Check { background: true }).is_err());
+    let view = updater.snapshot();
+    assert!(matches!(view.update_status, Status::Error { .. }));
+    assert!(!view.is_update_dialog_open);
+}
+
+#[test]
 fn concurrent_downloads_share_owner_while_environment_verification_is_pending() {
     let temp = scratch();
     let server = Server::new();

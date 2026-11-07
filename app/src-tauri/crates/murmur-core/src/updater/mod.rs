@@ -196,6 +196,12 @@ impl Updater {
         let view = {
             let mut view = self.view.lock().unwrap_or_else(|p| p.into_inner());
             change(&mut view);
+            // The indicator presents UpToDate and the modal renders nothing for
+            // it, so any dialog intent is consumed. A lingering flag would let a
+            // later background failure open an unsolicited recovery dialog.
+            if view.update_status == Status::UpToDate {
+                view.is_update_dialog_open = false;
+            }
             view.revision += 1;
             view.clone()
         };
@@ -628,10 +634,8 @@ impl Updater {
                 {
                     s.update_status = Status::UpToDate;
                 }
-                // The indicator presents UpToDate, so the dialog intent is
-                // consumed here; a lingering flag would let a later background
-                // failure open an unsolicited recovery dialog.
-                s.is_update_dialog_open = s.update_status != Status::UpToDate;
+                // update() consumes this intent again if the result is UpToDate.
+                s.is_update_dialog_open = true;
             });
             return Ok(false);
         }
