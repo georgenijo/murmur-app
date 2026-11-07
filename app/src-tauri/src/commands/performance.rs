@@ -52,7 +52,7 @@ pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(),
         })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_performance_runs(
     limit: Option<u32>,
     state: tauri::State<'_, State>,
@@ -60,7 +60,7 @@ pub fn list_performance_runs(
     state.performance.list(limit.unwrap_or(50))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_performance_run(
     run_id: String,
     state: tauri::State<'_, State>,
@@ -68,7 +68,7 @@ pub fn get_performance_run(
     state.performance.get(run_id.trim())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_performance_resource_window(
     state: tauri::State<'_, State>,
 ) -> Result<Vec<ResourceSampleV1>, String> {
@@ -84,7 +84,7 @@ pub fn get_performance_store_health(
     Ok(state.performance.health())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn recover_performance_store(
     window: tauri::WebviewWindow,
     allow_reinitialize: bool,
@@ -95,9 +95,14 @@ pub fn recover_performance_store(
 }
 
 #[tauri::command]
-pub fn clear_performance_diagnostics(state: tauri::State<'_, State>) -> Result<(), String> {
-    state.performance.clear()?;
-    state.capture_health.clear()
+pub async fn clear_performance_diagnostics(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<State>();
+        state.performance.clear()?;
+        state.capture_health.clear()
+    })
+    .await
+    .map_err(|_| "Diagnostics worker unavailable".to_string())?
 }
 
 #[cfg(test)]

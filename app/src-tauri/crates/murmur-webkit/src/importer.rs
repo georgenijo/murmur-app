@@ -319,6 +319,11 @@ impl Importer {
         }
         receive
     }
+    /// Freeze admission without fabricating import/removal acknowledgements.
+    /// In-flight native work retains its service handle and may settle off main.
+    pub fn preserve_for_shutdown(&mut self) {
+        self.failed = true;
+    }
     /// The main thread only handles bounded messages and JavaScript transport;
     /// all durable I/O stays on a worker and the completion actor.
     pub fn poll(&mut self) -> ImportStatus {

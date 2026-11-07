@@ -167,6 +167,7 @@ pub(crate) async fn retry_last_delivery(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, State>,
 ) -> Result<RetryResult, String> {
+    let _producer = crate::shutdown::WriterPermit::acquire()?;
     let Some(mut latest) = state.delivery_recovery.latest() else {
         let response = result(RetryResultKind::Empty, "Nothing to paste yet.");
         publish(&app_handle, &response);
@@ -330,6 +331,9 @@ pub(crate) async fn retry_last_delivery(
             ),
             InjectionOutcome::ClipboardOnly(reason) => {
                 let message = match reason {
+                    ClipboardOnlyReason::IsolatedIdentity => {
+                        "Text saved to the private test clipboard. External paste is disabled."
+                    }
                     ClipboardOnlyReason::SmartTargetUnavailable => {
                         preparation_failure.map(PreparationFailure::copied_message).unwrap_or(
                             "The original text field is no longer verified. Click your destination and press Cmd+V.")

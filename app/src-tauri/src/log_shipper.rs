@@ -38,7 +38,11 @@ struct ShipperState {
 }
 
 fn logs_dir() -> Option<PathBuf> {
-    Some(dirs::data_dir()?.join("local-dictation").join("logs"))
+    Some(
+        crate::identity::data_dir()?
+            .join("local-dictation")
+            .join("logs"),
+    )
 }
 
 fn state_path() -> Option<PathBuf> {

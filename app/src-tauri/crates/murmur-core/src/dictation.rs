@@ -19,6 +19,7 @@ pub enum Origin {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LaunchGate {
     pub configured: bool,
+    pub shutdown: bool,
     pub onboarding_complete: bool,
     pub model_installed: bool,
     pub accessibility: bool,
@@ -26,7 +27,11 @@ pub struct LaunchGate {
 }
 impl LaunchGate {
     pub fn armed(self) -> bool {
-        self.configured && self.onboarding_complete && self.model_installed && self.accessibility
+        !self.shutdown
+            && self.configured
+            && self.onboarding_complete
+            && self.model_installed
+            && self.accessibility
     }
     pub fn can_start(self) -> bool {
         self.armed() && !self.disabled

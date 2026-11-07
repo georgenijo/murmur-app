@@ -1,0 +1,3 @@
+use std::ffi::{c_char, c_void};
+unsafe extern "C" { fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void; }
+fn main() { let _symbol = unsafe { dlsym(std::ptr::null_mut(), b"_exit\0".as_ptr().cast()) }; }

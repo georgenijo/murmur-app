@@ -6,6 +6,7 @@ fn usage() -> &'static str {
     "Usage: cargo run --example murmur-eval -- <deterministic|hardware> [--fixtures DIR] [--output FILE] [--workspace-root DIR] [--machine-label LABEL]"
 }
 
+#[allow(clippy::disallowed_methods)]
 fn main() {
     if let Err(error) = run() {
         eprintln!("murmur-eval: {error}");

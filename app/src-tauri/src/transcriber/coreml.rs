@@ -53,7 +53,7 @@ impl std::fmt::Display for ModelPreparationError {
 }
 
 fn cache_root() -> Option<PathBuf> {
-    dirs::data_dir().map(|path| path.join("FluidAudio").join("Models"))
+    crate::identity::data_dir().map(|path| path.join("FluidAudio").join("Models"))
 }
 
 pub(crate) fn model_dir() -> Option<PathBuf> {
@@ -166,6 +166,9 @@ pub fn specific_model_exists(model_name: &str) -> bool {
 }
 
 fn new_engine() -> Result<FluidAudio, String> {
+    if crate::identity::internal() {
+        return Err("Core ML SDK global cache is unavailable to isolated bundles; select a local Whisper or Parakeet model".into());
+    }
     let engine = FluidAudio::new().map_err(|error| format!("FluidAudio setup failed: {error}"))?;
     if !engine.is_apple_silicon() {
         return Err("FluidAudio Core ML transcription requires Apple Silicon".to_string());

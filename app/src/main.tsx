@@ -1,3 +1,4 @@
+import { DictationSettingsNotice } from './components/DictationSettingsNotice';
 import { SourceRecovery } from './components/SourceRecovery';
 import { SourceStorageNotice } from './components/SourceStorageNotice';
 import { initializeWebkitState } from './lib/webkitLifecycle';
@@ -36,6 +37,7 @@ initializeWebkitState(true).then(() => Promise.all([
         <NativeWindowLifecycle>
           <CompletionNotice />
           <SourceStorageNotice />
+          <DictationSettingsNotice />
           <App />
         </NativeWindowLifecycle>
       </AppearanceProvider>

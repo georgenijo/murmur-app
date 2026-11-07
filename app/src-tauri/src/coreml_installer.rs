@@ -236,6 +236,7 @@ fn read_bounded_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<Vec<u
     }
 }
 
+#[allow(clippy::disallowed_methods)]
 fn start_parent_watchdog() {
     std::thread::spawn(|| {
         let mut input = std::io::stdin();
@@ -452,7 +453,7 @@ where
             termination_confirmed: false,
         });
     }
-    if cancel.is_cancelled() {
+    if crate::shutdown::closing() || cancel.is_cancelled() {
         return Err(InstallFailure {
             code: "cancelled",
             repaired_cache: false,
@@ -480,11 +481,11 @@ where
     let mut last_phase = None;
     loop {
         let now = Instant::now();
-        if cancel.is_cancelled() || now >= deadline {
+        if crate::shutdown::closing() || cancel.is_cancelled() || now >= deadline {
             let confirmed = terminate_or_retain(child);
             return Err(InstallFailure {
                 code: if confirmed {
-                    if cancel.is_cancelled() {
+                    if crate::shutdown::closing() || cancel.is_cancelled() {
                         "cancelled"
                     } else {
                         "installer_timeout"

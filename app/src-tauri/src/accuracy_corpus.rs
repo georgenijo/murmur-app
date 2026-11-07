@@ -68,14 +68,16 @@ pub(crate) struct AccuracyCorpus {
 }
 
 fn corpus_root() -> Result<PathBuf, String> {
-    if let Some(root) = std::env::var_os("MURMUR_ACCURACY_CORPUS_DIR") {
-        let root = PathBuf::from(root);
-        if root.is_absolute() {
-            return Ok(root);
+    if !crate::identity::internal() {
+        if let Some(root) = std::env::var_os("MURMUR_ACCURACY_CORPUS_DIR") {
+            let root = PathBuf::from(root);
+            if root.is_absolute() {
+                return Ok(root);
+            }
+            return Err("MURMUR_ACCURACY_CORPUS_DIR must be an absolute path".to_string());
         }
-        return Err("MURMUR_ACCURACY_CORPUS_DIR must be an absolute path".to_string());
     }
-    dirs::data_dir()
+    crate::identity::data_dir()
         .map(|root| root.join("Murmur Accuracy Corpus").join("v1"))
         .ok_or_else(|| "Could not locate the local Application Support directory".to_string())
 }

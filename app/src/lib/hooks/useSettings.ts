@@ -265,8 +265,8 @@ export function useSettings() {
     return () => { cancelled = true; unlisten?.(); };
   }, [persistSettings]);
 
-  // Persist backend-driven disabled changes (the tray's "Disable Murmur" item).
-  // The equality guard makes this window's own set_app_disabled echo a no-op.
+  // Native tray changes already own a durable field patch. Mirror runtime
+  // notifications without creating another settings intent or field identity.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
@@ -277,12 +277,12 @@ export function useSettings() {
       const next = { ...prev, disabled: event.payload };
       settingsRef.current = next;
       setSettings(next);
-      persistSettings(next);
+      cacheSettings(next);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
     });
     return () => { cancelled = true; unlisten?.(); };
-  }, [persistSettings]);
+  }, []);
 
   // Record a full configuration as native-confirmed, keeping any mode that
   // native code selected after the call was queued.

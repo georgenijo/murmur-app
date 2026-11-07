@@ -1,0 +1,1 @@
+unsafe extern "system" { fn puts(text: *const u8) -> i32; fn r#getpid() -> i32; }

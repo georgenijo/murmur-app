@@ -46,11 +46,13 @@ impl PerformanceMetrics {
             .operation_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let machine_id = production::local_machine_id(&root);
+        let os_version =
+            sysinfo::System::os_version().filter(|value| production::valid_os_version(value));
         {
             let mut production = self.production.lock().unwrap_or_else(|p| p.into_inner());
-            production.machine_id = production::local_machine_id(&root);
-            production.os_version =
-                sysinfo::System::os_version().filter(|value| production::valid_os_version(value));
+            production.machine_id = machine_id;
+            production.os_version = os_version;
         }
         let result = PerformanceRepository::initialize(root.clone());
         let mut inner = self

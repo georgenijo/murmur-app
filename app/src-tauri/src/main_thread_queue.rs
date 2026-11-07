@@ -32,14 +32,21 @@ impl MainThread for MainThreadQueue {
                     drain(&queue);
                 }
             });
-            // Unlike Tauri's run_on_main_thread, this always queues. The main
-            // NSOperationQueue is serviced by the AppKit main run loop that
-            // tao/Tauri drives; it needs no extra runtime or caller-thread path.
-            // Background callers may have their task drained before returning.
-            // SAFETY: Foundation copies the block; it owns all captured state.
+            // Common modes include AppKit's termination modal loop. One FIFO
+            // drain still consumes tasks outside its mutex.
+            let run_loop =
+                objc2_core_foundation::CFRunLoop::main().ok_or(ContextError::SchedulingFailed)?;
             unsafe {
-                objc2_foundation::NSOperationQueue::mainQueue().addOperationWithBlock(&block)
-            };
+                run_loop.perform_block(
+                    Some(
+                        objc2_core_foundation::kCFRunLoopCommonModes
+                            .unwrap()
+                            .as_ref(),
+                    ),
+                    Some(&block),
+                );
+            }
+            run_loop.wake_up();
         }
         Ok(())
     }

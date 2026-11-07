@@ -1,0 +1,5 @@
+fn main() {
+    let _symbol = r"_exit";
+    let _bytes = br##"abort"##;
+    let _c_string = cr#"quick_exit"#;
+}

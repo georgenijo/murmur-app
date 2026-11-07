@@ -1,13 +1,15 @@
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_log_contents(lines: usize) -> String {
     crate::telemetry::read_pretty_log_tail(lines)
 }
 
 #[tauri::command]
-pub fn clear_logs() -> Result<(), String> {
-    crate::telemetry::clear_all_logs()?;
+pub async fn clear_logs() -> Result<(), String> {
+    // Invalidate scheduled restoration before waiting on its disk worker.
     crate::telemetry::clear_event_history();
-    Ok(())
+    tauri::async_runtime::spawn_blocking(crate::telemetry::clear_all_logs)
+        .await
+        .map_err(|_| "Log worker unavailable".to_string())?
 }
 
 #[tauri::command]

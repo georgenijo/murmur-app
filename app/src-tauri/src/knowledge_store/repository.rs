@@ -16,6 +16,7 @@ const MAX_SCOPE_CHARS: usize = 4_096;
 const MAX_ALIASES: usize = 16;
 const MAX_BACKUPS: usize = 3;
 
+#[derive(Clone)]
 pub struct KnowledgeRepository {
     root: PathBuf,
     db_path: PathBuf,

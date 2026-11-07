@@ -16,10 +16,14 @@ pub enum Boundary {
 #[derive(Default)]
 pub struct Storage {
     pub root: PathBuf,
+    pub(super) capture_failures: bool,
+    pub(super) intents: std::collections::BTreeMap<String, serde_json::Value>,
     // Certainty of the most recent write, including failures before rename.
     pub renamed: bool,
     #[cfg(test)]
     pub fail: Option<(String, Boundary)>,
+    #[cfg(test)]
+    pub abort: Option<(String, Boundary)>,
     // Ordered faults; skip matching boundaries to target later writes to STATE.
     #[cfg(test)]
     pub faults: std::collections::VecDeque<(String, Boundary, usize)>,
@@ -40,12 +44,158 @@ pub struct Storage {
     pub trace: std::cell::RefCell<Vec<String>>,
 }
 impl Storage {
+    pub fn pending_recovery_resolved(&self) -> Result<bool> {
+        Ok(self
+            .read::<serde_json::Value>("completion-recovery.json", |v| {
+                v["schema"] == 1 && v["resolved"] == true
+            })?
+            .is_some())
+    }
+    pub fn remember_intent(&mut self, file: &str, value: &serde_json::Value) -> Result<()> {
+        if self.intents.contains_key(file) {
+            return Err(Error::TooManyFiles);
+        }
+        self.intents.insert(file.into(), value.clone());
+        Ok(())
+    }
+    pub fn resolve_intent(&mut self, file: &str) {
+        self.intents.remove(file);
+    }
+    pub fn has_intents(&self) -> bool {
+        !self.intents.is_empty()
+    }
+    pub fn retry_intents(&mut self) -> Result<()> {
+        for (file, value) in self.intents.clone() {
+            // Never overwrite damaged/conflicting durable evidence with an
+            // in-memory copy, even when the original admission was uncertain.
+            if file == super::BATCH {
+                let existed = self.root.join(super::BATCH).exists();
+                let durable = self.read_batch()?;
+                if let Some(durable) = durable {
+                    if durable != value {
+                        return Err(Error::Invalid);
+                    }
+                    self.sync_directory()?;
+                } else if existed || self.quarantined(super::BATCH)? {
+                    return Err(Error::Invalid);
+                } else {
+                    self.write(&file, &value)?;
+                }
+                self.recover_batch()?;
+            } else {
+                self.write(&file, &value)?;
+            }
+            self.resolve_intent(&file);
+        }
+        self.recover_batch()
+    }
+    /// The complete batch must be fully synced before either target can change.
+    /// Retain one complete copy through uncertain admission and retirement.
+    pub fn publish_batch(&mut self, snapshots: Vec<(String, serde_json::Value)>) -> Result<()> {
+        if self.has_intents() || self.root.join(super::BATCH).exists() {
+            return Err(Error::TooManyFiles);
+        }
+        let snapshots = serde_json::json!(snapshots);
+        // Hash the exact JSON slice embedded in the envelope. Validation reads
+        // that slice back from disk, without serializing parsed numbers.
+        let snapshot_bytes = serde_json::to_vec(&snapshots).map_err(|_| Error::Invalid)?;
+        let payload = serde_json::json!({"schema":1,"digest":bytes_digest(&snapshot_bytes),"snapshots":snapshots});
+        if !valid_batch(&payload) {
+            return Err(Error::Invalid);
+        }
+        let bytes = serde_json::to_vec(&payload).map_err(|_| Error::Invalid)?;
+        if bytes.len() > size_limit(super::BATCH) {
+            return Err(Error::Invalid);
+        }
+        self.remember_intent(super::BATCH, &payload)?;
+        // Do not capture failed target writes as independently retryable intents.
+        // They must always be preceded by the durable complete batch.
+        self.write_bytes(super::BATCH, &bytes)?;
+        self.recover_batch()?;
+        self.resolve_intent(super::BATCH);
+        Ok(())
+    }
+    fn read_batch(&self) -> Result<Option<serde_json::Value>> {
+        self.read_validated(super::BATCH, |value, bytes| {
+            valid_batch(value)
+                && super::numeric::member_bytes(bytes, "snapshots")
+                    .is_some_and(|raw| value["digest"] == bytes_digest(raw))
+        })
+    }
+    pub fn recover_batch(&mut self) -> Result<()> {
+        let existed = self.root.join(super::BATCH).exists();
+        let batch = self.read_batch()?;
+        if let Some(batch) = batch {
+            // Also resolves an unknown intent-rename outcome before publishing.
+            self.sync_directory()?;
+            let snapshots = batch["snapshots"].as_array().ok_or(Error::Invalid)?;
+            for snapshot in snapshots {
+                self.reject_future(snapshot[0].as_str().ok_or(Error::Invalid)?, "schema", 1)?;
+            }
+            for snapshot in snapshots {
+                let bytes = serde_json::to_vec(&snapshot[1]).map_err(|_| Error::Invalid)?;
+                self.write_bytes(snapshot[0].as_str().ok_or(Error::Invalid)?, &bytes)?;
+            }
+            // Every target is durable. Replaying after an uncertain unlink is
+            // harmless: these are exact snapshots, never relative mutations.
+            fs::remove_file(self.root.join(super::BATCH)).map_err(|_| Error::Io)?;
+            self.boundary(super::BATCH, Boundary::DirectorySync)?;
+            self.sync_directory()?;
+        } else if existed || self.quarantined(super::BATCH)? {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+    pub fn remove_temps(&self, name: &str) -> Result<()> {
+        for path in self.artifact_paths(name, true)? {
+            fs::remove_file(path).map_err(|_| Error::Io)?;
+        }
+        self.sync_directory()
+    }
+    pub fn remove_evidence(&self, name: &str) -> Result<()> {
+        for path in self.artifact_paths(name, false)? {
+            fs::remove_file(path).map_err(|_| Error::Io)?;
+        }
+        self.sync_directory()
+    }
+
+    pub fn publish_snapshot<T: Serialize>(&mut self, file: &str, value: &T) -> Result<()> {
+        let pending = format!("{file}.pending");
+        let payload = serde_json::json!({"schema":1,"value":value});
+        self.remember_intent(&pending, &payload)?;
+        self.write(&pending, &payload)?;
+        self.resolve_intent(&pending);
+        self.recover_snapshot(file, |v| v == &payload["value"])
+    }
+    pub fn recover_snapshot(
+        &mut self,
+        file: &str,
+        validate: impl FnOnce(&serde_json::Value) -> bool,
+    ) -> Result<()> {
+        let pending = format!("{file}.pending");
+        self.sync_directory()?;
+        let existed = self.root.join(&pending).exists();
+        if let Some(receipt) =
+            self.read::<serde_json::Value>(&pending, |v| v["schema"] == 1 && validate(&v["value"]))?
+        {
+            self.write(file, &receipt["value"])?;
+            fs::remove_file(self.root.join(&pending)).map_err(|_| Error::Io)?;
+            self.sync_directory()?;
+        } else if existed || self.quarantined(&pending)? {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
+            capture_failures: false,
+            intents: Default::default(),
             renamed: false,
             #[cfg(test)]
             fail: None,
+            #[cfg(test)]
+            abort: None,
             #[cfg(test)]
             faults: Default::default(),
             #[cfg(test)]
@@ -85,6 +235,13 @@ impl Storage {
         name: &str,
         validate: impl FnOnce(&T) -> bool,
     ) -> Result<Option<T>> {
+        self.read_validated(name, |value, _| validate(value))
+    }
+    fn read_validated<T: DeserializeOwned>(
+        &self,
+        name: &str,
+        validate: impl FnOnce(&T, &[u8]) -> bool,
+    ) -> Result<Option<T>> {
         #[cfg(test)]
         if self.fail_read.as_deref() == Some(name) {
             return Err(Error::Io);
@@ -96,16 +253,13 @@ impl Storage {
             Err(_) => return Err(Error::Io),
         };
         let mut bytes = Vec::new();
-        file.take(if name == super::STATE {
-            u64::MAX
-        } else {
-            32 * 1024 * 1024 + 1
-        })
-        .read_to_end(&mut bytes)
-        .map_err(|_| Error::Io)?;
-        if name == super::STATE || bytes.len() <= 32 * 1024 * 1024 {
-            if let Ok(value) = serde_json::from_slice::<T>(&bytes) {
-                if validate(&value) {
+        let limit = size_limit(name);
+        file.take(limit.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| Error::Io)?;
+        if bytes.len() <= limit {
+            if let Ok(value) = super::numeric::from_slice::<T>(&bytes) {
+                if validate(&value, &bytes) {
                     return Ok(Some(value));
                 }
             }
@@ -157,9 +311,11 @@ impl Storage {
         if self.fail_prune_after_guard.replace(false) {
             return Err(Error::Io);
         }
-        let unresolved = source_file(name).is_some_and(|file| {
-            !self.root.join(file).exists() || self.root.join(format!("{file}.pending")).exists()
-        });
+        let unresolved = name == super::BATCH
+            || (name == super::PENDING && !self.root.join("completion-recovery.json").exists())
+            || source_file(name).is_some_and(|file| {
+                !self.root.join(file).exists() || self.root.join(format!("{file}.pending")).exists()
+            });
         for temps in [false, true] {
             // All evidence for an unresolved source is pinned, including legacy
             // files whose generation cannot be proven. Temps carry no receipt.
@@ -269,11 +425,17 @@ impl Storage {
     }
     pub fn write<T: Serialize>(&mut self, name: &str, value: &T) -> Result<()> {
         let bytes = serde_json::to_vec(value).map_err(|_| Error::Invalid)?;
-        self.write_bytes(name, &bytes)
+        let result = self.write_bytes(name, &bytes);
+        if self.capture_failures && result.is_err() && name != super::STATE {
+            self.intents
+                .entry(name.to_owned())
+                .or_insert(super::numeric::from_slice(&bytes)?);
+        }
+        result
     }
     pub fn write_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         self.renamed = false;
-        if name != super::STATE && bytes.len() > 32 * 1024 * 1024 {
+        if bytes.len() > size_limit(name) {
             return Err(Error::Invalid);
         }
         fs::create_dir_all(&self.root).map_err(|_| Error::Io)?;
@@ -303,9 +465,18 @@ impl Storage {
         let _ = fs::remove_file(temp);
         result
     }
-    fn boundary(&mut self, _name: &str, _at: Boundary) -> Result<()> {
+    pub(super) fn boundary(&mut self, _name: &str, _at: Boundary) -> Result<()> {
         #[cfg(test)]
         self.trace.borrow_mut().push(format!("{_name}:{_at:?}"));
+        #[cfg(test)]
+        if self
+            .abort
+            .as_ref()
+            .is_some_and(|(name, at)| name == _name && *at == _at)
+        {
+            self.abort = None;
+            panic!("simulated process exit at {_name}:{_at:?}");
+        }
         #[cfg(test)]
         if self
             .pause
@@ -338,6 +509,44 @@ impl Storage {
         Ok(())
     }
 }
+fn size_limit(name: &str) -> usize {
+    match name {
+        super::STATE => usize::MAX,
+        // Two documents that each fit the existing destination limit plus envelope.
+        super::BATCH => 64 * 1024 * 1024 + 4096,
+        _ => 32 * 1024 * 1024,
+    }
+}
+
+fn bytes_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+// Only the ordered History mutation targets are admissible. Validate the
+// entire envelope before touching any target, including pre-import documents.
+fn valid_batch(v: &serde_json::Value) -> bool {
+    v.as_object().is_some_and(|o| o.len() == 3)
+        && v["schema"] == 1
+        && v["snapshots"].as_array().is_some_and(|snapshots| {
+            (1..=2).contains(&snapshots.len())
+                && snapshots.iter().enumerate().all(|(i, snapshot)| {
+                    snapshot.as_array().is_some_and(|s| s.len() == 2)
+                        && serde_json::to_vec(&snapshot[1])
+                            .is_ok_and(|bytes| bytes.len() <= 32 * 1024 * 1024)
+                        && if i == 0 {
+                            snapshot[0] == super::HOLD
+                                && serde_json::from_value::<super::Holding>(snapshot[1].clone())
+                                    .is_ok_and(|h| super::valid_holding(&h))
+                        } else {
+                            snapshot[0] == "history.json"
+                                && snapshot[1]["schema"] == 1
+                                && super::valid_document(super::Destination::History, &snapshot[1])
+                        }
+                })
+        })
+}
+
 // Only the two separately stored source destinations have sticky history guards.
 fn source_file(name: &str) -> Option<&'static str> {
     ["settings.json", "theme-library.json"]

@@ -331,7 +331,7 @@ mod tests {
             router.recipients(EventKind::AudioLevel, visible),
             vec![Consumer::Overlay]
         );
-        // Showing main requires no capture restart or subscription reset.
+        // Showing main requires no capture reopen or subscription reset.
         assert_eq!(
             router.recipients(EventKind::AudioLevel, |_, _| true),
             vec![Consumer::Main, Consumer::Overlay]

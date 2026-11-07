@@ -1,3 +1,4 @@
+mod identity;
 use crate::events::EventsExt;
 use murmur_core::events::{EventKind, EventSink};
 #[cfg(feature = "internal-benchmark")]
@@ -66,6 +67,11 @@ mod meeting_suggestions;
 mod microphone_auto;
 mod microphone_preview;
 mod microphone_signal;
+mod process_plugin;
+#[cfg(any(test, feature = "shutdown-test-support"))]
+mod qa_clipboard;
+mod shutdown;
+mod startup;
 use murmur_core::{model_artifact, model_digest};
 mod model_download;
 mod model_hardware_guidance;
@@ -210,28 +216,73 @@ pub(crate) struct State {
     pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
 }
 
+// Tauri's pre-runtime generated-context panic path contains exit(101).
+// This helper is called only before the application/coordinator is built.
+#[allow(clippy::disallowed_methods)]
+fn generated_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+pub fn initialize_identity() {
+    crate::identity::initialize(&generated_context().config().identifier);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = generated_context();
+    crate::identity::initialize(&context.config().identifier);
     launch::process_start();
     let builder = tauri::Builder::default()
+        .menu(|app| {
+            let menu = tauri::menu::Menu::default(app)?;
+            #[cfg(target_os = "macos")]
+            if let Some(tauri::menu::MenuItemKind::Submenu(application)) = menu.items()?.first() {
+                let count = application.items()?.len();
+                application.remove_at(count - 1)?;
+                application.append(
+                    &tauri::menu::MenuItemBuilder::with_id("shutdown-quit", "Quit Murmur")
+                        .accelerator("CmdOrCtrl+Q")
+                        .build(app)?,
+                )?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "shutdown-quit" {
+                shutdown::request(app, murmur_core::shutdown::Request::Quit);
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
+        .plugin(process_plugin::init())
         .plugin(tauri_plugin_dialog::init());
 
+    #[cfg(feature = "shutdown-test-support")]
+    let builder = if crate::identity::internal() {
+        builder.plugin(qa_clipboard::init())
+    } else {
+        builder
+    };
+
     #[cfg(not(feature = "internal-benchmark"))]
-    let builder = builder
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
-        .plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = if crate::identity::internal() {
+        builder
+    } else {
+        builder
+            .plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ))
+            .plugin(tauri_plugin_updater::Builder::new().build())
+    };
 
     #[cfg(feature = "internal-benchmark")]
     let builder = builder.plugin(commands::corpus::plugin());
 
     #[cfg(target_os = "macos")]
     let builder = builder.on_web_content_process_terminate(events::web_content_terminated);
+
+    #[cfg(feature = "shutdown-test-support")]
+    let builder = builder.plugin(shutdown::test_support::plugin());
 
     let app = builder
         .manage(State {
@@ -367,6 +418,7 @@ pub fn run() {
             commands::export::save_text_export,
             commands::mode_exchange::read_modes_file,
             completion::completion_snapshot,
+            completion::recover_completion_pending,
             completion::webkit_state_snapshot,
             completion::import_webkit_state,
             completion::save_webkit_source,
@@ -378,6 +430,8 @@ pub fn run() {
             completion::clear_completion_destination,
             completion::store_benchmark_report,
             commands::settings_store::load_settings_blob,
+            commands::settings_store::get_dictation_settings_unsaved,
+            shutdown::register_source_session,
             commands::settings_store::save_settings_blob,
             commands::settings_store::restore_source_backup,
             commands::settings_store::patch_overlay_setting,
@@ -473,6 +527,7 @@ pub fn run() {
         .setup(|app| {
             events::initialize(app.handle());
             app.manage(app_context::new(app.handle().clone()));
+            shutdown::initialize(app.handle())?;
             #[cfg(target_os = "macos")]
             if let Some(main) = app.get_webview_window("main") {
                 main.with_webview(|view| {
@@ -482,9 +537,7 @@ pub fn run() {
                         .expect("WebKit store identity could not be established; preserve legacy store");
                 })?;
             }
-            completion::initialize(app.handle())?;
             dictation_control::initialize(app.handle());
-            completion::start_gate(app.handle().clone());
             dictation_cues::initialize(app.handle());
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
@@ -492,17 +545,21 @@ pub fn run() {
             audio_inventory::initialize(app.handle().clone());
             smart_auto_probe::initialize(app.handle().clone());
             audio_graph_snapshot::set_app_handle(app.handle().clone());
-            // Restore the durable per-device capture backend memo before any
-            // capture can start, so a relaunch keeps the fast-fail tier a
-            // known-bad machine already earned. Fail-open: an unavailable
-            // directory just means this session stays in memory only.
-            match commands::settings_store::data_dir(app.handle()) {
-                Ok(dir) => audio::initialize_capture_memo_persistence(dir),
-                Err(error) => tracing::warn!(
-                    target: "audio",
-                    "capture backend memo persistence unavailable: {error}"
-                ),
-            }
+            // Restore the optional backend memo off main. Observations made
+            // by this launch outrank restored entries if capture starts first.
+            // The startup writer permit joins recovery during a simultaneous quit.
+            let memo_app = app.handle().clone();
+            let memo_owner = shutdown::WriterPermit::accepted_producer();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _memo_owner = memo_owner;
+                match commands::settings_store::data_dir(&memo_app) {
+                    Ok(dir) => audio::initialize_capture_memo_persistence(dir),
+                    Err(error) => tracing::warn!(
+                        target: "audio",
+                        "capture backend memo persistence unavailable: {error}"
+                    ),
+                }
+            });
             log_shipper::start(app.handle());
 
             if let Some(main_window) = app.get_webview_window("main") {
@@ -513,85 +570,8 @@ pub fn run() {
             }
             commands::dictation_preview::apply_initial_size(app.handle());
 
-            let app_data_root = app.path().app_data_dir()?;
-            if legacy_query_cleanup::cleanup(&app_data_root).is_err() {
-                tracing::warn!(target: "system", "legacy conversation cleanup failed");
-            }
-            if legacy_transform_cleanup::cleanup(&app_data_root).is_err() {
-                tracing::warn!(target: "system", "legacy transform capture cleanup failed");
-            }
-            let performance_root = app_data_root.join("diagnostics");
-            if let Err(error) = app
-                .state::<State>()
-                .capture_health
-                .initialize(performance_root.clone(), &telemetry::event_jsonl_paths())
-            {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "capture-health diagnostics store unavailable: {}",
-                    error
-                );
-            }
-            if let Err(error) = app
-                .state::<State>()
-                .performance
-                .initialize(performance_root.clone(), Some(app.handle().clone()))
-            {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "performance diagnostics store unavailable: {}",
-                    error
-                );
-            }
-            if app
-                .state::<State>()
-                .dictation_diagnostics
-                .initialize(performance_root.join("dictation-captures"))
-                .is_err()
-            {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "dictation diagnostic capture store unavailable"
-                );
-            }
-
-            let knowledge_root = app.path().app_data_dir()?.join("knowledge");
-            let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
-            if knowledge_status.availability != knowledge_store::StoreAvailability::Unavailable {
-                if let Err(error) = commands::knowledge::refresh_correction_rules(&app.state::<State>()) {
-                    tracing::warn!(target: "system", error, "initial knowledge correction matcher refresh failed");
-                }
-            }
-            tracing::info!(
-                target: "system",
-                availability = ?knowledge_status.availability,
-                schema_version = knowledge_status.schema_version,
-                record_count = knowledge_status.record_count,
-                "personal knowledge store initialized"
-            );
-
-            let meeting_root = app.path().app_data_dir()?.join("meetings");
-            diarization_audio::sweep_abandoned(&meeting_root);
-            let meeting_status = app
-                .state::<State>()
-                .meeting_store
-                .initialize(meeting_root);
-            tracing::info!(
-                target: "meeting",
-                availability = ?meeting_status.availability,
-                schema_version = meeting_status.schema_version,
-                session_count = meeting_status.session_count,
-                pending_segment_count = meeting_status.pending_segment_count,
-                "meeting transcript store initialized"
-            );
-            if let Ok(repository) = app.state::<State>().meeting_store.repository() {
-                app.state::<State>()
-                    .meetings
-                    .recover_pending(app.handle().clone(), repository);
-            }
+            completion::initialize(app.handle())?;
+            startup::initialize(app.handle())?;
 
             tracing::info!(target: "system", "app setup — Murmur v{}", env!("CARGO_PKG_VERSION"));
 
@@ -700,8 +680,7 @@ pub fn run() {
                             }
                         }
                         "toggle_disabled" => {
-                            let new_disabled = !keyboard::is_app_disabled();
-                            if let Err(e) = commands::keyboard::set_app_disabled(app_handle.clone(), new_disabled) {
+                            if let Err(e) = commands::settings_store::toggle_tray_disabled(app_handle.clone()) {
                                 tracing::warn!(target: "keyboard", "tray disable toggle failed: {}", e);
                             }
                         }
@@ -720,7 +699,7 @@ pub fn run() {
                             let _ = app_handle.events().publish(EventKind::CheckForUpdatesRequested, ());
                         }
                         "quit" => {
-                            app_handle.exit(0);
+                            shutdown::request(app_handle, murmur_core::shutdown::Request::Quit);
                         }
                         id if id.starts_with("next_mode:") => {
                             let mode_id = id.strip_prefix("next_mode:").filter(|id| !id.is_empty());
@@ -750,7 +729,7 @@ pub fn run() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|_app_handle, _event| {
@@ -773,19 +752,17 @@ pub fn run() {
             }
         }
 
-        if let RunEvent::Exit = &_event {
-            audio_lifecycle::retire_standby();
-            window_state::flush(_app_handle);
-            smart_destination::set_enabled(false);
-            audio_inventory::shutdown();
-            // App-exit teardown: stop resident native helpers so none outlive
-            // the app (all no-op when no child is running).
-            #[cfg(target_os = "macos")]
-            if let Some(state) = _app_handle.try_state::<State>() {
-                let _ = meeting_diarization::cancel_all();
-                state.meetings.shutdown(_app_handle);
-                state.meeting_suggestions.shutdown();
+        if let RunEvent::ExitRequested { api, code, .. } = &_event {
+            let permitted = shutdown::permitted(_app_handle);
+            if shutdown::forbidden_restart_exit(*code, permitted) {
+                tracing::error!(target:"shutdown", "forbidden restart bypass reached runtime without a drained permit");
             }
+            shutdown::adapter::intercept_exit(permitted, || api.prevent_exit(), || {
+                shutdown::request(_app_handle, murmur_core::shutdown::Request::Quit);
+            });
+        }
+        if let RunEvent::Exit = &_event {
+            shutdown::receipt(_app_handle);
         }
     });
 }

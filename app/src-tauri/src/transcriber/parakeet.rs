@@ -86,7 +86,7 @@ fn app_models_dir(data_dir: &Path) -> PathBuf {
 }
 
 fn data_models_dir() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| app_models_dir(&d))
+    crate::identity::data_dir().map(|d| app_models_dir(&d))
 }
 
 pub(crate) fn model_directory(model_name: &str) -> Result<PathBuf, String> {

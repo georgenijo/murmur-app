@@ -197,7 +197,8 @@ React queues Rust intents before attempting cache writes. This includes settings
 theme-library and small UI writers. Deliberate main-window Disable and Auto Paste
 edits accompany full settings writes as field patches; incidental snapshots still
 respect the durable owned-field revision. `save_settings_blob` returns the merged
-committed document. The renderer retains defensive library parsing for presentation
+committed document inside an applied receipt; layer 07 also fences stale renderer
+session generations with a distinct superseded receipt. The renderer retains defensive library parsing for presentation
 and import previews, but does not publish library repairs on load. Rust publishes
 reserved-ID migrations. Appearance cache regeneration and JSON key order do not
 advance revisions or emit repair events.
@@ -344,3 +345,13 @@ Linux verification: TypeScript and **182 files / 1,868 Vitest tests** pass
 their **15 Python / 42 Node** tests, reference documentation and Markdown link
 validators pass. Rust is unchanged; no Mac commands or GUI interaction are part
 of this fix. Final-head CI is reported separately after the push.
+## 1.8 shutdown handoff
+
+Source edits now submit immediately to a native FIFO while prior publications
+are still pending. React retains newest-generation retry presentation state;
+it is not the only owner waiting behind an older IPC. Settings/theme/source
+commands perform I/O off main and register accepted writer permits. UI snapshots
+also publish synced pending documents. Importer::preserve_for_shutdown freezes
+new native import work without inventing migration/removal receipts. The current
+Tauri host continues using the React importer; v3 and retirement ownership remain
+unchanged. See [shutdown contract](gpui-shutdown-coordinator.md).

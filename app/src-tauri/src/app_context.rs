@@ -26,7 +26,7 @@ impl Paths for TauriHost {
 
     fn models_dir(&self) -> Option<PathBuf> {
         // Preserve the VAD install location; do not silently migrate models.
-        dirs::data_dir().map(|root| root.join("local-dictation").join("models"))
+        crate::identity::data_dir().map(|root| root.join("local-dictation").join("models"))
     }
 }
 

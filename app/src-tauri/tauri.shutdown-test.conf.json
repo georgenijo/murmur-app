@@ -1,0 +1,38 @@
+{
+  "identifier": "com.localdictation.shutdown-test",
+  "productName": "Murmur Shutdown Test",
+  "app": {
+    "security": {
+      "capabilities": [
+        "default",
+        "diagnostics",
+        "dictation-preview",
+        "overlay",
+        {
+          "identifier": "shutdown-test-actions",
+          "description": "Isolated shutdown fixture actions for Main only",
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "shutdown-test:allow-shutdown-test-action"
+          ]
+        },
+        {
+          "identifier": "qa-clipboard",
+          "description": "Private text clipboard bridge; its plugin is registered only for isolated bundle identities and refuses production.",
+          "windows": [
+            "main",
+            "diagnostics",
+            "overlay",
+            "dictation-preview"
+          ],
+          "permissions": [
+            "qa-clipboard:allow-read-text",
+            "qa-clipboard:allow-write-text"
+          ]
+        }
+      ]
+    }
+  }
+}

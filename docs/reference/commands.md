@@ -1,12 +1,18 @@
 # Tauri Commands Reference
 
-The API reference covers 184 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 187 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
 For Rust → frontend events see [events.md](events.md). For the hooks that call these commands see [hooks.md](hooks.md).
 
 ---
+
+## Renderer source sessions (`shutdown.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `register_source_session` | `sourceSession: String` | `Result<(), String>` | Main/overlay-only registration on the native source FIFO. Registration order establishes succession per window label and retires the previous session across all source keys; a retired UUID cannot register again. Different live window labels remain independent. Every renderer source producer shares one completed handshake before writing. Accepted writes and field patches remain inside the native shutdown writer drain. |
 
 ## Recording and dictation (`commands/recording.rs`)
 
@@ -163,7 +169,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `configure_dictation_control` | `settings: JSON` | `Result<(), String>` | Main-window validated control settings; native startup uses the internal host adapter without a webview. |
+| `configure_dictation_control` | `settings: JSON` | `Result<(), String>` | Main-window control synchronization through the native source FIFO; rebases `disabled`/`autoPaste` from the durable owner before applying. Native startup uses the internal host adapter without a webview. |
 | `suspend_dictation_for_setup` | — | `Result<bool, String>` | Main-only; closes admission under the recording transition fence if no capture owner won the race. |
 | `resume_dictation_after_setup` | `settings: JSON` | `Result<(), String>` | Main-only explicit rearm after successful setup; stale settings updates cannot clear suspension. |
 | `toggle_dictation_lock` | — | `()` | Routes an overlay lock intent to the core controller. |
@@ -177,7 +183,7 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `stop_keyboard_listener` | — | `()` | Stops processing key events; the thread stays alive. |
 | `update_keyboard_key` | `hotkey: String` | `Result<(), String>` | Validates and changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
 | `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
-| `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
+| `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Runtime synchronization through the native source FIFO, using durable `disabled` when present (argument is only the pre-hydration fallback). Deliberate renderer edits use settings/overlay owned-field publishers; the native tray commits its own durable patch. Mirrors the tray check item and emits `app-disabled-changed`; listeners cache the echo without persisting it. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |
 | `set_paste_last_shortcut` | `enabled: bool` | `Result<(), String>` | Arms or disarms global ⌘⇧V on the shared rdev listener. Enabling requires Accessibility permission. |
 
@@ -306,17 +312,24 @@ migration rules stay in TypeScript. Writes are atomic, serialized, and created
 with owner-only permissions on Unix; rejected files are quarantined locally
 without logging their content.
 
+Renderer source writes use a fresh UUID `sourceSession` per webview load and a
+strictly increasing `intentGeneration` for every submission/retry. Native ordering
+is per window/session/key, checked inside the source FIFO before disk access.
+`SourceWrite<T>` serializes as `{ status: "applied", value: T }` or
+`{ status: "superseded" }`; superseded writes acknowledge no content or fields.
+
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `webkit_state_snapshot` | — | `Result<Receipt, String>` | Rust-owned source-state snapshot and independent v1/v2/v3, removal and retirement receipts. No WebKit data directory commits current versions without opening WebKit. |
 | `import_webkit_state` | `source: BTreeMap<String, Option<String>>` | `Result<Receipt, String>` | Main-only versioned importer. Raw JSON strings distinguish corrupt values from missing keys; disk values win. Shares the settings writer lock. |
-| `save_webkit_source` | `key: String`, `value: Value` | `Result<(), String>` | Main-only allow-listed source-state write to the completion actor. Settings/theme retain their dedicated commands. No updater v3 implementation or retirement permission is exposed to React. |
+| `save_webkit_source` | `key: String`, `value: Value`, `sourceSession: String`, `intentGeneration: u64` | `Result<SourceWrite<()>, String>` | Main-only allow-listed source-state write to the completion actor. Settings/theme retain their dedicated commands. No updater v3 implementation or retirement permission is exposed to React. |
 | `restore_source_backup` | `key: String`, `blob: String` | `Result<(), String>` | Main-only explicit restore of complete current-version settings or theme-library JSON into a missing/quarantined destination. Refuses partial documents and readable destinations; preserves quarantines. No default reset. |
+| `get_dictation_settings_unsaved` | — | `Result<bool, String>` | Main-only read of the retained native enabled/disabled patch, available before hydration and during source recovery. True until that choice is durably published or replaced and published; no private content or disk writes. Subscribe to `dictation-settings-warning-changed` before querying and requery on each notification. |
 | `load_settings_blob` | — | `Result<Option<String>, String>` | Replays any exact pending publication before reading and normalizing settings.json. None means never created. Required missing, quarantined, and future-schema destinations fail visibly across relaunch; quarantines use content-free UUID names and are preserved. |
-| `save_settings_blob` | `blob: String, ownedEdits?: { autoPaste?: bool, disabled?: bool }, intentGeneration?: u64` | `Result<String, String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Returns the committed normalized snapshot; the main-window acknowledgement echoes intentGeneration so newer per-field edits survive. Explicit owned-field edits patch the latest revision; incidental full snapshots cannot overwrite a newer overlay revision. Full writes require the main window; overlay quick controls use the field-limited patch command. Concurrent writers are serialized; failed publications retain an exact pending receipt and resume before the next read/merge. |
-| `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool` | `Result<String, String>` | Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
+| `save_settings_blob` | `blob: String, ownedEdits?: { autoPaste?: bool, disabled?: bool }, ownedEditGenerations?: { autoPaste?: u64, disabled?: u64 }, sourceSession: String, intentGeneration: u64` | `Result<SettingsWrite, String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Returns an applied snapshot receipt or superseded snapshot receipt, plus separate ownedPatchGenerations acknowledging only exact native-owned field IDs. A superseded document still applies fresh owned patches against the current native document. The main-window acknowledgement echoes intentSession, intentGeneration and acknowledgedFields so newer per-field edits survive. Explicit owned-field edits patch the latest revision; incidental full snapshots always preserve native owned fields. Field IDs survive retries so they cannot replay behind a later quick control. Full writes require the main window; overlay quick controls use the field-limited patch command. Concurrent writers are serialized; failed publications retain an exact pending receipt and resume before the next read/merge. |
+| `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool, sourceSession: String` | `Result<String, String>` | Requires the current registered overlay session. Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
 | `load_theme_library_blob` | — | `Result<Option<String>, String>` | Main-only read, serialized with writers and pending recovery. None means never created; missing required or quarantined destinations fail visibly. The 1 MiB object boundary is enforced before data reaches the renderer. |
-| `save_theme_library_blob` | `blob: String` | `Result<(), String>` | Main-only publication up to 1 MiB. Rust normalizes source schema and revisions; the renderer defensively parses presentation state. Exact pending receipt makes first publication restartable. |
+| `save_theme_library_blob` | `blob: String`, `sourceSession: String`, `intentGeneration: u64` | `Result<SourceWrite<()>, String>` | Main-only publication up to 1 MiB. Rust normalizes source schema and revisions; the renderer defensively parses presentation state. Exact pending receipt makes first publication restartable. |
 | `clear_theme_library_blob` | — | `Result<(), String>` | Main-window-only, idempotent removal of `theme-library.json`, independent of settings, history, stats, and the active appearance cache. |
 
 ## Overlay (`commands/overlay.rs`)
@@ -408,6 +421,7 @@ All successful mutations return the latest `Snapshot` and publish read-only
 |---------|-----------|---------|-------------|
 | `accept_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window accepts a visible, uncancelled file result into History using the operation's start-time retention. No statistics. |
 | `cancel_file_transcription` | `operation_id: String` | `Result<(), String>` | Main window cancels file History admission, including before native start or after transcription. |
+| `recover_completion_pending` | — | `Result<Snapshot, String>` (async) | Main-only explicit recovery: preserve rejected pending evidence, resume from readable current completion stores, and restore admission across restart. |
 | `completion_snapshot` | — | `Result<Snapshot, String>` | Main/diagnostics read of History, statistics, saved reports, migration notice and per-destination key-removal receipts. |
 | `acknowledge_completion_keys` | `destinations: Destination[]` | `Result<(), String>` | Main-only durable acknowledgement after targeted WebKit key removal. Safe to repeat on later launches. |
 | `import_completion_v1` | `source: LegacyImport` | `Result<Snapshot, String>` | Main-only fill/recovery import of History, statistics and reports. Disk wins when valid; durable markers prevent reimport. |
@@ -420,3 +434,17 @@ All successful mutations return the latest `Snapshot` and publish read-only
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `set_waveform_subscription` | `consumer: WaveformConsumer`, `active: bool` | `Result<(), String>` | Registers main-recording, corpus, or overlay waveform interest. The caller window must own the named consumer; native visibility and minimization also gate delivery. |
+
+## Shutdown transport behavior
+
+Settings/theme and WebKit lifecycle command names and result shapes remain
+unchanged; their wrappers are asynchronous and publish off main. Accepted source
+operations enter a native FIFO before waiting for disk. New source/file/correction
+or Paste Last work is refused during shutdown. The temporary app-owned process
+plugin preserves plugin:process|exit and plugin:process|restart for authorized
+Main callers, routing both through shutdown. process:allow-restart remains until
+#990. Exit code arguments are accepted; coordinated quit uses the common exit
+code zero. No public restart command is added to the 187-command app surface.
+
+The explicitly enabled shutdown-test-support feature exposes only the isolated
+QA plugin described in [native QA](../DEVELOPMENT.md#shutdown-coordinator-native-qa).

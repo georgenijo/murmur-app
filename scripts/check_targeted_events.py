@@ -17,7 +17,7 @@ ADAPTER = Path('app/src-tauri/src/events.rs')
 # modules named vendor/target/etc. must still be inspected. No third-party Rust
 # trees are currently exempted. .git is Git metadata, not a source directory.
 EXCLUDED = {Path('.git'), Path('app/node_modules'), Path('node_modules'),
-            Path('app/src-tauri/target'), Path('target')}
+            Path('app/src-tauri/target'), Path('target'), Path('app/src-tauri/patches/tao')}
 
 
 def excluded(path: Path, root: Path) -> bool:

@@ -1,0 +1,19 @@
+# Resolved paths close import-alias, grouped-import and macro-forwarding bypasses.
+# Exceptions are function-scoped and independently checked by check_restart_policy.py.
+disallowed-methods = [
+  { path = "std::process::exit", reason = "Use the drained shutdown coordinator (or an audited CLI-only exit)." },
+  { path = "std::process::abort", reason = "Bypasses the shutdown coordinator." },
+  { path = "libc::exit", reason = "Bypasses the shutdown coordinator." },
+  { path = "libc::_exit", reason = "Bypasses the shutdown coordinator." },
+  { path = "libc::abort", reason = "Bypasses the shutdown coordinator." },
+  { path = "std::os::unix::process::CommandExt::exec", reason = "Replaces the host without draining its owners." },
+  { path = "tauri::AppHandle::exit", reason = "Only the drained shutdown adapter may exit." },
+  { path = "tauri::AppHandle::request_restart", reason = "Only the drained shutdown adapter may request restart." },
+  { path = "tauri::process::restart", reason = "Use the drained shutdown adapter." },
+  { path = "tauri::AppHandle::restart", reason = "Only the drained shutdown adapter may restart." },
+  { path = "tauri_plugin_process::init", reason = "Use the coordinator compatibility plugin." },
+  { path = "tauri_plugin_process::commands::exit", reason = "Use the coordinator compatibility plugin." },
+  { path = "tauri_plugin_process::commands::restart", reason = "Use the coordinator compatibility plugin." },
+  { path = "tauri_plugin_process::exit", reason = "Use the coordinator compatibility plugin." },
+  { path = "tauri_plugin_process::restart", reason = "Use the coordinator compatibility plugin." },
+]

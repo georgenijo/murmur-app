@@ -434,7 +434,7 @@ mod tests {
                         } else {
                             lose(dir.path(), file, how);
                         }
-                        restart(&mut p, dir.path(), webkit);
+                        reopen(&mut p, dir.path(), webkit);
                         let snapshot = p.service.execute(Command::Snapshot);
                         if snapshot.is_err() {
                             assert!((file == "history.json" || file == "both-evidence-stores") && (!webkit || removed), "only a lost committed destination may fail snapshot: {webkit}/{file}/{how}/{removed}");
@@ -444,7 +444,7 @@ mod tests {
                                 assert!(p.service.execute(Command::Snapshot).is_err());
                                 assert!(p.accept_file("operation").is_err());
                             }
-                            restart(&mut p, dir.path(), webkit);
+                            reopen(&mut p, dir.path(), webkit);
                             assert!(p.service.execute(Command::Snapshot).is_err());
                             continue;
                         }
@@ -469,7 +469,7 @@ mod tests {
                         let after = p.service.execute(Command::Snapshot).unwrap();
                         assert_eq!(after.history, before.history);
                         assert_no_statistics(&after);
-                        restart(&mut p, dir.path(), false);
+                        reopen(&mut p, dir.path(), false);
                         assert_eq!(
                             p.service.execute(Command::Snapshot).unwrap().history,
                             before.history
@@ -539,10 +539,10 @@ mod tests {
         );
     }
 
-    // Persist the staged UUID across a service restart in tests. Production drops
+    // Persist the staged UUID across a service reopen in tests. Production drops
     // all staged content at process exit; this stronger check also models a lost
     // acceptance response and a reconnecting caller retrying its same UUID.
-    fn restart(p: &mut Producers, root: &std::path::Path, webkit: bool) {
+    fn reopen(p: &mut Producers, root: &std::path::Path, webkit: bool) {
         let placeholder = tempfile::tempdir().unwrap();
         let old = std::mem::replace(
             &mut p.service,
@@ -636,7 +636,7 @@ mod tests {
                     _ => unreachable!(),
                 }
                 if relaunch {
-                    restart(&mut p, dir.path(), webkit);
+                    reopen(&mut p, dir.path(), webkit);
                 }
                 let after = p.accept_file("operation").unwrap().unwrap();
                 assert_eq!(
@@ -653,7 +653,7 @@ mod tests {
                         .execute(Command::Import(super::super::LegacyImport::default()))
                         .unwrap();
                 }
-                restart(&mut p, dir.path(), false);
+                reopen(&mut p, dir.path(), false);
                 assert_eq!(
                     p.service.execute(Command::Snapshot).unwrap().history,
                     before.history
@@ -744,7 +744,7 @@ mod tests {
             let before = p.service.execute(Command::Snapshot).unwrap();
             p.cancel_file("operation");
             assert!(p.accept_file("operation").unwrap().is_none());
-            restart(&mut p, dir.path(), webkit);
+            reopen(&mut p, dir.path(), webkit);
             assert_eq!(
                 p.service.execute(Command::Snapshot).unwrap().history,
                 before.history
@@ -1107,9 +1107,9 @@ mod tests {
             let before = p.service.execute(Command::Snapshot).unwrap();
             assert!(before.history.is_empty());
             assert_no_statistics(&before);
-            // Also retain the live phase through actor restart; production exit
+            // Also retain the live phase through actor reopen; production exit
             // drops staging altogether and therefore has no automatic replay.
-            restart(&mut p, dir.path(), webkit);
+            reopen(&mut p, dir.path(), webkit);
             for _ in 0..3 {
                 p.accept_file("operation").unwrap();
                 let snapshot = p.service.execute(Command::Snapshot).unwrap();
@@ -1119,7 +1119,7 @@ mod tests {
             p.service
                 .execute(Command::Import(super::super::LegacyImport::default()))
                 .unwrap();
-            restart(&mut p, dir.path(), false);
+            reopen(&mut p, dir.path(), false);
             p.accept_file("operation").unwrap();
             let snapshot = p.service.execute(Command::Snapshot).unwrap();
             assert_eq!(snapshot.history.len(), 1);
@@ -1280,7 +1280,7 @@ mod tests {
                                 p.cancel_file("operation");
                             }
                             if relaunch {
-                                restart(&mut p, dir.path(), webkit);
+                                reopen(&mut p, dir.path(), webkit);
                             }
                             for _ in 0..3 {
                                 p.accept_file("operation").unwrap();
@@ -1295,7 +1295,7 @@ mod tests {
                             p.service
                                 .execute(Command::Import(super::super::LegacyImport::default()))
                                 .unwrap();
-                            restart(&mut p, dir.path(), false);
+                            reopen(&mut p, dir.path(), false);
                             p.accept_file("operation").unwrap();
                             let snapshot = p.service.execute(Command::Snapshot).unwrap();
                             assert_eq!(snapshot.history.len(), usize::from(!cancel || published));

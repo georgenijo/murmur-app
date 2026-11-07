@@ -9,12 +9,63 @@ use murmur_core::events::{EventKind, EventSink};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 
+/// Every core command can retry a retained lifecycle save while draining its
+/// FIFO, including native completion producers and file acceptance. Core fences
+/// publication with the shared source mutex; this observer retires host ownership
+/// and invalidates the warning after that publication.
+struct SourcePublicationObserver<'a, R: tauri::Runtime>(&'a tauri::AppHandle<R>);
+impl<R: tauri::Runtime> Drop for SourcePublicationObserver<'_, R> {
+    fn drop(&mut self) {
+        crate::commands::settings_store::reconcile_completion_publication(self.0);
+    }
+}
+
 pub(crate) struct Completion {
     service: CompletionService,
     pub(crate) producers: Producers,
     pub(crate) admitted: AtomicBool,
 }
+struct CompletionInitialization {
+    failed: AtomicBool,
+}
 pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<(), String> {
+    app.manage(CompletionInitialization {
+        failed: AtomicBool::new(false),
+    });
+    crate::startup::spawn(app, "completion-init", |app| {
+        match initialize_worker(&app) {
+            Ok(()) => start_gate(app),
+            Err(_) => {
+                app.state::<CompletionInitialization>()
+                    .failed
+                    .store(true, Ordering::SeqCst);
+                storage_error(&app);
+            }
+        }
+    })
+}
+fn ready<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::State<'_, Completion>, String> {
+    app.try_state::<Completion>()
+        .ok_or_else(|| "Completion storage is still initializing".into())
+}
+async fn wait_ready(app: &tauri::AppHandle) -> Result<(), String> {
+    loop {
+        if app.try_state::<Completion>().is_some() {
+            return Ok(());
+        }
+        if crate::shutdown::closing()
+            || app
+                .try_state::<CompletionInitialization>()
+                .is_none_or(|state| state.failed.load(Ordering::SeqCst))
+        {
+            return Err("Completion storage unavailable".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+fn initialize_worker(app: &tauri::AppHandle) -> Result<(), String> {
     let root = crate::commands::settings_store::data_dir(app)?;
     // Existence only; never enumerate/read the WebKit store. Isolated bundle
     // identities use their own directory, with no access to production data.
@@ -44,8 +95,19 @@ pub(crate) fn start_gate(app: tauri::AppHandle) {
         let mut gate = MigrationGate::default();
         let start = std::time::Instant::now();
         loop {
-            let state = app.state::<Completion>();
-            let snapshot = state.service.execute(Command::Snapshot);
+            if crate::shutdown::closing() {
+                break;
+            }
+            let worker_app = app.clone();
+            let snapshot = tauri::async_runtime::spawn_blocking(move || {
+                let _settings_observer = SourcePublicationObserver(&worker_app);
+                ready(&worker_app)?
+                    .service
+                    .execute(Command::Snapshot)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap_or_else(|_| Err("Completion worker unavailable".into()));
             let action = gate.tick(
                 snapshot.is_ok(),
                 snapshot.as_ref().is_ok_and(|s| s.v1_committed),
@@ -53,6 +115,9 @@ pub(crate) fn start_gate(app: tauri::AppHandle) {
             );
             match action {
                 GateAction::Arm | GateAction::ArmHolding => {
+                    let Ok(state) = ready(&app) else {
+                        break;
+                    };
                     state.admitted.store(true, Ordering::SeqCst);
                     if action == GateAction::ArmHolding {
                         tracing::warn!(target:"completion",code="migration_timeout_held","completion migration timed out");
@@ -83,8 +148,8 @@ pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
         .is_some_and(|s| s.admitted.load(Ordering::SeqCst))
 }
 fn execute(app: &tauri::AppHandle, command: Command) -> Result<Snapshot, String> {
-    let result = app
-        .state::<Completion>()
+    let _settings_observer = SourcePublicationObserver(app);
+    let result = ready(app)?
         .service
         .execute(command)
         .map_err(|e| e.to_string());
@@ -98,7 +163,11 @@ pub(crate) fn produce<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     f: impl FnOnce(&Producers) -> murmur_core::completion::Result<Snapshot>,
 ) {
-    let state = app.state::<Completion>();
+    let _settings_observer = SourcePublicationObserver(app);
+    let Ok(state) = ready(app) else {
+        storage_error(app);
+        return;
+    };
     match f(&state.producers) {
         Ok(_) => {
             let _ = app.events().publish(EventKind::HistoryChanged, ());
@@ -119,16 +188,19 @@ fn storage_error<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 }
 /// A failed/cancelled native operation drops its pending content on every exit.
 pub(crate) struct FileOperation<'a> {
+    _permit: crate::shutdown::WriterPermit,
     producers: &'a Producers,
     operation: String,
     ready: bool,
 }
 impl<'a> FileOperation<'a> {
     pub(crate) fn begin(producers: &'a Producers, operation: String) -> Result<Self, String> {
+        let permit = crate::shutdown::WriterPermit::acquire()?;
         producers
             .begin_file(&operation)
             .map_err(|e| e.to_string())?;
         Ok(Self {
+            _permit: permit,
             producers,
             operation,
             ready: false,
@@ -153,9 +225,7 @@ pub(crate) fn cancel_file_transcription<R: tauri::Runtime>(
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
-    app.state::<Completion>()
-        .producers
-        .cancel_file(&operation_id);
+    ready(&app)?.producers.cancel_file(&operation_id);
     Ok(())
 }
 #[tauri::command]
@@ -165,12 +235,15 @@ pub(crate) async fn accept_file_transcription<R: tauri::Runtime>(
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
+    let permit = crate::shutdown::WriterPermit::acquire()?;
     let worker_app = app.clone();
     if tauri::async_runtime::spawn_blocking(move || {
-        worker_app
-            .state::<Completion>()
+        let _permit = permit;
+        let _settings_observer = SourcePublicationObserver(&worker_app);
+        ready(&worker_app)?
             .producers
             .accept_file(&operation_id)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|_| {
@@ -212,19 +285,36 @@ fn main_only<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), 
     }
 }
 #[tauri::command]
-pub(crate) fn completion_snapshot(
+pub(crate) async fn recover_completion_pending(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Snapshot, String> {
+    main_only(&window)?;
+    let _permit = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::source_call(move || execute(&app, Command::RecoverPending))
+        .await
+        .map_err(|_| "Completion recovery worker unavailable".to_string())?
+}
+#[tauri::command]
+pub(crate) async fn completion_snapshot(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
 ) -> Result<Snapshot, String> {
     if !matches!(window.label(), "main" | "diagnostics") {
         return Err("Completion data is unavailable in this window".into());
     }
-    app.state::<Completion>()
-        .service
-        .execute(Command::Snapshot)
-        .map_err(|e| e.to_string())
+    wait_ready(&app).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _settings_observer = SourcePublicationObserver(&app);
+        ready(&app)?
+            .service
+            .execute(Command::Snapshot)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "Completion worker unavailable".to_owned())?
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn import_completion_v1(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -233,7 +323,7 @@ pub(crate) fn import_completion_v1(
     main_only(&window)?;
     execute(&app, Command::Import(source))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn mutate_history(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -242,7 +332,7 @@ pub(crate) fn mutate_history(
     main_only(&window)?;
     execute(&app, Command::History(mutation))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn clear_completion_destination(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -257,7 +347,7 @@ pub(crate) fn clear_completion_destination(
         },
     )
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn store_benchmark_report(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -267,14 +357,15 @@ pub(crate) fn store_benchmark_report(
     execute(&app, Command::Report(report))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn acknowledge_completion_keys(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     destinations: Vec<Destination>,
 ) -> Result<(), String> {
     main_only(&window)?;
-    app.state::<Completion>()
+    let _settings_observer = SourcePublicationObserver(&app);
+    ready(&app)?
         .service
         .execute(Command::KeysRemoved(destinations))
         .map(|_| ())
@@ -393,39 +484,43 @@ mod dispatch_tests {
     }
 }
 
-#[tauri::command]
-pub(crate) fn webkit_state_snapshot(
+fn webkit_state_snapshot_worker(
     app: tauri::AppHandle,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
-    source_status(&app.state::<Completion>().service)
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
+    source_status(
+        &ready(&app)?.service,
+        &crate::commands::settings_store::data_dir(&app)?,
+    )
 }
 fn source_status(
     service: &CompletionService,
+    root: &std::path::Path,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
-    use crate::MutexExt;
-    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    service
-        .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
-        .map_err(|e| e.to_string())
+    crate::commands::settings_store::reconcile_lifecycle_after(root, || {
+        service
+            .lifecycle(murmur_core::completion::lifecycle::Operation::Status)
+            .map_err(|e| e.to_string())
+    })
 }
-#[tauri::command]
-pub(crate) fn import_webkit_state(
+fn import_webkit_state_worker(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     source: std::collections::BTreeMap<String, Option<String>>,
 ) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
     main_only(&window)?;
-    use crate::MutexExt;
-    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    app.state::<Completion>()
-        .service
-        .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
-            source,
-        ))
-        .map_err(|e| e.to_string())
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
+    let root = crate::commands::settings_store::data_dir(&app)?;
+    crate::commands::settings_store::reconcile_lifecycle_after(&root, || {
+        ready(&app)?
+            .service
+            .lifecycle(murmur_core::completion::lifecycle::Operation::Import(
+                source,
+            ))
+            .map_err(|e| e.to_string())
+    })
 }
-#[tauri::command]
-pub(crate) fn save_webkit_source(
+fn save_webkit_source_worker(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     key: String,
@@ -435,19 +530,56 @@ pub(crate) fn save_webkit_source(
     if matches!(key.as_str(), "dictation-settings" | "murmur-theme-library") {
         return Err("Use the source owner's command".into());
     }
-    use crate::MutexExt;
-    let _guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
-    app.state::<Completion>()
-        .service
-        .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);
+    let root = crate::commands::settings_store::data_dir(&app)?;
+    crate::commands::settings_store::reconcile_lifecycle_after(&root, || {
+        ready(&app)?
+            .service
+            .lifecycle(murmur_core::completion::lifecycle::Operation::Save { key, value })
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
 }
 
 #[cfg(test)]
 mod source_ordering_tests {
     use super::*;
     use crate::MutexExt;
+    #[test]
+    fn lifecycle_and_shutdown_reconciliation_do_not_hold_lock_while_waiting() {
+        let root = tempfile::tempdir().unwrap();
+        let service = CompletionService::start(root.path().into(), false).unwrap();
+        service.execute(Command::Snapshot).unwrap();
+        for shutdown in [false, true] {
+            // Block the core's lifecycle critical section. The adapter must not
+            // acquire this mutex around the wait, nor retain it for reconciliation.
+            let guard = crate::commands::settings_store::WRITE_LOCK.lock_or_recover();
+            let owner = service.clone();
+            let path = root.path().to_path_buf();
+            let (started, start) = std::sync::mpsc::channel();
+            let (finished, finish) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                started.send(()).unwrap();
+                if shutdown {
+                    let receipt =
+                        crate::commands::settings_store::reconcile_lifecycle_after(&path, || {
+                            tauri::async_runtime::block_on(owner.shutdown_receipt())
+                        });
+                    assert_eq!(receipt, murmur_core::shutdown::WriteOutcome::Committed);
+                } else {
+                    source_status(&owner, &path).unwrap();
+                }
+                finished.send(()).unwrap();
+            });
+            start.recv().unwrap();
+            drop(guard);
+            finish
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            worker.join().unwrap();
+        }
+    }
+
     #[test]
     fn absent_webkit_status_serializes_with_source_writer() {
         let root = tempfile::tempdir().unwrap();
@@ -461,9 +593,10 @@ mod source_ordering_tests {
         .unwrap();
         let worker = service.clone();
         let (started, waiting) = std::sync::mpsc::channel();
+        let worker_root = root.path().to_path_buf();
         let status = std::thread::spawn(move || {
             started.send(()).unwrap();
-            source_status(&worker)
+            source_status(&worker, &worker_root)
         });
         waiting.recv().unwrap();
         murmur_core::completion::save_source(
@@ -482,4 +615,73 @@ mod source_ordering_tests {
                 .unwrap();
         assert_eq!(disk["language"], "fr");
     }
+}
+
+/// Worker-only final barrier. The service stays retained in managed state even
+/// if the coordinator stops waiting, so no joining destructor reaches main.
+pub(crate) fn shutdown_flush(app: &tauri::AppHandle) -> murmur_core::shutdown::WriteOutcome {
+    let Some(state) = app.try_state::<Completion>() else {
+        return murmur_core::shutdown::WriteOutcome::UnpreservedFailure;
+    };
+    let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(app);
+    // Seal/drain without WRITE_LOCK: queued lifecycle retries acquire it inside
+    // the core owner. Reconcile only after that owner has returned its receipt.
+    let drain = || tauri::async_runtime::block_on(state.service.shutdown_receipt());
+    match crate::commands::settings_store::data_dir(app) {
+        Ok(root) => crate::commands::settings_store::reconcile_lifecycle_after(&root, drain),
+        Err(_) => drain(),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn webkit_state_snapshot(
+    app: tauri::AppHandle,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    wait_ready(&app).await?;
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::source_call(move || {
+        let _admission = admission;
+        webkit_state_snapshot_worker(app)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub(crate) async fn import_webkit_state(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    source: std::collections::BTreeMap<String, Option<String>>,
+) -> Result<murmur_core::completion::lifecycle::Receipt, String> {
+    wait_ready(&app).await?;
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::source_call(move || {
+        let _admission = admission;
+        import_webkit_state_worker(window, app, source)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+#[tauri::command]
+pub(crate) async fn save_webkit_source(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    key: String,
+    value: serde_json::Value,
+    intent_generation: u64,
+    source_session: String,
+) -> Result<murmur_core::source_order::SourceWrite<()>, String> {
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::versioned_source_call(
+        window.label().into(),
+        source_session,
+        key.clone(),
+        intent_generation,
+        move || {
+            let _admission = admission;
+            save_webkit_source_worker(window, app, key, value)
+        },
+    )
+    .await
 }

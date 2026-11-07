@@ -79,6 +79,14 @@ describe('useRecordingState transition ordering', () => {
     container.remove();
   });
 
+  it('explains a recording refused while knowledge rules are loading', async () => {
+    mocks.startRecording.mockResolvedValueOnce({ type: 'knowledge_initializing', state: 'idle' });
+    await act(async () => current.handleStart());
+    expect(current.status).toBe('idle');
+    expect(current.error).toBe('Wait for the local knowledge rules to finish loading, or retry the knowledge store in Settings.');
+    expect(mocks.stopRecording).not.toHaveBeenCalled();
+  });
+
   it('presents native stop failure after Idle and rejects cancelled or older generations', async () => {
     const emit = (name: string, payload: unknown) => mocks.listeners.get(name)?.({ payload });
     await act(async () => {

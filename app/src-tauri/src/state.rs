@@ -496,8 +496,10 @@ pub struct AppState {
     /// Aho-Corasick automaton isn't serializable.
     pub correction_matcher:
         Mutex<Option<std::sync::Arc<crate::vocabulary_alias::CorrectionMatcherSet>>>,
+    /// Startup readiness and generation-fenced matcher publication.
+    pub(crate) knowledge_refresh: crate::commands::knowledge::KnowledgeRefresh,
     /// Enabled replacement rules from the local knowledge repository, ordered
-    /// by its deterministic precedence. Refreshed only after repository writes;
+    /// by its deterministic precedence. Refreshed at startup and after writes;
     /// recording snapshots never query SQLite in the transform hot path.
     pub knowledge_replacements: Mutex<Arc<Vec<crate::knowledge_store::KnowledgeEntry>>>,
     /// Short-lived local project indexes for explicitly opted-in app profiles.
@@ -620,6 +622,7 @@ impl Default for AppState {
             file_transcribing: AtomicBool::new(false),
             microphone_preview: crate::microphone_preview::MicrophonePreviewState::default(),
             correction_matcher: Mutex::new(None),
+            knowledge_refresh: Default::default(),
             knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
         }

@@ -1,0 +1,1 @@
+fn bypass() { std::process::exit(0); } fn main() { bypass(); }

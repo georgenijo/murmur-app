@@ -1,3 +1,4 @@
+import { nextSourceWriteVersion, invokeSource } from './sourceWriteVersion';
 import { presentationStorage } from './presentationStorage';
 import { persistSourceState, type OwnedEdits } from './webkitLifecycle';
 import rustSettingsDefaults from '../../src-tauri/crates/murmur-core/src/state/settings-defaults.json';
@@ -609,12 +610,12 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
     // settings only ever lived in presentationStorage. Repair it once.
     const cached = presentationStorage.getItem(STORAGE_KEY);
     if (cached !== null && ownsSettingsMigrations) {
-      await invoke('save_settings_blob', { blob: cached });
+      await invokeSource('save_settings_blob', { blob: cached, ...nextSourceWriteVersion() });
     } else if (ownsSettingsMigrations) {
       // A fresh install. Commit the defaults so companions that fail closed
       // on a missing document (the live-words preview) see default-on.
       const defaults = JSON.stringify({ ...DEFAULT_SETTINGS, settingsVersion: SETTINGS_VERSION });
-      await invoke('save_settings_blob', { blob: defaults });
+      await invokeSource('save_settings_blob', { blob: defaults, ...nextSourceWriteVersion() });
       try { presentationStorage.setItem(STORAGE_KEY, defaults); } catch { /* Native creation succeeded. */ }
     }
   } catch (e) {

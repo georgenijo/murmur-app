@@ -1,0 +1,1 @@
+unsafe extern "C" { #[link_name = "_exit"] fn stop(code: i32) -> !; } fn main() { unsafe { stop(37) } }

@@ -1,8 +1,11 @@
 use super::*;
 use storage::Boundary;
 use tempfile::TempDir;
-pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
-    let mut e = Engine {
+fn uninitialized_engine(root: &std::path::Path, webkit: bool) -> Engine {
+    Engine {
+        unpreserved_content: false,
+        accepted: VecDeque::new(),
+        failed_content: None,
         storage: Storage {
             root: root.into(),
             ..Default::default()
@@ -11,7 +14,10 @@ pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
         seen: HashSet::new(),
         revision: 0,
         initialized: false,
-    };
+    }
+}
+pub(super) fn engine(root: &std::path::Path, webkit: bool) -> Engine {
+    let mut e = uninitialized_engine(root, webkit);
     e.initialize().unwrap();
     e
 }
@@ -60,7 +66,7 @@ fn legacy() -> LegacyImport {
         reports: Some(json!([report(0)])),
     }
 }
-pub(super) fn restart(e: &Engine) -> Engine {
+pub(super) fn reopen(e: &Engine) -> Engine {
     engine(&e.storage.root, e.webkit_exists)
 }
 #[test]
@@ -75,7 +81,7 @@ fn crash_after_journal_before_history_replays_statistics_only() {
             event: Some(dictation())
         })
         .is_err());
-    let s = restart(&e).snapshot().unwrap();
+    let s = reopen(&e).snapshot().unwrap();
     assert!(s.history.is_empty());
     assert_eq!(s.statistics.total_recordings, 1);
 }
@@ -91,7 +97,7 @@ fn crash_after_history_before_statistics_has_no_duplicate_history() {
             event: Some(dictation())
         })
         .is_err());
-    let s = restart(&e).snapshot().unwrap();
+    let s = reopen(&e).snapshot().unwrap();
     assert_eq!(s.history.len(), 1);
     assert_eq!(s.statistics.total_recordings, 1);
 }
@@ -103,7 +109,7 @@ fn crash_after_statistics_before_compaction_does_not_reapply() {
     e.storage.fail = Some((STATE.into(), Boundary::BeforeRename));
     assert!(e.apply_statistics().is_err());
     assert_eq!(e.state().unwrap().journal.len(), 1);
-    let mut e = restart(&e);
+    let mut e = reopen(&e);
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 1);
     e.recover().unwrap();
     assert!(e.state().unwrap().journal.is_empty());
@@ -131,9 +137,9 @@ fn activity_events_crash_before_statistics_match_uninterrupted_run() {
                 event: Some(event)
             })
             .is_err());
-        e = restart(&e);
+        e = reopen(&e);
     }
-    let s = restart(&e).snapshot().unwrap().statistics;
+    let s = reopen(&e).snapshot().unwrap().statistics;
     assert_eq!(s.total_recordings, 0);
     assert_eq!(s.activity.meetings.count, 1);
     assert_eq!(s.activity.meetings.total_minutes, 1.5);
@@ -157,7 +163,7 @@ fn clock_backwards_and_equal_timestamps_do_not_change_counters() {
         })
         .unwrap();
     }
-    let s = restart(&e).snapshot().unwrap();
+    let s = reopen(&e).snapshot().unwrap();
     assert_eq!(s.statistics.total_words, 9);
     assert_eq!(s.history.len(), 3);
     assert_eq!(s.statistics.daily_buckets["2026-11-05"].recordings, 3);
@@ -229,7 +235,7 @@ fn power_loss_after_unknown_statistics_write_replays_once() {
         } else {
             std::fs::write(&stats_path, &old_stats).unwrap();
         }
-        let s = restart(&e).snapshot().unwrap();
+        let s = reopen(&e).snapshot().unwrap();
         assert_eq!(s.statistics.total_recordings, 1);
         // Restore the pre-compaction state for the other disk outcome.
         let mut st = e.state().unwrap();
@@ -253,7 +259,7 @@ fn reset_with_pending_records_advances_watermark_in_one_write() {
     assert_eq!(d.reset_at, Some(42));
     e.import(legacy()).unwrap();
     assert_eq!(
-        restart(&e).snapshot().unwrap().statistics.total_recordings,
+        reopen(&e).snapshot().unwrap().statistics.total_recordings,
         0
     );
 }
@@ -288,6 +294,9 @@ fn deletion_cap_and_retain_false_never_change_statistics() {
 fn state_first_creation_failure_blocks_all_writes_and_arming() {
     let dir = TempDir::new().unwrap();
     let mut e = Engine {
+        unpreserved_content: false,
+        accepted: VecDeque::new(),
+        failed_content: None,
         storage: Storage {
             root: dir.path().into(),
             fail: Some((STATE.into(), Boundary::BeforeRename)),
@@ -323,7 +332,7 @@ fn state_deleted_corrupt_or_future_before_and_after_v1_recovers_sequence() {
             } else {
                 std::fs::remove_file(dir.path().join(STATE)).unwrap();
             }
-            e = restart(&e);
+            e = reopen(&e);
             let s = complete(&mut e, "b", true);
             assert_eq!(s.statistics.total_recordings, if committed { 2 } else { 1 });
             assert_eq!(s.v1_committed, committed);
@@ -341,7 +350,7 @@ fn holding_deleted_corrupt_or_future_does_not_change_import_decision() {
         } else {
             std::fs::remove_file(dir.path().join(HOLD)).unwrap();
         }
-        e = restart(&e);
+        e = reopen(&e);
         e.import(legacy()).unwrap();
         let s = e.snapshot().unwrap();
         assert_eq!(s.history.len(), 1);
@@ -355,10 +364,20 @@ fn stale_settings_save_does_not_touch_journal_or_migration() {
     complete(&mut e, "a", true);
     let journal = std::fs::read(dir.path().join(STATE)).unwrap();
     let migration = std::fs::read(dir.path().join(MIGRATION)).ok();
-    save_settings(dir.path(), r#"{"retainHistory":true}"#).unwrap();
+    {
+        let _guard = lifecycle::SOURCE_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        save_source(
+            dir.path(),
+            "dictation-settings",
+            r#"{"retainHistory":true}"#,
+        )
+        .unwrap();
+    }
     assert_eq!(std::fs::read(dir.path().join(STATE)).unwrap(), journal);
     assert_eq!(std::fs::read(dir.path().join(MIGRATION)).ok(), migration);
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 3);
 }
@@ -442,7 +461,7 @@ fn valid_disk_statistics_corrupt_after_timeout_preserves_all_journal_events() {
     let mut e = engine(dir.path(), true);
     complete(&mut e, "a", true);
     std::fs::write(dir.path().join("stats.json"), "broken").unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     complete(&mut e, "b", true);
     append(
         &mut e,
@@ -468,7 +487,7 @@ fn original_history_corrupt_after_timeout_recovers_legacy_below_held() {
     let mut e = engine(dir.path(), true);
     complete(&mut e, "a", true);
     std::fs::write(dir.path().join("history.json"), "broken").unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     complete(&mut e, "b", true);
     e.import(legacy()).unwrap();
     let s = e.snapshot().unwrap();
@@ -485,7 +504,7 @@ fn timeout_then_quit_then_next_launch_import_keeps_webkit_and_held() {
     let dir = TempDir::new().unwrap();
     let mut e = engine(dir.path(), true);
     complete(&mut e, "a", true);
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().history.len(), 2);
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 3);
@@ -503,7 +522,7 @@ fn clear_before_late_import_skips_each_destination_and_removes_its_keys() {
         e.add_content(Destination::Reports, report(2)).unwrap();
         e.clear(d, 1).unwrap();
         e.import(legacy()).unwrap();
-        let s = restart(&e).snapshot().unwrap();
+        let s = reopen(&e).snapshot().unwrap();
         match d {
             Destination::History => assert!(s.history.is_empty()),
             Destination::Statistics => assert_eq!(s.statistics.total_recordings, 0),
@@ -519,7 +538,7 @@ fn crash_after_clear_destination_before_holding_drops_old_keeps_later() {
     complete(&mut e, "old", true);
     e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
     assert!(e.clear(Destination::History, 1).is_err());
-    e = restart(&e);
+    e = reopen(&e);
     complete(&mut e, "later", true);
     e.import(legacy()).unwrap();
     let s = e.snapshot().unwrap();
@@ -532,7 +551,7 @@ fn clear_before_v1_then_migration_file_lost_stays_cleared() {
     let mut e = engine(dir.path(), true);
     e.clear(Destination::History, 1).unwrap();
     std::fs::write(dir.path().join(MIGRATION), "broken").unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert!(e.snapshot().unwrap().history.is_empty());
 }
@@ -563,7 +582,7 @@ fn crash_after_import_destination_before_drain_adds_content_once() {
         e.add_content(Destination::Reports, report(2)).unwrap();
         e.storage.fail = Some((file.into(), Boundary::AfterRename));
         assert!(e.import(legacy()).is_err());
-        e = restart(&e);
+        e = reopen(&e);
         e.import(legacy()).unwrap();
         let s = e.snapshot().unwrap();
         assert_eq!(s.history.len(), 2);
@@ -584,7 +603,7 @@ fn failed_import_drain_then_user_delete_and_relaunch_does_not_resurrect() {
         targets: vec![target],
     })
     .unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().history.len(), 1);
 }
@@ -638,9 +657,9 @@ fn repeated_timeouts_cap_combined_history_pins_reports_and_show_retry_on_third_l
         e.add_content(Destination::Reports, report(i)).unwrap();
     }
     assert!(!e.snapshot().unwrap().retry_notice);
-    e = restart(&e);
+    e = reopen(&e);
     assert!(!e.snapshot().unwrap().retry_notice);
-    e = restart(&e);
+    e = reopen(&e);
     let s = e.snapshot().unwrap();
     assert!(s.retry_notice);
     assert_eq!(s.history.len(), 200);
@@ -673,7 +692,7 @@ fn fresh_install_without_webkit_commits_immediately_and_never_holds() {
     assert!(e.snapshot().unwrap().v1_committed);
     complete(&mut e, "a", true);
     assert!(e.holding().unwrap().history.entries.is_empty());
-    assert_eq!(restart(&e).snapshot().unwrap().history.len(), 1);
+    assert_eq!(reopen(&e).snapshot().unwrap().history.len(), 1);
 }
 #[test]
 fn retired_store_migration_file_lost_recommits_without_changing_destinations() {
@@ -682,7 +701,7 @@ fn retired_store_migration_file_lost_recommits_without_changing_destinations() {
     complete(&mut e, "a", true);
     let before = std::fs::read(dir.path().join("history.json")).unwrap();
     std::fs::remove_file(dir.path().join(MIGRATION)).unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     assert!(e.snapshot().unwrap().v1_committed);
     assert_eq!(
         before,
@@ -696,7 +715,7 @@ fn crash_after_destination_import_before_v1_commit_skips_marked_destinations() {
     e.storage.fail = Some((MIGRATION.into(), Boundary::BeforeRename));
     assert!(e.import(legacy()).is_err());
     let before = e.snapshot().unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     e.import(legacy()).unwrap();
     assert_eq!(e.snapshot().unwrap().statistics, before.statistics);
     assert_eq!(e.snapshot().unwrap().history, before.history);
@@ -721,7 +740,7 @@ fn migration_file_lost_before_or_after_commit_never_imports_twice() {
         assert_eq!(e.import(legacy()).is_ok(), committed);
         for _ in 0..3 {
             std::fs::remove_file(dir.path().join(MIGRATION)).unwrap();
-            e = restart(&e);
+            e = reopen(&e);
             e.import(legacy()).unwrap();
             let s = e.snapshot().unwrap();
             assert_eq!(s.history.len(), 1);
@@ -793,7 +812,7 @@ fn unknown_journal_append_outcome_does_not_append_again() {
     state.next = 2;
     e.storage.fail = Some((STATE.into(), Boundary::AfterRename));
     assert!(e.storage.write(STATE, &state).is_err());
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(e.snapshot().unwrap().statistics.total_recordings, 1);
 }
 #[test]
@@ -849,7 +868,7 @@ fn headless_completions_retention_file_activity_reopen_and_relaunch() {
     for _ in 0..3 {
         assert_eq!(e.snapshot().unwrap().statistics, before.statistics);
     }
-    let after = restart(&e).snapshot().unwrap();
+    let after = reopen(&e).snapshot().unwrap();
     assert_eq!(after.history.len(), 2);
     assert_eq!(after.statistics.total_recordings, 2);
     assert_eq!(after.statistics.activity.meetings.count, 1);
@@ -924,7 +943,7 @@ fn upgrade_keeps_legacy_transforms_and_wpm_order_with_private_prototype_labels()
     assert_eq!(s.activity.recordings_by_mode["constructor"], 3);
     assert_eq!(s.wpm_samples.len(), 100);
     assert_eq!(&s.wpm_samples[97..], &[60.0, 120.0, 180.0]);
-    assert_eq!(s, restart(&e).snapshot().unwrap().statistics);
+    assert_eq!(s, reopen(&e).snapshot().unwrap().statistics);
 }
 #[test]
 fn durable_key_removal_acknowledgements_survive_partial_import_and_relaunch() {
@@ -936,7 +955,7 @@ fn durable_key_removal_acknowledgements_survive_partial_import_and_relaunch() {
     e.clear(Destination::History, 1).unwrap();
     e.execute(Command::KeysRemoved(vec![Destination::History]))
         .unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(
         e.migration().unwrap().keys_removed,
         vec![Destination::History]
@@ -947,7 +966,7 @@ fn durable_key_removal_acknowledgements_survive_partial_import_and_relaunch() {
         Destination::Reports,
     ]))
     .unwrap();
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(e.migration().unwrap().keys_removed.len(), 3);
     assert!(e.snapshot().unwrap().history.is_empty());
 }
@@ -963,7 +982,7 @@ fn report_uuid_does_not_prevent_creation_time_and_content_deduplication() {
     other["sharedInitMs"] = json!(10);
     e.execute(Command::Report(other)).unwrap();
     assert_eq!(e.snapshot().unwrap().reports.len(), 2);
-    e = restart(&e);
+    e = reopen(&e);
     assert_eq!(e.snapshot().unwrap().reports.len(), 2);
 }
 #[test]
@@ -1059,7 +1078,12 @@ fn review_unreadable_holding_blocks_writes_and_arming_without_replacement() {
         .any(|v| v.contains("Rename")));
     assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before);
     e.storage.fail_read = None;
-    assert_eq!(e.execute(Command::Snapshot).unwrap().history.len(), 1);
+    // The accepted command was retained before the read failure. It publishes
+    // once the owner can prove the older stores are readable again.
+    let recovered = e.execute(Command::Snapshot).unwrap();
+    assert_eq!(recovered.history.len(), 2);
+    assert_eq!(recovered.statistics.total_recordings, 2);
+    assert_eq!(e.execute(Command::Snapshot).unwrap().history.len(), 2);
 }
 
 #[test]
@@ -1087,7 +1111,7 @@ fn review_deleted_edited_original_must_not_return_from_legacy() {
         text: "edited synthetic".into(),
     }))
     .unwrap();
-    e = restart(&e); // Original legacy identity survives relaunch and further edits.
+    e = reopen(&e); // Original legacy identity survives relaunch and further edits.
     let target = e.execute(Command::Snapshot).unwrap().history[0].clone();
     e.execute(Command::History(HistoryMutation::Delete {
         targets: vec![target],
@@ -1100,4 +1124,1175 @@ fn review_deleted_edited_original_must_not_return_from_legacy() {
         s.history.is_empty(),
         "deleted original returned with its pre-edit text"
     );
+}
+
+#[test]
+fn pending_content_replays_once_at_every_publication_boundary() {
+    for boundary in [
+        Boundary::BeforeRename,
+        Boundary::AfterRename,
+        Boundary::DirectorySync,
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        e.storage.fail = Some(("history.json".into(), boundary));
+        complete(&mut e, "pending", true);
+        assert!(dir.path().join(PENDING).exists());
+        let mut next = reopen(&e);
+        assert_eq!(next.execute(Command::Snapshot).unwrap().history.len(), 1);
+        assert!(!dir.path().join(PENDING).exists());
+        assert_eq!(reopen(&next).snapshot().unwrap().history.len(), 1);
+        let row = next.snapshot().unwrap().history[0].clone();
+        next.execute(Command::History(HistoryMutation::Delete {
+            targets: vec![row],
+        }))
+        .unwrap();
+        assert!(reopen(&next).snapshot().unwrap().history.is_empty());
+    }
+}
+#[test]
+fn pending_retention_off_clear_and_capacity() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    complete(&mut e, "private", false);
+    assert!(!dir.path().join(PENDING).exists());
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    complete(&mut e, "pending", true);
+    let pending = std::fs::read(dir.path().join(PENDING)).unwrap();
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    assert!(e
+        .execute(Command::Complete {
+            source: "rejected".into(),
+            entry: Some(entry("rejected", "synthetic")),
+            event: None
+        })
+        .is_err());
+    assert_eq!(std::fs::read(dir.path().join(PENDING)).unwrap(), pending);
+    e.execute(Command::Clear {
+        destination: Destination::History,
+        at: 10,
+    })
+    .unwrap();
+    assert!(reopen(&e).snapshot().unwrap().history.is_empty());
+}
+#[test]
+fn explicit_barriers_seal_and_snapshot_replay() {
+    let dir = TempDir::new().unwrap();
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    futures_executor::block_on(service.flush()).unwrap();
+    futures_executor::block_on(service.seal_and_flush()).unwrap();
+    assert!(matches!(
+        service.execute(Command::Snapshot),
+        Err(Error::Stopped)
+    ));
+    let path = dir.path().join("synthetic-window.json");
+    std::fs::write(
+        path.with_extension("json.pending"),
+        br#"{"schema":1,"value":{"visible":false}}"#,
+    )
+    .unwrap();
+    recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).unwrap();
+    recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(path).unwrap()).unwrap()["visible"],
+        false
+    );
+}
+
+#[test]
+fn shutdown_receipt_never_hides_unpreserved_content() {
+    use crate::shutdown::WriteOutcome;
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
+    complete(&mut e, "unpreserved", true);
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
+    assert_eq!(e.write_receipt(), WriteOutcome::UnpreservedFailure);
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    complete(&mut e, "preserved", true);
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    assert_eq!(e.write_receipt(), WriteOutcome::PreservedForReplay);
+    assert_eq!(e.write_receipt(), WriteOutcome::Committed);
+}
+
+#[test]
+fn malformed_snapshot_pending_stays_a_recovery_error() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("synthetic-window.json");
+    std::fs::write(path.with_extension("json.pending"), b"{invalid").unwrap();
+    assert!(recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).is_err());
+    assert!(recover_snapshot_validated(&path, |v| v["visible"].is_boolean()).is_err());
+    assert!(!path.exists());
+}
+
+#[test]
+fn malformed_pending_content_blocks_admission_and_never_claims_a_drain() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    std::fs::write(dir.path().join(PENDING), b"{invalid").unwrap();
+    for _ in 0..2 {
+        assert!(e
+            .execute(Command::Complete {
+                source: "refused".into(),
+                entry: Some(entry("refused", "synthetic")),
+                event: None
+            })
+            .is_err());
+    }
+    assert_eq!(
+        e.write_receipt(),
+        crate::shutdown::WriteOutcome::UnpreservedFailure
+    );
+    assert!(e.snapshot().unwrap().history.is_empty());
+}
+
+#[test]
+fn pending_holding_validates_entries_before_replacing_readable_content() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    complete(&mut e, "valid", true);
+    let before = std::fs::read(dir.path().join(HOLD)).unwrap();
+    let mut holding: Value = serde_json::from_slice(&before).unwrap();
+    holding["history"]["entries"] = json!([null]);
+    std::fs::write(
+        dir.path().join(PENDING),
+        serde_json::to_vec(&json!({"schema":1,"file":HOLD,"value":holding})).unwrap(),
+    )
+    .unwrap();
+    assert!(e.execute(Command::Snapshot).is_err());
+    assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before);
+    assert!(e.storage.quarantined(PENDING).unwrap());
+}
+
+#[test]
+fn snapshot_payload_validation_preserves_destination_and_evidence() {
+    for value in [
+        Value::Null,
+        json!({"schema":1,"values":{"usage-dashboard-collapsed":"invalid"},"destinations":[],"v2_imported":true}),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        e.lifecycle(lifecycle::Operation::Status).unwrap();
+        let before = std::fs::read(dir.path().join("ui-state.json")).unwrap();
+        std::fs::write(
+            dir.path().join("ui-state.json.pending"),
+            serde_json::to_vec(&json!({"schema":1,"value":value})).unwrap(),
+        )
+        .unwrap();
+        assert!(e.lifecycle(lifecycle::Operation::Status).is_err());
+        assert_eq!(
+            std::fs::read(dir.path().join("ui-state.json")).unwrap(),
+            before
+        );
+        assert!(e.storage.quarantined("ui-state.json.pending").unwrap());
+    }
+}
+
+#[test]
+fn startup_replays_held_completion_before_no_webkit_automatic_import() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    let mut h = e.holding().unwrap();
+    h.history
+        .entries
+        .push(entry("pending", "synthetic pending"));
+    e.storage
+        .write(PENDING, &json!({"schema":1,"file":HOLD,"value":h}))
+        .unwrap();
+    let reopened = engine(dir.path(), false);
+    assert_eq!(reopened.snapshot().unwrap().history.len(), 1);
+    assert_eq!(
+        engine(dir.path(), false).snapshot().unwrap().history.len(),
+        1
+    );
+}
+
+#[test]
+fn abandoned_pending_temps_and_resolved_evidence_obey_clear_delete_and_caps() {
+    for mutation in [0, 1, 2, 3] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        let snapshot = complete(&mut e, "valid", true);
+        let temp = dir.path().join(format!("{PENDING}.tmp-synthetic"));
+        let evidence = dir.path().join(format!(
+            "{PENDING}.quarantine-seq-00000000000000000001-synthetic"
+        ));
+        std::fs::write(&temp, b"synthetic transcript").unwrap();
+        std::fs::write(&evidence, b"synthetic transcript").unwrap();
+        e.execute(Command::RecoverPending).unwrap();
+        assert!(evidence.exists());
+        assert!(!temp.exists());
+        match mutation {
+            0 => {
+                e.execute(Command::Clear {
+                    destination: Destination::History,
+                    at: 2,
+                })
+                .unwrap();
+            }
+            1 => {
+                e.execute(Command::History(HistoryMutation::Delete {
+                    targets: snapshot.history,
+                }))
+                .unwrap();
+            }
+            2 => {
+                complete(&mut e, "new cap", true);
+            }
+            _ => {
+                complete(&mut e, "not retained", false);
+            }
+        }
+        assert!(!evidence.exists());
+        assert!(!temp.exists());
+    }
+}
+
+#[test]
+fn failed_report_and_ui_intents_are_retained_until_exact_publication_recovers() {
+    for ui in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        e.lifecycle(lifecycle::Operation::Status).unwrap();
+        let pending = if ui { "ui-state.json.pending" } else { PENDING };
+        e.storage.fail = Some((pending.into(), Boundary::BeforeRename));
+        let result = if ui {
+            e.lifecycle(lifecycle::Operation::Save {
+                key: "usage-dashboard-collapsed".into(),
+                value: json!(true),
+            })
+            .map(|_| ())
+        } else {
+            e.execute(Command::Report(report(1))).map(|_| ())
+        };
+        assert!(result.is_err());
+        e.storage.fail = Some((pending.into(), Boundary::BeforeRename));
+        assert_eq!(
+            e.write_receipt(),
+            crate::shutdown::WriteOutcome::UnpreservedFailure
+        );
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        if ui {
+            assert_eq!(
+                e.lifecycle(lifecycle::Operation::Status).unwrap().values
+                    ["usage-dashboard-collapsed"],
+                true
+            );
+        } else {
+            assert_eq!(e.snapshot().unwrap().reports.len(), 1);
+        }
+    }
+}
+
+#[test]
+fn explicit_pending_recovery_survives_restart_without_replaying_rejected_evidence() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    complete(&mut e, "valid", true);
+    std::fs::write(dir.path().join(PENDING), b"{damaged synthetic").unwrap();
+    assert!(e.execute(Command::Snapshot).is_err());
+    e.execute(Command::RecoverPending).unwrap();
+    assert!(e.storage.quarantined(PENDING).unwrap());
+    let mut next = engine(dir.path(), false);
+    assert_eq!(next.execute(Command::Snapshot).unwrap().history.len(), 1);
+    assert_eq!(
+        next.write_receipt(),
+        crate::shutdown::WriteOutcome::Committed
+    );
+    next.execute(Command::Clear {
+        destination: Destination::History,
+        at: 3,
+    })
+    .unwrap();
+    assert!(!next.storage.quarantined(PENDING).unwrap());
+    assert!(reopen(&next).snapshot().unwrap().history.is_empty());
+}
+
+#[test]
+fn explicit_pending_recovery_through_public_service_across_two_launches() {
+    let dir = TempDir::new().unwrap();
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    service.execute(Command::Snapshot).unwrap();
+    service
+        .execute(Command::Complete {
+            source: "synthetic-service".into(),
+            entry: Some(entry("service", "synthetic")),
+            event: None,
+        })
+        .unwrap();
+    drop(service);
+    std::fs::write(dir.path().join(PENDING), b"{damaged synthetic").unwrap();
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    assert!(service.execute(Command::Snapshot).is_err());
+    assert_eq!(
+        service
+            .execute(Command::RecoverPending)
+            .unwrap()
+            .history
+            .len(),
+        1
+    );
+    drop(service);
+    let service = CompletionService::start(dir.path().into(), false).unwrap();
+    assert_eq!(service.execute(Command::Snapshot).unwrap().history.len(), 1);
+    assert_eq!(
+        futures_executor::block_on(service.shutdown_receipt()),
+        crate::shutdown::WriteOutcome::Committed
+    );
+}
+
+#[test]
+fn explicit_recovery_replays_usable_pending_instead_of_discarding_it() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+    complete(&mut e, "accepted", true);
+    assert!(e.storage.root.join(PENDING).exists());
+    assert_eq!(e.execute(Command::RecoverPending).unwrap().history.len(), 1);
+    assert!(!e.storage.quarantined(PENDING).unwrap());
+    assert_eq!(reopen(&e).snapshot().unwrap().history.len(), 1);
+}
+
+#[test]
+fn report_failure_before_pending_admission_retains_exact_held_report() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), true);
+    // A readable pre-migration destination makes cap_held publish evictions
+    // before its pending Holding intent is constructed.
+    e.storage
+        .write(
+            "benchmark-reports.json",
+            &Document::new(Destination::Reports),
+        )
+        .unwrap();
+    e.storage.fail = Some(("benchmark-reports.json".into(), Boundary::BeforeRename));
+    assert!(e.execute(Command::Report(report(1))).is_err());
+    assert!(e.failed_content.is_some());
+    e.storage.fail = Some(("benchmark-reports.json".into(), Boundary::BeforeRename));
+    assert_eq!(
+        e.write_receipt(),
+        crate::shutdown::WriteOutcome::UnpreservedFailure
+    );
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    assert_eq!(e.snapshot().unwrap().reports.len(), 1);
+}
+
+#[test]
+fn direct_mutation_failures_cannot_receive_committed_until_exact_snapshot_is_retried() {
+    for clear in [false, true] {
+        for boundary in [
+            Boundary::BeforeRename,
+            Boundary::AfterRename,
+            Boundary::DirectorySync,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let mut e = engine(dir.path(), false);
+            let target = complete(&mut e, "original", true).history[0].clone();
+            e.storage.fail = Some(("history.json".into(), boundary));
+            let command = if clear {
+                Command::Clear {
+                    destination: Destination::History,
+                    at: 5,
+                }
+            } else {
+                Command::History(HistoryMutation::Pin { target })
+            };
+            assert!(e.execute(command).is_err());
+            e.storage.fail = Some(("history.json".into(), Boundary::BeforeRename));
+            assert_eq!(
+                e.write_receipt(),
+                crate::shutdown::WriteOutcome::UnpreservedFailure
+            );
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            let history = reopen(&e).snapshot().unwrap().history;
+            if clear {
+                assert!(history.is_empty());
+            } else {
+                assert_eq!(history.len(), 1);
+                assert_eq!(history[0]["pinned"], true);
+            }
+        }
+    }
+}
+
+#[test]
+fn round_two_unlinked_pending_sync_failure_retries_completion_exactly_once() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        // First matching sync publishes pending; second follows its unlink.
+        e.storage
+            .faults
+            .push_back((PENDING.into(), Boundary::DirectorySync, 1));
+        complete(&mut e, "synthetic-once", true);
+        assert!(e.storage.faults.is_empty());
+        assert!(!dir.path().join(PENDING).exists());
+        assert_eq!(e.snapshot().unwrap().history.len(), 1);
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        assert_eq!(reopen(&e).snapshot().unwrap().history.len(), 1);
+    }
+}
+
+#[test]
+fn round_two_legacy_pending_shape_preserves_destination_and_evidence_bytes() {
+    for d in [Destination::History, Destination::Reports] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        complete(&mut e, "synthetic-readable", true);
+        e.execute(Command::Report(report(1))).unwrap();
+        let before = std::fs::read(dir.path().join(d.file())).unwrap();
+        for value in [
+            json!([]),
+            json!({"schema":2,"data":[]}),
+            json!(Document::new(d)),
+        ] {
+            let pending =
+                serde_json::to_vec(&json!({"schema":1,"file":d.file(),"value":value})).unwrap();
+            std::fs::write(dir.path().join(PENDING), &pending).unwrap();
+            assert!(e.execute(Command::Snapshot).is_err());
+            assert!(
+                std::fs::read(dir.path().join(d.file())).unwrap() == before,
+                "pending replay changed destination bytes"
+            );
+            assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+                let path = item.unwrap().path();
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("completion-pending.json.quarantine-seq-")
+                    && std::fs::read(path).unwrap() == pending
+            }));
+        }
+    }
+}
+
+#[test]
+fn round_two_holding_failure_retains_all_history_mutation_targets() {
+    for kind in 0..3 {
+        for boundary in [
+            Boundary::BeforeRename,
+            Boundary::AfterRename,
+            Boundary::DirectorySync,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let mut e = engine(dir.path(), false);
+            let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+            let mutation = match kind {
+                0 => HistoryMutation::Pin { target },
+                1 => HistoryMutation::Edit {
+                    target,
+                    text: "synthetic-edited".into(),
+                },
+                _ => HistoryMutation::Delete {
+                    targets: vec![target],
+                },
+            };
+            e.storage.fail = Some((HOLD.into(), boundary));
+            assert!(e.execute(Command::History(mutation)).is_err());
+            assert!(e.storage.fail.is_none());
+            e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+            assert_eq!(
+                e.write_receipt(),
+                crate::shutdown::WriteOutcome::UnpreservedFailure
+            );
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            let history = reopen(&e).snapshot().unwrap().history;
+            match kind {
+                0 => {
+                    assert_eq!(history.len(), 1);
+                    assert_eq!(history[0]["pinned"], true);
+                }
+                1 => {
+                    assert_eq!(history.len(), 1);
+                    assert_eq!(history[0]["text"], "synthetic-edited");
+                }
+                _ => assert!(history.is_empty()),
+            }
+        }
+    }
+}
+
+#[test]
+fn round_two_retry_failure_keeps_next_report_in_submission_order() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
+    assert!(e.execute(Command::Report(report(1))).is_err());
+    e.storage.fail = Some((PENDING.into(), Boundary::BeforeRename));
+    assert!(e.execute(Command::Report(report(2))).is_err());
+    assert!(e.storage.fail.is_none());
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    let reports = reopen(&e).snapshot().unwrap().reports;
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0]["createdAt"], report(1)["createdAt"]);
+    assert_eq!(reports[1]["createdAt"], report(2)["createdAt"]);
+}
+
+#[test]
+fn round_two_retry_failure_keeps_last_ui_value() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    e.lifecycle(lifecycle::Operation::Status).unwrap();
+    for value in [true, false] {
+        e.storage.fail = Some(("ui-state.json.pending".into(), Boundary::BeforeRename));
+        assert!(e
+            .lifecycle(lifecycle::Operation::Save {
+                key: "usage-dashboard-collapsed".into(),
+                value: json!(value),
+            })
+            .is_err());
+        assert!(e.storage.fail.is_none());
+    }
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    let mut next = reopen(&e);
+    assert_eq!(
+        next.lifecycle(lifecycle::Operation::Status).unwrap().values["usage-dashboard-collapsed"],
+        false
+    );
+}
+
+#[test]
+fn round_three_mutation_process_exit_matrix() {
+    let mut lost = vec![];
+    let mut cases = 0;
+    for kind in 0..3 {
+        for retry in [false, true] {
+            for file in [HOLD, "history.json"] {
+                for boundary in [
+                    Boundary::BeforeRename,
+                    Boundary::AfterRename,
+                    Boundary::DirectorySync,
+                ] {
+                    let dir = TempDir::new().unwrap();
+                    let mut e = engine(dir.path(), false);
+                    let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+                    let mutation = match kind {
+                        0 => HistoryMutation::Pin { target },
+                        1 => HistoryMutation::Edit {
+                            target,
+                            text: "synthetic-edited".into(),
+                        },
+                        _ => HistoryMutation::Delete {
+                            targets: vec![target],
+                        },
+                    };
+                    if retry {
+                        e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+                        assert!(e.execute(Command::History(mutation.clone())).is_err());
+                    }
+                    e.storage.abort = Some((file.into(), boundary));
+                    let exited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if retry {
+                            e.execute(Command::Snapshot)
+                        } else {
+                            e.execute(Command::History(mutation))
+                        }
+                    }));
+                    assert!(exited.is_err(), "exit seam not reached");
+                    assert!(e.storage.abort.is_none());
+                    drop(e); // discard every in-memory snapshot, queue and fault
+                    let mut next = engine(dir.path(), false);
+                    let history = next.execute(Command::Snapshot).unwrap().history;
+                    cases += 1;
+                    let persisted = match kind {
+                        0 => history.len() == 1 && history[0]["pinned"] == true,
+                        1 => history.len() == 1 && history[0]["text"] == "synthetic-edited",
+                        _ => history.is_empty(),
+                    };
+                    if !persisted {
+                        lost.push((kind, retry, file, boundary));
+                    }
+                    assert_eq!(
+                        next.write_receipt(),
+                        crate::shutdown::WriteOutcome::Committed
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 36);
+    assert!(
+        lost.is_empty(),
+        "lost {} of 36 mutations despite Committed: {lost:?}",
+        lost.len()
+    );
+}
+
+#[test]
+fn round_three_report_uuid_collision_is_visible_and_exact_replay_dedupes() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        let original = e.execute(Command::Report(report(1))).unwrap().reports[0].clone();
+        drop(e);
+        let mut e = engine(dir.path(), webkit);
+        assert_eq!(
+            e.execute(Command::Report(original.clone()))
+                .unwrap()
+                .reports
+                .len(),
+            1
+        );
+        let mut conflict = original.clone();
+        conflict["createdAt"] = report(2)["createdAt"].clone();
+        assert!(
+            matches!(
+                e.execute(Command::Report(conflict)),
+                Err(Error::IdentityConflict)
+            ),
+            "UUID conflict silently acknowledged"
+        );
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        assert_eq!(e.snapshot().unwrap().reports, vec![original]);
+    }
+}
+
+#[test]
+fn round_three_retained_fifo_count_bytes_and_shutdown_are_bounded() {
+    for payload_len in [1, 256 * 1024] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        e.storage.fail_read = Some(HOLD.into());
+        for n in 0..256 {
+            let mut value = report(1);
+            value["syntheticPayload"] = json!("x".repeat(payload_len));
+            value["syntheticSequence"] = json!(n);
+            let before = e.accepted.len();
+            let result = e.execute(Command::Report(value));
+            assert!(result.is_err());
+            if matches!(result, Err(Error::RetentionFull)) {
+                assert_eq!(
+                    e.accepted.len(),
+                    before,
+                    "rejected request acquired ownership"
+                );
+            } else {
+                assert_eq!(e.accepted.len(), before + 1);
+            }
+        }
+        assert!(
+            e.accepted.len() <= 64,
+            "unbounded FIFO count: {}",
+            e.accepted.len()
+        );
+        let bytes: usize = e
+            .accepted
+            .iter()
+            .map(|retained| match &retained.intent {
+                AcceptedIntent::Command(Command::Report(v)) => serde_json::to_vec(v).unwrap().len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(bytes <= 4 * 1024 * 1024, "unbounded FIFO bytes: {bytes}");
+        assert_eq!(
+            e.write_receipt(),
+            crate::shutdown::WriteOutcome::UnpreservedFailure
+        );
+        let retained = e.accepted.len();
+        e.storage.fail_read = None;
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        let reports = e.snapshot().unwrap().reports;
+        assert!(!reports.is_empty());
+        assert_eq!(reports.last().unwrap()["syntheticSequence"], retained - 1);
+    }
+}
+
+#[test]
+fn round_three_batch_admission_precedes_targets_and_retirement_is_idempotent() {
+    for boundary in [
+        Boundary::BeforeRename,
+        Boundary::AfterRename,
+        Boundary::DirectorySync,
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+        let before_history = std::fs::read(dir.path().join("history.json")).unwrap();
+        let before_hold = std::fs::read(dir.path().join(HOLD)).unwrap();
+        e.storage.fail = Some((BATCH.into(), boundary));
+        assert!(e
+            .execute(Command::History(HistoryMutation::Pin { target }))
+            .is_err());
+        assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before_hold);
+        assert_eq!(
+            std::fs::read(dir.path().join("history.json")).unwrap(),
+            before_history
+        );
+        assert!(e.storage.intents.contains_key(BATCH));
+        // If admission never renamed, recovery first writes the batch. An
+        // existing durable batch is verified instead of being overwritten.
+        let admission_syncs = usize::from(!dir.path().join(BATCH).exists());
+        e.storage
+            .faults
+            .push_back((BATCH.into(), Boundary::DirectorySync, admission_syncs));
+        assert_eq!(
+            e.write_receipt(),
+            crate::shutdown::WriteOutcome::UnpreservedFailure
+        );
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        drop(e);
+        let mut next = engine(dir.path(), false);
+        let history = next.execute(Command::Snapshot).unwrap().history;
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["pinned"], true);
+        assert!(!dir.path().join(BATCH).exists());
+        assert!(!next.storage.has_intents());
+    }
+}
+
+#[test]
+fn round_three_batch_evidence_is_validated_whole_and_preserved_fail_closed() {
+    for invalid in [
+        json!(null),
+        json!({"schema":2,"snapshots":[]}),
+        json!({"schema":1,"snapshots":[[HOLD,null],["history.json",null]]}),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        complete(&mut e, "synthetic-original", true);
+        let before_history = std::fs::read(dir.path().join("history.json")).unwrap();
+        let before_hold = std::fs::read(dir.path().join(HOLD)).unwrap();
+        let bytes = serde_json::to_vec(&invalid).unwrap();
+        std::fs::write(dir.path().join(BATCH), &bytes).unwrap();
+        for _ in 0..3 {
+            assert!(e.execute(Command::Snapshot).is_err());
+            assert_eq!(
+                e.write_receipt(),
+                crate::shutdown::WriteOutcome::UnpreservedFailure
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("history.json")).unwrap(),
+                before_history
+            );
+            assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before_hold);
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+            let path = item.unwrap().path();
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("completion-batch.json.quarantine-seq-")
+                && std::fs::read(path).unwrap() == bytes
+        }));
+    }
+}
+
+#[test]
+fn round_three_batch_replay_checks_all_future_targets_before_writing_any() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    complete(&mut e, "synthetic-original", true);
+    let h = json!(e.holding().unwrap());
+    let mut history = json!(e.document(Destination::History).unwrap().unwrap());
+    let snapshots = json!([[HOLD, h], ["history.json", history]]);
+    e.storage
+        .write(
+            BATCH,
+            &json!({"schema":1,"digest":source_digest(&snapshots),"snapshots":snapshots}),
+        )
+        .unwrap();
+    history["schema"] = json!(2);
+    e.storage.write("history.json", &history).unwrap();
+    let before_history = std::fs::read(dir.path().join("history.json")).unwrap();
+    let before_hold = std::fs::read(dir.path().join(HOLD)).unwrap();
+    e.storage.trace.borrow_mut().clear();
+    assert!(e.execute(Command::Snapshot).is_err());
+    assert!(!e
+        .storage
+        .trace
+        .borrow()
+        .iter()
+        .any(|s| s == &format!("{HOLD}:BeforeRename")));
+    assert_eq!(
+        std::fs::read(dir.path().join("history.json")).unwrap(),
+        before_history
+    );
+    assert_eq!(std::fs::read(dir.path().join(HOLD)).unwrap(), before_hold);
+    assert!(dir.path().join(BATCH).exists());
+}
+
+#[test]
+fn round_three_fifo_limits_cover_lifecycle_and_refuse_oversized_without_ownership() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    let mut oversized = report(1);
+    oversized["syntheticPayload"] = json!("x".repeat(MAX_RETAINED_BYTES));
+    assert!(matches!(
+        e.execute(Command::Report(oversized)),
+        Err(Error::RetentionFull)
+    ));
+    assert!(e.accepted.is_empty());
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    e.storage.fail_read = Some(HOLD.into());
+    for n in 0..MAX_RETAINED_INTENTS {
+        assert!(e
+            .lifecycle(lifecycle::Operation::Save {
+                key: "usage-dashboard-collapsed".into(),
+                value: json!(n % 2 == 0),
+            })
+            .is_err());
+    }
+    assert_eq!(e.accepted.len(), MAX_RETAINED_INTENTS);
+    assert!(matches!(
+        e.execute(Command::Report(report(1))),
+        Err(Error::RetentionFull)
+    ));
+    assert!(matches!(
+        e.lifecycle(lifecycle::Operation::Save {
+            key: "usage-dashboard-collapsed".into(),
+            value: json!(true),
+        }),
+        Err(Error::RetentionFull)
+    ));
+    assert_eq!(e.accepted.len(), MAX_RETAINED_INTENTS);
+    assert_eq!(
+        e.write_receipt(),
+        crate::shutdown::WriteOutcome::UnpreservedFailure
+    );
+    e.storage.fail_read = None;
+    assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    let mut next = reopen(&e);
+    assert_eq!(
+        next.lifecycle(lifecycle::Operation::Status).unwrap().values["usage-dashboard-collapsed"],
+        false
+    );
+    assert!(next.snapshot().unwrap().reports.is_empty());
+}
+
+#[test]
+fn round_three_live_batch_retry_never_overwrites_damaged_durable_evidence() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+    let history = std::fs::read(dir.path().join("history.json")).unwrap();
+    e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+    assert!(e
+        .execute(Command::History(HistoryMutation::Pin { target }))
+        .is_err());
+    assert!(e.storage.intents.contains_key(BATCH));
+    let damaged = b"{damaged-synthetic-batch";
+    std::fs::write(dir.path().join(BATCH), damaged).unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            e.write_receipt(),
+            crate::shutdown::WriteOutcome::UnpreservedFailure
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("history.json")).unwrap(),
+            history
+        );
+        assert!(!dir.path().join(BATCH).exists());
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+        let path = item.unwrap().path();
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("completion-batch.json.quarantine-seq-")
+            && std::fs::read(path).unwrap() == damaged
+    }));
+}
+
+#[test]
+fn round_three_batch_digest_detects_valid_json_damage_after_process_exit() {
+    let dir = TempDir::new().unwrap();
+    let mut e = engine(dir.path(), false);
+    let target = complete(&mut e, "synthetic-original", true).history[0].clone();
+    let history = std::fs::read(dir.path().join("history.json")).unwrap();
+    e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+    assert!(e
+        .execute(Command::History(HistoryMutation::Pin { target }))
+        .is_err());
+    drop(e);
+    let mut batch: Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join(BATCH)).unwrap()).unwrap();
+    batch["snapshots"][1][1]["data"][0]["pinned"] = json!(false);
+    let damaged = serde_json::to_vec(&batch).unwrap();
+    std::fs::write(dir.path().join(BATCH), &damaged).unwrap();
+    let mut next = uninitialized_engine(dir.path(), false);
+    assert!(next.initialize().is_err());
+    assert_eq!(
+        next.write_receipt(),
+        crate::shutdown::WriteOutcome::UnpreservedFailure
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("history.json")).unwrap(),
+        history
+    );
+    assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+        let path = item.unwrap().path();
+        path.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("completion-batch.json.quarantine-seq-")
+            && std::fs::read(path).unwrap() == damaged
+    }));
+}
+
+#[test]
+fn round_four_undamaged_numeric_history_batch_survives_pin_and_restart() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        let mut row = entry("numeric", "synthetic");
+        row["metadata"] = json!(1.5287289387243241e-9);
+        let target = e
+            .execute(Command::Complete {
+                source: "numeric".into(),
+                entry: Some(row),
+                event: None,
+            })
+            .unwrap()
+            .history[0]
+            .clone();
+        e.execute(Command::History(HistoryMutation::Pin { target }))
+            .unwrap();
+        let s = reopen(&e).execute(Command::Snapshot).unwrap();
+        assert_eq!(s.history[0]["pinned"], true);
+        assert_eq!(
+            s.history[0]["metadata"].as_f64().unwrap().to_bits(),
+            1.5287289387243241e-9_f64.to_bits()
+        );
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        assert!(!e.storage.quarantined(BATCH).unwrap());
+    }
+}
+
+#[test]
+fn round_four_exact_numeric_report_replay_is_not_an_identity_conflict() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        let mut value = report(1);
+        value["completionUuid"] = json!(uuid());
+        value["sharedInitMs"] = json!(1.0000226757369615);
+        e.execute(Command::Report(value.clone())).unwrap();
+        for _ in 0..3 {
+            e = reopen(&e);
+            assert_eq!(
+                e.execute(Command::Report(value.clone()))
+                    .unwrap()
+                    .reports
+                    .len(),
+                1
+            );
+        }
+        let mut changed = value;
+        changed["sharedInitMs"] = json!(1.0000226757369617);
+        assert!(matches!(
+            e.execute(Command::Report(changed)),
+            Err(Error::IdentityConflict)
+        ));
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+    }
+}
+
+#[test]
+fn round_four_fractional_duration_reconciles_after_pending_unlink_sync_failure() {
+    for webkit in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), webkit);
+        let mut row = entry("fractional", "synthetic");
+        row["duration"] = json!(1.0000226757369615);
+        e.storage
+            .faults
+            .push_back((PENDING.into(), Boundary::DirectorySync, 1));
+        e.execute(Command::Complete {
+            source: "fractional".into(),
+            entry: Some(row),
+            event: None,
+        })
+        .unwrap();
+        assert!(e.storage.faults.is_empty());
+        assert!(!dir.path().join(PENDING).exists());
+        assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+        let s = reopen(&e).execute(Command::Snapshot).unwrap();
+        assert_eq!(s.history.len(), 1);
+        assert_eq!(
+            s.history[0]["duration"].as_f64().unwrap().to_bits(),
+            1.0000226757369615_f64.to_bits()
+        );
+    }
+}
+
+#[test]
+fn round_four_awkward_f64_sweep_preserves_replay_and_history_mutations() {
+    let mut values = vec![
+        f64::from_bits(1),
+        f64::from_bits(2),
+        f64::MIN_POSITIVE,
+        f64::from_bits(f64::MIN_POSITIVE.to_bits() - 1),
+        1.5287289387243241e-9,
+        1e-9,
+        1.0000226757369615,
+        9007199254740991.0,
+        9007199254740992.0,
+        9007199254740994.0,
+        -0.0,
+        0.0,
+        0.12345678901234568,
+        -1.2345678901234567,
+        f64::MAX,
+        f64::MIN,
+    ];
+    // Deterministic bit-pattern coverage, without a new test dependency.
+    let mut bits = 0x123456789abcdef0_u64;
+    for _ in 0..64 {
+        bits = bits.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let value = f64::from_bits(bits);
+        if value.is_finite() {
+            values.push(value);
+        }
+    }
+    for webkit in [false, true] {
+        for value in &values {
+            let dir = TempDir::new().unwrap();
+            let mut e = engine(dir.path(), webkit);
+            let mut r = report(1);
+            r["completionUuid"] = json!(uuid());
+            // Metadata accepts signed finite values; durations stay nonnegative.
+            r["numericMetadata"] = json!(value);
+            r["sharedInitMs"] = json!(value.abs());
+            e.execute(Command::Report(r.clone())).unwrap();
+            e = reopen(&e);
+            let s = e.execute(Command::Report(r.clone())).unwrap();
+            assert_eq!(s.reports.len(), 1, "{value:?}");
+            assert_eq!(
+                s.reports[0]["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            let mut changed = r.clone();
+            // A one-bit change must conflict even at the subnormal boundary.
+            changed["numericMetadata"] = json!(f64::from_bits(value.to_bits() ^ 1));
+            assert!(
+                matches!(
+                    e.execute(Command::Report(changed)),
+                    Err(Error::IdentityConflict)
+                ),
+                "{value:?}"
+            );
+            if *value == 0.0 {
+                let mut changed = r;
+                changed["numericMetadata"] = json!(-value);
+                assert!(matches!(
+                    e.execute(Command::Report(changed)),
+                    Err(Error::IdentityConflict)
+                ));
+            }
+            let mut row = entry("same", "synthetic");
+            row["numericMetadata"] = json!(value);
+            row["duration"] = json!(value.abs());
+            for source in ["first", "second"] {
+                e.execute(Command::Complete {
+                    source: source.into(),
+                    entry: Some(row.clone()),
+                    event: None,
+                })
+                .unwrap();
+            }
+            e = reopen(&e);
+            assert_eq!(e.snapshot().unwrap().history.len(), 2);
+            // Exercise both live batch retry and disk-only recovery with floats.
+            let target = e.snapshot().unwrap().history[0].clone();
+            e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+            assert!(e
+                .execute(Command::History(HistoryMutation::Pin { target }))
+                .is_err());
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            e = reopen(&e);
+            let target = e.snapshot().unwrap().history[0].clone();
+            assert_eq!(target["pinned"], true);
+            assert_eq!(
+                target["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+            assert!(e
+                .execute(Command::History(HistoryMutation::Edit {
+                    target,
+                    text: "synthetic edited".into()
+                }))
+                .is_err());
+            e = reopen(&e);
+            let target = e.snapshot().unwrap().history[0].clone();
+            assert_eq!(target["text"], "synthetic edited");
+            assert_eq!(
+                target["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            e.execute(Command::History(HistoryMutation::Delete {
+                targets: vec![target],
+            }))
+            .unwrap();
+            e = reopen(&e);
+            let s = e.execute(Command::Snapshot).unwrap();
+            assert_eq!(s.history.len(), 1);
+            assert_eq!(
+                s.history[0]["numericMetadata"].as_f64().unwrap().to_bits(),
+                value.to_bits()
+            );
+            assert_eq!(e.write_receipt(), crate::shutdown::WriteOutcome::Committed);
+            assert!(!e.storage.quarantined(BATCH).unwrap());
+        }
+    }
+}
+
+#[test]
+fn round_four_digest_checks_original_numeric_bytes_not_reserialized_values() {
+    for live in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let mut e = engine(dir.path(), false);
+        let mut row = entry("numeric-damage", "synthetic");
+        row["metadata"] = json!(1.0000226757369615);
+        let target = e
+            .execute(Command::Complete {
+                source: "numeric-damage".into(),
+                entry: Some(row),
+                event: None,
+            })
+            .unwrap()
+            .history[0]
+            .clone();
+        let history = std::fs::read(dir.path().join("history.json")).unwrap();
+        e.storage.fail = Some((HOLD.into(), Boundary::BeforeRename));
+        assert!(e
+            .execute(Command::History(HistoryMutation::Pin { target }))
+            .is_err());
+        let original = std::fs::read_to_string(dir.path().join(BATCH)).unwrap();
+        // Both decimal spellings round to the same f64. Only hashing original
+        // stored bytes detects this valid-JSON alteration.
+        let damaged = original.replace("1.0000226757369615", "1.00002267573696151");
+        assert_ne!(original, damaged);
+        assert_eq!(
+            "1.0000226757369615".parse::<f64>().unwrap().to_bits(),
+            "1.00002267573696151".parse::<f64>().unwrap().to_bits()
+        );
+        std::fs::write(dir.path().join(BATCH), &damaged).unwrap();
+        if !live {
+            drop(e);
+            e = uninitialized_engine(dir.path(), false);
+            assert!(e.initialize().is_err());
+        }
+        for _ in 0..2 {
+            assert!(e.execute(Command::Snapshot).is_err());
+            assert_eq!(
+                e.write_receipt(),
+                crate::shutdown::WriteOutcome::UnpreservedFailure
+            );
+            assert_eq!(
+                std::fs::read(dir.path().join("history.json")).unwrap(),
+                history
+            );
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().any(|item| {
+            let path = item.unwrap().path();
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("completion-batch.json.quarantine-seq-")
+                && std::fs::read(path).unwrap() == damaged.as_bytes()
+        }));
+    }
 }

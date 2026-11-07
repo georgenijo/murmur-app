@@ -130,6 +130,9 @@ pub fn schedule(
     capture_generation: u64,
     audio: RemoteAudio,
 ) {
+    if crate::shutdown::closing() {
+        return;
+    }
     let generation = {
         let mut control = CONTROL.lock_or_recover();
         if stop_owned(&mut control).is_err() {
@@ -351,6 +354,7 @@ fn restrict_worker_io() -> bool {
     false
 }
 
+#[allow(clippy::disallowed_methods)]
 pub fn run_cli_if_requested() -> Option<i32> {
     #[cfg(all(debug_assertions, target_os = "macos", target_arch = "aarch64"))]
     if let Some(exit) = probe::run_cli_if_requested() {
@@ -407,6 +411,9 @@ pub fn run_cli_if_requested() -> Option<i32> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let result = (|| {
+            if crate::identity::internal() {
+                return None;
+            }
             let engine = fluidaudio_rs::FluidAudio::new().ok()?;
             engine.init_diarization(0.7).ok()?;
             println!("MRMR_DIARIZATION_RUNNING_V1");

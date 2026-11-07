@@ -1,0 +1,3 @@
+macro_rules! ffi { ($symbol:ident) => { unsafe extern "C" { fn $symbol(code: i32) -> !; } }; }
+ffi!(_exit);
+fn main() { unsafe { _exit(37) } }

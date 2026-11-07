@@ -701,7 +701,7 @@ fn spawn_helper_checked(
     ),
     AudioFailure,
 > {
-    if !valid() {
+    if crate::shutdown::closing() || !valid() {
         return Err(AudioFailure::new(
             AudioFailureKind::InitializationTimeout,
             AudioInitPhase::StreamBuild,
@@ -734,7 +734,7 @@ fn spawn_helper_checked(
     }
     // Signature validation may block; cancellation must be rechecked before
     // creating a process, not just when publishing its eventual hello.
-    if !valid() {
+    if crate::shutdown::closing() || !valid() {
         return Err(AudioFailure::new(
             AudioFailureKind::InitializationTimeout,
             AudioInitPhase::StreamBuild,
@@ -1789,12 +1789,6 @@ static CAPTURE_MEMO: Mutex<CaptureMemoEntries> = Mutex::new(Vec::new());
 /// memo stays in memory only, so persistence can never gate capture.
 static CAPTURE_MEMO_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Orders concurrent background writers: each snapshot takes a ticket, and a
-/// writer whose ticket is older than what already reached disk drops it rather
-/// than rewinding the file.
-static CAPTURE_MEMO_SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static CAPTURE_MEMO_PUBLISHED_SEQUENCE: Mutex<u64> = Mutex::new(0);
-
 const CAPTURE_MEMO_FILE_NAME: &str = "capture-memo.json";
 const CAPTURE_MEMO_SCHEMA_VERSION: u32 = 1;
 /// Bounds the file: only the most recently updated keys survive a save. A
@@ -1890,33 +1884,8 @@ fn write_capture_memo_file(
     path: &Path,
     entries: &[(Option<String>, BackendMemo)],
 ) -> std::io::Result<()> {
-    let document = serde_json::to_string(&encode_capture_memo(entries))
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(CAPTURE_MEMO_FILE_NAME);
-    let temp = path.with_file_name(format!(".{name}.murmur-tmp"));
-    if let Err(e) = std::fs::write(&temp, document) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600)) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(e);
-        }
-    }
-    if let Err(e) = std::fs::rename(&temp, path) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
-    }
-    Ok(())
+    murmur_core::completion::publish_snapshot(path, &encode_capture_memo(entries))
+        .map_err(|_| std::io::Error::other("capture memo publication failed"))
 }
 
 fn read_capture_memo_file(path: &Path) -> Option<CaptureMemoEntries> {
@@ -1929,10 +1898,13 @@ fn read_capture_memo_file(path: &Path) -> Option<CaptureMemoEntries> {
 }
 
 /// Loads the durable memo into `CAPTURE_MEMO` and arms saving. Called once
-/// during app setup, before any capture can start. Never returns an error:
-/// every failure mode leaves the in-memory defaults in place.
+/// on the startup writer. Current-session observations outrank restored entries.
+/// Never returns an error: failures leave the in-memory memo in place.
 pub(crate) fn initialize_capture_memo_persistence(data_dir: PathBuf) {
     let path = data_dir.join(CAPTURE_MEMO_FILE_NAME);
+    let _ = murmur_core::completion::recover_snapshot_validated(&path, |v| {
+        decode_capture_memo(&v.to_string()).is_some()
+    });
     let restored = read_capture_memo_file(&path);
     let mut memo = CAPTURE_MEMO.lock_or_recover();
     if CAPTURE_MEMO_PATH.set(path).is_err() {
@@ -1967,37 +1939,50 @@ fn install_restored_memo(memo: &mut CaptureMemoEntries, entries: CaptureMemoEntr
     }
 }
 
-/// Publishes on a detached thread so the durable write is fully off the
-/// capture thread: `note_first_pcm` runs after first-buffer publication,
-/// and an inline write on a stalled app-data volume would delay capture. Saves happen at most a few times per recording, so one
-/// short-lived thread per save is cheap. A failure is logged without any
-/// content and the in-memory memo keeps working for this session.
+enum MemoWrite {
+    Save(CaptureMemoEntries),
+    Flush(std::sync::mpsc::Sender<bool>),
+}
+static MEMO_WRITER: OnceLock<std::sync::mpsc::Sender<MemoWrite>> = OnceLock::new();
+fn memo_writer() -> &'static std::sync::mpsc::Sender<MemoWrite> {
+    MEMO_WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("capture-memo-writer".into())
+            .spawn(move || {
+                let mut committed = true;
+                while let Ok(job) = rx.recv() {
+                    let mut newest = None;
+                    let mut replies = Vec::new();
+                    for job in std::iter::once(job).chain(rx.try_iter()) {
+                        match job {
+                            MemoWrite::Save(entries) => newest = Some(entries),
+                            MemoWrite::Flush(reply) => replies.push(reply),
+                        }
+                    }
+                    if let (Some(entries), Some(path)) = (newest, CAPTURE_MEMO_PATH.get()) {
+                        committed = write_capture_memo_file(path, &entries).is_ok();
+                    }
+                    for reply in replies {
+                        let _ = reply.send(committed);
+                    }
+                }
+            })
+            .expect("capture memo writer");
+        tx
+    })
+}
 fn save_capture_memo(entries: CaptureMemoEntries) {
-    if CAPTURE_MEMO_PATH.get().is_none() {
-        // Persistence was never armed (unit tests, or an unavailable app-data
-        // directory): stay in memory and never spawn a writer.
-        return;
+    if CAPTURE_MEMO_PATH.get().is_some() {
+        let _ = memo_writer().send(MemoWrite::Save(entries));
     }
-    let sequence = CAPTURE_MEMO_SAVE_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
-    std::thread::spawn(move || {
-        let Some(path) = CAPTURE_MEMO_PATH.get() else {
-            return;
-        };
-        let mut published = CAPTURE_MEMO_PUBLISHED_SEQUENCE.lock_or_recover();
-        if *published >= sequence {
-            // A newer snapshot already reached disk; writing this older one
-            // would move the file backwards.
-            return;
-        }
-        match write_capture_memo_file(path, &entries) {
-            Ok(()) => *published = sequence,
-            Err(error) => tracing::warn!(
-                target: "audio",
-                error_kind = error.kind().to_string(),
-                "failed to persist the capture backend memo"
-            ),
-        }
-    });
+}
+pub(crate) fn flush_capture_memo() -> bool {
+    let Some(writer) = MEMO_WRITER.get() else {
+        return true;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    writer.send(MemoWrite::Flush(tx)).is_ok() && rx.recv().unwrap_or(false)
 }
 
 // Normal production owners update this memo from observed device behavior.

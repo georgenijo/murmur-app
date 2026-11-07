@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Default)]
 pub struct KnowledgeStore {
     inner: Arc<Mutex<KnowledgeStoreInner>>,
+    initialization: Arc<Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -24,21 +25,25 @@ struct KnowledgeStoreInner {
 
 impl KnowledgeStore {
     pub fn initialize(&self, root: PathBuf) -> KnowledgeStoreStatus {
-        let mut inner = self
-            .inner
+        let _initialization = self
+            .initialization
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.root = Some(root.clone());
-        match KnowledgeRepository::initialize(root) {
-            Ok((repository, outcome)) => match repository.status(outcome) {
-                Ok(status) => {
-                    inner.repository = Some(repository);
-                    inner.outcome = Some(outcome);
-                    inner.status = status.clone();
-                    status
-                }
-                Err(error) => unavailable(&mut inner, error),
-            },
+            .unwrap_or_else(|p| p.into_inner());
+        let result =
+            KnowledgeRepository::initialize(root.clone()).and_then(|(repository, outcome)| {
+                repository
+                    .status(outcome)
+                    .map(|status| (repository, outcome, status))
+            });
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        inner.root = Some(root);
+        match result {
+            Ok((repository, outcome, status)) => {
+                inner.repository = Some(repository);
+                inner.outcome = Some(outcome);
+                inner.status = status.clone();
+                status
+            }
             Err(error) => unavailable(&mut inner, error),
         }
     }
@@ -110,7 +115,16 @@ impl KnowledgeStore {
     }
 
     pub fn enabled_replacement_rules(&self) -> Result<Vec<KnowledgeEntry>, String> {
-        self.with_repository(KnowledgeRepository::enabled_replacement_rules)
+        // Startup matcher loading must not pin the status/publication mutex
+        // while a filesystem or SQLite read is stalled.
+        let repository = self
+            .inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .repository
+            .clone()
+            .ok_or_else(|| "The local knowledge store is unavailable.".to_string())?;
+        repository.enabled_replacement_rules()
     }
 
     pub fn set_enabled(

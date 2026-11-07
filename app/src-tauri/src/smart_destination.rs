@@ -372,6 +372,9 @@ pub(crate) fn insert(
     pasteboard_change: i64,
     authority: Option<&crate::injector::authority::PasteAttempt>,
 ) -> InsertOutcome {
+    if !crate::identity::external_input_allowed() {
+        return InsertOutcome::Refused;
+    }
     native::insert(snapshot, text, pasteboard_change, authority)
 }
 

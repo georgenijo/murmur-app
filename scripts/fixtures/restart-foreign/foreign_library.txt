@@ -1,0 +1,1 @@
+#[link(name = "quick_exit")] unsafe extern "stdcall" { fn stop(); }

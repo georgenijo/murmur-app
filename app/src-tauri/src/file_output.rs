@@ -12,20 +12,37 @@
 use crate::state::WHISPER_SAMPLE_RATE;
 use std::path::{Path, PathBuf};
 
-/// Resolve the output directory: the user-chosen `output_dir` if non-empty,
-/// otherwise `<Documents>/Murmur` (falling back to `<home>/Murmur`).
+/// Explicit exports remain user-selected. Implicit exports require a proven
+/// identity; only production uses Documents/Murmur. No directory is scanned
+/// until this identity-specific resolution has succeeded.
 pub(crate) fn resolve_output_dir(output_dir: &str) -> Result<PathBuf, String> {
     let dir = if !output_dir.trim().is_empty() {
         PathBuf::from(output_dir)
     } else {
-        let base = dirs::document_dir()
-            .or_else(dirs::home_dir)
-            .ok_or_else(|| "Could not determine a default output directory".to_string())?;
-        base.join("Murmur")
+        let identifier = crate::identity::initialized_identifier()
+            .ok_or("Output identity has not been initialized")?;
+        default_output_dir(
+            identifier,
+            || dirs::document_dir().or_else(dirs::home_dir),
+            dirs::data_dir,
+        )?
     };
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create output directory: {}", e))?;
     Ok(dir)
+}
+
+fn default_output_dir(
+    identifier: &str,
+    documents: impl FnOnce() -> Option<PathBuf>,
+    app_data: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if identifier == crate::identity::PRODUCTION {
+        documents().map(|root| root.join("Murmur"))
+    } else {
+        app_data().map(|root| crate::identity::namespace(&root, identifier).join("exports"))
+    }
+    .ok_or_else(|| "Could not determine an isolated output directory".to_string())
 }
 
 /// Parse the sequence number from a `murmur-NNNN` file stem. Returns `None`
@@ -173,6 +190,46 @@ pub fn write_benchmark_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_qa_exports_do_not_read_or_increment_production_sequence() {
+        let fixture = tempfile::tempdir().unwrap();
+        let production = default_output_dir(
+            crate::identity::PRODUCTION,
+            || Some(fixture.path().join("Documents")),
+            || panic!("production data root unused"),
+        )
+        .unwrap();
+        write_dictation_outputs(
+            &[0.0],
+            "synthetic production",
+            true,
+            true,
+            production.to_str().unwrap(),
+        )
+        .unwrap();
+        let qa = default_output_dir(
+            "com.localdictation.shutdown-test",
+            || panic!("QA must never resolve production Documents"),
+            || Some(fixture.path().join("AppData")),
+        )
+        .unwrap();
+        write_dictation_outputs(&[0.0], "synthetic QA", true, true, qa.to_str().unwrap()).unwrap();
+        assert!(qa.join("murmur-0001.txt").exists());
+        assert!(qa.join("murmur-0001.wav").exists());
+        assert!(!production.join("murmur-0002.txt").exists());
+        assert_eq!(std::fs::read_dir(&production).unwrap().count(), 2);
+        assert_eq!(
+            std::fs::read_to_string(production.join("murmur-0001.txt")).unwrap(),
+            "synthetic production"
+        );
+        assert!(default_output_dir(
+            "com.localdictation.shutdown-test",
+            || panic!("no fallback to Documents"),
+            || None
+        )
+        .is_err());
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

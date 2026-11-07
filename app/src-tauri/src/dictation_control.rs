@@ -22,7 +22,7 @@ struct Queued {
     at: Instant,
 }
 #[derive(Default)]
-struct ConfigurationFence(Mutex<u64>);
+pub(crate) struct ConfigurationFence(Mutex<u64>);
 impl ConfigurationFence {
     fn run<T>(&self, action: impl FnOnce() -> T) -> T {
         let _guard = self.0.lock_or_recover();
@@ -30,18 +30,18 @@ impl ConfigurationFence {
     }
 
     // Allocate intent before scheduling work, not when the snapshot is applied.
-    fn accept(&self) -> u64 {
+    pub(crate) fn accept(&self) -> u64 {
         let mut revision = self.0.lock_or_recover();
         *revision += 1;
         *revision
     }
 
-    fn apply<T>(&self, revision: u64, action: impl FnOnce() -> T) -> Option<T> {
+    pub(crate) fn apply<T>(&self, revision: u64, action: impl FnOnce() -> T) -> Option<T> {
         let current = self.0.lock_or_recover();
         (*current == revision).then(action)
     }
 
-    fn override_current<T>(&self, action: impl FnOnce() -> T) -> T {
+    pub(crate) fn override_current<T>(&self, action: impl FnOnce() -> T) -> T {
         let mut revision = self.0.lock_or_recover();
         *revision += 1;
         action()
@@ -303,6 +303,7 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                         Some("busy_benchmarking") => "Wait for the benchmark to finish.",
                         Some("busy_transcribing_file") => "Wait for the file transcription to finish.",
                         Some("busy_meeting") => "Stop the meeting capture before starting dictation.",
+                        Some("knowledge_initializing") => "Wait for the local knowledge rules to finish loading, or retry the knowledge store in Settings.",
                         Some("busy_transforming") => "Wait for the transform to finish.",
                         Some("busy_recording_corpus") => "Finish the corpus recording before starting dictation.",
                         Some("audio_recovering") => "Microphone cleanup is still in progress. Try again when Murmur is ready.",
@@ -435,7 +436,21 @@ pub(crate) async fn configure(
     app: &tauri::AppHandle,
     settings: serde_json::Value,
 ) -> Result<(), String> {
-    configure_accepted(app, settings, accept_configuration(app)).map(|_| ())
+    let admission = crate::shutdown::WriterPermit::acquire()?;
+    let app = app.clone();
+    crate::shutdown::source_call(move || {
+        let _admission = admission;
+        crate::commands::settings_store::configure_renderer_control_worker(app, settings)
+    })
+    .await
+    .map_err(|_| "Source writer unavailable".to_owned())?
+}
+
+pub(crate) fn configuration_current(app: &tauri::AppHandle, revision: u64) -> bool {
+    app.state::<Control>()
+        .configuration
+        .apply(revision, || ())
+        .is_some()
 }
 
 pub(crate) fn accept_configuration(app: &tauri::AppHandle) -> u64 {
@@ -482,6 +497,7 @@ fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Resu
     let accessibility = crate::injector::is_accessibility_enabled();
     let control = app.state::<Control>();
     let mut gate = murmur_core::dictation::LaunchGate {
+        shutdown: crate::shutdown::closing(),
         configured: configured && crate::completion::admitted(app),
         onboarding_complete: settings["launchOnboardingComplete"]
             .as_bool()
@@ -562,10 +578,38 @@ pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) -> Result<(),
         if policy != previous {
             let _ = crate::smart_auto_probe::configure_host_policy(policy);
         }
-        crate::commands::keyboard::apply_app_disabled(app.clone(), disabled)
+        let result = crate::commands::keyboard::apply_app_disabled(app.clone(), disabled);
+        if disabled {
+            if let Some(generation) = active_capture_generation(&app.state::<State>().app_state) {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    // A re-enable/new start may win before this continuation.
+                    // Cancellation must remain owned by the captured generation.
+                    let _ = crate::commands::recording::cancel_native_recording(
+                        handle.clone(),
+                        handle.state::<State>(),
+                        Some(generation),
+                    )
+                    .await;
+                });
+            }
+        }
+        result
     })
 }
+
+fn active_capture_generation(state: &crate::state::AppState) -> Option<u64> {
+    let dictation = state.dictation.lock_or_recover();
+    matches!(
+        dictation.status,
+        crate::state::DictationStatus::Starting | crate::state::DictationStatus::Recording
+    )
+    .then(|| state.recording_id.load(Ordering::SeqCst))
+}
 pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
+    if crate::shutdown::closing() {
+        return false;
+    }
     app.try_state::<Control>()
         .is_none_or(|control| control.controller.lock_or_recover().gate.can_start())
 }
@@ -638,6 +682,35 @@ pub(crate) fn get_dictation_lock(app: tauri::AppHandle) -> bool {
 mod tests {
     use super::*;
     #[test]
+    fn delayed_disable_cancellation_cannot_cancel_a_new_recording() {
+        use crate::state::DictationStatus;
+        let state = crate::state::AppState::default();
+        for status in [DictationStatus::Starting, DictationStatus::Recording] {
+            state.recording_id.store(12, Ordering::SeqCst);
+            state.dictation.lock_or_recover().status = status;
+            let generation = active_capture_generation(&state).unwrap();
+            // A re-enable/new recording wins before the cancellation runs.
+            state.recording_id.store(13, Ordering::SeqCst);
+            assert!(crate::commands::recording::cancel_recording_transition(
+                &state,
+                Some(generation),
+                || panic!("old Disable cancelled the new recording"),
+            )
+            .is_none());
+            assert_eq!(state.dictation.lock_or_recover().status, status);
+            assert!(!state.is_cancelled(13));
+        }
+        for status in [
+            DictationStatus::Idle,
+            DictationStatus::Processing,
+            DictationStatus::Recovering,
+        ] {
+            state.dictation.lock_or_recover().status = status;
+            assert!(active_capture_generation(&state).is_none());
+        }
+    }
+
+    #[test]
     fn in_flight_refresh_cannot_overwrite_a_later_native_disable() {
         use std::sync::{
             atomic::{AtomicBool, Ordering},
@@ -699,6 +772,7 @@ mod tests {
         let (send, _receive) = tokio::sync::mpsc::unbounded_channel();
         let mut controller = Controller::default();
         controller.gate = murmur_core::dictation::LaunchGate {
+            shutdown: crate::shutdown::closing(),
             configured: true,
             onboarding_complete: true,
             accessibility: true,

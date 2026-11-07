@@ -484,3 +484,16 @@ added. The matrix also fails on that baseline with only its test fault seam:
 preparation BeforeRename leaves an empty History permanently Uncertain. The
 production changes preserve dictation's plan row 7 and the content-free error
 notice. No other producer or durable schema changes.
+
+## 1.8 shutdown handoff
+
+Explicit asynchronous flush/seal barriers now replace reliance on final-handle
+Drop. The host drains registered source/producer work before sealing. A private
+completion-pending.json publication envelope preserves History/report content
+across destination failures; replay runs before subsequent mutations and never
+appends a second copy. Clear/Delete and caps cover pending copies; retention-off
+producers submit no transcript. The earlier immediate-History-failure test still
+checks that no row was published at that failure; new tests additionally verify
+relaunch recovery. A lost pending publication remains UnpreservedFailure rather
+than being hidden by successful statistics flush. See the
+[shutdown contract](gpui-shutdown-coordinator.md) for deadlines and native gates.

@@ -3003,6 +3003,7 @@ async fn run_transcription_pipeline(
                         injector::ClipboardOnlyReason::FocusNotEditable
                         | injector::ClipboardOnlyReason::PasteFailed => Some(paste_hint),
                         injector::ClipboardOnlyReason::AutoPasteDisabled
+                        | injector::ClipboardOnlyReason::IsolatedIdentity
                         | injector::ClipboardOnlyReason::AccessibilityDenied => None,
                     };
                     if let Some(message) = failure_message {
@@ -5172,6 +5173,13 @@ pub(crate) struct DictationStartBlocker {
     pub state: &'static str,
 }
 
+pub(crate) fn knowledge_start_blocker(app_state: &AppState) -> Option<DictationStartBlocker> {
+    (!app_state.knowledge_refresh.ready()).then_some(DictationStartBlocker {
+        kind: "knowledge_initializing",
+        state: "idle",
+    })
+}
+
 /// The admission guards shared by a confirmed dictation start and silent
 /// first-tap helper preparation. Callers hold the dictation lock, so
 /// `transcribe_file` cannot slip between the
@@ -5181,6 +5189,9 @@ pub(crate) fn dictation_start_blocker(
     status: DictationStatus,
 ) -> Option<DictationStartBlocker> {
     let blocked = |kind, state| Some(DictationStartBlocker { kind, state });
+    if let Some(blocker) = knowledge_start_blocker(&state.app_state) {
+        return Some(blocker);
+    }
     if state.app_state.meeting_blocks_asr() {
         return blocked("busy_meeting", "idle");
     }
@@ -5211,7 +5222,8 @@ pub(crate) fn dictation_start_blocker(
 /// while a previous dictation's capture cleanup is still pending.
 pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
     let dictation = state.app_state.dictation.lock_or_recover();
-    dictation_start_blocker(state, dictation.status).is_none()
+    !crate::shutdown::closing()
+        && dictation_start_blocker(state, dictation.status).is_none()
         && !state.app_state.microphone_preview.is_active()
         && !audio_lifecycle::is_audio_active()
         && !audio_lifecycle::is_dictation_cleanup_pending(
@@ -5641,6 +5653,9 @@ pub(crate) async fn stop_native_recording_for(
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
+    // Register before the first await and retain through the final completion
+    // submission. Presentation may become Idle before this future returns.
+    let _completion_owner = crate::shutdown::WriterPermit::accepted_producer();
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
@@ -7427,6 +7442,12 @@ pub(crate) mod tests {
             overlay_frame: Default::default(),
             overlay_layout: Default::default(),
         });
+        assert!(!dictation_prepare_admitted(&state));
+        let knowledge_root = tempfile::tempdir().unwrap();
+        state
+            .knowledge
+            .initialize(knowledge_root.path().to_path_buf());
+        crate::commands::knowledge::refresh_correction_rules(&state).unwrap();
         let transition = state.app_state.recording_transition.lock().await;
         assert!(dictation_prepare_admitted(&state));
         let preview = state.app_state.microphone_preview.claim(0).unwrap();

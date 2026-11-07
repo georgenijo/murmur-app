@@ -1,3 +1,4 @@
+import { invokeSource, sourceSession } from '../sourceWriteVersion';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, sendTo } from '../targetedEvents';
@@ -131,7 +132,7 @@ export function useOverlaySettingsMirror({
   // Persist only the owned field; the host merges into the latest durable
   // document under its writer lock. Never write a retained settings snapshot.
   const commitOwnedField = useCallback(async (field: 'autoPaste' | 'disabled', value: boolean, isCurrent: () => boolean) => {
-    const blob = await invoke<string>('patch_overlay_setting', { field, value });
+    const blob = await invokeSource<string>('patch_overlay_setting', { field, value, sourceSession });
     if (!isCurrent()) return;
     durableSnapshot.current = parseSettingsBlob(blob);
     presentationStorage.rememberItem(STORAGE_KEY, blob);

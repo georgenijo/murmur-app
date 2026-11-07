@@ -1,0 +1,1 @@
+use tauri_plugin_process as original; fn main() { let _ = original::init::<tauri::Wry>(); }

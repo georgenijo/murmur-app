@@ -1,0 +1,1 @@
+fn exit(code: i32) -> i32 { code } fn main() { assert_eq!(exit(37), 37); }

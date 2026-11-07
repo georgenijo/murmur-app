@@ -865,7 +865,23 @@ fn run_recover(replay_acknowledgement: bool) -> (Value, i32) {
 }
 
 pub fn run_cli_if_requested() -> Option<i32> {
-    let (response, exit_code) = match parse_cli_request(std::env::args().skip(1)) {
+    let request = parse_cli_request(std::env::args().skip(1));
+    let (response, exit_code) =
+        dispatch_cli_request(request, crate::identity::initialized_identifier())?;
+    println!("{response}");
+    Some(exit_code)
+}
+
+fn dispatch_cli_request(request: CliRequest, identifier: Option<&str>) -> Option<(Value, i32)> {
+    if request == CliRequest::NotRequested {
+        return None;
+    }
+    // The experimental service has a production-only fixed Mach endpoint.
+    // Refuse *all* operations before spawn, SMAppService, recovery or status.
+    if identifier != Some(crate::identity::PRODUCTION) {
+        return Some((content_free_error("capture_agent_identity_refused"), 77));
+    }
+    let result = match request {
         CliRequest::NotRequested => return None,
         CliRequest::Invalid => (content_free_error("invalid_arguments"), 64),
         CliRequest::Service(command) => run_service_command(command),
@@ -876,13 +892,50 @@ pub fn run_cli_if_requested() -> Option<i32> {
         CliRequest::SyntheticProbe(observe_for) => run_probe(observe_for, true, false),
         CliRequest::SyntheticFaultProbe(observe_for) => run_probe(observe_for, true, true),
     };
-    println!("{response}");
-    Some(exit_code)
+    Some(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn isolated_and_unproven_identities_refuse_every_agent_operation_before_dispatch() {
+        for identity in [
+            None,
+            Some(""),
+            Some("future.id"),
+            Some("com.localdictation.shutdown-test"),
+        ] {
+            for flag in [
+                "--capture-agent-status",
+                "--capture-agent-recover",
+                "--capture-agent-recover-replay-ack",
+                "--capture-agent-probe",
+                "--capture-agent-synthetic-probe",
+                "--capture-agent-synthetic-fault-probe",
+            ] {
+                let (response, code) =
+                    dispatch_cli_request(parse_cli_request([flag.to_owned()]), identity).unwrap();
+                assert_eq!(code, 77);
+                assert_eq!(response["outcome"], "capture_agent_identity_refused");
+            }
+            for command in [
+                ServiceCommand::Register,
+                ServiceCommand::Refresh,
+                ServiceCommand::Status,
+                ServiceCommand::Unregister,
+            ] {
+                assert_eq!(
+                    dispatch_cli_request(CliRequest::Service(command), identity)
+                        .unwrap()
+                        .1,
+                    77
+                );
+            }
+            assert!(dispatch_cli_request(CliRequest::NotRequested, identity).is_none());
+        }
+    }
 
     #[test]
     fn cli_is_explicit_strict_and_bounded() {

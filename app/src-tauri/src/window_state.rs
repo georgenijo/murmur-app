@@ -10,7 +10,6 @@ use std::{
 use tauri::{LogicalPosition, LogicalSize, Manager};
 
 const LABELS: [&str; 2] = ["main", "diagnostics"];
-const DEBOUNCE: Duration = Duration::from_millis(500);
 pub(crate) const TRAFFIC_LIGHT_X: f64 = 16.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -139,42 +138,144 @@ fn restore_geometry(saved: &SavedWindow, displays: &[Display]) -> Option<Restore
     })
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct SavedState {
     windows: BTreeMap<String, SavedWindow>,
     #[serde(default)]
     backgrounds: BTreeMap<String, String>,
 }
 
+#[derive(Clone)]
 struct Store {
     path: PathBuf,
     saved: SavedState,
 }
 impl Store {
-    fn write(&self) -> std::io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let temp = self.path.with_extension("json.tmp");
-        std::fs::write(&temp, serde_json::to_vec_pretty(&self.saved)?)?;
-        std::fs::rename(temp, &self.path)
+    fn write(&self) -> Result<(), murmur_core::completion::Error> {
+        murmur_core::completion::publish_snapshot(&self.path, &self.saved)
     }
+}
+enum WindowWrite {
+    Changed,
+    Flush(mpsc::Sender<bool>),
 }
 
 pub(crate) struct WindowState {
     store: Arc<Mutex<Store>>,
-    changed: mpsc::Sender<()>,
+    changed: mpsc::Sender<WindowWrite>,
     chrome: Mutex<BTreeMap<String, (f64, f64)>>,
     painted: std::sync::atomic::AtomicBool,
+    initialized: std::sync::atomic::AtomicBool,
+    ready: std::sync::atomic::AtomicBool,
 }
 
 pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
     let path = app.path().app_data_dir()?.join("window-state.json");
-    let mut saved: SavedState = std::fs::read(&path)
-        .ok()
-        .filter(|bytes| bytes.len() < 16 * 1024)
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
+    let store = Arc::new(Mutex::new(Store {
+        path: path.clone(),
+        saved: SavedState::default(),
+    }));
+    let (changed, receiver) = mpsc::channel();
+    app.manage(WindowState {
+        store: store.clone(),
+        changed,
+        chrome: Mutex::new(BTreeMap::new()),
+        painted: false.into(),
+        initialized: false.into(),
+        ready: false.into(),
+    });
+    let worker_app = app.clone();
+    let main_thread = app
+        .state::<murmur_core::context::AppContext>()
+        .main_thread
+        .clone();
+    let worker_store = store.clone();
+    std::thread::Builder::new()
+        .name("window-state".into())
+        .spawn(move || {
+            // Recovery and reads stay on this owner, including startup. Window
+            // events cannot race defaults over a snapshot still being loaded.
+            if murmur_core::completion::recover_snapshot_validated(&path, |v| {
+                serde_json::from_value::<SavedState>(v.clone()).is_ok()
+            })
+            .is_err()
+            {
+                tracing::warn!(target:"system", "window snapshot recovery failed");
+            }
+            let mut saved: SavedState = std::fs::read(&path)
+                .ok()
+                .filter(|bytes| bytes.len() < 16 * 1024)
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+            let (restored, restoration) = mpsc::channel();
+            let restore_app = worker_app.clone();
+            if main_thread
+                .dispatch(Box::new(move || {
+                    use std::sync::atomic::Ordering;
+                    let state = restore_app.state::<WindowState>();
+                    // A newer renderer chrome intent always wins the saved source.
+                    saved
+                        .backgrounds
+                        .extend(state.store.lock_or_recover().saved.backgrounds.clone());
+                    if !crate::shutdown::closing()
+                        && restore_windows(&restore_app, &mut saved).is_err()
+                    {
+                        tracing::warn!(target:"system", "window restoration failed");
+                    }
+                    state.store.lock_or_recover().saved = saved;
+                    state.initialized.store(true, Ordering::SeqCst);
+                    if state.ready.load(Ordering::SeqCst) {
+                        if let Some(window) = restore_app.get_webview_window("main") {
+                            let _ = reveal_once(&window, &state);
+                        }
+                    }
+                    let _ = restored.send(());
+                }))
+                .is_err()
+                || restoration.recv().is_err()
+            {
+                return;
+            }
+
+            while let Ok(message) = receiver.recv() {
+                // Coalesce a burst into the newest immutable snapshot. Every
+                // queued flush still acknowledges all preceding changes.
+                let replies: Vec<_> = std::iter::once(message)
+                    .chain(receiver.try_iter())
+                    .filter_map(|message| {
+                        if let WindowWrite::Flush(reply) = message {
+                            Some(reply)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let snapshot = worker_store.lock_or_recover().clone();
+                let committed = snapshot.write().is_ok();
+                for reply in replies {
+                    let _ = reply.send(committed);
+                }
+                if !committed {
+                    tracing::warn!(target: "system", "window state publication failed");
+                }
+            }
+        })?;
+    // Independent of JS/hydration/rAF: a broken renderer never strands the app.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if let Some(window) = handle.get_webview_window("main") {
+            if let Err(error) = reveal_once(&window, &handle.state::<WindowState>()) {
+                tracing::warn!(target: "system", "window safety reveal failed: {error}");
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Geometry restoration is exclusively dispatched to AppKit main; this helper
+/// has no filesystem calls and never takes the writer mutex across native APIs.
+fn restore_windows(app: &tauri::AppHandle, saved: &mut SavedState) -> tauri::Result<()> {
     for label in LABELS {
         if let Some(window) = app.get_webview_window(label) {
             if let Some(color) = saved
@@ -239,35 +340,6 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
             }
         }
     }
-    let store = Arc::new(Mutex::new(Store { path, saved }));
-    let (changed, receiver) = mpsc::channel();
-    let worker_store = store.clone();
-    std::thread::Builder::new()
-        .name("window-state".into())
-        .spawn(move || {
-            while receiver.recv().is_ok() {
-                while receiver.recv_timeout(DEBOUNCE).is_ok() {}
-                if let Err(error) = worker_store.lock_or_recover().write() {
-                    tracing::warn!(target: "system", "window state save failed: {error}");
-                }
-            }
-        })?;
-    app.manage(WindowState {
-        store,
-        changed,
-        chrome: Mutex::new(BTreeMap::new()),
-        painted: false.into(),
-    });
-    // Independent of JS/hydration/rAF: a broken renderer never strands the app.
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        if let Some(window) = handle.get_webview_window("main") {
-            if let Err(error) = reveal_once(&window, &handle.state::<WindowState>()) {
-                tracing::warn!(target: "system", "window safety reveal failed: {error}");
-            }
-        }
-    });
     Ok(())
 }
 
@@ -287,6 +359,15 @@ pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     let Some(state) = window.try_state::<WindowState>() else {
         return;
     };
+    // An explicit hide during startup wins over a delayed automatic reveal.
+    if window.label() == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+        state
+            .painted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    if !state.initialized.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
     if let Some((header, zoom)) = state.chrome.lock_or_recover().get(window.label()).copied() {
         if let Some(webview) = window.app_handle().get_webview_window(window.label()) {
             crate::commands::native_window::position_traffic_lights(
@@ -330,15 +411,17 @@ pub(crate) fn on_event(window: &tauri::Window, event: &tauri::WindowEvent) {
             },
         );
     }
-    let _ = state.changed.send(());
+    let _ = state.changed.send(WindowWrite::Changed);
 }
 
-pub(crate) fn flush(app: &tauri::AppHandle) {
-    if let Some(state) = app.try_state::<WindowState>() {
-        if let Err(error) = state.store.lock_or_recover().write() {
-            tracing::warn!(target: "system", "window state flush failed: {error}");
-        }
-    }
+/// Called only by the shutdown worker. FIFO acknowledgement follows every
+/// previously accepted geometry snapshot; the UI mutex is never held over I/O.
+pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
+    let Some(state) = app.try_state::<WindowState>() else {
+        return true;
+    };
+    let (tx, rx) = mpsc::channel();
+    state.changed.send(WindowWrite::Flush(tx)).is_ok() && rx.recv().unwrap_or(false)
 }
 
 #[tauri::command]
@@ -379,7 +462,7 @@ pub(crate) fn sync_window_chrome(
                 .saved
                 .backgrounds
                 .insert(window.label().into(), background);
-            let _ = state.changed.send(());
+            let _ = state.changed.send(WindowWrite::Changed);
         }
     }
     crate::commands::native_window::position_traffic_lights(
@@ -394,6 +477,10 @@ pub(crate) fn sync_window_chrome(
 
 fn reveal_once(window: &tauri::WebviewWindow, state: &WindowState) -> Result<(), String> {
     use std::sync::atomic::Ordering;
+    state.ready.store(true, Ordering::SeqCst);
+    if !state.initialized.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     if state
         .painted
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)

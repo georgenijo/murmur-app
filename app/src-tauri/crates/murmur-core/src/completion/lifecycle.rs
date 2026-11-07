@@ -23,6 +23,13 @@ pub const TRANSCRIPT_KEYS: &[&str] = &[
 ];
 pub const DROP_KEYS: &[&str] = &["murmur-overlay-vertical-offset", "murmur-ui-latency-v1"];
 const UI_STATE: &str = "ui-state.json";
+
+/// Shared with host source writers. Hold across recovery, read/merge and durable
+/// publication, including retained lifecycle retries from completion producers.
+/// Lock order: completion owner -> SOURCE_WRITE_LOCK. A host must never wait
+/// for the completion owner (or drop its last service handle) while holding it.
+/// Admission only queues jobs and releases its mutex before waiting for results.
+pub static SOURCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Progress {
@@ -50,12 +57,14 @@ impl Default for UiState {
         }
     }
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub enum Operation {
     Status,
     /// Complete observed key set, not a partial snapshot. Missing values must
     /// be represented by null. Storage read errors must abort the transport.
     Import(BTreeMap<String, Option<String>>),
+    /// UI-state keys only. File-backed settings/themes use the host's ordered
+    /// source API; full snapshots cannot bypass that owner's intent fences.
     Save {
         key: String,
         value: Value,
@@ -86,19 +95,24 @@ fn decode(raw: &BTreeMap<String, Option<String>>, key: &str) -> Result<Option<Va
         _ => Err(Error::Invalid),
     }
 }
+fn valid_ui(v: &UiState) -> bool {
+    v.schema == 1
+        && v.destinations
+            .iter()
+            .enumerate()
+            .all(|(i, k)| crate::state::file(k).is_some() && !v.destinations[..i].contains(k))
+        && v.values
+            .iter()
+            .all(|(k, v)| crate::state::normalize(k, v.clone()).is_ok())
+}
+pub(super) fn valid_snapshot(value: &Value) -> bool {
+    serde_json::from_value::<UiState>(value.clone()).is_ok_and(|v| valid_ui(&v))
+}
 impl Engine {
     fn ui_state(&self) -> Result<UiState> {
         self.storage.reject_future(UI_STATE, "schema", 1)?;
         let existed = self.storage.root.join(UI_STATE).exists();
-        let state = self.storage.read(UI_STATE, |v: &UiState| {
-            v.schema == 1
-                && v.destinations.iter().enumerate().all(|(i, k)| {
-                    crate::state::file(k).is_some() && !v.destinations[..i].contains(k)
-                })
-                && v.values
-                    .iter()
-                    .all(|(k, v)| crate::state::normalize(k, v.clone()).is_ok())
-        })?;
+        let state = self.storage.read(UI_STATE, valid_ui)?;
         if state.is_none()
             && (existed || self.migration()?.lifecycle.v2 || self.storage.quarantined(UI_STATE)?)
         {
@@ -143,6 +157,29 @@ impl Engine {
             .transpose()
     }
     pub(super) fn lifecycle(&mut self, op: Operation) -> Result<Receipt> {
+        let queued = matches!(&op, Operation::Save { .. });
+        if queued {
+            // Reject malformed input before accepting it into the ordered FIFO.
+            if let Operation::Save { key, value } = &op {
+                // File-backed sources belong to the host's ordered merge API.
+                // Retaining a full snapshot here would bypass its intent fences.
+                if crate::state::file(key).is_some() {
+                    return Err(Error::Invalid);
+                }
+                crate::state::normalize(key, value.clone())?;
+            }
+            self.retain_intent(AcceptedIntent::Source(op.clone()))?;
+        }
+        self.drain_accepted()?;
+        self.lifecycle_inner(if queued { Operation::Status } else { op })
+    }
+    pub(super) fn lifecycle_inner(&mut self, op: Operation) -> Result<Receipt> {
+        let _guard = SOURCE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        self.lifecycle_locked(op)
+    }
+    fn lifecycle_locked(&mut self, op: Operation) -> Result<Receipt> {
+        self.storage.retry_intents()?;
+        self.storage.recover_snapshot(UI_STATE, valid_snapshot)?;
         self.storage.sync_directory()?;
         let mut m = self.migration()?;
         let mut state = self.ui_state()?;
@@ -154,7 +191,7 @@ impl Engine {
                         .chain(V2_KEYS)
                         .map(|k| ((*k).into(), None))
                         .collect();
-                    self.lifecycle(Operation::Import(source))?;
+                    self.lifecycle_locked(Operation::Import(source))?;
                     m = self.migration()?;
                     m.keys_removed = vec![
                         Destination::History,
@@ -174,13 +211,8 @@ impl Engine {
                         publish_source(&mut self.storage, "dictation-settings", &settings)?;
                     }
                 }
-                if crate::state::file(&key).is_some() {
-                    recover_source(&self.storage.root, &key)?;
-                    publish_source(&mut self.storage, &key, &value)?;
-                } else {
-                    state.values.insert(key, value);
-                    self.storage.write(UI_STATE, &state)?;
-                }
+                state.values.insert(key, value);
+                self.storage.publish_snapshot(UI_STATE, &state)?;
             }
             Operation::Import(raw) => {
                 if !m.v1 {
@@ -259,7 +291,7 @@ impl Engine {
                         }
                         state.values = all;
                         state.v2_imported = true;
-                        self.storage.write(UI_STATE, &state)?;
+                        self.storage.publish_snapshot(UI_STATE, &state)?;
                     }
                     m.lifecycle.v2 = true;
                     m.schema = 1;
@@ -307,7 +339,7 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{engine, restart};
+    use super::super::tests::{engine, reopen};
     use super::*;
     pub(super) fn source() -> BTreeMap<String, Option<String>> {
         TRANSCRIPT_KEYS
@@ -373,7 +405,7 @@ mod tests {
                 );
                 e.storage.fail = Some((file.into(), boundary));
                 assert!(e.lifecycle(Operation::Import(raw.clone())).is_err());
-                e = restart(&e);
+                e = reopen(&e);
                 let r = e.lifecycle(Operation::Import(raw.clone())).unwrap();
                 assert!(r.v2);
                 assert_eq!(r.values["dictation-settings"]["autoPaste"], true);
@@ -426,7 +458,7 @@ mod tests {
                 let mut e = engine(dir.path(), true);
                 if sequential {
                     e.import(LegacyImport::default()).unwrap();
-                    e = restart(&e);
+                    e = reopen(&e);
                 }
                 e.lifecycle(Operation::Import(source())).unwrap();
                 assert!(e.lifecycle(Operation::BeginRetirement).is_err());
@@ -442,11 +474,11 @@ mod tests {
                 .unwrap();
                 e.storage.fail = Some((MIGRATION.into(), boundary));
                 assert!(e.lifecycle(Operation::BeginRetirement).is_err());
-                e = restart(&e);
+                e = reopen(&e);
                 e.lifecycle(Operation::BeginRetirement).unwrap();
                 e.storage.fail = Some((MIGRATION.into(), boundary));
                 assert!(e.lifecycle(Operation::Retired).is_err());
-                e = restart(&e);
+                e = reopen(&e);
                 assert!(e.lifecycle(Operation::Retired).unwrap().retired);
             }
         }
@@ -474,7 +506,7 @@ mod removal_tests {
             assert!(e
                 .execute(Command::KeysRemoved(destinations.clone()))
                 .is_err());
-            e = super::super::tests::restart(&e);
+            e = super::super::tests::reopen(&e);
             e.execute(Command::KeysRemoved(destinations)).unwrap();
             assert!(
                 e.lifecycle(Operation::Status)
@@ -518,7 +550,7 @@ mod removal_tests {
 
 #[cfg(test)]
 mod review_safety {
-    use super::super::tests::{engine, restart};
+    use super::super::tests::{engine, reopen};
     use super::tests::source;
     use super::*;
     use crate::completion::storage::Boundary;
@@ -569,7 +601,7 @@ mod review_safety {
     #[test]
     fn imported_and_created_separate_destinations_remain_required_after_loss_or_quarantine() {
         for key in ["dictation-settings", "murmur-theme-library"] {
-            for created in 0..3 {
+            for created in [false, true] {
                 for corrupt in [false, true] {
                     let dir = tempfile::tempdir().unwrap();
                     let mut e = engine(dir.path(), true);
@@ -579,19 +611,13 @@ mod review_safety {
                         json!({"version":1,"themes":[]})
                     };
                     let mut raw = source();
-                    if created == 0 {
+                    if !created {
                         raw.insert(key.into(), Some(value.to_string()));
                     }
                     e.lifecycle(Operation::Import(raw)).unwrap();
-                    if created == 1 {
-                        e.lifecycle(Operation::Save {
-                            key: key.into(),
-                            value: value.clone(),
-                        })
-                        .unwrap();
-                    }
-                    if created == 2 {
-                        super::super::save_source(dir.path(), key, &value.to_string()).unwrap();
+                    if created {
+                        let _guard = SOURCE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+                        save_source(dir.path(), key, &value.to_string()).unwrap();
                     }
                     let mut m = e.migration().unwrap();
                     m.lifecycle.v3 = true;
@@ -609,7 +635,7 @@ mod review_safety {
                         std::fs::remove_file(&path).unwrap();
                     }
                     for _ in 0..3 {
-                        e = restart(&e);
+                        e = reopen(&e);
                         assert!(e.lifecycle(Operation::Status).is_err());
                         assert!(e.lifecycle(Operation::Import(source())).is_err());
                         assert!(e.lifecycle(Operation::BeginRetirement).is_err());
@@ -633,7 +659,7 @@ mod review_safety {
                 std::fs::write(dir.path().join(UI_STATE), b"{bad").unwrap();
             }
             for _ in 0..3 {
-                e = restart(&e);
+                e = reopen(&e);
                 assert!(e.lifecycle(Operation::Status).is_err());
                 assert!(e.lifecycle(Operation::Import(source())).is_err());
             }
@@ -656,7 +682,7 @@ mod review_safety {
                 e.storage.fail = Some((file.into(), boundary));
                 assert!(e.lifecycle(Operation::Import(raw.clone())).is_err());
                 assert!(e.storage.fail.is_none());
-                e = restart(&e);
+                e = reopen(&e);
                 let receipt = e.lifecycle(Operation::Import(raw)).unwrap();
                 let id = &receipt.values["murmur-theme-library"]["themes"][0]["id"];
                 assert_eq!(
@@ -721,7 +747,7 @@ mod review_safety {
         assert_eq!(disk["settingsVersion"], 7);
         assert_eq!(disk["overlayVerticalOffset"], 0);
         assert_eq!(disk["idleTimeoutMinutes"], -1);
-        e = restart(&e);
+        e = reopen(&e);
         let r = e.lifecycle(Operation::Status).unwrap();
         assert_eq!(
             r.values["dictation-settings"]["vocabularyEntries"],
@@ -752,12 +778,12 @@ mod review_safety {
                 let expected = crate::state::normalize(key, value.clone()).unwrap();
                 let file = crate::state::file(key).unwrap();
                 e.storage.fail = Some((file.into(), boundary));
-                assert!(e
-                    .lifecycle(Operation::Save {
-                        key: key.into(),
-                        value
-                    })
-                    .is_err());
+                // File sources now reject lifecycle Save, matching the host.
+                // Inject the same I/O boundary in its shared source publisher.
+                {
+                    let _guard = SOURCE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+                    assert!(publish_source(&mut e.storage, key, &expected).is_err());
+                }
                 assert!(dir.path().join(format!("{file}.required")).exists());
                 if boundary == Boundary::BeforeRename {
                     assert!(!dir.path().join(file).exists());
@@ -793,7 +819,7 @@ mod review_safety {
                 value: json!(complete),
             })
             .unwrap();
-            e = restart(&e);
+            e = reopen(&e);
             let r = e.lifecycle(Operation::Status).unwrap();
             assert_eq!(
                 r.values["dictation-settings"]["launchOnboardingComplete"],
@@ -839,7 +865,7 @@ mod review_safety {
             assert_eq!(disk["autoPasteDelayMs"], delay);
             assert_eq!(disk["smartDestinationEnabled"], smart);
             assert!(disk.get("pasteLastShortcutEnabled").is_none());
-            e = restart(&e);
+            e = reopen(&e);
             let restarted = e.lifecycle(Operation::Status).unwrap();
             assert_eq!(
                 restarted.values["dictation-settings"]["autoPasteDelayMs"],
@@ -866,7 +892,7 @@ mod review_safety {
         .unwrap();
         std::fs::write(dir.path().join("settings.json.required"), b"true").unwrap();
         for _ in 0..3 {
-            e = restart(&e);
+            e = reopen(&e);
             assert!(e.lifecycle(Operation::Status).is_err());
             assert!(e.lifecycle(Operation::Import(source())).is_err());
             assert!(!dir.path().join("settings.json").exists());

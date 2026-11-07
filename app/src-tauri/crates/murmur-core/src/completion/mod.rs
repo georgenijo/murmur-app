@@ -1,6 +1,7 @@
 //! Serialized durable completions. No window, runtime, clock or host dependency.
 //! Only the owner task touches these files; IPC clients never replace snapshots.
 pub mod lifecycle;
+mod numeric;
 pub mod producers;
 mod stats;
 mod storage;
@@ -9,9 +10,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 pub use stats::{Scope, StatisticsEvent, Stats};
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     path::PathBuf,
-    sync::{mpsc, Arc},
+    sync::{mpsc, Arc, Mutex},
 };
 use storage::{RootLock, Storage};
 
@@ -23,6 +24,8 @@ pub enum Error {
     InUse,
     Stopped,
     TooManyFiles,
+    RetentionFull,
+    IdentityConflict,
     Uncertain,
 }
 impl std::fmt::Display for Error {
@@ -34,6 +37,10 @@ impl std::fmt::Display for Error {
             Self::InUse => "Completion storage already in use",
             Self::Stopped => "Completion service stopped",
             Self::Uncertain => "File admission outcome uncertain; completion storage unavailable",
+            Self::IdentityConflict => {
+                "Completion identity conflicts with stored content; submission rejected"
+            }
+            Self::RetentionFull => "Completion retry queue full; submission not accepted",
             Self::TooManyFiles => "Too many pending file transcriptions",
         })
     }
@@ -41,6 +48,10 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 const STATE: &str = "completion-state.json";
+const PENDING: &str = "completion-pending.json";
+const BATCH: &str = "completion-batch.json";
+const MAX_RETAINED_INTENTS: usize = 64;
+const MAX_RETAINED_BYTES: usize = 4 * 1024 * 1024;
 const HOLD: &str = "completion-holding.json";
 const MIGRATION: &str = "migrations.json";
 
@@ -192,9 +203,11 @@ pub enum HistoryMutation {
     Pin { target: Value },
     Delete { targets: Vec<Value> },
 }
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub enum Command {
     Snapshot,
+    /// Explicitly preserve rejected pending evidence and resume from readable stores.
+    RecoverPending,
     Import(LegacyImport),
     KeysRemoved(Vec<Destination>),
     Clear {
@@ -214,12 +227,14 @@ pub enum Command {
     /// Success acknowledges durable History/holding publication, without statistics.
     AcceptFile {
         entry: Value,
+        #[serde(skip)]
         intent: Arc<producers::FileIntent>,
         active: Vec<String>,
     },
 }
 type Job = Box<dyn FnOnce(&mut Engine) + Send>;
 struct Owner {
+    admission: Mutex<bool>,
     send: Option<mpsc::Sender<Job>>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
@@ -244,6 +259,9 @@ impl CompletionService {
             .spawn(move || {
                 let _lock = lock;
                 let mut engine = Engine {
+                    unpreserved_content: false,
+                    accepted: VecDeque::new(),
+                    failed_content: None,
                     storage: Storage::new(root),
                     webkit_exists,
                     seen: HashSet::new(),
@@ -260,28 +278,91 @@ impl CompletionService {
             .map_err(|_| Error::Stopped)?;
         Ok(Self {
             owner: Arc::new(Owner {
+                admission: Mutex::new(true),
                 send: Some(send),
                 worker: Some(worker),
             }),
         })
     }
+    /// Queue a sequence barrier without blocking the executor or main thread.
+    /// Seal is permanent and ordered with submission under the admission lock.
+    pub async fn flush(&self) -> Result<()> {
+        self.barrier(false).await
+    }
+    pub async fn seal_and_flush(&self) -> Result<()> {
+        self.barrier(true).await
+    }
+    async fn barrier(&self, seal: bool) -> Result<()> {
+        let (send, receive) = futures_channel::oneshot::channel();
+        {
+            let mut admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+            if seal {
+                *admission = false;
+            }
+            self.owner
+                .send
+                .as_ref()
+                .ok_or(Error::Stopped)?
+                .send(Box::new(move |engine| {
+                    let result = engine
+                        .execute(Command::Snapshot)
+                        .and_then(|_| engine.lifecycle(lifecycle::Operation::Status))
+                        .map(|_| ());
+                    let _ = send.send(result);
+                }))
+                .map_err(|_| Error::Stopped)?;
+        }
+        receive.await.map_err(|_| Error::Stopped)?
+    }
+    /// Final sequence barrier with conservative, content-free durability proof.
+    /// Pending evidence is never called committed, and an earlier lost content
+    /// publication remains visible even when later disk operations succeed.
+    pub async fn shutdown_receipt(&self) -> crate::shutdown::WriteOutcome {
+        use crate::shutdown::WriteOutcome;
+        let (send, receive) = futures_channel::oneshot::channel();
+        {
+            let Ok(mut admission) = self.owner.admission.lock() else {
+                return WriteOutcome::UnpreservedFailure;
+            };
+            *admission = false;
+            let Some(owner) = &self.owner.send else {
+                return WriteOutcome::UnpreservedFailure;
+            };
+            if owner
+                .send(Box::new(move |engine| {
+                    let _ = send.send(engine.write_receipt());
+                }))
+                .is_err()
+            {
+                return WriteOutcome::UnpreservedFailure;
+            }
+        }
+        receive.await.unwrap_or(WriteOutcome::UnpreservedFailure)
+    }
     pub fn lifecycle(&self, command: lifecycle::Operation) -> Result<lifecycle::Receipt> {
         let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
         self.owner
             .send
             .as_ref()
             .ok_or(Error::Stopped)?
             .send(Box::new(move |engine| {
-                let result = engine
-                    .execute(Command::Snapshot)
-                    .and_then(|_| engine.lifecycle(command));
+                let result = engine.lifecycle(command);
                 let _ = send.send(result);
             }))
             .map_err(|_| Error::Stopped)?;
+        drop(admission);
         receive.recv().map_err(|_| Error::Stopped)?
     }
     pub fn execute(&self, command: Command) -> Result<Snapshot> {
         let (send, receive) = mpsc::sync_channel(1);
+        let admission = self.owner.admission.lock().map_err(|_| Error::Stopped)?;
+        if !*admission {
+            return Err(Error::Stopped);
+        }
         self.owner
             .send
             .as_ref()
@@ -290,6 +371,7 @@ impl CompletionService {
                 let _ = send.send(engine.execute(command));
             }))
             .map_err(|_| Error::Stopped)?;
+        drop(admission);
         receive.recv().map_err(|_| Error::Stopped)?
     }
 }
@@ -299,7 +381,21 @@ fn uuid() -> String {
 fn diagnostic(code: &'static str) {
     tracing::warn!(target:"completion",code,"completion service diagnostic");
 }
+#[derive(Clone, Serialize)]
+enum AcceptedIntent {
+    Command(Command),
+    Source(lifecycle::Operation),
+}
+struct RetainedIntent {
+    intent: AcceptedIntent,
+    bytes: usize,
+}
 struct Engine {
+    unpreserved_content: bool,
+    // Retain each accepted submission before recovery can fail. The shared FIFO
+    // orders completion commands and lifecycle saves under the same owner.
+    accepted: VecDeque<RetainedIntent>,
+    failed_content: Option<(Destination, Value)>,
     initialized: bool,
     revision: u64,
     storage: Storage,
@@ -307,6 +403,47 @@ struct Engine {
     seen: HashSet<String>,
 }
 impl Engine {
+    fn write_receipt(&mut self) -> crate::shutdown::WriteOutcome {
+        use crate::shutdown::WriteOutcome;
+        if self.storage.retry_intents().is_err() {
+            return WriteOutcome::UnpreservedFailure;
+        }
+        let reconciled = self.execute(Command::Snapshot).is_ok();
+        // If reconciliation is blocked by the sole durable pending snapshot,
+        // inspect source health without retrying that publication again. This
+        // keeps PreservedForReplay distinct from an unpreserved queued intent.
+        let sources = if reconciled {
+            self.lifecycle(lifecycle::Operation::Status)
+        } else {
+            self.lifecycle_inner(lifecycle::Operation::Status)
+        }
+        .is_ok();
+        if self.unpreserved_content
+            || !self.accepted.is_empty()
+            || self.failed_content.is_some()
+            || self.storage.has_intents()
+            || !sources
+            || self.state().is_err()
+            || self.holding().is_err()
+        {
+            return WriteOutcome::UnpreservedFailure;
+        }
+        if reconciled {
+            return WriteOutcome::Committed;
+        }
+        // The pending snapshot is the sole outstanding content publication;
+        // all earlier accepted jobs passed the same serialized owner.
+        if self.storage.sync_directory().is_ok()
+            && self
+                .storage
+                .read::<Value>(PENDING, valid_pending)
+                .is_ok_and(|v| v.is_some())
+        {
+            WriteOutcome::PreservedForReplay
+        } else {
+            WriteOutcome::UnpreservedFailure
+        }
+    }
     fn document(&self, d: Destination) -> Result<Option<Document>> {
         let raw = self
             .storage
@@ -359,12 +496,7 @@ impl Engine {
     }
     fn holding(&self) -> Result<Holding> {
         self.storage
-            .read(HOLD, |v: &Holding| {
-                v.schema == 1
-                    && valid_receipts(&v.file_receipts)
-                    && v.history.entries.iter().all(valid_history)
-                    && v.reports.entries.iter().all(valid_report)
-            })?
+            .read(HOLD, |v: &Holding| valid_holding(v))?
             .ok_or(Error::Missing)
     }
     fn migration(&self) -> Result<Migration> {
@@ -394,6 +526,11 @@ impl Engine {
         // Published generations may be unknown rename outcomes from a prior run.
         // Establish durability before trusting them or draining any held data.
         self.storage.sync_directory()?;
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.storage.retry_intents()?;
+        self.replay_content()?;
         let mut holding = match self.holding() {
             Ok(v) => v,
             Err(Error::Missing) => {
@@ -477,6 +614,14 @@ impl Engine {
         // Re-establish directory durability before using any published watermark
         // to compact a journal or drain a consumed holding generation.
         self.storage.sync_directory()?;
+        self.storage.retry_intents()?;
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.replay_content()?;
+        if let Some((destination, value)) = self.failed_content.take() {
+            self.add_content(destination, value)?;
+        }
         let mut h = self.holding()?;
         self.observe_file_receipts(&h)?;
         let previous = h.clone();
@@ -570,6 +715,79 @@ impl Engine {
         })
     }
     fn execute(&mut self, command: Command) -> Result<Snapshot> {
+        match command {
+            Command::RecoverPending => self.resolve_pending()?,
+            Command::Snapshot => {}
+            command => self.retain_intent(AcceptedIntent::Command(command))?,
+        }
+        self.drain_accepted()?;
+        self.snapshot()
+    }
+    fn retain_intent(&mut self, intent: AcceptedIntent) -> Result<()> {
+        // Bound the shared completion/lifecycle FIFO even when reads or recovery
+        // fail persistently. Rejection transfers no ownership to this service.
+        let bytes = serde_json::to_vec(&intent)
+            .map_err(|_| Error::Invalid)?
+            .len();
+        let retained_bytes: usize = self.accepted.iter().map(|v| v.bytes).sum();
+        if self.accepted.len() >= MAX_RETAINED_INTENTS
+            || bytes > MAX_RETAINED_BYTES.saturating_sub(retained_bytes)
+        {
+            return Err(Error::RetentionFull);
+        }
+        self.accepted.push_back(RetainedIntent { intent, bytes });
+        Ok(())
+    }
+    fn drain_accepted(&mut self) -> Result<()> {
+        loop {
+            // Do not take the next intent until every older publication has
+            // reconciled. Even initialization/read failures leave it in the FIFO.
+            self.prepare()?;
+            let Some(retained) = self.accepted.pop_front() else {
+                return Ok(());
+            };
+            let intent = &retained.intent;
+            let result = match intent {
+                AcceptedIntent::Command(command) => self.apply_command(command.clone()),
+                AcceptedIntent::Source(op) => self.lifecycle_inner(op.clone()).map(|_| ()),
+            };
+            self.storage.capture_failures = false;
+            if matches!(
+                intent,
+                AcceptedIntent::Command(Command::Complete { entry: Some(_), .. })
+            ) && result.is_err()
+                && !self.storage.has_intents()
+                && self.failed_content.is_none()
+                && !self.storage.root.join(PENDING).exists()
+            {
+                self.unpreserved_content = true;
+            }
+            if let Err(error) = result {
+                // Source saves are idempotent. Direct commands with captured
+                // snapshots/content resume from those exact values, not by
+                // repeating a toggle or another relative mutation.
+                let retry = match intent {
+                    AcceptedIntent::Source(_) => true,
+                    AcceptedIntent::Command(
+                        Command::Complete { .. } | Command::AcceptFile { .. },
+                    ) => false,
+                    AcceptedIntent::Command(_) => {
+                        !matches!(error, Error::Invalid | Error::IdentityConflict)
+                            && !self.storage.has_intents()
+                            && self.failed_content.is_none()
+                    }
+                };
+                if retry {
+                    self.accepted.push_front(retained);
+                }
+                return Err(error);
+            }
+            if self.accepted.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+    fn prepare(&mut self) -> Result<()> {
         self.revision += 1;
         // Initialization retry must not inflate launch counts on every command.
         if !self.initialized
@@ -583,8 +801,25 @@ impl Engine {
         self.state()?;
         self.holding()?;
         self.recover()?;
+        // Lifecycle commands need the same destination-health gate as Snapshot.
+        self.snapshot()?;
+        Ok(())
+    }
+    fn apply_command(&mut self, command: Command) -> Result<()> {
+        if matches!(&command, Command::Complete { entry: None, .. }) {
+            // Non-retaining producers do not prolong resolved private evidence.
+            self.storage.remove_evidence(PENDING)?;
+        }
+        // Capture exact mutation snapshots only after recovery admits this job.
+        self.storage.capture_failures = matches!(
+            &command,
+            Command::Clear { .. }
+                | Command::History(_)
+                | Command::Import(_)
+                | Command::KeysRemoved(_)
+        );
         match command {
-            Command::Snapshot => {}
+            Command::Snapshot | Command::RecoverPending => {}
             Command::AcceptFile {
                 entry,
                 intent,
@@ -697,13 +932,21 @@ impl Engine {
                         entry["completionUuid"] = json!(id);
                         if self.add_content(Destination::History, entry).is_err() {
                             diagnostic("history_write_failed");
+                            // A journal contains counts only; it cannot stand in
+                            // for a transcript whose pending publication failed.
+                            if !self.storage.has_intents()
+                                && self.failed_content.is_none()
+                                && !self.storage.root.join(PENDING).exists()
+                            {
+                                self.unpreserved_content = true;
+                            }
                         }
                     }
                     self.apply_statistics()?;
                 }
             }
         }
-        self.snapshot()
+        Ok(())
     }
     fn observe_file_receipts(&mut self, h: &Holding) -> Result<()> {
         let doc = self.document(Destination::History)?;
@@ -818,11 +1061,125 @@ impl Engine {
         }
         result
     }
+    fn resolve_pending(&mut self) -> Result<()> {
+        // A valid accepted intent must replay, even when this action is selected.
+        // Explicit recovery acknowledges only rejected evidence, never discards
+        // a usable pending completion in favour of an older readable snapshot.
+        if self.storage.root.join(PENDING).exists()
+            && self
+                .storage
+                .read::<Value>(PENDING, valid_pending)?
+                .is_some()
+        {
+            return self.replay_content();
+        }
+        // A readable current destination is mandatory. Never manufacture defaults
+        // or replay rejected evidence as part of this explicit recovery action.
+        self.holding()?;
+        for d in [
+            Destination::History,
+            Destination::Statistics,
+            Destination::Reports,
+        ] {
+            self.document(d)?;
+        }
+        self.storage.write(
+            "completion-recovery.json",
+            &json!({"schema":1,"resolved":true}),
+        )?;
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.storage.prune_artifacts(PENDING)?;
+        self.unpreserved_content = false;
+        Ok(())
+    }
+    // At most one pending publication. Recovery runs before the next command;
+    // a blocked destination rejects admission rather than evicting accepted work.
+    fn replay_content(&mut self) -> Result<()> {
+        let existed = self.storage.root.join(PENDING).exists();
+        if existed && self.storage.root.join("completion-recovery.json").exists() {
+            std::fs::remove_file(self.storage.root.join("completion-recovery.json"))
+                .map_err(|_| Error::Io)?;
+            self.storage.sync_directory()?;
+        }
+        let pending: Option<Value> = self.storage.read(PENDING, valid_pending)?;
+        if let Some(pending) = pending {
+            let file = pending["file"].as_str().ok_or(Error::Invalid)?;
+            // A current receipt cannot downgrade a destination from a newer app.
+            self.storage.reject_future(file, "schema", 1)?;
+            self.storage.write(file, &pending["value"])?;
+            std::fs::remove_file(self.storage.root.join(PENDING)).map_err(|_| Error::Io)?;
+            self.storage
+                .boundary(PENDING, storage::Boundary::DirectorySync)?;
+            self.storage.sync_directory()?;
+        } else if existed
+            || (self.storage.quarantined(PENDING)? && !self.storage.pending_recovery_resolved()?)
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(())
+    }
+    fn publish_content<T: Serialize>(&mut self, file: &str, value: &T) -> Result<()> {
+        if self.storage.root.join(PENDING).exists() {
+            return Err(Error::TooManyFiles);
+        }
+        let payload = json!({"schema":1,"file":file,"value":value});
+        self.storage.remember_intent(PENDING, &payload)?;
+        self.storage.write(PENDING, &payload)?;
+        self.storage.resolve_intent(PENDING);
+        self.replay_content()
+    }
     fn add_content(&mut self, d: Destination, mut value: Value) -> Result<()> {
         if d == Destination::Reports && value.get("completionUuid").is_none() {
             value["completionUuid"] = json!(uuid());
         }
+        let result = self.add_content_inner(d, value.clone());
+        // Failures before pending admission (including cap/eviction writes)
+        // retain the exact accepted content for the next owner reconciliation.
+        if result.is_err()
+            && result != Err(Error::IdentityConflict)
+            && !self.storage.has_intents()
+            && self.failed_content.is_none()
+            && !self.storage.root.join(PENDING).exists()
+        {
+            self.failed_content = Some((d, value));
+        }
+        result
+    }
+    fn add_content_inner(&mut self, d: Destination, value: Value) -> Result<()> {
+        self.storage.remove_evidence(PENDING)?;
         let mut doc = self.document(d)?.unwrap_or_else(|| Document::new(d));
+        let h = self.holding()?;
+        let held = match d {
+            Destination::History => &h.history.entries,
+            _ => &h.reports.entries,
+        };
+        if let Some(id) = value["completionUuid"].as_str() {
+            let matches: Vec<_> = doc
+                .data
+                .as_array()
+                .ok_or(Error::Invalid)?
+                .iter()
+                .chain(held)
+                .filter(|entry| entry["completionUuid"].as_str() == Some(id))
+                .collect();
+            // Lossless storage reads make this canonical JSON stable for every
+            // finite f64, including signed zero. Compare full content, never a
+            // rounded approximation or UUID alone.
+            let identity = serde_json::to_vec(&value).map_err(|_| Error::Invalid)?;
+            if matches
+                .iter()
+                .any(|entry| serde_json::to_vec(entry).map_or(true, |stored| stored != identity))
+            {
+                // Identity is proof only for an exact replay. Never acknowledge
+                // different content or retain a rejected conflict for retry.
+                return Err(Error::IdentityConflict);
+            }
+            if !matches.is_empty() {
+                return self.storage.sync_directory();
+            }
+        }
         if self.ready(d, &doc)? {
             let entries = doc.data.as_array_mut().ok_or(Error::Invalid)?;
             entries.push(value);
@@ -831,7 +1188,7 @@ impl Engine {
                 _ => trim_reports(entries),
             };
             doc.v1_imported = true;
-            self.storage.write(d.file(), &doc)
+            self.publish_content(d.file(), &doc)
         } else {
             let mut h = self.holding()?;
             match d {
@@ -839,7 +1196,7 @@ impl Engine {
                 _ => h.reports.entries.push(value),
             }
             self.cap_held(&mut h, d, &mut doc)?;
-            self.storage.write(HOLD, &h)
+            self.publish_content(HOLD, &h)
         }
     }
     fn cap_held(&mut self, h: &mut Holding, d: Destination, doc: &mut Document) -> Result<()> {
@@ -891,6 +1248,10 @@ impl Engine {
         Ok(())
     }
     fn clear(&mut self, d: Destination, at: u64) -> Result<()> {
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.storage.remove_evidence(PENDING)?;
         let mut doc = Document::new(d);
         if d == Destination::History {
             doc.file_receipts = self.document(d)?.map_or_else(Vec::new, |d| d.file_receipts);
@@ -915,6 +1276,10 @@ impl Engine {
         self.apply_statistics()
     }
     fn mutate_history(&mut self, mutation: HistoryMutation) -> Result<()> {
+        for file in [PENDING, HOLD, "history.json", "benchmark-reports.json"] {
+            self.storage.remove_temps(file)?;
+        }
+        self.storage.remove_evidence(PENDING)?;
         let mut h = self.holding()?;
         let mut doc = self
             .document(Destination::History)?
@@ -967,12 +1332,14 @@ impl Engine {
                 }
             }
         }
-        // Persist deletion records before changing originals, so losing the
-        // original file later cannot resurrect a deleted legacy entry.
-        self.storage.write(HOLD, &h)?;
+        // Capture every target before the first write. Holding must publish
+        // first so deletion evidence precedes changing originals; a failure
+        // there must not prevent retaining the intended History snapshot.
+        let mut snapshots = vec![(HOLD.to_owned(), json!(h))];
         if self.document(Destination::History)?.is_some() {
-            self.storage.write(Destination::History.file(), &doc)?;
+            snapshots.push((Destination::History.file().to_owned(), json!(doc)));
         }
+        self.storage.publish_batch(snapshots)?;
         Ok(())
     }
     fn import(&mut self, source: LegacyImport) -> Result<()> {
@@ -1126,6 +1493,10 @@ fn valid_receipts(ids: &[String]) -> bool {
     ids.len() <= producers::MAX_PENDING_FILES
         && ids.iter().all(|id| uuid::Uuid::parse_str(id).is_ok())
         && ids.iter().collect::<HashSet<_>>().len() == ids.len()
+}
+fn valid_current_document(d: Destination, v: &Value) -> bool {
+    // Legacy shapes are source-import input only, never replayable snapshots.
+    v["schema"] == 1 && v["v1_imported"] == true && valid_document(d, v)
 }
 fn valid_document(d: Destination, v: &Value) -> bool {
     if v.get("schema").is_some() {
@@ -1362,18 +1733,9 @@ impl MigrationGate {
 #[cfg(test)]
 mod tests;
 
-/// Shared whole-settings publication path. Migration and journal files are never
-/// part of a settings snapshot, even when that snapshot predates an import.
-pub fn save_settings(root: &std::path::Path, blob: &str) -> Result<()> {
-    let value: Value = serde_json::from_str(blob).map_err(|_| Error::Invalid)?;
-    if !value.is_object() || blob.len() > 1024 * 1024 {
-        return Err(Error::Invalid);
-    }
-    Storage::new(root.into()).write_bytes("settings.json", blob.as_bytes())
-}
-
-/// Settings/theme commands share the host's writer lock with lifecycle imports.
-/// Publication uses the same full-sync discipline as completion destinations.
+/// Host settings/theme commands hold `lifecycle::SOURCE_WRITE_LOCK` across
+/// recovery, read/merge and this call, sharing serialization with core lifecycle
+/// publication. Uses the same full-sync discipline as completion destinations.
 pub fn save_source(root: &std::path::Path, key: &str, blob: &str) -> Result<String> {
     if blob.len() > crate::state::source_size_limit(key) {
         return Err(Error::Invalid);
@@ -1538,6 +1900,7 @@ pub fn prune_source_artifacts(root: &std::path::Path, key: &str) -> Result<()> {
 
 /// Resume only a proven interrupted transition. Corrupt receipts never veto a
 /// readable destination; conflicting receipts surface once and preserve data.
+/// Caller holds `lifecycle::SOURCE_WRITE_LOCK`, including any following merge.
 pub fn recover_source(root: &std::path::Path, key: &str) -> Result<()> {
     let file = crate::state::file(key).ok_or(Error::Invalid)?;
     let pending = format!("{file}.pending");
@@ -1643,3 +2006,53 @@ pub fn source_required(root: &std::path::Path, key: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod source_recovery_tests;
+/// Private single-owner immutable snapshot publication, with recovery before
+/// admitting another writer. No host types or runtime are required.
+pub fn publish_snapshot<T: Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
+    let root = path.parent().ok_or(Error::Invalid)?;
+    std::fs::create_dir_all(root).map_err(|_| Error::Io)?;
+    let file = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or(Error::Invalid)?;
+    Storage::new(root.into()).publish_snapshot(file, value)
+}
+
+fn valid_holding(v: &Holding) -> bool {
+    v.schema == 1
+        && valid_receipts(&v.file_receipts)
+        && !v.history.generation.is_empty()
+        && !v.reports.generation.is_empty()
+        && v.history.entries.iter().all(valid_history)
+        && v.reports.entries.iter().all(valid_report)
+}
+
+/// Recovery of host-owned snapshots validates the complete host schema before rename.
+pub fn recover_snapshot_validated(
+    path: &std::path::Path,
+    validate: impl FnOnce(&Value) -> bool,
+) -> Result<()> {
+    let root = path.parent().ok_or(Error::Invalid)?;
+    let file = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or(Error::Invalid)?;
+    Storage::new(root.into()).recover_snapshot(file, validate)
+}
+
+fn valid_pending(v: &Value) -> bool {
+    v.as_object().is_some_and(|v| v.len() == 3)
+        && v["schema"] == 1
+        && match v["file"].as_str() {
+            Some(HOLD) => serde_json::from_value::<Holding>(v["value"].clone())
+                .is_ok_and(|h| valid_holding(&h)),
+            Some("history.json") => valid_current_document(Destination::History, &v["value"]),
+            Some("benchmark-reports.json") => {
+                valid_current_document(Destination::Reports, &v["value"])
+            }
+            _ => false,
+        }
+}
+
+#[cfg(test)]
+mod lifecycle_publication_tests;

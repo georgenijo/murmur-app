@@ -1,7 +1,9 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[allow(clippy::disallowed_methods)]
 fn main() {
+    ui_lib::initialize_identity();
     ui_lib::launch::process_start();
     if let Some(exit_code) = ui_lib::meeting_diarization::run_cli_if_requested() {
         std::process::exit(exit_code);
