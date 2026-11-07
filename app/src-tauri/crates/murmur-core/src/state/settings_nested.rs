@@ -180,7 +180,17 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
         for k in ["files", "skipped", "terms", "bytes", "ms"] {
             out[k] = json!(scan[k].as_f64().unwrap().max(0.).trunc() as u64);
         }
-        keep_unknown(preserve, scan, out, &[])
+        // Legacy scan payloads can contain an accidental copy of the settings
+        // document. Those known preference keys were always discarded here;
+        // preserve only genuinely opaque scan metadata alongside scan fields.
+        let defaults = super::settings_defaults();
+        let known: Vec<_> = defaults
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keep_unknown(preserve, scan, out, &known)
     } else {
         Value::Null
     };

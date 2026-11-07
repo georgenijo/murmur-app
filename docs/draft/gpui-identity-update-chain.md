@@ -35,8 +35,9 @@ interprets as no forced minimum. The migration policy in
 `.github/gpui-migration-policy.json` requires retention of the last Tauri arm64
 DMG through Phase 3. `last_tauri_release` deliberately remains null in this
 unshipped draft: George must name the **last Tauri build with the Phase 1.5 Rust
-loader and these additive compatibility fixes**, then name the same tag in the
-flip release notes. Pre-Phase-1 releases such as the plan's 0.62.0 baseline are
+loader and these additive compatibility fixes, including Tauri's frontend
+appearance/theme-library preservation fix from PR #1043**, then name the same
+tag in the flip release notes. Pre-Phase-1 releases such as the plan's 0.62.0 baseline are
 installation-chain starting points, not supported downgrade targets.
 
 `validate_workflow_policy.py` runs both identity and update config checks.
@@ -82,6 +83,18 @@ These run as library tests in `rust-macos`; they do not require opening either
 app or reading user data. Shared loaders avoid inventing a second parser. Keep
 these fixes in the final Tauri downgrade build before the flip; an older strict
 History envelope parser cannot promise preservation of future metadata.
+
+Vitest also loads the checked-in GPUI fixtures through Tauri's real frontend
+storage functions and appearance provider, replacing only native invoke calls.
+It covers launch without repair writes, known-field repair, source saves and
+library mutations, checking opaque values at every fixture nesting level.
+Portable appearance and library exports retain their existing projections.
+Tauri's settings decoder spreads the Rust-validated snapshot and its writer
+serializes that snapshot, retaining nested opaque data. History reads the
+completion snapshot and sends intact exact-row edit/pin targets to Rust rather
+than rewriting entries or envelopes in React; both paths have fixture coverage.
+The named last-Tauri downgrade release must contain these frontend changes as
+well as the shared Rust fixes; a release with only the Rust loaders is insufficient.
 
 ## Manual signed acceptance — George owns every row
 

@@ -3,7 +3,8 @@ import { mirrorDurableBlob, THEME_LIBRARY_STORE } from '../durableUserData';
 import { isRecord } from '../typeGuards';
 import { DEFAULT_THEME, OPENCODE_THEME } from './palettes';
 import { resolveTheme } from './resolve';
-import { sanitizeRevision, sanitizeTheme } from './sanitize';
+import { normalizeStoredTheme, sanitizeRevision, sanitizeTheme } from './sanitize';
+import { preserveUnknownFields, sameSource } from './persistence';
 import {
   MAX_APPEARANCE_REVISION,
   type AppearanceMode,
@@ -92,12 +93,13 @@ function parseCollection(value: unknown): ThemeLibraryCollectionV1 | undefined |
   if (typeof value.id !== 'string' || !/^[a-z0-9][a-z0-9.:-]{0,127}$/.test(value.id)) {
     return null;
   }
-  return { id: value.id, label: value.label.trim() };
+  return preserveUnknownFields(value, { id: value.id, label: value.label.trim() }, ['id', 'label']);
 }
 
 function parseSource(value: unknown): ThemeLibrarySourceV1 | null {
   if (!isRecord(value)) return null;
-  if (value.kind === 'local') return { kind: 'local' };
+  const knownKeys = ['kind', 'extensionId', 'version', 'license', 'sourceUrl'];
+  if (value.kind === 'local') return preserveUnknownFields<ThemeLibrarySourceV1>(value, { kind: 'local' }, knownKeys);
   if (
     value.kind !== 'open-vsx'
     || typeof value.extensionId !== 'string'
@@ -124,13 +126,13 @@ function parseSource(value: unknown): ThemeLibrarySourceV1 | null {
       return null;
     }
   }
-  return {
+  return preserveUnknownFields<ThemeLibrarySourceV1>(value, {
     kind: 'open-vsx',
     extensionId: value.extensionId,
     version: value.version,
     license: value.license,
     ...(sourceUrl ? { sourceUrl } : {}),
-  };
+  }, knownKeys);
 }
 
 export function parseThemeLibraryEntry(value: unknown): ThemeLibraryEntryV1 | null {
@@ -143,15 +145,15 @@ export function parseThemeLibraryEntry(value: unknown): ThemeLibraryEntryV1 | nu
     return null;
   }
   if (value.theme.presetId !== 'sonic' && value.theme.presetId !== 'custom') return null;
-  return {
+  return preserveUnknownFields<ThemeLibraryEntryV1>(value, {
     version: 1,
     id: value.id,
     label: value.label.trim(),
     modes,
-    theme: sanitizeTheme(value.theme),
+    theme: normalizeStoredTheme(value.theme),
     source,
     ...(collection ? { collection } : {}),
-  };
+  }, ['version', 'id', 'label', 'modes', 'theme', 'source', 'collection']);
 }
 
 export function emptyThemeLibrary(): ThemeLibraryDocumentV1 {
@@ -228,11 +230,12 @@ export function loadThemeLibrary(
     themes.push(theme);
   }
   const document: ThemeLibraryDocumentV1 = {
+    ...value,
     version: 1,
     revision: sanitizeRevision(value.revision),
     themes,
   };
-  if (JSON.stringify(document) !== JSON.stringify(value)) needsRepair = true;
+  if (!sameSource(document, value)) needsRepair = true;
   return { status: 'ready', document, needsRepair,
     ...(Object.keys(renamedIds).length ? { renamedIds } : {}),
   };
@@ -258,6 +261,7 @@ export function writeThemeLibrary(
     throw new Error('Theme library IDs must be unique.');
   }
   const canonical: ThemeLibraryDocumentV1 = {
+    ...document,
     version: 1,
     revision: sanitizeRevision(document.revision),
     themes: canonicalThemes,
@@ -293,6 +297,7 @@ function publishMutation(
   storage: ThemeLibraryStorageLike,
 ): ThemeLibraryDocumentV1 {
   const next: ThemeLibraryDocumentV1 = {
+    ...current,
     version: 1,
     revision: nextLibraryRevision(current.revision),
     themes: [...themes],
@@ -475,7 +480,7 @@ export function composeThemeSelection(
   selection: AppearanceSelectionV1,
 ): ThemeConfigV1 {
   if (selection.light === 'sonic' && selection.dark === 'sonic') return { ...DEFAULT_THEME };
-  if (selection.light === 'custom' && selection.dark === 'custom') return sanitizeTheme(current.theme);
+  if (selection.light === 'custom' && selection.dark === 'custom') return normalizeStoredTheme(current.theme);
   if (selection.light === selection.dark) {
     const entry = findThemeLibraryEntry(library, selection.light);
     if (entry && entry.modes.includes('light') && entry.modes.includes('dark')) {

@@ -1,6 +1,7 @@
 import { isHexColor, normalizeHex } from './color';
 import { DEFAULT_THEME } from './palettes';
 import { isRecord } from '../typeGuards';
+import { preserveUnknownFields } from './persistence';
 import {
   APPEARANCE_CACHE_VERSION,
   APPEARANCE_VERSION,
@@ -64,6 +65,28 @@ export function sanitizeTheme(value: unknown): ThemeConfigV1 {
   return output;
 }
 
+/** Durable v1 normalization preserves fields owned by newer hosts. The
+ * sanitizers above remain projections for portable imports/exports and UI use.
+ */
+export function normalizeStoredTheme(value: unknown): ThemeConfigV1 {
+  const sanitized = sanitizeTheme(value);
+  if (!isRecord(value) || value.version !== APPEARANCE_VERSION) return sanitized;
+  const theme = preserveUnknownFields(value, sanitized, [
+    'version', 'presetId', 'accent', 'background', 'foreground', 'contrast', 'light', 'dark',
+  ]);
+  for (const mode of ['light', 'dark'] as const) {
+    if (!isRecord(value[mode])) continue;
+    const overrides = preserveUnknownFields(value[mode], sanitized[mode] ?? {}, MURMUR_TOKEN_NAMES);
+    if (Object.keys(overrides).length) theme[mode] = overrides;
+  }
+  return theme;
+}
+
+export function normalizeStoredSelection(value: unknown): AppearanceSelectionV1 | undefined {
+  const selection = sanitizeAppearanceSelection(value);
+  return selection ? preserveUnknownFields(value, selection, ['light', 'dark']) : undefined;
+}
+
 export function sanitizeRevision(value: unknown): number {
   return typeof value === 'number'
     && Number.isSafeInteger(value)
@@ -115,8 +138,8 @@ export function sanitizeStoredAppearance(value: unknown): SanitizedStoredAppeara
     validDocument: true,
     revision: sanitizeRevision(value.revision),
     mode: sanitizeMode(value.mode),
-    theme: sanitizeTheme(value.theme),
+    theme: normalizeStoredTheme(value.theme),
     cache: validateCache(value.cache),
-    selection: sanitizeAppearanceSelection(value.selection),
+    selection: normalizeStoredSelection(value.selection),
   };
 }

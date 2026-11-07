@@ -3,8 +3,10 @@ import { DEFAULT_THEME } from './palettes';
 import { parse, type ParseError } from 'jsonc-parser';
 import { resolveTheme } from './resolve';
 import { isRecord } from '../typeGuards';
+import { preserveUnknownFields, sameSource } from './persistence';
 import {
-  sanitizeAppearanceSelection,
+  normalizeStoredSelection,
+  normalizeStoredTheme,
   sanitizeMode,
   sanitizeStoredAppearance,
   sanitizeTheme,
@@ -56,10 +58,11 @@ export function createAppearanceDocument(
   theme: ThemeConfigV1 = DEFAULT_THEME,
   revision = 0,
   selection?: AppearanceSelectionV1,
+  source?: unknown,
 ): AppearanceDocumentV1 {
-  const sanitizedTheme = sanitizeTheme(theme);
-  const sanitizedSelection = sanitizeAppearanceSelection(selection);
-  return {
+  const sanitizedTheme = normalizeStoredTheme(theme);
+  const sanitizedSelection = normalizeStoredSelection(selection);
+  return preserveUnknownFields(source, {
     version: 1,
     revision: Number.isSafeInteger(revision)
       && revision >= 0
@@ -70,7 +73,7 @@ export function createAppearanceDocument(
     theme: sanitizedTheme,
     cache: resolvedCache(sanitizedTheme),
     ...(sanitizedSelection ? { selection: sanitizedSelection } : {}),
-  };
+  }, ['version', 'revision', 'mode', 'theme', 'cache', 'selection']);
 }
 
 export function nextAppearanceRevision(current: number): number {
@@ -136,6 +139,7 @@ export function loadAppearanceDocument(
     sanitized.theme,
     sanitized.revision,
     sanitized.selection,
+    parsed,
   );
   return {
     document,
@@ -144,8 +148,7 @@ export function loadAppearanceDocument(
     needsRepair: (() => {
       const { cache: _cache, ...source } = document;
       const { cache: _oldCache, ...stored } = parsed as Record<string, unknown>;
-      const stable = (v: unknown): unknown => Array.isArray(v) ? v.map(stable) : isRecord(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, stable(v[k])])) : v;
-      return JSON.stringify(stable(source)) !== JSON.stringify(stable(stored));
+      return !sameSource(source, stored);
     })(),
     error: null,
   };
@@ -160,6 +163,7 @@ export function writeAppearanceDocument(
     document.theme,
     document.revision,
     document.selection,
+    document,
   );
   const serialized = JSON.stringify(canonical);
   if (byteLength(serialized) > MAX_APPEARANCE_BYTES) {

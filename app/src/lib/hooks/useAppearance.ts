@@ -168,6 +168,7 @@ function useMainAppearanceController(): AppearanceController {
         current.theme,
         nextAppearanceRevision(current.revision),
         current.selection,
+        current,
       );
       try {
         writeAppearanceDocument(current);
@@ -211,6 +212,7 @@ function useMainAppearanceController(): AppearanceController {
           configuration.theme,
           revision,
           configuration.selection,
+          current,
         );
         writeAppearanceDocument(next);
         await flushSourceState();
@@ -246,6 +248,7 @@ function useMainAppearanceController(): AppearanceController {
     const initialLibrary = initialLibraryRef.current;
     const renamedIds = initialLibrary?.status === 'ready' ? initialLibrary.renamedIds : undefined;
     const selection: AppearanceSelectionV1 = {
+      ...previousSelection,
       light: renamedIds?.[previousSelection.light] ?? previousSelection.light,
       dark: renamedIds?.[previousSelection.dark] ?? previousSelection.dark,
     };
@@ -255,13 +258,15 @@ function useMainAppearanceController(): AppearanceController {
       || owner === 'custom'
       || Boolean(findThemeLibraryEntry(library, owner)?.modes.includes(appearance));
     const nextSelection: AppearanceSelectionV1 = {
+      ...selection,
       light: available(selection.light, 'light') ? selection.light : 'sonic',
       dark: available(selection.dark, 'dark') ? selection.dark : 'sonic',
     };
     const theme = composeThemeSelection(current, library, nextSelection);
     if (
-      JSON.stringify(theme) === JSON.stringify(current.theme)
-      && JSON.stringify(nextSelection) === JSON.stringify(current.selection ?? appearanceSelection(current))
+      JSON.stringify(sanitizeTheme(theme)) === JSON.stringify(sanitizeTheme(current.theme))
+      && nextSelection.light === previousSelection.light
+      && nextSelection.dark === previousSelection.dark
     ) return;
     void commit('repair', (document) => ({
       mode: document.mode,

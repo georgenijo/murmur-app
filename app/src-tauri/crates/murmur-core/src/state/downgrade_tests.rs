@@ -39,17 +39,50 @@ fn same_version_unknown_keys_survive_normalization_and_settings_edits() {
     ] {
         let normalized = state::normalize(key, fixture[name].clone()).unwrap();
         assert_future_keys(&fixture[name], &normalized);
-        assert_eq!(
-            state::normalize(key, normalized.clone()).unwrap(),
-            normalized
-        );
+        let reopened = state::normalize(key, normalized.clone()).unwrap();
+        let mut expected = normalized.clone();
         if name == "settings" {
-            let edited = state::settings_edit(&normalized, "autoPaste", json!(true)).unwrap();
+            // The sparse fixture has no microphone. Its first load supplies
+            // system_default with migration pending; reopening that explicit
+            // default legitimately completes the existing UID migration.
+            assert_eq!(normalized["microphone"], "system_default");
+            assert_eq!(normalized["microphoneIdMigrationComplete"], false);
+            expected["microphoneIdMigrationComplete"] = json!(true);
+        }
+        assert_eq!(reopened, expected);
+        assert_future_keys(&fixture[name], &reopened);
+        assert_eq!(state::normalize(key, reopened.clone()).unwrap(), reopened);
+        if name == "settings" {
+            let edited = state::settings_edit(&reopened, "autoPaste", json!(true)).unwrap();
             assert_future_keys(&fixture[name], &edited);
             assert_eq!(edited["settingsVersion"], 7);
             assert_eq!(edited["autoPaste"], true);
         }
     }
+}
+
+#[test]
+fn scan_metadata_preservation_does_not_resurrect_misplaced_settings() {
+    let fixture = fixture();
+    let mut settings = fixture["settings"].clone();
+    let scan = &mut settings["codeVocabLastScan"];
+    scan["autoPaste"] = json!(true);
+    scan["microphoneIdMigrationComplete"] = json!(false);
+    scan["codeVocabLastScan"] = json!({"files": 999});
+    scan["files"] = json!(-4);
+    scan["rankedTerms"][0]["freq"] = json!(-3);
+    let normalized = state::normalize("dictation-settings", settings).unwrap();
+    assert_future_keys(&fixture["settings"], &normalized);
+    let scan = &normalized["codeVocabLastScan"];
+    for key in [
+        "autoPaste",
+        "microphoneIdMigrationComplete",
+        "codeVocabLastScan",
+    ] {
+        assert!(scan.get(key).is_none(), "misplaced setting {key}");
+    }
+    assert_eq!(scan["files"], 0);
+    assert_eq!(scan["rankedTerms"][0]["freq"], 0);
 }
 
 #[test]
