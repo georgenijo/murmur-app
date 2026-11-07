@@ -1268,6 +1268,7 @@ pub struct Window {
     modifiers: Modifiers,
     capslock: Capslock,
     scale_factor: f32,
+    ui_zoom: f32,
     pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
     appearance: WindowAppearance,
     pub(crate) appearance_observers: SingleSubscriberSet<AnyObserver>,
@@ -2243,7 +2244,9 @@ impl Window {
             let mut cx = cx.to_async();
             Box::new(move |event| {
                 handle
-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
+                    .update(&mut cx, |_, window, cx| {
+                        window.dispatch_platform_event(event, cx)
+                    })
                     .with_context(|| {
                         format!("dispatching input for window {:?}", handle.window_id())
                     })
@@ -2391,6 +2394,7 @@ impl Window {
             modifiers,
             capslock,
             scale_factor,
+            ui_zoom: 1.0,
             bounds_observers: SingleSubscriberSet::new(),
             appearance,
             appearance_observers: SingleSubscriberSet::new(),
@@ -3002,9 +3006,9 @@ impl Window {
     /// the platform window, then notifies observers. Normally called automatically
     /// by the platform's resize callback, but exposed publicly for test infrastructure.
     pub fn bounds_changed(&mut self, cx: &mut App) {
-        self.scale_factor = self.platform_window.scale_factor();
-        self.viewport_size = self.platform_window.content_size();
-        self.mouse_position = self.platform_window.mouse_position();
+        self.scale_factor = self.platform_window.scale_factor() * self.ui_zoom;
+        self.viewport_size = self.platform_window.content_size() / self.ui_zoom;
+        self.mouse_position = self.platform_window.mouse_position() / self.ui_zoom;
 
         self.refresh();
 
@@ -3167,7 +3171,8 @@ impl Window {
     /// During drawing this is a consistent frame snapshot. Outside drawing it
     /// reflects the latest platform sample, not a synchronous geometry query.
     pub fn visual_viewport_bounds(&self) -> Bounds<Pixels> {
-        self.platform_window.visual_viewport_bounds()
+        let bounds = self.platform_window.visual_viewport_bounds();
+        Bounds::new(bounds.origin / self.ui_zoom, bounds.size / self.ui_zoom)
     }
 
     /// Returns a conservative rectangle avoiding platform-known obscured content.
@@ -3175,7 +3180,11 @@ impl Window {
     /// Intersects the visual viewport with the full layout area inset by system
     /// safe areas and keyboard occlusion. Unknown overlays cannot be excluded.
     pub fn fully_visible_bounds(&self) -> Bounds<Pixels> {
-        let insets = self.platform_window.insets().effective();
+        let mut insets = self.platform_window.insets().effective();
+        insets.left /= self.ui_zoom;
+        insets.top /= self.ui_zoom;
+        insets.right /= self.ui_zoom;
+        insets.bottom /= self.ui_zoom;
         let viewport = self.viewport_size();
         let left = insets.left.max(Pixels::ZERO).min(viewport.width);
         let top = insets.top.max(Pixels::ZERO).min(viewport.height);
@@ -3228,7 +3237,8 @@ impl Window {
 
     /// Opens the native title bar context menu, useful when implementing client side decorations (Wayland and X11)
     pub fn show_window_menu(&self, position: Point<Pixels>) {
-        self.platform_window.show_window_menu(position)
+        self.platform_window
+            .show_window_menu(position * self.ui_zoom)
     }
 
     /// Handle window movement for Linux and macOS.
@@ -3327,6 +3337,34 @@ impl Window {
     /// be rendered as two pixels on screen.
     pub fn scale_factor(&self) -> f32 {
         self.scale_factor
+    }
+
+    /// Native window points per layout pixel. Defaults to one. Unlike changing
+    /// rem size this scales fixed-pixel controls, layout, paint, hit testing,
+    /// accessibility and IME coordinates together without resizing NSWindow.
+    pub fn ui_zoom(&self) -> f32 {
+        self.ui_zoom
+    }
+
+    /// Set bounded whole-window content zoom on the main thread. A later
+    /// resize/display-scale notification preserves this independent factor.
+    pub fn set_ui_zoom(&mut self, zoom: f32, cx: &mut App) -> bool {
+        if !zoom.is_finite() || !(0.5..=3.0).contains(&zoom) || self.ui_zoom == zoom {
+            return false;
+        }
+        self.ui_zoom = zoom;
+        self.bounds_changed(cx);
+        self.invalidate_character_coordinates();
+        true
+    }
+    pub(crate) fn ui_bounds_to_native(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        Bounds::new(
+            bounds.origin * self.ui_zoom,
+            size(
+                bounds.size.width * self.ui_zoom,
+                bounds.size.height * self.ui_zoom,
+            ),
+        )
     }
 
     /// Overrides the display scale factor for tests.
@@ -5869,6 +5907,17 @@ impl Window {
                     .join(" ")
             })
             .unwrap_or_else(|| action.name().to_string())
+    }
+
+    /// Dispatch input expressed in native window points. Platform callbacks
+    /// use this boundary; accessibility and layout-local synthetic actions use
+    /// `dispatch_event` and must not be converted a second time.
+    pub fn dispatch_platform_event(
+        &mut self,
+        event: PlatformInput,
+        cx: &mut App,
+    ) -> DispatchEventResult {
+        self.dispatch_event(event.for_ui_zoom(self.ui_zoom), cx)
     }
 
     /// Dispatch a mouse, keyboard, or touch event on the window.

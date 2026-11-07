@@ -253,7 +253,9 @@ impl Registry {
         }
         if let WindowCommand::Zoom(zoom) = command.command {
             if zoom.is_finite() && (0.5..=3.).contains(&zoom) {
-                let _ = handle.update(cx, |_, w, _| w.set_rem_size(gpui::px((16. * zoom) as f32)));
+                let _ = handle.update(cx, |_, w, cx| {
+                    w.set_ui_zoom(zoom as f32, cx);
+                });
             }
             return;
         }

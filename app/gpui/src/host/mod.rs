@@ -12,3 +12,6 @@ pub mod shell;
 
 #[cfg(all(target_os = "macos", feature = "production-host"))]
 pub mod services;
+
+#[cfg(test)]
+mod zoom_tests;

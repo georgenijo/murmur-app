@@ -180,10 +180,21 @@ impl Updater {
     /// in production. The native adapter also checks the isolated identity.
     #[cfg(feature = "updater-test-support")]
     pub fn isolated_fixture(mut self, feed: String, key: String) -> Result<Self> {
-        if self.identifier != "com.localdictation.shutdown-test" {
+        if !matches!(
+            self.identifier.as_str(),
+            "com.localdictation.shutdown-test" | "com.localdictation.gpui-host-qa110"
+        ) {
             return Err("Isolated updater identity required".into());
         }
         validate_url(&feed, true)?;
+        if self.identifier == "com.localdictation.gpui-host-qa110" {
+            let url = url::Url::parse(&feed).map_err(|_| "Invalid fixture URL")?;
+            if url.scheme() != "http"
+                || !matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "localhost"))
+            {
+                return Err("Native updater fixture must use loopback HTTP".into());
+            }
+        }
         self.feed = feed;
         self.key = key;
         self.local_fixture = true;

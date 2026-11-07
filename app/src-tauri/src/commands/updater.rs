@@ -59,7 +59,7 @@ pub(crate) fn initialize(
             notification.notify_update(&version);
         },
     );
-    #[cfg(feature = "shutdown-test-support")]
+    #[cfg(any(feature = "shutdown-test-support", feature = "native-host-qa"))]
     let updater = fixture::configure(app, updater)?;
     app.install_updater_owner(Arc::new(updater));
     let timer = app.clone();
@@ -109,11 +109,11 @@ fn run(app: &crate::host::Context, action: Action) -> Result<Snapshot, String> {
     // Other internal builds must never consume the production feed or replace
     // their unsigned developer bundle. The QA fixture alone opts in explicitly.
     if crate::identity::internal() {
-        #[cfg(feature = "shutdown-test-support")]
+        #[cfg(any(feature = "shutdown-test-support", feature = "native-host-qa"))]
         if !fixture::enabled(app) {
             return Err("Updater unavailable for this internal identity".into());
         }
-        #[cfg(not(feature = "shutdown-test-support"))]
+        #[cfg(not(any(feature = "shutdown-test-support", feature = "native-host-qa")))]
         return Err("Updater unavailable for this internal identity".into());
     }
     let updater = owner(app)?;
@@ -187,13 +187,16 @@ pub fn updater_canary(
     })
 }
 
-#[cfg(feature = "shutdown-test-support")]
+#[cfg(any(feature = "shutdown-test-support", feature = "native-host-qa"))]
 mod fixture {
     use super::*;
     /// This override is compiled only with the QA feature. Production identity
     /// ignores it, even in a feature-enabled developer build.
     pub(super) fn enabled(app: &crate::host::Context) -> bool {
-        app.config().identifier == "com.localdictation.shutdown-test"
+        ((cfg!(feature = "shutdown-test-support")
+            && app.config().identifier == "com.localdictation.shutdown-test")
+            || (cfg!(feature = "native-host-qa")
+                && app.config().identifier == "com.localdictation.gpui-host-qa110"))
             && std::env::var_os("MURMUR_UPDATER_FIXTURE").is_some()
     }
     pub(super) fn configure(
@@ -206,7 +209,13 @@ mod fixture {
         let path = std::path::PathBuf::from(
             std::env::var_os("MURMUR_UPDATER_FIXTURE").ok_or("Updater fixture missing")?,
         );
-        let bytes = std::fs::read(path).map_err(|_| "Updater fixture unreadable")?;
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|_| "Updater fixture unreadable")?
+            .take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Updater fixture unreadable")?;
         if bytes.len() > 65536 {
             return Err("Updater fixture too large".into());
         }

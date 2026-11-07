@@ -21,7 +21,10 @@ actions!(
         Quit,
         Hide,
         HideOthers,
-        ShowAll
+        ShowAll,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset
     ]
 );
 /// Production service composition is injected by the executable. This boundary
@@ -143,7 +146,14 @@ pub fn run_with(
             .into();
         cx.on_action(move |_: &Diagnostics, cx| show(diagnostics, cx));
 
+        cx.on_action(|_: &ZoomIn, cx| zoom(cx, 0.1, false));
+        cx.on_action(|_: &ZoomOut, cx| zoom(cx, -0.1, false));
+        cx.on_action(|_: &ZoomReset, cx| zoom(cx, 0., true));
         cx.bind_keys([
+            KeyBinding::new("cmd-+", ZoomIn, None),
+            KeyBinding::new("cmd-=", ZoomIn, None),
+            KeyBinding::new("cmd--", ZoomOut, None),
+            KeyBinding::new("cmd-0", ZoomReset, None),
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-,", Settings, None),
             KeyBinding::new("cmd-h", Hide, None),
@@ -266,4 +276,17 @@ pub fn run_with(
         .detach();
         cx.activate(true);
     });
+}
+
+fn zoom(cx: &mut App, delta: f32, reset: bool) {
+    if let Some(handle) = cx.active_window() {
+        let _ = handle.update(cx, |_, w, cx| {
+            let next = if reset {
+                1.
+            } else {
+                ((w.ui_zoom() + delta) * 10.).round() / 10.
+            };
+            w.set_ui_zoom(next.clamp(0.5, 3.), cx);
+        });
+    }
 }

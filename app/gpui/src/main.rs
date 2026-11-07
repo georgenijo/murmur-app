@@ -30,7 +30,7 @@ fn main() -> ExitCode {
     if murmur_services::native_services::initialize_identity(&identifier, &home).is_err() {
         return ExitCode::FAILURE;
     }
-    if let Some(code) = worker::dispatch(&NativeWorkers) {
+    if let Some(code) = services::legacy::worker().or_else(|| worker::dispatch(&NativeWorkers)) {
         return ExitCode::from(u8::try_from(code).unwrap_or(1));
     }
     services::run(identifier, home)

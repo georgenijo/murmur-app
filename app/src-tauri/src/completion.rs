@@ -783,3 +783,77 @@ pub(crate) fn native_history_publish(
         })
         .map_err(|_| "History changed or unavailable".into())
 }
+
+/// Native transport has no webview/window authority: only the fixed migration
+/// worker supplies a bounded snapshot. The shared owner retains all receipts.
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) async fn native_import(
+    app: crate::host::Context,
+    value: serde_json::Value,
+) -> Result<(Vec<String>, bool), String> {
+    wait_ready(&app).await?;
+    let permit = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::source_call(move || {
+        let _permit = permit;
+        let _observer = SourcePublicationObserver(&app);
+        let _warning = crate::commands::settings_store::SettingsWarningNotification(&app);
+        let root = crate::commands::settings_store::data_dir(&app)?;
+        crate::commands::settings_store::reconcile_lifecycle_after(&root, || {
+            murmur_core::completion::transport::import(&ready(&app)?.service, value)
+                .map(|removal| (removal.keys, removal.committed))
+                .map_err(|e| e.to_string())
+        })
+    })
+    .await
+    .map_err(|_| "Importer owner unavailable".to_owned())?
+}
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) async fn native_acknowledge(
+    app: crate::host::Context,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    wait_ready(&app).await?;
+    let permit = crate::shutdown::WriterPermit::acquire()?;
+    crate::shutdown::source_call(move || {
+        let _permit = permit;
+        let _observer = SourcePublicationObserver(&app);
+        murmur_core::completion::transport::acknowledge(&ready(&app)?.service, &value)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|_| "Importer owner unavailable".to_owned())?
+}
+
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) async fn native_retry_initialization(app: crate::host::Context) -> Result<(), String> {
+    if app
+        .completion_initialization()
+        .failed
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+    let permit = crate::shutdown::WriterPermit::acquire()?;
+    let worker = app.clone();
+    let result = crate::host::runtime::spawn_blocking(move || {
+        let _permit = permit;
+        if worker.try_completion_owner().is_none() {
+            initialize_worker(&worker)
+        } else if worker.try_updater_owner().is_none() {
+            crate::commands::updater::initialize(&worker, ready(&worker)?.service.clone())
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|_| "Storage initializer unavailable".to_owned())?;
+    if result.is_ok() {
+        start_gate(app);
+    } else {
+        app.completion_initialization()
+            .failed
+            .store(true, Ordering::Release);
+    }
+    result
+}

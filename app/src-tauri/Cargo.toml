@@ -35,6 +35,7 @@ harness = false
 default = ["tauri-host"]
 tauri-host = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-opener", "dep:tauri-plugin-autostart", "dep:tauri-plugin-notification", "dep:tauri-plugin-process", "dep:tauri-plugin-dialog", "dep:murmur-webkit", "dep:tao"]
 native-host = []
+native-host-qa = ["native-host", "murmur-core/updater-test-support"]
 # Test-only capture helper executable injection.
 capture-test-support = []
 # Isolated synthetic shutdown fixture; never enabled in release workflows.

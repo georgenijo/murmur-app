@@ -5,6 +5,7 @@ mod numeric;
 pub mod producers;
 mod stats;
 mod storage;
+pub mod transport;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

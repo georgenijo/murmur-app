@@ -824,6 +824,45 @@ pub enum PlatformInput {
 }
 
 impl PlatformInput {
+    pub(crate) fn for_ui_zoom(mut self, zoom: f32) -> Self {
+        if zoom == 1.0 {
+            return self;
+        }
+        match &mut self {
+            Self::MouseDown(e) => e.position = e.position / zoom,
+            Self::MouseUp(e) => e.position = e.position / zoom,
+            Self::MouseMove(e) => e.position = e.position / zoom,
+            Self::MouseExited(e) => e.position = e.position / zoom,
+            Self::MousePressure(e) => e.position = e.position / zoom,
+            Self::Scroll(e) => {
+                e.position = e.position / zoom;
+                if let ScrollDelta::Pixels(delta) = &mut e.delta {
+                    *delta = *delta / zoom;
+                }
+            }
+            Self::Pinch(e) => e.position = e.position / zoom,
+            Self::Touch(e) => {
+                e.position = e.position / zoom;
+                e.predicted_position = e.predicted_position.map(|p| p / zoom);
+            }
+            Self::LongPress(e) => {
+                e.start_position = e.start_position / zoom;
+                e.position = e.position / zoom;
+            }
+            Self::TouchDrag(e) => {
+                e.start_position = e.start_position / zoom;
+                e.position = e.position / zoom;
+            }
+            Self::BackGesture(e) => e.start_position = e.start_position / zoom,
+            Self::FileDrop(
+                FileDropEvent::Entered { position, .. }
+                | FileDropEvent::Pending { position }
+                | FileDropEvent::Submit { position },
+            ) => *position = *position / zoom,
+            Self::FileDrop(_) | Self::KeyDown(_) | Self::KeyUp(_) | Self::ModifiersChanged(_) => {}
+        }
+        self
+    }
     pub(crate) fn mouse_event(&self) -> Option<&dyn Any> {
         match self {
             PlatformInput::KeyDown { .. } => None,

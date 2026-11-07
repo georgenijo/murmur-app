@@ -29,7 +29,7 @@ impl StoreIdentity {
 }
 use murmur_core::completion::{
     lifecycle::{Operation, TRANSCRIPT_KEYS, UPDATER_V3_KEYS, V2_KEYS},
-    Command, CompletionService, Destination,
+    CompletionService,
 };
 use objc2::{
     define_class, msg_send, rc::Retained, runtime::ProtocolObject, AnyThread, DefinedClass,
@@ -422,43 +422,14 @@ impl Importer {
                 std::thread::spawn(move || {
                     let result = (|| {
                         if removing {
-                            let keys = value["removed"].as_array().ok_or(())?;
-                            let mut destinations = vec![];
-                            for (d, required) in [
-                                (Destination::History, &TRANSCRIPT_KEYS[0..1]),
-                                (Destination::Statistics, &TRANSCRIPT_KEYS[1..2]),
-                                (Destination::Reports, &TRANSCRIPT_KEYS[2..4]),
-                            ] {
-                                if required
-                                    .iter()
-                                    .all(|k| keys.iter().any(|v| v.as_str() == Some(k)))
-                                {
-                                    destinations.push(d);
-                                }
-                            }
-                            service
-                                .execute(Command::KeysRemoved(destinations))
+                            murmur_core::completion::transport::acknowledge(&service, &value)
                                 .map_err(|_| ())?;
                             Ok((vec![], committed))
                         } else {
-                            let source = if value.get("error").is_none() {
-                                serde_json::from_value(value).ok()
-                            } else {
-                                None
-                            };
-                            // A failed partial import may still expose durable
-                            // destination receipts on the next launch. No broad purge.
-                            let imported = source.is_some_and(|source| {
-                                service.lifecycle(Operation::Import(source)).is_ok()
-                            });
-                            let mut keys = service
-                                .execute(Command::Snapshot)
-                                .map_err(|_| ())?
-                                .remove_keys;
-                            if service.lifecycle(Operation::Status).is_ok_and(|r| r.v3) {
-                                keys.extend(UPDATER_V3_KEYS.iter().map(|k| (*k).to_owned()));
-                            }
-                            Ok((keys, imported))
+                            let removal =
+                                murmur_core::completion::transport::import(&service, value)
+                                    .map_err(|_| ())?;
+                            Ok((removal.keys, removal.committed))
                         }
                     })();
                     let _ = send.send(result);

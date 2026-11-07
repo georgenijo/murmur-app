@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/host.m");
+    println!("cargo:rerun-if-changed=native/legacy.m");
     println!("cargo:rerun-if-changed=native/services.m");
     println!("cargo:rerun-if-changed=native/ax_focus_fix.m");
     println!("cargo:rerun-if-changed=native/preferences.m");
@@ -33,7 +34,7 @@ fn main() {
             }
 
             cc::Build::new()
-                .file("native/services.m")
+                .files(["native/services.m", "native/legacy.m"])
                 .flag("-fobjc-arc")
                 .compile("murmur_host_services");
             println!("cargo:rustc-link-lib=framework=ServiceManagement");

@@ -837,6 +837,14 @@ fn compiled_qa_seam_rejects_production_identity_and_nonloopback_endpoints() {
     assert!(owner(ID)
         .isolated_fixture("http://127.0.0.1/feed".into(), "test".into())
         .is_ok());
+    assert!(owner("com.localdictation.gpui-host-qa110")
+        .isolated_fixture("http://127.0.0.1/feed".into(), "test".into())
+        .is_ok());
+    for feed in ["https://127.0.0.1/feed", "http://example.test/feed"] {
+        assert!(owner("com.localdictation.gpui-host-qa110")
+            .isolated_fixture(feed.into(), "test".into())
+            .is_err());
+    }
     assert_eq!(owner("com.localdictation").feed, FEED);
     assert_eq!(owner("com.localdictation").key, PUBLIC_KEY);
 }

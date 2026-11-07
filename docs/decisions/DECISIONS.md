@@ -1,5 +1,17 @@
 # Decisions Log
 
+## 2026-11-07: Gate native startup on durable legacy import and scale GPUI content coherently (#996)
+
+**Decision:** Add draft layer 23 above the production adapters. A disposable native worker alone loads WebKit to read the fixed legacy origin; the GPUI process retains the shared completion owner, durable receipts and exact key-removal acknowledgements. Main exposes a loading/retry gate until import and production configuration finish. Whole-window zoom scales layout, paint, platform input, AX and IME together, while native window geometry remains in AppKit points.
+
+**Rationale:** Existing users must reach their migrated settings before recording admission. The standalone transport survives Tauri removal, and shares migration decisions with the shipping importer. Changing rem size alone misses fixed-pixel controls and cannot preserve pointer/AX/IME alignment.
+
+**Status:** active
+
+**References:** #996, #1037, #1038, #1039, #1040, [startup integration](../draft/gpui-startup-integration.md)
+
+---
+
 ## 2026-11-07: Separate native services from production view composition (#996)
 
 **Decision:** Keep the authorized complete #996 scope, with one further draft

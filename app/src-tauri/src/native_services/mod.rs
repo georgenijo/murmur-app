@@ -319,6 +319,22 @@ pub struct AcceptedWork {
     _permit: crate::shutdown::WriterPermit,
 }
 impl Services {
+    pub async fn retry_initialization(&self) -> Result<(), String> {
+        crate::completion::native_retry_initialization(self.context.clone()).await
+    }
+    pub fn legacy_store_present(&self) -> bool {
+        self.context.path().home_dir().is_ok_and(|home| {
+            home.join("Library/WebKit")
+                .join(&self.context.config().identifier)
+                .exists()
+        })
+    }
+    pub async fn import_legacy(&self, value: Value) -> Result<(Vec<String>, bool), String> {
+        crate::completion::native_import(self.context.clone(), value).await
+    }
+    pub async fn acknowledge_legacy(&self, value: Value) -> Result<(), String> {
+        crate::completion::native_acknowledge(self.context.clone(), value).await
+    }
     pub fn accept_work(&self) -> Result<AcceptedWork, String> {
         crate::shutdown::WriterPermit::acquire().map(|permit| AcceptedWork { _permit: permit })
     }

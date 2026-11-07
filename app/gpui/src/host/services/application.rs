@@ -27,7 +27,7 @@ use murmur_services::native_services::{
 };
 use serde_json::{Value, json};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     path::PathBuf,
     rc::Rc,
@@ -328,6 +328,7 @@ struct Host {
     routes: mpsc::Receiver<Route>,
     handles: RefCell<BTreeMap<&'static str, AnyWindowHandle>>,
     main: RefCell<Option<Entity<root::Main>>>,
+    focused: Cell<bool>,
     diagnostics: RefCell<Option<Entity<crate::diagnostics::Diagnostics>>>,
     overlay: RefCell<Option<Entity<crate::overlay::Overlay>>>,
     preview: RefCell<Option<Entity<crate::preview::Preview>>>,
@@ -547,7 +548,26 @@ impl ApplicationHost for Rc<Host> {
         if let Some(handle) = self.handles.borrow().get("main").copied()
             && let Some(view) = self.main.borrow().clone()
         {
-            let _ = handle.update(cx, |_, w, cx| view.update(cx, |s, cx| s.tick(w, cx)));
+            let _ = handle.update(cx, |_, w, cx| {
+                let active = w.is_window_active();
+                if active
+                    && !self.focused.replace(active)
+                    && self.backend.booted.load(Ordering::Acquire)
+                {
+                    let b = self.backend.clone();
+                    self.backend.spawn(async move {
+                        let _ = b
+                            .call(
+                                "updater_action",
+                                json!({"action":{"kind":"check","background":true}}),
+                            )
+                            .await;
+                    });
+                } else {
+                    self.focused.set(active);
+                }
+                view.update(cx, |s, cx| s.tick(w, cx));
+            });
         }
         let handles = self.handles.borrow().clone();
         while let Ok(command) = self.commands.try_recv() {
@@ -687,6 +707,11 @@ impl ApplicationHost for Rc<Host> {
         }
     }
     fn intent(&self, intent: Intent) {
+        if !self.backend.booted.load(Ordering::Acquire)
+            && !matches!(intent, Intent::Show | Intent::Quit | Intent::Diagnostics)
+        {
+            return;
+        }
         let b = self.backend.clone();
         match intent {
             Intent::Settings => b.navigate(Route::Settings(crate::settings::schema::Page::General)),
@@ -836,6 +861,24 @@ impl crate::overlay::Host for OverlayHost {
     }
 }
 pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
+    #[cfg(feature = "native-host-qa")]
+    if std::env::args_os().any(|a| a == "--native-host-legacy-fixture") {
+        if identifier != "com.localdictation.gpui-host-qa110"
+            || std::env::var_os("MURMUR_NATIVE_TEST_HOME")
+                .map(PathBuf::from)
+                .as_ref()
+                != Some(&home)
+            || home
+                .file_name()
+                .is_none_or(|name| !name.to_string_lossy().starts_with("murmur-gpui-test-"))
+        {
+            return std::process::ExitCode::FAILURE;
+        }
+        if std::fs::create_dir_all(home.join("Library/WebKit").join(&identifier)).is_err() {
+            return std::process::ExitCode::FAILURE;
+        }
+    }
+
     let Ok(paths) = DataPaths::new(&home, &identifier) else {
         return std::process::ExitCode::FAILURE;
     };
@@ -916,6 +959,8 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
         let backend = Backend {
             services: services.clone(),
             activity: Default::default(),
+            booting: Default::default(),
+            booted: Default::default(),
             theme_snapshot: Default::default(),
             scan: scan.clone(),
             calendar_access: Arc::new(Mutex::new(crate::onboarding::model::Access::Unknown)),
@@ -944,6 +989,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             routes: route_receive,
             handles: Default::default(),
             main: Default::default(),
+            focused: Default::default(),
             diagnostics: Default::default(),
             overlay: Default::default(),
             preview: Default::default(),
@@ -1000,7 +1046,9 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
                     let source = b.clone();
                     b.spawn(async move {
                         if let Ok(sources) = source.sources().await {
-                            if let Ok(settings) = super::projections::settings(&source).await {
+                            if source.booted.load(Ordering::Acquire)
+                                && let Ok(settings) = super::projections::settings(&source).await
+                            {
                                 configure_background(
                                     &source,
                                     &settings,
@@ -1015,33 +1063,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             }),
         );
         host._subscriptions.borrow_mut().push(stop);
-        let b = backend.clone();
-        backend.spawn(async move {
-            let result = async {
-                let sources = b.sources().await?;
-                b.navigate(Route::Sources(sources.clone()));
-                let settings = super::projections::settings(&b).await?;
-                b.call("init_dictation", json!({})).await?;
-                b.call("configure_dictation", json!({"options":settings}))
-                    .await?;
-                b.call("configure_dictation_control", json!({"settings":settings}))
-                    .await?;
-                if sources["murmur_onboarding_complete"] != true {
-                    b.navigate(Route::Setup);
-                }
-                configure_background(&b, &settings, sources["murmur_onboarding_complete"] == true)
-                    .await;
-                let saved = settings["launchAtLogin"].as_bool();
-                b.login.migrate(saved).await?;
-                Ok::<(), String>(())
-            }
-            .await;
-            if result.is_err() {
-                b.navigate(Route::Setup);
-            }
-            #[cfg(feature = "native-host-qa")]
-            contract(&b).await;
-        });
+        bootstrap(backend.clone());
         (
             Rc::new(host) as Rc<dyn ApplicationHost>,
             Arc::new(services) as Arc<dyn crate::host::lifecycle::ProcessLifecycle>,
@@ -1053,7 +1075,69 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+pub(super) fn bootstrap(b: Backend) {
+    if b.booting
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let task = b.clone();
+    b.spawn(async move {
+        let b = task;
+        let result = async {
+            b.services.retry_initialization().await?;
+            let synthetic = cfg!(feature = "native-host-qa")
+                && std::env::args_os().any(|a| a == "--native-host-legacy-fixture")
+                && os::identity() == "com.localdictation.gpui-host-qa110";
+            super::legacy::migrate(&b, synthetic).await?;
+            let sources = b.sources().await?;
+            b.navigate(Route::Sources(sources.clone()));
+            let settings = migrate_microphone(&b).await?;
+            let models = super::projections::models(b.clone()).await?;
+            let installed = models
+                .model(&models.selected)
+                .is_some_and(|m| m.install == crate::models::model::Install::Installed);
+            let complete = sources["murmur_onboarding_complete"] == true && installed;
+            b.call("init_dictation", json!({})).await?;
+            b.call("configure_dictation", json!({"options":settings}))
+                .await?;
+            b.call("configure_dictation_control", json!({"settings":settings}))
+                .await?;
+            configure_background(&b, &settings, complete).await;
+            if b.login
+                .migrate(settings["launchAtLogin"].as_bool())
+                .await
+                .is_err()
+            {
+                b.navigate(Route::Notice(
+                    "Launch at login could not be updated. Review it in Settings.",
+                ));
+            }
+            Ok::<bool, String>(!complete)
+        }
+        .await;
+        b.booting.store(false, Ordering::Release);
+        match result {
+            Ok(setup) => {
+                b.booted.store(true, Ordering::Release);
+                b.navigate(Route::BootstrapReady(setup));
+            }
+            Err(_) => b.navigate(Route::BootstrapFailed),
+        }
+        #[cfg(feature = "native-host-qa")]
+        contract(&b).await;
+    });
+}
+
 async fn configure_background(b: &Backend, settings: &Value, complete: bool) {
+    let complete = complete
+        && b.call(
+            "check_specific_model_exists",
+            json!({"modelName":settings["model"]}),
+        )
+        .await
+        .is_ok_and(|installed| installed == true);
     let _ = b.call("updater_action", json!({"action":{"kind":"configure","automatic":complete && settings["autoUpdateEnabled"] != false}})).await;
     let _ = b
         .call(
@@ -1123,6 +1207,25 @@ async fn contract(b: &Backend) {
     );
     results.insert("identity".into(), json!(os::identity()));
     results.insert("nsApplication".into(), json!(true));
+    results.insert(
+        "startupReady".into(),
+        json!(b.booted.load(Ordering::Acquire)),
+    );
+    if args.iter().any(|arg| arg == "--native-host-legacy-fixture") {
+        let migrated = async {
+            let settings = super::projections::settings(b).await?;
+            let (_, snapshot) = b.services.history_snapshot().await?;
+            Ok::<bool, String>(
+                settings["language"] == "es"
+                    && snapshot.history.len() == 1
+                    && b.call("webkit_state_snapshot", json!({})).await?["transcriptKeysRemoved"]
+                        == true,
+            )
+        }
+        .await
+        .unwrap_or(false);
+        results.insert("legacyFixture".into(), json!(migrated));
+    }
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1136,4 +1239,51 @@ async fn contract(b: &Backend) {
             .and_then(|_| f.sync_all());
     }
     b.services.shutdown(murmur_core::shutdown::Request::Quit);
+}
+
+async fn migrate_microphone(b: &Backend) -> Result<Value, String> {
+    let (revision, mut settings) = b.services.settings_snapshot().await?;
+    if settings["microphoneIdMigrationComplete"] != true {
+        let inventory = b.call("get_audio_input_inventory", json!({})).await?;
+        if inventory["status"] == "available" {
+            let current = settings["microphone"].as_str().unwrap_or("system_default");
+            if let Some(id) = legacy_microphone(current, &inventory["devices"]) {
+                b.patch(
+                    json!({"microphone":id,"microphoneIdMigrationComplete":true}),
+                    revision,
+                )
+                .await?;
+                settings = super::projections::settings(b).await?;
+            }
+        }
+    }
+    Ok(settings)
+}
+fn legacy_microphone(current: &str, devices: &Value) -> Option<String> {
+    let devices = devices.as_array()?;
+    if devices.iter().any(|d| d["id"] == current) {
+        return Some(current.into());
+    }
+    let matches: Vec<_> = devices.iter().filter(|d| d["name"] == current).collect();
+    if matches.len() == 1 {
+        matches[0]["id"].as_str().map(String::from)
+    } else {
+        None
+    }
+}
+#[cfg(test)]
+mod startup_tests {
+    use super::legacy_microphone;
+    use serde_json::json;
+    #[test]
+    fn microphone_migration_requires_an_existing_uid_or_unique_name() {
+        let devices = json!([{"id":"uid-a","name":"Synthetic mic"},{"id":"uid-b","name":"Repeated"},{"id":"uid-c","name":"Repeated"}]);
+        assert_eq!(legacy_microphone("uid-a", &devices), Some("uid-a".into()));
+        assert_eq!(
+            legacy_microphone("Synthetic mic", &devices),
+            Some("uid-a".into())
+        );
+        assert_eq!(legacy_microphone("Repeated", &devices), None);
+        assert_eq!(legacy_microphone("Missing", &devices), None);
+    }
 }

@@ -37,3 +37,9 @@ no Zed GPL crate, examples, benchmark or upstream test asset is included.
 `component-unfocused-tab.patch` records the shared Root correction for unhandled
 Tab entry from a window with no focused element; it preserves activation focus
 and the existing focus-trap traversal policy.
+
+`gpui-window-zoom.patch` records the native host's whole-window content zoom.
+It scales layout/paint and AX consistently, maps platform pointer/scroll/drop
+coordinates into layout space once, and converts IME bounds back to native
+points. Native window geometry and default zoom remain unchanged. The patch
+applies after the production host clipboard additions from layer 21.

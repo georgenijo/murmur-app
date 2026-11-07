@@ -51,6 +51,8 @@ pub struct Main {
     backend: Backend,
     section: Section,
     visible: bool,
+    ready: bool,
+    startup_failed: bool,
     home: Entity<crate::home::Home>,
     settings: Entity<crate::settings::Settings>,
     meetings: Entity<crate::meetings::Meetings>,
@@ -95,6 +97,8 @@ impl Main {
             backend,
             section: Section::Home,
             visible: false,
+            ready: false,
+            startup_failed: false,
             home,
             settings,
             meetings,
@@ -135,6 +139,10 @@ impl Main {
             return;
         }
         self.visible = true;
+        if !self.ready {
+            cx.notify();
+            return;
+        }
         macro_rules! attach {
             ($field:ident) => {
                 self.$field.update(cx, |s, cx| {
@@ -285,7 +293,46 @@ impl Main {
         }
     }
     pub fn route(&mut self, route: Route, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.ready
+            && !matches!(
+                route,
+                Route::BootstrapRetry
+                    | Route::BootstrapReady(_)
+                    | Route::BootstrapFailed
+                    | Route::Sources(_)
+                    | Route::Notice(_)
+                    | Route::Update(_)
+                    | Route::Diagnostics
+            )
+        {
+            return;
+        }
         match route {
+            Route::BootstrapRetry => {
+                self.startup_failed = false;
+                super::application::bootstrap(self.backend.clone());
+            }
+            Route::BootstrapFailed => {
+                self.startup_failed = true;
+                if self.ready {
+                    self.error = Some("Legacy import remains preserved for retry.");
+                }
+            }
+            Route::BootstrapReady(setup) => {
+                if self.ready {
+                    cx.notify();
+                    return;
+                }
+                let visible = self.visible;
+                self.ready = true;
+                self.startup_failed = false;
+                self.section = if setup { Section::Setup } else { Section::Home };
+                self.visible = false;
+                if visible {
+                    self.show(w, cx);
+                }
+            }
+
             Route::Home => self.select(Section::Home, w, cx),
             Route::Meetings => self.select(Section::Meetings, w, cx),
             Route::MeetingToggle => {
@@ -474,6 +521,13 @@ actions!(
 );
 impl Render for Main {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.ready {
+            return div().size_full().flex().flex_col().items_center().justify_center().gap_4()
+                .child(if self.startup_failed {"Murmur could not finish loading your local data. Your previous data is preserved."} else {"Loading your local data…"})
+                .when(self.startup_failed, |d| d.child(Button::new("startup-retry", "Retry").on_click(cx.listener(|s,_,_,cx| {s.startup_failed=false;super::application::bootstrap(s.backend.clone());cx.notify();}))))
+                .into_any_element();
+        }
+
         let p = Palette::get(cx);
         let mut nav = div()
             .flex()
@@ -871,7 +925,7 @@ impl Render for Main {
                     .child(modal),
             );
         }
-        root
+        root.into_any_element()
     }
 }
 

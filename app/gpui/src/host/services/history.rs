@@ -169,7 +169,7 @@ impl Host for Backend {
                     },
                     RequestKind::CorrectAndTeach{entry}=>b.navigate(Route::Teach(entry)),
                     RequestKind::TranscribeFile=>b.transcribe_files(current.clone()).await?,
-                    RequestKind::RetryImport=>{b.effect("retry_completion_initialization",json!({}),current.clone()).await?;}
+                    RequestKind::RetryImport=>{super::application::bootstrap(b.clone());}
                 }Ok(Outcome::Opened)
             }.await;
             if current()&&!inbox.is_closed(){let _=inbox.publish(Event::Action{ticket:r.ticket,outcome:result.unwrap_or(Outcome::Failed)});}

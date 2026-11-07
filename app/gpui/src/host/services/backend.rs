@@ -148,6 +148,8 @@ impl Activity {
 pub struct Backend {
     pub services: Services,
     pub activity: Arc<Activity>,
+    pub booting: Arc<AtomicBool>,
+    pub booted: Arc<AtomicBool>,
     pub scan: Arc<Mutex<Option<(String, Value)>>>,
     pub theme_snapshot: Arc<Mutex<Option<(crate::themes::model::Snapshot, Value)>>>,
     pub calendar_access: Arc<Mutex<crate::onboarding::model::Access>>,
@@ -252,6 +254,9 @@ impl Backend {
 #[derive(Clone)]
 pub enum Route {
     Home,
+    BootstrapRetry,
+    BootstrapReady(bool),
+    BootstrapFailed,
     Meetings,
     MeetingToggle,
     MeetingSuggested(String),

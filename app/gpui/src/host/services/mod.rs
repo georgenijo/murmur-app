@@ -1,6 +1,7 @@
 //! Production composition only. QA/gallery entry points keep their injected
 //! fixtures and never create these service owners or register OS capabilities.
 pub mod autostart;
+pub mod legacy;
 pub mod os;
 pub mod process;
 

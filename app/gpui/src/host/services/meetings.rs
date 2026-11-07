@@ -27,6 +27,8 @@ pub struct Presentation {
     retired: Mutex<Vec<p::Worker>>,
     revision: AtomicU64,
     reads: tokio::sync::Mutex<()>,
+    last_tick: Mutex<Option<std::time::Instant>>,
+    refreshing: Arc<AtomicBool>,
 }
 impl Presentation {
     pub fn quiesce(&self, deadline: std::time::Instant) -> bool {
@@ -452,6 +454,20 @@ impl Host for Backend {
             .unwrap_or_else(|p| p.into_inner())
             .as_mut()
             .and_then(|(_, w)| w.poll());
+        let due = {
+            let mut last = self
+                .meetings
+                .last_tick
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if last.is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(1)) {
+                *last = Some(std::time::Instant::now());
+                true
+            } else {
+                false
+            }
+        };
+        let changed = update.is_some();
         if let Some(update) = update {
             {
                 let mut selection = self
@@ -471,8 +487,23 @@ impl Host for Backend {
                     Err(_) => selection.audio.state = AudioState::Error,
                 }
             }
+        }
+        if (changed || due)
+            && self
+                .meetings
+                .refreshing
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
             let b = self.clone();
             self.spawn(async move {
+                struct Release(Arc<AtomicBool>);
+                impl Drop for Release {
+                    fn drop(&mut self) {
+                        self.0.store(false, Ordering::Release);
+                    }
+                }
+                let _release = Release(b.meetings.refreshing.clone());
                 if let Ok(snapshot) = read(b.clone()).await
                     && !b.activity.busy()
                 {
