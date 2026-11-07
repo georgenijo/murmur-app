@@ -197,8 +197,13 @@ impl Render for Form {
                 });
                 (e.read(cx).focus_handle(cx), e.clone().into_any_element())
             };
-            let reveal =
-                crate::data_components::focus_reveal(focus, self.scroll_parent.clone(), None, w, cx);
+            let reveal = crate::data_components::focus_reveal(
+                focus,
+                self.scroll_parent.clone(),
+                None,
+                w,
+                cx,
+            );
             body = body.child(
                 div()
                     .relative()
