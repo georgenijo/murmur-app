@@ -1,5 +1,6 @@
 //! Synthetic-only host: no app database, settings files, Calendar, capture or clipboard.
 use super::{host::*, inbox::Inbox, model::*, playback};
+use crate::workspace::Projection;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -91,6 +92,50 @@ pub fn snapshot() -> Snapshot {
         notice: None,
     }
 }
+/// Gallery/QA-only corpus. The host pages it through the real List intents;
+/// no environment variables are read by production or by the shared view.
+pub fn corpus(count: usize, segments: usize, text_chars: usize) -> Snapshot {
+    let mut s = snapshot();
+    let template = s.meetings[0].clone();
+    s.meetings = (0..count)
+        .map(|i| {
+            if i < 2 {
+                s.meetings[i].clone()
+            } else {
+                Meeting {
+                    id: format!("fixture-{}", i + 1),
+                    title: Some(format!("Synthetic meeting {:05}", i + 1)),
+                    ..template.clone()
+                }
+            }
+        })
+        .collect();
+    s.total = count;
+    let detail = s.detail.as_mut().unwrap();
+    let templates = detail.segments.clone();
+    detail.segments = (0..segments)
+        .map(|i| {
+            let mut segment = templates[i % templates.len()].clone();
+            segment.id = i as u64 + 1;
+            segment.start_ms = i as u64 * 1000;
+            segment.end_ms = segment.start_ms + 1500;
+            // Only the original short segments have generated audio backing.
+            segment.audio_available &= i < 2;
+            if segment.status == "final" && text_chars > 0 {
+                let sentence = format!("Synthetic segment {}. Local fixture text only. ", i + 1);
+                segment.text = sentence.chars().cycle().take(text_chars).collect();
+            }
+            segment
+        })
+        .collect();
+    detail.session.segment_count = segments;
+    if let Some(first) = s.meetings.first_mut() {
+        first.segment_count = segments;
+    } else {
+        s.detail = None;
+    }
+    s
+}
 struct AudioRequest {
     ticket: Ticket,
     lease: crate::workspace::Lease,
@@ -98,6 +143,7 @@ struct AudioRequest {
 }
 pub struct FixtureHost {
     pub state: RefCell<Snapshot>,
+    corpus: Snapshot,
     pub actions: RefCell<Vec<Action>>,
     pub calls: RefCell<Vec<&'static str>>,
     pub stops: Rc<Cell<usize>>,
@@ -111,8 +157,21 @@ pub struct FixtureHost {
 }
 impl Default for FixtureHost {
     fn default() -> Self {
+        Self::with_corpus(2, 4, 0)
+    }
+}
+impl FixtureHost {
+    pub fn with_corpus(count: usize, segments: usize, text_chars: usize) -> Self {
+        let corpus = corpus(count, segments, text_chars);
+        assert!(
+            corpus.valid(),
+            "Synthetic fixture exceeds the projection limits; reduce COUNT, SEGMENTS or TEXT_CHARS (16 MiB combined maximum)"
+        );
+        let mut initial = corpus.clone();
+        initial.meetings.truncate(50);
         Self {
-            state: RefCell::new(snapshot()),
+            state: RefCell::new(initial),
+            corpus,
             actions: Default::default(),
             calls: Default::default(),
             stops: Default::default(),
@@ -222,8 +281,10 @@ impl Host for FixtureHost {
                     return Err(Problem::Conflict);
                 }
                 Action::Select(id) => {
-                    s.detail = snapshot()
+                    s.detail = self
+                        .corpus
                         .detail
+                        .clone()
                         .filter(|d| d.session.id == id)
                         .or_else(|| {
                             s.meetings.iter().find(|m| m.id == id).map(|m| Detail {
@@ -247,10 +308,11 @@ impl Host for FixtureHost {
                     s.calendar = Calendar::Closed;
                     s.bundle = None;
                 }
-                Action::List { query, .. } => {
-                    s.meetings = snapshot()
+                Action::List { query, limit } => {
+                    let matches: Vec<_> = self
+                        .corpus
                         .meetings
-                        .into_iter()
+                        .iter()
                         .filter(|m| {
                             query.is_empty()
                                 || m.title.as_ref().is_some_and(|t| {
@@ -258,8 +320,10 @@ impl Host for FixtureHost {
                                 })
                                 || m.preview.to_lowercase().contains(&query.to_lowercase())
                         })
+                        .cloned()
                         .collect();
-                    s.total = s.meetings.len();
+                    s.total = matches.len();
+                    s.meetings = matches.into_iter().take(limit).collect();
                     s.query = query;
                     if s.detail
                         .as_ref()

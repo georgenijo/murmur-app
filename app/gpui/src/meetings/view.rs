@@ -10,6 +10,7 @@ impl Meetings {
             return vec![];
         };
         let p = Palette::get(cx);
+        let scroll_parent = self.list_scroll.0.borrow().base_handle.clone();
         range
             .filter_map(|index| s.meetings.get(index))
             .map(|meeting| {
@@ -20,12 +21,14 @@ impl Meetings {
                     .or_else(|| s.detail.as_ref().map(|d| &d.session.id))
                     == Some(&id);
                 let focus = self.focus_for(&format!("meeting-{id}"), cx);
+                let reveal = self.row_reveal.entry(id.clone()).or_default().clone();
                 let title = meeting
                     .title
                     .clone()
                     .unwrap_or_else(|| "Untitled meeting".into());
                 div()
                     .h(px(112.))
+                    .p(tokens::FOCUS_WIDTH + px(1.))
                     .w_full()
                     .flex()
                     .flex_col()
@@ -34,6 +37,8 @@ impl Meetings {
                     .child(
                         Button::new(format!("meeting-{id}"), title)
                             .track_focus(&focus)
+                            .with_scroll_parent(Some(&scroll_parent))
+                            .with_focus_reveal(reveal)
                             .toggled(selected)
                             .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx))),
                     )
@@ -592,6 +597,23 @@ impl Meetings {
                         String::new()
                     }
                 ));
+            let text = if segment.status == "final" {
+                segment.text.as_str()
+            } else if segment.status == "pending" {
+                "Transcript pending…"
+            } else {
+                "Transcription failed."
+            };
+            let pieces = text.chars().count().div_ceil(2048).max(1);
+            let index = *self.text_pages.entry(segment.id).or_default();
+            let index = index.min(pieces - 1);
+            row = row.child(gpui::text!(
+                id = ("meeting-segment-text", segment.id),
+                text.chars()
+                    .skip(index * 2048)
+                    .take(2048)
+                    .collect::<String>()
+            ));
             if segment.audio_available && d.session.retain_audio {
                 let action = PlaybackAction::Seek(segment.start_ms);
                 let channel = segment.channel;
@@ -621,22 +643,6 @@ impl Meetings {
                 );
                 let _ = action;
             }
-            let text = if segment.status == "final" {
-                segment.text.as_str()
-            } else if segment.status == "pending" {
-                "Transcript pending…"
-            } else {
-                "Transcription failed."
-            };
-            let pieces = text.chars().count().div_ceil(2048).max(1);
-            let index = *self.text_pages.entry(segment.id).or_default();
-            let index = index.min(pieces - 1);
-            row = row.child(
-                text.chars()
-                    .skip(index * 2048)
-                    .take(2048)
-                    .collect::<String>(),
-            );
             if pieces > 1 {
                 let key = segment.id;
                 row = row.child(
@@ -682,6 +688,24 @@ impl Meetings {
 impl Render for Meetings {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain(cx);
+        // Keep focus-entry state across virtualized remounts. Wheel scrolling
+        // while focused must not trigger another reveal; blur resets it even
+        // when that row is outside the rendered range.
+        self.row_reveal.retain(|id, state| {
+            let present = self
+                .model
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.meetings.iter().any(|m| &m.id == id));
+            if !self
+                .focus
+                .get(&format!("meeting-{id}"))
+                .is_some_and(|f| f.is_focused(w))
+            {
+                state.reset();
+            }
+            present
+        });
         let p = Palette::get(cx);
         let snapshot = self.model.snapshot.clone();
         let header = div()
@@ -764,7 +788,7 @@ impl Render for Meetings {
                 list=list.child(if s.query.is_empty(){"No meeting transcripts yet. Start one to capture microphone and Mac playback as separate speakers."}else{"No meetings match this search. Try another word or clear the search."});
             }
             list = list.child(
-                div().flex_1().min_h(px(0.)).child(
+                div().flex_1().min_h(px(0.)).overflow_hidden().child(
                     uniform_list(
                         "saved-meeting-rows",
                         s.meetings.len(),
@@ -801,7 +825,9 @@ impl Render for Meetings {
                         div()
                             .id("meeting-list-scroll")
                             .when(!narrow, |v| v.w(px(264.)))
-                            .when(narrow, |v| v.h(px(160.)))
+                            // Includes the toolbar/status chrome plus at least one
+                            // complete 112pt row and its focus-ring inset.
+                            .when(narrow, |v| v.h(px(288.)).flex_shrink_0())
                             .min_h(px(0.))
                             .child(list.h_full()),
                     )

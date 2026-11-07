@@ -1,4 +1,24 @@
 //! Synthetic native Notetaker review app. No production identity or data access.
+//!
+//! Gallery/QA-only launch parameters (never read by production startup):
+//! - MURMUR_MEETINGS_STATE=compact uses a 720×560 content window (default: review).
+//! - MURMUR_MEETINGS_COUNT=N creates N meetings, initially 50, then Load more
+//!   pages of 50 (0..=10,000; default 2). End reaches the last loaded row.
+//! - MURMUR_MEETINGS_SEGMENTS=N creates N transcript segments, paged 24 at a
+//!   time (0..=10,000; default 4), including final, pending and failed text.
+//! - MURMUR_MEETINGS_TEXT_CHARS=N gives each final segment N synthetic
+//!   characters (0..=32,768; default 0 keeps short text); >2,048 exercises
+//!   transcript text pages.
+//!
+//! Example (from app/gpui):
+//! ```sh
+//! MURMUR_MEETINGS_COUNT=250 MURMUR_MEETINGS_SEGMENTS=80 \
+//! MURMUR_MEETINGS_TEXT_CHARS=5000 cargo run --features gallery --bin meetings-qa
+//! ```
+//!
+//! The combined fixture must fit the 16 MiB projection limit.
+//! All names/text/PCM are synthetic; no microphone, production storage or
+//! pasteboard is accessed.
 use gpui::*;
 use murmur_ui::{
     meetings::{Meetings, fixtures},
@@ -40,7 +60,11 @@ fn main() {
         murmur_ui::tokens::apply_appearance(std::env::var_os("MURMUR_DARK").is_some(), cx);
         let state = std::env::var("MURMUR_MEETINGS_STATE").unwrap_or_else(|_| "review".into());
         let mut entity = None;
-        let host = Rc::new(fixtures::FixtureHost::default());
+        let host = Rc::new(fixtures::FixtureHost::with_corpus(
+            fixture_count("MURMUR_MEETINGS_COUNT", 2, 10_000),
+            fixture_count("MURMUR_MEETINGS_SEGMENTS", 4, 10_000),
+            fixture_count("MURMUR_MEETINGS_TEXT_CHARS", 0, 32_768),
+        ));
         host.native_audio.set(!headless);
         let handle = cx
             .open_window(
@@ -164,4 +188,14 @@ fn audio_self_test() {
 #[cfg(not(target_os = "macos"))]
 fn audio_self_test() {
     panic!("native playback requires macOS")
+}
+
+fn fixture_count(name: &str, default: usize, max: usize) -> usize {
+    std::env::var(name).ok().map_or(default, |value| {
+        value
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n <= max)
+            .unwrap_or_else(|| panic!("{name} must be an integer from 0 to {max}"))
+    })
 }
