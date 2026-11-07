@@ -295,3 +295,30 @@ fn home_command_f_exits_detail_and_searches_the_real_embedded_list(cx: &mut Test
         1
     );
 }
+
+#[gpui::test]
+fn palette_shortcut_restores_the_originating_history_editor(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    keys(cx, "cmd-f");
+    assert!(cx.update(|w, cx| {
+        e.read(cx)
+            .history
+            .read(cx)
+            .search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(w)
+    }));
+    keys(cx, "cmd-k");
+    cx.update(|w, cx| e.update(cx, |s, cx| s.destination_closed(w, cx)));
+    draw(cx);
+    assert!(cx.update(|w, cx| {
+        e.read(cx)
+            .history
+            .read(cx)
+            .search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(w)
+    }));
+}

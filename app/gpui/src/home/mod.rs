@@ -35,6 +35,7 @@ pub struct Home {
     more: bool,
     scroll: ScrollHandle,
     return_to: Option<String>,
+    keyboard_return: Option<FocusHandle>,
     last_permission: Option<Access>,
 }
 impl Home {
@@ -66,6 +67,7 @@ impl Home {
             more: false,
             scroll: ScrollHandle::new(),
             return_to: None,
+            keyboard_return: None,
             last_permission: None,
         }
     }
@@ -106,6 +108,7 @@ impl Home {
         }
         self.model.detach();
         self.return_to = None;
+        self.keyboard_return = None;
         self.more = false;
         self.warning_dismissed = false;
         self.drag = None;
@@ -171,10 +174,14 @@ impl Home {
     }
     fn open(&mut self, d: Destination, id: &str, cx: &mut Context<Self>) {
         self.return_to = Some(id.into());
+        self.keyboard_return = None;
         self.request(Action::Open(d), cx);
     }
     pub fn destination_closed(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.return_to.take() {
+        if let Some(focus) = self.keyboard_return.take() {
+            self.return_to = None;
+            w.focus(&focus, cx);
+        } else if let Some(id) = self.return_to.take() {
             w.focus(&self.focus_for(&id, cx), cx);
         }
     }
@@ -223,11 +230,15 @@ impl Home {
         }
         let k = &e.keystroke;
         if k.modifiers.platform && k.modifiers.number_of_modifiers() == 1 && k.key == "," {
+            let focus = w.focused(cx);
             self.open(Destination::General, "settings", cx);
+            self.keyboard_return = focus;
             w.prevent_default();
             cx.stop_propagation();
         } else if k.modifiers.platform && k.modifiers.number_of_modifiers() == 1 && k.key == "k" {
+            let focus = w.focused(cx);
             self.open(Destination::Palette, "palette", cx);
+            self.keyboard_return = focus;
             w.prevent_default();
             cx.stop_propagation();
         } else if k.modifiers.platform && k.modifiers.number_of_modifiers() == 1 && k.key == "f" {
