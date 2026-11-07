@@ -1,0 +1,56 @@
+[
+  {
+    "section": "Home",
+    "nativeClickExit": 0,
+    "axElements": 42,
+    "result": "PASS"
+  },
+  {
+    "section": "Meetings",
+    "nativeClickExit": 0,
+    "axElements": 23,
+    "result": "PASS"
+  },
+  {
+    "section": "Insights",
+    "nativeClickExit": 0,
+    "axElements": 125,
+    "result": "PASS"
+  },
+  {
+    "section": "Models",
+    "nativeClickExit": 0,
+    "axElements": 54,
+    "result": "PASS"
+  },
+  {
+    "section": "Knowledge",
+    "nativeClickExit": 0,
+    "axElements": 31,
+    "result": "PASS"
+  },
+  {
+    "section": "Modes",
+    "nativeClickExit": 0,
+    "axElements": 41,
+    "result": "PASS"
+  },
+  {
+    "section": "Customize",
+    "nativeClickExit": 0,
+    "axElements": 30,
+    "result": "PASS"
+  },
+  {
+    "section": "Appearance",
+    "nativeClickExit": 0,
+    "axElements": 43,
+    "result": "PASS"
+  },
+  {
+    "section": "Settings",
+    "nativeClickExit": 0,
+    "axElements": 40,
+    "result": "PASS"
+  }
+]

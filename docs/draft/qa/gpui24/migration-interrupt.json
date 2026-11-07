@@ -1,0 +1,14 @@
+{
+  "exactLegacyChildInterrupted": true,
+  "interruptedExit": 0,
+  "retry": {
+    "exit": 0,
+    "startupReady": true,
+    "legacyFixture": true
+  },
+  "repeat": {
+    "exit": 0,
+    "startupReady": true,
+    "legacyFixture": true
+  }
+}

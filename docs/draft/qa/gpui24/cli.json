@@ -1,0 +1,37 @@
+[
+  {
+    "mode": "version",
+    "exit": 0,
+    "expectedExit": 0,
+    "pass": true,
+    "homeCreated": false
+  },
+  {
+    "mode": "diarization",
+    "exit": 64,
+    "expectedExit": 64,
+    "pass": true,
+    "homeCreated": false
+  },
+  {
+    "mode": "coreml",
+    "exit": 64,
+    "expectedExit": 64,
+    "pass": true,
+    "homeCreated": false
+  },
+  {
+    "mode": "capture-agent",
+    "exit": 77,
+    "expectedExit": 77,
+    "pass": true,
+    "homeCreated": false
+  },
+  {
+    "mode": "capture-helper",
+    "exit": 64,
+    "expectedExit": 64,
+    "pass": true,
+    "homeCreated": false
+  }
+]

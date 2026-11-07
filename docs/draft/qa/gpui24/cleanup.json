@@ -1,0 +1,11 @@
+{
+  "testAppStopped": true,
+  "exactTaskExecutablesRemaining": 0,
+  "fixtureServerStopped": true,
+  "testPasteboardReleasedWithoutReading": true,
+  "testBundleLaunchServicesRegistrationRemoved": true,
+  "disposableBundleAndHomeRootsRemoved": 3,
+  "retainedEvidence": "only files in this directory",
+  "checkoutAndPairedTargetPreserved": true,
+  "systemSettingsChanged": false
+}

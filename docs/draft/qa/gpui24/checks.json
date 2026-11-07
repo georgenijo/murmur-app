@@ -1,0 +1,101 @@
+{
+  "checkedAt": "2026-11-07T17:27:40.167164+00:00",
+  "toolchain": "1.98.1",
+  "pairedCheckout": "~/Builds/gpui-stack",
+  "pairedTarget": "~/Builds/gpui-stack-target",
+  "results": [
+    {
+      "check": "workflow policy",
+      "result": "PASS",
+      "evidence": "workflow policy validation passed (5 CI cases; 4 release-build cases; 2 secretless rehearsal jobs; 14 publication gates; trusted cache ownership intact)"
+    },
+    {
+      "check": "packaging Python suite",
+      "result": "PASS",
+      "count": 37
+    },
+    {
+      "check": "vendored patch/source suite",
+      "result": "PASS",
+      "count": 6
+    },
+    {
+      "check": "GPUI gallery,production-host check",
+      "result": "PASS",
+      "evidence": "    Finished `dev` profile [unoptimized] target(s) in 1.44s"
+    },
+    {
+      "check": "GPUI gallery,production-host all-target Clippy -D warnings",
+      "result": "PASS",
+      "evidence": "    Finished `dev` profile [unoptimized] target(s) in 3.90s"
+    },
+    {
+      "check": "GPUI AX-enabled lib suite production-host",
+      "result": "PASS",
+      "passed": 369,
+      "failed": 0
+    },
+    {
+      "check": "native-host service library check no default features",
+      "result": "PASS",
+      "evidence": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.29s"
+    },
+    {
+      "check": "native-host service library suite no default features",
+      "result": "PASS",
+      "passed": 1514,
+      "failed": 0,
+      "existingIgnored": 14,
+      "environment": "synthetic HOME/CFFIXED_USER_HOME; no DYLD override"
+    },
+    {
+      "check": "native path/identity contract",
+      "result": "PASS",
+      "evidence": "Native host path/identity contracts passed (calculation only)"
+    },
+    {
+      "check": "default Tauri library tests compile",
+      "result": "PASS",
+      "scope": "compile only; root crate no new warnings"
+    },
+    {
+      "check": "GPUI and service formatting",
+      "result": "PASS"
+    },
+    {
+      "check": "production-only packaged ui --version",
+      "result": "PASS",
+      "version": "0.62.1",
+      "createdHome": false
+    },
+    {
+      "check": "final native AX heading",
+      "result": "PASS",
+      "role": "AXHeading"
+    },
+    {
+      "check": "compact fresh-process restore",
+      "result": "PASS",
+      "frame": [
+        200,
+        150,
+        760,
+        632
+      ],
+      "content": [
+        760,
+        600
+      ]
+    },
+    {
+      "check": "independent Sol review",
+      "result": "PENDING",
+      "owner": "lead"
+    },
+    {
+      "check": "GitHub CI",
+      "result": "PENDING",
+      "owner": "lead"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "source": "b2a41b372bbf67ef85af4c07b0e20392c332dd29",
+  "features": [
+    "production-host"
+  ],
+  "binarySha256": "05530c6f1f48db9f2d627eda02d6a303c9a4803c22d2935e61ae43ccf6fd33c3",
+  "identity": "com.localdictation.gpui-host-qa110",
+  "signature": "ad-hoc; deep strict verify passed"
+}

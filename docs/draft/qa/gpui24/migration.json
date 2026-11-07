@@ -1,0 +1,40 @@
+[
+  {
+    "home": true,
+    "preferences": true,
+    "onboarding": true,
+    "insights": true,
+    "modes": true,
+    "models": true,
+    "knowledge": true,
+    "customize": true,
+    "themes": true,
+    "palette": true,
+    "meetings": true,
+    "identity": "com.localdictation.gpui-host-qa110",
+    "nsApplication": true,
+    "startupStage": 110,
+    "startupReady": true,
+    "legacyFixture": true,
+    "exit": 0
+  },
+  {
+    "home": true,
+    "preferences": true,
+    "onboarding": true,
+    "insights": true,
+    "modes": true,
+    "models": true,
+    "knowledge": true,
+    "customize": true,
+    "themes": true,
+    "palette": true,
+    "meetings": true,
+    "identity": "com.localdictation.gpui-host-qa110",
+    "nsApplication": true,
+    "startupStage": 110,
+    "startupReady": true,
+    "legacyFixture": true,
+    "exit": 0
+  }
+]

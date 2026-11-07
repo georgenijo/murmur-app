@@ -1,0 +1,12 @@
+{
+  "bounds": {
+    "x": 200.0,
+    "y": 150.0,
+    "width": 760.0,
+    "height": 632.0
+  },
+  "inner_width": 760,
+  "inner_height": 600,
+  "maximized": false,
+  "scale_factor": 1.0
+}

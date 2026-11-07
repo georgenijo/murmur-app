@@ -1,0 +1,88 @@
+[
+  {
+    "action": "set synthetic editable value",
+    "exit": 0,
+    "toolVerified": true
+  },
+  {
+    "action": "AX text entry",
+    "result": "PASS",
+    "fieldFound": true,
+    "expectedLength": 12
+  },
+  {
+    "action": "focus synthetic field",
+    "exit": 0,
+    "toolVerified": true
+  },
+  {
+    "action": "Edit Select All",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "Edit Copy (private board)",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "Edit Cut (private board)",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "Cut empties focused field",
+    "result": "FAIL",
+    "fieldFound": true,
+    "expectedLength": 0
+  },
+  {
+    "action": "Edit Paste (private board)",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "Paste restores private synthetic value",
+    "result": "PASS",
+    "fieldFound": true,
+    "expectedLength": 12
+  },
+  {
+    "action": "Edit Undo",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "Undo paste",
+    "result": "FAIL",
+    "fieldFound": true,
+    "expectedLength": 0
+  },
+  {
+    "action": "Edit Redo",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "Redo paste",
+    "result": "PASS",
+    "fieldFound": true,
+    "expectedLength": 12
+  },
+  {
+    "action": "command select all",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "delete selected value",
+    "exit": 0,
+    "toolVerified": false
+  },
+  {
+    "action": "keyboard editing dispatch",
+    "result": "FAIL",
+    "fieldFound": true,
+    "expectedLength": 0
+  }
+]

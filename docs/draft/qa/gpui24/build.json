@@ -1,0 +1,11 @@
+{
+  "source": "bceccb63",
+  "binarySha256": "903080b35f24982daa6f7d32a4714669db3319a1a7b7474705ed4681819be1d6",
+  "identity": "com.localdictation.gpui-host-qa110",
+  "links": {
+    "swift_rpath": "/usr/lib/swift",
+    "macos_minimum": "14.0",
+    "foundation_models": "weak"
+  },
+  "signature": "ad-hoc; deep strict verify passed"
+}
