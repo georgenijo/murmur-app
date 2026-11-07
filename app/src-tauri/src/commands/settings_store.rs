@@ -894,6 +894,9 @@ mod tests {
             ("murmur-theme-library", "library"),
         ] {
             let value = murmur_core::state::normalize(key, fixture[name].clone()).unwrap();
+            // Reopen once so the sparse fixture's pending microphone migration
+            // completes; settings_edit only accepts a normalized fixed point.
+            let value = murmur_core::state::normalize(key, value).unwrap();
             let value = if name == "settings" {
                 murmur_core::state::settings_edit(&value, "autoPaste", serde_json::json!(true))
                     .unwrap()
