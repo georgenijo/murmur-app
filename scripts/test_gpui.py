@@ -9,6 +9,7 @@ checkout is modified. Python 3.11+, git, cargo; run on macOS with Rust 1.98.1.
 """
 from pathlib import Path
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -73,8 +74,12 @@ def main():
     (target / 'Cargo.toml').write_text('\n'.join(
         '[' + name + ']\n' + '\n'.join(json.dumps(k) + ' = ' + inline(v) for k, v in section.items()) + '\n'
         for name, section in sections.items()))
-    subprocess.run(['git', 'apply', '--unsafe-paths', '--directory=' + str(target),
-                    str(UI / 'patches/test-accessibility.patch')], check=True, cwd=target)
+    # A target directory inside a work tree (CI's app/gpui/target) makes git
+    # apply silently skip every path; the ceiling keeps it out of that repo.
+    patch = str(UI / 'patches/test-accessibility.patch')
+    env = {**os.environ, 'GIT_CEILING_DIRECTORIES': str(target.parent)}
+    subprocess.run(['git', 'apply', patch], check=True, cwd=target, env=env)
+    subprocess.run(['git', 'apply', '--check', '--reverse', patch], check=True, cwd=target, env=env)
     lock = UI / 'Cargo.lock'
     original = lock.read_bytes()
     try:
