@@ -1,4 +1,5 @@
 use super::{host::*, model::*};
+use crate::remaining::Scenario;
 use crate::section;
 use serde_json::{Value, json};
 use std::{cell::RefCell, rc::Rc};
@@ -22,13 +23,65 @@ pub fn snapshot() -> Snapshot {
 pub struct FixtureHost {
     pub state: RefCell<Snapshot>,
     pub actions: RefCell<Vec<Action>>,
+    scenario: Scenario,
+    import_baseline: RefCell<Option<u64>>,
 }
 impl Default for FixtureHost {
     fn default() -> Self {
-        Self {
-            state: RefCell::new(snapshot()),
-            actions: RefCell::new(vec![]),
+        Self::with_scenario(Scenario::Ready)
+    }
+}
+impl FixtureHost {
+    pub fn with_scenario(scenario: Scenario) -> Self {
+        let mut state = snapshot();
+        if scenario == Scenario::PartialBulk {
+            state.availability = "recovered".into();
         }
+        Self {
+            state: RefCell::new(state),
+            actions: RefCell::new(vec![]),
+            scenario,
+            import_baseline: RefCell::new(None),
+        }
+    }
+    fn apply_bulk(&self, s: &mut Snapshot, bulk: &Bulk, action: BulkAction) -> Result<(), Problem> {
+        if bulk.revision != s.store_revision {
+            return Err(Problem::Conflict);
+        }
+        let commands = bulk.commands(action)?;
+        let unchanged = bulk.entries.len() - commands.len();
+        let mut succeeded = 0;
+        let mut failures = vec![];
+        for (_, command) in commands {
+            if self.scenario == Scenario::PartialBulk && command["id"] == "synthetic-1" {
+                failures.push("synthetic-1");
+                continue;
+            }
+            if action == BulkAction::Delete {
+                s.records.retain(|v| v["id"] != command["id"]);
+            } else if let Some(record) = s.records.iter_mut().find(|v| v["id"] == command["id"]) {
+                record["enabled"] = json!(action == BulkAction::Enable);
+                record["revision"] = json!(record["revision"].as_u64().unwrap() + 1);
+            }
+            succeeded += 1;
+        }
+        s.total = s.records.len();
+        if succeeded > 0 {
+            s.store_revision += 1;
+        }
+        s.notice = Some(format!(
+            "{succeeded} succeeded · {unchanged} unchanged · {} failed{}",
+            failures.len(),
+            if failures.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " · Failed IDs: {}. Review these records before retrying.",
+                    failures.join(", ")
+                )
+            }
+        ));
+        Ok(())
     }
 }
 struct Stop;
@@ -118,29 +171,33 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
                 if *action == BulkAction::Delete {
                     s.bulk = Some(b)
                 } else {
-                    for v in &mut s.records {
-                        v["enabled"] = json!(*action == BulkAction::Enable);
-                    }
-                    s.notice = Some("Matching records updated.".into());
+                    problem = self.apply_bulk(&mut s, &b, *action).err();
                 }
             }
             Action::Apply { bulk, action } => {
-                if bulk.revision != s.store_revision {
-                    problem = Some(Problem::Conflict)
-                } else {
-                    let ids: Vec<_> = bulk.entries.iter().map(|v| v["id"].clone()).collect();
-                    if *action == BulkAction::Delete {
-                        s.records.retain(|v| !ids.contains(&v["id"]));
-                        s.total = s.records.len();
-                    }
+                problem = self.apply_bulk(&mut s, bulk, *action).err();
+            }
+            Action::InspectImport => {
+                *self.import_baseline.borrow_mut() = Some(s.store_revision);
+                s.import_preview = Some(
+                    json!({"token":"synthetic-import","new":2,"duplicates":1,"conflicts":usize::from(self.scenario == Scenario::ConflictingImport)}),
+                );
+                if self.scenario == Scenario::StaleImport {
+                    // Owner changes after inspection, before the user confirms.
                     s.store_revision += 1;
                 }
             }
-            Action::InspectImport => {
-                s.import_preview =
-                    Some(json!({"token":"synthetic-import","new":2,"duplicates":1,"conflicts":0}))
+            Action::Import { preview } => {
+                if preview["token"] != "synthetic-import"
+                    || preview["conflicts"] != 0
+                    || *self.import_baseline.borrow() != Some(s.store_revision)
+                {
+                    problem = Some(Problem::Conflict);
+                } else {
+                    s.notice = Some("Knowledge imported.".into());
+                    *self.import_baseline.borrow_mut() = None;
+                }
             }
-            Action::Import { .. } => s.notice = Some("Knowledge imported.".into()),
             Action::Retry => s.availability = "ready".into(),
             Action::Export => s.notice = Some("Knowledge exported.".into()),
             _ => (),

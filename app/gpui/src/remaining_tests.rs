@@ -8,10 +8,17 @@ fn draw(cx: &mut VisualTestContext) {
     cx.update(|w, cx| w.draw(cx).clear(cx));
 }
 fn harness(cx: &mut TestAppContext, index: usize) -> (Entity<Review>, &mut VisualTestContext) {
+    harness_options(cx, index, crate::remaining::QaOptions::default())
+}
+fn harness_options(
+    cx: &mut TestAppContext,
+    index: usize,
+    options: crate::remaining::QaOptions,
+) -> (Entity<Review>, &mut VisualTestContext) {
     cx.update(crate::init);
     let mut entity = None;
     let (_, cx) = cx.add_window_view(|w, cx| {
-        let e = cx.new(|cx| Review::new(w, cx));
+        let e = cx.new(|cx| Review::with_options(options, w, cx));
         entity = Some(e.clone());
         gpui_base::Root::new(e, w, cx)
     });
@@ -141,6 +148,194 @@ mod ax {
         focus(cx, label);
         let t = tree(cx);
         click(cx, named(&t, label));
+    }
+    fn static_text(t: &TreeUpdate, expected: &str) {
+        assert_eq!(
+            t.nodes
+                .iter()
+                .filter(|(_, n)| n.role() == gpui::Role::Label && n.value() == Some(expected))
+                .count(),
+            1,
+            "missing or duplicated prose: {expected}"
+        );
+    }
+    #[gpui::test]
+    fn remaining_sections_expose_visible_prose_once_in_accesskit(cx: &mut TestAppContext) {
+        let (e, cx) = harness(cx, 1);
+        let t = tree(cx);
+        for (label, value, detail) in crate::insights::fixtures::snapshot().totals() {
+            static_text(&t, &format!("{label}: {value}"));
+            // Repeated detail strings are meaningful only within their own total.
+            let total = t
+                .nodes
+                .iter()
+                .find(|(_, n)| n.value() == Some(format!("{label}: {value}").as_str()))
+                .unwrap()
+                .0;
+            let group = t
+                .nodes
+                .iter()
+                .find(|(_, n)| n.children().contains(&total))
+                .unwrap();
+            assert!(group.1.children().iter().any(|id| {
+                t.nodes
+                    .iter()
+                    .any(|(i, n)| i == id && n.value() == Some(detail.as_str()))
+            }));
+        }
+        let totals = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Usage totals"))
+            .unwrap();
+        assert!(!totals.1.children().is_empty());
+        for (index, prose) in [
+            (2, "Synthetic Apple Silicon · 16 GB"),
+            (3, "Synthetic replacement 0"),
+            (
+                4,
+                "Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.",
+            ),
+            (5, "Sonic"),
+            (0, "↑↓ navigate · Enter run · Esc close"),
+        ] {
+            cx.update(|w, cx| e.update(cx, |s, cx| s.select(index, w, cx)));
+            let t = tree(cx);
+            static_text(&t, prose);
+            if index == 2 {
+                static_text(&t, "Synthetic size · Local transcription · Mac · Installed");
+                static_text(
+                    &t,
+                    "Synthetic size · Local transcription · Mac · Not installed · Selected",
+                );
+            }
+            if index == 3 {
+                assert_eq!(
+                    t.nodes
+                        .iter()
+                        .filter(|(_, n)| n.value() == Some("\"global\" · \"manual\" · updated 0"))
+                        .count(),
+                    3
+                );
+            }
+        }
+        for (page, prose) in [
+            (
+                crate::customize::model::Page::Spellings,
+                "For reliable replacement, enter the words Murmur actually hears on the left. Separate variants with commas.",
+            ),
+            (crate::customize::model::Page::Commands, "Hello {{date}}"),
+            (
+                crate::customize::model::Page::Apps,
+                "Project symbols stay in memory. No screen, selection, or clipboard context is read.",
+            ),
+            (
+                crate::customize::model::Page::Scan,
+                "Built-in dev terms active. Scan this folder to add your own identifiers.",
+            ),
+        ] {
+            cx.update(|w, cx| e.update(cx, |s, cx| s.select_customize(page, w, cx)));
+            if page == crate::customize::model::Page::Apps {
+                draw(cx);
+                e.read_with(cx, |s, _| s.customize.clone())
+                    .update(cx, |s, cx| {
+                        let mut profile = crate::customize::model::profile(
+                            "example.synthetic",
+                            "Synthetic editor",
+                        );
+                        profile["ideContextEnabled"] = serde_json::json!(true);
+                        s.controller.model.snapshot.as_mut().unwrap().settings["appProfiles"] =
+                            serde_json::json!([profile]);
+                        cx.notify();
+                    });
+            }
+            static_text(&tree(cx), prose);
+        }
+    }
+    #[gpui::test]
+    fn existing_knowledge_editor_starts_on_enabled_title_and_return_saves(cx: &mut TestAppContext) {
+        let (_, cx) = harness(cx, 3);
+        activate(cx, "Edit Synthetic phrase 0");
+        let t = tree(cx);
+        let focused = t.nodes.iter().find(|(id, _)| *id == t.focus).unwrap();
+        assert!(!focused.1.is_disabled());
+        assert_eq!(
+            focused.1.label(),
+            Some("Heard phrase / written term / trigger / name")
+        );
+        key(cx, "enter");
+        assert!(
+            !tree(cx)
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Edit knowledge"))
+        );
+    }
+    #[gpui::test]
+    fn partial_bulk_fixture_presents_recovery_and_failed_ids(cx: &mut TestAppContext) {
+        let options = crate::remaining::QaOptions::parse("partial-bulk", "", "", "").unwrap();
+        let (_, cx) = harness_options(cx, 3, options);
+        static_text(&tree(cx), "Recovered from a local backup.");
+        activate(cx, "Disable matches");
+        static_text(
+            &tree(cx),
+            "2 succeeded · 0 unchanged · 1 failed · Failed IDs: synthetic-1. Review these records before retrying.",
+        );
+    }
+    #[gpui::test]
+    fn knowledge_import_fixtures_present_conflict_without_success(cx: &mut TestAppContext) {
+        for parameter in ["stale-import", "conflicting-import"] {
+            let options = crate::remaining::QaOptions::parse(parameter, "", "", "").unwrap();
+            let (_, cx) = harness_options(cx, 3, options);
+            activate(cx, "Import…");
+            let t = tree(cx);
+            named(&t, "Import knowledge preview");
+            activate(cx, "Confirm");
+            static_text(&tree(cx), crate::workspace::Problem::Conflict.message());
+            assert!(
+                !tree(cx)
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.value() == Some("Knowledge imported."))
+            );
+        }
+    }
+    #[gpui::test]
+    fn spelling_import_fixtures_disable_unsafe_confirmation(cx: &mut TestAppContext) {
+        for parameter in ["stale-import", "conflicting-import"] {
+            let options = crate::remaining::QaOptions::parse("", parameter, "", "").unwrap();
+            let (e, cx) = harness_options(cx, 3, options);
+            cx.update(|w, cx| {
+                e.update(cx, |s, cx| {
+                    s.select_customize(crate::customize::model::Page::Spellings, w, cx)
+                })
+            });
+            activate(cx, "Import saved spellings…");
+            let t = tree(cx);
+            let confirm = named(&t, "Confirm spelling import");
+            assert!(
+                t.nodes
+                    .iter()
+                    .find(|(id, _)| *id == confirm)
+                    .unwrap()
+                    .1
+                    .is_disabled()
+            );
+        }
+    }
+    #[gpui::test]
+    fn mode_file_fixture_reports_full_import_and_export_completion(cx: &mut TestAppContext) {
+        let options = crate::remaining::QaOptions::parse("", "", "1", "").unwrap();
+        let (_, cx) = harness_options(cx, 4, options);
+        activate(cx, "Import modes…");
+        static_text(
+            &tree(cx),
+            "1 new modes · 0 exact duplicates · 0 missing apps · 0 conflicts",
+        );
+        activate(cx, "Confirm import");
+        static_text(&tree(cx), "Modes imported from the synthetic file.");
+        activate(cx, "Export custom modes…");
+        static_text(&tree(cx), "Modes exported to synthetic sink · 1 saved");
     }
     #[gpui::test]
     fn regression_palette_active_descendant_tracks_search_selection(cx: &mut TestAppContext) {
@@ -293,6 +488,11 @@ mod ax {
         draw(cx);
         activate(cx, "Edit app overrides…");
         let t = tree(cx);
+        assert_eq!(
+            t.focus,
+            named(&t, "App label"),
+            "existing overrides skip immutable bundle ID"
+        );
         let id = named(&t, "App bundle ID");
         assert!(
             t.nodes
@@ -617,4 +817,207 @@ fn customization_sheets_preserve_explicit_clipboard_and_profile_defaults(cx: &mu
             .len()),
         2
     );
+}
+
+mod fixture_parameters {
+    use crate::{
+        remaining::{QaOptions, Scenario},
+        section::Controller,
+        workspace::Problem,
+    };
+    use std::rc::Rc;
+
+    #[test]
+    fn partial_bulk_parameter_keeps_failed_records_and_exposes_recovery() {
+        use crate::knowledge::{
+            fixtures::FixtureHost,
+            host::Action,
+            model::{BulkAction, Filter},
+        };
+        let options = QaOptions::parse("partial-bulk", "", "", "").unwrap();
+        let host = Rc::new(FixtureHost::with_scenario(options.knowledge));
+        let mut controller = Controller::new(host.clone());
+        controller.attach(Action::List {
+            filter: Filter::default(),
+            offset: 0,
+        });
+        controller.drain();
+        assert_eq!(
+            controller.model.snapshot.as_ref().unwrap().availability,
+            "recovered"
+        );
+        controller.request(Action::Collect {
+            filter: Filter::default(),
+            action: BulkAction::Disable,
+        });
+        controller.drain();
+        let s = host.state.borrow();
+        assert_eq!(s.records[0]["enabled"], false);
+        assert_eq!(s.records[0]["revision"], 2);
+        assert_eq!(s.records[1]["enabled"], true);
+        assert_eq!(s.records[1]["revision"], 1);
+        assert!(
+            s.notice
+                .as_ref()
+                .unwrap()
+                .contains("2 succeeded · 0 unchanged · 1 failed")
+        );
+        assert!(s.notice.as_ref().unwrap().contains("synthetic-1"));
+        drop(s);
+        controller.request(Action::Collect {
+            filter: Filter::default(),
+            action: BulkAction::Delete,
+        });
+        controller.drain();
+        let bulk = controller
+            .model
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .bulk
+            .clone()
+            .unwrap();
+        controller.request(Action::Apply {
+            bulk,
+            action: BulkAction::Delete,
+        });
+        controller.drain();
+        let s = host.state.borrow();
+        assert_eq!(s.total, 1);
+        assert_eq!(s.records[0]["id"], "synthetic-1");
+        assert_eq!(s.records[0]["revision"], 1);
+    }
+    fn knowledge_import(parameter: &str) {
+        use crate::knowledge::{fixtures::FixtureHost, host::Action, model::Filter};
+        let options = QaOptions::parse(parameter, "", "", "").unwrap();
+        let host = Rc::new(FixtureHost::with_scenario(options.knowledge));
+        let mut controller = Controller::new(host.clone());
+        controller.attach(Action::List {
+            filter: Filter::default(),
+            offset: 0,
+        });
+        controller.drain();
+        controller.request(Action::InspectImport);
+        controller.drain();
+        let preview = controller
+            .model
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .import_preview
+            .clone()
+            .unwrap();
+        assert_eq!(
+            preview["conflicts"],
+            usize::from(options.knowledge == Scenario::ConflictingImport)
+        );
+        let before = host.state.borrow().records.clone();
+        controller.request(Action::Import { preview });
+        controller.drain();
+        assert_eq!(controller.model.problem, Some(Problem::Conflict));
+        assert_eq!(host.state.borrow().records, before);
+        assert!(host.state.borrow().notice.is_none());
+    }
+    #[test]
+    fn knowledge_stale_import_parameter_refuses_write() {
+        knowledge_import("stale-import");
+    }
+    #[test]
+    fn knowledge_conflicting_import_parameter_refuses_write() {
+        knowledge_import("conflicting-import");
+    }
+
+    fn spelling_import(parameter: &str) {
+        use crate::customize::{fixtures::FixtureHost, host::Action};
+        let options = QaOptions::parse("", parameter, "", "").unwrap();
+        let host = Rc::new(FixtureHost::with_scenario(options.spellings));
+        let mut controller = Controller::new(host.clone());
+        controller.attach(Action::Read);
+        controller.drain();
+        controller.request(Action::InspectSpellings);
+        controller.drain();
+        let preview = controller
+            .model
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .import_preview
+            .clone()
+            .unwrap();
+        assert_eq!(
+            preview.conflicts > 0,
+            options.spellings == Scenario::ConflictingImport
+        );
+        let before = host.state.borrow().settings.clone();
+        controller.request(Action::ImportSpellings(preview));
+        controller.drain();
+        assert_eq!(controller.model.problem, Some(Problem::Conflict));
+        assert_eq!(host.state.borrow().settings, before);
+    }
+    #[test]
+    fn spellings_stale_import_parameter_refuses_write() {
+        spelling_import("stale-import");
+    }
+    #[test]
+    fn spellings_conflicting_import_parameter_refuses_write() {
+        spelling_import("conflicting-import");
+    }
+
+    #[test]
+    fn mode_files_parameter_completes_parse_import_and_memory_export() {
+        use crate::modes::{exchange, fixtures::FixtureHost, host::Action};
+        let options = QaOptions::parse("", "", "1", "").unwrap();
+        let host = Rc::new(FixtureHost::with_files(options.mode_files));
+        let mut controller = Controller::new(host.clone());
+        controller.attach(Action::Read);
+        controller.drain();
+        controller.request(Action::InspectImport);
+        controller.drain();
+        let preview = controller
+            .model
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .import_preview
+            .clone()
+            .unwrap();
+        assert_eq!(preview.additions, 1);
+        assert_eq!(preview.conflicts, 0);
+        controller.request(Action::Import(preview));
+        controller.drain();
+        assert!(controller.model.problem.is_none());
+        assert!(host.state.borrow().import_preview.is_none());
+        assert_eq!(
+            host.state.borrow().settings["modes"][0]["name"],
+            "Synthetic file mode"
+        );
+        controller.request(Action::Export);
+        controller.drain();
+        let file = exchange::parse(&host.exports.borrow()[0]).unwrap();
+        assert_eq!(file["modes"], host.state.borrow().settings["modes"]);
+        assert_eq!(file["appBindings"][0]["bundleId"], "example.synthetic");
+        assert_eq!(file["appBindings"][0]["modeId"], "mode.fixture-file");
+        assert_eq!(file["browserSiteRules"][0]["host"], "example.com");
+        assert_eq!(host.state.borrow().settings["siteModeLookupEnabled"], false);
+        assert_eq!(host.exports.borrow().len(), 1);
+        assert_eq!(
+            host.state.borrow().notice.as_deref(),
+            Some("Modes exported to synthetic sink · 1 saved")
+        );
+    }
+    #[test]
+    fn normal_motion_parameter_changes_only_injected_preferences() {
+        let normal = QaOptions::parse("", "", "", "normal")
+            .unwrap()
+            .preferences(false);
+        let reduced = QaOptions::parse("", "", "", "").unwrap().preferences(false);
+        assert!(!normal.reduce_motion);
+        assert!(reduced.reduce_motion);
+        assert_eq!(normal.reduce_transparency, reduced.reduce_transparency);
+        assert_eq!(normal.increase_contrast, reduced.increase_contrast);
+        assert!(QaOptions::parse("invalid", "", "", "").is_err());
+        assert!(QaOptions::parse("", "partial-bulk", "", "").is_err());
+        assert!(QaOptions::parse("", "", "2", "").is_err());
+        assert!(QaOptions::parse("", "", "", "invalid").is_err());
+    }
 }

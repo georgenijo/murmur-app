@@ -492,7 +492,11 @@ impl Render for Customize {
                         })
                     }),
             )
-            .child(div().text_size(px(20.)).child(self.page.label()));
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .child(gpui::text!(self.page.label())),
+            );
         let mut nav = div().flex().flex_wrap().gap(px(8.));
         for page in Page::ALL {
             let e = cx.entity();
@@ -513,12 +517,17 @@ impl Render for Customize {
                     div()
                         .id("customize-error")
                         .role(Role::Alert)
-                        .child(problem.message()),
+                        .child(gpui::text!(problem.message())),
                 )
                 .child(self.button("customize-retry", "Retry", Action::Read, cx));
         }
         if let Some(n) = self.notice {
-            body = body.child(div().id("customize-notice").role(Role::Alert).child(n));
+            body = body.child(
+                div()
+                    .id("customize-notice")
+                    .role(Role::Alert)
+                    .child(gpui::text!(n)),
+            );
         }
         if let Some(snapshot) = self.controller.model.snapshot.clone() {
             if self.editing.is_some() {
@@ -537,7 +546,7 @@ impl Render for Customize {
                     let e = cx.entity();
                     let keep = e.clone();
                     body = body
-                        .child("Discard changes?")
+                        .child(gpui::text!("Discard changes?"))
                         .child(
                             Button::new("discard-command", "Discard changes")
                                 .with_scroll_parent(Some(&self.scroll))
@@ -575,17 +584,17 @@ impl Render for Customize {
                         let e = cx.entity();
                         self.tester
                             .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
-                        body=body.child("Preview never writes to clipboard or pastes. Clipboard reading needs separate permission for this preview.").child(self.tester.clone()).child(Button::new("command-preview","Preview command").with_scroll_parent(Some(&self.scroll)).disabled(self.controller.model.pending).on_click(move|_,_,cx|e.update(cx,|s,cx|s.preview(cx))));
+                        body=body.child(gpui::text!("Preview never writes to clipboard or pastes. Clipboard reading needs separate permission for this preview.")).child(self.tester.clone()).child(Button::new("command-preview","Preview command").with_scroll_parent(Some(&self.scroll)).disabled(self.controller.model.pending).on_click(move|_,_,cx|e.update(cx,|s,cx|s.preview(cx))));
                     }
                 }
             } else {
                 match self.page {
                     Page::Spellings => {
                         let e = cx.entity();
-                        body=body.child("For reliable replacement, enter the words Murmur actually hears on the left. Separate variants with commas.").child(Button::new("spelling-add","Add spelling").with_scroll_parent(Some(&self.scroll)).on_click(move|_,w,cx|e.update(cx,|s,cx|s.open(Value::Null,w,cx)))).child(self.button("spellings-import","Import saved spellings…",Action::InspectSpellings,cx)).child(self.button("spellings-export","Export saved spellings…",Action::ExportSpellings,cx));
+                        body=body.child(gpui::text!("For reliable replacement, enter the words Murmur actually hears on the left. Separate variants with commas.")).child(Button::new("spelling-add","Add spelling").with_scroll_parent(Some(&self.scroll)).on_click(move|_,w,cx|e.update(cx,|s,cx|s.open(Value::Null,w,cx)))).child(self.button("spellings-import","Import saved spellings…",Action::InspectSpellings,cx)).child(self.button("spellings-export","Export saved spellings…",Action::ExportSpellings,cx));
                         let entries = snapshot.settings["vocabularyEntries"].as_array().unwrap();
                         if entries.is_empty() {
-                            body=body.child("Everything spelled correctly? Add a name or unusual word when Murmur gets it wrong.");
+                            body=body.child(gpui::text!("Everything spelled correctly? Add a name or unusual word when Murmur gets it wrong."));
                         }
                         for v in entries {
                             let id = v["id"].as_str().unwrap().to_string();
@@ -604,8 +613,9 @@ impl Render for Customize {
                             let armed = self.confirm.as_ref() == Some(&key);
                             body = body.child(
                                 div()
-                                    .child(v["written"].as_str().unwrap().to_string())
-                                    .child(v["aliases"].to_string())
+                                    .id(SharedString::from(format!("spelling-row-{id}")))
+                                    .child(gpui::text!(v["written"].as_str().unwrap().to_string()))
+                                    .child(gpui::text!(v["aliases"].to_string()))
                                     .child(
                                         Button::new(
                                             SharedString::from(format!("spelling-edit-{id}")),
@@ -673,10 +683,10 @@ impl Render for Customize {
                                     .id("spelling-import-preview")
                                     .role(Role::Group)
                                     .aria_label("Spelling import preview")
-                                    .child(format!(
+                                    .child(gpui::text!(format!(
                                         "{} new · {} duplicates · {} conflicts",
                                         preview.added, preview.duplicates, preview.conflicts
-                                    ))
+                                    )))
                                     .child(
                                         self.button(
                                             "spelling-import-confirm",
@@ -699,7 +709,7 @@ impl Render for Customize {
                         self.search
                             .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                         if snapshot.settings["voiceCommandsEnabled"] != true {
-                            body=body.child("Voice commands are saved but do not run while Voice commands & spoken formatting is off.").child(self.button("voice-command-settings","Open voice command settings",Action::VoiceCommandSettings,cx));
+                            body=body.child(gpui::text!("Voice commands are saved but do not run while Voice commands & spoken formatting is off.")).child(self.button("voice-command-settings","Open voice command settings",Action::VoiceCommandSettings,cx));
                         }
                         let e = cx.entity();
                         body = body
@@ -721,7 +731,7 @@ impl Render for Customize {
                                 cx,
                             ));
                         if snapshot.commands.is_empty() {
-                            body = body.child("No voice commands yet.");
+                            body = body.child(gpui::text!("No voice commands yet."));
                         }
                         for v in snapshot.commands {
                             let id = v["id"].as_str().unwrap().to_string();
@@ -734,8 +744,11 @@ impl Render for Customize {
                             let armed = self.confirm.as_ref() == Some(&key);
                             body = body.child(
                                 div()
-                                    .child(crate::knowledge::model::title(&v).to_string())
-                                    .child(crate::knowledge::model::detail(&v))
+                                    .id(SharedString::from(format!("command-row-{id}")))
+                                    .child(gpui::text!(
+                                        crate::knowledge::model::title(&v).to_string()
+                                    ))
+                                    .child(gpui::text!(crate::knowledge::model::detail(&v)))
                                     .child(
                                         Button::new(
                                             SharedString::from(format!("command-edit-{id}")),
@@ -859,18 +872,19 @@ impl Render for Customize {
                             let key = format!("app:{bundle}");
                             let armed = self.confirm.as_ref() == Some(&key);
                             let mut row = div()
+                                .id(SharedString::from(format!("app-row-{bundle}")))
                                 .p(px(12.))
                                 .border_1()
                                 .border_color(p.border)
                                 .rounded(tokens::CARD_RADIUS)
-                                .child(
+                                .child(gpui::text!(
                                     profile["label"]
                                         .as_str()
                                         .filter(|s| !s.is_empty())
                                         .unwrap_or(&bundle)
-                                        .to_string(),
-                                )
-                                .child(bundle.clone())
+                                        .to_string()
+                                ))
+                                .child(gpui::text!(bundle.clone()))
                                 .child(
                                     Button::new(
                                         SharedString::from(format!("app-edit-{bundle}")),
@@ -906,7 +920,7 @@ impl Render for Customize {
                                     ),
                                 );
                             if profile["ideContextEnabled"] == true {
-                                row=row.child("Project symbols stay in memory. No screen, selection, or clipboard context is read.").child(self.button(format!("root-add-{bundle}"),"Add project root…",Action::ChooseRoot(bundle.clone()),cx).disabled(profile["ideProjectRoots"].as_array().is_some_and(|a|a.len()>=4)||self.controller.model.pending)).child(self.button(format!("ide-refresh-{bundle}"),"Refresh index",Action::RefreshIde(bundle.clone()),cx)).child(self.button(format!("ide-clear-{bundle}"),"Clear index",Action::ClearIde(bundle.clone()),cx));
+                                row=row.child(gpui::text!("Project symbols stay in memory. No screen, selection, or clipboard context is read.")).child(self.button(format!("root-add-{bundle}"),"Add project root…",Action::ChooseRoot(bundle.clone()),cx).disabled(profile["ideProjectRoots"].as_array().is_some_and(|a|a.len()>=4)||self.controller.model.pending)).child(self.button(format!("ide-refresh-{bundle}"),"Refresh index",Action::RefreshIde(bundle.clone()),cx)).child(self.button(format!("ide-clear-{bundle}"),"Clear index",Action::ClearIde(bundle.clone()),cx));
                                 for root in
                                     profile["ideProjectRoots"].as_array().into_iter().flatten()
                                 {
@@ -919,20 +933,24 @@ impl Render for Customize {
                                                 .retain(|r| r != root)
                                         }
                                     }
-                                    row = row.child(root.as_str().unwrap().to_string()).child(
-                                        self.button(
+                                    row = row
+                                        .child(gpui::text!(
+                                            id =
+                                                SharedString::from(format!("root-{bundle}-{root}")),
+                                            root.as_str().unwrap().to_string()
+                                        ))
+                                        .child(self.button(
                                             format!("remove-root-{bundle}-{root}"),
                                             "Remove root…",
                                             Action::Patch(json!({"appProfiles":next})),
                                             cx,
-                                        ),
-                                    );
+                                        ));
                                 }
                                 if let Some(status) = snapshot.ide.get(&bundle) {
-                                    row = row.child(format!(
+                                    row = row.child(gpui::text!(format!(
                                         "{} · {} files · {} symbols",
                                         status["state"], status["files"], status["symbols"]
-                                    ));
+                                    )));
                                 }
                             }
                             body = body.child(row);
@@ -945,7 +963,7 @@ impl Render for Customize {
                             .to_string();
                         let scanning = snapshot.scan["state"] == "scanning";
                         let scan_id = snapshot.scan["id"].as_str().unwrap_or("").to_string();
-                        body=body.child("Built-in dev terms active. Scan this folder to add your own identifiers.").child(folder.clone()).child(self.button("project-folder","Choose project folder…",Action::ChooseProject,cx)).child(self.button("project-scan",if scanning{"Scanning…"}else{"Scan folder"},Action::Scan{folder:folder.clone(),id:format!("scan-{}",chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default())},cx).disabled(scanning||folder.is_empty()||self.controller.model.pending));
+                        body=body.child(gpui::text!("Built-in dev terms active. Scan this folder to add your own identifiers.")).child(gpui::text!(folder.clone())).child(self.button("project-folder","Choose project folder…",Action::ChooseProject,cx)).child(self.button("project-scan",if scanning{"Scanning…"}else{"Scan folder"},Action::Scan{folder:folder.clone(),id:format!("scan-{}",chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default())},cx).disabled(scanning||folder.is_empty()||self.controller.model.pending));
                         if scanning {
                             body = body.child(self.button(
                                 "project-scan-cancel",
@@ -954,15 +972,16 @@ impl Render for Customize {
                                 cx,
                             ));
                         }
-                        body =
-                            body.child(div().id("scan-status").role(Role::Status).child(format!(
+                        body = body.child(div().id("scan-status").role(Role::Status).child(
+                            gpui::text!(format!(
                                 "{} · {} files · {} terms",
                                 snapshot.scan["state"],
                                 snapshot.scan["filesRead"],
                                 snapshot.scan["terms"]
-                            )));
+                            )),
+                        ));
                         if snapshot.scan["capped"] == true {
-                            body=body.child("The 1,000-file cap was reached. Choose a smaller folder for complete coverage.");
+                            body=body.child(gpui::text!("The 1,000-file cap was reached. Choose a smaller folder for complete coverage."));
                         }
                         self.search
                             .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
@@ -991,10 +1010,13 @@ impl Render for Customize {
                             cx,
                         ));
                         for term in terms.iter().skip(self.terms_page * 50).take(50) {
-                            body = body.child(format!(
-                                "{} · {}",
-                                term["term"].as_str().unwrap_or(""),
-                                term["frequency"]
+                            body = body.child(gpui::text!(
+                                id = SharedString::from(format!("term-{}", term["term"])),
+                                format!(
+                                    "{} · {}",
+                                    term["term"].as_str().unwrap_or(""),
+                                    term["frequency"]
+                                )
                             ));
                         }
                         if self.terms_page > 0 {
@@ -1032,11 +1054,11 @@ impl Render for Customize {
                         .id("customize-preview")
                         .role(Role::Group)
                         .aria_label("Local preview result")
-                        .child(preview),
+                        .child(gpui::text!(preview)),
                 );
             }
         } else {
-            body = body.child("Loading customization…");
+            body = body.child(gpui::text!("Loading customization…"));
         }
         div()
             .id("customize")

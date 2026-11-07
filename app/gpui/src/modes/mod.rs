@@ -329,17 +329,22 @@ impl Render for Modes {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(div().text_size(px(20.)).child("Modes"));
+            .child(div().text_size(px(20.)).child(gpui::text!("Modes")));
         if let Some(problem) = self.controller.model.problem {
             body = body.child(
                 div()
                     .id("modes-error")
                     .role(Role::Alert)
-                    .child(problem.message()),
+                    .child(gpui::text!(problem.message())),
             );
         }
         if let Some(n) = self.notice {
-            body = body.child(div().id("modes-validation").role(Role::Alert).child(n));
+            body = body.child(
+                div()
+                    .id("modes-validation")
+                    .role(Role::Alert)
+                    .child(gpui::text!(n)),
+            );
         }
         if let Some(s) = self.controller.model.snapshot.clone() {
             let all = s.all();
@@ -372,7 +377,7 @@ impl Render for Modes {
                     }),
                 );
             }
-            body = body.child("Library").child(list);
+            body = body.child(gpui::text!("Library")).child(list);
             let create = cx.entity();
             let duplicate = create.clone();
             let source = selected.clone();
@@ -407,13 +412,13 @@ impl Render for Modes {
                         .id("modes-import-preview")
                         .role(Role::Group)
                         .aria_label("Mode import preview")
-                        .child(format!(
+                        .child(gpui::text!(format!(
                             "{} new modes · {} exact duplicates · {} missing apps · {} conflicts",
                             preview.additions,
                             preview.duplicates,
                             preview.missing_apps,
                             preview.conflicts
-                        ))
+                        )))
                         .child(
                             self.button(
                                 "modes-confirm-import",
@@ -427,12 +432,12 @@ impl Render for Modes {
                         ),
                 );
             }
-            body = body.child("Selected mode").child(
+            body = body.child(gpui::text!("Selected mode")).child(gpui::text!(
                 selected["name"]
                     .as_str()
                     .unwrap_or("Untitled mode")
-                    .to_string(),
-            );
+                    .to_string()
+            ));
             if custom {
                 if self.editing.is_none() {
                     let e = cx.entity();
@@ -517,9 +522,9 @@ impl Render for Modes {
                     }),
                 );
             } else {
-                body=body.child("Built-in modes are read-only. Duplicate one to change its style, model, language, or vocabulary.");
+                body=body.child(gpui::text!("Built-in modes are read-only. Duplicate one to change its style, model, language, or vocabulary."));
             }
-            body = body.child("Where it applies");
+            body = body.child(gpui::text!("Where it applies"));
             let profiles = s.settings["appProfiles"].as_array().unwrap();
             if profiles.is_empty() {
                 body = body.child(self.button(
@@ -559,7 +564,7 @@ impl Render for Modes {
                 ));
             }
             let enabled = s.settings["siteModeLookupEnabled"] == true;
-            body=body.child("Browser sites").child("Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.").child(self.button("site-activation",if enabled{"Disable browser site mode rules"}else{"Use browser site mode rules"},Action::Patch(json!({"siteModeLookupEnabled":!enabled})),cx));
+            body=body.child(gpui::text!("Browser sites")).child(gpui::text!("Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.")).child(self.button("site-activation",if enabled{"Disable browser site mode rules"}else{"Use browser site mode rules"},Action::Patch(json!({"siteModeLookupEnabled":!enabled})),cx));
             if enabled {
                 self.site
                     .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
@@ -597,7 +602,8 @@ impl Render for Modes {
                     let armed = self.confirm.as_deref() == Some(&removal_id);
                     body = body.child(
                         div()
-                            .child(format!("{host} · {}", r["browserBundleId"]))
+                            .id(SharedString::from(format!("site-row-{id}")))
+                            .child(gpui::text!(format!("{host} · {}", r["browserBundleId"])))
                             .child(self.button(
                                 &format!("toggle-site-{id}"),
                                 &format!(
@@ -620,19 +626,24 @@ impl Render for Modes {
                         div()
                             .id("mode-probe-result")
                             .role(Role::Status)
-                            .child(probe),
+                            .child(gpui::text!(probe)),
                     );
                 }
             }
             self.sample
                 .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
             let text = self.sample.read(cx).value("sample").to_string();
-            body=body.child("Before / after test").child("Preview stays in this window. It never copies, pastes, or injects into another app.").child(self.sample.clone()).child(format!("Before: {text}")).child(format!("After: {}",preview(&text,&selected)));
+            body=body.child(gpui::text!("Before / after test")).child(gpui::text!("Preview stays in this window. It never copies, pastes, or injects into another app.")).child(self.sample.clone()).child(gpui::text!(format!("Before: {text}"))).child(gpui::text!(format!("After: {}",preview(&text,&selected))));
             if let Some(n) = s.notice {
-                body = body.child(div().id("modes-notice").role(Role::Status).child(n));
+                body = body.child(
+                    div()
+                        .id("modes-notice")
+                        .role(Role::Status)
+                        .child(gpui::text!(n)),
+                );
             }
         } else {
-            body = body.child("Loading modes…");
+            body = body.child(gpui::text!("Loading modes…"));
         }
         div()
             .id("modes")

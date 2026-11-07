@@ -174,11 +174,9 @@ impl Render for CommandPalette {
                         .flex()
                         .gap(px(12.))
                         .child(div().flex_1().child(c.title.clone()))
-                        .child(
-                            div()
-                                .text_color(p.muted)
-                                .child(c.hint.clone().unwrap_or_else(|| c.section.clone())),
-                        )
+                        .child(div().text_color(p.muted).child(gpui::text!(
+                            c.hint.clone().unwrap_or_else(|| c.section.clone())
+                        )))
                         .on_mouse_move(move |_, _, cx| {
                             m.update(cx, |s, cx| {
                                 if s.selected != row {
@@ -203,7 +201,7 @@ impl Render for CommandPalette {
             }
         }
         if self.rows.is_empty() {
-            list = list.child("No commands found.");
+            list = list.child(gpui::text!("No commands found."));
         }
         div()
             .id("command-palette")
@@ -217,7 +215,9 @@ impl Render for CommandPalette {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .when(!self.open, |d| d.child("Command palette closed"))
+            .when(!self.open, |d| {
+                d.child(gpui::text!("Command palette closed"))
+            })
             .when(self.open, |d| {
                 d.child(TextField::new(&self.search, "Search commands"))
                     .when_some(self.controller.model.problem, |d, problem| {
@@ -225,14 +225,14 @@ impl Render for CommandPalette {
                             div()
                                 .id("section-alert")
                                 .role(Role::Alert)
-                                .child(problem.message()),
+                                .child(gpui::text!(problem.message())),
                         )
                     })
                     .child(list)
                     .child(
                         div()
                             .text_color(p.muted)
-                            .child("↑↓ navigate · Enter run · Esc close"),
+                            .child(gpui::text!("↑↓ navigate · Enter run · Esc close")),
                     )
             })
     }

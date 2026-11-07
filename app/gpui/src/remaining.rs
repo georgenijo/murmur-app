@@ -1,6 +1,7 @@
 //! Gallery-only review composition. Synthetic hosts, no production services.
 use crate::{Button, ButtonSize, tokens::Palette};
 use gpui::{prelude::*, *};
+use std::rc::Rc;
 pub const SECTIONS: [&str; 6] = [
     "Command palette",
     "Insights",
@@ -9,6 +10,61 @@ pub const SECTIONS: [&str; 6] = [
     "Modes",
     "Themes",
 ];
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum Scenario {
+    #[default]
+    Ready,
+    PartialBulk,
+    StaleImport,
+    ConflictingImport,
+}
+#[derive(Clone, Copy, Default, Debug)]
+pub struct QaOptions {
+    pub knowledge: Scenario,
+    pub spellings: Scenario,
+    pub mode_files: bool,
+    pub normal_motion: bool,
+}
+impl QaOptions {
+    pub fn preferences(self, increase_contrast: bool) -> crate::preferences::DisplayPreferences {
+        crate::preferences::DisplayPreferences {
+            reduce_motion: !self.normal_motion,
+            reduce_transparency: true,
+            increase_contrast,
+        }
+    }
+    /// Parsing lives only in the gallery/test module; production reads no QA variables.
+    pub fn parse(
+        knowledge: &str,
+        spellings: &str,
+        mode_files: &str,
+        motion: &str,
+    ) -> Result<Self, String> {
+        fn scenario(value: &str, bulk: bool) -> Result<Scenario, String> {
+            match value {
+                "" | "ready" => Ok(Scenario::Ready),
+                "partial-bulk" if bulk => Ok(Scenario::PartialBulk),
+                "stale-import" => Ok(Scenario::StaleImport),
+                "conflicting-import" => Ok(Scenario::ConflictingImport),
+                _ => Err(format!("Unknown remaining-qa scenario: {value}")),
+            }
+        }
+        Ok(Self {
+            knowledge: scenario(knowledge, true)?,
+            spellings: scenario(spellings, false)?,
+            mode_files: match mode_files {
+                "" | "0" => false,
+                "1" => true,
+                _ => return Err("MURMUR_MODE_FILES must be 0 or 1".into()),
+            },
+            normal_motion: match motion {
+                "" | "reduced" => false,
+                "normal" => true,
+                _ => return Err("MURMUR_MOTION must be reduced or normal".into()),
+            },
+        })
+    }
+}
 pub struct Review {
     pub customize: Entity<crate::customize::Customize>,
     pub custom_active: bool,
@@ -23,8 +79,18 @@ pub struct Review {
 }
 impl Review {
     pub fn new(w: &mut Window, cx: &mut Context<Self>) -> Self {
-        let customize = cx
-            .new(|cx| crate::customize::Customize::new(crate::customize::fixtures::host(), w, cx));
+        Self::with_options(QaOptions::default(), w, cx)
+    }
+    pub fn with_options(options: QaOptions, w: &mut Window, cx: &mut Context<Self>) -> Self {
+        let customize = cx.new(|cx| {
+            crate::customize::Customize::new(
+                Rc::new(crate::customize::fixtures::FixtureHost::with_scenario(
+                    options.spellings,
+                )),
+                w,
+                cx,
+            )
+        });
         let back = cx.subscribe(&customize, |s, _, _: &crate::customize::Back, cx| {
             s.custom_active = false;
             s.knowledge.update(cx, |s, cx| {
@@ -44,9 +110,23 @@ impl Review {
                 .new(|cx| crate::insights::Insights::new(crate::insights::fixtures::host(), w, cx)),
             models: cx.new(|cx| crate::models::Models::new(crate::models::fixtures::host(), w, cx)),
             knowledge: cx.new(|cx| {
-                crate::knowledge::Knowledge::new(crate::knowledge::fixtures::host(), w, cx)
+                crate::knowledge::Knowledge::new(
+                    Rc::new(crate::knowledge::fixtures::FixtureHost::with_scenario(
+                        options.knowledge,
+                    )),
+                    w,
+                    cx,
+                )
             }),
-            modes: cx.new(|cx| crate::modes::Modes::new(crate::modes::fixtures::host(), w, cx)),
+            modes: cx.new(|cx| {
+                crate::modes::Modes::new(
+                    Rc::new(crate::modes::fixtures::FixtureHost::with_files(
+                        options.mode_files,
+                    )),
+                    w,
+                    cx,
+                )
+            }),
             themes: cx.new(|cx| crate::themes::Themes::new(crate::themes::fixtures::host(), w, cx)),
             selected: usize::MAX,
         }

@@ -158,14 +158,24 @@ impl Form {
             })
     }
     pub fn focus_first(&self, w: &mut Window, cx: &mut App) {
-        if let Some(spec) = self.specs.first() {
-            if let Some(e) = self.areas.get(spec.key) {
-                w.focus(&e.read(cx).focus_handle(cx), cx)
-            } else if let Some(e) = self.texts.get(spec.key) {
-                w.focus(&e.read(cx).focus_handle(cx), cx)
-            } else if let Some(e) = self.choices.get(spec.key) {
-                w.focus(&e.read(cx).focus_handle(cx), cx)
+        if self.disabled {
+            return;
+        }
+        for spec in &self.specs {
+            if self.disabled_keys.contains(spec.key) {
+                continue;
             }
+            let focus = if let Some(e) = self.areas.get(spec.key) {
+                e.read(cx).focus_handle(cx)
+            } else if let Some(e) = self.texts.get(spec.key) {
+                e.read(cx).focus_handle(cx)
+            } else if let Some(e) = self.choices.get(spec.key) {
+                e.read(cx).focus_handle(cx)
+            } else {
+                continue;
+            };
+            w.focus(&focus, cx);
+            break;
         }
     }
 }
@@ -216,5 +226,54 @@ impl Render for Form {
             );
         }
         body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Form, Spec};
+    use gpui::{AppContext, Focusable, TestAppContext};
+    #[gpui::test]
+    fn focus_first_skips_disabled_and_missing_controls(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let mut form = None;
+        let (_, cx) = cx.add_window_view(|w, cx| {
+            let e = cx.new(|cx| {
+                Form::new(
+                    vec![
+                        Spec::boolean("kind", "Disabled choice"),
+                        Spec::text("missing", "No focusable control"),
+                        Spec {
+                            multiline: true,
+                            ..Spec::text("body", "Disabled multiline")
+                        },
+                        Spec::text("title", "Enabled title"),
+                    ],
+                    w,
+                    cx,
+                )
+            });
+            form = Some(e.clone());
+            gpui_base::Root::new(e, w, cx)
+        });
+        let form = form.unwrap();
+        cx.update(|w, cx| {
+            form.update(cx, |s, cx| {
+                s.disabled_keys.extend(["kind", "body"]);
+                let missing = s.texts.remove("missing").unwrap();
+                s.focus_first(w, cx);
+                assert!(s.texts["title"].read(cx).focus_handle(cx).is_focused(w));
+                assert!(!s.choices["kind"].read(cx).focus_handle(cx).is_focused(w));
+                s.disabled = true;
+                w.blur(cx);
+                s.focus_first(w, cx);
+                assert!(w.focused(cx).is_none());
+                s.disabled = false;
+                s.disabled_keys.insert("title");
+                s.focus_first(w, cx);
+                assert!(w.focused(cx).is_none());
+                s.texts.insert("missing", missing);
+            })
+        });
     }
 }

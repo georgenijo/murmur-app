@@ -12,11 +12,27 @@ pub fn snapshot() -> Snapshot {
 }
 pub struct FixtureHost {
     pub state: RefCell<Snapshot>,
+    pub exports: RefCell<Vec<String>>,
+    files: bool,
 }
 impl Default for FixtureHost {
     fn default() -> Self {
+        Self::with_files(false)
+    }
+}
+impl FixtureHost {
+    pub fn with_files(files: bool) -> Self {
+        let mut state = snapshot();
+        if files {
+            state.settings["appProfiles"] = serde_json::json!([crate::customize::model::profile(
+                "example.synthetic",
+                "Synthetic editor"
+            )]);
+        }
         Self {
-            state: RefCell::new(snapshot()),
+            state: RefCell::new(state),
+            exports: RefCell::new(vec![]),
+            files,
         }
     }
 }
@@ -59,6 +75,31 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
                         s.settings[k] = v.clone()
                     }
                     s.import_preview = None;
+                    s.notice = Some("Modes imported from the synthetic file.".into());
+                }
+                Err(p) => error = Some(p),
+            },
+            Action::InspectImport if self.files => {
+                let mut source = snapshot().settings;
+                source["modes"] =
+                    serde_json::json!([blank("mode.fixture-file", "Synthetic file mode")]);
+                source["appProfiles"] = s.settings["appProfiles"].clone();
+                source["appProfiles"][0]["modeId"] = serde_json::json!("mode.fixture-file");
+                source["browserSiteRules"] = serde_json::json!([{
+                    "id":"site.fixture-file", "browserBundleId": BROWSERS[0].0,
+                    "host":"example.com", "modeId":"mode.fixture-file", "enabled":true
+                }]);
+                let bytes = super::exchange::export(&source).unwrap();
+                let file = super::exchange::parse(&bytes).unwrap();
+                s.import_preview = Some(super::exchange::preview(&file, &s.settings).unwrap());
+            }
+            Action::Export if self.files => match super::exchange::export(&s.settings) {
+                Ok(bytes) => {
+                    self.exports.borrow_mut().push(bytes);
+                    s.notice = Some(format!(
+                        "Modes exported to synthetic sink · {} saved",
+                        self.exports.borrow().len()
+                    ));
                 }
                 Err(p) => error = Some(p),
             },

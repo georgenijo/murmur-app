@@ -323,13 +323,13 @@ impl Render for Knowledge {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(div().text_size(px(20.)).child("Knowledge"));
+            .child(div().text_size(px(20.)).child(gpui::text!("Knowledge")));
         if let Some(problem) = self.controller.model.problem {
             body = body.child(
                 div()
                     .id("knowledge-error")
                     .role(Role::Alert)
-                    .child(problem.message()),
+                    .child(gpui::text!(problem.message())),
             );
         }
         if let Some(message) = self.notice {
@@ -337,7 +337,7 @@ impl Render for Knowledge {
                 div()
                     .id("knowledge-validation")
                     .role(Role::Alert)
-                    .child(message),
+                    .child(gpui::text!(message)),
             );
         }
         if let Some(dialog) = &self.dialog {
@@ -356,27 +356,29 @@ impl Render for Knowledge {
                 .flex()
                 .flex_col()
                 .gap(px(12.))
-                .child(label);
+                .child(gpui::text!(label));
             self.phrase
                 .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
             match dialog {
                 Dialog::Edit(_) => {
                     self.editor
                         .update(cx, |s, _| s.scroll_parent = Some(self.scroll.clone()));
-                    form=form.child("Stored only on this Mac. Content is never sent to a cloud service or written to logs.").child(self.editor.clone());
+                    form=form.child(gpui::text!("Stored only on this Mac. Content is never sent to a cloud service or written to logs.")).child(self.editor.clone());
                 }
-                Dialog::Delete(v) => form = form.child(title(v).to_string()),
+                Dialog::Delete(v) => form = form.child(gpui::text!(title(v).to_string())),
                 Dialog::Bulk(b, _) => {
                     form = form
-                        .child(format!("{} captured matches · {}", b.total, b.filter.query))
+                        .child(gpui::text!(format!("{} captured matches · {}", b.total, b.filter.query)))
                         .child(self.phrase.clone())
                 }
-                Dialog::DeleteAll(_) => form = form.child(self.phrase.clone()),
+                Dialog::DeleteAll(_) => form = form
+                    .child(gpui::text!("This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later."))
+                    .child(self.phrase.clone()),
                 Dialog::Import(v) => {
-                    form = form.child(format!(
+                    form = form.child(gpui::text!(format!(
                         "{} new · {} duplicates · {} conflicts",
                         v["new"], v["duplicates"], v["conflicts"]
-                    ))
+                    )))
                 }
             };
             let e = cx.entity();
@@ -418,12 +420,12 @@ impl Render for Knowledge {
         } else {
             if let Some(s) = snapshot {
                 body = body.child(div().id("knowledge-status").role(Role::Status).child(
-                    match s.availability.as_str() {
+                    gpui::text!(match s.availability.as_str() {
                         "ready" => "Local store ready",
                         "recovered" => "Recovered from a local backup.",
                         "reinitialized" => "Started with a new local store.",
                         _ => "The local knowledge store is unavailable.",
-                    },
+                    }),
                 ));
                 if s.availability == "unavailable" {
                     body = body.child(self.button(
@@ -490,9 +492,11 @@ impl Render for Knowledge {
                                 })
                             }),
                     );
-                    body = body.child(actions).child(format!("{} records", s.total));
+                    body = body
+                        .child(actions)
+                        .child(gpui::text!(format!("{} records", s.total)));
                     if s.records.is_empty() {
-                        body = body.child("No knowledge records match your filters.");
+                        body = body.child(gpui::text!("No knowledge records match your filters."));
                     }
                     for v in s.records {
                         let id = v["id"].as_str().unwrap_or_default();
@@ -503,6 +507,7 @@ impl Render for Knowledge {
                         body =
                             body.child(
                                 div()
+                                    .id(SharedString::from(format!("knowledge-record-{id}")))
                                     .p(px(12.))
                                     .border_1()
                                     .border_color(p.border)
@@ -510,12 +515,12 @@ impl Render for Knowledge {
                                     .flex()
                                     .flex_col()
                                     .gap(px(8.))
-                                    .child(title(&v).to_string())
-                                    .child(detail(&v))
-                                    .child(format!(
+                                    .child(gpui::text!(title(&v).to_string()))
+                                    .child(gpui::text!(detail(&v)))
+                                    .child(gpui::text!(format!(
                                         "{} · {} · updated {}",
                                         v["scope"]["kind"], v["provenance"], v["updatedAtMs"]
-                                    ))
+                                    )))
                                     .child(
                                         div()
                                             .flex()
@@ -602,12 +607,12 @@ impl Render for Knowledge {
                             div()
                                 .id("knowledge-notice")
                                 .role(Role::Status)
-                                .child(notice),
+                                .child(gpui::text!(notice)),
                         );
                     }
                 }
             } else {
-                body = body.child("Loading knowledge…");
+                body = body.child(gpui::text!("Loading knowledge…"));
             }
         }
         div()

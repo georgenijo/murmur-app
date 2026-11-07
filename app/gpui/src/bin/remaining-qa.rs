@@ -1,7 +1,29 @@
 //! Synthetic review app and offscreen render driver. No production I/O.
+//!
+//! QA-only parameters (all data and export sinks stay in memory):
+//! - MURMUR_SECTION=knowledge + MURMUR_KNOWLEDGE_SCENARIO=partial-bulk:
+//!   recovery-backup banner, then Disable/Delete matches yields a partial
+//!   write with failed IDs and counts. Failed records retain their revision.
+//! - MURMUR_KNOWLEDGE_SCENARIO=stale-import|conflicting-import: Import… opens
+//!   a preview; Confirm refuses the stale token or conflicting synthetic record.
+//! - MURMUR_SECTION=spellings + MURMUR_SPELLINGS_SCENARIO=stale-import|conflicting-import:
+//!   Import saved spellings… reviews the import, disables unsafe confirmation.
+//! - MURMUR_SECTION=modes + MURMUR_MODE_FILES=1: Import modes… parses a synthetic
+//!   Mode file, Confirm imports it, Export custom modes… serializes to memory and
+//!   reports completion. No file panels, disk writes, or user profiles.
+//! - MURMUR_MOTION=normal enables ordinary transitions; default is reduced.
+//!
+//! These switches are read only by this gallery binary, never production startup.
 use gpui::*;
-use murmur_ui::{preferences::DisplayPreferences, remaining::Review};
+use murmur_ui::remaining::{QaOptions, Review};
 fn main() {
+    let options = QaOptions::parse(
+        &std::env::var("MURMUR_KNOWLEDGE_SCENARIO").unwrap_or_default(),
+        &std::env::var("MURMUR_SPELLINGS_SCENARIO").unwrap_or_default(),
+        &std::env::var("MURMUR_MODE_FILES").unwrap_or_default(),
+        &std::env::var("MURMUR_MOTION").unwrap_or_default(),
+    )
+    .expect("valid remaining-qa parameters");
     murmur_ui::overlay::native::start_webkit_policy();
     if std::env::var_os("MURMUR_WEBKIT_BASELINE_ONLY").is_some() {
         murmur_ui::overlay::native::assert_webkit_policy("MURMUR_REMAINING_INVENTORY");
@@ -22,11 +44,7 @@ fn main() {
         cx.set_quit_mode(QuitMode::LastWindowClosed);
         murmur_ui::init_with_preferences(
             cx,
-            Some(DisplayPreferences {
-                reduce_motion: true,
-                reduce_transparency: true,
-                increase_contrast: std::env::var_os("MURMUR_CONTRAST").is_some(),
-            }),
+            Some(options.preferences(std::env::var_os("MURMUR_CONTRAST").is_some())),
         );
         let dark = std::env::var_os("MURMUR_DARK").is_some();
         murmur_ui::tokens::apply_appearance(dark, cx);
@@ -68,7 +86,7 @@ fn main() {
                     ..Default::default()
                 },
                 |w, cx| {
-                    let e = cx.new(|cx| Review::new(w, cx));
+                    let e = cx.new(|cx| Review::with_options(options, w, cx));
                     entity = Some(e.clone());
                     cx.new(|cx| gpui_base::Root::new(e, w, cx))
                 },

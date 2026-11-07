@@ -79,9 +79,11 @@ impl Render for Insights {
                 div()
                     .text_size(px(20.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Insights"),
+                    .child(gpui::text!("Insights")),
             )
-            .child("Your usage patterns, computed on this Mac and never uploaded");
+            .child(gpui::text!(
+                "Your usage patterns, computed on this Mac and never uploaded"
+            ));
         if let Some(problem) = self.controller.model.problem {
             let e = cx.entity();
             body = body
@@ -89,7 +91,7 @@ impl Render for Insights {
                     div()
                         .id("section-alert")
                         .role(Role::Alert)
-                        .child(problem.message()),
+                        .child(gpui::text!(problem.message())),
                 )
                 .child(
                     Button::new("insights-retry", "Retry")
@@ -113,14 +115,19 @@ impl Render for Insights {
             for (label, value, detail) in snapshot.totals() {
                 totals = totals.child(
                     div()
+                        .id(label)
+                        .role(Role::Group)
                         .w(px(230.))
                         .p(px(12.))
                         .border_1()
                         .border_color(p.border)
                         .rounded(tokens::CARD_RADIUS)
-                        .child(div().text_color(p.muted).child(label))
-                        .child(div().text_size(px(24.)).child(value))
-                        .child(div().text_size(px(12.)).child(detail)),
+                        .child(
+                            div()
+                                .text_size(px(20.))
+                                .child(gpui::text!(format!("{label}: {value}"))),
+                        )
+                        .child(div().text_size(px(12.)).child(gpui::text!(detail))),
                 );
             }
             body = body.child(totals);
@@ -146,18 +153,19 @@ impl Render for Insights {
                 });
                 body = body.child(
                     div()
-                        .child(
+                        .id(("insights-chart", i))
+                        .child(gpui::text!(
                             [
                                 "Activity · last 8 weeks",
                                 "Words per day · last 7 days",
                                 "WPM trend · last 7 days",
-                            ][i],
-                        )
+                            ][i]
+                        ))
                         .child(self.charts[i].clone()),
                 );
             }
         } else {
-            body = body.child("Loading insights…");
+            body = body.child(gpui::text!("Loading insights…"));
         }
         div()
             .id("insights")

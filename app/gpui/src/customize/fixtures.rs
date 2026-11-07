@@ -1,4 +1,5 @@
 use super::{host::*, model::*, vocabulary};
+use crate::remaining::Scenario;
 use crate::section;
 use serde_json::json;
 use std::{cell::RefCell, rc::Rc};
@@ -26,12 +27,19 @@ pub fn snapshot() -> Snapshot {
 pub struct FixtureHost {
     pub state: RefCell<Snapshot>,
     pub actions: RefCell<Vec<Action>>,
+    scenario: Scenario,
 }
 impl Default for FixtureHost {
     fn default() -> Self {
+        Self::with_scenario(Scenario::Ready)
+    }
+}
+impl FixtureHost {
+    pub fn with_scenario(scenario: Scenario) -> Self {
         Self {
             state: RefCell::new(snapshot()),
             actions: RefCell::new(vec![]),
+            scenario,
         }
     }
 }
@@ -125,8 +133,18 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
             }
             Action::CancelScan(_) => s.scan["state"] = json!("idle"),
             Action::InspectSpellings => {
-                let v = json!({"format":"murmur-vocabulary","version":1,"entries":[{"id":"import-spelling","written":"FixtureName","aliases":["fixture name"],"enabled":true,"scope":{"kind":"global"}}]});
+                let alias = if self.scenario == Scenario::ConflictingImport {
+                    "synthetic term"
+                } else {
+                    "fixture name"
+                };
+                let v = json!({"format":"murmur-vocabulary","version":1,"entries":[{"id":"import-spelling","written":"FixtureName","aliases":[alias],"enabled":true,"scope":{"kind":"global"}}]});
+                // Exercise the same strict parser as a real import without opening a panel.
+                let v = vocabulary::parse(&v.to_string()).unwrap();
                 s.import_preview = Some(vocabulary::preview(&v, &s.settings).unwrap());
+                if self.scenario == Scenario::StaleImport {
+                    s.settings["vocabularyEntries"][0]["written"] = json!("SyntheticTermUpdated");
+                }
             }
             Action::ImportSpellings(p) => match vocabulary::commit(p, &s.settings) {
                 Ok(v) => {

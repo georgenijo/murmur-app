@@ -92,7 +92,7 @@ impl Render for Models {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.controller.drain();
         let p = Palette::get(cx);
-        let mut body=div().flex().flex_col().gap(px(12.)).child(div().text_size(px(20.)).child("Model storage")).child("Remove unused models to free storage. Choose another model before removing the selected one.");
+        let mut body=div().flex().flex_col().gap(px(12.)).child(div().text_size(px(20.)).child(gpui::text!("Model storage"))).child(gpui::text!("Remove unused models to free storage. Choose another model before removing the selected one."));
         if let Some(problem) = self.controller.model.problem {
             let e = cx.entity();
             body = body
@@ -100,7 +100,7 @@ impl Render for Models {
                     div()
                         .id("section-alert")
                         .role(Role::Alert)
-                        .child(problem.message()),
+                        .child(gpui::text!(problem.message())),
                 )
                 .child(
                     Button::new("models-retry", "Retry")
@@ -110,7 +110,7 @@ impl Render for Models {
         }
         if let Some(snapshot) = self.controller.model.snapshot.clone() {
             if let Some(h) = &snapshot.hardware {
-                body = body.child(h.clone());
+                body = body.child(gpui::text!(h.clone()));
             }
             for m in &snapshot.catalog {
                 let active = m.id == snapshot.selected
@@ -121,6 +121,7 @@ impl Render for Models {
                     _ => "Not installed",
                 };
                 let mut row = div()
+                    .id(SharedString::from(format!("model-{}", m.id)))
                     .p(px(12.))
                     .border_1()
                     .border_color(p.border)
@@ -128,8 +129,8 @@ impl Render for Models {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(m.label.clone())
-                    .child(format!(
+                    .child(gpui::text!(m.label.clone()))
+                    .child(gpui::text!(format!(
                         "{} · {} · {} · {status}{}",
                         m.size,
                         m.backend,
@@ -141,16 +142,16 @@ impl Render for Models {
                         } else {
                             ""
                         }
-                    ))
-                    .child(m.capabilities.join(" · "));
+                    )))
+                    .child(gpui::text!(m.capabilities.join(" · ")));
                 if !m.supported {
-                    row = row.child("Unavailable on this Mac");
+                    row = row.child(gpui::text!("Unavailable on this Mac"));
                 }
                 if snapshot.recommended.as_ref() == Some(&m.id) {
-                    row = row.child("Recommended for this Mac");
+                    row = row.child(gpui::text!("Recommended for this Mac"));
                 }
                 if snapshot.warned.contains(&m.id) {
-                    row = row.child("Higher memory");
+                    row = row.child(gpui::text!("Higher memory"));
                 }
                 let mut actions = div().flex().flex_wrap().gap(px(8.));
                 if m.supported && m.id != snapshot.selected {
@@ -219,11 +220,13 @@ impl Render for Models {
                 body = body.child(row.child(actions));
             }
             if snapshot.attempt.is_some() {
-                body = body.child(div().id("section-status").role(Role::Status).child(format!(
-                    "{} {}",
-                    snapshot.phase.as_deref().unwrap_or("Preparing…"),
-                    snapshot.percent.map_or(String::new(), |p| format!("{p}%"))
-                )));
+                body = body.child(div().id("section-status").role(Role::Status).child(
+                    gpui::text!(format!(
+                        "{} {}",
+                        snapshot.phase.as_deref().unwrap_or("Preparing…"),
+                        snapshot.percent.map_or(String::new(), |p| format!("{p}%"))
+                    )),
+                ));
             }
             if let (Some(request_id), Some(model)) = (&snapshot.attempt, &snapshot.attempt_model) {
                 let e = cx.entity();
@@ -238,7 +241,7 @@ impl Render for Models {
                 );
             }
         } else {
-            body = body.child("Loading models…");
+            body = body.child(gpui::text!("Loading models…"));
         }
         div()
             .id("model-storage")

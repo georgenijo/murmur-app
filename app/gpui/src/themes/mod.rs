@@ -280,19 +280,24 @@ impl Render for Themes {
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(div().text_size(px(20.)).child("Appearance"));
+            .child(div().text_size(px(20.)).child(gpui::text!("Appearance")));
         if let Some(problem) = self.controller.model.problem {
             body = body
                 .child(
                     div()
                         .id("themes-error")
                         .role(Role::Alert)
-                        .child(problem.message()),
+                        .child(gpui::text!(problem.message())),
                 )
                 .child(self.button("themes-retry".into(), "Retry".into(), Action::Read, cx));
         }
         if let Some(n) = self.notice {
-            body = body.child(div().id("theme-validation").role(Role::Alert).child(n));
+            body = body.child(
+                div()
+                    .id("theme-validation")
+                    .role(Role::Alert)
+                    .child(gpui::text!(n)),
+            );
         }
         if let Some(dialog) = self.dialog.clone() {
             let import_choice = matches!(dialog, Dialog::Import);
@@ -342,10 +347,10 @@ impl Render for Themes {
                         .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                     let query = self.search.read(cx).value("query").to_string();
                     let sort = self.search.read(cx).value("sort").to_string();
-                    content=content.child("Search sends your query and ordinary connection metadata directly to https://open-vsx.org. Downloads occur only when you choose Add or Update. No account, proxy, background polling, or automatic updates.").child(self.search.clone()).child(self.button("community-search".into(),"Search Open VSX".into(),Action::Search{query,sort},cx));
+                    content=content.child(gpui::text!("Search sends your query and ordinary connection metadata directly to https://open-vsx.org. Downloads occur only when you choose Add or Update. No account, proxy, background polling, or automatic updates.")).child(self.search.clone()).child(self.button("community-search".into(),"Search Open VSX".into(),Action::Search{query,sort},cx));
                     if let Some(s) = &snapshot {
                         if s.results.is_empty() {
-                            content = content.child("No community themes to show.");
+                            content = content.child(gpui::text!("No community themes to show."));
                         }
                         for e in &s.results {
                             let installed: Vec<_> = s.library["themes"]
@@ -356,8 +361,12 @@ impl Render for Themes {
                                 .cloned()
                                 .collect();
                             let mut row = div()
-                                .child(e.label.clone())
-                                .child(format!("{} · {} · {}", e.publisher, e.version, e.license));
+                                .id(SharedString::from(format!("community-{}", e.id)))
+                                .child(gpui::text!(e.label.clone()))
+                                .child(gpui::text!(format!(
+                                    "{} · {} · {}",
+                                    e.publisher, e.version, e.license
+                                )));
                             if installed.is_empty() {
                                 row = row.child(self.button(
                                     format!("add-{}", e.id),
@@ -398,15 +407,18 @@ impl Render for Themes {
                     self.editor
                         .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                     let e = cx.entity();
-                    content=content.child(self.editor.clone()).child("Colors resolve to accessible semantic roles. Leave a color empty to use Sonic.").child(Button::new("theme-save","Save theme").with_scroll_parent(Some(&self.scroll)).on_click(move|_,_,cx|e.update(cx,|s,cx|s.save_editor(cx))));
+                    content=content.child(self.editor.clone()).child(gpui::text!("Colors resolve to accessible semantic roles. Leave a color empty to use Sonic.")).child(Button::new("theme-save","Save theme").with_scroll_parent(Some(&self.scroll)).on_click(move|_,_,cx|e.update(cx,|s,cx|s.save_editor(cx))));
                 }
                 Dialog::Preview(entries) => {
                     for entry in &entries {
                         let c = compile::compile(&entry["theme"]);
-                        content = content.child(format!(
-                            "{} · {} contrast adjustments",
-                            entry["label"].as_str().unwrap_or("Imported theme"),
-                            c.adjustments
+                        content = content.child(gpui::text!(
+                            id = SharedString::from(format!("theme-preview-{}", entry["id"])),
+                            format!(
+                                "{} · {} contrast adjustments",
+                                entry["label"].as_str().unwrap_or("Imported theme"),
+                                c.adjustments
+                            )
                         ));
                     }
                     let e = cx.entity();
@@ -427,21 +439,23 @@ impl Render for Themes {
                 }
                 Dialog::Remove(id) => {
                     let e = cx.entity();
-                    content = content.child("Remove this saved theme?").child(
-                        Button::new("theme-remove-confirm", "Confirm remove…")
-                            .with_scroll_parent(Some(&self.scroll))
-                            .intent(ButtonIntent::Danger)
-                            .on_click(move |_, _, cx| {
-                                e.update(cx, |s, cx| {
-                                    s.dialog = None;
-                                    s.request(Action::Remove(vec![id.clone()]), cx)
-                                })
-                            }),
-                    );
+                    content = content
+                        .child(gpui::text!("Remove this saved theme?"))
+                        .child(
+                            Button::new("theme-remove-confirm", "Confirm remove…")
+                                .with_scroll_parent(Some(&self.scroll))
+                                .intent(ButtonIntent::Danger)
+                                .on_click(move |_, _, cx| {
+                                    e.update(cx, |s, cx| {
+                                        s.dialog = None;
+                                        s.request(Action::Remove(vec![id.clone()]), cx)
+                                    })
+                                }),
+                        );
                 }
                 Dialog::Update(extension, expected) => {
                     let e = cx.entity();
-                    content=content.child("Replace the installed collection with this version? Local changes since this preview refuse the update.").child(Button::new("theme-update-confirm","Confirm update").with_scroll_parent(Some(&self.scroll)).on_click(move|_,_,cx|e.update(cx,|s,cx|{s.dialog=None;s.request(Action::Update{extension:(*extension).clone(),expected:expected.clone()},cx)})));
+                    content=content.child(gpui::text!("Replace the installed collection with this version? Local changes since this preview refuse the update.")).child(Button::new("theme-update-confirm","Confirm update").with_scroll_parent(Some(&self.scroll)).on_click(move|_,_,cx|e.update(cx,|s,cx|{s.dialog=None;s.request(Action::Update{extension:(*extension).clone(),expected:expected.clone()},cx)})));
                 }
             }
             if !import_choice {
@@ -526,12 +540,15 @@ impl Render for Themes {
             );
             if !s.library_available {
                 body = body.child(div().id("theme-library-error").role(Role::Alert).child(
-                    "Theme library storage is unavailable. Your active appearance is kept.",
+                    gpui::text!(
+                        "Theme library storage is unavailable. Your active appearance is kept."
+                    ),
                 ));
             }
             for entry in library::entries(&s.library) {
                 let id = entry["id"].as_str().unwrap().to_string();
                 let mut row = div()
+                    .id(SharedString::from(format!("theme-{id}")))
                     .p(px(16.))
                     .border_1()
                     .border_color(p.border)
@@ -539,7 +556,9 @@ impl Render for Themes {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(entry["label"].as_str().unwrap_or("Theme").to_string());
+                    .child(gpui::text!(
+                        entry["label"].as_str().unwrap_or("Theme").to_string()
+                    ));
                 let mut variants = div().flex().flex_wrap().gap(px(8.));
                 for mode in entry["modes"].as_array().unwrap() {
                     let mode = mode.as_str().unwrap();
@@ -596,10 +615,15 @@ impl Render for Themes {
                 body = body.child(row);
             }
             if let Some(n) = s.notice {
-                body = body.child(div().id("themes-notice").role(Role::Status).child(n));
+                body = body.child(
+                    div()
+                        .id("themes-notice")
+                        .role(Role::Status)
+                        .child(gpui::text!(n)),
+                );
             }
         } else {
-            body = body.child("Loading appearance…");
+            body = body.child(gpui::text!("Loading appearance…"));
         }
         div()
             .id("themes")
