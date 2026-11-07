@@ -151,29 +151,41 @@ bool murmur_webkit_inventory(const char *prefix) {
     // it may itself load a framework. Storage is bounded and QA-only.
     WebkitLoad *snapshot=calloc(MAX_IMAGES,sizeof(WebkitLoad));
     if (!snapshot) return false;
-    pthread_mutex_lock(&lock);
-    unsigned count=load_count, extra=overflow, base=baseline, linked=linkage;
-    memcpy(snapshot,loads,count*sizeof(WebkitLoad));
-    pthread_mutex_unlock(&lock);
-    unsigned ax=0;
-    @autoreleasepool {
-        for (unsigned i=0; i<count; i++) {
-            WebkitLoad *load=&snapshot[i];
-            ax+=load->ax;
-            NSMutableArray *chain=[NSMutableArray array];
-            for (unsigned j=0; j<load->count; j++) {
-                WebkitFrame *f=&load->frames[j];
-                [chain addObject:@{@"image": @(f->image), @"symbol": @(f->symbol)}];
+    unsigned count=0, extra=0, base=0, linked=0, printed=0, ax=0;
+    bool stable=false;
+    // A valid AX load arriving during JSON emission must be included, not
+    // rejected merely for changing the inventory. Each pass emits new records
+    // only; bounded storage limits this to at most MAX_IMAGES+1 snapshots.
+    for (unsigned pass=0; pass<=MAX_IMAGES; pass++) {
+        pthread_mutex_lock(&lock);
+        count=load_count; extra=overflow; base=baseline; linked=linkage;
+        memcpy(snapshot,loads,count*sizeof(WebkitLoad));
+        pthread_mutex_unlock(&lock);
+#ifdef MURMUR_WEBKIT_SNAPSHOT_HOOK
+        // Unit regression injects an arrival at this precise race boundary.
+        MURMUR_WEBKIT_SNAPSHOT_HOOK();
+#endif
+        @autoreleasepool {
+            for (unsigned i=printed; i<count; i++) {
+                WebkitLoad *load=&snapshot[i];
+                ax+=load->ax;
+                NSMutableArray *chain=[NSMutableArray array];
+                for (unsigned j=0; j<load->count; j++) {
+                    WebkitFrame *f=&load->frames[j];
+                    [chain addObject:@{@"image": @(f->image), @"symbol": @(f->symbol)}];
+                }
+                NSDictionary *event=@{@"image": @(load->image), @"axAttributed": @(load->ax), @"chain": chain};
+                NSData *json=[NSJSONSerialization dataWithJSONObject:event options:NSJSONWritingSortedKeys error:NULL];
+                printf("MURMUR_WEBKIT_LOAD=%s\n",[[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] UTF8String]);
             }
-            NSDictionary *event=@{@"image": @(load->image), @"axAttributed": @(load->ax), @"chain": chain};
-            NSData *json=[NSJSONSerialization dataWithJSONObject:event options:NSJSONWritingSortedKeys error:NULL];
-            printf("MURMUR_WEBKIT_LOAD=%s\n",[[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] UTF8String]);
         }
+        printed=count;
+        pthread_mutex_lock(&lock);
+        stable=count==load_count && extra==overflow && base==baseline && linked==linkage;
+        pthread_mutex_unlock(&lock);
+        if (stable) break;
     }
     free(snapshot);
-    pthread_mutex_lock(&lock);
-    bool stable=count==load_count && extra==overflow && base==baseline && linked==linkage;
-    pthread_mutex_unlock(&lock);
     printf("%s={\"pid\":%d,\"webkitImages\":%u,\"axAttributed\":%u,\"unattributed\":%u,\"startupWebkitImages\":%u,\"linkageViolations\":%u}\n",
         prefix,getpid(),count+extra,ax,count+extra-ax,base,linked);
     fflush(stdout);

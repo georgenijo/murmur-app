@@ -468,8 +468,19 @@ class WebkitSourcePolicyTests(unittest.TestCase):
 class WebkitPolicyTests(unittest.TestCase):
     def test_classifier_linkage_and_zero_baseline(self):
         source = r'''
+static void snapshot_hook(void);
+#define MURMUR_WEBKIT_SNAPSHOT_HOOK snapshot_hook
 #include "webkit_policy.m"
 #include <assert.h>
+static WebkitLoad pending;
+static bool inject;
+static void snapshot_hook(void) {
+    if (!inject) return;
+    inject=false;
+    pthread_mutex_lock(&lock);
+    loads[load_count++]=pending;
+    pthread_mutex_unlock(&lock);
+}
 int main(void) {
     assert(murmur_webkit_start());
     assert(murmur_webkit_inventory("MURMUR_TEST_INVENTORY"));
@@ -492,6 +503,16 @@ int main(void) {
     };
     unsigned n=sizeof(ax)/sizeof(*ax);
     assert(murmur_webkit_ax_chain(ax,n,false));
+    // Deterministically arrive after snapshot copy, before serialization.
+    strcpy(pending.image,"/System/Library/Frameworks/WebKit.framework/WebKit");
+    memcpy(pending.frames,ax,sizeof(ax)); pending.count=n;
+    pending.ax=murmur_webkit_ax_chain(ax,n,false);
+    inject=true;
+    assert(murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_AX_INVENTORY"));
+    assert(load_count==1); load_count=0;
+    pending.ax=false; inject=true;
+    assert(!murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_UNKNOWN_INVENTORY"));
+    assert(load_count==1); load_count=0;
     assert(!murmur_webkit_ax_chain(ax,n,true)); // Truncated evidence.
     assert(!murmur_webkit_ax_chain(ax,0,false));
     assert(!murmur_webkit_ax_chain(ax,4,false)); // No incoming AX IPC.
