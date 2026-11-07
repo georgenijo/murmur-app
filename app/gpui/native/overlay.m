@@ -248,3 +248,12 @@ void murmur_preview_visibility(void *raw, bool hidden) {
     if (hidden) [window orderOut:nil];
     else if (!window.isVisible) [window orderFrontRegardless];
 }
+
+// Global top-left logical coordinates match GPUI window bounds. Read only;
+// never posts an event, monitors another app, or moves the system pointer.
+void murmur_overlay_pointer_position(double *out) {
+    assert([NSThread isMainThread]);
+    NSPoint point = NSEvent.mouseLocation;
+    out[0] = point.x;
+    out[1] = NSMaxY(NSScreen.screens.firstObject.frame) - point.y;
+}

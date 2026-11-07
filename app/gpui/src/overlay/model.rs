@@ -480,6 +480,9 @@ impl Model {
             }
         }
     }
+    pub(super) fn hover_suppressed(&self) -> bool {
+        self.hover_closed
+    }
     /// An outside sample can end an explicit-close visit even if the panel
     /// never received its enter. It must not manufacture an AX-opened exit.
     pub(super) fn rearm_hover(&mut self) {
