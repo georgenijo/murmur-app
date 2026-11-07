@@ -50,6 +50,7 @@ pub struct Meetings {
     calendar_selection: Option<String>,
     confirmation: Option<(String, Instant)>,
     focus: BTreeMap<String, FocusHandle>,
+    row_reveal: BTreeMap<String, crate::data_components::FocusRevealState>,
     query_epoch: u64,
     detail_id: Option<String>,
     page: usize,
@@ -111,6 +112,7 @@ impl Meetings {
             calendar_selection: None,
             confirmation: None,
             focus: BTreeMap::new(),
+            row_reveal: BTreeMap::new(),
             query_epoch: 0,
             detail_id: None,
             page: 0,
@@ -211,6 +213,7 @@ impl Meetings {
         self.naming = false;
         self.speakers = false;
         self.text_pages.clear();
+        self.row_reveal.clear();
         self.page = 0;
         self.query_epoch += 1;
         self.seek_state = None;

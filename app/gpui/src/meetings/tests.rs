@@ -12,8 +12,13 @@ fn draw(cx: &mut VisualTestContext) {
     cx.update(|w, cx| w.draw(cx).clear(cx));
 }
 fn harness(cx: &mut TestAppContext) -> (Entity<Meetings>, Rc<FixtureHost>, &mut VisualTestContext) {
+    harness_host(cx, Rc::new(FixtureHost::default()))
+}
+fn harness_host(
+    cx: &mut TestAppContext,
+    h: Rc<FixtureHost>,
+) -> (Entity<Meetings>, Rc<FixtureHost>, &mut VisualTestContext) {
     cx.update(crate::init);
-    let h = Rc::new(FixtureHost::default());
     let mut view = None;
     let (_, cx) = cx.add_window_view(|w, cx| {
         let e = cx.new(|cx| Meetings::new(h.clone(), w, cx));
@@ -325,6 +330,172 @@ mod ax {
         );
         draw(cx);
     }
+    fn focus_click(cx: &mut VisualTestContext, id: NodeId) {
+        let w = cx.update(|w, _| w.window_handle());
+        cx.dispatch_accessibility_action(
+            w,
+            ActionRequest {
+                action: gpui::accesskit::Action::Focus,
+                target_node: id,
+                target_tree: TreeId::ROOT,
+                data: None,
+            },
+        );
+        draw(cx);
+        cx.update(|w, cx| w.simulate_next_frame(cx));
+        draw(cx);
+        click(cx, id);
+    }
+    #[gpui::test]
+    fn every_segment_exposes_text_once_before_play(cx: &mut TestAppContext) {
+        let (_, h, cx) = harness(cx);
+        let t = tree(cx);
+        let state = h.state.borrow();
+        for segment in &state.detail.as_ref().unwrap().segments {
+            let group = t
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.role() == gpui::accesskit::Role::Article)
+                .nth((segment.id - 1) as usize)
+                .unwrap();
+            let children: Vec<_> = group
+                .1
+                .children()
+                .iter()
+                .map(|id| &t.nodes.iter().find(|(node_id, _)| node_id == id).unwrap().1)
+                .collect();
+            let expected = match segment.status.as_str() {
+                "final" => segment.text.as_str(),
+                "pending" => "Transcript pending…",
+                _ => "Transcription failed.",
+            };
+            let text: Vec<_> = children
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| {
+                    n.role() == gpui::accesskit::Role::Label && n.value() == Some(expected)
+                })
+                .collect();
+            assert_eq!(
+                text.len(),
+                1,
+                "segment {} must expose its text once",
+                segment.id
+            );
+            assert!(group.1.label().unwrap().contains("channel"));
+            if segment.audio_available {
+                let play = children
+                    .iter()
+                    .position(|n| n.role() == gpui::accesskit::Role::Button)
+                    .unwrap();
+                assert!(text[0].0 < play, "channel/time, text, then Play");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn compact_and_regular_keyboard_focus_bounds_stay_in_row_viewport(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness(cx);
+        for (width, height) in [(720., 560.), (1120., 820.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            draw(cx);
+            cx.update(|w, cx| {
+                e.update(cx, |s, cx| {
+                    let focus = s.focus_for("meeting-fixture-1", cx);
+                    w.focus(&focus, cx);
+                })
+            });
+            draw(cx);
+            for (key, index, title) in [
+                ("end", 1, "Untitled meeting"),
+                ("home", 0, "Synthetic planning meeting"),
+                ("down", 1, "Untitled meeting"),
+                ("up", 0, "Synthetic planning meeting"),
+            ] {
+                cx.simulate_keystrokes(key);
+                draw(cx);
+                cx.update(|w, cx| w.simulate_next_frame(cx));
+                draw(cx);
+                let t = tree(cx);
+                let node = &t
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == t.focus)
+                    .expect("focused row AX node")
+                    .1;
+                assert_eq!(node.label(), Some(title));
+                let bounds = node.bounds().unwrap();
+                let scale = cx.update(|w, _| f64::from(w.scale_factor()));
+                let viewport =
+                    e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.bounds());
+                assert!(
+                    bounds.x0 >= scale * f64::from(f32::from(viewport.left()))
+                        && bounds.x1 <= scale * f64::from(f32::from(viewport.right()))
+                        && bounds.y0 >= scale * f64::from(f32::from(viewport.top()))
+                        && bounds.y1 <= scale * f64::from(f32::from(viewport.bottom())),
+                    "{width}×{height}: {key} focused {bounds:?} outside rows {viewport:?}"
+                );
+                super::assert_row_visible(&e, cx, index);
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn long_fixture_pages_expose_complete_text_and_later_segments(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness_host(cx, Rc::new(FixtureHost::with_corpus(250, 80, 5000)));
+        let expected = fixtures::corpus(250, 80, 5000).detail.unwrap().segments[0]
+            .text
+            .clone();
+        for page in 0..3 {
+            let t = tree(cx);
+            let part: String = expected.chars().skip(page * 2048).take(2048).collect();
+            assert_eq!(
+                t.nodes
+                    .iter()
+                    .filter(|(_, n)| n.role() == gpui::accesskit::Role::Label
+                        && n.value() == Some(part.as_str()))
+                    .count(),
+                1
+            );
+            focus_click(
+                cx,
+                named(
+                    &t,
+                    &format!("Transcript text page {} of 3 · Next", page + 1),
+                ),
+            );
+        }
+        // The first segment's text pager wraps; transcript paging reaches the
+        // final eight segments, including their pending/failed static text.
+        for expected_page in 1..=3 {
+            let t = tree(cx);
+            focus_click(cx, named(&t, "Next transcript page"));
+            assert_eq!(
+                e.read_with(cx, |s, _| s.page),
+                expected_page,
+                "Next transcript page action"
+            );
+        }
+        let t = tree(cx);
+        assert_eq!(
+            t.nodes
+                .iter()
+                .filter(|(_, n)| n.role() == gpui::accesskit::Role::Article)
+                .count(),
+            8
+        );
+        assert!(
+            t.nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some("Transcript pending…"))
+        );
+        assert!(
+            t.nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some("Transcription failed."))
+        );
+    }
+
     #[gpui::test]
     fn native_ax_capture_and_stop_have_exact_generation(cx: &mut TestAppContext) {
         let (e, h, cx) = harness(cx);
@@ -668,3 +839,87 @@ fn calendar_and_detail_labels_use_local_wall_clock() {
 #[cfg(target_os = "macos")]
 #[path = "tests/native_playback.rs"]
 mod native_playback;
+
+fn assert_row_visible(e: &Entity<Meetings>, cx: &mut VisualTestContext, index: usize) {
+    e.read_with(cx, |s, _| {
+        let scroll = s.list_scroll.0.borrow();
+        let viewport = scroll.base_handle.bounds();
+        let top = scroll.base_handle.offset().y + gpui::px(index as f32 * 112.);
+        assert!(
+            top >= gpui::px(-1.) && top + gpui::px(112.) <= viewport.size.height + gpui::px(1.),
+            "row {index} clipped: top={top:?}, viewport={viewport:?}"
+        );
+    });
+}
+
+#[gpui::test]
+fn large_fixture_paging_keyboard_and_retained_reveal(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness_host(cx, Rc::new(FixtureHost::with_corpus(250, 80, 5000)));
+    cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
+    draw(cx);
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            let focus = s.focus_for("meeting-fixture-1", cx);
+            w.focus(&focus, cx);
+        })
+    });
+    for limit in [50, 100, 150, 200, 250] {
+        if limit > 50 {
+            e.update(cx, |s, cx| {
+                s.request(
+                    Action::List {
+                        query: String::new(),
+                        limit,
+                    },
+                    cx,
+                )
+            });
+            draw(cx);
+        }
+        assert_eq!(
+            e.read_with(cx, |s, _| s.model.snapshot.as_ref().unwrap().meetings.len()),
+            limit
+        );
+        cx.simulate_keystrokes("end");
+        draw(cx);
+        cx.update(|w, cx| w.simulate_next_frame(cx));
+        draw(cx);
+        assert_row_visible(&e, cx, limit - 1);
+        let id = format!("fixture-{limit}");
+        assert!(
+            matches!(h.actions.borrow().last(), Some(Action::Select(selected)) if selected == &id)
+        );
+        assert!(cx.update(|w, cx| e.read(cx).focus[&format!("meeting-{id}")].is_focused(w)));
+    }
+    // A focused row can unmount and remount after wheel scrolling. Its retained
+    // reveal must not pull the viewport back, until focus actually leaves.
+    let original = e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset());
+    e.update(cx, |s, cx| {
+        s.list_scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+        cx.notify();
+    });
+    draw(cx);
+    let partial = original + gpui::point(gpui::px(0.), gpui::px(60.));
+    e.update(cx, |s, cx| {
+        s.list_scroll.0.borrow().base_handle.set_offset(partial);
+        cx.notify();
+    });
+    draw(cx);
+    cx.update(|w, cx| w.simulate_next_frame(cx));
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.list_scroll.0.borrow().base_handle.offset()),
+        partial
+    );
+    cx.simulate_keystrokes("home");
+    draw(cx);
+    cx.simulate_keystrokes("end");
+    draw(cx);
+    cx.update(|w, cx| w.simulate_next_frame(cx));
+    draw(cx);
+    assert_row_visible(&e, cx, 249);
+}
