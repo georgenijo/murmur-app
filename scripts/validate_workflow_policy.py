@@ -740,6 +740,9 @@ def validate_promotion_policy(workflow: str) -> int:
 
 
 def main() -> None:
+    from gpui_migration_policy import validate_identity, validate_update_policy
+    validate_identity()
+    validate_update_policy()
     ci = CI_WORKFLOW.read_text()
     release_build = RELEASE_BUILD_WORKFLOW.read_text()
     release_rehearsal = RELEASE_REHEARSAL_WORKFLOW.read_text()

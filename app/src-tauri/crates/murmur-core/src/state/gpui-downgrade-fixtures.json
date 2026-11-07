@@ -1,0 +1,36 @@
+{
+  "settings": {
+    "settingsVersion": 7,
+    "autoPaste": false,
+    "futureSettings": {"enabled": true, "nested": [null, 42, "synthetic"]},
+    "appProfiles": [{"bundleId": "example.synthetic", "label": "Synthetic", "futureProfile": {"flag": true}}],
+    "modes": [{"id": "synthetic-mode", "name": "Synthetic", "futureMode": [1, 2]}],
+    "browserSiteRules": [{"id": "synthetic-rule", "browserBundleId": "com.apple.Safari", "host": "example.invalid", "modeId": "builtin.everyday", "futureRule": null}],
+    "voiceCommands": [{"phrase": "synthetic phrase", "replacement": "synthetic replacement", "futureCommand": true}],
+    "vocabularyEntries": [{"id": "synthetic-vocab", "written": "Synthetic", "scope": {"kind": "global", "futureScope": "opaque"}, "futureVocabulary": false}],
+    "codeVocabLastScan": {"files": 1, "skipped": 0, "terms": 1, "bytes": 1, "ms": 1, "capped": false, "sampleTerms": ["Synthetic"], "rankedTerms": [{"term": "Synthetic", "freq": 1, "futureRank": true}], "futureScan": ["opaque"]}
+  },
+  "appearance": {
+    "version": 1,
+    "revision": 4,
+    "mode": "system",
+    "theme": {"version": 1, "presetId": "custom", "accent": "#abcdef", "dark": {"background": "#123456", "futureColor": {"opaque": true}}, "futureTheme": 42},
+    "selection": {"light": "custom", "dark": "custom", "futureSelection": [false]},
+    "futureAppearance": {"opaque": "synthetic"}
+  },
+  "library": {
+    "version": 1,
+    "revision": 2,
+    "futureLibrary": [42],
+    "themes": [{"version": 1, "id": "synthetic-theme", "label": "Synthetic", "modes": ["dark"], "theme": {"version": 1, "presetId": "custom", "futureTheme": true}, "source": {"kind": "local", "futureSource": [null]}, "collection": {"id": "synthetic", "label": "Synthetic", "futureCollection": true}, "futureEntry": 42}]
+  },
+  "history": {
+    "schemaVersion": 2,
+    "id": "synthetic-history",
+    "text": "Synthetic transcript only.",
+    "timestamp": 1,
+    "duration": 2,
+    "source": "recording",
+    "futureHistory": {"nested": [null, false, {"opaque": 42}]}
+  }
+}

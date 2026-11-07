@@ -36,7 +36,7 @@ pub(super) fn theme(v: &Value) -> Value {
     }
     for mode in ["light", "dark"] {
         let mut colors = serde_json::Map::new();
-        for k in [
+        let known = [
             "background",
             "surface",
             "surface-container-low",
@@ -53,16 +53,31 @@ pub(super) fn theme(v: &Value) -> Value {
             "error",
             "success",
             "warning",
-        ] {
+        ];
+        for &k in &known {
             if let Some(c) = color(&v[mode][k]) {
                 colors.insert(k.into(), json!(c));
             }
         }
-        if !colors.is_empty() {
-            out[mode] = json!(colors);
+        let colors = with_unknown(&v[mode], json!(colors), &known);
+        if colors.as_object().is_some_and(|c| !c.is_empty()) {
+            out[mode] = colors;
         }
     }
-    out
+    with_unknown(
+        v,
+        out,
+        &[
+            "version",
+            "presetId",
+            "accent",
+            "background",
+            "foreground",
+            "contrast",
+            "light",
+            "dark",
+        ],
+    )
 }
 fn revision(v: &Value) -> u64 {
     v.as_u64().filter(|n| *n < 2147483646).unwrap_or(0)
@@ -82,9 +97,17 @@ pub(super) fn document(v: Value) -> Result<Value> {
     }
     let mut out = json!({"version":1,"revision":revision(&v["revision"]),"mode":if allowed(&v["mode"],&["system","light","dark"]) {v["mode"].clone()} else {json!("system")},"theme":theme(&v["theme"])});
     if id(&v["selection"]["light"]) && id(&v["selection"]["dark"]) {
-        out["selection"] = json!({"light":v["selection"]["light"],"dark":v["selection"]["dark"]});
+        out["selection"] = with_unknown(
+            &v["selection"],
+            json!({"light":v["selection"]["light"],"dark":v["selection"]["dark"]}),
+            &["light", "dark"],
+        );
     }
-    Ok(out)
+    Ok(with_unknown(
+        &v,
+        out,
+        &["version", "revision", "mode", "theme", "selection", "cache"],
+    ))
 }
 pub(super) fn library(v: Value) -> Result<Value> {
     if v["version"] != 1 || !v["themes"].is_array() || v["themes"].as_array().unwrap().len() > 128 {
@@ -126,8 +149,8 @@ pub(super) fn library(v: Value) -> Result<Value> {
             return Err(Error::Invalid);
         }
         let source = &t["source"];
-        let source = if source["kind"] == "local" {
-            // Legacy local metadata extras are ignored, including sourceUrl.
+        let normalized_source = if source["kind"] == "local" {
+            // Retired local source metadata is ignored, including sourceUrl.
             json!({"kind":"local"})
         } else {
             let extension = source["extensionId"].as_str().unwrap_or("");
@@ -158,6 +181,11 @@ pub(super) fn library(v: Value) -> Result<Value> {
             }
             out
         };
+        let source = with_unknown(
+            source,
+            normalized_source,
+            &["kind", "extensionId", "version", "license", "sourceUrl"],
+        );
         let original = t["id"].as_str().unwrap();
         let mut key = original.to_string();
         if reserved.contains(&original) {
@@ -203,15 +231,35 @@ pub(super) fn library(v: Value) -> Result<Value> {
             {
                 return Err(Error::Invalid);
             }
-            entry["collection"] = json!({"id":collection["id"],"label":label});
+            entry["collection"] = with_unknown(
+                collection,
+                json!({"id":collection["id"],"label":label}),
+                &["id", "label"],
+            );
         }
-        out.push(entry);
+        out.push(with_unknown(
+            t,
+            entry,
+            &[
+                "version",
+                "id",
+                "label",
+                "modes",
+                "theme",
+                "source",
+                "collection",
+            ],
+        ));
     }
     let mut result = json!({"version":1,"revision":revision(&v["revision"]),"themes":out});
     if !renamed.is_empty() {
         result["legacyRenamedIds"] = json!(renamed);
     }
-    Ok(result)
+    Ok(with_unknown(
+        &v,
+        result,
+        &["version", "revision", "themes", "legacyRenamedIds"],
+    ))
 }
 
 fn ascii_id(s: &str, extension: bool) -> bool {

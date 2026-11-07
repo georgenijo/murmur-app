@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "until_phase": 4,
+  "min_version": null,
+  "retain_last_tauri_dmg": true,
+  "last_tauri_release": null
+}

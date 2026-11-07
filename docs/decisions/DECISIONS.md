@@ -1,5 +1,17 @@
 # Decisions Log
 
+## 2026-11-07: Freeze GPUI identity and additive downgrade policy through Phase 3 (#997)
+
+**Decision:** Compare native packaging and signing inputs with frozen Tauri identity inputs, retain a null updater minimum and the last compatible Tauri DMG, and preserve opaque same-version fields in shared Rust state. Name the final Tauri release with these compatible Rust loaders before the flip; until that tag is set, signed flip readiness fails closed. Keep the signed installed Tauri → GPUI → GPUI chain and real TCC/data acceptance as George-owned pending gates.
+
+**Rationale:** Linux can enforce inputs, generated manifest policy and synthetic disk compatibility without signing credentials. Only production Developer ID/notarized installed builds can establish TCC continuity and actual update/downgrade recovery; no secretless test is a substitute.
+
+**Status:** active
+
+**References:** #997, [identity/update/downgrade contract](../draft/gpui-identity-update-chain.md), [rewrite plan §2.4](../draft/gpui-rewrite-plan.md#phase-2-gpui-becomes-the-host)
+
+---
+
 ## 2026-11-07: Gate native startup on durable legacy import and scale GPUI content coherently (#996)
 
 **Decision:** Add draft layer 23 above the production adapters. A disposable native worker alone loads WebKit to read the fixed legacy origin; the GPUI process retains the shared completion owner, durable receipts and exact key-removal acknowledgements. Main exposes a loading/retry gate until import and production configuration finish. Whole-window zoom scales layout, paint, platform input, AX and IME together, while native window geometry remains in AppKit points.

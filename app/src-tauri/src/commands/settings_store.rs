@@ -881,6 +881,53 @@ mod tests {
     }
     use super::*;
 
+    #[test]
+    fn tauri_loads_gpui_written_synthetic_settings_and_theme_library() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../crates/murmur-core/src/state/gpui-downgrade-fixtures.json"
+        ))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = WRITE_LOCK.lock_or_recover();
+        for (key, name) in [
+            ("dictation-settings", "settings"),
+            ("murmur-theme-library", "library"),
+        ] {
+            let value = murmur_core::state::normalize(key, fixture[name].clone()).unwrap();
+            let value = if name == "settings" {
+                murmur_core::state::settings_edit(&value, "autoPaste", serde_json::json!(true))
+                    .unwrap()
+            } else {
+                value
+            };
+            murmur_core::completion::save_source(dir.path(), key, &value.to_string()).unwrap();
+        }
+        // Exercise Tauri's actual source loader, including its normalize/save
+        // on read, after the GPUI writer has published the files.
+        let settings: serde_json::Value =
+            serde_json::from_str(&load_settings_blob_locked(dir.path()).unwrap().unwrap()).unwrap();
+        assert_eq!(settings["settingsVersion"], 7);
+        assert_eq!(settings["autoPaste"], true);
+        assert_eq!(
+            settings["futureSettings"],
+            fixture["settings"]["futureSettings"]
+        );
+        assert_eq!(
+            settings["appProfiles"][0]["futureProfile"],
+            fixture["settings"]["appProfiles"][0]["futureProfile"]
+        );
+        let library: serde_json::Value =
+            serde_json::from_str(&read_blob(dir.path(), THEME_LIBRARY).unwrap().unwrap()).unwrap();
+        assert_eq!(
+            library["futureLibrary"],
+            fixture["library"]["futureLibrary"]
+        );
+        assert_eq!(
+            library["themes"][0]["futureEntry"],
+            fixture["library"]["themes"][0]["futureEntry"]
+        );
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "murmur_durable_store_test_{}_{}",

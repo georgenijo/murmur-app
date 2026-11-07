@@ -39,8 +39,9 @@ pub(super) struct Progress {
     pub retired: bool,
 }
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct UiState {
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
     schema: u32,
     v2_imported: bool,
     #[serde(default)]
@@ -52,6 +53,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             schema: 1,
+            extra: BTreeMap::new(),
             v2_imported: false,
             v3_imported: false,
             values: BTreeMap::new(),

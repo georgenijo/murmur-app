@@ -1,0 +1,92 @@
+{
+  "entitlements": "./entitlements.plist",
+  "external_bin": [
+    "binaries/murmur-capture-agent",
+    "binaries/murmur-capture-helper",
+    "binaries/murmur-capture-worker"
+  ],
+  "helpers": {
+    "murmur-capture-agent": "com.localdictation.capture-agent",
+    "murmur-capture-helper": "com.localdictation.capture-helper",
+    "murmur-capture-worker": "com.localdictation.capture-worker"
+  },
+  "host_identifier": "com.localdictation",
+  "info_plist": "./macos/Info.plist",
+  "plists": {
+    "capture-agent-info.plist": {
+      "CFBundleExecutable": "murmur-capture-agent",
+      "CFBundleIdentifier": "com.localdictation.capture-agent",
+      "CFBundleName": "Murmur Capture Agent",
+      "CFBundlePackageType": "APPL",
+      "CFBundleShortVersionString": "__MURMUR_VERSION__",
+      "CFBundleVersion": "__MURMUR_VERSION__"
+    },
+    "capture-agent.entitlements.plist": {
+      "com.apple.security.app-sandbox": true,
+      "com.apple.security.device.audio-input": true,
+      "com.apple.security.device.microphone": true,
+      "com.apple.security.temporary-exception.mach-lookup.global-name": [
+        "com.localdictation.capture-agent.xpc"
+      ],
+      "com.apple.security.temporary-exception.mach-register.global-name": [
+        "com.localdictation.capture-agent.xpc"
+      ]
+    },
+    "capture-helper.entitlements.plist": {
+      "com.apple.security.app-sandbox": true,
+      "com.apple.security.device.audio-input": true,
+      "com.apple.security.device.microphone": true
+    },
+    "capture-worker.entitlements.plist": {
+      "com.apple.security.app-sandbox": true,
+      "com.apple.security.device.audio-input": true,
+      "com.apple.security.device.microphone": true
+    },
+    "entitlements.plist": {
+      "com.apple.security.device.audio-input": true,
+      "com.apple.security.device.microphone": true,
+      "com.apple.security.personal-information.calendars": true
+    },
+    "macos/Info.plist": {
+      "NSAppleEventsUsageDescription": "Local Dictation needs accessibility access for global hotkeys.",
+      "NSAudioCaptureUsageDescription": "Murmur needs system audio access to create local Me/Them meeting transcripts.",
+      "NSCalendarsFullAccessUsageDescription": "Murmur reads calendar events when you choose Name from calendar or enable meeting suggestions. You confirm before any meeting recording starts. Murmur never changes your calendar.",
+      "NSMicrophoneUsageDescription": "Local Dictation needs microphone access to record your voice for transcription."
+    },
+    "macos/com.localdictation.capture-agent.plist": {
+      "BundleProgram": "Contents/MacOS/murmur-capture-agent",
+      "Label": "com.localdictation.capture-agent",
+      "MachServices": {
+        "com.localdictation.capture-agent.xpc": true
+      },
+      "ProcessType": "Interactive",
+      "ThrottleInterval": 10
+    },
+    "sidecars/capture/Info.plist": {
+      "CFBundleDevelopmentRegion": "en",
+      "CFBundleExecutable": "murmur-capture-helper",
+      "CFBundleIdentifier": "com.localdictation.capture-helper",
+      "CFBundleInfoDictionaryVersion": "6.0",
+      "CFBundleName": "Murmur Capture Helper",
+      "CFBundlePackageType": "APPL",
+      "CFBundleShortVersionString": "__MURMUR_VERSION__",
+      "CFBundleVersion": "__MURMUR_VERSION__",
+      "LSMinimumSystemVersion": "14.0",
+      "NSAudioCaptureUsageDescription": "Murmur needs system audio access to create local Me/Them meeting transcripts.",
+      "NSMicrophoneUsageDescription": "Murmur needs microphone access to record your voice for local transcription."
+    },
+    "sidecars/capture/WorkerInfo.plist": {
+      "CFBundleDevelopmentRegion": "en",
+      "CFBundleExecutable": "murmur-capture-worker",
+      "CFBundleIdentifier": "com.localdictation.capture-worker",
+      "CFBundleInfoDictionaryVersion": "6.0",
+      "CFBundleName": "Murmur Capture Worker",
+      "CFBundlePackageType": "APPL",
+      "CFBundleShortVersionString": "__MURMUR_VERSION__",
+      "CFBundleVersion": "__MURMUR_VERSION__",
+      "LSMinimumSystemVersion": "14.0",
+      "NSAudioCaptureUsageDescription": "Murmur needs system audio access to create local Me/Them meeting transcripts.",
+      "NSMicrophoneUsageDescription": "Murmur needs microphone access to record your voice for local transcription."
+    }
+  }
+}

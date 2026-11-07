@@ -634,5 +634,133 @@ minos 14.0
                     process.assert_not_called()
 
 
+class MigrationPolicyTests(unittest.TestCase):
+    def test_frozen_identity_matches_both_packagers(self):
+        from gpui_migration_policy import validate_identity
+        validate_identity()
+
+    def test_identity_rejects_host_helper_entitlement_permission_and_placeholder_drift(self):
+        from gpui_migration_policy import PLISTS, validate_identity
+        with tempfile.TemporaryDirectory() as directory:
+            tauri = Path(directory)
+            for name in (*PLISTS, "tauri.conf.json", "tauri.macos.conf.json"):
+                target = tauri / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(TAURI / name, target)
+            for name in PLISTS:
+                with self.subTest(name=name):
+                    path = tauri / name
+                    original = path.read_bytes()
+                    value = plistlib.loads(original)
+                    value[next(iter(value))] = "drift"
+                    path.write_bytes(plistlib.dumps(value))
+                    with self.assertRaisesRegex(ValueError, "identity inputs drifted"):
+                        validate_identity(tauri)
+                    path.write_bytes(original)
+            for name, key in (("tauri.conf.json", "identifier"), ("tauri.macos.conf.json", "bundle")):
+                path = tauri / name
+                value = json.loads(path.read_text())
+                value[key] = "drift"
+                path.write_text(json.dumps(value))
+                with self.assertRaises((ValueError, TypeError)):
+                    validate_identity(tauri)
+                shutil.copy2(TAURI / name, path)
+
+    def test_gpui_finalization_uses_the_tauri_release_inputs_and_team_slot(self):
+        import re
+        import shlex
+        from rehearse_gpui_bundle import finalize
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        command = re.search(r'python3 scripts/finalize_macos_bundle.py (.*?)\n\n', workflow, re.S)[1]
+        args = shlex.split(command.replace("\\\n", " "))
+        tauri_flags = dict(zip(args[::2], args[1::2]))
+        self.assertEqual(tauri_flags.pop("--app"), "$APP")
+        self.assertEqual(tauri_flags.pop("--identity"), "$APPLE_SIGNING_IDENTITY")
+        self.assertEqual(tauri_flags.pop("--expected-team-id"), "$APPLE_TEAM_ID")
+        # Synthetic values only; subprocess is intercepted before any codesign.
+        with patch("rehearse_gpui_bundle.subprocess.run") as process:
+            finalize(Path("/synthetic/Murmur.app"), "synthetic identity", "ABCDE12345")
+        native = process.call_args.args[0][2:]
+        native_flags = dict(zip(native[::2], native[1::2]))
+        self.assertEqual(native_flags.pop("--app"), "/synthetic/Murmur.app")
+        self.assertEqual(native_flags.pop("--identity"), "synthetic identity")
+        self.assertEqual(native_flags.pop("--expected-team-id"), "ABCDE12345")
+        self.assertEqual({k: Path(v).resolve() for k, v in tauri_flags.items()},
+                         {k: Path(v).resolve() for k, v in native_flags.items()})
+
+    def test_codesign_and_designated_requirement_shape_for_host_and_every_helper(self):
+        import finalize_macos_bundle as finalizer
+        from capture_helper_evidence import _designated_requirement_profile, EvidenceError
+        identifiers = {"ui": "com.localdictation", **HELPERS}
+        for name, identifier in identifiers.items():
+            with self.subTest(name=name):
+                entitlement = TAURI / ("entitlements.plist" if name == "ui" else name.removeprefix("murmur-") + ".entitlements.plist")
+                with patch("finalize_macos_bundle.run") as run:
+                    finalizer.sign(Path("/synthetic") / name, "synthetic identity", entitlement,
+                                   None if name == "ui" else identifier)
+                command = run.call_args.args[0]
+                expected = ["codesign", "--force", "--sign", "synthetic identity", "--options", "runtime", "--timestamp"]
+                if name != "ui":
+                    expected += ["--identifier", identifier]
+                self.assertEqual(command, expected + ["--entitlements", str(entitlement), "/synthetic/" + name])
+                # No custom -r: Developer ID produces this canonical DR. Runtime
+                # helper peer requirements are a separate, same-Team-ID check.
+                requirement = (f'identifier "{identifier}" and anchor apple generic and '
+                               'certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and '
+                               'certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and '
+                               'certificate leaf[subject.OU] = "ABCDE12345"')
+                self.assertEqual(_designated_requirement_profile(requirement, identifier, "ABCDE12345", name)[0],
+                                 "developer_id_application")
+                for drift in (requirement + " or true", requirement.replace("ABCDE12345", "ZZZZZ99999"),
+                              requirement.replace(identifier, identifier + ".qa")):
+                    with self.assertRaises(EvidenceError):
+                        _designated_requirement_profile(drift, identifier, "ABCDE12345", name)
+        rust = (ROOT / "app/src-tauri/src/code_signing.rs").read_text()
+        self.assertIn(r'identifier \"{expected_identifier}\" and anchor apple generic and certificate leaf[subject.OU] = \"{team_id}\"', rust)
+        swift = (TAURI / "sidecars/capture-agent/main.swift").read_text()
+        self.assertIn(r'certificate leaf[subject.OU] = \"\(signingTeamID)\"', swift)
+
+    def test_update_configuration_retains_null_and_the_downgrade_dmg(self):
+        from gpui_migration_policy import UPDATE_POLICY, validate_update_policy
+        policy = json.loads(UPDATE_POLICY.read_text())
+        validate_update_policy()
+        for drift in ({**policy, "min_version": "1.0.0"}, {**policy, "retain_last_tauri_dmg": False},
+                      {**policy, "until_phase": 3}):
+            with self.assertRaises(ValueError):
+                validate_update_policy(drift)
+        with self.assertRaisesRegex(ValueError, "min_version null"):
+            validate_update_policy(policy, {"min_version": "0.62.1"})
+
+    def test_generated_flip_manifest_and_release_inventory(self):
+        from gpui_migration_policy import UPDATE_POLICY, validate_flip
+        from release_artifacts import write_updater_manifests
+        policy = {**json.loads(UPDATE_POLICY.read_text()), "last_tauri_release": "v0.99.0"}
+        url = "https://github.com/georgenijo/murmur-app/releases/download/v0.99.0/Murmur_0.99.0_aarch64.dmg"
+        releases = [{"tag_name": "v0.99.0", "draft": False, "prerelease": False, "assets": [
+            {"name": "Murmur_0.99.0_aarch64.dmg", "browser_download_url": url, "state": "uploaded", "size": 42}]}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            validated = root / "validated.json"
+            validated.write_text(json.dumps({"platforms": {"macos": {
+                "platform_key": "darwin-aarch64", "updater_bundle": "Murmur.app.tar.gz", "signature": "synthetic"}}}))
+            notes = root / "notes.md"
+            notes.write_text("Synthetic flip; supported downgrade: v0.99.0.")
+            modern, _ = write_updater_manifests(validated, "v1.0.0", "georgenijo/murmur-app",
+                                               "https://example.invalid/bridge", "synthetic", notes, root)
+            manifest = json.loads(modern.read_text())
+            self.assertIsNone(manifest.get("min_version"))
+            self.assertEqual(validate_flip(manifest, releases, notes.read_text(), policy), url)
+            for bad_manifest, bad_releases, bad_notes, bad_policy in (
+                ({**manifest, "min_version": "1.0.0"}, releases, notes.read_text(), policy),
+                (manifest, [], notes.read_text(), policy),
+                (manifest, [{**releases[0], "assets": []}], notes.read_text(), policy),
+                (manifest, [{**releases[0], "draft": True}], notes.read_text(), policy),
+                (manifest, releases, "No downgrade target named", policy),
+                (manifest, releases, notes.read_text(), {**policy, "last_tauri_release": None}),
+            ):
+                with self.assertRaises(ValueError):
+                    validate_flip(bad_manifest, bad_releases, bad_notes, bad_policy)
+
+
 if __name__ == "__main__":
     unittest.main()

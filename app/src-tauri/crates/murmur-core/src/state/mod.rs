@@ -2,7 +2,23 @@
 use crate::completion::{Error, Result};
 use serde_json::{json, Value};
 mod appearance;
+#[cfg(test)]
+mod downgrade_tests;
 mod settings_nested;
+
+/// Retain opaque fields on a validated object. `known` includes optional,
+/// invalid and retired fields, so normalization cannot resurrect rejected data.
+/// Never use this at export or IPC trust boundaries.
+pub(super) fn with_unknown(original: &Value, mut normalized: Value, known: &[&str]) -> Value {
+    if let (Some(source), Some(target)) = (original.as_object(), normalized.as_object_mut()) {
+        for (key, value) in source {
+            if !known.contains(&key.as_str()) && !target.contains_key(key) {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    normalized
+}
 
 pub fn settings_defaults() -> Value {
     serde_json::from_str(include_str!("settings-defaults.json")).expect("checked-in schema")

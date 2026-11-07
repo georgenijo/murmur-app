@@ -73,8 +73,10 @@ impl Destination {
     }
 }
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct Document {
+    // Additive metadata stays opaque across GPUI/Tauri until Phase 4.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
     schema: u32,
     v1_imported: bool,
     generation: Option<String>,
@@ -90,6 +92,7 @@ impl Document {
     fn new(d: Destination) -> Self {
         Self {
             schema: 1,
+            extra: serde_json::Map::new(),
             file_receipts: vec![],
             v1_imported: false,
             generation: None,
