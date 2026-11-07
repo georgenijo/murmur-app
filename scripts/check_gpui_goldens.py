@@ -99,6 +99,12 @@ def main():
             raise AssertionError(f'non-deterministic {case}')
         results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
         print(f'PASS {case}: identical offscreen Metal images')
+    preview_baseline = subprocess.check_output([str(target / 'debug/preview-qa')],
+        env={**os.environ, 'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(preview_baseline, 'MURMUR_PREVIEW_INVENTORY')['webkitImages'] != 0:
+        raise AssertionError('nonzero preview launch-only baseline')
+    policy_log.extend(preview_baseline.splitlines())
+    print('PASS zero-image preview launch baseline and native linkage policy')
     # Preview captures contain synthetic text only. Inventory this process,
     # not other applications; WebKit destruction has its own standalone test.
     for placement in ('notch', 'pill-light', 'pill-dark'):
@@ -115,10 +121,8 @@ def main():
                     env['MURMUR_DARK'] = '1'
                 stdout = subprocess.check_output([str(target / 'debug/preview-qa')], env=env,
                                                  cwd=UI, timeout=60, text=True)
-                inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
-                             if line.startswith('MURMUR_PREVIEW_INVENTORY=')]
-                if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
-                    raise AssertionError('missing or nonempty native preview WebKit inventory')
+                check_inventory(stdout, 'MURMUR_PREVIEW_INVENTORY')
+                policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
             if paths[0].read_bytes() != paths[1].read_bytes():
                 raise AssertionError(f'non-deterministic {case}')
             results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()

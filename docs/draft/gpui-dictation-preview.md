@@ -205,3 +205,16 @@ not claimed complete. No performance harness or benchmark was run; memory and
 frame/CPU acceptance awaits George's explicit request. Checkout 45 and its
 private targets are removed after the gates; protected directories, the GUI
 owner's session and production application data remain untouched.
+
+### Shared QA WebKit policy
+
+Preview QA uses the overlay's [attributed WebKit policy](gpui-overlay.md#qa-webkit-attribution-policy)
+at startup, offscreen capture, and native-smoke completion. The golden suite
+also runs `MURMUR_WEBKIT_BASELINE_ONLY=1 preview-qa` before NSApplication/window
+creation and requires zero images. Runtime inventories preserve numeric
+`pid`/`webkitImages`, add `axAttributed`/`unattributed` plus startup/linkage counts,
+and retain path/symbol load evidence. Apple accessibility bundle loads reached
+through incoming AX Mach/runloop dispatch are allowed; app-owned or unexplained
+loads fail. No accessibility suppression or production diagnostic overhead is
+introduced. This policy concerns the GPUI process; legacy-view retirement remains
+a separate lifetime check.
