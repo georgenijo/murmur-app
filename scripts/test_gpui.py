@@ -50,6 +50,8 @@ def main():
     original = lock.read_bytes()
     try:
         config = 'patch."https://github.com/zed-industries/zed".gpui.path=' + json.dumps(str(target))
+        subprocess.run(['cargo', '--config', config, 'test', '-p', 'accesskit_macos', '--lib'],
+                       cwd=UI, check=True)
         return subprocess.call(['cargo', '--config', config, 'test', '-p', 'murmur-ui',
                                 '--features', 'a11y-tests', *sys.argv[1:]], cwd=UI)
     finally:

@@ -18,9 +18,9 @@ fn main() {
         } else {
             murmur_ui::init(cx);
         }
-        let dark = std::env::var_os("MURMUR_DARK").is_some();
-        murmur_ui::tokens::apply_appearance(dark, cx);
         if headless {
+            let dark = std::env::var_os("MURMUR_DARK").is_some();
+            murmur_ui::tokens::apply_appearance(dark, cx);
             // Fixed preferences; never reads or changes the GUI owner's settings.
             preferences::apply(
                 DisplayPreferences {

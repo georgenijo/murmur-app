@@ -137,6 +137,22 @@ pub(crate) fn focus_event(node_id: NodeId) -> QueuedEvent {
     }
 }
 
+fn expansion_notification(
+    old: Option<bool>,
+    new: Option<bool>,
+) -> Option<&'static NSAccessibilityNotificationName> {
+    if old == new {
+        return None;
+    }
+    new.map(|expanded| unsafe {
+        if expanded {
+            NSAccessibilityRowExpandedNotification
+        } else {
+            NSAccessibilityRowCollapsedNotification
+        }
+    })
+}
+
 pub(crate) struct EventGenerator {
     context: Rc<Context>,
     events: Vec<QueuedEvent>,
@@ -259,6 +275,14 @@ impl TreeChangeHandler for EventGenerator {
         let node_id = new_node.id();
         let old_wrapper = NodeWrapper(old_node);
         let new_wrapper = NodeWrapper(new_node);
+        if let Some(notification) =
+            expansion_notification(old_node.data().is_expanded(), new_node.data().is_expanded())
+        {
+            self.events.push(QueuedEvent::Generic {
+                node_id,
+                notification,
+            });
+        }
         if old_wrapper.title() != new_wrapper.title() {
             self.events.push(QueuedEvent::Generic {
                 node_id,
@@ -326,5 +350,32 @@ impl TreeChangeHandler for EventGenerator {
             self.enqueue_selected_rows_change_if_needed(node);
         }
         self.events.push(QueuedEvent::NodeDestroyed(node.id()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expanded_notifications_follow_state_changes_only() {
+        unsafe {
+            assert_eq!(
+                expansion_notification(Some(false), Some(true)),
+                Some(NSAccessibilityRowExpandedNotification)
+            );
+            assert_eq!(
+                expansion_notification(Some(true), Some(false)),
+                Some(NSAccessibilityRowCollapsedNotification)
+            );
+            assert_eq!(
+                expansion_notification(None, Some(true)),
+                Some(NSAccessibilityRowExpandedNotification)
+            );
+        }
+        for state in [None, Some(false), Some(true)] {
+            assert!(expansion_notification(state, state).is_none());
+            assert!(expansion_notification(state, None).is_none());
+        }
     }
 }

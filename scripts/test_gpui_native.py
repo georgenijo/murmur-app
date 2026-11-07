@@ -10,6 +10,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
 class FocusHookTests(unittest.TestCase):
+    def test_effective_appearance_selects_light_dark_and_accessible_variants(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+extern unsigned murmur_display_preferences(void);
+int main(void) {
+    @autoreleasepool {
+        NSApplication *app = NSApplication.sharedApplication;
+        unsigned preferences = murmur_display_preferences() & 7;
+        for (NSString *name in @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+                NSAppearanceNameAccessibilityHighContrastAqua,
+                NSAppearanceNameAccessibilityHighContrastDarkAqua, NSAppearanceNameAqua]) {
+            // Process-local appearance only: no windows, activation, or settings changes.
+            app.appearance = [NSAppearance appearanceNamed:name];
+            unsigned bits = murmur_display_preferences();
+            assert((bits & 7) == preferences);
+            assert(((bits & 8) != 0) == [name containsString:@"Dark"]);
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-appearance-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            str(ROOT / 'app/gpui/native/preferences.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_window_and_panel_forward_focus_and_keep_fallbacks(self):
         source = r'''
 #import <Foundation/Foundation.h>
@@ -20,13 +49,20 @@ class FocusHookTests(unittest.TestCase):
 @implementation Content
 - (id)accessibilityFocusedUIElement { return self; }
 @end
-@interface GPUIWindow : NSObject
+@interface OriginalWindow : NSObject
 @property id contentView;
+@end
+@implementation OriginalWindow
+- (NSArray *)accessibilityAttributeNames { return @[@"AXTitle"]; }
+- (id)accessibilityAttributeValue:(NSString *)attribute {
+    return [attribute isEqualToString:@"AXTitle"] ? @"synthetic window" : nil;
+}
+@end
+@interface GPUIWindow : OriginalWindow
 @end
 @implementation GPUIWindow
 @end
-@interface GPUIPanel : NSObject
-@property id contentView;
+@interface GPUIPanel : OriginalWindow
 @end
 @implementation GPUIPanel
 @end
@@ -50,8 +86,13 @@ int main(void) {
             id window = [cls new];
             assert([window respondsToSelector:@selector(accessibilityFocusedUIElement)]);
             assert([window accessibilityFocusedUIElement] == window);
+            assert([[window accessibilityAttributeNames] containsObject:@"AXFocusedUIElement"]);
+            assert([[window accessibilityAttributeNames] containsObject:@"AXTitle"]);
+            assert([[window accessibilityAttributeValue:@"AXTitle"] isEqualToString:@"synthetic window"]);
+            assert([window accessibilityAttributeValue:@"AXFocusedUIElement"] == window);
             [window setContentView:content];
             assert([window accessibilityFocusedUIElement] == content);
+            assert([window accessibilityAttributeValue:@"AXFocusedUIElement"] == content);
         }
         id app = [GPUIApplication new];
         assert([app accessibilityFocusedUIElement] == app);
