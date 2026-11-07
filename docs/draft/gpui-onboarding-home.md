@@ -130,9 +130,11 @@ retains the download failure explanation until its terminal receipt, keeping
 those disabled fallbacks visible. Close only
 the task's own test process to end the held fixture. No production host changes.
 
-Follow-up verification on the Mac mini (Rust 1.98.1, fresh
-`~/Builds/murmur-gpui-100`, capture helpers built first): 140 regular Rust tests,
-225 AccessKit-enabled tests, 15 native glue tests, strict all-target/gallery
+Follow-up verification after merging `gpui/14-settings` at `6dfa0169` and
+passing `None` for onboarding’s retained focus-reveal state: on the Mac mini
+(Rust 1.98.1, fresh
+`~/Builds/murmur-gpui-100`, capture helpers built first): 143 regular Rust tests,
+228 AccessKit-enabled tests, 15 native glue tests, strict all-target/gallery
 Clippy and formatting passed. Twenty-five exact-PID native AX assertions verified
 static-text values (including two fresh Done/total reads) and disabled controls
 in the held cancellation preset, without activation, focus requests or HID.
