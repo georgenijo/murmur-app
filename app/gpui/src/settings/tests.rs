@@ -440,6 +440,33 @@ mod ax {
         );
     }
     #[gpui::test]
+    fn all_navigation_rows_fit_the_settings_navigation_surface(cx: &mut TestAppContext) {
+        let (_, _, cx) = harness(cx);
+        let t = tree(cx);
+        let nav = named(&t, "Settings pages");
+        let diagnostics = named(&t, "Diagnostics");
+        let nav = t
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == nav)
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let diagnostics = t
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == diagnostics)
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        assert!(
+            diagnostics.y1 <= nav.y1,
+            "Tools navigation must not be clipped inside the shared picker height cap"
+        );
+    }
+    #[gpui::test]
     fn assistive_range_increment_changes_the_persisted_value(cx: &mut TestAppContext) {
         let (e, host, cx) = harness(cx);
         cx.update(|w, cx| e.update(cx, |s, cx| s.navigate(Page::Recording, None, w, cx)));

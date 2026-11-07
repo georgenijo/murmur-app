@@ -326,7 +326,7 @@ impl Render for Choices {
         if visible {
             let mut list = div()
                 .id("options")
-                .max_h(px(240.))
+                .when(self.kind != ChoiceKind::Navigation, |s| s.max_h(px(240.)))
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll)
                 .flex()
