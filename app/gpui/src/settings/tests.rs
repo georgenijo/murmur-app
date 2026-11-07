@@ -410,6 +410,22 @@ mod ax {
         draw(cx);
     }
     #[gpui::test]
+    fn shared_pane_prose_is_static_text(cx: &mut TestAppContext) {
+        let (_, _, cx) = harness(cx);
+        let t = tree(cx);
+        click(cx, named(&t, "Meetings"));
+        let t = tree(cx);
+        assert_eq!(
+            t.nodes
+                .iter()
+                .filter(|(_, n)| n.role() == gpui::accesskit::Role::Label
+                    && n.value() == Some("Meetings are stored separately from dictation history."))
+                .count(),
+            1
+        );
+    }
+
+    #[gpui::test]
     fn real_accesskit_roles_navigation_switches_disclosure_and_inert_children(
         cx: &mut TestAppContext,
     ) {
