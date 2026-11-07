@@ -442,7 +442,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.gpui == 'true'
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       RUSTUP_TOOLCHAIN: 1.98.1
       CARGO_TARGET_DIR: ${{ github.workspace }}/app/gpui/target
