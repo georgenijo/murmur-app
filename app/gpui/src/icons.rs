@@ -8,6 +8,8 @@ pub enum Glyph {
     Chart,
     Mic,
     Stop,
+    Play,
+    Pause,
     Spinner,
     Settings,
     PanelLeft,
@@ -84,6 +86,12 @@ pub fn icon(glyph: Glyph) -> Icon {
             "../vendor/gpui-component/crates/assets/assets/icons/chart-no-axes-column.svg"
         ),
         Glyph::Mic => include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/mic.svg"),
+        Glyph::Play => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/play.svg")
+        }
+        Glyph::Pause => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/pause.svg")
+        }
         Glyph::Stop => {
             include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/square.svg")
         }

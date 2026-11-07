@@ -534,17 +534,22 @@ impl Meetings {
                             c.set_value(s.audio.channel.wire(), cx);
                         }
                     });
-                    content = content.child(div().id("meeting-playback").role(Role::Group).aria_label("Meeting audio playback")
-                        .child(div().flex().items_center().gap(px(8.))
-                            .child(self.button("audio-toggle", if playing {"Pause"} else if s.audio.state == AudioState::Paused {"Resume"} else {"Play"},
-                                Action::Playback { id: id.clone(), action: if playing { PlaybackAction::Pause } else { PlaybackAction::Play } }, cx)
-                                .size(ButtonSize::Compact).pill())
-                            .child(div().flex_shrink_0().font_family(tokens::MONO_FONT).text_size(tokens::MICRO_SIZE)
-                                .text_color(p.muted).child(format!("{} / {}", timestamp(s.audio.position_ms), timestamp(s.audio.duration_ms))))
-                            .child(self.detail_control(&self.channel_control, w, cx))
-                            .child(div().flex_1().min_w(px(48.)).child(self.detail_control(&self.seek, w, cx))))
-                        .when(s.busy(), |v| v.child(Self::notice("Playback is paused while Murmur records or processes a request.", false)))
-                        .when(s.audio.state == AudioState::Buffering, |v| v.child(Self::notice("Buffering retained audio…", false))));
+                    content = content.child(
+                        div().id("meeting-playback").role(Role::Group).aria_label("Meeting audio playback")
+                            .border_1().border_color(p.hairline).rounded(tokens::CARD_RADIUS).bg(p.tint_raised)
+                            .px(px(12.)).py(px(8.))
+                            .child(div().flex().items_center().gap(px(8.))
+                                .child(self.button("audio-toggle", if playing { "Pause" } else if s.audio.state == AudioState::Paused { "Resume" } else { "Play" },
+                                    Action::Playback { id: id.clone(), action: if playing { PlaybackAction::Pause } else { PlaybackAction::Play } }, cx)
+                                    .icon_only(if playing { crate::icons::Glyph::Pause } else { crate::icons::Glyph::Play })
+                                    .size(ButtonSize::Standard).intent(crate::ButtonIntent::Primary).pill())
+                                .child(div().flex_1().min_w(px(16.)).child(self.detail_control(&self.seek, w, cx)))
+                                .child(div().flex_shrink_0().font_family(tokens::MONO_FONT).text_size(tokens::MICRO_SIZE)
+                                    .text_color(p.muted).child(format!("{} / {}", timestamp(s.audio.position_ms), timestamp(s.audio.duration_ms))))
+                                .child(self.detail_control(&self.channel_control, w, cx)))
+                            .when(s.busy(), |v| v.child(Self::notice("Playback is paused while Murmur records or processes a request.", false)))
+                            .when(s.audio.state == AudioState::Buffering, |v| v.child(Self::notice("Buffering retained audio…", false)))
+                    );
                 }
             }
         }
