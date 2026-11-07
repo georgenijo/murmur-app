@@ -18,6 +18,8 @@ pub mod settings;
 pub mod toggle;
 pub mod tokens;
 mod workspace;
+mod section;
+pub mod palette;
 
 pub use button::{Button, ButtonIntent, ButtonSize};
 pub use choice::{Choice, ChoiceKind, Choices, SelectionChanged};
@@ -58,3 +60,4 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests;
+pub mod insights;

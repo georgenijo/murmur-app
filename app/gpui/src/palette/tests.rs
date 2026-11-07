@@ -1,0 +1,3 @@
+use super::{fixtures,model::*};
+#[test]fn tiers_and_tokens_match_react(){let s=fixtures::snapshot();assert_eq!(s.commands[filter(&s.commands,"set del")[0]].id,"settings-delivery");assert!(filter(&s.commands,"unknown query").is_empty());assert!(score(&s.commands[4],"delivery").unwrap()>score(&s.commands[4],"dlv").unwrap());}
+#[test]fn editing_shortcuts_are_preserved(){assert_eq!(shortcut("K",true,false,false,false,true),Some(Shortcut::Palette));assert_eq!(shortcut("k",false,true,false,false,true),None);assert_eq!(shortcut("f",false,true,false,false,false),Some(Shortcut::Search));assert_eq!(shortcut("k",true,false,false,true,false),None);}
