@@ -93,6 +93,7 @@ impl Render for Range {
         let reveal = crate::data_components::focus_reveal(
             self.focus.clone(),
             self.scroll_parent.clone(),
+            None,
             w,
             cx,
         );
