@@ -30,7 +30,7 @@ harness = false
 # Test-only capture helper executable injection.
 capture-test-support = []
 # Isolated synthetic shutdown fixture; never enabled in release workflows.
-shutdown-test-support = []
+shutdown-test-support = ["murmur-core/updater-test-support"]
 # Private corpus capture/replay tools. Off by default: production builds do not
 # compile the corpus command module or register its IPC surface.
 internal-benchmark = []
@@ -44,7 +44,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
-tauri-plugin-updater = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"

@@ -267,12 +267,10 @@ pub fn run() {
     let builder = if crate::identity::internal() {
         builder
     } else {
-        builder
-            .plugin(tauri_plugin_autostart::init(
-                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-                None,
-            ))
-            .plugin(tauri_plugin_updater::Builder::new().build())
+        builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
     };
 
     #[cfg(feature = "internal-benchmark")]
@@ -282,7 +280,9 @@ pub fn run() {
     let builder = builder.on_web_content_process_terminate(events::web_content_terminated);
 
     #[cfg(feature = "shutdown-test-support")]
-    let builder = builder.plugin(shutdown::test_support::plugin());
+    let builder = builder
+        .plugin(shutdown::test_support::plugin())
+        .plugin(commands::updater::fixture_plugin());
 
     let app = builder
         .manage(State {
@@ -481,6 +481,8 @@ pub fn run() {
             commands::tray::set_tray_update_available,
             commands::updater::get_update_install_environment,
             commands::updater::updater_canary,
+            commands::updater::updater_snapshot,
+            commands::updater::updater_action,
             commands::overlay::show_overlay,
             commands::overlay::hide_overlay,
             commands::overlay::set_overlay_expanded,

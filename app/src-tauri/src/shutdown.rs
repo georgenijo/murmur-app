@@ -101,6 +101,7 @@ fn reduce(
     adapter::reduce(core, message, now)
 }
 pub(crate) fn request(app: &tauri::AppHandle, request: Request) {
+    crate::commands::updater::close_admission(app);
     close_admission(); // synchronous even if the reducer/owner thread is delayed
     if let Some(shutdown) = app.try_state::<Shutdown>() {
         // Acceptance and issue share the reducer mutex. A queued notification
@@ -244,11 +245,12 @@ async fn run_owner(app: &tauri::AppHandle, effect: Effect, deadline: Instant) ->
             let app = app.clone();
             let committed = tauri::async_runtime::spawn_blocking(move || {
                 wait_accepted_producers();
+                let updater = crate::commands::updater::shutdown_flush(&app, deadline);
                 let sources = crate::commands::settings_store::flush(&app);
                 let windows = crate::window_state::flush(&app);
                 let memo = crate::audio::flush_capture_memo();
                 let completion = crate::completion::shutdown_flush(&app);
-                if sources && windows && memo {
+                if updater && sources && windows && memo {
                     completion
                 } else {
                     WriteOutcome::UnpreservedFailure

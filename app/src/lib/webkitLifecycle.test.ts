@@ -42,7 +42,7 @@ it('sends unmigrated raw strings and hydrates only after the Rust commit', async
 });
 it('already imported state never sends a second source snapshot and disk wins', async () => {
   localStorage.setItem('usage-dashboard-collapsed', 'true');
-  mock.invoke.mockResolvedValue({ v1: true, v2: true, values: { 'usage-dashboard-collapsed': false } });
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values: { 'usage-dashboard-collapsed': false } });
   await initializeWebkitState(true);
   expect(mock.invoke.mock.calls.filter(([command]) => command === 'import_webkit_state')).toHaveLength(0);
   expect(localStorage.getItem('usage-dashboard-collapsed')).toBe('false');
@@ -118,7 +118,7 @@ it.each([false, true])('in-flight generation cannot discard the newer edit on fa
 });
 it.each([false, true])('removes obsolete calibration key after v2, settings-present=%s', async present => {
   localStorage.setItem('murmur-overlay-vertical-offset', '48');
-  mock.invoke.mockResolvedValue({ v1: true, v2: true, values: present ? { 'dictation-settings': { settingsVersion: 7, overlayVerticalOffset: 0 } } : {} });
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values: present ? { 'dictation-settings': { settingsVersion: 7, overlayVerticalOffset: 0 } } : {} });
   await initializeWebkitState();
   expect(localStorage.getItem('murmur-overlay-vertical-offset')).toBeNull();
 });
@@ -328,4 +328,36 @@ it('a superseded document acknowledges only the exact patches owned by native', 
   const saves = mock.invoke.mock.calls.filter(([name]) => name === 'save_settings_blob');
   expect(saves[saves.length - 1][1].ownedEdits).toEqual({});
   expect(JSON.parse(saves[saves.length - 1][1].blob).language).toBe('es');
+});
+
+it('imports updater v3 raw keys once, removes after receipt and never hydrates them back to WebKit', async () => {
+  localStorage.setItem('updater-last-check', '1234');
+  localStorage.setItem('pending-update-release-notes', '{"version":"1.2.0","notes":"Synthetic"}');
+  const values = { 'updater-last-check': 1234, 'pending-update-release-notes': { version: '1.2.0', notes: 'Synthetic' } };
+  mock.invoke.mockImplementation(async (command: string, args?: { source: Record<string, unknown> }) => {
+    if (command === 'webkit_state_snapshot') return { v1: true, v2: true, v3: false, values: {} };
+    if (command === 'import_webkit_state') {
+      expect(args?.source['updater-last-check']).toBe('1234');
+      expect(args?.source['pending-update-release-notes']).toBe('{"version":"1.2.0","notes":"Synthetic"}');
+      return { v1: true, v2: true, v3: true, values };
+    }
+  });
+  await initializeWebkitState(true);
+  expect(localStorage.getItem('updater-last-check')).toBeNull();
+  expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values });
+  await initializeWebkitState(false);
+  expect(localStorage.getItem('updater-last-check')).toBeNull();
+  expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
+});
+it('v3 interruption during key removal retries without importing again', async () => {
+  localStorage.setItem('updater-last-check', '1234');
+  mock.invoke.mockResolvedValue({ v1: true, v2: true, v3: true, values: {} });
+  const removal = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('Synthetic removal interruption'); });
+  await initializeWebkitState(true);
+  expect(localStorage.getItem('updater-last-check')).toBe('1234');
+  removal.mockRestore();
+  await initializeWebkitState(true);
+  expect(localStorage.getItem('updater-last-check')).toBeNull();
+  expect(mock.invoke.mock.calls.some(([command]) => command === 'import_webkit_state')).toBe(false);
 });

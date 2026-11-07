@@ -6,7 +6,7 @@ pub enum Request {
     Restart,
     System,
 }
-/// Opaque, process-local updater handoff. Installation ownership moves in #990;
+/// Opaque, process-local compatible-relaunch handoff. The updater owns installation;
 /// this token cannot authorize host termination or outlive its coordinator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RestartTicket {

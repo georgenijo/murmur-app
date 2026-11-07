@@ -919,8 +919,8 @@ meets the frozen budgets.
 3. **Controls.** `gpui-component` or in-house controls, decided in Phase 0b.
 4. **Main-window strategy.** Native shell with child views (default) or one
    all-at-once port, confirmed at Phase 0 exit.
-5. **Updater implementation.** In-house on `minisign-verify` or
-   `cargo-packager-updater`.
+5. **Updater implementation.** Decided in #990: in-house on
+   `minisign-verify` 0.3; see [design](gpui-host-neutral-updater.md).
 
 ## Reference counts
 

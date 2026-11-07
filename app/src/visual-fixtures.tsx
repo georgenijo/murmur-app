@@ -3,7 +3,8 @@ import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { Channel } from '@tauri-apps/api/core';
+import { sendTo } from './lib/targetedEvents';
+import type { UpdaterSnapshot } from './lib/updater';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import { MainHeader } from './components/MainHeader';
@@ -225,8 +226,31 @@ const manyMeetingDetail = (id: string) => {
   };
 };
 
+const fixtureUpdater: UpdaterSnapshot = { revision: 0, updateStatus: { phase: 'idle' }, completedUpdate: null, isUpdateDialogOpen: false };
+const fixtureListeners = new Map<number, string>();
+function publishFixtureUpdater(): UpdaterSnapshot {
+  fixtureUpdater.revision += 1;
+  const snapshot = structuredClone(fixtureUpdater);
+  void sendTo('main', 'updater-state-changed', snapshot);
+  return snapshot;
+}
 mockWindows('main');
 mockIPC((command, payload) => {
+  // The SDK mock lacks targeted-event dispatch. Keep the fixture transport
+  // named, and deliver registered callback IDs without any broadcast API.
+  if (command.startsWith('plugin:event|') && payload) {
+    const data = payload as Record<string, unknown>;
+    if (typeof data.handler === 'number' && typeof data.event === 'string') {
+      fixtureListeners.set(data.handler, data.event);
+      return data.handler;
+    }
+    if (typeof data.eventId === 'number') fixtureListeners.delete(data.eventId);
+    if ('payload' in data && typeof data.event === 'string') {
+      const internal = (window as unknown as { __TAURI_INTERNALS__: { runCallback: (id: number, event: unknown) => void } }).__TAURI_INTERNALS__;
+      for (const [id, event] of fixtureListeners) if (event === data.event) internal.runCallback(id, { event, id, payload: data.payload });
+    }
+    return;
+  }
   // #850 regression states use synthetic captures and record only invoked IDs.
   if (requestedState === 'copy-diagnostics') {
     const replacement = document.documentElement.hasAttribute('data-copy-replace-captures');
@@ -277,25 +301,30 @@ mockIPC((command, payload) => {
     }
   }
   if (requestedState === 'update-flow') {
-    if (command === 'plugin:app|version') return '0.44.1';
-    if (command === 'get_update_install_environment') return { appTranslocated: false };
-    if (command === 'plugin:updater|check') {
-      return { rid: 1, currentVersion: '0.44.1', version: '0.44.2', body: shortUpdateNotes, rawJson: {} };
-    }
-    if (command === 'plugin:updater|download') {
-      const channel = payload && 'onEvent' in payload ? payload.onEvent : null;
-      if (!(channel instanceof Channel)) throw new Error('Missing updater progress channel');
-      channel.onmessage({ event: 'Started', data: { contentLength: 100 } });
-      channel.onmessage({ event: 'Progress', data: { chunkLength: 65 } });
-      return new Promise<number>((resolve) => setTimeout(() => {
-        channel.onmessage({ event: 'Finished' });
-        resolve(2);
-      }, 1500));
-    }
-    if (command === 'plugin:updater|install' || command === 'plugin:process|restart') {
-      const key = command === 'plugin:updater|install' ? 'data-update-installs' : 'data-update-restarts';
-      document.documentElement.setAttribute(key, String(Number(document.documentElement.getAttribute(key) ?? 0) + 1));
-      return;
+    if (command === 'updater_snapshot') return structuredClone(fixtureUpdater);
+    if (command === 'updater_action') {
+      const action = payload && 'action' in payload ? payload.action as { kind: string } : null;
+      switch (action?.kind) {
+        case 'check':
+          fixtureUpdater.updateStatus = { phase: 'available', version: '0.44.2', notes: shortUpdateNotes, isForced: false };
+          fixtureUpdater.isUpdateDialogOpen = true;
+          break;
+        case 'show': fixtureUpdater.isUpdateDialogOpen = true; break;
+        case 'dismiss': fixtureUpdater.isUpdateDialogOpen = false; break;
+        case 'download':
+          fixtureUpdater.updateStatus = { phase: 'downloading', version: '0.44.2', progress: 65 };
+          fixtureUpdater.isUpdateDialogOpen = true;
+          publishFixtureUpdater();
+          return new Promise<UpdaterSnapshot>(resolve => setTimeout(() => {
+            fixtureUpdater.updateStatus = { phase: 'ready', version: '0.44.2', isForced: false };
+            resolve(publishFixtureUpdater());
+          }, 1500));
+        case 'install':
+          for (const key of ['data-update-installs', 'data-update-restarts']) document.documentElement.setAttribute(key, String(Number(document.documentElement.getAttribute(key) ?? 0) + 1));
+          fixtureUpdater.updateStatus = { phase: 'restarting', version: '0.44.2' };
+          break;
+      }
+      return publishFixtureUpdater();
     }
   }
   if (command === 'configure_smart_auto_probe' || command === 'retry_smart_auto_probe') return 1;
@@ -422,7 +451,7 @@ mockIPC((command, payload) => {
 
   if (command.includes('version')) return '0.27.0';
   return null;
-}, { shouldMockEvents: true });
+});
 
 const fixtureToday = new Date();
 

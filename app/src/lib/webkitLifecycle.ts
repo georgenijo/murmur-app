@@ -6,8 +6,9 @@ import { sourceSession, nextSourceWriteVersion, invokeSource } from './sourceWri
 // This cache contains presentation source state only. Migration ownership and
 // validation belong to murmur-core; malformed raw strings reach Rust intact.
 export const V2_KEYS = PRESENTATION_KEYS;
-const LEGACY_KEYS = ['dictation-history', 'dictation-stats', 'murmur-benchmark-report', 'murmur-benchmark-reports', ...V2_KEYS];
-interface StateReceipt { v1: boolean; v2: boolean; values: Record<string, unknown> }
+export const V3_KEYS = ['updater-last-check', 'pending-update-release-notes'];
+const LEGACY_KEYS = ['dictation-history', 'dictation-stats', 'murmur-benchmark-report', 'murmur-benchmark-reports', ...V2_KEYS, ...V3_KEYS];
+interface StateReceipt { v1: boolean; v2: boolean; v3?: boolean; values: Record<string, unknown> }
 export const SOURCE_STORAGE_FAILED = 'murmur-source-storage-error';
 export const SOURCE_STORAGE_SAVED = 'murmur-source-storage-saved';
 const inFlight = new Map<number, Promise<void>>();
@@ -183,7 +184,7 @@ export async function initializeWebkitState(importLegacy = false): Promise<void>
   try { if (!isTauri()) return; } catch { return; }
   try {
   let state = await invoke<StateReceipt>('webkit_state_snapshot');
-  if (importLegacy && (!state.v1 || !state.v2)) {
+  if (importLegacy && (!state.v1 || !state.v2 || !state.v3)) {
     // Do not catch getItem failures or parse JSON here: either would turn an
     // unreadable/corrupt store into a destructive empty-source receipt.
     const source = Object.fromEntries(LEGACY_KEYS.map(key => [key, localStorage.getItem(key)]));
@@ -191,11 +192,14 @@ export async function initializeWebkitState(importLegacy = false): Promise<void>
   }
 
   for (const [key, value] of Object.entries(state.values)) {
-    presentationStorage.setItem(key, JSON.stringify(value));
+    if (!V3_KEYS.includes(key)) presentationStorage.setItem(key, JSON.stringify(value));
   }
   if (state.v2) {
     presentationStorage.removeItem('murmur-overlay-vertical-offset');
     presentationStorage.removeItem('murmur-ui-latency-v1');
+  }
+  if (importLegacy && state.v3) {
+    for (const key of V3_KEYS) { try { localStorage.removeItem(key); } catch { /* Disk receipt prevents reimport; removal retries next launch. */ } }
   }
   await synchronizePresentation();
   } finally {

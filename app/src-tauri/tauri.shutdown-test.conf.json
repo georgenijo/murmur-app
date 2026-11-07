@@ -31,6 +31,16 @@
             "qa-clipboard:allow-read-text",
             "qa-clipboard:allow-write-text"
           ]
+        },
+        {
+          "identifier": "updater-test-actions",
+          "description": "Throwaway local signed updater fixture; isolated identity and Main only",
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "updater-test:allow-updater-test-run"
+          ]
         }
       ]
     }

@@ -222,7 +222,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 187 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 189 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -256,7 +256,7 @@ stay local and never reach logs or telemetry. See
 | `commands/integrations.rs` | Local Launch Services availability probe for the optional NotchPill companion app |
 | `commands/microphone_preview.rs` | Main-window microphone test lifecycle, input validation, VAD sensitivity, and exact-owner stop |
 | `commands/mode_runtime.rs` | Foreground app and browser-site mode resolution, mode cycling, temporary overrides, and watcher events |
-| `commands/updater.rs` | App-translocation status and opt-in updater canary file transport |
+| `commands/updater.rs` | Main-only Rust updater intents/snapshots, native notifications, scheduling adapter, coordinated relaunch and QA-only fixture transport |
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
 | `frontmost.rs` | Native frontmost-app query + running-application list |
@@ -296,7 +296,7 @@ stay local and never reach logs or telemetry. See
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
+Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Updater flow and migration v3 live in `murmur-core::updater`; the Tauri adapter forwards state and routes installation relaunch through shutdown. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 
@@ -486,7 +486,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-187 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+189 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -626,7 +626,7 @@ The main React startup sends bounded raw strings to the core before hydrating
 presentation caches. Transcript removal runs independently after durable v1
 receipts, including when v2 fails. Failed source writes retain their newest
 per-key intent for retry and display a content-free notice. No completion data
-is cached in WebKit. Updater keys keep their existing owner until v3 in #990.
+is cached in WebKit. Migration v3 imports updater-last-check and pending-update-release-notes into the same Rust-owned source document; the updater alone writes them thereafter. React removes the legacy keys after v3 and never hydrates them back into WebKit.
 
 The separate `murmur-webkit` crate ships a permanent standalone objc2 importer
 with no Tauri/wry dependency. A native host supplies its data store, retains the
@@ -636,7 +636,7 @@ all durable I/O stays off the main thread. Its retirement coordinator requires
 a no-webview barrier plus v1/v2/v3 and removal receipts. It purges via
 WKWebsiteDataStore, verifies no records, releases the store, removes the bundle
 store directory and syncs its parent before writing the retirement receipt.
-This release cannot retire: it never writes v3. See the
+The React host keeps the store while its pages remain alive; v3 now commits, but retirement still requires the native host's no-webview barrier. See the
 [design and failure matrix](draft/gpui-webkit-lifecycle.md).
 
 The renderer retains defensive theme-library decoding for presentation and import

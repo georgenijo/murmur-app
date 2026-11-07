@@ -76,7 +76,8 @@ fn initialize_worker(app: &tauri::AppHandle) -> Result<(), String> {
         .join("Library/WebKit")
         .join(&app.config().identifier);
     let service = CompletionService::start(root, webkit.exists()).map_err(|e| e.to_string())?;
-    initialize_with_service(app, service);
+    initialize_with_service(app, service.clone());
+    crate::commands::updater::initialize(app, service)?;
     Ok(())
 }
 pub(crate) fn initialize_with_service<R: tauri::Runtime>(
@@ -527,7 +528,13 @@ fn save_webkit_source_worker(
     value: serde_json::Value,
 ) -> Result<(), String> {
     main_only(&window)?;
-    if matches!(key.as_str(), "dictation-settings" | "murmur-theme-library") {
+    if matches!(
+        key.as_str(),
+        "dictation-settings"
+            | "murmur-theme-library"
+            | "updater-last-check"
+            | "pending-update-release-notes"
+    ) {
         return Err("Use the source owner's command".into());
     }
     let _warning_notification = crate::commands::settings_store::SettingsWarningNotification(&app);

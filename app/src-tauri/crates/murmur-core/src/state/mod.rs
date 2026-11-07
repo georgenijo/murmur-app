@@ -232,6 +232,8 @@ fn normalize_inner(key: &str, value: Value) -> Result<Value> {
                     .as_object()
                     .is_some_and(|o| o.values().all(Value::is_boolean))
         }
+        "updater-last-check" => value.as_u64().is_some(),
+        "pending-update-release-notes" => return crate::updater::normalize_pending(value),
         "usage-dashboard-collapsed" | "murmur_onboarding_complete" => value.is_boolean(),
         "murmur-microphone-startup-benchmark-reports" => value
             .as_array()
