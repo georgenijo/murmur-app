@@ -57,9 +57,13 @@ void *murmur_overlay_material(void *raw) {
     return (__bridge void *)hud;
 }
 
-static void refit_surface(NSView *view, double width, double height, double radius) {
-    NSRect surface = NSMakeRect((view.bounds.size.width-width)/2.0,
-        view.isFlipped ? view.bounds.size.height-height : 0, width, height);
+static void refit_surface(NSView *view, double width, double height, double radius, bool floating) {
+    // GPUI bottom-aligns floating pills and top-aligns notch cards. During a
+    // contraction the window still has its expanded height: sample only the
+    // painted band, in the view's own (possibly flipped) coordinates.
+    NSRect surface = NSMakeRect(NSMinX(view.bounds)+(view.bounds.size.width-width)/2.0,
+        NSMinY(view.bounds)+((view.isFlipped == floating) ? view.bounds.size.height-height : 0),
+        width, height);
     objc_setAssociatedObject(view, &surface_key, [NSValue valueWithRect:surface], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
     if (!hud) return;
@@ -107,6 +111,7 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     if (!floating) {
         [hud removeFromSuperview];
         objc_setAssociatedObject(view, &hud_key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        refit_surface(view, view.bounds.size.width, surface_height, radius, floating);
         return true;
     }
     hud = (__bridge MurmurOverlayMaterial *)murmur_overlay_material(raw);
@@ -117,7 +122,7 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     // GPUI owns the tint/foreground above the effect. Opaque accessibility
     // surfaces do not need a backdrop effect at all.
     hud.hidden = reduced_transparency || high_contrast;
-    refit_surface(view, view.bounds.size.width, surface_height, radius);
+    refit_surface(view, view.bounds.size.width, surface_height, radius, floating);
     hud.layer.masksToBounds = YES;
     return true;
 }
@@ -169,10 +174,19 @@ uint32_t murmur_overlay_webkit_images(void) {
     return count;
 }
 
-void murmur_overlay_refit_hud(void *raw, double width, double height, double radius) {
+void murmur_overlay_refit_hud(void *raw, double width, double height, double radius, bool floating) {
     assert([NSThread isMainThread]);
     NSView *view=(__bridge NSView *)raw;
-    refit_surface(view, width, height, radius);
+    refit_surface(view, width, height, radius, floating);
+}
+
+// Windowless regression tests use the same stored presentation rect as the
+// real screen-pointer query, without moving the pointer or opening a window.
+bool murmur_overlay_surface_contains(void *raw, NSPoint point) {
+    assert([NSThread isMainThread]);
+    NSView *view = (__bridge NSView *)raw;
+    NSValue *surface = objc_getAssociatedObject(view, &surface_key);
+    return surface && NSPointInRect(point, surface.rectValue);
 }
 
 // A never-key panel can miss tracking/GPUI exit events, especially across a
@@ -180,9 +194,8 @@ void murmur_overlay_refit_hud(void *raw, double width, double height, double rad
 bool murmur_overlay_pointer_inside(void *raw) {
     assert([NSThread isMainThread]);
     NSView *view = (__bridge NSView *)raw;
-    NSValue *surface = objc_getAssociatedObject(view, &surface_key);
-    if (!view.window || !surface || view.window.ignoresMouseEvents) return false;
+    if (!view.window || view.window.ignoresMouseEvents) return false;
     NSPoint point = [view.window convertPointFromScreen:NSEvent.mouseLocation];
     point = [view convertPoint:point fromView:nil];
-    return NSPointInRect(point, surface.rectValue);
+    return murmur_overlay_surface_contains(raw, point);
 }

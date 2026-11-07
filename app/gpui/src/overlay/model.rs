@@ -719,7 +719,7 @@ impl Model {
     }
 }
 
-/// Reconcile presence rather than relying on tracking events. Only transitions
+/// Reconcile delivered tracking events with watchdog samples. Only transitions
 /// generate hover intent: repeated samples cannot postpone leave, restart a
 /// cancelled dwell, or close an AX-opened panel before a pointer has entered it.
 #[derive(Default)]

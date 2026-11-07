@@ -21,9 +21,6 @@ pub struct Surface {
     pub surface_height: f64,
     pub radius: f64,
 }
-pub fn has_native_window(window: &Window) -> bool {
-    raw(window).is_some()
-}
 pub fn apply(window: &mut Window, surface: Surface, cx: &mut gpui::App) -> bool {
     let Surface {
         frame,
@@ -158,7 +155,13 @@ unsafe extern "C" {
 
 /// Refit the mask from the same main-thread presentation frame as GPUI's
 /// value transition; window geometry still follows the acknowledged frame.
-pub fn refit_material(window: &Window, width: gpui::Pixels, height: gpui::Pixels, radius: f32) {
+pub fn refit_material(
+    window: &Window,
+    width: gpui::Pixels,
+    height: gpui::Pixels,
+    radius: f32,
+    floating: bool,
+) {
     #[cfg(target_os = "macos")]
     if let Some(raw) = raw(window) {
         // SAFETY: view lives for this window update; main-thread-only function.
@@ -168,11 +171,18 @@ pub fn refit_material(window: &Window, width: gpui::Pixels, height: gpui::Pixels
                 f32::from(width) as f64,
                 f32::from(height) as f64,
                 radius as f64,
+                floating,
             )
         };
     }
 }
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
-    fn murmur_overlay_refit_hud(view: *mut std::ffi::c_void, width: f64, height: f64, radius: f64);
+    fn murmur_overlay_refit_hud(
+        view: *mut std::ffi::c_void,
+        width: f64,
+        height: f64,
+        radius: f64,
+        floating: bool,
+    );
 }

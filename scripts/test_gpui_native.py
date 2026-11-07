@@ -10,6 +10,72 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
 class FocusHookTests(unittest.TestCase):
+    def test_overlay_contraction_and_reentry_sample_the_painted_band_in_both_placements(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+#include <stdbool.h>
+@interface FlippedView : NSView
+@end
+@implementation FlippedView
+- (BOOL)isFlipped { return YES; }
+@end
+extern void murmur_overlay_refit_hud(void *, double, double, double, bool);
+extern bool murmur_overlay_surface_contains(void *, NSPoint);
+static NSPoint from_top(NSView *view, double x, double y) {
+    return NSMakePoint(x, view.isFlipped ? y : view.bounds.size.height-y);
+}
+int main(void) {
+    @autoreleasepool {
+        for (Class cls in @[NSView.class, FlippedView.class]) {
+            for (int floating = 0; floating <= 1; floating++) {
+                // No HUD is installed for a notch. Presence still tracks its
+                // painted rectangle, not the retained expanded window bounds.
+                NSView *view = [[cls alloc] initWithFrame:NSMakeRect(0, 0, 241, 101)];
+                void *raw = (__bridge void *)view;
+                NSPoint top = from_top(view, 120.5, 10);
+                NSPoint bottom = from_top(view, 120.5, 90);
+                NSPoint persistent = floating ? bottom : top;
+                NSPoint disappearing = floating ? top : bottom;
+                double collapsed = floating ? 34 : 37;
+                assert(!murmur_overlay_surface_contains(raw, persistent));
+                murmur_overlay_refit_hud(raw, 241, 101, 12, floating);
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                assert(murmur_overlay_surface_contains(raw, disappearing));
+                // About 100 ms into contraction: 61 pt painted in 101 pt.
+                murmur_overlay_refit_hud(raw, 200, 61, 12, floating);
+                assert(!murmur_overlay_surface_contains(raw, disappearing));
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                // Leaving through the transparent band, then re-entering the
+                // persistent band, must produce outside -> inside in either
+                // coordinate system. Horizontal transparent margins stay out.
+                assert(!murmur_overlay_surface_contains(raw, from_top(view, 5, 50)));
+                murmur_overlay_refit_hud(raw, 120, collapsed, 17, floating);
+                assert(!murmur_overlay_surface_contains(raw, disappearing));
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                // Commit the native shrink, then grow again. Both anchors
+                // keep the persistent band at the window edge throughout.
+                view.frame = NSMakeRect(0, 0, 120, collapsed);
+                murmur_overlay_refit_hud(raw, 120, collapsed, 17, floating);
+                assert(murmur_overlay_surface_contains(raw, from_top(view, 60, collapsed/2)));
+                view.frame = NSMakeRect(0, 0, 241, 101);
+                murmur_overlay_refit_hud(raw, 241, 101, 12, floating);
+                assert(murmur_overlay_surface_contains(raw, persistent));
+                assert(murmur_overlay_surface_contains(raw, disappearing));
+            }
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-presence-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_effective_appearance_selects_light_dark_and_accessible_variants(self):
         source = r'''
 #import <AppKit/AppKit.h>
@@ -116,8 +182,9 @@ int main(void) {
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
 #include <assert.h>
+#include <stdbool.h>
 extern void *murmur_overlay_material(void *view);
-extern void murmur_overlay_refit_hud(void *view, double width, double height, double radius);
+extern void murmur_overlay_refit_hud(void *view, double width, double height, double radius, bool floating);
 int main(void) {
     @autoreleasepool {
         NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 241, 98)];
@@ -132,20 +199,20 @@ int main(void) {
         assert(metal.subviews.count == 0 && metal.layer == layer);
         assert(murmur_overlay_material(raw) == (__bridge void *)hud);
         assert([hud hitTest:NSMakePoint(10, 10)] == nil);
-        murmur_overlay_refit_hud(raw, 241, 98, 12);
+        murmur_overlay_refit_hud(raw, 241, 98, 12, true);
         assert(NSEqualRects(hud.frame, metal.frame));
         // A shrink retains a centered bottom-anchored material, then exact bounds.
-        murmur_overlay_refit_hud(raw, 120, 34, 17);
+        murmur_overlay_refit_hud(raw, 120, 34, 17, true);
         assert(NSEqualRects(hud.frame, NSMakeRect(60.5, 0, 120, 34)));
         metal.frame = NSMakeRect(0, 0, 120, 34);
-        murmur_overlay_refit_hud(raw, 120, 34, 17);
+        murmur_overlay_refit_hud(raw, 120, 34, 17, true);
         assert(NSEqualRects(hud.frame, metal.frame));
         // Reparenting/placement changes must preserve ordering and conversion.
         NSView *other = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 500, 200)];
         [metal removeFromSuperview];
         metal.frame = NSMakeRect(25, 30, 241, 98);
         [other addSubview:metal];
-        murmur_overlay_refit_hud(raw, 241, 98, 12);
+        murmur_overlay_refit_hud(raw, 241, 98, 12, true);
         assert(hud.superview == other && other.subviews[0] == hud && other.subviews[1] == metal);
         assert(NSEqualRects(hud.frame, metal.frame));
     }

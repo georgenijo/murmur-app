@@ -337,12 +337,16 @@ window was borrowed: centering the expanded 241 pt card in the stale 120 pt
 viewport displaced paint, hitboxes and AX by approximately 60 pt. Paint, input
 and AX now share the acknowledged viewport after growth and shrink.
 
-The existing 33 ms watchdog reconciles actual pointer presence in the painted
-surface, independently of tracking events and key-window status. Only presence
+Delivered GPUI hover events and the existing 33 ms watchdog reconcile through
+one pointer-presence state, using current timestamps. Events cancel dwell even
+when a fast exit/re-entry falls between two inside samples; polling recovers
+missed exits during resizing. The stored painted rectangle follows GPUI's
+alignment: bottom for floating pills, top for notch cards, including flipped
+views and contraction inside retained expanded bounds. Only presence
 transitions feed hover intent, preserving the 150 ms dwell, 300 ms leave and
 380 ms shrink without repeatedly moving deadlines. An AX-opened panel stays
 open until the pointer actually enters and leaves; a stationary pointer cannot
-undo an explicit AX close. Headless hosts retain GPUI hover transport.
+undo an explicit AX close. Headless hosts use the same GPUI event path.
 
 Regression coverage includes native sibling order/material hit-test exclusion
 and mask refits, missed-exit recovery and exact collapsed bounds with/without

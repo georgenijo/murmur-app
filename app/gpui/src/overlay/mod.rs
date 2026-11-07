@@ -75,6 +75,17 @@ impl Overlay {
             self.host.submit(intent);
         }
     }
+    /// Tracking events and watchdog samples share transition ownership. A
+    /// delivered exit cancels dwell immediately, even between two inside
+    /// samples; repeated inside observations never move the deadline.
+    fn observe_pointer(&mut self, inside: bool, now: u64) -> bool {
+        if self.pointer.observe(inside) {
+            self.model.hover(inside, now);
+            true
+        } else {
+            false
+        }
+    }
     pub fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.now = self.epoch.elapsed().as_millis() as u64;
         let prefs = preferences::current(cx);
@@ -193,9 +204,8 @@ impl Overlay {
                                 s.model.sample(generation, level, s.now);
                             }
                             if let Some(inside) = native::pointer_inside(w)
-                                && s.pointer.observe(inside)
+                                && s.observe_pointer(inside, s.now)
                             {
-                                s.model.hover(inside, s.now);
                                 changed = true;
                             }
                             if s.now >= s.screen_poll {
@@ -302,7 +312,7 @@ impl Render for Overlay {
         } else {
             12.
         };
-        native::refit_material(window, width, height, radius);
+        native::refit_material(window, width, height, radius, g.floating);
         let mut card = div()
             .id("overlay-surface")
             .relative()
@@ -342,10 +352,8 @@ impl Render for Overlay {
                 )
             })
             .on_hover(cx.listener(|s, inside, w, cx| {
-                // Native panels use reconciled pointer presence, independent of
-                // AppKit tracking delivery. Test/headless windows use GPUI.
-                if !native::has_native_window(w) {
-                    s.model.hover(*inside, s.now);
+                let now = s.epoch.elapsed().as_millis() as u64;
+                if s.observe_pointer(*inside, now) {
                     s.advance(w, cx);
                 }
             }));

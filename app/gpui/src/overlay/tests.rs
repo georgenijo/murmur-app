@@ -975,6 +975,111 @@ fn pointer_samples_do_not_undo_ax_disclosure_or_restart_stationary_dwell() {
 
 #[cfg(feature = "a11y-tests")]
 #[gpui::test]
+fn delivered_hover_exits_between_watchdog_ticks_restart_continuous_dwell(
+    test_cx: &mut TestAppContext,
+) {
+    test_cx.update(crate::init);
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for reduced in [false, true] {
+            test_cx.update(|cx| {
+                crate::preferences::apply(
+                    crate::preferences::DisplayPreferences {
+                        reduce_motion: reduced,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            let mut entity = None;
+            let (_, cx) = test_cx.add_window_view(|w, cx| {
+                let overlay = cx.new(|_| {
+                    let mut overlay = Overlay::new(active().snapshot, Rc::new(FakeHost::default()));
+                    overlay.model.snapshot.placement = placement;
+                    overlay
+                });
+                entity = Some(overlay.clone());
+                gpui_base::Root::new(overlay, w, cx)
+            });
+            let overlay = entity.unwrap();
+            cx.update(|w, cx| {
+                overlay.update(cx, |s, cx| s.advance(w, cx));
+                w.draw(cx).clear(cx);
+                w.simulate_mouse_move(gpui::point(gpui::px(-10.), gpui::px(-10.)), cx);
+                overlay.update(cx, |s, _| {
+                    s.model.collapse();
+                    s.pointer = PointerPresence::default();
+                });
+            });
+            let band = cx.debug_bounds("overlay-status").unwrap().center();
+            let deliver = |cx: &mut gpui::VisualTestContext, inside, at| {
+                cx.update(|w, cx| {
+                    overlay.update(cx, |s, _| {
+                        s.epoch = std::time::Instant::now() - std::time::Duration::from_millis(at);
+                    });
+                    // Deliver the actual GPUI hover callback, not an outside
+                    // sample: the watchdog sees only inside on both sides.
+                    w.simulate_mouse_move(
+                        if inside {
+                            band
+                        } else {
+                            gpui::point(gpui::px(-10.), gpui::px(-10.))
+                        },
+                        cx,
+                    );
+                    overlay.read(cx).now
+                })
+            };
+            deliver(cx, true, 0);
+            cx.update(|_, cx| {
+                overlay.update(cx, |s, _| {
+                    assert!(
+                        !s.observe_pointer(true, 99),
+                        "event and poll share presence"
+                    );
+                    s.model.tick(99, reduced, |_, _| panic!("early dwell"));
+                });
+            });
+            // Recreate 99/132 ms samples surrounding an exit at 110 and a
+            // re-entry at 120. Also repeat brief grazes across later ticks.
+            let mut last_entry = 0;
+            for (exit, enter, sample) in [(110, 120, 132), (175, 185, 198), (241, 251, 264)] {
+                deliver(cx, false, exit);
+                let entered = deliver(cx, true, enter);
+                assert!(
+                    entered >= enter,
+                    "delivered events must use the current clock"
+                );
+                last_entry = enter;
+                cx.update(|_, cx| {
+                    overlay.update(cx, |s, _| {
+                        assert!(!s.observe_pointer(true, sample));
+                        s.model
+                            .tick(sample, reduced, |_, _| panic!("a graze cannot open"));
+                        s.model
+                            .tick(sample + 33, reduced, |_, _| panic!("cancelled dwell"));
+                        assert_eq!(s.model.phase, Phase::Collapsed);
+                    });
+                });
+            }
+            let entered = overlay.read_with(cx, |s, _| s.now);
+            cx.update(|_, cx| {
+                overlay.update(cx, |s, _| {
+                    assert!(!s.observe_pointer(true, last_entry + 149));
+                    // Bound the event timestamp between clock setup and the
+                    // completed callback, allowing a slow frame on CI.
+                    s.model.tick(last_entry + 149, reduced, |_, _| {
+                        panic!("full dwell required")
+                    });
+                    s.model.tick(entered + 150, reduced, |_, _| true);
+                    assert_eq!(s.model.phase, Phase::Open);
+                });
+            });
+        }
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
 fn resized_overlay_ax_frames_match_viewport_and_mode_pointer_target(cx: &mut TestAppContext) {
     cx.update(crate::init);
     cx.update(|cx| {
