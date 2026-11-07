@@ -264,5 +264,118 @@ int main(void) {
             subprocess.run([str(path / 'test')], check=True)
 
 
+class WebkitSourcePolicyTests(unittest.TestCase):
+    def test_attributed_inventory_parser(self):
+        from scripts.check_gpui_goldens import check_inventory
+        import json
+        valid = dict(pid=1, webkitImages=5, axAttributed=5, unattributed=0,
+                     startupWebkitImages=0, linkageViolations=0)
+        def parse(value):
+            return check_inventory('MURMUR_TEST_INVENTORY=' + json.dumps(value),
+                                   'MURMUR_TEST_INVENTORY')
+        self.assertEqual(parse(valid), valid)
+        for field, value in [('unattributed', 1), ('axAttributed', 4),
+                             ('startupWebkitImages', 1), ('linkageViolations', 1),
+                             ('webkitImages', -1), ('pid', True)]:
+            with self.subTest(field=field), self.assertRaises(AssertionError):
+                parse({**valid, field: value})
+        with self.assertRaises(AssertionError):
+            check_inventory('', 'MURMUR_TEST_INVENTORY')
+
+    def test_gpui_sources_do_not_construct_web_views(self):
+        # No linked class reference, dynamic named lookup, or message dispatch
+        # to a web-view class is allowed in our GPUI sources. The policy's own
+        # classifier strings are evidence matching, not class construction.
+        root = ROOT / 'app/gpui'
+        for directory in ('src', 'native'):
+            for path in (root / directory).rglob('*'):
+                if path.suffix not in ('.rs', '.m', '.h') or path.name == 'webkit_policy.m':
+                    continue
+                self.assertNotRegex(path.read_text(), r'WKWebView|\bWebView\b', str(path))
+
+
+@unittest.skipUnless(platform.system() == 'Darwin', 'dyld policy requires macOS')
+class WebkitPolicyTests(unittest.TestCase):
+    def test_classifier_linkage_and_zero_baseline(self):
+        source = r'''
+#include "webkit_policy.m"
+#include <assert.h>
+int main(void) {
+    assert(murmur_webkit_start());
+    assert(murmur_webkit_inventory("MURMUR_TEST_INVENTORY"));
+    // Synthetic chain follows the captured VoiceOver/Apple AX bundle stack.
+    WebkitFrame ax[] = {
+        {"/usr/lib/dyld", "dlopen"},
+        {"/System/Library/PrivateFrameworks/SoftLinking.framework/SoftLinking", "_sl_dlopen"},
+        {"/System/Library/PrivateFrameworks/AccessibilityBundles.framework/AccessibilityBundles",
+            "-[AXBBundleManager _loadCoreAccessibilityAdditionsForBundle:]"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "loadAccessibilityBundles"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "_AXXMIGSetAttributeValue"},
+        {"/System/Library/Frameworks/ApplicationServices.framework/Frameworks/HIServices.framework/HIServices",
+            "mshMIGPerform"},
+        {"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+            "__CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__"},
+        {"/System/Library/Frameworks/AppKit.framework/AppKit", "-[NSApplication run]"},
+        {"/synthetic/Murmur", "main"},
+    };
+    unsigned n=sizeof(ax)/sizeof(*ax);
+    assert(murmur_webkit_ax_chain(ax,n,false));
+    assert(!murmur_webkit_ax_chain(ax,n,true)); // Truncated evidence.
+    assert(!murmur_webkit_ax_chain(ax,0,false));
+    assert(!murmur_webkit_ax_chain(ax,4,false)); // No incoming AX IPC.
+    assert(!murmur_webkit_ax_chain(ax,5,false)); // No Mach/runloop dispatch.
+    WebkitFrame dispatch=ax[5];
+    strcpy(ax[5].image,"/synthetic/Murmur");
+    strcpy(ax[5].symbol,"direct_AX_call");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // App invoking the AX handler itself.
+    ax[5]=dispatch;
+    WebkitFrame saved=ax[1];
+    strcpy(ax[1].image,"/synthetic/Murmur");
+    strcpy(ax[1].symbol,"create_web_view");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // App initiated, even with AX frames.
+    ax[1]=saved;
+    ax[1].image[0]=0;
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Unknown origin.
+    ax[1]=saved;
+    strcpy(ax[1].image,"/tmp/AccessibilityBundles.framework/AccessibilityBundles");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Untrusted path spoof.
+    ax[1]=saved;
+    strcpy(ax[n-1].symbol,"-[WKWebView initWithFrame:]");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Web view anywhere in chain.
+    assert(murmur_webkit_family("/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit"));
+    assert(murmur_webkit_family("@rpath/JavaScriptCore.framework/JavaScriptCore"));
+    assert(!murmur_webkit_family("/System/Library/Frameworks/AppKit.framework/AppKit"));
+    struct { struct mach_header_64 h; struct dylib_command d; char name[128]; } image={0};
+    image.h.magic=MH_MAGIC_64; image.h.ncmds=1;
+    image.h.sizeofcmds=sizeof(image)-sizeof(image.h);
+    image.d.cmd=LC_LOAD_DYLIB; image.d.cmdsize=image.h.sizeofcmds;
+    image.d.dylib.name.offset=sizeof(image.d);
+    strcpy(image.name,"/System/Library/Frameworks/AppKit.framework/AppKit");
+    assert(!links_webkit((void *)&image));
+    strcpy(image.name,"@rpath/WebKit.framework/WebKit");
+    assert(links_webkit((void *)&image));
+    image.d.cmd=LC_LOAD_WEAK_DYLIB;
+    assert(links_webkit((void *)&image));
+    image.d.cmd=LC_REEXPORT_DYLIB;
+    assert(links_webkit((void *)&image));
+    image.d.dylib.name.offset=image.d.cmdsize;
+    assert(links_webkit((void *)&image)); // Malformed linkage fails closed.
+    // A real app-owned load must fail despite a clean startup. No web view,
+    // NSApplication, persistent store or accessibility client is constructed.
+    assert(dlopen("/System/Library/Frameworks/WebKit.framework/WebKit",RTLD_LAZY|RTLD_LOCAL));
+    assert(!murmur_webkit_inventory("MURMUR_TEST_APP_LOAD_INVENTORY"));
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-webkit-policy-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
+                            '-framework', 'Foundation', '-I', str(ROOT / 'app/gpui/native'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
+
 if __name__ == '__main__':
     unittest.main()

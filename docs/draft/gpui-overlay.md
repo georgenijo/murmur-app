@@ -422,3 +422,30 @@ its private `target48` directory:
 Captures and gate logs are preserved before deleting the task checkout and its
 target. The live HID recheck and independent review remain with the lead; this
 stack layer is still draft and unmerged.
+
+### QA WebKit attribution policy
+
+`gallery` builds install the shared `overlay::native` dyld observer before main.
+The launch-only `MURMUR_WEBKIT_BASELINE_ONLY=1 overlay-qa` run exits before
+NSApplication/window/AX exposure and requires zero WebKit-family images. Every
+loaded executable or non-system dylib is checked for WebKit-family load commands;
+our GPUI source gate also forbids web-view class construction references.
+
+After launch, a WebKit-family load is allowed only when its captured image/symbol
+chain contains Apple's AccessibilityBundles/AXBBundleManager activation and
+HIServices bundle loading followed by an incoming `_AXXMIG` request and Apple
+Mach/source-1 runloop dispatch. Unknown,
+non-system or app frames before that dispatch boundary, any web-view frame, truncated
+records, and inventory overflow fail closed. Ordinary app event-loop frames below
+the incoming dispatch boundary are not the initiator. No AX clients, text, audio,
+clipboard contents or other process data are collected. QA stores only bounded
+image paths/symbol names; production builds contain no observer or backtraces.
+
+`MURMUR_*_INVENTORY` retains numeric `pid` and `webkitImages`, adding numeric
+`axAttributed`, `unattributed`, `startupWebkitImages`, and `linkageViolations`.
+`MURMUR_WEBKIT_LOAD` records the supporting chain. Accessibility-induced system
+loads do not mean Murmur constructs a web view. The policy is attribution to an
+incoming AX request, not proof of a particular client's identity. The golden
+script checks this policy and a separate deterministic zero-image launch run.
+A bounded native diagnostic (`MURMUR_WEBKIT_QA_SECONDS=3 overlay-qa`) checks the
+same policy before quitting, without HID input or altering accessibility.

@@ -59,6 +59,11 @@ impl Host for Synthetic {
     fn preview_anchor(&self, _: OverlayFrame, _: bool, _: f64) {}
 }
 fn main() {
+    murmur_ui::overlay::native::start_webkit_policy();
+    if std::env::var_os("MURMUR_WEBKIT_BASELINE_ONLY").is_some() {
+        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_OVERLAY_INVENTORY");
+        return;
+    }
     let output = std::env::var_os("MURMUR_GOLDEN");
     let headless = output.is_some();
     let app = if headless {
@@ -197,13 +202,7 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank overlay"
                     );
-                    let images = murmur_ui::overlay::native::webkit_images();
-                    assert_eq!(images, 0, "native overlay process must not load WebKit");
-                    println!(
-                        "MURMUR_OVERLAY_INVENTORY={{\"pid\":{},\"webkitImages\":{}}}",
-                        std::process::id(),
-                        images
-                    );
+                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_OVERLAY_INVENTORY");
                     image.save(path).expect("write synthetic capture");
                     cx.quit();
                 })
@@ -211,6 +210,18 @@ fn main() {
             })
             .detach();
         } else {
+            // Optional bounded diagnostic run, no input or system-setting changes.
+            if let Ok(seconds) = std::env::var("MURMUR_WEBKIT_QA_SECONDS") {
+                let seconds: u64 = seconds.parse().expect("QA seconds");
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(seconds))
+                        .await;
+                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_OVERLAY_INVENTORY");
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
             handle
                 .update(cx, |_, w, cx| {
                     overlay.update(cx, |s, cx| {
