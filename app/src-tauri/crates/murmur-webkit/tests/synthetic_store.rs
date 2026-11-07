@@ -30,6 +30,30 @@ fn main() {
     drop(extra);
     assert_eq!(retirement.remaining_webviews(mtm), 0);
     println!("synthetic overlay webview inventory: before=1 after=0 (deallocated)");
+    // A real, windowless, nonpersistent WKWebView. The listing remains one
+    // while an extra owner exists; only deallocation satisfies the barrier.
+    let (retirement, extra) = objc2::rc::autoreleasepool(|_| {
+        use objc2::MainThreadOnly;
+        use objc2_web_kit::{WKWebView, WKWebViewConfiguration};
+        let configuration = unsafe { WKWebViewConfiguration::new(mtm) };
+        let store = unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) };
+        unsafe { configuration.setWebsiteDataStore(&store) };
+        let view = unsafe {
+            WKWebView::initWithFrame_configuration(
+                WKWebView::alloc(mtm),
+                objc2_foundation::NSRect::ZERO,
+                &configuration,
+            )
+        };
+        let extra = view.clone();
+        let retirement = murmur_webkit::PreviewRetirement::destroy(mtm, view);
+        assert_eq!(retirement.remaining_webviews(mtm), 1);
+        (retirement, extra)
+    });
+    assert_eq!(retirement.remaining_webviews(mtm), 1);
+    drop(extra);
+    assert_eq!(retirement.remaining_webviews(mtm), 0);
+    println!("synthetic dictation preview webview inventory: before=1 after=0 (deallocated)");
     let root = tempfile::tempdir().unwrap();
     let service = CompletionService::start(root.path().into(), true).unwrap();
     // Never obtain the default store. This custom store is memory-only; all

@@ -38,7 +38,7 @@ bool murmur_overlay_never_key(void *object) {
 @implementation MurmurOverlayMaterial
 - (NSView *)hitTest:(NSPoint)point { (void)point; return nil; }
 @end
-static char hud_key, surface_key;
+static char hud_key, surface_key, panel_setup_key, preview_key, preview_setup_key;
 
 // Shared by the native transaction and the windowless hierarchy regression.
 void *murmur_overlay_material(void *raw) {
@@ -57,13 +57,7 @@ void *murmur_overlay_material(void *raw) {
     return (__bridge void *)hud;
 }
 
-static void refit_surface(NSView *view, double width, double height, double radius, bool floating) {
-    // GPUI bottom-aligns floating pills and top-aligns notch cards. During a
-    // contraction the window still has its expanded height: sample only the
-    // painted band, in the view's own (possibly flipped) coordinates.
-    NSRect surface = NSMakeRect(NSMinX(view.bounds)+(view.bounds.size.width-width)/2.0,
-        NSMinY(view.bounds)+((view.isFlipped == floating) ? view.bounds.size.height-height : 0),
-        width, height);
+static void refit_surface_rect(NSView *view, NSRect surface, double radius) {
     objc_setAssociatedObject(view, &surface_key, [NSValue valueWithRect:surface], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
     if (!hud) return;
@@ -74,6 +68,15 @@ static void refit_surface(NSView *view, double width, double height, double radi
     hud.frame = [view convertRect:surface toView:view.superview];
     hud.layer.cornerRadius = radius;
 }
+
+static void refit_surface(NSView *view, double width, double height, double radius, bool floating) {
+    // GPUI bottom-aligns floating pills and top-aligns notch cards.
+    NSRect surface = NSMakeRect(NSMinX(view.bounds)+(view.bounds.size.width-width)/2.0,
+        NSMinY(view.bounds)+((view.isFlipped == floating) ? view.bounds.size.height-height : 0),
+        width, height);
+    refit_surface_rect(view, surface, radius);
+}
+
 bool murmur_overlay_apply(void *raw, double x, double y, double width, double height,
                           bool floating, bool hidden, bool reduced_transparency,
                           bool high_contrast, bool dark, double radius, double surface_height) {
@@ -81,25 +84,32 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     NSView *view = (__bridge NSView *)raw;
     NSWindow *window = view.window;
     if (!window || !murmur_overlay_never_key((__bridge void *)window)) return false;
-    window.level = 25;
-    window.hasShadow = NO;
-    window.opaque = NO;
-    window.backgroundColor = NSColor.clearColor;
-    window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
-        NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle |
-        NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorCanJoinAllApplications;
-    if ([window isKindOfClass:NSPanel.class]) {
-        NSPanel *panel = (NSPanel *)window;
-        panel.styleMask |= NSWindowStyleMaskNonactivatingPanel;
-        panel.hidesOnDeactivate = NO;
-        panel.becomesKeyOnlyIfNeeded = YES;
+    // AppKit setup is instance-local and idempotent. Reinstalling style/opacity
+    // during a presentation callback can reenter the platform's frame update.
+    if (!objc_getAssociatedObject(window, &panel_setup_key)) {
+        window.level = 25;
+        window.hasShadow = NO;
+        window.opaque = NO;
+        window.backgroundColor = NSColor.clearColor;
+        window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+            NSWindowCollectionBehaviorStationary | NSWindowCollectionBehaviorIgnoresCycle |
+            NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorCanJoinAllApplications;
+        if ([window isKindOfClass:NSPanel.class]) {
+            NSPanel *panel = (NSPanel *)window;
+            if (!(panel.styleMask & NSWindowStyleMaskNonactivatingPanel)) {
+                panel.styleMask |= NSWindowStyleMaskNonactivatingPanel;
+            }
+            panel.hidesOnDeactivate = NO;
+            panel.becomesKeyOnlyIfNeeded = YES;
+        }
+        SEL prevent = NSSelectorFromString(@"_setPreventsActivation:");
+        if ([window respondsToSelector:prevent]) {
+            void (*setter)(id, SEL, BOOL) = (void *)[window methodForSelector:prevent];
+            setter(window, prevent, YES);
+        }
+        objc_setAssociatedObject(window, &panel_setup_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    SEL prevent = NSSelectorFromString(@"_setPreventsActivation:");
-    if ([window respondsToSelector:prevent]) {
-        void (*setter)(id, SEL, BOOL) = (void *)[window methodForSelector:prevent];
-        setter(window, prevent, YES);
-    }
-    window.ignoresMouseEvents = hidden;
+    window.ignoresMouseEvents = hidden || objc_getAssociatedObject(view, &preview_key) != nil;
     // Input uses global top-left coordinates; AppKit uses the primary screen's
     // bottom-left origin. Never derive this from the window's stale display.
     NSScreen *primary = NSScreen.screens.firstObject;
@@ -154,8 +164,9 @@ void murmur_overlay_announce(void *raw, const char *message) {
     assert([NSThread isMainThread]);
     NSView *view = (__bridge NSView *)raw;
     if (!view.window || !message) return;
-    // Only a fixed content-free state label crosses this API, never words or a
-    // calendar title. GPUI's pinned AccessKit lacks a live-region API.
+    // Overlay callers send only content-free state labels. The explicit
+    // preview-only wrapper preserves the existing consent-gated polite live
+    // region's speech. GPUI's pinned AccessKit lacks a live-region API.
     NSAccessibilityPostNotificationWithUserInfo(view, NSAccessibilityAnnouncementRequestedNotification,
         @{NSAccessibilityAnnouncementKey: [NSString stringWithUTF8String:message],
           NSAccessibilityPriorityKey: @(NSAccessibilityPriorityMedium)});
@@ -198,6 +209,44 @@ bool murmur_overlay_pointer_inside(void *raw) {
     NSPoint point = [view.window convertPointFromScreen:NSEvent.mouseLocation];
     point = [view convertPoint:point fromView:nil];
     return murmur_overlay_surface_contains(raw, point);
+}
+
+// Preview reuses the overlay's never-key/main-thread panel transaction, but
+// ignores every pointer event even while visible. Mask only the painted card.
+void murmur_preview_refit(void *raw, double x, double y, double width, double height) {
+    assert([NSThread isMainThread]);
+    NSView *view=(__bridge NSView *)raw;
+    NSWindow *window=view.window;
+    // A host may supply the default titled/resizable GPUI popup. On macOS,
+    // its resize tracking region can exceed CGRegion's integer range;
+    // CGRegionCreateWithRect returns NULL and AppKit unconditionally releases
+    // it. Enforce the preview contract before its first resize/orderFront,
+    // independently of whether the host used Preview::window_options.
+    if ([window isKindOfClass:NSWindow.class] &&
+        !objc_getAssociatedObject(window, &preview_setup_key)) {
+        window.styleMask = (window.styleMask | NSWindowStyleMaskFullSizeContentView) &
+            ~(NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskClosable);
+        window.titlebarAppearsTransparent = YES;
+        window.titleVisibility = NSWindowTitleHidden;
+        window.movable = NO;
+        objc_setAssociatedObject(window, &preview_setup_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    window.ignoresMouseEvents=YES;
+    objc_setAssociatedObject(view, &preview_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSRect surface = NSMakeRect(NSMinX(view.bounds)+x,
+        NSMinY(view.bounds)+(view.isFlipped ? y : view.bounds.size.height-y-height), width, height);
+    refit_surface_rect(view, surface, 14.);
+}
+
+// A preview starts ordered out. Admit only after its nonempty frame and the
+// exact recording/consent ticket have been checked in the main-thread owner.
+void murmur_preview_visibility(void *raw, bool hidden) {
+    assert([NSThread isMainThread]);
+    NSView *view=(__bridge NSView *)raw;
+    NSWindow *window=view.window;
+    window.ignoresMouseEvents=YES;
+    if (hidden) [window orderOut:nil];
+    else if (!window.isVisible) [window orderFrontRegardless];
 }
 
 // Global top-left logical coordinates match GPUI window bounds. Read only;

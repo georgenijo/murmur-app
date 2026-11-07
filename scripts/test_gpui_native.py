@@ -1,4 +1,5 @@
-"""Exercise native glue and own-process AppKit policy with synthetic fixtures."""
+"""Exercise native glue and own-process AppKit policy with synthetic fixtures;
+never show windows."""
 from pathlib import Path
 import platform
 import subprocess
@@ -10,6 +11,51 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
 class FocusHookTests(unittest.TestCase):
+    def test_preview_normalizes_a_default_resizable_panel_before_presentation(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+@interface SyntheticPreviewPanel : NSPanel
+@property NSUInteger styleWrites;
+@end
+@implementation SyntheticPreviewPanel
+- (void)setStyleMask:(NSWindowStyleMask)mask { self.styleWrites++; [super setStyleMask:mask]; }
+@end
+extern void murmur_preview_refit(void *, double, double, double, double);
+int main(void) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        NSWindowStyleMask mask = NSWindowStyleMaskTitled | NSWindowStyleMaskResizable |
+            NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskNonactivatingPanel;
+        SyntheticPreviewPanel *panel = [[SyntheticPreviewPanel alloc] initWithContentRect:NSMakeRect(0,0,460,168)
+            styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+        NSPanel *other = [[NSPanel alloc] initWithContentRect:NSMakeRect(0,0,460,168)
+            styleMask:mask backing:NSBackingStoreBuffered defer:NO];
+        panel.styleWrites = 0;
+        NSView *view = panel.contentView;
+        murmur_preview_refit((__bridge void *)view, 120,0,220,42);
+        assert(!(panel.styleMask & NSWindowStyleMaskResizable));
+        assert(!(panel.styleMask & (NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable)));
+        assert(panel.styleMask & NSWindowStyleMaskFullSizeContentView);
+        assert(panel.styleMask & NSWindowStyleMaskNonactivatingPanel);
+        assert(panel.titlebarAppearsTransparent && panel.titleVisibility == NSWindowTitleHidden);
+        assert(!panel.movable && panel.ignoresMouseEvents && !panel.visible);
+        assert(panel.contentView == view);
+        assert(NSEqualSizes(view.frame.size, panel.frame.size));
+        murmur_preview_refit((__bridge void *)view, 120,64,220,42);
+        assert(panel.styleWrites == 1);
+        assert(other.styleMask == mask && !other.ignoresMouseEvents && !other.visible);
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-preview-panel-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore', str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_overlay_contraction_and_reentry_sample_the_painted_band_in_both_placements(self):
         source = r'''
 #import <AppKit/AppKit.h>
@@ -227,6 +273,64 @@ int main(void) {
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
             subprocess.run([str(path / 'test')], check=True)
 
+    def test_preview_surface_converts_card_coordinates_and_tracks_reparenting(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
+#include <assert.h>
+#include <stdbool.h>
+@interface FlippedPreview : NSView
+@end
+@implementation FlippedPreview
+- (BOOL)isFlipped { return YES; }
+@end
+extern void *murmur_overlay_material(void *);
+extern void murmur_preview_refit(void *, double, double, double, double);
+extern bool murmur_overlay_surface_contains(void *, NSPoint);
+int main(void) {
+    @autoreleasepool {
+        for (Class parentClass in @[NSView.class, FlippedPreview.class]) {
+            for (Class viewClass in @[NSView.class, FlippedPreview.class]) {
+                NSView *parent = [[parentClass alloc] initWithFrame:NSMakeRect(0, 0, 500, 400)];
+                NSView *view = [[viewClass alloc] initWithFrame:NSMakeRect(25, 30, 300, 160)];
+                view.bounds = NSMakeRect(7, 9, 300, 160);
+                [parent addSubview:view];
+                void *raw = (__bridge void *)view;
+                NSVisualEffectView *hud = (__bridge NSVisualEffectView *)murmur_overlay_material(raw);
+                for (int lifted = 0; lifted <= 1; lifted++) {
+                    double y = lifted ? 12 : 64;
+                    murmur_preview_refit(raw, 18, y, 210, 42);
+                    NSRect card = NSMakeRect(25, 9+(view.isFlipped ? y : 160-y-42), 210, 42);
+                    assert(NSEqualRects(hud.frame, [view convertRect:card toView:parent]));
+                    assert(hud.layer.cornerRadius == 14);
+                    assert(murmur_overlay_surface_contains(raw, NSMakePoint(NSMidX(card), NSMidY(card))));
+                    assert(!murmur_overlay_surface_contains(raw, NSMakePoint(8, 10)));
+                    assert([hud hitTest:NSMakePoint(30, 30)] == nil);
+                }
+                NSView *other = [[parentClass alloc] initWithFrame:NSMakeRect(0, 0, 600, 500)];
+                [view removeFromSuperview];
+                [other addSubview:view];
+                murmur_preview_refit(raw, 18, 64, 210, 42);
+                assert(hud.superview == other && other.subviews[0] == hud && other.subviews[1] == view);
+                assert(NSEqualRects(hud.frame, [view convertRect:NSMakeRect(25, 9+(view.isFlipped ? 64 : 54), 210, 42) toView:other]));
+                // Notch previews have no material, but retain their own surface.
+                NSView *notch = [[viewClass alloc] initWithFrame:NSMakeRect(0, 0, 300, 160)];
+                murmur_preview_refit((__bridge void *)notch, 18, 64, 210, 42);
+                assert(murmur_overlay_surface_contains((__bridge void *)notch, NSMakePoint(100, notch.isFlipped ? 80 : 70)));
+            }
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-preview-surface-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
     def test_overlay_never_key_hook_is_instance_local_and_idempotent(self):
         source = r'''
 #import <AppKit/AppKit.h>
@@ -255,6 +359,118 @@ int main(void) {
 }
 '''
         with tempfile.TemporaryDirectory(prefix='murmur-overlay-hook-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
+    def test_panel_configuration_is_applied_once_across_frame_transactions(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+#include <stdbool.h>
+@interface SyntheticWindow : NSObject
+@property(nonatomic) NSInteger level;
+@property(nonatomic) BOOL hasShadow;
+@property(nonatomic) BOOL opaque;
+@property(nonatomic) NSUInteger opaqueWrites;
+@property(nonatomic,strong) NSColor *backgroundColor;
+@property(nonatomic) NSWindowCollectionBehavior collectionBehavior;
+@property(nonatomic) BOOL ignoresMouseEvents;
+@property(nonatomic) NSRect frame;
+@property(nonatomic) double alphaValue;
+@end
+@implementation SyntheticWindow
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+- (void)setOpaque:(BOOL)value { _opaque=value; self.opaqueWrites+=1; }
+- (void)setFrame:(NSRect)value display:(BOOL)display { (void)display; self.frame=value; }
+@end
+@interface SyntheticView : NSObject
+@property(nonatomic,strong) SyntheticWindow *syntheticWindow;
+@end
+@implementation SyntheticView
+- (NSWindow *)window { return (NSWindow *)self.syntheticWindow; }
+- (NSRect)bounds { return NSMakeRect(0, 0, 240, 106); }
+- (BOOL)isFlipped { return NO; }
+@end
+extern bool murmur_overlay_apply(void *, double, double, double, double, bool, bool, bool, bool, bool, double, double);
+extern void murmur_preview_refit(void *, double, double, double, double);
+int main(void) {
+    @autoreleasepool {
+        SyntheticView *view = [SyntheticView new];
+        view.syntheticWindow = [SyntheticWindow new];
+        assert(murmur_overlay_apply((__bridge void *)view, 0,0,200,42,false,true,true,false,true,14,42));
+        assert(murmur_overlay_apply((__bridge void *)view, 0,0,220,42,false,false,true,false,true,14,42));
+        assert(view.syntheticWindow.opaqueWrites == 1);
+        assert(view.syntheticWindow.frame.size.width == 220);
+        assert(view.syntheticWindow.alphaValue == 1);
+        assert(!view.syntheticWindow.ignoresMouseEvents);
+        // The preview marker must survive the shared resize transaction.
+        murmur_preview_refit((__bridge void *)view, 12, 0, 100, 42);
+        assert(murmur_overlay_apply((__bridge void *)view, 0,0,240,42,false,false,true,false,true,14,42));
+        assert(view.syntheticWindow.ignoresMouseEvents);
+        assert(view.syntheticWindow.opaqueWrites == 1);
+        assert(!view.syntheticWindow.canBecomeKeyWindow && !view.syntheticWindow.canBecomeMainWindow);
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-panel-transaction-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
+    def test_preview_is_click_through_even_while_visible(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#include <assert.h>
+#include <stdbool.h>
+@interface SyntheticWindow : NSObject
+@property BOOL ignoresMouseEvents;
+@property(getter=isVisible) BOOL visible;
+@property NSUInteger frontCount;
+@end
+@implementation SyntheticWindow
+- (void)orderOut:(id)sender { (void)sender; self.visible=NO; }
+- (void)orderFrontRegardless { self.visible=YES; self.frontCount+=1; }
+@end
+@interface SyntheticView : NSObject
+@property SyntheticWindow *syntheticWindow;
+@end
+@implementation SyntheticView
+- (NSWindow *)window { return (NSWindow *)self.syntheticWindow; }
+- (NSRect)bounds { return NSMakeRect(0, 0, 240, 106); }
+- (BOOL)isFlipped { return NO; }
+@end
+extern void murmur_preview_refit(void *, double, double, double, double);
+extern void murmur_preview_visibility(void *, bool);
+int main(void) {
+    @autoreleasepool {
+        SyntheticView *view = [SyntheticView new];
+        view.syntheticWindow = [SyntheticWindow new];
+        view.syntheticWindow.ignoresMouseEvents = NO;
+        murmur_preview_refit((__bridge void *)view, 12, 64, 200, 42);
+        assert(view.syntheticWindow.ignoresMouseEvents);
+        view.syntheticWindow.ignoresMouseEvents = NO;
+        murmur_preview_refit((__bridge void *)view, 12, 0, 100, 42);
+        assert(view.syntheticWindow.ignoresMouseEvents);
+        murmur_preview_visibility((__bridge void *)view, false);
+        murmur_preview_visibility((__bridge void *)view, false);
+        assert(view.syntheticWindow.visible && view.syntheticWindow.frontCount == 1);
+        assert(view.syntheticWindow.ignoresMouseEvents);
+        murmur_preview_visibility((__bridge void *)view, true);
+        assert(!view.syntheticWindow.visible && view.syntheticWindow.ignoresMouseEvents);
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-preview-hook-') as directory:
             path = Path(directory)
             (path / 'test.m').write_text(source)
             subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',

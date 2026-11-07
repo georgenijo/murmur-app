@@ -1,5 +1,28 @@
 # Decisions Log
 
+## 2026-11-06: Keep Live Words ephemeral behind a generation-checked native adapter (#1000)
+
+**Decision:** Build the GPUI dictation preview as a separate murmur-ui consumer
+of durable consent, lifecycle and provisional results. Reuse shared overlay
+geometry, panel treatment, preferences and motion. Keep preview WebKit
+retirement on the same weak-deallocation barrier as the overlay, outside the
+native UI graph.
+
+**Rationale:** The Phase 0 native-parity route postpones the production host
+switch to Phase 2. A typed, bounded presentation boundary preserves privacy and
+stale-generation rejection without copying backend inference, settings or final
+delivery logic. Revision tickets recheck deferred first-frame work on main;
+consent epochs reject stale durable reads independently of recording ownership.
+
+**Status:** active (draft stack; host integration, Sol review and native
+acceptance remain open).
+
+**References:** #1000, #1011, PR #1028,
+[preview contract](../draft/gpui-dictation-preview.md),
+[overlay contract](../draft/gpui-overlay.md)
+
+---
+
 ## 2026-11-06: Share overlay geometry and keep the native port host-independent (#999)
 
 **Decision:** Move the existing pure overlay geometry and its characterization

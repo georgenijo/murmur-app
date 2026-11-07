@@ -3855,7 +3855,8 @@ impl Window {
     }
 
     /// Presents the most recently drawn frame if it hasn't been presented yet.
-    #[cfg(all(test, feature = "profiler"))]
+    /// Hosts may explicitly paint a hidden window before ordering it on screen,
+    /// without waiting for an occluded window's paused display link.
     pub fn present_if_needed(&mut self) {
         if self.needs_present.get() {
             self.present();
