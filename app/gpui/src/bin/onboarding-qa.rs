@@ -1,4 +1,8 @@
 //! Synthetic offscreen/native read-only QA. Never accesses application storage.
+//! MURMUR_ONBOARDING_HOLD_CANCEL=1 with MURMUR_ONBOARDING_STATE=cancel-error
+//! starts and retains CancelDownload in flight without any native input. The host
+//! stays in Cancelling… with Back, model choices and both fallbacks disabled.
+//! Synthetic/gallery-only: no real download, cancellation or storage services.
 use gpui::*;
 use murmur_ui::{
     onboarding::{Onboarding, fixtures, model::*},
@@ -42,6 +46,7 @@ fn main() {
         }
         let state = std::env::var("MURMUR_ONBOARDING_STATE").unwrap_or_else(|_| "welcome".into());
         let compact = state.starts_with("compact");
+        let fixture = Rc::new(fixtures::FixtureHost::default());
         let mut entity = None;
         let handle = cx
             .open_window(
@@ -79,9 +84,7 @@ fn main() {
                         apply(w, cx);
                         w.observe_window_appearance(apply).detach();
                     }
-                    let d = cx.new(|cx| {
-                        Onboarding::new(Rc::new(fixtures::FixtureHost::default()), w, cx)
-                    });
+                    let d = cx.new(|cx| Onboarding::new(fixture.clone(), w, cx));
                     entity = Some(d.clone());
                     cx.new(|cx| gpui_base::Root::new(d, w, cx))
                 },
@@ -149,6 +152,11 @@ fn main() {
                         s.model.snapshot = None;
                         s.model.pending = false;
                         s.model.problem = Some(Problem::Unavailable);
+                    }
+                    let hold_cancel = std::env::var_os("MURMUR_ONBOARDING_HOLD_CANCEL").is_some();
+                    fixture.hold_cancel.set(hold_cancel);
+                    if hold_cancel && state == "cancel-error" {
+                        s.fixture_cancel_download(cx);
                     }
                     if !headless {
                         s.follow(cx);

@@ -192,13 +192,42 @@ fn draw(cx: &mut VisualTestContext) {
     cx.update(|w, cx| w.draw(cx).clear(cx));
 }
 fn harness(cx: &mut TestAppContext) -> (Entity<History>, Rc<FixtureHost>, &mut VisualTestContext) {
+    harness_after(cx, None)
+}
+struct WithAfterHistory {
+    history: Entity<History>,
+    after: gpui::FocusHandle,
+}
+impl gpui::Render for WithAfterHistory {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        gpui::div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(gpui::div().flex_1().min_h_0().child(self.history.clone()))
+            .child(crate::Button::new("after-history", "After History").track_focus(&self.after))
+    }
+}
+fn harness_after(
+    cx: &mut TestAppContext,
+    after: Option<gpui::FocusHandle>,
+) -> (Entity<History>, Rc<FixtureHost>, &mut VisualTestContext) {
     cx.update(crate::init);
     let host = Rc::new(FixtureHost::default());
     let mut entity = None;
     let (_, cx) = cx.add_window_view(|w, cx| {
         let d = cx.new(|cx| History::new(host.clone(), w, cx));
         entity = Some(d.clone());
-        gpui_base::Root::new(d, w, cx)
+        let view: gpui::AnyView = if let Some(after) = after {
+            cx.new(|_| WithAfterHistory { history: d, after }).into()
+        } else {
+            d.into()
+        };
+        gpui_base::Root::new(view, w, cx)
     });
     let entity = entity.unwrap();
     entity.update(cx, |s, cx| {
@@ -870,6 +899,122 @@ fn tab_row_actions_reveal_forward_reverse_and_unrendered_rows(cx: &mut TestAppCo
             })
         });
     }
+}
+
+/// Wheel scrolling may unmount a focused row without changing window focus.
+#[gpui::test]
+fn focused_row_remount_does_not_reveal_again(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| {
+        w.resize(gpui::size(gpui::px(880.), gpui::px(720.)));
+        w.bounds_changed(cx);
+        e.update(cx, |s, cx| {
+            s.scroll.scroll_to_item(30, gpui::ScrollStrategy::Top);
+            cx.notify();
+        });
+    });
+    draw(cx);
+    let key = e.read_with(cx, |s, _| s.model.entries[s.model.matches[30]].key);
+    cx.update(|w, cx| {
+        let focus = e.read(cx).row_focus[&key].clone();
+        w.focus(&focus, cx);
+    });
+    draw(cx);
+    draw(cx);
+    e.update(cx, |s, cx| {
+        s.scroll.scroll_to_item(50, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    assert!(!e.read_with(cx, |s, _| s.rendered.contains(&30)));
+    cx.update(|w, cx| assert!(e.read(cx).row_focus[&key].is_focused(w)));
+    let partial = -(super::ROW_HEIGHT * 30. + gpui::px(90.));
+    e.update(cx, |s, cx| {
+        s.scroll
+            .0
+            .borrow()
+            .base_handle
+            .set_offset(gpui::point(gpui::px(0.), partial));
+        cx.notify();
+    });
+    draw(cx);
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.rendered.contains(&30)));
+    assert_eq!(
+        e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y),
+        partial,
+        "unchanged focus must not jump when a clipped row remounts"
+    );
+    // A real focus exit and re-entry must still reveal that same clipped action.
+    cx.update(|w, cx| w.focus(&e.read(cx).search.read(cx).focus_handle(cx), cx));
+    draw(cx);
+    cx.update(|w, cx| {
+        let focus = e.read(cx).row_focus[&key].clone();
+        w.focus(&focus, cx);
+    });
+    draw(cx);
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y) > partial);
+}
+
+#[gpui::test]
+fn fresh_reverse_entry_wraps_to_unrendered_last_row(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| {
+        w.resize(gpui::size(gpui::px(880.), gpui::px(720.)));
+        w.bounds_changed(cx);
+        w.focus(&e.read(cx).search.read(cx).focus_handle(cx), cx);
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.rendered.end < 199));
+    cx.simulate_keystrokes("shift-tab");
+    draw(cx);
+    draw(cx);
+    assert_row_action_visible(&e, 199, cx);
+    cx.simulate_keystrokes("shift-tab");
+    draw(cx);
+    assert_row_action_visible(&e, 198, cx);
+    cx.simulate_keystrokes("tab tab");
+    draw(cx);
+    cx.update(|w, cx| assert!(e.read(cx).search.read(cx).focus_handle(cx).is_focused(w)));
+}
+
+#[gpui::test]
+fn fresh_reverse_entry_from_control_after_list_reaches_last_row(cx: &mut TestAppContext) {
+    let after = cx.update(|cx| cx.focus_handle());
+    let (e, _, cx) = harness_after(cx, Some(after.clone()));
+    cx.update(|w, cx| {
+        w.resize(gpui::size(gpui::px(880.), gpui::px(720.)));
+        w.bounds_changed(cx);
+        w.focus(&after, cx);
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.rendered.end < 199));
+    cx.simulate_keystrokes("shift-tab");
+    draw(cx);
+    draw(cx);
+    assert_row_action_visible(&e, 199, cx);
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    cx.update(|w, _| assert!(after.is_focused(w)));
+}
+
+fn assert_row_action_visible(e: &Entity<History>, position: usize, cx: &mut VisualTestContext) {
+    cx.update(|w, cx| {
+        e.read_with(cx, |s, _| {
+            let key = s.model.entries[s.model.matches[position]].key;
+            assert!(s.row_focus.get(&key).is_some_and(|focus| focus.is_focused(w)),
+                "expected transcript {} action to own focus; boundary focused={}, focused rows={:?}", position + 1,
+                s.list_end_focus.is_focused(w),
+                s.row_focus.iter().filter_map(|(key, focus)| focus.is_focused(w).then_some(*key)).collect::<Vec<_>>());
+            assert!(s.rendered.contains(&position));
+            let scroll = s.scroll.0.borrow();
+            let top = super::ROW_HEIGHT * position as f32 + scroll.base_handle.offset().y;
+            assert!(top >= -gpui::px(1.));
+            assert!(top + super::ROW_HEIGHT <= scroll.base_handle.bounds().size.height + gpui::px(1.));
+        });
+    });
 }
 
 /// No explicit drain/receive after setup: every response must travel through

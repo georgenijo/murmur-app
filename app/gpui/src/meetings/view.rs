@@ -122,6 +122,7 @@ impl Meetings {
                                     .child(crate::data_components::focus_reveal(
                                         state.read(cx).focus_handle(cx),
                                         Some(self.detail_scroll.clone()),
+                                        None,
                                         w,
                                         cx,
                                     ))

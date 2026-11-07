@@ -9,7 +9,7 @@ mod tests;
 use crate::{
     Button, ButtonIntent, ButtonSize, Choice, ChoiceKind, Choices, SelectionChanged, TextField,
     Toggle,
-    data_components::Progress,
+    data_components::{FocusRevealState, Progress},
     field::{InputEvent, TextFieldState},
     tokens::{self, Palette},
 };
@@ -84,6 +84,8 @@ pub struct History {
     detail_pages: DetailPages,
     scroll: UniformListScrollHandle,
     row_focus: BTreeMap<u64, FocusHandle>,
+    row_reveal: BTreeMap<u64, FocusRevealState>,
+    list_end_focus: FocusHandle,
     #[cfg(any(test, feature = "gallery"))]
     pub fixture_clock: Option<Clock>,
     #[cfg(any(test, feature = "gallery"))]
@@ -148,6 +150,8 @@ impl History {
             detail_pages: DetailPages::default(),
             scroll: UniformListScrollHandle::new(),
             row_focus: BTreeMap::new(),
+            row_reveal: BTreeMap::new(),
+            list_end_focus: cx.focus_handle().tab_stop(true),
             #[cfg(any(test, feature = "gallery"))]
             fixture_clock: None,
             #[cfg(any(test, feature = "gallery"))]
@@ -239,6 +243,7 @@ impl History {
         }
         self.model.detach();
         self.row_focus.clear();
+        self.row_reveal.clear();
         self.filters_open = false;
         self.detail_page = 0;
         self.detail_pages = DetailPages::default();
@@ -366,6 +371,8 @@ impl History {
         self.model.refresh();
         self.row_focus
             .retain(|key, _| self.model.entries.iter().any(|e| e.key == *key));
+        self.row_reveal
+            .retain(|key, _| self.row_focus.contains_key(key));
         self.authority.sync(&self.model);
         let count = self.model.matches.len();
         let mut choices = vec![
@@ -539,6 +546,7 @@ impl History {
         cx.notify();
     }
     fn row_action_focus(&mut self, key: u64, cx: &mut Context<Self>) -> FocusHandle {
+        self.row_reveal.entry(key).or_default();
         self.row_focus
             .entry(key)
             .or_insert_with(|| cx.focus_handle())
@@ -564,19 +572,28 @@ impl History {
             }
             (Some(i), true) => Some(i - 1),
             (Some(i), false) if i + 1 < self.model.matches.len() => Some(i + 1),
+            (Some(_), false) => {
+                // Skip the reverse-entry boundary without adding a Tab press.
+                w.focus(&self.list_end_focus, cx);
+                w.focus_next(cx);
+                return true;
+            }
             (None, false) if self.focus.is_focused(w) && !self.model.matches.is_empty() => Some(0),
             _ => None,
         };
         let Some(position) = next else {
             return false;
         };
+        self.focus_row_action(position, w, cx);
+        true
+    }
+    fn focus_row_action(&mut self, position: usize, w: &mut Window, cx: &mut Context<Self>) {
         let key = self.model.entries[self.model.matches[position]].key;
         let focus = self.row_action_focus(key, cx);
         self.scroll
             .scroll_to_item(position, ScrollStrategy::Nearest);
         w.focus(&focus, cx);
         cx.notify();
-        true
     }
     fn list_key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) {
         if e.prefer_character_input
@@ -737,6 +754,7 @@ impl History {
                                 .caption("Show more / actions")
                                 .size(ButtonSize::ExtraSmall)
                                 .track_focus(&action_focus)
+                                .with_focus_reveal(self.row_reveal[&key].clone())
                                 .with_scroll_parent(Some(&scroll_parent))
                                 .on_click(cx.listener(
                                     move |s, _, w, cx| {
@@ -925,6 +943,23 @@ impl Drop for History {
 }
 impl Render for History {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Root's tab order includes a stable boundary after the virtualized
+        // list. Resolve it before building rows, so reverse entry scrolls and
+        // focuses the real tail even without a window-activation notification.
+        if self.list_end_focus.is_focused(w)
+            && self.model.detail.is_none()
+            && !self.model.loading
+            && let Some(position) = self.model.matches.len().checked_sub(1)
+        {
+            self.focus_row_action(position, w, cx);
+        }
+        // Observe blur outside the virtualized rows. A focused row disappearing
+        // is not a focus change; another control receiving focus is.
+        for (key, state) in &self.row_reveal {
+            if !self.row_focus[key].is_focused(w) {
+                state.reset();
+            }
+        }
         let p = Palette::get(cx);
         let mut root = div()
             .id("history-root")
@@ -1148,6 +1183,13 @@ impl Render for History {
                     .track_scroll(&self.scroll)
                     .size_full(),
                 ),
+        )
+        .child(
+            div()
+                .id("history-list-end")
+                .track_focus(&self.list_end_focus)
+                .absolute()
+                .size_0(),
         )
     }
 }

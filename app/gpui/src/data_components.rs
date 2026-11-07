@@ -5,7 +5,7 @@ use crate::{
     tokens::{self, Palette},
 };
 use gpui::{prelude::*, *};
-use std::collections::BTreeSet;
+use std::{cell::Cell, collections::BTreeSet, rc::Rc};
 
 #[derive(Clone)]
 pub struct TabChanged(pub usize);
@@ -215,28 +215,41 @@ pub(crate) fn reveal_bounds<'a>(
     changed
 }
 
+/// Keep this in the owning view for virtualized controls. Element keyed state
+/// lasts only while the control is rendered; it cannot track focus across remounts.
+/// The owner resets this on blur even when the control is not rendered.
+#[derive(Clone, Default)]
+pub(crate) struct FocusRevealState(Rc<Cell<bool>>);
+impl FocusRevealState {
+    pub(crate) fn reset(&self) {
+        self.0.set(false);
+    }
+}
+
 /// Paint-time bounds include wrapping and the current scroll offsets. Reveal
 /// only on focus entry: wheel scrolling must remain possible while focused.
 pub(crate) fn focus_reveal<P: IntoIterator<Item = ScrollHandle>>(
     focus: FocusHandle,
     parents: P,
+    retained: Option<FocusRevealState>,
     w: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<P> {
     let parents: Vec<_> = parents.into_iter().collect();
-    let state = w.use_keyed_state(
-        SharedString::from(format!("focus-reveal-{focus:?}")),
-        cx,
-        |_, _| false,
-    );
+    let state = retained.unwrap_or_else(|| {
+        w.use_keyed_state(
+            SharedString::from(format!("focus-reveal-{focus:?}")),
+            cx,
+            |_, _| FocusRevealState::default(),
+        )
+        .read(cx)
+        .clone()
+    });
     canvas(
-        move |bounds, w, cx| {
+        move |bounds, w, _| {
             let focused = focus.is_focused(w);
-            let entered = state.update(cx, |was, _| {
-                let entered = focused && !*was;
-                *was = focused;
-                entered
-            });
+            let was_focused = state.0.replace(focused);
+            let entered = focused && !was_focused;
             if entered && reveal_bounds(bounds.dilate(px(1.)), &parents) {
                 w.on_next_frame(|w, _| w.refresh());
             }
@@ -588,7 +601,7 @@ impl Render for DetailList {
             self.scroll.scroll_to_item(self.active);
         }
         self.focus_was_inside = focused;
-        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), w, cx);
+        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), None, w, cx);
         let p = Palette::get(cx);
         div()
             .id("bounded-detail-list")
@@ -858,7 +871,7 @@ impl Chart {
 }
 impl Render for Chart {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), w, cx);
+        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), None, w, cx);
         let p = Palette::get(cx);
         let max = self
             .points

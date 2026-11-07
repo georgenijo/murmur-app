@@ -33,3 +33,7 @@ preserving the existing transition-only `on_hover` API. Delivered event position
 let the overlay distinguish pointer movement from resize-generated exits.
 Only `src/`, `resources/`, the build script, README and Apache license are copied;
 no Zed GPL crate, examples, benchmark or upstream test asset is included.
+
+`component-unfocused-tab.patch` records the shared Root correction for unhandled
+Tab entry from a window with no focused element; it preserves activation focus
+and the existing focus-trap traversal policy.

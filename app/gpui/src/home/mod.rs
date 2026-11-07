@@ -338,7 +338,11 @@ impl Render for Home {
             .p(px(8.))
             .gap(px(8.));
         if !collapsed {
-            nav = nav.child(div().font_weight(FontWeight::SEMIBOLD).child("Murmur"));
+            nav = nav.child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(text!("Murmur")),
+            );
         }
         for (id, label, short, d) in [
             ("nav-home", "Home", "H", Destination::Home),
@@ -361,7 +365,7 @@ impl Render for Home {
                 div()
                     .text_color(p.muted)
                     .text_size(px(12.))
-                    .child("Dictation stays on this Mac."),
+                    .child(text!("Dictation stays on this Mac.")),
             );
         }
         let inc = cx.entity();
@@ -484,7 +488,7 @@ impl Render for Home {
                     .flex()
                     .flex_wrap()
                     .gap(px(8.))
-                    .child(message)
+                    .child(text!(message))
                     .child(
                         Button::new("permission-settings", "Open System Settings…")
                             .disabled(self.model.pending)
@@ -615,7 +619,7 @@ impl Render for Home {
                                         .text_size(px(12.))
                                         .line_height(px(16.))
                                         .text_color(p.muted)
-                                        .child(hint),
+                                        .child(text!(hint)),
                                 ),
                         ),
                 )
@@ -626,8 +630,8 @@ impl Render for Home {
                         .flex_wrap()
                         .items_center()
                         .gap(px(8.))
-                        .child(format!(
-                            "This month  {} words · {} {}",
+                        .child(text!(format!(
+                            "This month: {} words, {} {}",
                             s.words_this_month,
                             s.recordings_this_month,
                             if s.recordings_this_month == 1 {
@@ -635,7 +639,7 @@ impl Render for Home {
                             } else {
                                 "dictations"
                             }
-                        ))
+                        )))
                         .child(
                             self.button("insights", "View insights", Destination::Insights, cx)
                                 .size(ButtonSize::Compact)
@@ -665,7 +669,7 @@ impl Render for Home {
                         .border_color(p.border)
                         .rounded(tokens::CARD_RADIUS)
                         .child(title)
-                        .child(detail)
+                        .child(text!(detail))
                         .child(
                             Button::new("hint-action", action)
                                 .disabled(self.model.pending)
@@ -703,7 +707,7 @@ impl Render for Home {
                             .flex()
                             .flex_wrap()
                             .gap(px(8.))
-                            .child(format!("Get more from Murmur · {count}/5"))
+                            .child(text!(format!("Get more from Murmur · {count}/5")))
                             .child(
                                 Button::new("dismiss-checklist", "Dismiss Get more from Murmur")
                                     .with_scroll_parent(Some(&self.scroll))
@@ -718,7 +722,7 @@ impl Render for Home {
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Try what is ready when you are"),
+                            .child(text!("Try what is ready when you are")),
                     );
                 for (id, title, detail, action) in ITEMS {
                     let e = cx.entity();
@@ -733,10 +737,28 @@ impl Render for Home {
                                 div()
                                     .flex_1()
                                     .min_w(px(0.))
-                                    .child(format!("{}{}", if done { "✓ " } else { "" }, title))
                                     .child(
-                                        div().text_size(px(12.)).text_color(p.muted).child(detail),
-                                    ),
+                                        div()
+                                            .id(SharedString::from(format!("checklist-title-{id}")))
+                                            .role(Role::Label)
+                                            .aria_value(format!(
+                                                "{title}: {}",
+                                                if done { "Complete" } else { "Not completed" }
+                                            ))
+                                            .child(format!(
+                                                "{}{}",
+                                                if done { "✓ " } else { "" },
+                                                title
+                                            )),
+                                    )
+                                    .child(div().text_size(px(12.)).text_color(p.muted).child(
+                                        text!(
+                                            id = SharedString::from(format!(
+                                                "checklist-detail-{id}"
+                                            )),
+                                            detail
+                                        ),
+                                    )),
                             )
                             .child(
                                 Button::new(
@@ -770,7 +792,7 @@ impl Render for Home {
                 );
             }
         } else {
-            content = content.child("Getting ready…");
+            content = content.child(text!("Getting ready…"));
         }
         content = content.child(div().flex_1().min_h(px(120.)).child(self.history.clone()));
         div()

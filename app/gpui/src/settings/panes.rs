@@ -28,7 +28,7 @@ impl Settings {
                     div()
                         .text_size(px(12.))
                         .line_height(px(18.))
-                        .child($value)
+                        .child(gpui::text!(id = ("settings-prose", out.len()), $value))
                         .into_any_element(),
                 )
             };

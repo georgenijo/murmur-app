@@ -291,6 +291,7 @@ impl Render for Choices {
             .child(crate::data_components::focus_reveal(
                 self.focus.clone(),
                 self.scroll_parent.clone(),
+                None,
                 window,
                 cx,
             ))
