@@ -722,6 +722,26 @@ mod ax {
         click(cx, named(&t, "Cancel"));
     }
     #[gpui::test]
+    fn mode_name_matching_a_settings_row_keeps_both_accessible_text_nodes(cx: &mut TestAppContext) {
+        let (e, cx) = harness(cx, 4);
+        activate(cx, "Create mode");
+        e.update(cx, |s, cx| {
+            s.modes.update(cx, |m, cx| {
+                m.controller.model.snapshot.as_mut().unwrap().settings["modes"][0]["name"] =
+                    serde_json::json!("Custom mode");
+                cx.notify();
+            })
+        });
+        let t = tree(cx);
+        assert_eq!(
+            t.nodes
+                .iter()
+                .filter(|(_, n)| n.role() == gpui::Role::Label && n.value() == Some("Custom mode"))
+                .count(),
+            2
+        );
+    }
+    #[gpui::test]
     fn modes_create_edit_policies_and_bindings(cx: &mut TestAppContext) {
         let (e, cx) = harness(cx, 4);
         let t = tree(cx);

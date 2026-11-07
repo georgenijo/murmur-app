@@ -61,11 +61,16 @@ fn card(p: Palette) -> Div {
         .bg(p.tint_raised)
         .shadow(p.card_shadow())
 }
-fn copy(title: impl Into<SharedString>, description: impl Into<SharedString>, p: Palette) -> Div {
+fn copy(
+    scope: &'static str,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    p: Palette,
+) -> Div {
     let title = title.into();
     let description = description.into();
-    let title_id = SharedString::from(format!("mode-row-title-{title}"));
-    let description_id = SharedString::from(format!("mode-row-description-{title}"));
+    let title_id = SharedString::from(format!("mode-row-title-{scope}"));
+    let description_id = SharedString::from(format!("mode-row-description-{scope}"));
     div()
         .flex_1()
         .min_w_0()
@@ -541,6 +546,7 @@ impl Render for Modes {
                 .child(
                     row(p)
                         .child(copy(
+                            "custom-mode",
                             "Custom mode",
                             "Start from your global settings, or duplicate a selected mode",
                             p,
@@ -558,6 +564,7 @@ impl Render for Modes {
                 .child(
                     row(p)
                         .child(copy(
+                            "mode-files",
                             "Import and export",
                             "Share custom modes with their app and site bindings as a JSON file",
                             p,
@@ -642,6 +649,7 @@ impl Render for Modes {
             let mut selected_card = card(p).child(
                 row(p)
                     .child(copy(
+                        "selected-mode",
                         selected["name"]
                             .as_str()
                             .unwrap_or("Untitled mode")
@@ -743,7 +751,7 @@ impl Render for Modes {
                     }),
                 );
             } else {
-                selected_card = selected_card.child(row(p).child(copy("Customize", "Built-in modes are read-only. Duplicate one to change its style, model, language, or vocabulary.", p)));
+                selected_card = selected_card.child(row(p).child(copy("mode-readonly", "Customize", "Built-in modes are read-only. Duplicate one to change its style, model, language, or vocabulary.", p)));
             }
             body = body.child(group("Selected mode", selected_card));
             let mut applies = card(p);
@@ -752,6 +760,7 @@ impl Render for Modes {
                 applies = applies.child(
                     row(p)
                         .child(copy(
+                            "bound-apps",
                             "Bound applications",
                             "Add an app, then choose its Mode here.",
                             p,
@@ -796,7 +805,7 @@ impl Render for Modes {
             let enabled = s.settings["siteModeLookupEnabled"] == true;
             let owner = cx.entity();
             applies=applies.child(row(p)
-                .child(copy("Browser sites", "Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.", p))
+                .child(copy("browser-sites", "Browser sites", "Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.", p))
                 .child(crate::Toggle::new("site-activation","Use browser site mode rules",enabled).with_scroll_parent(&self.scroll).disabled(self.controller.model.pending).on_change(move |v,_,cx|owner.update(cx,|s,cx|s.patch(json!({"siteModeLookupEnabled":*v}),cx)))));
             if enabled {
                 self.site
@@ -809,6 +818,7 @@ impl Render for Modes {
                         .border_b_1()
                         .border_color(p.hairline)
                         .child(copy(
+                            "add-site",
                             "Add a site rule",
                             format!(
                                 "Use {} on an exact host in one browser",
@@ -983,6 +993,7 @@ impl Render for Modes {
                 applies = applies.child(
                     row(p)
                         .child(copy(
+                            "current-site",
                             "Current site",
                             "Detects the frontmost browser host within five seconds",
                             p,
