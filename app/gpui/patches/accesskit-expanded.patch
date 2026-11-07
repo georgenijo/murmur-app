@@ -1,0 +1,100 @@
+diff --git a/src/event.rs b/src/event.rs
+index 5a1cdc41..d1abc393 100644
+--- a/src/event.rs
++++ b/src/event.rs
+@@ -137,6 +137,22 @@ pub(crate) fn focus_event(node_id: NodeId) -> QueuedEvent {
+     }
+ }
+ 
++fn expansion_notification(
++    old: Option<bool>,
++    new: Option<bool>,
++) -> Option<&'static NSAccessibilityNotificationName> {
++    if old == new {
++        return None;
++    }
++    new.map(|expanded| unsafe {
++        if expanded {
++            NSAccessibilityRowExpandedNotification
++        } else {
++            NSAccessibilityRowCollapsedNotification
++        }
++    })
++}
++
+ pub(crate) struct EventGenerator {
+     context: Rc<Context>,
+     events: Vec<QueuedEvent>,
+@@ -259,6 +275,14 @@ impl TreeChangeHandler for EventGenerator {
+         let node_id = new_node.id();
+         let old_wrapper = NodeWrapper(old_node);
+         let new_wrapper = NodeWrapper(new_node);
++        if let Some(notification) =
++            expansion_notification(old_node.data().is_expanded(), new_node.data().is_expanded())
++        {
++            self.events.push(QueuedEvent::Generic {
++                node_id,
++                notification,
++            });
++        }
+         if old_wrapper.title() != new_wrapper.title() {
+             self.events.push(QueuedEvent::Generic {
+                 node_id,
+@@ -328,3 +352,30 @@ impl TreeChangeHandler for EventGenerator {
+         self.events.push(QueuedEvent::NodeDestroyed(node.id()));
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn expanded_notifications_follow_state_changes_only() {
++        unsafe {
++            assert_eq!(
++                expansion_notification(Some(false), Some(true)),
++                Some(NSAccessibilityRowExpandedNotification)
++            );
++            assert_eq!(
++                expansion_notification(Some(true), Some(false)),
++                Some(NSAccessibilityRowCollapsedNotification)
++            );
++            assert_eq!(
++                expansion_notification(None, Some(true)),
++                Some(NSAccessibilityRowExpandedNotification)
++            );
++        }
++        for state in [None, Some(false), Some(true)] {
++            assert!(expansion_notification(state, state).is_none());
++            assert!(expansion_notification(state, None).is_none());
++        }
++    }
++}
+diff --git a/src/node.rs b/src/node.rs
+index e23f21ec..14cc0067 100644
+--- a/src/node.rs
++++ b/src/node.rs
+@@ -1186,6 +1186,12 @@ declare_class!(
+                 .unwrap_or(false)
+         }
+ 
++        #[method(isAccessibilityExpanded)]
++        fn is_expanded(&self) -> bool {
++            self.resolve(|node| node.data().is_expanded().unwrap_or(false))
++                .unwrap_or(false)
++        }
++
+         // We discovered through experimentation that when mixing the newer
+         // NSAccessibility protocols with the older informal protocol,
+         // the platform uses both protocols to discover which actions are
+@@ -1223,6 +1229,9 @@ declare_class!(
+         #[method(isAccessibilitySelectorAllowed:)]
+         fn is_selector_allowed(&self, selector: Sel) -> bool {
+             self.resolve(|node| {
++                if selector == sel!(isAccessibilityExpanded) {
++                    return node.data().is_expanded().is_some();
++                }
+                 if selector == sel!(setAccessibilityFocused:) {
+                     return node.is_focusable(&filter);
+                 }

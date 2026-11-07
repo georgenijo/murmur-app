@@ -1210,6 +1210,12 @@ declare_class!(
                 .unwrap_or(false)
         }
 
+        #[method(isAccessibilityExpanded)]
+        fn is_expanded(&self) -> bool {
+            self.resolve(|node| node.data().is_expanded().unwrap_or(false))
+                .unwrap_or(false)
+        }
+
         // We discovered through experimentation that when mixing the newer
         // NSAccessibility protocols with the older informal protocol,
         // the platform uses both protocols to discover which actions are
@@ -1247,6 +1253,9 @@ declare_class!(
         #[method(isAccessibilitySelectorAllowed:)]
         fn is_selector_allowed(&self, selector: Sel) -> bool {
             self.resolve(|node| {
+                if selector == sel!(isAccessibilityExpanded) {
+                    return node.data().is_expanded().is_some();
+                }
                 if selector == sel!(setAccessibilityFocused:) {
                     return node.is_focusable(&filter);
                 }

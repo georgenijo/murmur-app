@@ -456,6 +456,38 @@ fn display_preferences_feed_the_actual_animation_engine(cx: &mut TestAppContext)
     });
 }
 
+#[gpui::test]
+fn native_appearance_snapshot_updates_theme_and_invalidates_only_on_change(
+    cx: &mut TestAppContext,
+) {
+    use gpui_component::{ActiveTheme, ThemeMode};
+    cx.update(crate::init);
+    cx.update(|cx| {
+        assert!(preferences::apply_snapshot(0, cx));
+        let light = tokens::Palette::get(cx);
+        assert_eq!(cx.theme().mode, ThemeMode::Light);
+        assert!(!preferences::apply_snapshot(0, cx));
+        assert!(preferences::apply_snapshot(8, cx));
+        let dark = tokens::Palette::get(cx);
+        assert_eq!(cx.theme().mode, ThemeMode::Dark);
+        assert_ne!(light.surface, dark.surface);
+        assert_ne!(light.text, dark.text);
+        assert_ne!(light.raised, dark.raised);
+        assert_ne!(light.accent, dark.accent);
+        assert!(!preferences::apply_snapshot(8, cx));
+        // Accessibility changes keep the selected appearance and still redraw.
+        assert!(preferences::apply_snapshot(8 | 7, cx));
+        assert_eq!(tokens::Palette::get(cx).surface, dark.surface);
+        assert_eq!(tokens::Palette::get(cx).border, dark.text);
+        assert!(cx.reduce_motion());
+        assert!(!preferences::apply_snapshot(8 | 7, cx));
+        assert!(preferences::apply_snapshot(0, cx));
+        assert_eq!(cx.theme().mode, ThemeMode::Light);
+        assert_eq!(tokens::Palette::get(cx).surface, light.surface);
+        assert!(!cx.reduce_motion());
+    });
+}
+
 #[cfg(feature = "a11y-tests")]
 mod accessibility {
     use super::*;
