@@ -662,6 +662,40 @@ fn calibration_save_cancel_and_destructive_confirmation_use_explicit_actions(
     });
     draw(cx);
     assert_eq!(host.state.borrow().settings["overlayVerticalOffset"], 4);
+    e.update(cx, |s, cx| {
+        s.action(
+            Action::Calibration {
+                offset: 0,
+                finish: true,
+            },
+            false,
+            cx,
+        )
+    });
+    assert_eq!(host.state.borrow().settings["overlayVerticalOffset"], 0);
+    host.state.borrow_mut().runtime.calibration = Some(super::model::Calibration {
+        requested: 0,
+        applied: 0,
+        min: -2,
+        max: 2,
+    });
+    e.update(cx, |s, cx| {
+        s.calibration = Some(4);
+        s.action(
+            Action::Calibration {
+                offset: 4,
+                finish: false,
+            },
+            false,
+            cx,
+        );
+    });
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.model.runtime().calibration.unwrap().applied),
+        2
+    );
+    e.update(cx, |s, cx| s.action(Action::CancelCalibration, false, cx));
     let before = host.actions.borrow().len();
     e.update(cx, |s, cx| s.action(Action::ResetStatistics, true, cx));
     assert_eq!(host.actions.borrow().len(), before);

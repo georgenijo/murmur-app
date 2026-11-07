@@ -46,7 +46,9 @@ impl Settings {
                     Destination::Checklist
                 );
                 if advanced {
-                    if let Some(offset) = self.calibration {
+                    if let Some(requested) = self.calibration {
+                        let offset = r.calibration.map(|c| c.applied).unwrap_or(requested);
+                        let (min, max) = r.calibration.map(|c| (c.min, c.max)).unwrap_or((-12, 12));
                         text!(format!("Overlay preview: {offset:+} pt"));
                         for (id, label, next) in [
                             ("cal-up", "Move overlay up one point", offset - 1),
@@ -56,7 +58,7 @@ impl Settings {
                             let e = cx.entity();
                             out.push(
                                 Button::new(id, label)
-                                    .disabled(self.model.pending || !(-12..=12).contains(&next))
+                                    .disabled(self.model.pending || !(min..=max).contains(&next))
                                     .on_click(move |_, _, cx| {
                                         e.update(cx, |s, cx| {
                                             s.calibration = Some(next);
@@ -113,6 +115,16 @@ impl Settings {
                                     })
                                 })
                                 .into_any_element(),
+                        );
+                        action!(
+                            "reset-overlay",
+                            "Reset overlay position",
+                            Action::Calibration {
+                                offset: 0,
+                                finish: true
+                            },
+                            false,
+                            settings["overlayVerticalOffset"] == 0
                         );
                     }
                     action!(

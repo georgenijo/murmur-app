@@ -81,8 +81,16 @@ impl Update {
         }
     }
 }
+#[derive(Clone, Copy)]
+pub struct Calibration {
+    pub requested: i64,
+    pub applied: i64,
+    pub min: i64,
+    pub max: i64,
+}
 #[derive(Clone, Default)]
 pub struct Runtime {
+    pub calibration: Option<Calibration>,
     pub recording: bool,
     pub internal_build: bool,
     pub english_only: bool,
@@ -146,6 +154,13 @@ pub fn valid(s: &Snapshot) -> bool {
         super::schema::ROWS.iter().find(|r| r.key == "model").is_some_and(|r| matches!(r.kind, super::schema::Kind::Choice(options) if options.iter().any(|(v,_)| *v == id)))
     }));
     sources
+        && r.calibration.is_none_or(|c| {
+            (-12..=12).contains(&c.requested)
+                && (-12..=12).contains(&c.min)
+                && (-12..=12).contains(&c.max)
+                && c.min <= c.max
+                && (c.min..=c.max).contains(&c.applied)
+        })
         && disclosure
         && devices
         && models

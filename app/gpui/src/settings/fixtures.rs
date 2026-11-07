@@ -138,6 +138,26 @@ impl Host for FixtureHost {
                             next.runtime.lab_progress = None;
                         }
                         Action::ClearReports => next.runtime.reports.clear(),
+                        Action::CancelCalibration => next.runtime.calibration = None,
+                        Action::Calibration {
+                            offset,
+                            finish: false,
+                        } => {
+                            if !(-12..=12).contains(offset) {
+                                return Err(Problem::Invalid);
+                            }
+                            let (min, max) = next
+                                .runtime
+                                .calibration
+                                .map(|c| (c.min, c.max))
+                                .unwrap_or((-12, 12));
+                            next.runtime.calibration = Some(Calibration {
+                                requested: *offset,
+                                applied: (*offset).clamp(min, max),
+                                min,
+                                max,
+                            });
+                        }
                         Action::Calibration {
                             offset,
                             finish: true,
@@ -146,6 +166,7 @@ impl Host for FixtureHost {
                                 return Err(Problem::Invalid);
                             }
                             next.settings["overlayVerticalOffset"] = json!(offset);
+                            next.runtime.calibration = None;
                             source = Some("dictation-settings");
                         }
                         _ => (),
