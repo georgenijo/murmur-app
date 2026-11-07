@@ -126,6 +126,15 @@ fn main() {
                 })
             })
             .expect("initialize diagnostics");
+        if !headless {
+            // Inventory finalizes and seals the dyld observer. Do that at quit,
+            // after AppKit launch, text input and AX work, never in the launch
+            // callback (which precedes AppKit's menu customization).
+            cx.on_app_quit(|_| {
+                murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
+                async {}
+            }).detach();
+        }
         if !headless && std::env::var_os("MURMUR_DIAGNOSTICS_LIVE").is_some() {
             // Explicit synthetic live stream for the GUI QA owner. Goldens stay
             // deterministic. Updates coalesce under backpressure, at two-second
@@ -140,11 +149,8 @@ fn main() {
         if !headless && std::env::var_os("MURMUR_DIAGNOSTICS_NATIVE_SMOKE").is_some() {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(std::time::Duration::from_secs(20)).await;
-                murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
                 cx.update(|cx| cx.quit());
             }).detach();
-        } else if !headless {
-            murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
         }
         if let Some(path) = output {
             cx.spawn(async move |cx| {

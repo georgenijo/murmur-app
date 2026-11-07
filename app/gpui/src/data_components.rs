@@ -175,6 +175,68 @@ fn reveal_axis(start: Pixels, end: Pixels, low: Pixels, high: Pixels) -> Pixels 
         px(0.)
     }
 }
+/// Shared immediate reveal, also used by table arrow navigation. No animation,
+/// so keyboard focus obeys Reduced Motion without an extra motion path.
+pub(crate) fn reveal_bounds(bounds: Bounds<Pixels>, scroll: &ScrollHandle) -> bool {
+    let viewport = scroll.bounds();
+    let old = scroll.offset();
+    let next = point(
+        old.x
+            + reveal_axis(
+                bounds.left(),
+                bounds.right(),
+                viewport.left(),
+                viewport.right(),
+            ),
+        old.y
+            + reveal_axis(
+                bounds.top(),
+                bounds.bottom(),
+                viewport.top(),
+                viewport.bottom(),
+            ),
+    );
+    if next == old {
+        return false;
+    }
+    scroll.set_offset(next);
+    true
+}
+
+/// Paint-time bounds include wrapping and the current scroll offsets. Reveal
+/// only on focus entry: wheel scrolling must remain possible while focused.
+pub(crate) fn focus_reveal(
+    focus: FocusHandle,
+    parent: Option<ScrollHandle>,
+    w: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement + use<> {
+    let state = w.use_keyed_state(
+        SharedString::from(format!("focus-reveal-{focus:?}")),
+        cx,
+        |_, _| false,
+    );
+    canvas(
+        move |bounds, w, cx| {
+            let focused = focus.is_focused(w);
+            let entered = state.update(cx, |was, _| {
+                let entered = focused && !*was;
+                *was = focused;
+                entered
+            });
+            if entered
+                && let Some(parent) = &parent
+                && reveal_bounds(bounds.dilate(px(1.)), parent)
+            {
+                w.on_next_frame(|w, _| w.refresh());
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_full()
+}
+
 impl RenderOnce for DataTable {
     fn render(self, w: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = Palette::get(cx);
@@ -188,6 +250,11 @@ impl RenderOnce for DataTable {
         });
         let scroll = navigation.read(cx).scroll.clone();
         let parent = self.scroll_parent;
+        let focus_entry = w.use_keyed_state(
+            SharedString::from(format!("table-entry-{:?}", self.id)),
+            cx,
+            |_, _| false,
+        );
         let focus = navigation.read(cx).focus.clone();
         let table_focused = focus.is_focused(w);
         let row_count = self.rows.len() + 1;
@@ -197,6 +264,7 @@ impl RenderOnce for DataTable {
             s.cells.resize(row_count, vec![]);
         });
         let active = (navigation.read(cx).row, navigation.read(cx).column);
+        let action_parent = parent.clone();
         let mut actions = self.actions.into_iter();
         let header = div()
             .on_children_prepainted({
@@ -231,6 +299,27 @@ impl RenderOnce for DataTable {
         // Keep the border outside the scroll viewport: ScrollHandle measures
         // content against its full bounds, including any border on that element.
         div()
+            .relative()
+            .on_children_prepainted({
+                let navigation = navigation.clone();
+                let parent = parent.clone();
+                move |_, w, cx| {
+                    let s = navigation.read(cx);
+                    let focused = s.focus.is_focused(w);
+                    let cell = s.cells.get(s.row).and_then(|r| r.get(s.column)).copied();
+                    let entered = focus_entry.update(cx, |was, _| {
+                        let entered = focused && !*was;
+                        *was = focused;
+                        entered
+                    });
+                    if entered && let Some(cell) = cell {
+                        let changed = parent.as_ref().is_some_and(|p| reveal_bounds(cell, p));
+                        if changed {
+                            w.on_next_frame(|w, _| w.refresh());
+                        }
+                    }
+                }
+            })
             .flex_shrink_0()
             .border_1()
             .border_color(if table_focused { p.focus } else { p.border })
@@ -304,15 +393,7 @@ impl RenderOnce for DataTable {
                                     );
                                     s.scroll.set_offset(offset);
                                     if let Some(parent) = &parent {
-                                        let viewport = parent.bounds();
-                                        let mut offset = parent.offset();
-                                        offset.y += reveal_axis(
-                                            cell.top(),
-                                            cell.bottom(),
-                                            viewport.top(),
-                                            viewport.bottom(),
-                                        );
-                                        parent.set_offset(offset);
+                                        reveal_bounds(*cell, parent);
                                     }
                                 }
                                 cx.notify();
@@ -336,7 +417,9 @@ impl RenderOnce for DataTable {
                     .line_height(tokens::CAPTION_LEADING)
                     .child(header)
                     .children(self.rows.into_iter().enumerate().map(|(r, cells)| {
-                        let mut action = actions.next();
+                        let mut action = actions
+                            .next()
+                            .map(|a| a.with_scroll_parent(action_parent.as_ref()));
                         div()
                             .on_children_prepainted({
                                 let navigation = navigation.clone();
@@ -399,6 +482,8 @@ pub struct DetailRow {
 /// Bounded accessible list with one keyboard stop and independently expandable
 /// monospace rows. Producers own the retained history; this paints its newest N.
 pub struct DetailList {
+    pub(crate) scroll_parent: Option<ScrollHandle>,
+    focus_was_inside: bool,
     label: SharedString,
     rows: Vec<DetailRow>,
     total: usize,
@@ -419,6 +504,8 @@ impl DetailList {
         let label = label.into();
         assert!(!label.trim().is_empty() && limit > 0);
         Self {
+            scroll_parent: None,
+            focus_was_inside: false,
             label,
             rows: vec![],
             total: 0,
@@ -487,7 +574,13 @@ impl DetailList {
     }
 }
 impl Render for DetailList {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = self.focus.is_focused(w);
+        if focused && !self.focus_was_inside {
+            self.scroll.scroll_to_item(self.active);
+        }
+        self.focus_was_inside = focused;
+        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), w, cx);
         let p = Palette::get(cx);
         div()
             .id("bounded-detail-list")
@@ -521,6 +614,7 @@ impl Render for DetailList {
             .child(
                 div()
                     .id("rows")
+                    .relative()
                     .role(Role::List)
                     .aria_label(self.label.clone())
                     .track_focus(&self.focus)
@@ -603,7 +697,8 @@ impl Render for DetailList {
                                         .child(r.detail.clone()),
                                 )
                             })
-                    })),
+                    }))
+                    .child(reveal),
             )
     }
 }
@@ -663,6 +758,7 @@ pub struct ChartPoint {
     pub value: Option<f64>,
 }
 pub struct Chart {
+    pub(crate) scroll_parent: Option<ScrollHandle>,
     label: SharedString,
     unit: SharedString,
     points: Vec<ChartPoint>,
@@ -689,6 +785,7 @@ impl Chart {
             cx.notify();
         });
         Self {
+            scroll_parent: None,
             label: label.into(),
             unit: unit.into(),
             points: vec![],
@@ -728,7 +825,8 @@ impl Chart {
     }
 }
 impl Render for Chart {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), w, cx);
         let p = Palette::get(cx);
         let max = self
             .points
@@ -738,6 +836,8 @@ impl Render for Chart {
             .fold(1., f64::max);
         div()
             .id("chart")
+            .relative()
+            .child(reveal)
             .role(Role::Group)
             .aria_label(self.label.clone())
             .track_focus(&self.focus)
