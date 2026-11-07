@@ -41,7 +41,7 @@ pub struct Themes {
     scroll: ScrollHandle,
     applied: Option<Value>,
     base_theme: Value,
-    editor_revision: u64,
+    editor_document: Value,
     confirming: bool,
     notice: Option<&'static str>,
     restore: Option<FocusHandle>,
@@ -115,7 +115,7 @@ impl Themes {
             scroll: ScrollHandle::new(),
             applied: None,
             base_theme: Value::Null,
-            editor_revision: 0,
+            editor_document: Value::Null,
             confirming: false,
             notice: None,
             restore: None,
@@ -160,7 +160,7 @@ impl Themes {
                 .unwrap_or(json!({"theme":{"version":1,"presetId":"sonic"}}));
             let theme = editable_theme(&document, appearance::is_dark(&document, cx));
             self.base_theme = theme.clone();
-            self.editor_revision = self.controller.model.revision;
+            self.editor_document = document;
             self.editor.update(cx,|f,cx|f.set(json!({"label":if *create{"New theme"}else{"Custom"},"accent":theme["accent"].as_str().unwrap_or(""),"background":theme["background"].as_str().unwrap_or(""),"foreground":theme["foreground"].as_str().unwrap_or(""),"contrast":theme["contrast"].as_i64().unwrap_or(0).to_string()}),w,cx));
             self.editor.update(cx, |f, cx| f.focus_first(w, cx));
         }
@@ -188,7 +188,13 @@ impl Themes {
             return;
         };
         let f = self.editor.read(cx);
-        if self.editor_revision != self.controller.model.revision {
+        if self
+            .controller
+            .model
+            .snapshot
+            .as_ref()
+            .is_none_or(|s| s.appearance != self.editor_document)
+        {
             self.notice = Some(
                 "Appearance changed elsewhere. Cancel this edit and review the current theme.",
             );
@@ -300,6 +306,14 @@ impl Render for Themes {
                 div()
                     .id("theme-validation")
                     .role(Role::Alert)
+                    .child(gpui::text!(n)),
+            );
+        }
+        if let Some(n) = snapshot.as_ref().and_then(|s| s.notice.clone()) {
+            body = body.child(
+                div()
+                    .id("themes-notice")
+                    .role(Role::Status)
                     .child(gpui::text!(n)),
             );
         }
@@ -572,6 +586,8 @@ impl Render for Themes {
                         Button::new("theme-create", "Create theme…")
                             .caption("Create theme")
                             .size(crate::ButtonSize::Compact)
+                            .text_size(tokens::CAPTION_SIZE)
+                            .bordered()
                             .intent(crate::ButtonIntent::Ghost)
                             .icon(crate::icons::Glyph::Plus)
                             .with_scroll_parent(Some(&self.scroll))
@@ -585,6 +601,8 @@ impl Render for Themes {
                         Button::new("theme-import", "Import theme…")
                             .caption("Import theme")
                             .size(crate::ButtonSize::Compact)
+                            .text_size(tokens::CAPTION_SIZE)
+                            .bordered()
                             .intent(crate::ButtonIntent::Ghost)
                             .icon(crate::icons::Glyph::Download)
                             .with_scroll_parent(Some(&self.scroll))
@@ -620,34 +638,29 @@ impl Render for Themes {
                     if let Ok(doc) = library::selection(&s.appearance, &s.library, &id, Some(mode))
                     {
                         let colors = compile::resolve(&entry["theme"], mode == "dark");
-                        let swatch = colors.get("primary").map(|[r, g, b]| {
-                            Hsla::from(rgb(((*r as u32) << 16) | ((*g as u32) << 8) | *b as u32))
-                        });
-                        let color = swatch.unwrap_or(p.accent);
+                        let role =
+                            |key: &str| color::hex(*colors.get(key).unwrap_or(&[0., 0., 0.]));
+                        // Same background and layered radial fills as React ThemeOrb.
+                        let svg = format!(
+                            r#"<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 36 36"><defs><radialGradient id="accent" cx="35%" cy="70%" r="62%"><stop stop-color="{}"/><stop offset="1" stop-color="{}" stop-opacity="0"/></radialGradient><radialGradient id="surface" cx="75%" cy="25%" r="58%"><stop stop-color="{}"/><stop offset="1" stop-color="{}" stop-opacity="0"/></radialGradient></defs><circle cx="18" cy="18" r="18" fill="{}"/><circle cx="18" cy="18" r="18" fill="url(#surface)"/><circle cx="18" cy="18" r="18" fill="url(#accent)"/></svg>"#,
+                            role("primary"),
+                            role("primary"),
+                            role("surface-container-highest"),
+                            role("surface-container-highest"),
+                            role("background")
+                        );
                         let orb = div()
                             .relative()
                             .size(px(36.))
                             .rounded_full()
                             .border_1()
                             .border_color(p.hairline_strong)
-                            .bg(linear_gradient(
-                                135.,
-                                linear_color_stop(color.blend(white().opacity(0.80)), 0.),
-                                linear_color_stop(color.blend(black().opacity(0.42)), 1.),
-                            ))
-                            .shadow(p.card_shadow())
                             .child(
-                                div()
-                                    .absolute()
-                                    .left(px(4.))
-                                    .top(px(3.))
-                                    .size(px(22.))
-                                    .rounded_full()
-                                    .bg(linear_gradient(
-                                        140.,
-                                        linear_color_stop(white().opacity(0.50), 0.),
-                                        linear_color_stop(color.opacity(0.), 1.),
-                                    )),
+                                img(std::sync::Arc::new(Image::from_bytes(
+                                    ImageFormat::Svg,
+                                    svg.into_bytes(),
+                                )))
+                                .size(px(36.)),
                             )
                             .child(
                                 div()
@@ -680,6 +693,7 @@ impl Render for Themes {
                                 cx,
                             )
                             .intent(crate::ButtonIntent::Ghost)
+                            .padding_y(px(0.))
                             .content(orb),
                         );
                     }
@@ -687,17 +701,19 @@ impl Render for Themes {
                 let mut actions = div().flex().items_center().gap(px(2.));
                 if let Ok(doc) = library::selection(&s.appearance, &s.library, &id, None) {
                     actions = actions.child(
-                        self.button(
-                            format!("theme-{id}-pair"),
-                            format!("Use {label} theme"),
-                            Action::Appearance(doc),
-                            cx,
-                        )
-                        .caption(label.to_string())
-                        .intent(crate::ButtonIntent::Ghost),
+                        div().flex_1().min_w_0().overflow_hidden().child(
+                            self.button(
+                                format!("theme-{id}-pair"),
+                                format!("Use {label} theme"),
+                                Action::Appearance(doc),
+                                cx,
+                            )
+                            .caption(label.to_string())
+                            .intent(crate::ButtonIntent::Ghost),
+                        ),
                     );
                 }
-                actions = actions.child(div().flex_1());
+
                 if id != "custom" {
                     actions = actions
                         .child(
@@ -772,6 +788,13 @@ impl Render for Themes {
                         .intent(crate::ButtonIntent::Ghost),
                     );
                 }
+                let resolved = compile::resolve(
+                    &s.appearance["theme"],
+                    appearance::is_dark(&s.appearance, cx),
+                );
+                let [r, g, b] = resolved["surface-container-lowest"];
+                let card_surface =
+                    Hsla::from(rgb(((r as u32) << 16) | ((g as u32) << 8) | b as u32));
                 grid = grid.child(
                     div()
                         .id(SharedString::from(format!("theme-{id}")))
@@ -783,23 +806,24 @@ impl Render for Themes {
                         } else {
                             p.hairline_strong
                         })
-                        .bg(p.tint_raised)
+                        .bg(card_surface)
                         .rounded(tokens::CARD_RADIUS)
-                        .shadow(p.card_shadow())
+                        .shadow(if selected {
+                            vec![BoxShadow {
+                                color: p.accent.opacity(0.35),
+                                offset: point(px(0.), px(0.)),
+                                blur_radius: px(0.),
+                                spread_radius: px(2.),
+                                inset: false,
+                            }]
+                        } else {
+                            p.card_shadow()
+                        })
                         .child(orbs)
                         .child(actions),
                 );
             }
             body = body.child(grid);
-
-            if let Some(n) = s.notice {
-                body = body.child(
-                    div()
-                        .id("themes-notice")
-                        .role(Role::Status)
-                        .child(gpui::text!(n)),
-                );
-            }
         } else {
             body = body.child(gpui::text!("Loading appearance…"));
         }

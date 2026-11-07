@@ -61,6 +61,7 @@ pub struct Button {
     height: Option<Pixels>,
     padding_y: Option<Pixels>,
     padding_x: Option<Pixels>,
+    text_size: Option<Pixels>,
 }
 impl Button {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
@@ -95,6 +96,7 @@ impl Button {
             height: None,
             padding_y: None,
             padding_x: None,
+            text_size: None,
         }
     }
     /// Custom visual layout; the button still owns its name, state, focus and actions.
@@ -134,6 +136,10 @@ impl Button {
     }
     pub fn padding_y(mut self, inset: Pixels) -> Self {
         self.padding_y = Some(inset);
+        self
+    }
+    pub fn text_size(mut self, size: Pixels) -> Self {
+        self.text_size = Some(size);
         self
     }
     pub fn height(mut self, height: Pixels) -> Self {
@@ -323,7 +329,7 @@ impl RenderOnce for Button {
                 ))
             })
             .text_color(fg)
-            .text_size(if self.nav {
+            .text_size(self.text_size.unwrap_or(if self.nav {
                 tokens::LABEL_SIZE
             } else {
                 match self.size {
@@ -331,7 +337,7 @@ impl RenderOnce for Button {
                     ButtonSize::Compact => tokens::LABEL_SIZE,
                     ButtonSize::ExtraSmall => tokens::CAPTION_SIZE,
                 }
-            })
+            }))
             .line_height(tokens::BODY_LEADING)
             .font_weight(if card && !self.nav {
                 FontWeight::SEMIBOLD

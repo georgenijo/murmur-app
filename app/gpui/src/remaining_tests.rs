@@ -469,6 +469,9 @@ mod ax {
                     .unwrap()
                     .contains("exported current")
             }));
+            // Export changes the section reply revision, not the appearance being edited.
+            activate(cx, "Save theme");
+            activate(cx, "Edit colors…");
             activate(cx, "Reset to Sonic");
             assert_eq!(
                 themes.read_with(cx, |s, _| s
