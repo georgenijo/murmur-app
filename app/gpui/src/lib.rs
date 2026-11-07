@@ -61,3 +61,4 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests;
 pub mod insights;
+pub mod models;
