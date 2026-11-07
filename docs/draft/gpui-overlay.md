@@ -31,7 +31,10 @@ services and Tokio runtime through shutdown. The host must:
    start of an asynchronous read and deliver `Event::Hydrate` with that epoch;
    an intervening lifecycle/visibility/geometry event rejects the old read.
    Authoritative full snapshots carry increasing presentation revisions and
-   the current recording generation. `elapsed_ms` restores an ongoing timer.
+   the current recording generation. Every accepted recording snapshot rebases
+   the local timer at receipt: `elapsed_ms` is the authoritative base, including
+   a refresh with unchanged status/generation. Rejected snapshots change neither
+   the elapsed base nor its local clock anchor.
 2. Forward typed lifecycle/cancellation/failure/delivery/stall events, committed
    settings and Mode/meeting/Smart Auto read models. Keep generation IDs as u64.
    The bounded queue returns rejected messages to the producer; retry or refresh
@@ -109,23 +112,34 @@ All fixtures and rendered captures are synthetic. Native acceptance is separate.
 
 | Current behavior / matrix row | GPUI implementation | Automated coverage and remaining acceptance |
 |---|---|---|
-| O01 notch, pretend notch, 1×/2×, nonzero origins, fixed pill | Shared geometry, `Model::frame`, primary NSScreen snapshot | 32 moved geometry tests; `both_placements_use_the_shared_geometry_and_live_dock_limit`; native physical notch/Retina/display pass remains |
+| O01 notch, pretend notch, 1×/2×, nonzero origins, fixed pill | Shared geometry, `Model::frame`, primary NSScreen snapshot; fixed 28 pt wings with a notch spacer, centered pill row | 32 moved geometry tests; `both_placements_use_the_shared_geometry_and_live_dock_limit`; `painted_status_content_stays_in_notch_wings_and_centers_in_the_pill` checks actual painted waveform/retry bounds; physical/pretend-notch/pill goldens; native physical notch/Retina/display pass remains |
 | O01 non-activation, all Spaces, fullscreen, Stage Manager | Instance-local never-key panel and guarded prevents-activation | `test_overlay_never_key_hook_is_instance_local_and_idempotent` uses inert NSObject doubles; native click-then-type/Space/fullscreen checks remain |
 | O01 Dock tracking, calibration intent, bottom anchoring | Shared Dock clearance; separate `Event::Dock`; static preference fallback | Shared live/unknown Dock and work-area tests; native magnification/reveal/side-Dock checks and live watcher connection remain |
 | O02 Idle, Starting/stalled, Recording, Recovering, Processing, meeting, Done | Core Status read model, priority derivation, bounded Done | `cue_priority_and_expiry_match_current_overlay`, `elapsed_starts_at_recording_not_hover_and_done_is_preemptible`; state goldens |
 | O02 7/18 bars; coalesced 16 ms levels; no idle animation | Single latest-level slot, generation/visibility check, one GPUI draw stream | `waveform_is_bounded_and_only_the_current_visible_owner_can_supply_samples`, inbox backpressure/coalescing test; no performance claim |
 | O02 HUD/tints, Reduce Motion/Transparency, appearance | Same-turn AppKit HUD and window-local palettes; shared motion engine | Inert shim compilation; deterministic offscreen goldens and existing motion/preference tests; live material and OS changes remain |
-| O03 150 ms dwell, acknowledged growth, 300 ms leave, delayed shrink | One main-thread surface writer and phase reducer | `hover_dwell_ack_leave_shrink_and_failed_grow`, `state_contractions_retain_native_bounds_then_release_without_anchor_drift`, `hidden_disabled_and_topology_reset_do_not_reopen_transparent_hit_area`; native clipping/hit-area check remains |
-| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents | `actual_overlay_tree_controls_and_actions` dispatches the emitted AX tree and excludes collapsed controls; native host field commits/Settings opening remain |
+| O03 150 ms dwell, acknowledged growth, 300 ms leave, delayed shrink | One main-thread surface writer and phase reducer; disabled state retains hover; shrink retains a pending re-entry dwell | `hover_dwell_ack_leave_shrink_and_failed_grow`, `disabled_hover_can_reopen_quick_settings_but_cannot_start_recording`, `shrink_preserves_a_pending_dwell_in_the_persistent_top_band` (1000 ms enter → 1080 ms shrink → 1150 ms open), `state_contractions_retain_native_bounds_then_release_without_anchor_drift`, `hidden_and_topology_reset_do_not_reopen_transparent_hit_area`; native clipping/hit-area check remains |
+| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents; collapsed status exposes AX Expand/Collapse and expanded state, Tab focus and Down/Escape disclosure | `actual_overlay_tree_controls_and_actions` starts collapsed, dispatches emitted Expand and all four control actions, and excludes collapsed controls; `disabled_collapsed_overlay_opens_with_keyboard_and_exposes_enable_action` dispatches Focus, Down, Enable and Escape; native host field commits/Settings opening remain |
 | O04 250 ms click, double-click lock, disabled/processing/open guards | Click recognizer sends generation-bound core inputs | `click_delay_double_click_and_generation_ownership`, `starting_click_cancels_and_disabled_recording_remains_stoppable`; real capture/delivery remains host acceptance |
 | O05 Cancelled 800 ms, opt-in tap miss 500 ms, failure 5 s | Generation-scoped timed cues, fixed content-free announcements | Priority/expiry and stale-generation tests; actual VoiceOver speech remains |
 | O05 Clipboard-only/retry, duplicate/stale outcomes | Secure retry intent, attempt/generation guard, bounded result | `delivery_duplicates_never_extend_cue_and_only_confirmed_clipboard_installs_it`, `retry_is_single_flight_and_uses_a_fresh_bounded_result`, stale retry test; no clipboard access in test host |
 | O06 calibration cue and offset, no pointer dragging | Shared finite ±12 pt intent; pill zero travel; pretend-top clamp | Moved calibration tests and state priority test; Settings Save/Cancel remains its owner and a native acceptance flow |
-| O07 reattach during recording, subscribe-before-read | Snapshot revision + hydration epoch + current elapsed read model | `hydration_cannot_roll_back_a_same_generation_event_and_restores_elapsed`; actual host subscription ordering must follow the integration contract |
+| O07 reattach during recording, subscribe-before-read | Snapshot revision + hydration epoch + current elapsed read model | `hydration_cannot_roll_back_a_same_generation_event_and_restores_elapsed`, `accepted_recording_snapshots_rebase_elapsed_even_without_lifecycle_change`; actual host subscription ordering must follow the integration contract |
 | O08/O09 Live Words consent, generation, click-through and hover lift | Existing preview owner retained; anchor/lift interface only | Moved preview fitting/collapsed-anchor tests; text/rendering port belongs to #1000, with native click-through and consent checks retained |
 | M01/M13 meeting states/suggestions, accept/dismiss | Idle-only prompt, token recheck and single-flight action | `suggestion_requires_idle_and_retains_expanded_bounds_until_dismissal`, `suggestion_actions_recheck_current_token_and_are_single_flight`; live capture/token authority stays in meeting service |
 | A01 accessible names, roles, state changes, inactive announcements | Shared controls/AccessKit plus native content-free announcement notification | Emitted tree/actions test and component suite; VoiceOver spoken output cannot be established headlessly |
 | Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero WebKit images; production host replacement remains pending |
+
+The shipping `useOverlayExpansion` and its disabled-hover/re-entry tests define
+pointer timing, including keeping the close shrink armed until a re-entry dwell
+commits. `OverlayPill` and its tests reserve independent notch wings and center
+the floating row. Native status uses those same content slots: seven bars occupy
+23 pt centered in the right 28 pt wing; eighteen bars occupy 61.5 pt in the pill.
+The idle, collapsed notch has no exposed wings and paints no status content in
+the cutout. The native disclosure action adds a non-pointer route to the same
+Quick settings group and names used by the React dropdown. It grows through the
+same acknowledged writer as hover and does not activate recording. Disabled
+state gates recording starts, never access to the Enable control.
 
 No React assertion is retired. This table describes replacement implementation
 and executable tests; it does not mark the feature matrix's native rows passed.
@@ -139,9 +153,11 @@ Use Rust 1.98.1 and the isolated target directory. The existing `gpui-macos`
 job checks both gallery-gated binaries, strict all-target Clippy, rustfmt,
 `scripts/test_gpui.py` (real emitted AX tree/actions without native windows),
 Objective-C inert shims, and `scripts/check_gpui_goldens.py`. The latter now
-renders 19 overlay cases twice in addition to the 30 component cases: 49 cases,
-98 captures. It rejects blank/non-deterministic captures and missing/nonzero
-own-process WebKit inventories. The native workspace and core remain within
+renders 33 overlay cases twice in addition to the 30 component cases: 63 cases,
+126 captures. Physical and pretend notches each cover 12 states, including
+collapsed/expanded disabled states; the pill covers nine visible states. It
+rejects blank/non-deterministic captures and missing/nonzero own-process WebKit
+inventories. The native workspace and core remain within
 the existing source/transport/restart dependency guards. The WebKit lifecycle
 target already runs under the existing `rust-macos` job; no new CI job is needed.
 
@@ -202,3 +218,42 @@ recipe was applied only in that temporary checkout.
 This receipt is headless evidence. Independent Sol review and all native lead
 acceptance listed above remain open. The issue is not claimed complete by this
 receipt, and no production application, data store or release was changed.
+
+## Review corrections receipt (Mac mini, 2026-11-06)
+
+The five review findings against `e016910a` are corrected without changing the
+shipping React/Tauri app or core. The React expansion controller and its tests,
+`OverlayPill`/geometry tests, and `OverlayDropdown` timer/control tests were the
+behavior references. Disabled hover, collapsed AX disclosure and control actions,
+authoritative timer rebasing, the 1080/1150 ms shrink race, and painted notch/pill
+content geometry now have regression coverage.
+
+Headless checks ran through `fleet exec --via opti` in a fresh
+`~/Builds/gpui-checkout-43`, with its own `~/Builds/gpui-target-43` and
+`RUSTUP_TOOLCHAIN=1.98.1`:
+
+- `cargo fmt -p murmur-ui -- --check`, locked gallery check and strict all-target
+  gallery Clippy (`-D warnings`) passed.
+- `python3 scripts/test_gpui.py -- --test-threads=1`: **58 passed, 0 failed,
+  0 ignored**, plus zero doctests. Five tests were added; the existing emitted
+  AX test now begins collapsed and dispatches Expand, all four quick controls,
+  and Collapse. The disabled keyboard test opens with Down and closes with
+  Escape after an AX button moves focus. AX/layout fixtures use Reduced Motion
+  to assert the settled layout; painted centers allow half a device pixel of
+  snapping, while notch/content nonintersection remains strict.
+- `python3 -m unittest scripts/test_test_gpui.py scripts/test_gpui_native.py`:
+  **6 passed, 0 skipped**, including both inert Objective-C runtime tests.
+- `python3 scripts/check_gpui_goldens.py`: **63 cases / 126 captures**, all
+  nonblank and byte-identical within each same-host pair. The **33 overlay
+  cases / 66 captures** include physical/pretend-notch disabled states and
+  all visible pill states. All **66 overlay process inventories** require zero
+  loaded WebKit images.
+- Local Markdown/reference, core-dependency and workflow-policy validators
+  passed. No core/Tauri source changed. The six changed source/document hashes
+  matched the Mac checkout before cleanup. Gate logs, the golden receipt and
+  synthetic captures were preserved before removing checkout 43 and its target.
+
+This is headless evidence only. No real application was driven, no OS permission
+or production data was accessed, and no other worker's checkout or GUI session
+was touched. Independent review of these corrections and the lead's native
+acceptance remain separate; the PR stays draft and unmerged.

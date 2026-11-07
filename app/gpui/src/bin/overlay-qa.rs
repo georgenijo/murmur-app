@@ -83,9 +83,13 @@ fn main() {
         murmur_ui::tokens::apply_appearance(dark, cx);
         let state = std::env::var("MURMUR_OVERLAY_STATE").unwrap_or_else(|_| "recording".into());
         let floating = std::env::var_os("MURMUR_PILL").is_some();
-        let expanded = state == "expanded" || state == "suggestion";
+        let expanded = matches!(
+            state.as_str(),
+            "expanded" | "suggestion" | "disabled-expanded"
+        );
         let mut snapshot = Snapshot {
             generation: 1,
+            disabled: state.starts_with("disabled"),
             placement: if floating {
                 OverlayPlacement::FloatingPill
             } else {
@@ -94,13 +98,23 @@ fn main() {
             ..Snapshot::default()
         };
         snapshot.status = match state.as_str() {
-            "idle" | "suggestion" => Status::Idle,
+            "idle" | "suggestion" | "disabled" | "disabled-expanded" => Status::Idle,
             "starting" => Status::Starting,
             "processing" => Status::Processing,
             "recovering" => Status::Recovering,
             _ => Status::Recording,
         };
         let mut model = Model::new(snapshot.clone());
+        model.screen.notch = Some(NotchInfo {
+            width: 185.,
+            height: if std::env::var_os("MURMUR_PRETEND_NOTCH").is_some() {
+                30.
+            } else {
+                37.
+            },
+            physical_notch: std::env::var_os("MURMUR_PRETEND_NOTCH").is_none(),
+            menu_bar_visible: true,
+        });
         model.level = 0.04;
         if expanded {
             model.phase = Phase::Open;

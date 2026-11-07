@@ -291,6 +291,10 @@ impl Model {
                 }
                 let reset = next.placement != self.snapshot.placement;
                 self.snapshot = next;
+                // elapsed_ms is authoritative at receipt, including refreshes
+                // within the same recording. Do not count the old local delta
+                // a second time on top of it.
+                self.started_ms = (self.snapshot.status == Status::Recording).then_some(now);
                 if reset {
                     self.collapse();
                 }
@@ -456,10 +460,7 @@ impl Model {
     pub fn hover(&mut self, inside: bool, now: u64) {
         if inside {
             self.leave_due = None;
-            if !self.hidden(now)
-                && !self.snapshot.disabled
-                && matches!(self.phase, Phase::Collapsed | Phase::Closing)
-            {
+            if !self.hidden(now) && matches!(self.phase, Phase::Collapsed | Phase::Closing) {
                 self.hover_due.get_or_insert(now + 150);
             }
         } else {
@@ -477,6 +478,22 @@ impl Model {
             || self.leave_due.is_some()
             || self.shrink_due.is_some()
             || self.click.is_some()
+    }
+    /// Keyboard/AX disclosure uses the same acknowledged surface transaction
+    /// as hover, without requiring pointer movement or a dwell.
+    pub fn expand(&mut self, now: u64) {
+        if !self.hidden(now) {
+            self.leave_due = None;
+            if matches!(self.phase, Phase::Collapsed | Phase::Closing) {
+                self.hover_due = Some(now);
+            }
+        }
+    }
+    pub fn close(&mut self, now: u64) {
+        self.hover_due = None;
+        if self.phase == Phase::Open && self.suggestion.is_none() {
+            self.leave_due = Some(now);
+        }
     }
     pub fn collapse(&mut self) {
         self.phase = Phase::Collapsed;
@@ -511,7 +528,11 @@ impl Model {
         }
         if self.shrink_due.is_some_and(|u| now >= u) {
             if apply(self.frame(false, now), self.hidden(now)) {
-                self.collapse();
+                // A pointer can re-enter the persistent top band before the
+                // shrink commits. Its dwell still owns the next grow, even if
+                // no further enter event arrives after shrinking.
+                self.phase = Phase::Collapsed;
+                self.shrink_due = None;
             } else {
                 self.shrink_due = Some(now + 100);
             }

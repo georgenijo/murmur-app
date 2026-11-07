@@ -51,16 +51,18 @@ def main():
         raise AssertionError('appearance/preference variants rendered identically')
     # Overlay uses the production view/controls, synthetic snapshots and the
     # same offscreen Metal platform. Never opens a real native window.
-    overlay_cases = [(placement, state) for placement in ('notch', 'pill')
+    overlay_cases = [(placement, state) for placement in ('notch', 'pretend-notch', 'pill')
                      for state in ('idle', 'starting', 'recording', 'processing', 'recovering',
-                                   'cancelled', 'failure', 'delivery', 'expanded', 'suggestion')
-                     if (placement, state) != ('pill', 'idle')]
+                                   'cancelled', 'failure', 'delivery', 'expanded', 'suggestion', 'disabled', 'disabled-expanded')
+                     if not (placement == 'pill' and state in ('idle', 'disabled', 'disabled-expanded'))]
     for placement, state in overlay_cases:
         case = f'overlay-{placement}-{state}'
         paths = [output / f'{case}-{i}.png' for i in (1, 2)]
         for path in paths:
-            env = {k: v for k, v in os.environ.items() if k not in ('MURMUR_DARK', 'MURMUR_PILL')}
+            env = {k: v for k, v in os.environ.items() if k not in ('MURMUR_DARK', 'MURMUR_PILL', 'MURMUR_PRETEND_NOTCH')}
             env.update(MURMUR_GOLDEN=str(path), MURMUR_OVERLAY_STATE=state, MURMUR_DARK='1')
+            if placement == 'pretend-notch':
+                env['MURMUR_PRETEND_NOTCH'] = '1'
             if placement == 'pill':
                 env['MURMUR_PILL'] = '1'
             stdout = subprocess.check_output([str(target / 'debug/overlay-qa')], env=env, cwd=UI, timeout=60, text=True)

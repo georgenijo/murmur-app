@@ -247,6 +247,14 @@ impl Render for Overlay {
         let root = div()
             .id("overlay-root")
             .tab_group()
+            .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
+                if e.keystroke.key == "escape" {
+                    s.model.close(s.now);
+                    cx.stop_propagation();
+                    w.prevent_default();
+                    s.advance(w, cx);
+                }
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -314,11 +322,36 @@ impl Render for Overlay {
                 s.advance(w, cx);
             }));
         let accessible = cx.entity().downgrade();
+        let disclosure = accessible.clone();
+        let collapse = accessible.clone();
         let mut status = div()
             .id("overlay-status")
+            .debug_selector(|| "overlay-status".into())
             .role(Role::Status)
             .aria_label(indicator.label())
-            .aria_description("Start locked dictation, or stop the current recording")
+            .aria_description("Start locked dictation, or stop the current recording. Down arrow opens Quick settings; Escape closes them")
+            .aria_expanded(expanded)
+            .tab_index(0)
+            .on_a11y_action(AccessibleAction::Expand, move |_, w, cx| {
+                let _ = disclosure.update(cx, |s, cx| {
+                    s.model.expand(s.now);
+                    s.advance(w, cx);
+                });
+            })
+            .on_a11y_action(AccessibleAction::Collapse, move |_, w, cx| {
+                let _ = collapse.update(cx, |s, cx| {
+                    s.model.close(s.now);
+                    s.advance(w, cx);
+                });
+            })
+            .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
+                if e.keystroke.key == "down" {
+                    s.model.expand(s.now);
+                    cx.stop_propagation();
+                    w.prevent_default();
+                    s.advance(w, cx);
+                }
+            }))
             .on_a11y_action(AccessibleAction::Click, move |_, w, cx| {
                 let _ = accessible.update(cx, |s, cx| {
                     let action = s.model.accessible_activate(s.now);
@@ -330,8 +363,8 @@ impl Render for Overlay {
             .h(px(g.collapsed_h as f32))
             .flex()
             .items_center()
-            .justify_between()
-            .px(px(8.))
+            .flex_shrink_0()
+            .when(g.floating, |s| s.justify_center().gap(px(8.)).px(px(8.)))
             .on_click(cx.listener(|s, e: &ClickEvent, w, cx| {
                 let action = if matches!(e, ClickEvent::Keyboard(_)) {
                     s.model.accessible_activate(s.now)
@@ -353,6 +386,22 @@ impl Render for Overlay {
             Indicator::Delivery(Delivery::Nothing) => "−",
             _ => "·",
         };
+        let mut leading = div()
+            .id("overlay-leading")
+            .debug_selector(|| "overlay-leading".into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .when(!g.floating, |s| s.w(px(g.wing_w as f32)));
+        let mut trailing = div()
+            .id("overlay-trailing")
+            .debug_selector(|| "overlay-trailing".into())
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .when(!g.floating, |s| s.w(px(g.wing_w as f32)));
         let state_glyph = div()
             .text_color(if indicator == Indicator::Recording {
                 p.danger
@@ -371,7 +420,7 @@ impl Render for Overlay {
             indicator,
             Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing
         ) {
-            status = status.child(
+            leading = leading.child(
                 gpui_component::Icon::default()
                     .data(include_bytes!(
                         "../../vendor/gpui-component/crates/assets/assets/icons/loader.svg"
@@ -390,7 +439,7 @@ impl Render for Overlay {
             indicator,
             Indicator::Starting | Indicator::Slow | Indicator::Recording
         ) {
-            status = status.child(
+            leading = leading.child(
                 state_glyph.with_animation(
                     "recording-pulse",
                     Animation::new(std::time::Duration::from_millis(1200))
@@ -400,7 +449,7 @@ impl Render for Overlay {
                 ),
             );
         } else {
-            status = status.child(state_glyph);
+            leading = leading.child(state_glyph);
         }
         if g.floating
             && !matches!(indicator, Indicator::Recording)
@@ -416,13 +465,15 @@ impl Render for Overlay {
                 Indicator::Delivery(Delivery::Pasted) => "Pasted",
                 _ => indicator.label(),
             };
-            status = status.child(word);
+            trailing = trailing.child(word);
         }
         if self.model.waveform(now) {
-            status = status.child(
+            trailing = trailing.child(
                 div()
                     .id("overlay-waveform")
+                    .debug_selector(|| "overlay-waveform".into())
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .gap(px(1.5))
                     .children(
@@ -440,9 +491,10 @@ impl Render for Overlay {
             );
         }
         if matches!(indicator,Indicator::Delivery(d) if d.retryable()) {
-            status = status.child(
+            trailing = trailing.child(
                 div()
                     .id("delivery-action")
+                    .debug_selector(|| "delivery-action".into())
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|s, _, _, _| s.model.pause_delivery(s.now)),
@@ -466,6 +518,17 @@ impl Render for Overlay {
                     ),
             );
         }
+        // The shared geometry reserves a fixed wing on each side of the
+        // physical (or pretend) notch. Never pad a full-width row: even a few
+        // points would push the waveform behind the hardware cutout.
+        status = status.when(
+            g.floating || expanded || indicator != Indicator::Idle,
+            |s| {
+                s.child(leading)
+                    .when(!g.floating, |s| s.child(div().flex_1()))
+                    .child(trailing)
+            },
+        );
         let controls = if expanded {
             let mut group = div()
                 .id("overlay-quick-settings")

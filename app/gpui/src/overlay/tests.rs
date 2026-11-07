@@ -209,17 +209,13 @@ fn hover_dwell_ack_leave_shrink_and_failed_grow() {
     assert_eq!(m.phase, Phase::Collapsed);
 }
 #[test]
-fn hidden_disabled_and_topology_reset_do_not_reopen_transparent_hit_area() {
+fn hidden_and_topology_reset_do_not_reopen_transparent_hit_area() {
     let mut m = active();
     m.hover(true, 0);
     m.event(Event::Visible(false), 10);
     m.tick(1000, false, |_, _| panic!("hidden"));
     assert_eq!(m.phase, Phase::Collapsed);
     m.event(Event::Visible(true), 1001);
-    m.snapshot.disabled = true;
-    m.hover(true, 1002);
-    m.tick(2000, false, |_, _| panic!("disabled"));
-    m.snapshot.disabled = false;
     m.hover(true, 2001);
     m.event(
         Event::Screen(Screen {
@@ -366,16 +362,19 @@ impl Host for FakeHost {
 fn actual_overlay_tree_controls_and_actions(cx: &mut TestAppContext) {
     use gpui::accesskit::{ActionRequest, TreeId};
     cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
     let host = Rc::new(FakeHost::default());
     let cloned = host.clone();
-    let mut entity = None;
     let (_, cx) = cx.add_window_view(|w, cx| {
-        let overlay = cx.new(|_| {
-            let mut s = Overlay::new(Snapshot::default(), cloned);
-            s.model.phase = Phase::Open;
-            s
-        });
-        entity = Some(overlay.clone());
+        let overlay = cx.new(|_| Overlay::new(Snapshot::default(), cloned));
         gpui_base::Root::new(overlay, w, cx)
     });
     let window = cx.update(|w, _| w.window_handle());
@@ -383,8 +382,48 @@ fn actual_overlay_tree_controls_and_actions(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|w, cx| w.draw(cx).clear(cx));
     let tree = cx.accessibility_tree(window);
+    assert!(
+        !tree
+            .nodes
+            .iter()
+            .any(|(_, n)| n.label() == Some("Quick settings"))
+    );
+    let (status_id, status) = tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.label() == Some("Ready"))
+        .unwrap();
+    assert_eq!(status.is_expanded(), Some(false));
+    assert!(status.supports_action(AccessibleAction::Expand));
+    assert!(status.supports_action(AccessibleAction::Focus));
+    cx.dispatch_accessibility_action(
+        window,
+        ActionRequest {
+            action: AccessibleAction::Expand,
+            target_tree: TreeId::ROOT,
+            target_node: *status_id,
+            data: None,
+        },
+    );
+    cx.run_until_parked();
+    cx.update(|w, cx| w.draw(cx).clear(cx));
+    let tree = cx.accessibility_tree(window);
+    assert_eq!(
+        tree.nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Ready"))
+            .unwrap()
+            .1
+            .is_expanded(),
+        Some(true)
+    );
+    assert!(
+        host.intents.borrow().is_empty(),
+        "expansion must not start recording"
+    );
     for (name, role) in [
         ("Quick settings", Role::Group),
+        ("Mode: Everyday. Click to cycle", Role::Button),
         ("Disable Murmur", Role::Button),
         ("Auto-paste", Role::Switch),
         ("Open settings", Role::Button),
@@ -397,28 +436,55 @@ fn actual_overlay_tree_controls_and_actions(cx: &mut TestAppContext) {
             "missing {name}"
         );
     }
+    for name in [
+        "Mode: Everyday. Click to cycle",
+        "Disable Murmur",
+        "Auto-paste",
+        "Open settings",
+    ] {
+        cx.update(|w, cx| w.draw(cx).clear(cx));
+        let tree = cx.accessibility_tree(window);
+        let id = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some(name))
+            .unwrap()
+            .0;
+        cx.dispatch_accessibility_action(
+            window,
+            ActionRequest {
+                action: AccessibleAction::Click,
+                target_tree: TreeId::ROOT,
+                target_node: id,
+                data: None,
+            },
+        );
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        *host.intents.borrow(),
+        vec![
+            Intent::CycleMode,
+            Intent::Disabled(true),
+            Intent::AutoPaste(false),
+            Intent::OpenSettings
+        ]
+    );
     let id = tree
         .nodes
         .iter()
-        .find(|(_, n)| n.label() == Some("Disable Murmur"))
+        .find(|(_, n)| n.label() == Some("Ready"))
         .unwrap()
         .0;
     cx.dispatch_accessibility_action(
         window,
         ActionRequest {
-            action: AccessibleAction::Click,
+            action: AccessibleAction::Collapse,
             target_tree: TreeId::ROOT,
             target_node: id,
             data: None,
         },
     );
-    cx.run_until_parked();
-    cx.update(|w, cx| w.draw(cx).clear(cx));
-    assert_eq!(*host.intents.borrow(), vec![Intent::Disabled(true)]);
-    entity.unwrap().update(cx, |s, cx| {
-        s.model.collapse();
-        cx.notify();
-    });
     cx.run_until_parked();
     cx.update(|w, cx| w.draw(cx).clear(cx));
     let tree = cx.accessibility_tree(window);
@@ -530,4 +596,278 @@ fn state_contractions_retain_native_bounds_then_release_without_anchor_drift() {
     assert_eq!(writer.resolve(small, Some(large), 0, false, false), small);
     let moved = OverlayFrame { y: 100., ..small };
     assert_eq!(writer.resolve(moved, Some(large), 0, false, true), moved);
+}
+
+#[test]
+fn disabled_hover_can_reopen_quick_settings_but_cannot_start_recording() {
+    let mut m = Model::new(Snapshot::default());
+    m.hover(true, 0);
+    m.tick(150, false, |_, _| true);
+    assert_eq!(m.phase, Phase::Open);
+    m.event(
+        Event::Snapshot(Snapshot {
+            disabled: true,
+            revision: 1,
+            ..m.snapshot.clone()
+        }),
+        200,
+    );
+    m.hover(false, 400);
+    m.tick(700, false, |_, _| true);
+    m.tick(1080, false, |_, _| true);
+    assert_eq!(m.phase, Phase::Collapsed);
+    assert!(m.accessible_activate(1100).is_none());
+    m.hover(true, 1200);
+    m.tick(1349, false, |_, _| panic!("dwell still pending"));
+    m.tick(1350, false, |_, _| true);
+    assert_eq!(m.phase, Phase::Open);
+}
+
+#[test]
+fn accepted_recording_snapshots_rebase_elapsed_even_without_lifecycle_change() {
+    let mut m = Model::new(Snapshot {
+        elapsed_ms: 61000,
+        ..active().snapshot
+    });
+    m.event(
+        Event::Snapshot(Snapshot {
+            elapsed_ms: 62000,
+            revision: 2,
+            ..m.snapshot.clone()
+        }),
+        1000,
+    );
+    assert_eq!(m.elapsed(1000), "1:02");
+    assert_eq!(m.elapsed(2000), "1:03");
+    m.event(
+        Event::Hydrate {
+            snapshot: Snapshot {
+                elapsed_ms: 64000,
+                revision: 3,
+                ..m.snapshot.clone()
+            },
+            observed_epoch: m.hydration_epoch(),
+        },
+        3000,
+    );
+    assert_eq!(m.elapsed(3000), "1:04");
+    assert_eq!(m.elapsed(4000), "1:05");
+    // Rejected stale snapshots cannot move the current anchor or elapsed base.
+    for snapshot in [
+        Snapshot {
+            revision: 2,
+            ..m.snapshot.clone()
+        },
+        Snapshot {
+            generation: 6,
+            ..m.snapshot.clone()
+        },
+    ] {
+        m.event(Event::Snapshot(snapshot), 5000);
+        assert_eq!(m.elapsed(5000), "1:06");
+    }
+}
+
+#[test]
+fn shrink_preserves_a_pending_dwell_in_the_persistent_top_band() {
+    let mut m = active();
+    m.hover(true, 0);
+    m.tick(150, false, |_, _| true);
+    m.hover(false, 400);
+    m.tick(700, false, |_, _| true);
+    assert_eq!(m.phase, Phase::Closing);
+    m.hover(true, 1000);
+    m.tick(1080, false, |frame, _| {
+        assert_eq!(frame.height, 37.);
+        true
+    });
+    assert_eq!(m.phase, Phase::Collapsed);
+    assert!(m.needs_tick());
+    m.tick(1149, false, |_, _| panic!("no early grow"));
+    // No second enter event: the pointer has remained inside throughout.
+    m.tick(1150, false, |frame, _| {
+        assert_eq!(frame.height, 101.);
+        true
+    });
+    assert_eq!(m.phase, Phase::Open);
+    assert!(!m.needs_tick());
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn painted_status_content_stays_in_notch_wings_and_centers_in_the_pill(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, Rc::new(FakeHost::default())));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let entity = entity.unwrap();
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for physical in [true, false] {
+            for expanded in [false, true] {
+                for delivery in [false, true] {
+                    entity.update(cx, |s, cx| {
+                        s.model = active();
+                        s.model.screen.notch = Some(NotchInfo {
+                            width: 185.,
+                            height: 37.,
+                            physical_notch: physical,
+                            menu_bar_visible: true,
+                        });
+                        s.model.snapshot.placement = placement;
+                        s.model.phase = if expanded {
+                            Phase::Open
+                        } else {
+                            Phase::Collapsed
+                        };
+                        if delivery {
+                            s.model.snapshot.status = Status::Idle;
+                            s.model.event(Event::Delivery(7, Delivery::Clipboard), 0);
+                        }
+                        cx.notify();
+                    });
+                    cx.run_until_parked();
+                    cx.update(|w, cx| w.draw(cx).clear(cx));
+                    let row = cx.debug_bounds("overlay-status").unwrap();
+                    let geometry = entity.read_with(cx, |s, _| s.model.geometry(expanded, 0));
+                    assert_eq!(row.size.width, gpui::px(geometry.window_w as f32));
+                    assert_eq!(row.size.height, gpui::px(geometry.collapsed_h as f32));
+                    let leading = cx.debug_bounds("overlay-leading").unwrap();
+                    let trailing = cx.debug_bounds("overlay-trailing").unwrap();
+                    let content = cx
+                        .debug_bounds(if delivery {
+                            "delivery-action"
+                        } else {
+                            "overlay-waveform"
+                        })
+                        .unwrap();
+                    assert!(leading.left() >= row.left());
+                    assert!(content.left() >= trailing.left());
+                    assert!(content.right() <= trailing.right());
+                    assert!(trailing.right() <= row.right());
+                    let center = |b: gpui::Bounds<gpui::Pixels>| (b.left() + b.right()) / 2.;
+                    // GPUI snaps painted origins to the device pixel grid.
+                    let half_pixel = gpui::px(0.5 / cx.update(|w, _| w.scale_factor()));
+                    assert!((center(content) - center(trailing)).abs() <= half_pixel);
+                    if placement == OverlayPlacement::Notch {
+                        // The 185pt cutout is shared by the physical and pretend notch.
+                        let notch_left = center(row) - gpui::px(92.5);
+                        let notch_right = center(row) + gpui::px(92.5);
+                        assert!(leading.right() <= notch_left);
+                        assert!(trailing.left() >= notch_right);
+                        assert_eq!(leading.size.width, gpui::px(WING as f32));
+                        assert_eq!(trailing.size.width, gpui::px(WING as f32));
+                        if !delivery {
+                            assert_eq!(content.size.width, gpui::px(23.));
+                        }
+                    } else {
+                        assert!(
+                            (center(row) - (leading.left() + trailing.right()) / 2.).abs()
+                                <= half_pixel,
+                            "pill layout physical={physical} expanded={expanded} delivery={delivery}: row={row:?} leading={leading:?} trailing={trailing:?}"
+                        );
+                        if !delivery {
+                            assert_eq!(content.size.width, gpui::px(61.5));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn disabled_collapsed_overlay_opens_with_keyboard_and_exposes_enable_action(
+    cx: &mut TestAppContext,
+) {
+    use gpui::accesskit::{ActionRequest, TreeId};
+    cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let host = Rc::new(FakeHost::default());
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| {
+            Overlay::new(
+                Snapshot {
+                    disabled: true,
+                    ..Snapshot::default()
+                },
+                host.clone(),
+            )
+        });
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    cx.run_until_parked();
+    cx.update(|w, cx| w.draw(cx).clear(cx));
+    let tree = cx.accessibility_tree(window);
+    let id = tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.label() == Some("Ready"))
+        .unwrap()
+        .0;
+    cx.dispatch_accessibility_action(
+        window,
+        ActionRequest {
+            action: AccessibleAction::Focus,
+            target_tree: TreeId::ROOT,
+            target_node: id,
+            data: None,
+        },
+    );
+    cx.run_until_parked();
+    cx.update(|w, cx| w.draw(cx).clear(cx));
+    assert_eq!(cx.accessibility_tree(window).focus, id);
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    cx.update(|w, cx| w.draw(cx).clear(cx));
+    assert!(host.intents.borrow().is_empty());
+    let tree = cx.accessibility_tree(window);
+    let id = tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.label() == Some("Enable Murmur"))
+        .unwrap()
+        .0;
+    cx.dispatch_accessibility_action(
+        window,
+        ActionRequest {
+            action: AccessibleAction::Click,
+            target_tree: TreeId::ROOT,
+            target_node: id,
+            data: None,
+        },
+    );
+    cx.run_until_parked();
+    assert_eq!(*host.intents.borrow(), vec![Intent::Disabled(false)]);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    cx.update(|w, cx| w.draw(cx).clear(cx));
+    assert!(
+        !cx.accessibility_tree(window)
+            .nodes
+            .iter()
+            .any(|(_, n)| n.label() == Some("Quick settings"))
+    );
 }
