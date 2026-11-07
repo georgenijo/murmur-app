@@ -92,6 +92,9 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
                     json!({"version":1,"id":"imported-fixture","label":"Imported fixture","modes":["dark"],"theme":{"version":1,"presetId":"custom","accent":"#aa77ee"},"source":{"kind":"local"}}),
                 ])
             }
+            Action::ExportCurrent => {
+                s.notice = Some("Fixture exported current appearance. No file was written.".into())
+            }
             Action::Cancel => s.import_preview = None,
             Action::Search { .. } => {
                 s.notice = Some("Fixture search completed. No network request was made.".into())

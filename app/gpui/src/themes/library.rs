@@ -21,13 +21,24 @@ pub fn entries(library: &Value) -> Vec<Value> {
         .chain(library["themes"].as_array().into_iter().flatten().cloned())
         .collect()
 }
+/// The active custom appearance remains editable even without a saved library entry.
+pub fn display_entries(current: &Value, library: &Value) -> Vec<Value> {
+    let mut all = entries(library);
+    if ["light", "dark"]
+        .iter()
+        .any(|mode| current["selection"][mode] == "custom")
+    {
+        all.insert(2, json!({"version":1,"id":"custom","label":"Custom","modes":["light","dark"],"theme":current["theme"]}));
+    }
+    all
+}
 pub fn selection(
     current: &Value,
     library: &Value,
     id: &str,
     appearance: Option<&str>,
 ) -> Result<Value, Problem> {
-    let all = entries(library);
+    let all = display_entries(current, library);
     let entry = all.iter().find(|v| v["id"] == id).ok_or(Problem::Invalid)?;
     let modes = entry["modes"].as_array().ok_or(Problem::Invalid)?;
     let mut selection=current.get("selection").cloned().unwrap_or(json!({"light":if current["theme"]["presetId"]=="sonic"{"sonic"}else{"custom"},"dark":if current["theme"]["presetId"]=="sonic"{"sonic"}else{"custom"}}));

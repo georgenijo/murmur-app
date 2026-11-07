@@ -446,6 +446,42 @@ mod ax {
             });
             assert!(saved.get("light").is_none() && saved.get("dark").is_none());
             assert_eq!(saved["accent"], "#ee7733");
+            let t = tree(cx);
+            assert!(
+                t.nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("Use Custom theme"))
+            );
+            activate(cx, "Edit colors…");
+            assert_eq!(
+                editor.read_with(cx, |f, _| f.value("accent").to_string()),
+                "#ee7733"
+            );
+            activate(cx, "Export current…");
+            assert!(themes.read_with(cx, |s, _| {
+                s.controller
+                    .model
+                    .snapshot
+                    .as_ref()
+                    .unwrap()
+                    .notice
+                    .as_ref()
+                    .unwrap()
+                    .contains("exported current")
+            }));
+            activate(cx, "Reset to Sonic");
+            assert_eq!(
+                themes.read_with(cx, |s, _| s
+                    .controller
+                    .model
+                    .snapshot
+                    .as_ref()
+                    .unwrap()
+                    .appearance["selection"]
+                    .clone()),
+                json!({"light":"sonic","dark":"sonic"})
+            );
+
             assert_ne!(
                 compile::value(&compile::resolve(&saved, true))["primary"],
                 old["primary"]

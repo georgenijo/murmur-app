@@ -411,7 +411,55 @@ impl Render for Themes {
                     self.editor
                         .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                     let e = cx.entity();
-                    content=content.child(self.editor.clone()).child(gpui::text!("Colors resolve to accessible semantic roles. Leave a color empty to use Sonic.")).child(Button::new("theme-save","Save theme").with_scroll_parent(Some(&self.scroll)).on_click(move|_,_,cx|e.update(cx,|s,cx|s.save_editor(cx))));
+                    content = content.child(self.editor.clone()).child(gpui::text!("Colors resolve to accessible semantic roles. Leave a color empty to use Sonic."));
+                    if let Some(snapshot) = &snapshot {
+                        let mut reset = snapshot.appearance.clone();
+                        reset["theme"] = json!({"version":1,"presetId":"sonic"});
+                        reset["selection"] = json!({"light":"sonic","dark":"sonic"});
+                        reset["revision"] = json!(library::next_revision(
+                            reset["revision"].as_u64().unwrap_or(0)
+                        ));
+                        let reset_owner = cx.entity();
+                        content = content.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .pt(px(16.))
+                                .border_t_1()
+                                .border_color(p.hairline)
+                                .child(
+                                    Button::new("theme-reset", "Reset to Sonic")
+                                        .intent(ButtonIntent::Ghost)
+                                        .with_scroll_parent(Some(&self.scroll))
+                                        .disabled(self.controller.model.pending)
+                                        .on_click(move |_, _, cx| {
+                                            reset_owner.update(cx, |s, cx| {
+                                                s.confirming = true;
+                                                s.request(Action::Appearance(reset.clone()), cx);
+                                            })
+                                        }),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    self.button(
+                                        "theme-export-current".into(),
+                                        "Export current…".into(),
+                                        Action::ExportCurrent,
+                                        cx,
+                                    )
+                                    .caption("Export")
+                                    .pill(),
+                                )
+                                .child(
+                                    Button::new("theme-save", "Save theme")
+                                        .with_scroll_parent(Some(&self.scroll))
+                                        .on_click(move |_, _, cx| {
+                                            e.update(cx, |s, cx| s.save_editor(cx))
+                                        }),
+                                ),
+                        );
+                    }
                 }
                 Dialog::Preview(entries) => {
                     for entry in &entries {
@@ -553,7 +601,7 @@ impl Render for Themes {
                 ));
             }
             let mut grid = div().flex().flex_wrap().gap(px(8.));
-            for entry in library::entries(&s.library) {
+            for entry in library::display_entries(&s.appearance, &s.library) {
                 let id = entry["id"].as_str().unwrap().to_string();
                 let label = entry["label"].as_str().unwrap_or("Theme");
                 let selected = s.appearance["selection"][if appearance::is_dark(&s.appearance, cx) {
@@ -649,33 +697,35 @@ impl Render for Themes {
                         .intent(crate::ButtonIntent::Ghost),
                     );
                 }
-                actions = actions
-                    .child(div().flex_1())
-                    .child(
-                        self.button(
-                            format!("theme-{id}-duplicate"),
-                            format!("Duplicate {label}"),
-                            Action::Duplicate(id.clone()),
-                            cx,
+                actions = actions.child(div().flex_1());
+                if id != "custom" {
+                    actions = actions
+                        .child(
+                            self.button(
+                                format!("theme-{id}-duplicate"),
+                                format!("Duplicate {label}"),
+                                Action::Duplicate(id.clone()),
+                                cx,
+                            )
+                            .icon_only(crate::icons::Glyph::Copy)
+                            .palette(Palette { text: p.muted, ..p })
+                            .size(crate::ButtonSize::ExtraSmall)
+                            .intent(crate::ButtonIntent::Ghost),
                         )
-                        .icon_only(crate::icons::Glyph::Copy)
-                        .palette(Palette { text: p.muted, ..p })
-                        .size(crate::ButtonSize::ExtraSmall)
-                        .intent(crate::ButtonIntent::Ghost),
-                    )
-                    .child(
-                        self.button(
-                            format!("theme-{id}-export"),
-                            format!("Export {label}…"),
-                            Action::ExportEntry(id.clone()),
-                            cx,
-                        )
-                        .icon_only(crate::icons::Glyph::Upload)
-                        .palette(Palette { text: p.muted, ..p })
-                        .size(crate::ButtonSize::ExtraSmall)
-                        .intent(crate::ButtonIntent::Ghost),
-                    );
-                if !["sonic", "opencode"].contains(&id.as_str()) {
+                        .child(
+                            self.button(
+                                format!("theme-{id}-export"),
+                                format!("Export {label}…"),
+                                Action::ExportEntry(id.clone()),
+                                cx,
+                            )
+                            .icon_only(crate::icons::Glyph::Upload)
+                            .palette(Palette { text: p.muted, ..p })
+                            .size(crate::ButtonSize::ExtraSmall)
+                            .intent(crate::ButtonIntent::Ghost),
+                        );
+                }
+                if !["sonic", "opencode", "custom"].contains(&id.as_str()) {
                     let e = cx.entity();
                     let remove_id = id.clone();
                     actions = actions.child(
@@ -741,21 +791,6 @@ impl Render for Themes {
                 );
             }
             body = body.child(grid);
-            let mut reset = s.appearance.clone();
-            reset["theme"] = json!({"version":1,"presetId":"sonic"});
-            reset["selection"] = json!({"light":"sonic","dark":"sonic"});
-            reset["revision"] = json!(library::next_revision(
-                reset["revision"].as_u64().unwrap_or(0)
-            ));
-            body = body.child(
-                self.button(
-                    "theme-reset".into(),
-                    "Reset to Sonic".into(),
-                    Action::Appearance(reset),
-                    cx,
-                )
-                .intent(crate::ButtonIntent::Ghost),
-            );
 
             if let Some(n) = s.notice {
                 body = body.child(
