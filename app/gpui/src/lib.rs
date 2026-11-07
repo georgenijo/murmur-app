@@ -6,6 +6,7 @@ pub mod diagnostics;
 mod events;
 pub mod field;
 pub mod gallery;
+pub mod history;
 pub mod motion;
 pub mod overlay;
 pub mod preferences;

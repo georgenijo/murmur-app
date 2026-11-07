@@ -5,6 +5,7 @@ pub mod context;
 pub mod dictation;
 pub mod events;
 pub mod hold_promotion;
+pub mod history;
 pub mod keyboard;
 pub mod memory;
 pub mod model_artifact;

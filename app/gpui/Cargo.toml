@@ -168,3 +168,8 @@ required-features = ["gallery"]
 name = "diagnostics-qa"
 path = "src/bin/diagnostics-qa.rs"
 required-features = ["gallery"]
+
+[[bin]]
+name = "history-qa"
+path = "src/bin/history-qa.rs"
+required-features = ["gallery"]
