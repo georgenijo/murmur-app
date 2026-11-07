@@ -95,9 +95,10 @@ names when their visible captions are compact glyphs.
 
 The native UI links no WebKit. Every offscreen overlay capture checks the
 [attributed QA policy](#qa-webkit-attribution-policy): zero images before AX
-exposure, then only proven Apple AX bundle loads. It records only
-its PID and that count. This proves the native process's dependency/runtime
-absence, not destruction of another process's Tauri window.
+exposure, then only proven Apple AX bundle loads. Inventory records contain the
+PID and attribution counts; supporting load records contain image paths and
+symbols only. This checks the native process's linkage and load attribution;
+destruction of another process's Tauri window remains a separate lifetime check.
 
 `murmur-webkit::OverlayRetirement::destroy` separately consumes the legacy
 host's retained view on main, stops navigation, disconnects delegates, removes
