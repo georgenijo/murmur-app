@@ -58,6 +58,7 @@ pub struct Meetings {
     list_scroll: UniformListScrollHandle,
     list_selection: Option<String>,
     detail_scroll: ScrollHandle,
+    content_scroll: ScrollHandle,
     seek_state: Option<(u64, u64, bool)>,
 }
 impl Meetings {
@@ -120,12 +121,9 @@ impl Meetings {
             list_scroll: UniformListScrollHandle::new(),
             list_selection: None,
             detail_scroll: ScrollHandle::new(),
+            content_scroll: ScrollHandle::new(),
             seek_state: None,
         };
-        for choices in [&format_control, &channel_control] {
-            choices.update(cx, |c, _| c.scroll_parent = Some(s.detail_scroll.clone()));
-        }
-        seek.update(cx, |r, _| r.scroll_parent = Some(s.detail_scroll.clone()));
         for key in ["title", "attendees", "me", "them"] {
             s.fields
                 .insert(key.into(), cx.new(|cx| TextFieldState::new(w, cx)));
@@ -590,7 +588,10 @@ impl Meetings {
         })
     }
     fn detail_button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-        Button::new(id, label).with_scroll_parent(Some(&self.detail_scroll))
+        Button::new(id, label).with_scroll_parents(vec![
+            self.detail_scroll.clone(),
+            self.content_scroll.clone(),
+        ])
     }
     fn button(
         &mut self,
@@ -611,12 +612,18 @@ impl Meetings {
         );
         let disabled = (self.model.pending && !cancels_playback) || !self.allowed(&action);
         Button::new(id.clone(), label)
+            .with_scroll_parent(Some(&self.content_scroll))
             .when(
                 !matches!(
                     id.as_str(),
                     "back" | "retry" | "check-access" | "audio-settings" | "load-more"
                 ),
-                |b| b.with_scroll_parent(Some(&self.detail_scroll)),
+                |b| {
+                    b.with_scroll_parents(vec![
+                        self.detail_scroll.clone(),
+                        self.content_scroll.clone(),
+                    ])
+                },
             )
             .size(ButtonSize::Compact)
             .track_focus(&f)

@@ -3,7 +3,7 @@ impl Meetings {
     fn meeting_rows(
         &mut self,
         range: std::ops::Range<usize>,
-        _w: &mut Window,
+        w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(s) = self.model.snapshot.clone() else {
@@ -27,6 +27,7 @@ impl Meetings {
                     .clone()
                     .unwrap_or_else(|| "Untitled meeting".into());
                 div()
+                    .relative()
                     .h(px(112.))
                     .p(tokens::FOCUS_WIDTH + px(1.))
                     .w_full()
@@ -34,11 +35,18 @@ impl Meetings {
                     .flex_col()
                     .gap(px(4.))
                     .overflow_hidden()
+                    // The title is only 32pt tall. Reveal the complete row on
+                    // every focus entry, including Tab and AX Focus.
+                    .child(crate::data_components::focus_reveal(
+                        focus.clone(),
+                        [scroll_parent.clone(), self.content_scroll.clone()],
+                        Some(reveal),
+                        w,
+                        cx,
+                    ))
                     .child(
                         Button::new(format!("meeting-{id}"), title)
                             .track_focus(&focus)
-                            .with_scroll_parent(Some(&scroll_parent))
-                            .with_focus_reveal(reveal)
                             .toggled(selected)
                             .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx))),
                     )
@@ -66,19 +74,49 @@ impl Meetings {
             })
             .collect()
     }
-    fn field(&self, key: &str, label: &str, disabled: bool) -> impl IntoElement {
+    fn field(
+        &self,
+        key: &str,
+        label: &str,
+        disabled: bool,
+        w: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement + use<> {
         div()
             .flex()
             .flex_col()
             .gap(px(4.))
             .child(label.to_owned())
             .when_some(self.fields.get(key), |d, s| {
-                d.child(
-                    TextField::new(s, label.to_owned())
-                        .with_scroll_parent(&self.detail_scroll)
-                        .disabled(disabled),
-                )
+                d.relative()
+                    .child(crate::data_components::focus_reveal(
+                        s.read(cx).focus_handle(cx),
+                        [self.detail_scroll.clone(), self.content_scroll.clone()],
+                        None,
+                        w,
+                        cx,
+                    ))
+                    .child(TextField::new(s, label.to_owned()).disabled(disabled))
             })
+    }
+    // Own one reveal through both viewports so controls do not scroll the
+    // inner viewport twice on the same focus entry.
+    fn detail_control<V: Render + Focusable + 'static>(
+        &self,
+        entity: &Entity<V>,
+        w: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement + use<V> {
+        div()
+            .relative()
+            .child(crate::data_components::focus_reveal(
+                entity.read(cx).focus_handle(cx),
+                [self.detail_scroll.clone(), self.content_scroll.clone()],
+                None,
+                w,
+                cx,
+            ))
+            .child(entity.clone())
     }
     fn notice(text: impl Into<SharedString>, alert: bool) -> Stateful<Div> {
         let text = text.into();
@@ -115,7 +153,7 @@ impl Meetings {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(self.field("title", "Meeting title", disabled))
+                    .child(self.field("title", "Meeting title", disabled, w, cx))
                     .child(
                         div()
                             .flex()
@@ -126,7 +164,7 @@ impl Meetings {
                                 v.relative()
                                     .child(crate::data_components::focus_reveal(
                                         state.read(cx).focus_handle(cx),
-                                        Some(self.detail_scroll.clone()),
+                                        [self.detail_scroll.clone(), self.content_scroll.clone()],
                                         None,
                                         w,
                                         cx,
@@ -421,8 +459,8 @@ impl Meetings {
                     content=content.child(div().id("meeting-playback").role(Role::Group).aria_label("Meeting audio playback").flex().flex_col().gap(px(8.))
                     .child(div().flex().flex_wrap().items_center().gap(px(8.))
                         .child(self.button("audio-toggle",if playing{"Pause"}else if s.audio.state==AudioState::Paused{"Resume"}else{"Play"},Action::Playback{id:id.clone(),action:if playing{PlaybackAction::Pause}else{PlaybackAction::Play}},cx))
-                        .child(format!("{} / {}",timestamp(s.audio.position_ms),timestamp(s.audio.duration_ms))).child(self.channel_control.clone()))
-                    .child(self.seek.clone())
+                        .child(format!("{} / {}",timestamp(s.audio.position_ms),timestamp(s.audio.duration_ms))).child(self.detail_control(&self.channel_control, w, cx)))
+                    .child(self.detail_control(&self.seek, w, cx))
                     .when(s.busy(),|v|v.child(Self::notice("Playback is paused while Murmur records or processes a request.",false)))
                     .when(s.audio.state==AudioState::Buffering,|v|v.child(Self::notice("Buffering retained audio…",false))));
                 }
@@ -437,7 +475,7 @@ impl Meetings {
             .gap(px(8.))
             .items_center()
             .child("Format")
-            .child(self.format_control.clone())
+            .child(self.detail_control(&self.format_control, w, cx))
             .child(self.button(
                 "copy",
                 if self.format.captions() {
@@ -522,8 +560,8 @@ impl Meetings {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(self.field("me", "Me speaker label", self.model.pending))
-                .child(self.field("them", "Them speaker label", self.model.pending))
+                .child(self.field("me", "Me speaker label", self.model.pending, w, cx))
+                .child(self.field("them", "Them speaker label", self.model.pending, w, cx))
                 .child(self.button(
                     "save-labels",
                     "Save labels",
@@ -548,6 +586,8 @@ impl Meetings {
                         &key,
                         &format!("Remote speaker {} label", speaker.id),
                         self.model.pending,
+                        w,
+                        cx,
                     ))
                     .child(self.button(
                         format!("save-{key}"),
@@ -715,6 +755,7 @@ impl Render for Meetings {
             .pt(px(32.))
             .px(px(16.))
             .pb(px(12.))
+            .flex_shrink_0()
             .child(self.button("back", "Back", Action::Back, cx))
             .child(
                 div()
@@ -730,6 +771,8 @@ impl Render for Meetings {
             .size_full()
             .flex()
             .flex_col()
+            .overflow_y_scroll()
+            .track_scroll(&self.content_scroll)
             .bg(p.surface)
             .text_color(p.text)
             .text_size(tokens::BODY_SIZE)
@@ -746,9 +789,9 @@ impl Render for Meetings {
                 || s.phase == Phase::Processing
                 || (!s.phase.active()
                     && (s.capture_busy || s.permission == Permission::Unsupported));
-            root=root.child(div().p(px(16.)).flex().flex_col().gap(px(8.))
+            root=root.child(div().p(px(16.)).flex().flex_col().flex_shrink_0().gap(px(8.))
                 .child(div().flex().flex_wrap().items_center().gap(px(8.)).child(Self::notice(format!("{}{}",s.phase.label(),if s.elapsed_ms>0 {format!(" · {}",timestamp(s.elapsed_ms))}else{String::new()}),false))
-                    .child(Button::new("meeting-record",if s.phase.active(){"Stop meeting"}else if s.phase==Phase::Processing{"Finishing…"}else{"Start meeting"}).disabled(action_disabled).on_click(cx.listener(|s,_,_,cx|s.record(cx)))))
+                    .child(Button::new("meeting-record",if s.phase.active(){"Stop meeting"}else if s.phase==Phase::Processing{"Finishing…"}else{"Start meeting"}).with_scroll_parent(Some(&self.content_scroll)).disabled(action_disabled).on_click(cx.listener(|s,_,_,cx|s.record(cx)))))
                 .child(format!("{}Microphone · Me    {}System Audio · Them",if s.microphone_active{"● "}else{"○ "},if s.system_audio_active{"● "}else{"○ "}))
                 .child("Me comes from your microphone; Them comes from Mac playback. If your own voice is played through speakers, it can also appear as Them.")
                 .when(!s.busy()&&matches!(s.permission,Permission::Unknown|Permission::Denied),|v|v.child("System Audio access is requested only when you explicitly check it or start a meeting.").child(self.button("check-access","Check access",Action::CheckAccess,cx)))
@@ -766,6 +809,14 @@ impl Render for Meetings {
                 .id("saved-meetings")
                 .role(Role::Group)
                 .aria_label("Saved meetings")
+                .relative()
+                .child(crate::data_components::focus_reveal(
+                    self.search.read(cx).focus_handle(cx),
+                    Some(self.content_scroll.clone()),
+                    None,
+                    w,
+                    cx,
+                ))
                 .flex()
                 .flex_col()
                 .gap(px(8.))
@@ -781,6 +832,7 @@ impl Render for Meetings {
                         },
                     )
                     .size(ButtonSize::Compact)
+                    .with_scroll_parent(Some(&self.content_scroll))
                     .disabled(s.phase.busy() || self.model.pending || s.meetings.is_empty())
                     .on_click(cx.listener(|s, _, _, cx| s.delete(true, cx))),
                 );
@@ -820,7 +872,11 @@ impl Render for Meetings {
                     .flex_1()
                     .min_h(px(0.))
                     .flex()
-                    .when(narrow, |v| v.flex_col())
+                    .when(narrow, |v| {
+                        // Taller permission/error chrome scrolls with the page;
+                        // it must never consume the detail viewport.
+                        v.flex_col().min_h(px(448.)).flex_shrink_0()
+                    })
                     .child(
                         div()
                             .id("meeting-list-scroll")
@@ -836,7 +892,7 @@ impl Render for Meetings {
                             .id("meeting-detail-scroll")
                             .flex_1()
                             .min_w(px(0.))
-                            .min_h(px(0.))
+                            .min_h(px(160.))
                             .overflow_y_scroll()
                             .track_scroll(&self.detail_scroll)
                             .child(detail),
