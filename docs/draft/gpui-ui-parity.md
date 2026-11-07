@@ -141,3 +141,94 @@ Native window and traffic lights, focus rings, accessible names/states on every 
 splitter, Increase Contrast / Reduce Transparency, Sonic accent values, subtle accent bar on pinned
 transcripts, explicit "Denied" state with "Open System Settings…", explicit history detail actions
 (restyled), 32/28/24px control heights.
+
+## Round 2 findings (council at 77635e35)
+
+Scores: Claude Opus 5.5 7/10, GPT-6 Astra 7/10, Muse Wonder 1.0 7/10. Round-1 identity issues are
+resolved. Target unchanged: 8+ overall, no screen below 7. Worst screens: site modes (4/5/5),
+meeting review (5/6/6), meeting captions (6/6/6), Insights (6/7/7).
+
+Settled by the council (do not chase):
+- Pill corners are transparent (alpha 0); the black corners were a sheet-compositing artifact.
+- "Assistant" (sidebar) and "Selected-text rewrite" (Customize) appear only in stale Darwin goldens;
+  current React (`R/components/home/HomeSidebar.tsx`, `R/components/settings/CustomizationHub.tsx`)
+  has neither. Do not add them.
+- "Reset to Sonic" exists in React (`R/components/settings/AppearanceSettings.tsx:423`); keep it.
+
+### Comparison baseline (round 3)
+
+- OLD: render current React (this branch's `app/src`, same as `main`) on macOS WebKit for all 19 keys,
+  instead of the stale Darwin goldens. Do not commit regenerated snapshots.
+- Put OLD and NEW in the same state: discovery checklist visible at 2/5 on Home, recording and
+  processing (`G/bin/home-qa.rs:43,109` currently dismisses it); same selected theme and scheme on
+  Appearance; captions view with SubRip selected and its caption note; meeting review opened at the
+  top (title visible); onboarding microphone in the same permission state on both sides.
+
+### Cross-cutting
+
+R1. Chevrons are text characters (`G/history/mod.rs:~1380` "Filter  ⌄", `G/home/mod.rs:~864`
+"View insights  ›"). Use label + Lucide chevron icon (12px, muted). Grep for ⌄ › ‹ in captions.
+R2. Off toggles are almost invisible (`G/toggle.rs:~98` uses `p.raised`). React: grey track
+(surface-container-highest) with white knob and hairline.
+R3. Search fields: Settings (`G/settings/mod.rs:~1280`) and Meetings (`G/meetings/view.rs:~882`) lack
+the magnifier and Meetings is square. Share History's search style (icon, rounded, 32px).
+R4. Weights and sizes: titles, row titles and stat numbers are semibold where React mostly uses medium
+(talk-card title, "Your dictations", Insights numbers). Keep semibold only where React says
+`font-semibold` (e.g. hub card titles, `CustomizationHub.tsx:64`). Talk-card subtitle 13px/20px.
+R5. Navigation: inactive labels and 14px icons use on-surface-variant; active Home row tints its icon
+with the accent; active Settings row is a raised white row in light mode (`R/styles/settings.css:~421,427`;
+`G/choice.rs:~433`, `G/settings/mod.rs:~1209,1286`). Match each destination's Lucide icon to React
+(Customize, Delivery, AI differ today, `G/icons.rs:~147`).
+R6. Transcript previews are cut mid-word (`G/history/mod.rs:~823` `chars().take`). Clamp to 2 lines
+with an ellipsis and cap the text column at a readable width as React does.
+R7. Row rhythm and card recipes: Home/History rows are ~48px one-line vs React's ~60px two-line.
+Port per-component padding/leading/border/surface from React (`R/styles.css:~124,1281-1307`,
+`R/styles/settings.css:~446-461`) rather than one card recipe everywhere; settings rows 12px/16px.
+The fixed 76px description-button height inflates Customize and Keyboard shortcuts.
+
+### Per screen
+
+R8. Site modes (`G/modes/mod.rs:~440-800`, ref `R/components/settings/ModesManager.tsx:~205-263`).
+Rebuild into React's grouped structure:
+- Selected mode card: mode row with "Built-in template · …" caption and Duplicate right; Customize row
+  with the read-only note.
+- "Where it applies" section heading.
+- One divided card: Bound applications ("Add an app" right-aligned), Browser sites toggle, "Add a site
+  rule" with its caption, browser select + host field (placeholder `github.com`, capped width) + Add,
+  rule rows (toggle, browser, host, bordered red-text "Remove…"), Current site with "Test current
+  site" on the right.
+- Move Create/Import/Export into the mode-list area like React. Fix the clipped mode-chip row; open at top.
+R9. Meeting review/captions (`G/meetings/view.rs`, `G/meetings/model.rs:~89`, ref
+`R/components/history/MeetingReviewWorkspace.tsx:~220`, `R/styles.css:~1365-1429`):
+- Detail opens scrolled to top.
+- Playback on one compact row (Play, time, channel, slider); remove the "0 ms" label.
+- Fold the lone download icon into the Format/Copy/Export row.
+- "Copy transcript" / "Copy captions" full labels; SubRip default and caption note in captions view.
+- Hairline above "Transcript", muted smaller "N segments"; 28px pill actions; rounded "Speakers"/"Rename"
+  in secondary style; speaker column wide enough that "(Them)" doesn't wrap.
+R10. Meeting list rows (`G/meetings/view.rs:~42-80`): replace the description-button string with
+React's row: title + right-aligned time, one-line preview with ellipsis, right-aligned duration;
+selected = raised card + border + accent edge; unselected unfilled; no 112px reservation and no empty
+per-item date headings.
+R11. Insights (`G/data_components.rs:~900-967`, `G/insights/mod.rs`, ref `R/components/ui/DayChart.tsx:~103,256`,
+`R/components/home/InsightsView.tsx`, `R/styles.css:~692,706`): heatmap month labels, weekday labels,
+date-range caption, stronger low-value tint; weekday letters under bars, narrow rounded bars; both
+charts in one outer container as React; React copy ("Focus a day for exact values."); values ~24px
+medium and long values ("Everyday") must fit.
+R12. Appearance (`G/themes/mod.rs:~526-620`, ref `ThemeLibrary.tsx:~82,173,497,516`): layered radial
+orbs (~36px) with a small sun/moon badge on the lower-right edge, not a glyph inside; selected card is
+ring only, no tinted fill; muted 12-14px action icons (delete not red); "Create theme"/"Import theme"
+labels; remove header icon buttons React lacks; segmented control without the grey container if
+React has none.
+R13. Customize: heading "Customize Murmur" (`SettingsPanel.tsx:~906`) with "Customize" kept as nav
+label; React's top gap (`mt-6`) and card height (measure React, ~68-76px).
+R14. Settings General: "Keyboard shortcuts" row uses the same padding/weight as other rows; "Run setup
+assistant…" gets a visible hairline border.
+R15. Update dialog (`G/update_dialog.rs`, ref `R/components/UpdateModal.tsx:~139,161,190,313`): blur
+or ~0.45 scrim; 16px header padding, 20px body; "What's Changed" 16px; tighter disc bullets;
+36-40px footer pills with React's primary gradient.
+R16. Pill (`G/overlay/mod.rs:~554,635-690`, ref `R/components/overlay/OverlayPill.tsx:~63`): measure
+React for the dot (round, not faceted), bar count/width/gap and the symmetric envelope (~24 bars of
+~1.5px); match the light fill tint and hairline.
+R17. Onboarding: column ~20px lower; permission row height per React. Collapsed Home rail: privacy dot
+keeps its capsule.
