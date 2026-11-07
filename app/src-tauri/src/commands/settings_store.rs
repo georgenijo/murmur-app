@@ -2616,37 +2616,27 @@ pub(crate) fn patch_native_settings_effect_worker(
     let mut rollback = Some(rollback);
     // This is the same staging/alias/model validation and immutable-start owner
     // used by Tauri. Shortcut/control registration must succeed before saving.
-    if crate::commands::recording::configure_dictation_for_host(
+    let published = crate::commands::recording::configure_dictation_transaction(
         settings.clone(),
+        previous.clone(),
         &app.services(),
         &app,
-    )
-    .is_err()
-    {
-        crate::dictation_control::native_setup_suspension(&app, Some(suspended));
-        if let Some(rollback) = rollback.take() {
-            rollback();
-        }
-        restore_native_configuration(&app, previous);
-        return Err("Configuration unavailable".into());
-    }
-    let configured = crate::dictation_control::configure_accepted(
-        &app,
-        settings.clone(),
-        crate::dictation_control::accept_configuration(&app),
-    );
-    if !matches!(configured, Ok(true)) {
-        crate::dictation_control::native_setup_suspension(&app, Some(suspended));
-        if let Some(rollback) = rollback.take() {
-            rollback();
-        }
-        restore_native_configuration(&app, previous);
-        return Err("Configuration unavailable".into());
-    }
-    let published = murmur_core::completion::save_source(
-        &dir,
-        "dictation-settings",
-        &serde_json::to_string(&settings).map_err(|_| "Invalid settings intent")?,
+        || {
+            let configured = crate::dictation_control::configure_accepted(
+                &app,
+                settings.clone(),
+                crate::dictation_control::accept_configuration(&app),
+            );
+            if !matches!(configured, Ok(true)) {
+                return Err("Configuration unavailable".into());
+            }
+            murmur_core::completion::save_source(
+                &dir,
+                "dictation-settings",
+                &serde_json::to_string(&settings).map_err(|_| "Invalid settings intent")?,
+            )
+            .map_err(|_| "Settings publication unavailable".to_owned())
+        },
     );
     match published {
         Ok(published) => {
@@ -2654,29 +2644,32 @@ pub(crate) fn patch_native_settings_effect_worker(
             notify_settings_committed(&app, &published);
             Ok(settings)
         }
-        Err(_) => {
+        Err(error) => {
             crate::dictation_control::native_setup_suspension(&app, Some(suspended));
             if let Some(rollback) = rollback.take() {
                 rollback();
             }
-            restore_native_configuration(&app, previous);
-            Err("Settings publication unavailable".into())
+            if restore_native_control_configuration(&app, previous).is_err() {
+                tracing::error!(target: "pipeline", "native control configuration rollback unavailable");
+                return Err(format!("{error}; control rollback unavailable"));
+            }
+            Err(error)
         }
     }
 }
 #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
-fn restore_native_configuration(app: &crate::host::Context, previous: serde_json::Value) {
-    use crate::host::ServiceAccess;
-    let _ = crate::commands::recording::configure_dictation_for_host(
-        previous.clone(),
-        &app.services(),
-        app,
-    );
-    let _ = crate::dictation_control::configure_accepted(
+fn restore_native_control_configuration(
+    app: &crate::host::Context,
+    previous: serde_json::Value,
+) -> Result<(), String> {
+    match crate::dictation_control::configure_accepted(
         app,
         previous,
         crate::dictation_control::accept_configuration(app),
-    );
+    ) {
+        Ok(true) => Ok(()),
+        _ => Err("Control rollback unavailable".into()),
+    }
 }
 #[cfg(any(test, all(feature = "native-host", not(feature = "tauri-host"))))]
 fn merge_native_settings_intent(

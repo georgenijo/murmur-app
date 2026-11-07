@@ -232,7 +232,7 @@ bool murmur_services_window_command(const char *label,uint64_t generation,const 
     else if ([kind isEqualToString:@"cursor"]) w.ignoresMouseEvents=[c[@"value"] boolValue];
     else if ([kind isEqualToString:@"focusable"]) {if(![c[@"value"] boolValue]){w.styleMask|=NSWindowStyleMaskNonactivatingPanel;w.hidesOnDeactivate=NO;}}
     else if ([kind isEqualToString:@"background"]) {
-        NSArray *rgba=c[@"rgba"];
+        NSArray *rgba=[c[@"rgba"] isKindOfClass:NSArray.class] ? c[@"rgba"] : nil;
         w.backgroundColor=rgba.count==4 ? [NSColor colorWithSRGBRed:[rgba[0] doubleValue]/255. green:[rgba[1] doubleValue]/255. blue:[rgba[2] doubleValue]/255. alpha:[rgba[3] doubleValue]/255.] : NSColor.windowBackgroundColor;
     }
     else if ([kind isEqualToString:@"size"]) {
