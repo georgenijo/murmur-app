@@ -4802,6 +4802,7 @@ dependencies = [
  "cc",
  "chrono",
  "chrono-tz",
+ "flate2",
  "gpui",
  "gpui-base",
  "gpui-component",
@@ -4809,8 +4810,11 @@ dependencies = [
  "gpui_platform",
  "murmur-core",
  "raw-window-handle",
+ "reqwest",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "url",
 ]
 
 [[package]]

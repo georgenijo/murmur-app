@@ -66,3 +66,5 @@ mod form;
 pub mod knowledge;
 mod json;
 pub mod modes;
+
+pub mod themes;

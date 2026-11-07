@@ -24,7 +24,7 @@ pub(crate) fn apply_snapshot(bits: u32, cx: &mut App) -> bool {
     let appearance_changed = cx.try_global::<SystemAppearance>().map(|a| a.0) != Some(dark);
     let preferences_changed = preferences != current(cx);
     if appearance_changed {
-        crate::tokens::apply_appearance(dark, cx);
+        crate::themes::appearance::system_changed(dark, cx);
         cx.set_global(SystemAppearance(dark));
     }
     if preferences_changed {
