@@ -305,6 +305,8 @@ class WebkitPolicyTests(unittest.TestCase):
         recorded = json.loads((ROOT / 'tests/fixtures/gpui/webkit-appkit-writing-tools.json').read_text())
         frames = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
                              for f in recorded['chain'])
+        negative = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
+                               for f in recorded['negativeChain'])
         source = r'''
 #include "webkit_policy.m"
 #include <assert.h>
@@ -342,6 +344,8 @@ int main(void) {
         assert(!murmur_webkit_writing_tools_chain(chain,n,false));
         chain[i]=saved;
     }
+    WebkitFrame text_input[]={ NEGATIVE_FRAMES };
+    assert(!murmur_webkit_writing_tools_chain(text_input,sizeof(text_input)/sizeof(*text_input),false));
     WebkitFrame partial[]={
         {"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
             "+[NSWritingToolsCoordinator isWritingToolsAvailable]"},
@@ -362,7 +366,7 @@ int main(void) {
     load->writing_tools=murmur_webkit_writing_tools_chain(chain,n,false);
     assert(murmur_webkit_inventory("MURMUR_TEST_WRITING_TOOLS_INVENTORY"));
 }
-'''.replace('FRAMES', frames)
+'''.replace('NEGATIVE_FRAMES', negative).replace('FRAMES', frames)
         with tempfile.TemporaryDirectory(prefix='murmur-writing-tools-') as directory:
             path = Path(directory)
             (path / 'test.m').write_text(source)
