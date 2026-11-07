@@ -151,38 +151,12 @@ fn main() {
 }
 #[cfg(target_os = "macos")]
 fn audio_self_test() {
-    use murmur_ui::meetings::{model::Channel, playback::*};
-    use std::{
-        sync::Arc,
-        time::{Duration, Instant},
-    };
-    let output =
-        Arc::new(NativeSink::new().unwrap_or_else(|_| panic!("native output unavailable")));
-    let control = Control::new(output.clone());
-    let mut player = Player::new(
-        Arc::new(fixtures::SyntheticAudio),
-        control.clone(),
-        "fixture-1".into(),
+    use murmur_ui::meetings::playback::NativeSink;
+    let output = std::sync::Arc::new(
+        NativeSink::new().unwrap_or_else(|_| panic!("native output unavailable")),
     );
-    for (position, channel) in [
-        (0, Channel::All),
-        (1000, Channel::Them),
-        (62000, Channel::Me),
-    ] {
-        player
-            .play(position, channel)
-            .unwrap_or_else(|_| panic!("native playback admission failed"));
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while output.played_frames() < 1600 {
-            player
-                .pump()
-                .unwrap_or_else(|_| panic!("native playback failed"));
-            assert!(Instant::now() < deadline, "native output made no progress");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        control.pause();
-        assert_eq!(output.queued_frames(), 0);
-    }
+    fixtures::audio_self_test(output)
+        .unwrap_or_else(|_| panic!("native playback self-test failed"));
     println!(
         "MURMUR_MEETINGS_AUDIO=PASS native AVAudioEngine play/pause/seek/channel; synthetic PCM only"
     );

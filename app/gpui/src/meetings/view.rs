@@ -6,7 +6,7 @@ impl Meetings {
         _w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let Some(s) = self.model.snapshot.as_ref() else {
+        let Some(s) = self.model.snapshot.clone() else {
             return vec![];
         };
         let p = Palette::get(cx);
@@ -14,7 +14,12 @@ impl Meetings {
             .filter_map(|index| s.meetings.get(index))
             .map(|meeting| {
                 let id = meeting.id.clone();
-                let selected = s.detail.as_ref().is_some_and(|d| d.session.id == id);
+                let selected = self
+                    .list_selection
+                    .as_ref()
+                    .or_else(|| s.detail.as_ref().map(|d| &d.session.id))
+                    == Some(&id);
+                let focus = self.focus_for(&format!("meeting-{id}"), cx);
                 let title = meeting
                     .title
                     .clone()
@@ -28,6 +33,7 @@ impl Meetings {
                     .overflow_hidden()
                     .child(
                         Button::new(format!("meeting-{id}"), title)
+                            .track_focus(&focus)
                             .toggled(selected)
                             .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx))),
                     )
@@ -62,7 +68,11 @@ impl Meetings {
             .gap(px(4.))
             .child(label.to_owned())
             .when_some(self.fields.get(key), |d, s| {
-                d.child(TextField::new(s, label.to_owned()).disabled(disabled))
+                d.child(
+                    TextField::new(s, label.to_owned())
+                        .with_scroll_parent(&self.detail_scroll)
+                        .disabled(disabled),
+                )
             })
     }
     fn notice(text: impl Into<SharedString>, alert: bool) -> Stateful<Div> {
@@ -108,12 +118,19 @@ impl Meetings {
                             .gap(px(4.))
                             .child("Attendees, one per line")
                             .when_some(self.attendees.as_ref(), |v, state| {
-                                v.child(
-                                    gpui_component::input::Textarea::new(state)
-                                        .aria_label("Attendees, one per line")
-                                        .disabled(disabled)
-                                        .h(px(64.)),
-                                )
+                                v.relative()
+                                    .child(crate::data_components::focus_reveal(
+                                        state.read(cx).focus_handle(cx),
+                                        Some(self.detail_scroll.clone()),
+                                        w,
+                                        cx,
+                                    ))
+                                    .child(
+                                        gpui_component::input::Textarea::new(state)
+                                            .aria_label("Attendees, one per line")
+                                            .disabled(disabled)
+                                            .h(px(64.)),
+                                    )
                             }),
                     )
                     .child(
@@ -121,13 +138,13 @@ impl Meetings {
                             .flex()
                             .gap(px(8.))
                             .child(
-                                Button::new("save-details", "Save details")
+                                self.detail_button("save-details", "Save details")
                                     .size(ButtonSize::Compact)
                                     .disabled(disabled)
                                     .on_click(cx.listener(|s, _, _, cx| s.save_metadata(cx))),
                             )
                             .child(
-                                Button::new("cancel-name", "Cancel naming")
+                                self.detail_button("cancel-name", "Cancel naming")
                                     .size(ButtonSize::Compact)
                                     .on_click(cx.listener(|s, _, w, cx| {
                                         s.naming = false;
@@ -162,17 +179,15 @@ impl Meetings {
                         ),
                 )
                 .child(div().text_size(px(12.)).text_color(p.muted).child(format!(
-                        "{} · {} · {}",
-                        chrono::DateTime::from_timestamp_millis(d.session.started_at_ms)
-                            .map(|t| t.format("%a, %b %e, %Y %H:%M").to_string())
-                            .unwrap_or_default(),
-                        duration(d.session.duration_ms),
-                        if d.session.retain_audio {
-                            "Audio kept"
-                        } else {
-                            "Transcript only"
-                        }
-                    )))
+                    "{} · {} · {}",
+                    local_datetime(d.session.started_at_ms),
+                    duration(d.session.duration_ms),
+                    if d.session.retain_audio {
+                        "Audio kept"
+                    } else {
+                        "Transcript only"
+                    }
+                )))
                 .when(
                     !d.session.attendees.is_empty() || d.session.title_source.is_some(),
                     |v| {
@@ -193,7 +208,7 @@ impl Meetings {
                     },
                 )
                 .child(
-                    Button::new(
+                    self.detail_button(
                         "rename",
                         if d.session.title.is_some() {
                             "Rename"
@@ -223,7 +238,7 @@ impl Meetings {
                     cx,
                 ))
                 .child(
-                    Button::new(
+                    self.detail_button(
                         "delete-meeting",
                         if confirming {
                             "Confirm delete…"
@@ -259,13 +274,13 @@ impl Meetings {
                     let token = event.token.clone();
                     let selected = self.calendar_selection.as_ref() == Some(&token);
                     picker = picker.child(
-                        Button::new(
+                        self.detail_button(
                             format!("calendar-event-{index}"),
                             format!(
                                 "{} · {} – {} · Attendees: {}",
                                 event.title,
-                                event.start_ms,
-                                event.end_ms,
+                                local_datetime(event.start_ms),
+                                local_datetime(event.end_ms),
                                 event.attendees.join(", ")
                             ),
                         )
@@ -295,7 +310,7 @@ impl Meetings {
                             .disabled(disabled || token.is_none()),
                         )
                         .child(
-                            Button::new("calendar-cancel", "Cancel calendar lookup")
+                            self.detail_button("calendar-cancel", "Cancel calendar lookup")
                                 .size(ButtonSize::Compact)
                                 .on_click(cx.listener(|s, _, w, cx| {
                                     s.close_calendar(cx);
@@ -318,7 +333,7 @@ impl Meetings {
                     .gap(px(8.))
                     .child(Self::notice(*message, false))
                     .child(
-                        Button::new("manual-name", "Name manually")
+                        self.detail_button("manual-name", "Name manually")
                             .on_click(cx.listener(|s, _, w, cx| s.name(w, cx))),
                     );
                 if !unsupported {
@@ -386,7 +401,7 @@ impl Meetings {
                         self.seek_state = Some(state);
                         self.seek.update(cx, |range, cx| {
                             range.set_max(state.0.min(i64::MAX as u64) as i64, cx);
-                            range.set(state.1 as i64, state.2, w, cx);
+                            range.set_playback_position(state.1 as i64, state.2, w, cx);
                         });
                     }
                     self.channel_control.update(cx, |c, cx| {
@@ -454,7 +469,7 @@ impl Meetings {
             .when(b.unavailable>0,|v|v.child(Self::notice(format!("{} retained audio segments are missing and will be left out. The manifest lists them, so the bundle is incomplete.",b.unavailable),true)))
             .when(b.audio_bytes>b.max_bytes,|v|v.child(Self::notice("This is over the bundle limit. Use Export… for the transcript on its own.",true)))
             .child(self.button("bundle-save","Choose location…",Action::BundleExport{id:id.clone(),format:self.format},cx))
-            .child(Button::new("cancel-bundle","Cancel").size(ButtonSize::Compact).on_click(cx.listener(|s,_,_,cx|{if let Some(s)=&mut s.model.snapshot{s.bundle=None;}cx.notify();}))));
+            .child(self.detail_button("cancel-bundle","Cancel").size(ButtonSize::Compact).on_click(cx.listener(|s,_,_,cx|{if let Some(s)=&mut s.model.snapshot{s.bundle=None;}cx.notify();}))));
         }
         if self.format.captions() {
             content=content.child(Self::notice(if d.finished(){"One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included."}else{"Stop this meeting before exporting captions."},false));
@@ -466,7 +481,7 @@ impl Meetings {
                 .gap(px(8.))
                 .child(format!("Transcript · {} segments", d.segments.len()))
                 .child(
-                    Button::new(
+                    self.detail_button(
                         "speakers",
                         format!(
                             "Speakers: {}, {}{}",
@@ -581,7 +596,7 @@ impl Meetings {
                 let channel = segment.channel;
                 let start = segment.start_ms;
                 row = row.child(
-                    Button::new(
+                    self.detail_button(
                         format!("segment-play-{}", segment.id),
                         format!("Play segment at {}, {canonical} channel", timestamp(start)),
                     )
@@ -624,7 +639,7 @@ impl Meetings {
             if pieces > 1 {
                 let key = segment.id;
                 row = row.child(
-                    Button::new(
+                    self.detail_button(
                         format!("segment-text-{key}"),
                         format!("Transcript text page {} of {pieces} · Next", index + 1),
                     )
@@ -642,7 +657,7 @@ impl Meetings {
                     .flex()
                     .gap(px(8.))
                     .child(
-                        Button::new("previous-transcript", "Previous transcript page")
+                        self.detail_button("previous-transcript", "Previous transcript page")
                             .disabled(self.page == 0)
                             .on_click(cx.listener(|s, _, _, cx| {
                                 s.page = s.page.saturating_sub(1);
@@ -651,7 +666,7 @@ impl Meetings {
                     )
                     .child(format!("{} / {pages}", self.page + 1))
                     .child(
-                        Button::new("next-transcript", "Next transcript page")
+                        self.detail_button("next-transcript", "Next transcript page")
                             .disabled(self.page + 1 == pages)
                             .on_click(cx.listener(|s, _, _, cx| {
                                 s.page += 1;
@@ -805,4 +820,14 @@ impl Render for Meetings {
         }
         root
     }
+}
+
+pub(super) fn local_datetime(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%a, %b %e, %Y %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
 }

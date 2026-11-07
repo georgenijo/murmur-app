@@ -55,8 +55,9 @@ pub struct Onboarding {
 }
 impl Onboarding {
     pub fn new(host: Rc<dyn Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
+        let scroll = ScrollHandle::new();
         let modes = cx.new(|cx| {
-            Choices::new(
+            let mut choices = Choices::new(
                 "Recording trigger",
                 ChoiceKind::Dropdown,
                 [
@@ -69,7 +70,9 @@ impl Onboarding {
                 .collect(),
                 w,
                 cx,
-            )
+            );
+            choices.scroll_parent = Some(scroll.clone());
+            choices
         });
         let options = crate::settings::schema::ROWS
             .iter()
@@ -83,13 +86,15 @@ impl Onboarding {
             })
             .unwrap();
         let keys = cx.new(|cx| {
-            Choices::new(
+            let mut choices = Choices::new(
                 "Trigger key",
                 ChoiceKind::Dropdown,
                 options.iter().map(|(v, l)| Choice::new(*v, *l)).collect(),
                 w,
                 cx,
-            )
+            );
+            choices.scroll_parent = Some(scroll.clone());
+            choices
         });
         let subscriptions = vec![
             cx.subscribe(&modes, |s, _, e: &SelectionChanged, cx| {
@@ -119,7 +124,7 @@ impl Onboarding {
             heading: cx.focus_handle().tab_stop(false),
             primary: cx.focus_handle(),
             focused_step: None,
-            scroll: ScrollHandle::new(),
+            scroll,
             operation: None,
             visit_started: Instant::now(),
             last_poll: Instant::now(),
@@ -163,6 +168,7 @@ impl Onboarding {
         }
         self.model.detach();
         self.operation = None;
+        self.cancelling = false;
         self.selected_model.clear();
         self.recording_mode.clear();
         self.trigger_key.clear();
@@ -234,13 +240,14 @@ impl Onboarding {
                         Some(Action::Complete { .. } | Action::ResumeExisting) => {
                             self.finished = true
                         }
-                        Some(Action::Download(_)) if !self.cancelling => {
+                        Some(Action::Download(id)) if !self.cancelling => {
                             if self
                                 .model
                                 .snapshot
                                 .as_ref()
-                                .is_some_and(|s| s.installed(&self.selected_model))
+                                .is_some_and(|s| s.installed(&id))
                             {
+                                self.selected_model = id;
                                 self.advance(cx);
                             }
                         }
@@ -305,6 +312,10 @@ impl Onboarding {
         }
     }
     pub fn request(&mut self, action: Action, cx: &mut Context<Self>) {
+        // The retained download owns cancellation until its terminal receipt.
+        if self.downloading() {
+            return;
+        }
         let Some(ticket) = self.model.begin() else {
             return;
         };
@@ -472,7 +483,12 @@ impl Onboarding {
         "Continue".into()
     }
     fn activate(&mut self, cx: &mut Context<Self>) {
-        if self.model.pending || self.downloading() || self.mic_wait.is_some() || self.finished {
+        if self.model.pending
+            || self.downloading()
+            || self.mic_wait.is_some()
+            || self.model.snapshot.is_none()
+            || self.finished
+        {
             return;
         }
         if self.step == Step::Done {
@@ -520,12 +536,18 @@ impl Onboarding {
         cx.notify();
     }
     fn cancel_download(&mut self, cx: &mut Context<Self>) {
-        if !self.downloading() || self.cancelling {
+        let Some(Action::Download(id)) = self.operation.clone() else {
+            return;
+        };
+        if !self.model.attached || self.cancelling {
             return;
         }
         self.cancelling = true;
         if !self.model.pending {
-            let _ = self.model.begin();
+            if self.model.begin().is_none() {
+                self.cancelling = false;
+                return;
+            }
             self.authority.sync(&self.model);
         }
         let ticket = self.model.ticket();
@@ -533,10 +555,20 @@ impl Onboarding {
             Request {
                 ticket,
                 lease: self.authority.lease(ticket),
-                action: Action::CancelDownload(self.selected_model.clone()),
+                action: Action::CancelDownload(id),
             },
             self.inbox.clone(),
         );
+        cx.notify();
+    }
+    fn body_button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+        Button::new(id, label).with_scroll_parent(Some(&self.scroll))
+    }
+    fn select_model(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.downloading() {
+            return;
+        }
+        self.selected_model = id;
         cx.notify();
     }
     fn default_navigation(&self) -> bool {
@@ -609,6 +641,13 @@ impl Render for Onboarding {
                     .role(Role::Heading)
                     .aria_label(title)
                     .track_focus(&self.heading)
+                    .relative()
+                    .child(crate::data_components::focus_reveal(
+                        self.heading.clone(),
+                        Some(self.scroll.clone()),
+                        w,
+                        cx,
+                    ))
                     .text_size(px(24.))
                     .line_height(px(30.))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -620,6 +659,14 @@ impl Render for Onboarding {
         }
         if let Some(problem) = self.model.problem {
             body=body.child(div().id("setup-error").role(Role::Alert).aria_label(problem.message()).text_color(p.danger).child(if self.step==Step::Done {"Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model."}else{problem.message()}));
+        }
+        if self.model.snapshot.is_none() && self.model.problem.is_some() {
+            let e = cx.entity();
+            body = body.child(
+                self.body_button("retry-setup", "Retry")
+                    .disabled(self.model.pending)
+                    .on_click(move |_, _, cx| e.update(cx, |s, cx| s.request(Action::Read, cx))),
+            );
         }
         if let Some(permission) = self.step.permission() {
             let access = self.access();
@@ -695,7 +742,7 @@ impl Render for Onboarding {
             {
                 let e = cx.entity();
                 body = body.child(
-                    Button::new(
+                    self.body_button(
                         "reset-permission",
                         if permission == Permission::Calendar {
                             "Reset Calendar permission…"
@@ -714,7 +761,7 @@ impl Render for Onboarding {
             {
                 let e = cx.entity();
                 body = body.child(
-                    Button::new(
+                    self.body_button(
                         "recheck-permission",
                         if access == Access::Denied {
                             "Check again"
@@ -771,7 +818,7 @@ impl Render for Onboarding {
                                 .flex_col()
                                 .gap(px(4.))
                                 .child(
-                                    Button::new(
+                                    self.body_button(
                                         SharedString::from(format!("model-{}", model.id)),
                                         caption,
                                     )
@@ -785,8 +832,7 @@ impl Render for Onboarding {
                                     .on_click(
                                         move |_, _, cx| {
                                             e.update(cx, |s, cx| {
-                                                s.selected_model = id.clone();
-                                                cx.notify();
+                                                s.select_model(id.clone(), cx);
                                             })
                                         },
                                     ),
@@ -807,7 +853,7 @@ impl Render for Onboarding {
             }
             if self.downloading() {
                 let e = cx.entity();
-                body=body.child(Progress::new("Model installation in progress",snapshot.download_percent.map(|v|f64::from(v)/100.))).child(Button::new("cancel-download",if self.cancelling{"Cancelling…"}else{"Cancel download"}).disabled(self.cancelling).on_click(move|_,_,cx|e.update(cx,|s,cx|s.cancel_download(cx)))).child("Cancel to go back or choose another model. Retry resumes supported downloads.");
+                body=body.child(Progress::new("Model installation in progress",snapshot.download_percent.map(|v|f64::from(v)/100.))).child(self.body_button("cancel-download",if self.cancelling{"Cancelling…"}else{"Cancel download"}).disabled(self.cancelling).on_click(move|_,_,cx|e.update(cx,|s,cx|s.cancel_download(cx)))).child("Cancel to go back or choose another model. Retry resumes supported downloads.");
             }
             if self.model.problem.is_some() && self.selected_model == CURATED[0] {
                 for (id, label) in [
@@ -815,12 +861,15 @@ impl Render for Onboarding {
                     ("parakeet-tdt-0.6b-v2-fp16", "Use CPU Parakeet"),
                 ] {
                     let e = cx.entity();
-                    body = body.child(Button::new(id, label).on_click(move |_, _, cx| {
-                        e.update(cx, |s, cx| {
-                            s.selected_model = id.into();
-                            cx.notify();
-                        })
-                    }));
+                    body = body.child(
+                        self.body_button(id, label)
+                            .disabled(self.downloading())
+                            .on_click(move |_, _, cx| {
+                                e.update(cx, |s, cx| {
+                                    s.select_model(id.into(), cx);
+                                })
+                            }),
+                    );
                 }
             }
         }

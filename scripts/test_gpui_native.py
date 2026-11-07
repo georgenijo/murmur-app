@@ -1,4 +1,5 @@
-"""Compile native shims against synthetic views/panels; never show windows."""
+"""Exercise native glue and own-process AppKit policy with synthetic fixtures;
+never show windows."""
 from pathlib import Path
 import platform
 import subprocess
@@ -483,14 +484,17 @@ class WebkitSourcePolicyTests(unittest.TestCase):
     def test_attributed_inventory_parser(self):
         from scripts.check_gpui_goldens import check_inventory
         import json
-        valid = dict(pid=1, webkitImages=5, axAttributed=5, unattributed=0,
+        valid = dict(pid=1, webkitImages=5, axAttributed=5, writingToolsAttributed=0, unattributed=0,
                      startupWebkitImages=0, linkageViolations=0)
         def parse(value):
             return check_inventory('MURMUR_TEST_INVENTORY=' + json.dumps(value),
                                    'MURMUR_TEST_INVENTORY')
         self.assertEqual(parse(valid), valid)
+        mixed = {**valid, 'axAttributed': 2, 'writingToolsAttributed': 3}
+        self.assertEqual(parse(mixed), mixed)
         for field, value in [('unattributed', 1), ('axAttributed', 4),
                              ('startupWebkitImages', 1), ('linkageViolations', 1),
+                             ('writingToolsAttributed', 1), ('writingToolsAttributed', True),
                              ('webkitImages', -1), ('pid', True)]:
             with self.subTest(field=field), self.assertRaises(AssertionError):
                 parse({**valid, field: value})
@@ -511,6 +515,146 @@ class WebkitSourcePolicyTests(unittest.TestCase):
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'dyld policy requires macOS')
 class WebkitPolicyTests(unittest.TestCase):
+    def test_recorded_writing_tools_chain_is_narrow_and_counted(self):
+        self.check_recorded_writing_tools_chain('webkit-appkit-writing-tools.json')
+
+    def test_recorded_macos26_writing_tools_chain_is_narrow_and_counted(self):
+        self.check_recorded_writing_tools_chain('webkit-appkit-writing-tools-macos26.json')
+
+    def check_recorded_writing_tools_chain(self, fixture):
+        import json
+        from scripts.check_gpui_goldens import check_inventory
+        recorded = json.loads((ROOT / 'tests/fixtures/gpui' / fixture).read_text())
+        text_input = json.loads((ROOT / 'tests/fixtures/gpui/webkit-appkit-writing-tools.json').read_text())
+        frames = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
+                             for f in recorded['chain'])
+        negative = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
+                               for f in text_input['negativeChain'])
+        source = r'''
+#include "webkit_policy.m"
+#include <assert.h>
+int main(int argc, char **argv) {
+    (void)argv;
+    assert(murmur_webkit_start());
+    WebkitFrame chain[] = { FRAMES };
+    unsigned n=sizeof(chain)/sizeof(*chain);
+    assert(murmur_webkit_writing_tools_chain(chain,n,false));
+    assert(!murmur_webkit_ax_chain(chain,n,false));
+    assert(!murmur_webkit_writing_tools_chain(chain,n,true));
+    assert(!murmur_webkit_writing_tools_chain(NULL,n,false));
+    // Every prefix, unresolved frame, path spoof, and symbol change fails,
+    // including missing symbols below AppKit in the Rust entry-point frames.
+    for (unsigned i=0; i<n; i++) {
+        assert(!murmur_webkit_writing_tools_chain(chain,i,false));
+        WebkitFrame saved=chain[i];
+        for (unsigned j=0; j<4; j++) {
+            strcpy(chain[i].symbol,((const char *[]){"","<redacted>","???","<unknown>"})[j]);
+            assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        }
+        chain[i]=saved; chain[i].image[0]=0;
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+        strcpy(chain[i].symbol,"-[WKWebView initWithFrame:]");
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+    }
+    for (unsigned i=0; i<n; i++) {
+        if (strcmp(chain[i].image,"/usr/lib/dyld") &&
+            !strstr(chain[i].image,"/AppKit.framework/") &&
+            !strstr(chain[i].image,"/SoftLinking.framework/")) continue;
+        WebkitFrame saved=chain[i];
+        strcpy(chain[i].image,"/synthetic/AppKit.framework/AppKit");
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+        if (!strcmp(chain[i].image,"/usr/lib/dyld")) continue;
+        strcpy(chain[i].symbol,"unrelated_probe");
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved;
+        // Each probe/launch frame is required, in its recorded position.
+        memmove(&chain[i],&chain[i+1],(n-i-1)*sizeof(*chain));
+        assert(!murmur_webkit_writing_tools_chain(chain,n-1,false));
+        memmove(&chain[i+1],&chain[i],(n-i-1)*sizeof(*chain));
+        chain[i]=saved;
+        WebkitFrame next=chain[i+1];
+        chain[i]=next; chain[i+1]=saved;
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved; chain[i+1]=next;
+    }
+    WebkitFrame text_input[]={ NEGATIVE_FRAMES };
+    assert(!murmur_webkit_writing_tools_chain(text_input,sizeof(text_input)/sizeof(*text_input),false));
+    WebkitFrame partial[]={
+        {"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+            "+[NSWritingToolsCoordinator isWritingToolsAvailable]"},
+        {"/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
+            "-[NSApplication(NSMenuUpdating) _addTextInputMenuItems:]"},
+        {"/usr/lib/dyld","start"},
+    };
+    assert(!murmur_webkit_writing_tools_chain(partial,3,false));
+    // A correctly named marker in dyld's place cannot impersonate AppKit.
+    WebkitFrame saved=chain[0];
+    strcpy(chain[0].image,"/synthetic/Murmur");
+    strcpy(chain[0].symbol,"WritingToolsUILibraryCore");
+    assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+    chain[0]=saved;
+    WebkitLoad *load=&loads[load_count++];
+    strcpy(load->image,"/System/Library/Frameworks/WebKit.framework/Versions/A/WebKit");
+    memcpy(load->frames,chain,sizeof(chain)); load->count=n;
+    load->writing_tools=murmur_webkit_writing_tools_chain(chain,n,false);
+    assert(murmur_webkit_inventory("MURMUR_TEST_WRITING_TOOLS_INVENTORY"));
+    if (argc>1) image_added(NULL,0); // Even an attributed inventory closes observation.
+}
+'''.replace('NEGATIVE_FRAMES', negative).replace('FRAMES', frames)
+        with tempfile.TemporaryDirectory(prefix='murmur-writing-tools-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
+                            '-framework', 'Foundation', '-I', str(ROOT / 'app/gpui/native'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            output = subprocess.check_output([str(path / 'test')], text=True, timeout=30)
+            inventory = check_inventory(output, 'MURMUR_TEST_WRITING_TOOLS_INVENTORY')
+            self.assertEqual(inventory['writingToolsAttributed'], 1)
+            self.assertEqual(inventory['axAttributed'], 0)
+            late = subprocess.run([str(path / 'test'), 'late'], capture_output=True, timeout=30)
+            self.assertEqual(late.returncode, 86)
+
+    def test_appkit_main_menu_launch_inventory(self):
+        # A real AppKit startup regression: no HID, clipboard, text view, or
+        # production data. Context-menu opt-out must not disguise this probe.
+        from scripts.check_gpui_goldens import check_inventory
+        source = r'''
+#import <AppKit/AppKit.h>
+#include "webkit_policy.m"
+#include <assert.h>
+int main(void) { @autoreleasepool {
+    assert(murmur_webkit_start());
+    NSApplication *app=NSApplication.sharedApplication;
+    NSMenu *menu=[[NSMenu alloc] initWithTitle:@"Synthetic QA"];
+    NSMenuItem *item=[[NSMenuItem alloc] initWithTitle:@"Edit" action:NULL keyEquivalent:@""];
+    item.submenu=[[NSMenu alloc] initWithTitle:@"Edit"];
+    for (NSString *s in @[@"cut:",@"copy:",@"paste:",@"undo:"]) {
+        [item.submenu addItem:[[NSMenuItem alloc] initWithTitle:s action:NSSelectorFromString(s) keyEquivalent:@""]];
+    }
+    [menu addItem:item]; app.mainMenu=menu;
+    [NSTimer scheduledTimerWithTimeInterval:0.1 repeats:NO block:^(NSTimer *timer) {
+        (void)timer;
+        bool ok=murmur_webkit_inventory("MURMUR_TEST_APPKIT_INVENTORY");
+        _exit(ok?0:1);
+    }];
+    [app run];
+} }
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-appkit-menu-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
+                            '-framework', 'AppKit', '-I', str(ROOT / 'app/gpui/native'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            result = subprocess.run([str(path / 'test')], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0,
+                             f'AppKit launch exited {result.returncode}\n'
+                             f'stdout:\n{result.stdout}\nstderr:\n{result.stderr}')
+            check_inventory(result.stdout, 'MURMUR_TEST_APPKIT_INVENTORY')
+
     def test_classifier_linkage_and_zero_baseline(self):
         source = r'''
 #include <pthread.h>
@@ -708,6 +852,17 @@ int main(int argc, char **argv) {
             for schedule in ('during-output', 'after-flush', 'after-return'):
                 result = subprocess.run([str(path / 'test'), schedule], timeout=30)
                 self.assertEqual(result.returncode, 86, schedule)
+
+
+@unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
+class MeetingPlaybackTests(unittest.TestCase):
+    def test_cancel_never_waits_for_start_and_configuration_change_invalidates_output(self):
+        with tempfile.TemporaryDirectory(prefix='murmur-meeting-output-') as directory:
+            executable = Path(directory) / 'test'
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AVFoundation',
+                            str(ROOT / 'scripts/fixtures/meeting_playback_test.m'),
+                            '-o', str(executable)], check=True)
+            subprocess.run([str(executable)], check=True, timeout=20)
 
 
 if __name__ == '__main__':

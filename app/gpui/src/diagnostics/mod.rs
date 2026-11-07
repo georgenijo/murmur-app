@@ -88,6 +88,8 @@ pub struct Diagnostics {
     restore_focus: Option<FocusHandle>,
     confirmation_origins: BTreeMap<String, FocusHandle>,
     panel_scroll: ScrollHandle,
+    run_back_focus: FocusHandle,
+    run_origins: BTreeMap<String, FocusHandle>,
     report_titles: Vec<(String, String)>,
     navigation: u64,
     pending_reads: BTreeMap<Lane, (Ticket, Option<String>)>,
@@ -196,11 +198,33 @@ impl Diagnostics {
             .map(|id| (id.to_owned(), cx.focus_handle().tab_stop(true)))
             .collect(),
             panel_scroll: ScrollHandle::new(),
+            run_back_focus: cx.focus_handle().tab_stop(true),
+            run_origins: BTreeMap::new(),
             report_titles: vec![],
             navigation: 0,
             pending_reads: BTreeMap::new(),
             fixture: false,
         };
+        for chart in s.charts.iter().chain(std::iter::once(&s.stage_chart)) {
+            chart.update(cx, |chart, _| {
+                chart.scroll_parent = Some(s.panel_scroll.clone())
+            });
+        }
+        s.events.update(cx, |list, _| {
+            list.scroll_parent = Some(s.panel_scroll.clone())
+        });
+        for picker in [
+            &s.field,
+            &s.kind,
+            &s.outcome,
+            &s.baseline,
+            &s.candidate,
+            &s.build,
+        ] {
+            picker.update(cx, |picker, _| {
+                picker.scroll_parent = Some(s.panel_scroll.clone())
+            });
+        }
         s.subscriptions
             .push(cx.subscribe(&tabs, |s, _, e: &TabChanged, cx| {
                 s.model.navigate(Tab::ALL[e.0]);
@@ -541,6 +565,25 @@ impl Diagnostics {
     // render/disabled conditions at callback time, even if no draw has happened
     // since a host notification changed the model.
     fn restorable_origin(&self, focus: &FocusHandle) -> bool {
+        if focus == &self.run_back_focus {
+            return self.model.tab() == Tab::Runs
+                && self
+                    .model
+                    .selected_run
+                    .as_ref()
+                    .is_some_and(|id| self.model.runs.iter().any(|run| &run.id == id));
+        }
+        if let Some((id, _)) = self.run_origins.iter().find(|(_, handle)| *handle == focus) {
+            return self.model.tab() == Tab::Runs
+                && self.model.selected_run.is_none()
+                && self.model.runs.iter().any(|run| {
+                    &run.id == id
+                        && self.kind_filter.is_none_or(|kind| kind == run.kind)
+                        && self
+                            .outcome_filter
+                            .is_none_or(|outcome| outcome == run.outcome)
+                });
+        }
         let Some((id, _)) = self.confirmation_origins.iter().find(|(_, h)| *h == focus) else {
             return false;
         };
@@ -576,31 +619,45 @@ impl Diagnostics {
             }
         }
     }
+    fn button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+        Button::new(id, label).with_scroll_parent(Some(&self.panel_scroll))
+    }
+    fn defer_focus(&self, focus: FocusHandle, w: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.entity().downgrade();
+        let navigation = self.model.navigation;
+        let selected_run = self.model.selected_run.clone();
+        let attachment = self.model.ticket(Lane::Events).attachment;
+        w.on_next_frame(move |w, cx| {
+            let _ = entity.update(cx, |s, cx| {
+                if s.confirm.is_none()
+                    && s.model.navigation == navigation
+                    && s.model.selected_run == selected_run
+                    && s.subscription.is_some()
+                    && s.model.ticket(Lane::Events).attachment == attachment
+                {
+                    let target = if s.restorable_origin(&focus) {
+                        focus.clone()
+                    } else {
+                        s.tabs.read(cx).focus_handle(cx)
+                    };
+                    w.focus(&target, cx);
+                }
+            });
+        });
+    }
+    fn open_run(&mut self, id: String, w: &mut Window, cx: &mut Context<Self>) {
+        self.model.selected_run = Some(id);
+        self.panel_scroll.set_offset(Point::default());
+        self.sync(cx);
+        self.defer_focus(self.run_back_focus.clone(), w, cx);
+        cx.notify();
+    }
     fn dismiss(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.confirm = None;
         self.confirm_ticket = None;
         if let Some(focus) = self.restore_focus.take() {
-            // Background controls are remounted by this draw. Focusing before
-            // then would target a handle absent from the current dispatch tree.
-            let entity = cx.entity().downgrade();
-            let navigation = self.navigation;
-            let attachment = self.model.ticket(Lane::Events).attachment;
-            w.on_next_frame(move |w, cx| {
-                let _ = entity.update(cx, |s, cx| {
-                    if s.confirm.is_none()
-                        && s.model.navigation == navigation
-                        && s.subscription.is_some()
-                        && s.model.ticket(Lane::Events).attachment == attachment
-                    {
-                        let target = if s.restorable_origin(&focus) {
-                            focus.clone()
-                        } else {
-                            s.tabs.read(cx).focus_handle(cx)
-                        };
-                        w.focus(&target, cx);
-                    }
-                });
-            });
+            // Background controls are remounted by this draw.
+            self.defer_focus(focus, w, cx);
         }
         cx.notify();
     }
@@ -689,9 +746,10 @@ impl Diagnostics {
                 .role(Role::Alert)
                 .child("Diagnostics health could not be verified. Dictation remains available.")
                 .child(
-                    Button::new("health-refresh", "Refresh store health").on_click(
-                        cx.listener(|s, _, _, _| s.request(Lane::Health, RequestKind::Read)),
-                    ),
+                    self.button("health-refresh", "Refresh store health")
+                        .on_click(
+                            cx.listener(|s, _, _, _| s.request(Lane::Health, RequestKind::Read)),
+                        ),
                 )
                 .into_any_element();
         }
@@ -708,7 +766,7 @@ impl Diagnostics {
         }
         if h.can_recover() {
             d = d.child(
-                Button::new(
+                self.button(
                     "recover",
                     if h.recommended == Recovery::Reinitialize {
                         "Reinitialize store…"
@@ -742,7 +800,7 @@ impl Diagnostics {
         let mut filters = self.toolbar();
         for stream in Stream::ALL {
             filters = filters.child(
-                Button::new(
+                self.button(
                     ("stream", stream as usize),
                     format!(
                         "{} {}",
@@ -768,7 +826,7 @@ impl Diagnostics {
         let mut levels = self.toolbar();
         for level in Level::ALL {
             levels = levels.child(
-                Button::new(
+                self.button(
                     ("level", level as usize),
                     format!(
                         "{} {}",
@@ -799,7 +857,7 @@ impl Diagnostics {
             .child(
                 self.toolbar()
                     .child(
-                        Button::new("copy-events", "Copy filtered events")
+                        self.button("copy-events", "Copy filtered events")
                             .disabled(self.model.filtered_events().is_empty())
                             .on_click(cx.listener(|s, _, _, _| {
                                 s.request(
@@ -809,7 +867,7 @@ impl Diagnostics {
                             })),
                     )
                     .child(
-                        Button::new("clear-events", "Clear events…")
+                        self.button("clear-events", "Clear events…")
                             .track_focus(&self.confirmation_origins["clear-events"])
                             .on_click(cx.listener(|s, _, w, cx| {
                                 s.open_confirm(Confirm::Events, Lane::Events, w, cx)
@@ -819,12 +877,15 @@ impl Diagnostics {
             .child(filters)
             .child(levels)
             .child(
-                self.toolbar()
-                    .child(self.field.clone())
-                    .child(div().w(px(240.)).child(TextField::new(
-                        &self.correlation,
-                        format!("Filter by {}", self.model.filters.field.label()),
-                    ))),
+                self.toolbar().child(self.field.clone()).child(
+                    div().w(px(240.)).child(
+                        TextField::new(
+                            &self.correlation,
+                            format!("Filter by {}", self.model.filters.field.label()),
+                        )
+                        .with_scroll_parent(&self.panel_scroll),
+                    ),
+                ),
             )
             .when(self.model.loading.contains(&Lane::Events), |d| {
                 d.child(Progress::new("Loading events", None))
@@ -847,12 +908,18 @@ impl Diagnostics {
                 .flex_col()
                 .gap(px(12.))
                 .child(
-                    Button::new("back-runs", "Back to runs").on_click(cx.listener(
-                        |s, _, _, cx| {
-                            s.model.selected_run = None;
+                    self.button("back-runs", "Back to runs")
+                        .track_focus(&self.run_back_focus)
+                        .on_click(cx.listener(|s, _, w, cx| {
+                            let id = s.model.selected_run.take();
+                            let target = id
+                                .as_ref()
+                                .and_then(|id| s.run_origins.get(id))
+                                .cloned()
+                                .unwrap_or_else(|| s.tabs.read(cx).focus_handle(cx));
+                            s.defer_focus(target, w, cx);
                             cx.notify();
-                        },
-                    )),
+                        })),
                 )
                 .child(format!(
                     "{} · {} · {}",
@@ -905,8 +972,8 @@ impl Diagnostics {
                     ),
                 )
                 .child(
-                    Button::new("show-events", "Show correlated events").on_click(cx.listener(
-                        |s, _, w, cx| {
+                    self.button("show-events", "Show correlated events")
+                        .on_click(cx.listener(|s, _, w, cx| {
                             if let Some(r) = s
                                 .model
                                 .selected_run
@@ -934,8 +1001,7 @@ impl Diagnostics {
                                 s.sync(cx);
                                 cx.notify();
                             }
-                        },
-                    )),
+                        })),
                 )
                 .into_any_element();
         }
@@ -957,11 +1023,11 @@ impl Diagnostics {
                 self.toolbar()
                     .child(self.kind.clone())
                     .child(self.outcome.clone())
-                    .child(Button::new("refresh-runs", "Refresh runs").on_click(
+                    .child(self.button("refresh-runs", "Refresh runs").on_click(
                         cx.listener(|s, _, _, _| s.request(Lane::Performance, RequestKind::Read)),
                     ))
                     .child(
-                        Button::new("clear-performance", "Clear performance data…")
+                        self.button("clear-performance", "Clear performance data…")
                             .track_focus(&self.confirmation_origins["clear-performance"])
                             .on_click(cx.listener(|s, _, w, cx| {
                                 s.open_confirm(Confirm::Performance, Lane::Performance, w, cx)
@@ -1008,18 +1074,13 @@ impl Diagnostics {
                     runs.into_iter()
                         .map(|r| {
                             let id = r.id.clone();
-                            Button::new(
+                            self.button(
                                 SharedString::from(format!("run-{id}")),
                                 format!("View details for {} · {}", r.kind.label(), id),
                             )
                             .caption("Details")
-                            .on_click(cx.listener(
-                                move |s, _, _, cx| {
-                                    s.model.selected_run = Some(id.clone());
-                                    s.sync(cx);
-                                    cx.notify();
-                                },
-                            ))
+                            .track_focus(&self.run_origins[&id])
+                            .on_click(cx.listener(move |s, _, w, cx| s.open_run(id.clone(), w, cx)))
                         })
                         .collect(),
                 ),
@@ -1033,12 +1094,11 @@ impl Diagnostics {
             .gap(px(12.))
             .child(self.health(cx))
             .child(
-                Button::new("refresh-performance", "Refresh performance").on_click(cx.listener(
-                    |s, _, _, _| {
+                self.button("refresh-performance", "Refresh performance")
+                    .on_click(cx.listener(|s, _, _, _| {
                         s.request(Lane::Performance, RequestKind::Read);
                         s.request(Lane::Health, RequestKind::Read);
-                    },
-                )),
+                    })),
             )
             .child("Content-free resources · missing observations remain unavailable")
             .when(self.model.loading.contains(&Lane::Performance), |d| {
@@ -1048,42 +1108,42 @@ impl Diagnostics {
             .into_any_element()
     }
     fn compare_view(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut d =
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .child("Report comparison · explicit JSON imports stay in this Diagnostics session")
-                .child(
-                    self.toolbar()
-                        .child(
-                            Button::new("import", "Import JSON")
-                                .disabled(
-                                    self.model
-                                        .reports
-                                        .iter()
-                                        .filter(|r| r.source == reports::Source::Imported)
-                                        .count()
-                                        >= reports::MAX_IMPORTS,
-                                )
-                                .on_click(cx.listener(|s, _, _, _| {
-                                    s.request(Lane::Reports, RequestKind::ImportReport)
-                                })),
-                        )
-                        .child(Button::new("clear-imports", "Clear imports").on_click(
-                            cx.listener(|s, _, _, cx| {
+        let mut d = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child("Report comparison · explicit JSON imports stay in this Diagnostics session")
+            .child(
+                self.toolbar()
+                    .child(
+                        self.button("import", "Import JSON")
+                            .disabled(
+                                self.model
+                                    .reports
+                                    .iter()
+                                    .filter(|r| r.source == reports::Source::Imported)
+                                    .count()
+                                    >= reports::MAX_IMPORTS,
+                            )
+                            .on_click(cx.listener(|s, _, _, _| {
+                                s.request(Lane::Reports, RequestKind::ImportReport)
+                            })),
+                    )
+                    .child(
+                        self.button("clear-imports", "Clear imports")
+                            .on_click(cx.listener(|s, _, _, cx| {
                                 s.model.clear_imports();
                                 s.authority.sync(&s.model);
                                 s.sync(cx);
                                 cx.notify();
-                            }),
-                        )),
-                )
-                .child(
-                    self.toolbar()
-                        .child(self.baseline.clone())
-                        .child(self.candidate.clone()),
-                );
+                            })),
+                    ),
+            )
+            .child(
+                self.toolbar()
+                    .child(self.baseline.clone())
+                    .child(self.candidate.clone()),
+            );
         if let Some(e) = self.model.import_error {
             d = d.child(div().id("error").role(Role::Alert).child(e.message()));
         }
@@ -1197,26 +1257,25 @@ impl Diagnostics {
             .filter(|l| self.build_filter.as_ref().is_none_or(|b| b == &l.build))
             .collect();
         div().flex().flex_col().gap(px(12.)).child("UI latency map · content-free observations by build")
-            .child(self.toolbar().child(self.build.clone()).child(Button::new("copy-latency","Copy latency JSON").disabled(filtered.is_empty()).on_click(cx.listener(|s,_,_,_|{
+            .child(self.toolbar().child(self.build.clone()).child(self.button("copy-latency","Copy latency JSON").disabled(filtered.is_empty()).on_click(cx.listener(|s,_,_,_|{
                 let values:Vec<_>=s.model.latency.iter().filter(|l|s.build_filter.as_ref().is_none_or(|b|b==&l.build)).map(|l|serde_json::json!({"build":l.build,"from":l.from,"to":l.to,"count":l.count,"firstFrameMs":l.first_frame.value(),"commitMs":l.commit.value(),"paintedMs":l.painted.value(),"p95Ms":l.p95.value()})).collect();
                 s.request(Lane::Latency,RequestKind::CopyLatency(serde_json::json!({"schemaVersion":1,"edges":values}).to_string()));
-            }))).child(Button::new("clear-latency","Clear latency samples…").track_focus(&self.confirmation_origins["clear-latency"]).on_click(cx.listener(|s,_,w,cx|s.open_confirm(Confirm::Latency,Lane::Latency,w,cx)))))
+            }))).child(self.button("clear-latency","Clear latency samples…").track_focus(&self.confirmation_origins["clear-latency"]).on_click(cx.listener(|s,_,w,cx|s.open_confirm(Confirm::Latency,Lane::Latency,w,cx)))))
             .child(self.table("latency-table","UI latency edges",&["Build / route","Samples","First frame","Commit","Paint proxy","p95"],filtered.iter().map(|l|vec![format!("{} · {} → {}",l.build,l.from,l.to),l.count.to_string(),l.first_frame.display("ms"),l.commit.display("ms"),l.painted.display("ms"),l.p95.display("ms")]).collect()))
             .when(filtered.is_empty(),|d|d.child("No latency samples for this build")).into_any_element()
     }
     fn dictation_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut d=div().flex().flex_col().gap(px(12.)).child("Private dictation captures · arm or disarm from the main Murmur window")
             .child("One-shot consent expires after ten minutes. Captures remain local for at most seven days. Upload requires separate review and confirmation.")
-            .child(Button::new("refresh-captures","Refresh private captures").on_click(cx.listener(|s,_,_,_|s.request(Lane::Captures,RequestKind::Read))));
+            .child(self.button("refresh-captures","Refresh private captures").on_click(cx.listener(|s,_,_,_|s.request(Lane::Captures,RequestKind::Read))));
         if let Some(c) = self.model.capture_detail.as_ref() {
             d = d.child(
-                Button::new("back-captures", "Back to private captures").on_click(cx.listener(
-                    |s, _, _, cx| {
+                self.button("back-captures", "Back to private captures")
+                    .on_click(cx.listener(|s, _, _, cx| {
                         s.model.clear_capture_review();
                         s.authority.sync(&s.model);
                         cx.notify();
-                    },
-                )),
+                    })),
             );
             for (label, text) in &c.sections {
                 d = d.child(
@@ -1239,7 +1298,7 @@ impl Diagnostics {
             }
             let id = c.id.clone();
             d = d.child(
-                Button::new("upload-capture", "Upload reviewed private capture…")
+                self.button("upload-capture", "Upload reviewed private capture…")
                     .track_focus(&self.confirmation_origins["upload-capture"])
                     .on_click(cx.listener(move |s, _, w, cx| {
                         s.open_confirm(Confirm::Upload(id.clone()), Lane::Captures, w, cx)
@@ -1249,7 +1308,7 @@ impl Diagnostics {
             for c in &self.model.captures {
                 let id = c.id.clone();
                 d = d.child(
-                    Button::new(
+                    self.button(
                         SharedString::from(format!("capture-{id}")),
                         format!(
                             "Review capture · recording {} · created {} · expires {}{}",
@@ -1273,7 +1332,7 @@ impl Diagnostics {
                 );
                 let id = c.id.clone();
                 d = d.child(
-                    Button::new(
+                    self.button(
                         SharedString::from(format!("delete-{id}")),
                         format!("Delete local capture for recording {}…", c.recording_id),
                     )
@@ -1311,6 +1370,13 @@ impl Render for Diagnostics {
         for capture in &self.model.captures {
             self.confirmation_origins
                 .entry(format!("delete-{}", capture.id))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
+        self.run_origins
+            .retain(|id, _| self.model.runs.iter().any(|run| &run.id == id));
+        for run in &self.model.runs {
+            self.run_origins
+                .entry(run.id.clone())
                 .or_insert_with(|| cx.focus_handle().tab_stop(true));
         }
         let p = Palette::get(cx);
@@ -1394,7 +1460,7 @@ impl Render for Diagnostics {
             Tab::Compare => Lane::Reports,
             Tab::Dictation => Lane::Captures,
         }) {
-            root=root.child(div().id("error").role(Role::Alert).child("Diagnostics could not be refreshed. Retry to reconnect; existing data remains visible.").child(Button::new("retry","Retry diagnostics").on_click(cx.listener(|s,_,_,_|{for l in Lane::ALL{s.request(l,RequestKind::Read);}}))));
+            root=root.child(div().id("error").role(Role::Alert).child("Diagnostics could not be refreshed. Retry to reconnect; existing data remains visible.").child(self.button("retry","Retry diagnostics").on_click(cx.listener(|s,_,_,_|{for l in Lane::ALL{s.request(l,RequestKind::Read);}}))));
         }
         root.child(
             div()

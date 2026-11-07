@@ -37,6 +37,10 @@ impl Sink for FakeSink {
         s.blocks.push(b.to_vec());
         Ok(())
     }
+    fn healthy(&self, g: u64) -> bool {
+        let s = self.0.lock().unwrap();
+        s.started && s.generation == g
+    }
     fn queued_frames(&self) -> u64 {
         self.0.lock().unwrap().queued
     }
@@ -269,5 +273,199 @@ fn pause_keeps_consumed_position_and_drops_decoded_audio() {
     p.pause();
     assert_eq!(p.position_ms(), 1100);
     assert!(p.tracks.iter().all(|t| t.decoded.is_empty()));
+    assert_eq!(sink.queued_frames(), 0);
+}
+
+#[test]
+fn stopped_output_is_detected_even_with_a_full_queue_and_can_restart() {
+    let sink = Arc::new(FakeSink::default());
+    let control = Control::new(sink.clone());
+    let mut player = Player::new(Arc::new(AudioSource::default()), control, "fixture".into());
+    assert!(player.play(0, Channel::All).is_ok());
+    for _ in 0..3 {
+        assert!(player.pump().unwrap_or_else(|_| panic!("pump failed")));
+    }
+    assert_eq!(sink.0.lock().unwrap().queued, 4800);
+    sink.0.lock().unwrap().started = false;
+    assert!(matches!(player.pump(), Err(Error::Output)));
+    assert!(!player.pump().unwrap_or_else(|_| panic!("pump failed")));
+    assert!(player.play(100, Channel::All).is_ok());
+    assert!(player.pump().unwrap_or_else(|_| panic!("pump failed")));
+}
+
+#[test]
+fn retired_worker_teardown_cannot_revoke_a_new_play_generation() {
+    let sink = Arc::new(FakeSink::default());
+    let control = Control::new(sink.clone());
+    let retired = control.next();
+    let current = control.next();
+    assert!(sink.start(current).is_ok());
+    control.pause_if_current(retired);
+    assert!(control.current(current));
+    assert!(sink.healthy(current));
+    control.pause_if_current(current);
+    assert!(!sink.healthy(current));
+}
+
+// A synthetic native start that stays blocked until explicitly released. Every
+// start records its generation and worker identity before entering the stall.
+#[derive(Default)]
+struct StalledSink {
+    output: FakeSink,
+    stalled: Mutex<bool>,
+    release: Condvar,
+    attempts: Mutex<Vec<(u64, std::thread::ThreadId)>>,
+    in_flight: AtomicUsize,
+    peak: AtomicUsize,
+}
+impl Sink for StalledSink {
+    fn reset(&self, generation: u64) {
+        self.output.reset(generation);
+    }
+    fn start(&self, generation: u64) -> Result<(), Error> {
+        let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(in_flight, Ordering::SeqCst);
+        self.attempts
+            .lock()
+            .unwrap()
+            .push((generation, std::thread::current().id()));
+        drop(
+            self.release
+                .wait_while(self.stalled.lock().unwrap(), |s| *s)
+                .unwrap(),
+        );
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        self.output.start(generation)
+    }
+    fn enqueue(&self, generation: u64, samples: &[f32]) -> Result<(), Error> {
+        self.output.enqueue(generation, samples)
+    }
+    fn healthy(&self, generation: u64) -> bool {
+        self.output.healthy(generation)
+    }
+    fn queued_frames(&self) -> u64 {
+        self.output.queued_frames()
+    }
+    fn played_frames(&self) -> u64 {
+        self.output.played_frames()
+    }
+}
+// Always release the test stall, even when an assertion fails.
+struct ReleaseStart(Arc<StalledSink>);
+impl Drop for ReleaseStart {
+    fn drop(&mut self) {
+        *self.0.stalled.lock().unwrap() = false;
+        self.0.release.notify_all();
+    }
+}
+fn wait_for(mut predicate: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !predicate() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker did not make progress"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+fn stalled_worker() -> (Worker, Arc<StalledSink>, Control, ReleaseStart) {
+    let sink = Arc::new(StalledSink {
+        stalled: Mutex::new(true),
+        ..Default::default()
+    });
+    let control = Control::new(sink.clone());
+    let worker = Worker::new(
+        Arc::new(AudioSource::default()),
+        control.clone(),
+        "synthetic-session".into(),
+    );
+    (worker, sink.clone(), control, ReleaseStart(sink))
+}
+#[test]
+fn stalled_start_coalesces_many_pause_play_cycles_on_one_worker() {
+    let (mut worker, sink, control, release) = stalled_worker();
+    assert!(worker.play(0, Channel::Me).is_ok());
+    wait_for(|| sink.attempts.lock().unwrap().len() == 1);
+    let thread = worker.thread.as_ref().unwrap().thread().id();
+    for position in 0..1000 {
+        worker.pause();
+        assert!(worker.poll().is_none());
+        assert!(worker.play(position, Channel::Me).is_ok());
+        assert_eq!(worker.thread.as_ref().unwrap().thread().id(), thread);
+    }
+    worker.pause();
+    assert!(worker.play(1000, Channel::Them).is_ok());
+    let latest = control.epoch.load(Ordering::SeqCst);
+    assert_eq!(sink.attempts.lock().unwrap().len(), 1);
+    assert_eq!(sink.peak.load(Ordering::SeqCst), 1);
+    assert!(worker.poll().is_none());
+    drop(release);
+    wait_for(|| sink.output.queued_frames() == 4800);
+    assert_eq!(
+        *sink.attempts.lock().unwrap(),
+        vec![(1, thread), (latest, thread)]
+    );
+    assert_eq!(sink.peak.load(Ordering::SeqCst), 1);
+    assert!(sink.healthy(latest));
+    assert_eq!(worker.position_ms(), 1000);
+    assert!(matches!(
+        worker.poll(),
+        Some(Ok(Progress {
+            playing: true,
+            position_ms: 1000
+        }))
+    ));
+    // Only the final position/channel is decoded and enqueued after the stall.
+    assert!(
+        sink.output.0.lock().unwrap().blocks[0]
+            .iter()
+            .all(|s| (*s - 0.25).abs() < 0.00001)
+    );
+    worker.pause();
+    let thread = worker.thread.take().unwrap();
+    drop(worker);
+    wait_for(|| thread.is_finished());
+    assert!(thread.join().is_ok());
+}
+#[test]
+fn pause_replaces_pending_play_while_start_is_stalled() {
+    let (mut worker, sink, _, release) = stalled_worker();
+    assert!(worker.play(0, Channel::All).is_ok());
+    wait_for(|| sink.attempts.lock().unwrap().len() == 1);
+    for _ in 0..1000 {
+        worker.pause();
+        assert!(worker.play(1000, Channel::Them).is_ok());
+    }
+    worker.pause();
+    assert!(worker.pending.0.lock().unwrap().play.is_none());
+    drop(release);
+    wait_for(|| sink.in_flight.load(Ordering::SeqCst) == 0);
+    let thread = worker.thread.take().unwrap();
+    drop(worker);
+    wait_for(|| thread.is_finished());
+    assert!(thread.join().is_ok());
+    assert_eq!(sink.attempts.lock().unwrap().len(), 1);
+    assert_eq!(sink.queued_frames(), 0);
+}
+#[test]
+fn drop_fences_stalled_worker_and_discards_pending_play_without_waiting() {
+    let (mut worker, sink, control, release) = stalled_worker();
+    assert!(worker.play(0, Channel::All).is_ok());
+    wait_for(|| sink.attempts.lock().unwrap().len() == 1);
+    assert!(worker.play(1000, Channel::Them).is_ok());
+    let pending = worker.pending.clone();
+    let sink_references = Arc::strong_count(&sink);
+    let before = std::time::Instant::now();
+    drop(worker);
+    assert!(before.elapsed() < std::time::Duration::from_millis(200));
+    assert!(pending.0.lock().unwrap().shutdown);
+    assert!(pending.0.lock().unwrap().play.is_none());
+    assert!(!control.current(1));
+    assert_eq!(sink.in_flight.load(Ordering::SeqCst), 1);
+    drop(release);
+    // The detached worker exits and releases its resources once start returns.
+    wait_for(|| Arc::strong_count(&pending) == 1);
+    assert!(Arc::strong_count(&sink) < sink_references);
+    assert_eq!(sink.attempts.lock().unwrap().len(), 1);
     assert_eq!(sink.queued_frames(), 0);
 }

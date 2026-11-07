@@ -23,6 +23,13 @@ use std::{
     rc::Rc,
     time::{Duration, Instant},
 };
+#[derive(PartialEq, Eq)]
+struct ConfirmationOwner {
+    detail: Option<String>,
+    recording_generation: u64,
+    recording_session: Option<String>,
+    busy: bool,
+}
 pub struct Meetings {
     pub model: Workspace<Snapshot>,
     host: Rc<dyn Host>,
@@ -48,6 +55,7 @@ pub struct Meetings {
     page: usize,
     text_pages: BTreeMap<u64, usize>,
     list_scroll: UniformListScrollHandle,
+    list_selection: Option<String>,
     detail_scroll: ScrollHandle,
     seek_state: Option<(u64, u64, bool)>,
 }
@@ -108,9 +116,14 @@ impl Meetings {
             page: 0,
             text_pages: BTreeMap::new(),
             list_scroll: UniformListScrollHandle::new(),
+            list_selection: None,
             detail_scroll: ScrollHandle::new(),
             seek_state: None,
         };
+        for choices in [&format_control, &channel_control] {
+            choices.update(cx, |c, _| c.scroll_parent = Some(s.detail_scroll.clone()));
+        }
+        seek.update(cx, |r, _| r.scroll_parent = Some(s.detail_scroll.clone()));
         for key in ["title", "attendees", "me", "them"] {
             s.fields
                 .insert(key.into(), cx.new(|cx| TextFieldState::new(w, cx)));
@@ -236,9 +249,12 @@ impl Meetings {
     }
     pub fn drain(&mut self, cx: &mut Context<Self>) {
         for event in self.inbox.drain() {
+            let ownership = self.confirmation_owner();
             if self.model.event(event) {
                 self.authority.sync(&self.model);
-                self.confirmation = None;
+                if ownership != self.confirmation_owner() {
+                    self.confirmation = None;
+                }
                 if let Some(s) = self.model.snapshot.clone() {
                     let id = s.detail.as_ref().map(|d| d.session.id.clone());
                     if s.busy() {
@@ -277,6 +293,18 @@ impl Meetings {
     pub fn request(&mut self, action: Action, cx: &mut Context<Self>) {
         if !self.allowed(&action) {
             return;
+        }
+        if matches!(
+            action,
+            Action::Back
+                | Action::Playback {
+                    action: PlaybackAction::Pause,
+                    ..
+                }
+        ) {
+            // Pause and navigation remain immediate while startup is pending.
+            self.host.pause_playback();
+            self.model.invalidate();
         }
         let Some(ticket) = self.model.begin() else {
             return;
@@ -386,6 +414,7 @@ impl Meetings {
         self.request(Action::List { query, limit: 50 }, cx);
     }
     pub fn select(&mut self, id: String, cx: &mut Context<Self>) {
+        self.list_selection = Some(id.clone());
         self.host.pause_playback();
         self.cancel_transient();
         self.model.invalidate();
@@ -549,6 +578,17 @@ impl Meetings {
             cx,
         );
     }
+    fn confirmation_owner(&self) -> Option<ConfirmationOwner> {
+        self.model.snapshot.as_ref().map(|s| ConfirmationOwner {
+            detail: s.detail.as_ref().map(|d| d.session.id.clone()),
+            recording_generation: s.recording_generation,
+            recording_session: s.recording_session.clone(),
+            busy: s.busy(),
+        })
+    }
+    fn detail_button(&self, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+        Button::new(id, label).with_scroll_parent(Some(&self.detail_scroll))
+    }
     fn button(
         &mut self,
         id: impl Into<String>,
@@ -558,14 +598,71 @@ impl Meetings {
     ) -> Button {
         let id = id.into();
         let f = self.focus_for(&id, cx);
-        let disabled = self.model.pending || !self.allowed(&action);
-        Button::new(id, label)
+        let cancels_playback = matches!(
+            action,
+            Action::Back
+                | Action::Playback {
+                    action: PlaybackAction::Pause,
+                    ..
+                }
+        );
+        let disabled = (self.model.pending && !cancels_playback) || !self.allowed(&action);
+        Button::new(id.clone(), label)
+            .when(
+                !matches!(
+                    id.as_str(),
+                    "back" | "retry" | "check-access" | "audio-settings" | "load-more"
+                ),
+                |b| b.with_scroll_parent(Some(&self.detail_scroll)),
+            )
             .size(ButtonSize::Compact)
             .track_focus(&f)
             .disabled(disabled)
             .on_click(cx.listener(move |s, _, _, cx| s.request(action.clone(), cx)))
     }
+    fn list_key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) -> bool {
+        if e.prefer_character_input
+            || e.keystroke.modifiers.platform
+            || e.keystroke.modifiers.alt
+            || e.keystroke.modifiers.control
+        {
+            return false;
+        }
+        let Some(snapshot) = self.model.snapshot.as_ref() else {
+            return false;
+        };
+        let focused = snapshot.meetings.iter().position(|m| {
+            self.focus
+                .get(&format!("meeting-{}", m.id))
+                .is_some_and(|f| f.is_focused(w))
+        });
+        let Some(current) = focused else {
+            return false;
+        };
+        let index = match e.keystroke.key.as_str() {
+            "down" => (current + 1).min(snapshot.meetings.len() - 1),
+            "up" => current.saturating_sub(1),
+            "home" => 0,
+            "end" => snapshot.meetings.len() - 1,
+            _ => return false,
+        };
+        let id = snapshot.meetings[index].id.clone();
+        self.list_scroll
+            .scroll_to_item(index, ScrollStrategy::Nearest);
+        let focus = self.focus_for(&format!("meeting-{id}"), cx);
+        w.focus(&focus, cx);
+        if index != current {
+            self.select(id, cx);
+        }
+        w.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+        true
+    }
     fn key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) {
+        if self.list_key(e, w, cx) {
+            return;
+        }
         if e.is_held {
             return;
         }

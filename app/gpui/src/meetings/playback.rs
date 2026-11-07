@@ -5,7 +5,7 @@ use super::model::Channel;
 use std::{
     collections::VecDeque,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -61,11 +61,12 @@ pub trait Source: Send + Sync {
     ) -> Result<Vec<u8>, Error>;
 }
 pub trait Sink: Send + Sync {
-    /// Atomically stop/clear output for a newer generation. Older resets cannot
-    /// resurrect a paused sink. enqueue/start check the same generation lock.
+    /// Fence a newer generation immediately; perform engine teardown on its worker.
+    /// Must never wait on engine startup or shutdown (callable from the UI).
     fn reset(&self, generation: u64);
     fn start(&self, generation: u64) -> Result<(), Error>;
     fn enqueue(&self, generation: u64, mono: &[f32]) -> Result<(), Error>;
+    fn healthy(&self, generation: u64) -> bool;
     fn queued_frames(&self) -> u64;
     fn played_frames(&self) -> u64;
 }
@@ -92,6 +93,22 @@ impl Control {
     }
     fn current(&self, g: u64) -> bool {
         self.epoch.load(Ordering::SeqCst) == g
+    }
+    fn pause_if_current(&self, generation: u64) {
+        // A worker may finish between the UI's new Play/Pause and teardown.
+        // Checking then incrementing separately could revoke the newer attempt.
+        if self
+            .epoch
+            .compare_exchange(
+                generation,
+                generation + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            self.sink.reset(generation + 1);
+        }
     }
 }
 struct Decoded {
@@ -150,7 +167,11 @@ impl Player {
         self.duration_ms
     }
     pub fn play(&mut self, position_ms: u64, channel: Channel) -> Result<(), Error> {
-        self.generation = self.control.next();
+        let generation = self.control.next();
+        self.start(generation, position_ms, channel)
+    }
+    fn start(&mut self, generation: u64, position_ms: u64, channel: Channel) -> Result<(), Error> {
+        self.generation = generation;
         self.playing = false;
         self.channel = channel;
         self.start_frame = position_ms.saturating_mul(RATE) / 1000;
@@ -159,6 +180,7 @@ impl Player {
         self.duration_ms = 0;
         self.check()?;
         self.control.sink.start(self.generation)?;
+        self.check()?;
         self.playing = true;
         Ok(())
     }
@@ -178,15 +200,16 @@ impl Player {
         let result = self.pump_inner();
         if result.is_err() {
             self.playing = false;
-            if self.control.current(self.generation) {
-                self.control.pause();
-            }
+            self.control.pause_if_current(self.generation);
             self.tracks = Default::default();
         }
         result
     }
     fn pump_inner(&mut self) -> Result<bool, Error> {
         self.check()?;
+        if !self.control.sink.healthy(self.generation) {
+            return Err(Error::Output);
+        }
         if self.control.sink.queued_frames() >= 3 * BLOCK as u64 {
             return Ok(true);
         }
@@ -205,7 +228,7 @@ impl Player {
             if self.control.sink.queued_frames() == 0 {
                 self.playing = false;
                 self.start_frame = end_frame;
-                self.control.pause();
+                self.control.pause_if_current(self.generation);
                 self.tracks = Default::default();
                 return Ok(false);
             }
@@ -322,8 +345,200 @@ impl Player {
 }
 impl Drop for Player {
     fn drop(&mut self) {
-        if self.control.current(self.generation) {
-            self.control.pause();
+        self.control.pause_if_current(self.generation);
+    }
+}
+/// One worker per player, with one replaceable pending Play and one progress
+/// mailbox. Cancellation fences immediately; no UI call waits on native audio.
+#[derive(Clone, Copy)]
+pub struct Progress {
+    pub position_ms: u64,
+    pub playing: bool,
+}
+type Mailbox = Arc<Mutex<Option<Result<Progress, Error>>>>;
+struct PlayRequest {
+    generation: u64,
+    position_ms: u64,
+    channel: Channel,
+    mailbox: Mailbox,
+}
+#[derive(Default)]
+struct Requests {
+    play: Option<PlayRequest>,
+    shutdown: bool,
+}
+type Pending = Arc<(Mutex<Requests>, Condvar)>;
+pub struct Worker {
+    source: Arc<dyn Source>,
+    control: Control,
+    session: String,
+    pending: Pending,
+    thread: Option<std::thread::JoinHandle<()>>,
+    updates: Option<Mailbox>,
+    start_ms: u64,
+    position_ms: u64,
+}
+impl Worker {
+    pub fn new(source: Arc<dyn Source>, control: Control, session: String) -> Self {
+        Self {
+            source,
+            control,
+            session,
+            pending: Default::default(),
+            thread: None,
+            updates: None,
+            start_ms: 0,
+            position_ms: 0,
+        }
+    }
+    pub fn play(&mut self, position_ms: u64, channel: Channel) -> Result<(), Error> {
+        // Reserve on the caller. The worker cannot mint a generation after a
+        // newer Play/Pause and thereby regain ownership.
+        let generation = self.control.next();
+        self.updates = None;
+        self.start_ms = position_ms;
+        self.position_ms = position_ms;
+        if self.thread.is_none() {
+            let pending = self.pending.clone();
+            let player = Player::new(
+                self.source.clone(),
+                self.control.clone(),
+                self.session.clone(),
+            );
+            self.thread = Some(
+                std::thread::Builder::new()
+                    .name("meeting-playback".into())
+                    .spawn(move || Self::run(player, pending))
+                    .map_err(|_| Error::Output)?,
+            );
+        }
+        let mailbox: Mailbox = Default::default();
+        self.pending
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .play = Some(PlayRequest {
+            generation,
+            position_ms,
+            channel,
+            mailbox: mailbox.clone(),
+        });
+        self.updates = Some(mailbox);
+        self.pending.1.notify_one();
+        Ok(())
+    }
+    fn run(mut player: Player, pending: Pending) {
+        let mut active: Option<PlayRequest> = None;
+        loop {
+            let request = {
+                let mut requests = pending.0.lock().unwrap_or_else(|p| p.into_inner());
+                loop {
+                    if requests.shutdown {
+                        return;
+                    }
+                    if let Some(request) = requests.play.take() {
+                        break Some(request);
+                    }
+                    if active
+                        .as_ref()
+                        .is_some_and(|r| player.control.current(r.generation))
+                    {
+                        break None;
+                    }
+                    // Pause has already fenced the sink. Release decoded audio
+                    // here without issuing a reset against a newer generation.
+                    active = None;
+                    player.playing = false;
+                    player.tracks = Default::default();
+                    requests = pending.1.wait(requests).unwrap_or_else(|p| p.into_inner());
+                }
+            };
+            // No request/mailbox lock is held across native or source calls.
+            let result = if let Some(request) = request {
+                let result = player.start(request.generation, request.position_ms, request.channel);
+                active = Some(request);
+                result
+            } else {
+                Ok(())
+            };
+            if result.is_err() {
+                player.control.pause_if_current(player.generation);
+            }
+            let update = result.and_then(|()| player.pump()).map(|playing| Progress {
+                position_ms: player.position_ms(),
+                playing,
+            });
+            let finished = !matches!(update, Ok(Progress { playing: true, .. }));
+            if let Some(request) = &active {
+                // Old mailboxes are discarded synchronously by Play/Pause.
+                *request.mailbox.lock().unwrap_or_else(|p| p.into_inner()) = Some(update);
+            }
+            if finished {
+                active = None;
+            }
+            let requests = pending.0.lock().unwrap_or_else(|p| p.into_inner());
+            if !requests.shutdown && requests.play.is_none() && active.is_some() {
+                // Wake promptly for replacement, pause, or shutdown; otherwise
+                // pump every ~20 ms with the existing 300 ms queue bound.
+                drop(
+                    pending
+                        .1
+                        .wait_timeout(requests, std::time::Duration::from_millis(20)),
+                );
+            }
+        }
+    }
+    pub fn poll(&mut self) -> Option<Result<Progress, Error>> {
+        let update = self
+            .updates
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()?;
+        if let Ok(progress) = update {
+            self.position_ms = progress.position_ms;
+        }
+        if !matches!(update, Ok(Progress { playing: true, .. })) {
+            self.updates = None;
+        }
+        Some(update)
+    }
+    pub fn position_ms(&self) -> u64 {
+        if self.updates.is_some() {
+            self.start_ms
+                .saturating_add(self.control.sink.played_frames().saturating_mul(1000) / RATE)
+        } else {
+            self.position_ms
+        }
+    }
+    pub fn pause(&mut self) {
+        self.position_ms = self.position_ms();
+        self.control.pause();
+        self.pending
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .play = None;
+        // Late start/progress/error results have no route back to the UI.
+        self.updates = None;
+        self.pending.1.notify_one();
+    }
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.pause();
+        self.pending
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .shutdown = true;
+        self.pending.1.notify_one();
+        if let Some(thread) = self.thread.take() {
+            // Never wait for a stalled Core Audio call. At most this one worker
+            // is detached; it releases its player/sink as soon as the call ends.
+            if thread.is_finished() {
+                let _ = thread.join();
+            }
         }
     }
 }
@@ -403,6 +618,9 @@ impl Sink for NativeSink {
             Err(Error::Revoked)
         }
     }
+    fn healthy(&self, g: u64) -> bool {
+        unsafe { murmur_meeting_output_healthy(self.0.as_ptr(), g) }
+    }
     fn queued_frames(&self) -> u64 {
         unsafe { murmur_meeting_output_queued(self.0.as_ptr()) }
     }
@@ -427,6 +645,7 @@ unsafe extern "C" {
         s: *const f32,
         len: usize,
     ) -> bool;
+    fn murmur_meeting_output_healthy(output: *mut std::ffi::c_void, g: u64) -> bool;
     fn murmur_meeting_output_queued(output: *mut std::ffi::c_void) -> u64;
     fn murmur_meeting_output_played(output: *mut std::ffi::c_void) -> u64;
     fn murmur_meeting_output_free(output: *mut std::ffi::c_void);
