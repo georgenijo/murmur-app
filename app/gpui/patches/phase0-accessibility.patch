@@ -1,0 +1,123 @@
+--- a/src/ax_focus_fix.m
++++ b/src/ax_focus_fix.m
+@@ -0,0 +1,22 @@
++#import <AppKit/AppKit.h>
++#import <objc/runtime.h>
++static IMP originalAppFocus;
++static id appFocusedElement(NSApplication *app, SEL cmd) {
++    id focused=[app.keyWindow.contentView accessibilityFocusedUIElement];
++    return focused ?: ((id(*)(id,SEL))originalAppFocus)(app,cmd);
++}
++// Production candidate: route window focus to AccessKit's content-view adapter.
++static id focusedElement(NSWindow *window, SEL cmd) {
++    id focused = [window.contentView accessibilityFocusedUIElement];
++    return focused ?: window;
++}
++void gpui0b_install_focus_hook(void) {
++    static BOOL installed=NO;
++    if (installed) return;
++    installed=YES;
++    Class cls = NSClassFromString(@"GPUIWindow");
++    class_addMethod(cls, @selector(accessibilityFocusedUIElement), (IMP)focusedElement, "@@:");
++    Class app=NSClassFromString(@"GPUIApplication");
++    originalAppFocus=class_getMethodImplementation(app,@selector(accessibilityFocusedUIElement));
++    class_addMethod(app,@selector(accessibilityFocusedUIElement),(IMP)appFocusedElement,"@@:");
++}
+--- a/src/input.rs
++++ b/src/input.rs
+@@ -666,12 +666,59 @@
+ 
+ impl Render for TextInput {
+     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
++        let content = self.content.clone();
++        let selection = self.selected_range.clone();
++        let reversed = self.selection_reversed;
++        let entity = cx.entity();
+         div()
+             .id("vocabulary-input")
+             .role(gpui::Role::TextInput)
+             .aria_label("Vocabulary test field")
+             .aria_value(self.content.clone())
+             .aria_placeholder(self.placeholder.clone())
++            .a11y_synthetic_children(move |builder| {
++                let id = builder.synthetic_node_id("text-run");
++                let lengths: Vec<u8> = content.graphemes(true).map(|g| g.len() as u8).collect();
++                let index = |byte| content[..byte].graphemes(true).count();
++                let (anchor, focus) = if reversed { (selection.end, selection.start) } else { (selection.start, selection.end) };
++                builder.parent_node().set_text_selection(accesskit::TextSelection {
++                    anchor: accesskit::TextPosition { node: id, character_index: index(anchor) },
++                    focus: accesskit::TextPosition { node: id, character_index: index(focus) },
++                });
++                let mut run = accesskit::Node::new(accesskit::Role::TextRun);
++                run.set_value(content.to_string());
++                run.set_character_lengths(lengths);
++                builder.push_child(id, run);
++            })
++            .on_a11y_action(gpui::AccessibleAction::SetTextSelection, {
++                let entity=entity.clone();
++                move |data, window, cx| {
++                    if let Some(accesskit::ActionData::SetTextSelection(selection))=data {
++                        entity.update(cx,|s,cx| {
++                            let byte = |i| s.content.grapheme_indices(true).nth(i).map(|(b,_)|b).unwrap_or(s.content.len());
++                            let a=byte(selection.anchor.character_index);let f=byte(selection.focus.character_index);
++                            s.selected_range=a.min(f)..a.max(f);s.selection_reversed=f<a;
++                            window.notify_text_selection_changed(&s.focus_handle);cx.notify();
++                        });
++                    }
++                }
++            })
++            .on_a11y_action(gpui::AccessibleAction::SetValue, {
++                let entity=entity.clone();
++                move |data,window,cx| {
++                    if let Some(accesskit::ActionData::Value(value))=data {
++                        entity.update(cx,|s,cx| {
++                            let end=s.content.encode_utf16().count();
++                            s.replace_text_in_range(Some(0..end),value,window,cx);
++                        });
++                    }
++                }
++            })
++            .on_a11y_action(gpui::AccessibleAction::ReplaceSelectedText, move |data,window,cx| {
++                if let Some(accesskit::ActionData::Value(value))=data {
++                    entity.update(cx,|s,cx|s.replace_text_in_range(None,value,window,cx));
++                }
++            })
+             .tab_stop(true)
+             .focus_visible(|s| s.border_color(rgb(0x277dba)))
+             .flex()
+--- a/vendor/accesskit_macos/src/node.rs
++++ b/vendor/accesskit_macos/src/node.rs
+@@ -1003,6 +1003,22 @@
+             .unwrap_or_else(|| NSRange::new(0, 0))
+         }
+ 
++        #[method(setAccessibilitySelectedText:)]
++        fn set_selected_text(&self, value: &NSString) {
++            self.resolve_with_context(|node, tree, context| {
++                if node.supports_text_ranges() && !node.is_read_only() {
++                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
++                        context.do_action(ActionRequest {
++                            action: Action::ReplaceSelectedText,
++                            target_tree,
++                            target_node,
++                            data: Some(ActionData::Value(value.to_string().into())),
++                        });
++                    }
++                }
++            });
++        }
++
+         #[method(setAccessibilitySelectedTextRange:)]
+         fn set_selected_text_range(&self, range: NSRange) {
+             self.resolve_with_context(|node, tree, context| {
+@@ -1234,6 +1250,10 @@
+                     || selector == sel!(setAccessibilitySelectedTextRange:)
+                 {
+                     return node.supports_text_ranges();
++                }
++                if selector == sel!(setAccessibilitySelectedText:) {
++                    return node.supports_text_ranges() && !node.is_read_only()
++                        && node.supports_action(Action::ReplaceSelectedText, &filter);
+                 }
+                 if selector == sel!(setAccessibilityValue:) {
+                     return (node.supports_text_ranges() && !node.is_read_only()) || node.supports_action(Action::SetValue, &filter);

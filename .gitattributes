@@ -1,0 +1,2 @@
+# Unified patches require a single-space prefix on blank context lines.
+app/gpui/patches/*.patch -whitespace

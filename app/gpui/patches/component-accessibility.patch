@@ -1,0 +1,116 @@
+--- a/crates/base/Cargo.toml
++++ b/crates/base/Cargo.toml
+@@ -16,13 +16,7 @@
+ [lib]
+ doctest = false
+ 
+-[[bench]]
+-name = "motion"
+-harness = false
+ 
+-[[bench]]
+-name = "text_view_scroll"
+-harness = false
+ 
+ [features]
+ gpui-fast = ["dep:gpui-fast"]
+--- a/crates/base/src/input/base/state.rs
++++ b/crates/base/src/input/base/state.rs
+@@ -5126,8 +5126,69 @@
+             self._pending_update = false;
+         }
+ 
++        // Murmur #998: Phase 0 text-range bridge, ported from the proven
++        // scratch Input to the component's sole editor/focus owner.
++        let expose_text = self.accessibility.as_ref().is_some_and(|a| a.value_exposed)
++            && !self.masked && (window.is_a11y_active() || cfg!(feature = "test-support"));
++        let text = expose_text.then(|| self.text.to_string()).unwrap_or_default();
++        let selection = *self.active_selection();
++        let text_node = Rc::new(Cell::new(None));
++        let text_node_for_tree = text_node.clone();
++        let disabled = self.disabled;
++        let readonly = self.readonly;
+         let element = div()
+             .id(EDITOR_ELEMENT_ID)
++            .a11y_synthetic_children(move |builder| {
++                    if disabled { builder.parent_node().set_disabled(); }
++                    if readonly { builder.parent_node().set_read_only(); }
++                    if !expose_text { return; }
++                    let id = builder.synthetic_node_id("murmur-text-run");
++                    text_node_for_tree.set(Some(id));
++                    let offsets = murmur_character_offsets(&text);
++                    let character_index = |byte| offsets.partition_point(|o| *o < byte);
++                    let (anchor, focus) = if selection.reversed {
++                        (selection.end, selection.start)
++                    } else { (selection.start, selection.end) };
++                    builder.parent_node().set_text_selection(gpui::accesskit::TextSelection {
++                        anchor: gpui::accesskit::TextPosition { node: id, character_index: character_index(anchor) },
++                        focus: gpui::accesskit::TextPosition { node: id, character_index: character_index(focus) },
++                    });
++                    let mut run = gpui::accesskit::Node::new(gpui::Role::TextRun);
++                    run.set_value(text);
++                    run.set_character_lengths(offsets.windows(2).map(|w| (w[1] - w[0]) as u8).collect::<Vec<_>>());
++                    builder.push_child(id, run);
++                })
++            .when(expose_text, |this| {
++                this.on_a11y_action(gpui::AccessibleAction::SetTextSelection, {
++                    let entity = entity.clone();
++                    move |data, window, cx| {
++                        if let Some(gpui::accesskit::ActionData::SetTextSelection(selection)) = data {
++                            entity.update(cx, |state, cx| {
++                                if state.disabled || Some(selection.anchor.node) != text_node.get()
++                                    || Some(selection.focus.node) != text_node.get() { return; }
++                                let text = state.text.to_string();
++                                let offsets = murmur_character_offsets(&text);
++                                let (Some(&a), Some(&f)) = (offsets.get(selection.anchor.character_index), offsets.get(selection.focus.character_index)) else { return; };
++                                state.set_selected_range_with_direction(a.min(f)..a.max(f), f < a, cx);
++                                window.notify_text_selection_changed(&state.focus_handle);
++                            });
++                        }
++                    }
++                })
++                .when(self.is_editable(), |this| this.on_a11y_action(gpui::AccessibleAction::ReplaceSelectedText, {
++                    let entity = entity.clone();
++                    move |data, window, cx| {
++                        if let Some(gpui::accesskit::ActionData::Value(value)) = data {
++                            entity.update(cx, |state, cx| {
++                                if state.is_editable() {
++                                    use gpui::EntityInputHandler;
++                                    state.replace_text_in_range(None, value, window, cx);
++                                }
++                            });
++                        }
++                    }
++                }))
++            })
+             .key_context(CONTEXT)
+             .when_some(self.accessibility.as_ref(), |this, accessibility| {
+                 this.when_some(accessibility.role, |this, role| this.role(role))
+@@ -5301,7 +5362,9 @@
+         // `Self` is concrete enough to name its own entity type.
+         M::register_actions(element, &entity, window)
+             .test_support()
+-            .track_focus(&self.focus_handle)
++            // Murmur: disabled fields remain in the dispatch tree so an
++            // existing focus can leave, but are never a new Tab destination.
++            .track_focus(&self.focus_handle.clone().tab_stop(!self.disabled))
+     }
+ }
+ 
+@@ -12993,3 +13056,16 @@
+         cx.notify();
+     }
+ }
++
++// AccessKit lengths are u8 UTF-8 byte lengths. Preserve graphemes normally;
++// split pathological >255-byte combining clusters at scalar boundaries rather
++// than truncate their length (the Phase 0 scratch cast was unchecked).
++fn murmur_character_offsets(text: &str) -> Vec<usize> {
++    let mut offsets = Vec::new();
++    for (start, grapheme) in text.grapheme_indices(true) {
++        if grapheme.len() <= u8::MAX as usize { offsets.push(start); }
++        else { offsets.extend(grapheme.char_indices().map(|(i, _)| start + i)); }
++    }
++    offsets.push(text.len());
++    offsets
++}

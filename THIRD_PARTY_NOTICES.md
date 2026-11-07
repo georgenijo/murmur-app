@@ -519,3 +519,18 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## GPUI native component workspace (draft stack #998)
+
+`app/gpui` uses the Apache-2.0 GPUI framework at Zed revision
+`654efae441bc8eb117d0042bb28cd7cf3570bdc9` and vendors GPUI Kit / gpui-component
+v0.9.0 (copyright its contributors, Apache-2.0). The vendored base, component,
+component-macros and assets crates retain their license files. Lucide's ISC
+license is retained with its icons. Upstream documentation is credited to
+GPUI Kit under its retained CC BY 4.0 documentation license.
+
+The vendored `accesskit_macos` 0.26.3 is MIT OR Apache-2.0, copyright the
+AccessKit contributors. Both license texts are retained. Murmur's focused
+UI element forwarding and text-selection fixes are recorded in
+[the native component contract](docs/draft/gpui-accessible-components.md).
+Zed's GPL `ui`, `editor`, and `ui_input` crates are not included.

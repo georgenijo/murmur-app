@@ -1,0 +1,88 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,46 +1,6 @@
+ [workspace]
+-default-members = ["crates/story"]
+-members = [
+-    "crates/kit",
+-    "crates/base",
+-    "crates/base/examples/wasm",
+-    "crates/base/examples/native",
+-    "crates/component-macros",
+-    "crates/story",
+-    "crates/story-web",
+-    "crates/component",
+-    "crates/assets",
+-    "crates/fps",
+-    "crates/webview",
+-    "examples/app_assets",
+-    "examples/fps_monitor",
+-    "examples/hello_world",
+-    "examples/input",
+-    "examples/editor",
+-    "examples/syntect",
+-    "examples/tig",
+-    "examples/brush",
+-    "examples/dock",
+-    "examples/html",
+-    "examples/large-text",
+-    "examples/markdown",
+-    "examples/stream-markdown",
+-    "examples/window_title",
+-    "examples/dialog_overlay",
+-    "examples/webview",
+-    "examples/system_monitor",
+-    "examples/focus_trap",
+-    "examples/tooltip_top_edge",
+-    "examples/sidebar",
+-    "examples/text_max_lines",
+-    "examples/text_selection",
+-    "examples/touch_selection",
+-    "examples/table_in_scrollable",
+-    "examples/markdown_table",
+-    "examples/ai_recipes",
+-    "examples/speech",
+-    "crates/shell",
+-]
++default-members = ["crates/component"]
++members = ["crates/base", "crates/component", "crates/component-macros", "crates/assets"]
+ resolver = "2"
+ 
+ [workspace.package]
+@@ -65,19 +25,18 @@
+ # onto a newer snapshot that gpui-component did not compile with (#3156). Bump
+ # every snapshot crate together with its Cargo.lock entry; `script/check-gpui-pin.ts`
+ # fails CI when a pin is not exact.
+-gpui = { package = "gpui-pre", version = "=0.3.11" }
+-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+-gpui_web = { package = "gpui-pre-web", version = "=0.3.11" }
++gpui = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", package = "gpui" }
++gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", package = "gpui_platform", default-features = false, features = ["font-kit", "runtime_shaders"] }
+ # Fast is optional; existing crates select it through their gpui-fast feature.
+ # Explicit package fields make Cargo use these dependency keys as Rust crate names;
+ # the packages declare the same library names as the pre backend.
+ gpui-fast = { package = "gpui-fast", version = "0.1.13", features = ["windows-manifest-provided-by-host"] }
+ gpui-fast-platform = { package = "gpui-fast-platform", version = "0.1.13", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+ gpui-fast-web = { package = "gpui-fast-web", version = "0.1.13" }
+-gpui_macros = { package = "gpui-pre-macros", version = "=0.3.11" }
+-reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.11" }
+-sum-tree = { package = "gpui-pre-sum-tree", version = "=0.3.11" }
+-reqwest = { package = "gpui-pre-reqwest", version = "=0.12.15", default-features = false, features = [
++gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", package = "gpui_macros" }
++reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", package = "reqwest_client" }
++sum-tree = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", package = "sum_tree" }
++reqwest = { git = "https://github.com/zed-industries/reqwest.git", rev = "33bc764aa15ff7b200bf7c93bd96e24878d53e14", package = "zed-reqwest", version = "0.12.15-zed", default-features = false, features = [
+     "charset",
+     "http2",
+     "macos-system-configuration",
+--- a/crates/component-macros/src/crate_path.rs
++++ b/crates/component-macros/src/crate_path.rs
+@@ -4,7 +4,7 @@
+ 
+ /// Resolve the consumer's GPUI API, preferring the Kit facade over a direct engine.
+ pub(crate) fn gpui() -> syn::Result<TokenStream> {
+-    for package in ["gpui-kit", "gpui-pre", "gpui-fast"] {
++    for package in ["gpui-kit", "gpui", "gpui-pre", "gpui-fast"] {
+         if let Ok(found) = crate_name(package) {
+             return Ok(found_crate_path(found));
+         }

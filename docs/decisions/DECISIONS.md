@@ -1,5 +1,27 @@
 # Decisions Log
 
+## 2026-11-06: Isolate the reusable GPUI component workspace (#998)
+
+**Decision:** Build the native presentation layer in `app/gpui`, a separate
+Cargo workspace/lockfile on Rust 1.98.1, with a one-way dependency on
+`murmur-core`. Vendor the four Apache-2.0 gpui-component v0.9.0 crates from the
+proven Phase 0 port. Keep its keyboard/editor infrastructure, add Murmur's
+styled wrappers and port the text-range patch to the existing editor owner.
+
+**Why:** Later screen ports need one reusable native layer while the shipping
+Tauri graph/toolchain remains independent. The pinned engine's TestWindow drops
+AX callbacks, so a test-only transport patch is applied to a private GPUI source
+copy in the task target directory; actual tree building and action dispatch are
+tested without live windows or modifying shared Cargo sources. Production GPUI
+continues to resolve to the exact Phase 0 git revision.
+
+**Status:** active (draft stack; live native and MacBook acceptance remain open).
+
+**References:** #998, #1011,
+[component contract](../draft/gpui-accessible-components.md),
+[Phase 0 exit](2026-11-05-gpui-phase-0-exit.md)
+
+
 ## 2026-11-06: Own the updater on minisign-verify 0.3 (#990)
 
 **Decision:** Use a Tauri-free in-house Rust updater on `minisign-verify`

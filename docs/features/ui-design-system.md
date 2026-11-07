@@ -29,6 +29,15 @@ values. New recurring measurements belong in `--ui-*`; one-off arbitrary
 Tailwind measurements in redesigned surfaces should be treated as a review
 failure.
 
+## GPUI native controls (draft stack)
+
+The native-parity build uses the same control geometry and semantic roles in
+`app/gpui`. Its reusable Button, Toggle, TextField, dropdown/list/navigation and
+motion APIs, accessibility contract, patch provenance, test commands and native
+QA handoff are documented in [GPUI accessible components](../draft/gpui-accessible-components.md).
+The shipping React primitives below remain active; no screen or test is retired
+by the shared native layer.
+
 ## Shared primitives
 
 `components/ui/AppSurface.tsx` owns the sans stack at the main, onboarding,

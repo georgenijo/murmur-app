@@ -51,6 +51,14 @@ and VoiceOver where applicable, and honor Reduce Motion and Reduce Transparency.
 Move Rust-loaded frontend fixtures to a neutral location before deleting their
 old owners, especially the overlay geometry and System Audio fixtures.
 
+## Shared native component coverage (3.1 / #998)
+
+The [accessible component layer](gpui-accessible-components.md) provides native
+button, switch, field, dropdown, list, navigation and motion tests. These are
+prerequisites for the screen acceptance flows below. No complete feature row
+is marked passed and no Vitest/Playwright assertion is retired by component
+coverage alone; later ports must list their concrete passing replacements.
+
 ## Phase 1 exit gates
 
 Rows D01, H01, and R02 test pieces of these gates. Phase 1 is not done until

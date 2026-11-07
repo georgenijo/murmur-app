@@ -266,7 +266,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_ci_pass_requires_every_parallel_job(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for job in ("policy", "visual-linux", "rust-lint"):
+        for job in ("policy", "visual-linux", "rust-lint", "gpui-macos"):
             with self.subTest(job=job):
                 result = f'            "${{{{ needs.{job}.result }}}}"'
                 start = workflow.index(result)
@@ -274,7 +274,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 mutated = workflow[:start] + workflow[end:]
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
-                needs = "needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos]"
+                needs = "needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos, gpui-macos]"
                 dropped = workflow.replace(needs, needs.replace(f", {job}", ""), 1)
                 self.assertNotEqual(workflow, dropped)
                 with self.assertRaises(AssertionError):

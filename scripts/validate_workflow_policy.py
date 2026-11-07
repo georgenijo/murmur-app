@@ -33,6 +33,7 @@ CI_BUILD_JOBS = (
     "visual-regression",
     "rust-lint",
     "rust-macos",
+    "gpui-macos",
 )
 CI_RUST_TEST_STEPS = (
     "Run tests",
