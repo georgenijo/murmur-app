@@ -6189,6 +6189,19 @@ fn single_line_accessibility_run(
     scroll_size: Size<Pixels>,
     scale: f32,
 ) -> Option<gpui::accesskit::Node> {
+    // Decide direction from source text: an RTL ligature (e.g. lam-alef) can
+    // have sorted glyph indices and nondecreasing x_for_index positions while
+    // collapsing a character to zero width. Explicit bidi formatting also
+    // needs visual-run support, even when the surrounding text is ASCII.
+    if text.chars().any(|ch| {
+        use unicode_bidi::BidiClass::*;
+        matches!(
+            unicode_bidi::bidi_class(ch),
+            R | AL | LRE | RLE | PDF | LRO | RLO | LRI | RLI | FSI | PDI
+        )
+    }) {
+        return None;
+    }
     let line = layout.lines.first()?;
     // x_for_index returns the first glyph with index >= the requested byte.
     // RTL glyphs can therefore produce nondecreasing but incorrect positions.

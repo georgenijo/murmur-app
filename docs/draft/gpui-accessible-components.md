@@ -46,7 +46,7 @@ attribution are retained. See [third-party notices](../../THIRD_PARTY_NOTICES.md
 | `app/gpui/native/ax_focus_fix.m` | Production hook forwards GPUIApplication and both GPUIWindow/GPUIPanel's `accessibilityFocusedUIElement` to the window content view's AccessKit adapter, with the original application fallback. Called idempotently on GPUI's main thread after platform initialization. No Tauri process installs it. |
 | `app/gpui/vendor/accesskit_macos/src/node.rs` | Phase 0 selected-text setter bridge; exposes `setAccessibilitySelectedText:` only for an editable text-range node advertising ReplaceSelectedText. |
 | `app/gpui/patches/component-accessibility.patch` | Ports the scratch text-range bridge to the component's existing editor; adds TextRun, UTF-8 grapheme lengths, directed selection, SetTextSelection and ReplaceSelectedText. Disabled editor focus remains dispatchable but is excluded from Tab order. |
-| `app/gpui/patches/component-review-fixes.patch` | Additive patch after `component-port.patch` and `component-accessibility.patch`: disabled-switch dispatch binding, current-layout single-line AX range geometry, and explicit placeholder color. |
+| `app/gpui/patches/component-review-fixes.patch` | Additive patch after `component-port.patch` and `component-accessibility.patch`: disabled-switch dispatch binding, current-layout single-line AX range geometry with source bidi and glyph-order guards, the existing `unicode-bidi` dependency wired into `gpui-base`, and explicit placeholder color. |
 | `app/gpui/patches/gpui-manifest.patch` | Makes only the Apache GPUI crate self-contained, resolving inherited workspace dependency tables against the unchanged upstream revision. Examples, benches and upstream test-only assets are not vendored. |
 | `app/gpui/patches/gpui-deferred-accessibility.patch` | Production fix: deferred draws capture their AX ancestry, append children to the finalized parent, and retain the focused-ancestor check. Ordinary builds use it through the workspace Cargo git-source patch. |
 | `app/gpui/patches/test-accessibility.patch` | Test transport only: retain TestWindow AX callbacks/tree updates, expose activation, tree retrieval and action dispatch on TestAppContext. Production tree building, focus calculation and action handlers remain unchanged. |
@@ -69,11 +69,22 @@ substring and caret bounds and compare the caret to the painted editor layout.
 RTL/mixed-direction fallback and LTR character-bound tests use the pinned
 CoreText shaper directly in test windows, without a native platform or NSWindow;
 the default no-op test shaper cannot reproduce glyph reordering.
-Range geometry requires source-ordered shaped glyph byte indices across font
-runs, checked before calling `x_for_index`: that API can map reversed RTL glyphs
-to nondecreasing but incorrect character positions. Equal glyph indices within
-one cluster remain valid, preserving LTR combining characters and emoji.
-Multi-line, reordered RTL/mixed-direction and nonmonotonic layouts require
+Range geometry first checks the source text's Unicode bidi classes using the
+already-resolved `unicode-bidi` 0.3.18 dependency. Any strong RTL character
+(R or AL, including RLM U+200F and ALM U+061C) or explicit embedding, override,
+pop or isolate control (U+202A–U+202E, U+2066–U+2069) disables ranges. Sorted
+glyphs alone cannot establish direction: CoreText can shape Arabic `لا` into
+one glyph whose indices and character positions remain nondecreasing despite
+a zero-width character. The same issue can occur in `abc لا def`.
+As an additional safety net, range geometry requires source-ordered shaped glyph
+byte indices across font runs before calling `x_for_index`: that API can map
+reversed RTL glyphs to nondecreasing but incorrect character positions. Equal
+glyph indices within one LTR cluster remain valid, preserving combining
+characters and emoji ZWJ sequences. CoreText/emitted-node regressions cover
+pure and mixed lam-alef, Hebrew, all eleven controls above, and LTR ASCII,
+accented text, CJK, combining marks and emoji with character bounds matched to
+painted carets.
+Multi-line, RTL/mixed-direction, explicitly bidi-controlled and nonmonotonic layouts require
 multiple visual runs; until supported, they expose AXValue without TextRun,
 TextSelection, SetTextSelection or ReplaceSelectedText. They do not advertise zero-geometry
 range APIs. Masked fields continue to expose none of these values.
@@ -282,6 +293,32 @@ No live GUI interaction was performed. Native window/panel AX focus,
 VoiceOver, real text-range frames (including Retina), popup edge placement and
 preference changes remain in the native QA handoff below. The task checkout
 and target directory are removed after these headless gates.
+
+## RTL ligature review-fix receipt (Mac mini, checkout 40)
+
+On 2026-11-06, Rust 1.98.1, fresh `~/Builds/gpui-checkout-40` and its own
+`~/Builds/gpui-checkout-40-target`, using Fleet through opti and headless only:
+
+- The new CoreText lam-alef regression **failed on d194e6b8**: `لا` still
+  advertised ranges. The same regression passes with the source bidi guard.
+- `cargo tree --locked -i unicode-bidi` confirmed **0.3.18** already resolved
+  through `usvg`; the fix adds only a direct dependency edge in `gpui-base`.
+- `cargo fmt --check`, gallery `cargo check --locked`, and gallery/all-target
+  `cargo clippy --locked -- -D warnings`: **all three pass**.
+- `python3 scripts/test_gpui.py -- --test-threads=1`: **36 passed**, zero
+  failures/ignored; zero doc tests. Includes pure/mixed lam-alef, Hebrew, all
+  **11** bidi controls and unchanged LTR character bounds against painted carets.
+- Runner-source and compiled native-shim unittest suite: **4 passed**.
+- Offscreen Metal goldens: **30 cases / 60 captures**, each pair byte-identical;
+  nonblank and interaction-state distinction checks pass.
+- Reproduced **102 GPUI files** and all **6 component review-patch files**
+  byte-for-byte from their pinned upstreams plus recorded patches. The six
+  component files also match the recorded pre-review tree after reversing the
+  review patch; forward/reverse application checks pass.
+- Maintained Markdown links: **72 docs** checked; `git diff --check` passes.
+
+No live GUI or production data was used. Checkout 40 and its private target
+are removed after verification; native QA remains with the handoff below.
 
 ## Dependency audit receipt
 

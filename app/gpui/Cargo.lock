@@ -2543,6 +2543,7 @@ dependencies = [
  "smol",
  "sum_tree",
  "tracing",
+ "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
  "web-time",

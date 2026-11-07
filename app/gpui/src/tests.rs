@@ -829,6 +829,33 @@ mod accessibility {
         assert_unsupported_direction(cx, &["abc אבג def", "abc مرحبا 日", "אבג abc"]);
     }
     #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn arabic_ligature_does_not_advertise_range_geometry(cx: &mut TestAppContext) {
+        // CoreText can shape lam-alef as a single glyph. Its byte indices are
+        // trivially sorted, so glyph order cannot establish text direction.
+        assert_unsupported_direction(cx, &["لا", "abc لا def"]);
+    }
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn bidi_controls_do_not_advertise_range_geometry(cx: &mut TestAppContext) {
+        assert_unsupported_direction(
+            cx,
+            &[
+                "abc\u{200f}def", // RLM
+                "abc\u{061c}def", // ALM
+                "abc\u{202a}def", // LRE
+                "abc\u{202b}def", // RLE
+                "abc\u{202c}def", // PDF
+                "abc\u{202d}def", // LRO
+                "abc\u{202e}def", // RLO
+                "abc\u{2066}def", // LRI
+                "abc\u{2067}def", // RLI
+                "abc\u{2068}def", // FSI
+                "abc\u{2069}def", // PDI
+            ],
+        );
+    }
+    #[cfg(target_os = "macos")]
     fn shaped_context(cx: &TestAppContext) -> TestAppContext {
         // The default NoopTextSystem never produces RTL glyph order. Use the
         // production shaper directly, without constructing a native platform.

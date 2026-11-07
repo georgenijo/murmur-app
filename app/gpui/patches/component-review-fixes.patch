@@ -1,3 +1,13 @@
+--- a/crates/base/Cargo.toml
++++ b/crates/base/Cargo.toml
+@@ -49,6 +49,7 @@
+ smallvec.workspace = true
+ sum-tree.workspace = true
+ tracing.workspace = true
++unicode-bidi = "0.3.18"
+ unicode-linebreak = "0.1.5"
+ unicode-segmentation = "1.12.0"
+ web-time = "1"
 --- a/crates/base/src/input/base/element.rs
 +++ b/crates/base/src/input/base/element.rs
 @@ -3036,6 +3036,11 @@
@@ -38,7 +48,7 @@
          PrepaintState {
              token_elements,
              hitbox,
-@@ -6155,3 +6179,68 @@
+@@ -6155,3 +6179,81 @@
          );
      }
  }
@@ -52,6 +62,19 @@
 +    scroll_size: Size<Pixels>,
 +    scale: f32,
 +) -> Option<gpui::accesskit::Node> {
++    // Decide direction from source text: an RTL ligature (e.g. lam-alef) can
++    // have sorted glyph indices and nondecreasing x_for_index positions while
++    // collapsing a character to zero width. Explicit bidi formatting also
++    // needs visual-run support, even when the surrounding text is ASCII.
++    if text.chars().any(|ch| {
++        use unicode_bidi::BidiClass::*;
++        matches!(
++            unicode_bidi::bidi_class(ch),
++            R | AL | LRE | RLE | PDF | LRO | RLO | LRI | RLI | FSI | PDI
++        )
++    }) {
++        return None;
++    }
 +    let line = layout.lines.first()?;
 +    // x_for_index returns the first glyph with index >= the requested byte.
 +    // RTL glyphs can therefore produce nondecreasing but incorrect positions.
