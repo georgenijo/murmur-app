@@ -78,16 +78,26 @@ impl Overlay {
     fn toggle_quick_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.now = self.epoch.elapsed().as_millis() as u64;
         if self.model.phase == Phase::Open {
-            self.model.close(self.now);
+            self.close_quick_settings(window);
         } else {
             self.model.expand(self.now);
         }
         self.advance(window, cx);
     }
+    fn close_quick_settings(&mut self, window: &Window) {
+        // AX/keyboard activation may close before any tracking event or sample.
+        // Only the visit actually present at close belongs to this action.
+        let inside = native::pointer_inside(window).unwrap_or(self.pointer.inside());
+        self.pointer.observe(inside);
+        self.model.close(self.now, inside);
+    }
     /// Tracking events and watchdog samples share transition ownership. A
     /// delivered exit cancels dwell immediately, even between two inside
     /// samples; repeated inside observations never move the deadline.
     fn observe_pointer(&mut self, inside: bool, now: u64) -> bool {
+        if !inside {
+            self.model.rearm_hover();
+        }
         if self.pointer.observe(inside) {
             self.model.hover(inside, now);
             true
@@ -280,7 +290,8 @@ impl Render for Overlay {
             .tab_group()
             .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
                 if e.keystroke.key == "escape" {
-                    s.model.close(s.now);
+                    s.now = s.epoch.elapsed().as_millis() as u64;
+                    s.close_quick_settings(w);
                     cx.stop_propagation();
                     w.prevent_default();
                     s.advance(w, cx);
@@ -361,12 +372,26 @@ impl Render for Overlay {
                         .border_color(p.border),
                 )
             })
-            .on_hover(cx.listener(|s, inside, w, cx| {
-                let now = s.epoch.elapsed().as_millis() as u64;
-                if s.observe_pointer(*inside, now) {
-                    s.advance(w, cx);
-                }
-            }));
+            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
+            .on_hover_with_source({
+                let listener =
+                    cx.listener(|s, (inside, source): &(bool, HoverEventSource), w, cx| {
+                        let now = s.epoch.elapsed().as_millis() as u64;
+                        // Recheck deferred layout snapshots, but retain delivered
+                        // pointer history: a real exit releases close ownership even
+                        // when the pointer is already back inside at dispatch time.
+                        let inside = match source {
+                            HoverEventSource::Layout => {
+                                native::pointer_inside(w).unwrap_or(*inside)
+                            }
+                            HoverEventSource::Pointer => *inside,
+                        };
+                        if s.observe_pointer(inside, now) {
+                            s.advance(w, cx);
+                        }
+                    });
+                move |inside, source, w, cx| listener(&(*inside, source), w, cx)
+            });
         // A separate bounded affordance keeps recording/status clicks and
         // child quick controls independent. AX and pointer input share its
         // exact laid-out rectangle and action, without taking key focus.

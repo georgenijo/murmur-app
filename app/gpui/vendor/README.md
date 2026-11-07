@@ -28,5 +28,7 @@ under `gpui/` so the recorded deferred-AX fix applies in ordinary production
 builds through Cargo's git-source patch. All other Zed dependencies retain
 the exact git revision. `gpui-manifest.patch` and
 `gpui-deferred-accessibility.patch` reproduce this crate from the pin.
+`gpui-hover-source.patch` then adds source-aware hover observations while
+preserving the existing transition-only `on_hover` API.
 Only `src/`, `resources/`, the build script, README and Apache license are copied;
 no Zed GPL crate, examples, benchmark or upstream test asset is included.

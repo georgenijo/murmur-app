@@ -253,6 +253,9 @@ pub struct Model {
     delivered: u64,
     slow: bool,
     hover_due: Option<u64>,
+    // An explicit close owns the current pointer visit, even when a delayed
+    // first enter arrives after the click. Only a real exit rearms hover.
+    hover_closed: bool,
     leave_due: Option<u64>,
     shrink_due: Option<u64>,
     click: Option<(u64, u64)>,
@@ -460,10 +463,14 @@ impl Model {
     pub fn hover(&mut self, inside: bool, now: u64) {
         if inside {
             self.leave_due = None;
-            if !self.hidden(now) && matches!(self.phase, Phase::Collapsed | Phase::Closing) {
+            if !self.hover_closed
+                && !self.hidden(now)
+                && matches!(self.phase, Phase::Collapsed | Phase::Closing)
+            {
                 self.hover_due.get_or_insert(now + 150);
             }
         } else {
+            self.hover_closed = false;
             self.hover_due = None;
             if self.phase == Phase::Opening {
                 self.collapse();
@@ -472,6 +479,11 @@ impl Model {
                 self.leave_due.get_or_insert(now + 300);
             }
         }
+    }
+    /// An outside sample can end an explicit-close visit even if the panel
+    /// never received its enter. It must not manufacture an AX-opened exit.
+    pub(super) fn rearm_hover(&mut self) {
+        self.hover_closed = false;
     }
     pub fn needs_tick(&self) -> bool {
         self.hover_due.is_some()
@@ -483,13 +495,15 @@ impl Model {
     /// as hover, without requiring pointer movement or a dwell.
     pub fn expand(&mut self, now: u64) {
         if !self.hidden(now) {
+            self.hover_closed = false;
             self.leave_due = None;
             if matches!(self.phase, Phase::Collapsed | Phase::Closing) {
                 self.hover_due = Some(now);
             }
         }
     }
-    pub fn close(&mut self, now: u64) {
+    pub fn close(&mut self, now: u64, pointer_inside: bool) {
+        self.hover_closed = pointer_inside;
         self.hover_due = None;
         if self.phase == Phase::Open && self.suggestion.is_none() {
             self.leave_due = Some(now);
@@ -497,6 +511,7 @@ impl Model {
     }
     pub fn collapse(&mut self) {
         self.phase = Phase::Collapsed;
+        self.hover_closed = false;
         self.hover_due = None;
         self.leave_due = None;
         self.shrink_due = None;
@@ -727,6 +742,9 @@ pub struct PointerPresence {
     inside: bool,
 }
 impl PointerPresence {
+    pub fn inside(&self) -> bool {
+        self.inside
+    }
     pub fn observe(&mut self, inside: bool) -> bool {
         let changed = self.inside != inside;
         self.inside = inside;

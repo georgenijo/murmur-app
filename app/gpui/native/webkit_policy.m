@@ -30,6 +30,29 @@ static WebkitLoad loads[MAX_IMAGES];
 static unsigned load_count, baseline, linkage, overflow;
 static atomic_bool registering;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t settled = PTHREAD_COND_INITIALIZER;
+static unsigned in_flight;
+static uint64_t arrivals;
+static bool observation_closed, late_load;
+
+// Never wait for finalization in a dyld callback: the caller may own the loader
+// lock. A post-inventory arrival terminates this QA process even if inventory
+// has already returned, so successful output cannot mask a later load.
+static void callback_enter(void) {
+    pthread_mutex_lock(&lock);
+    in_flight++;
+    arrivals++;
+    bool late=observation_closed;
+    late_load|=late;
+    pthread_mutex_unlock(&lock);
+    if (late) _exit(86);
+}
+static void callback_leave(void) {
+    pthread_mutex_lock(&lock);
+    in_flight--;
+    pthread_cond_broadcast(&settled);
+    pthread_mutex_unlock(&lock);
+}
 
 static bool system_image(const char *path) {
     return !strncmp(path, "/System/Library/", 16) || !strncmp(path, "/usr/lib/", 9);
@@ -45,11 +68,19 @@ bool murmur_webkit_family(const char *path) {
 // App frames below the verified source-1 dispatch are the NSApplication event loop,
 // not the load's initiator. A web-view frame anywhere still rejects the chain.
 bool murmur_webkit_ax_chain(const WebkitFrame *frames, unsigned count, bool truncated) {
-    if (!count || truncated) return false;
+    if (!frames || !count || truncated) return false;
     for (unsigned i=0; i<count; i++) {
         const char *s=frames[i].symbol;
+        if (!frames[i].image[0] || !s[0] || strstr(s,"<redacted>") ||
+            !strcmp(s,"???") || !strcmp(s,"<unknown>")) return false;
         if (strstr(s,"WKWebView") || strstr(s,"WebView") || strstr(s,"webkit")) return false;
     }
+    // A dispatch marker alone is only a prefix. Require a fully symbolicated
+    // unwind through the event loop to the actual process/thread root.
+    const WebkitFrame *root=&frames[count-1];
+    if (!((!strcmp(root->image,"/usr/lib/dyld") && !strcmp(root->symbol,"start")) ||
+          (!strcmp(root->image,"/usr/lib/system/libsystem_pthread.dylib") &&
+           (!strcmp(root->symbol,"thread_start") || !strcmp(root->symbol,"_pthread_start"))))) return false;
     bool bundle=false, services=false, ipc=false, mig=false;
     for (unsigned i=0; i<count; i++) {
         const char *p=frames[i].image, *s=frames[i].symbol;
@@ -93,6 +124,10 @@ static bool links_webkit(const struct mach_header *header) {
 }
 
 __attribute__((noinline)) static void image_added(const struct mach_header *header, intptr_t slide) {
+    callback_enter(); // Before path lookup, backtrace or symbolication.
+#ifdef MURMUR_WEBKIT_CAPTURE_HOOK
+    MURMUR_WEBKIT_CAPTURE_HOOK();
+#endif
     (void)slide;
     Dl_info info={0};
     const char *path=dladdr(header,&info) ? info.dli_fname : NULL;
@@ -102,6 +137,7 @@ __attribute__((noinline)) static void image_added(const struct mach_header *head
         pthread_mutex_lock(&lock);
         linkage+=bad_link;
         pthread_mutex_unlock(&lock);
+        callback_leave();
         return;
     }
     bool initial=atomic_load(&registering);
@@ -126,6 +162,7 @@ __attribute__((noinline)) static void image_added(const struct mach_header *head
     if (load_count==MAX_IMAGES) overflow++;
     else loads[load_count++]=load;
     pthread_mutex_unlock(&lock);
+    callback_leave();
 }
 
 // Registered before main, NSApplication, or window/AX exposure. dyld reports
@@ -152,12 +189,22 @@ bool murmur_webkit_inventory(const char *prefix) {
     WebkitLoad *snapshot=calloc(MAX_IMAGES,sizeof(WebkitLoad));
     if (!snapshot) return false;
     unsigned count=0, extra=0, base=0, linked=0, printed=0, ax=0;
+    uint64_t observed=0;
     bool stable=false;
     // A valid AX load arriving during JSON emission must be included, not
     // rejected merely for changing the inventory. Each pass emits new records
     // only; bounded storage limits this to at most MAX_IMAGES+1 snapshots.
     for (unsigned pass=0; pass<=MAX_IMAGES; pass++) {
         pthread_mutex_lock(&lock);
+        // cond_wait releases our mutex. Never hold it while acquiring dyld's
+        // loader lock (including Foundation allocation/serialization/output).
+        while (in_flight) {
+#ifdef MURMUR_WEBKIT_WAIT_HOOK
+            MURMUR_WEBKIT_WAIT_HOOK();
+#endif
+            pthread_cond_wait(&settled,&lock);
+        }
+        observed=arrivals;
         count=load_count; extra=overflow; base=baseline; linked=linkage;
         memcpy(snapshot,loads,count*sizeof(WebkitLoad));
         pthread_mutex_unlock(&lock);
@@ -181,13 +228,26 @@ bool murmur_webkit_inventory(const char *prefix) {
         }
         printed=count;
         pthread_mutex_lock(&lock);
-        stable=count==load_count && extra==overflow && base==baseline && linked==linkage;
+        stable=in_flight==0 && observed==arrivals && count==load_count &&
+            extra==overflow && base==baseline && linked==linkage;
+        // Serialization is complete. Close observation atomically with the
+        // last stability check; all later callbacks fail the process closed.
+        if (stable) observation_closed=true;
         pthread_mutex_unlock(&lock);
         if (stable) break;
     }
+#ifdef MURMUR_WEBKIT_OUTPUT_HOOK
+    MURMUR_WEBKIT_OUTPUT_HOOK();
+#endif
     free(snapshot);
     printf("%s={\"pid\":%d,\"webkitImages\":%u,\"axAttributed\":%u,\"unattributed\":%u,\"startupWebkitImages\":%u,\"linkageViolations\":%u}\n",
         prefix,getpid(),count+extra,ax,count+extra-ax,base,linked);
-    fflush(stdout);
-    return stable && base==0 && linked==0 && extra==0 && count==ax;
+    bool flushed=fflush(stdout)==0;
+#ifdef MURMUR_WEBKIT_FLUSH_HOOK
+    MURMUR_WEBKIT_FLUSH_HOOK();
+#endif
+    pthread_mutex_lock(&lock);
+    bool ok=stable && !late_load && in_flight==0 && observed==arrivals;
+    pthread_mutex_unlock(&lock);
+    return flushed && ok && base==0 && linked==0 && extra==0 && count==ax;
 }
