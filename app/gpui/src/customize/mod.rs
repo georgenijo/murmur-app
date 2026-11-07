@@ -268,6 +268,9 @@ impl Customize {
             if self.page == Page::Apps && entry["bundleId"].is_string() {
                 f.disabled_keys.insert("bundleId");
             }
+            // A save that finished while the editor was closed leaves the
+            // render-synced flag stale; sync it before seeding focus.
+            f.disabled = self.controller.model.pending;
             f.focus_first(w, cx)
         });
         self.tester.update(cx, |f, cx| {

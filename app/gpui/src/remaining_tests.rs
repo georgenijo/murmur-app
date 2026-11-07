@@ -472,6 +472,35 @@ mod ax {
         }
     }
     #[gpui::test]
+    fn regression_reopen_after_async_save_focuses_editor(cx: &mut TestAppContext) {
+        use serde_json::json;
+        let (e, cx) = harness(cx, 3);
+        activate(cx, "Review App overrides");
+        let custom = e.read_with(cx, |s, _| s.customize.clone());
+        custom.update(cx, |s, cx| {
+            s.controller.model.snapshot.as_mut().unwrap().settings["appProfiles"] =
+                json!([crate::customize::model::profile(
+                    "example.synthetic",
+                    "Synthetic app"
+                )]);
+            cx.notify();
+        });
+        draw(cx);
+        activate(cx, "Edit app overrides…");
+        activate(cx, "Save");
+        draw(cx);
+        // An asynchronous save closes the editor while the render-synced
+        // disabled flag is still set from its pending frame.
+        custom.update(cx, |s, cx| {
+            s.editor.update(cx, |f, _| f.disabled = true);
+            cx.notify();
+        });
+        draw(cx);
+        activate(cx, "Edit app overrides…");
+        let t = tree(cx);
+        assert_eq!(t.focus, named(&t, "App label"));
+    }
+    #[gpui::test]
     fn regression_app_profile_bundle_id_is_disabled_and_immutable(cx: &mut TestAppContext) {
         use serde_json::json;
         let (e, cx) = harness(cx, 3);
