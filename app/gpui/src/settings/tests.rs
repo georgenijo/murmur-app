@@ -621,6 +621,172 @@ mod ax {
         assert!(e.read_with(cx, |s, _| s.calibration.is_none()));
     }
     #[gpui::test]
+    fn regression_calibration_reopen_escape_and_mounted_focus(cx: &mut TestAppContext) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.disclosure["panes"]["general"] = json!(true);
+        });
+        for exit in ["save", "escape", "cancel", "escape"] {
+            let t = tree(cx);
+            click(cx, named(&t, "Calibrate overlay position…"));
+            let t = tree(cx);
+            assert_eq!(
+                t.focus,
+                named(&t, "Cancel calibration"),
+                "opening must focus a mounted, enabled preview control"
+            );
+            if exit == "save" {
+                for _ in 0..3 {
+                    let t = tree(cx);
+                    click(cx, named(&t, "Move overlay down one point"));
+                }
+                let t = tree(cx);
+                click(cx, named(&t, "Save position"));
+                assert_eq!(host.state.borrow().settings["overlayVerticalOffset"], 3);
+            } else if exit == "cancel" {
+                let t = tree(cx);
+                click(cx, named(&t, "Cancel calibration"));
+            } else {
+                keys(cx, "escape");
+            }
+            let t = tree(cx);
+            assert!(e.read_with(cx, |s, _| s.calibration.is_none()));
+            assert!(
+                !t.nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some("Save position"))
+            );
+            assert_eq!(t.focus, named(&t, "Calibrate overlay position…"));
+        }
+    }
+    #[gpui::test]
+    fn regression_all_panes_tab_reveals_every_scrolling_control(cx: &mut TestAppContext) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            for page in Page::NAV
+                .into_iter()
+                .chain([Page::Transcription, Page::Shortcuts])
+            {
+                snapshot.disclosure["panes"][page.id()] = json!(true);
+            }
+            for key in [
+                "captureStandbyEnabled",
+                "smartAutoMicrophoneEnabled",
+                "soundCuesEnabled",
+                "saveTranscript",
+                "saveAudio",
+                "cleanupEnabled",
+                "correctionEnabled",
+                "codeVocabEnabled",
+                "meetingSuggestionsEnabled",
+            ] {
+                snapshot.settings[key] = json!(true);
+            }
+            snapshot.settings["recordingMode"] = json!("both");
+            snapshot.settings["smartAutoApprovedDeviceIds"] = json!(["synthetic.microphone"]);
+            snapshot.settings["vadSensitivity"] = json!(60);
+            snapshot.settings["autoStopSilenceMs"] = json!(1500);
+            snapshot.settings["outputDir"] = json!("/synthetic/output");
+            snapshot.settings["benchmarkOutputDir"] = json!("/synthetic/reports");
+        });
+        for (width, height) in [(720., 560.), (1120., 820.)] {
+            cx.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            for page in Page::NAV
+                .into_iter()
+                .chain([Page::Transcription, Page::Shortcuts])
+            {
+                cx.update(|w, cx| e.update(cx, |s, cx| s.navigate(page, None, w, cx)));
+                let t = tree(cx);
+                let panel = t
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.role() == gpui::accesskit::Role::TabPanel)
+                    .unwrap()
+                    .0;
+                let mut descendants = BTreeSet::new();
+                let mut pending = vec![panel];
+                while let Some(id) = pending.pop() {
+                    if descendants.insert(id) {
+                        let node = &t.nodes.iter().find(|(i, _)| *i == id).unwrap().1;
+                        pending.extend(node.children());
+                    }
+                }
+                let expected: BTreeSet<_> = t
+                    .nodes
+                    .iter()
+                    .filter(|(id, node)| {
+                        descendants.contains(id)
+                            && node.supports_action(AccessibleAction::Focus)
+                            && !node.is_disabled()
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                // Enter from the first Tab stop in the navigation, then traverse
+                // the real Root order. No scroll or reveal test hook is invoked.
+                cx.update(|w, cx| {
+                    e.update(cx, |s, cx| {
+                        if width < 768. {
+                            w.focus(&s.focus["nav-general"], cx);
+                        } else {
+                            w.focus(&s.navigation.read(cx).focus_handle(cx), cx);
+                        }
+                    })
+                });
+                let mut visited = BTreeSet::new();
+                let mut entered = false;
+                for _ in 0..180 {
+                    keys(cx, "tab");
+                    cx.update(|w, cx| w.simulate_next_frame(cx));
+                    draw(cx);
+                    let t = tree(cx);
+                    if !descendants.contains(&t.focus) {
+                        if entered {
+                            break;
+                        }
+                        continue;
+                    }
+                    entered = true;
+                    assert!(visited.insert(t.focus), "Tab must advance in {:?}", page);
+                    let n = &t.nodes.iter().find(|(id, _)| *id == t.focus).unwrap().1;
+                    let bounds = n.bounds().expect("focused control bounds");
+                    let viewport = e.read_with(cx, |s, _| s.scroll.bounds());
+                    let scale = cx.update(|w, _| f64::from(w.scale_factor()));
+                    assert!(
+                        bounds.y0 >= f64::from(viewport.top()) * scale
+                            && bounds.y1 <= f64::from(viewport.bottom()) * scale,
+                        "{:?} {} at {width}×{height}: {bounds:?} outside {viewport:?}",
+                        page,
+                        n.label().unwrap_or("unnamed")
+                    );
+                    if page == Page::Recording && n.label() == Some("Microphone") {
+                        // S11 starts by closing the microphone picker before Tab.
+                        keys(cx, "space escape");
+                    }
+                }
+                assert!(entered, "must traverse pane {:?}", page);
+                assert!(
+                    expected.is_subset(&visited),
+                    "must visit every focusable control in {:?}: missing {:?}",
+                    page,
+                    expected.difference(&visited).collect::<Vec<_>>()
+                );
+                if page == Page::Recording {
+                    let t = tree(cx);
+                    for label in [
+                        "Microphone standby window",
+                        "Pre-roll",
+                        "Voice detection",
+                        "Preview start cue",
+                        "Reset Voice detection to default",
+                        "Prefer Synthetic microphone",
+                    ] {
+                        assert!(visited.contains(&named(&t, label)), "must exercise {label}");
+                    }
+                }
+            }
+        }
+    }
+    #[gpui::test]
     fn regression_folder_reset_restores_empty_default_through_owner(cx: &mut TestAppContext) {
         let (e, host, cx) = harness(cx);
         publish(&e, &host, cx, |snapshot| {
@@ -668,21 +834,8 @@ mod ax {
                 .is_disabled()
         );
         host.fail.set(Some(Problem::Unavailable));
-        // Invoke the actual Escape handler as a test hook; no native HID input.
-        cx.update(|w, cx| {
-            e.update(cx, |s, cx| {
-                s.key(
-                    &gpui::KeyDownEvent {
-                        keystroke: gpui::Keystroke::parse_with_os("escape", cx.platform_info().os)
-                            .unwrap(),
-                        is_held: false,
-                        prefer_character_input: false,
-                    },
-                    w,
-                    cx,
-                )
-            })
-        });
+        // Dispatch through the mounted view, just like the reopened flow.
+        keys(cx, "escape");
         assert!(!host.delayed.borrow()[0].0.lease.is_current());
         assert!(e.read_with(cx, |s, _| s.calibration.is_some()));
         let t = tree(cx);
@@ -699,6 +852,46 @@ mod ax {
         e.update(cx, |s, cx| s.drain(cx));
         assert!(host.state.borrow().runtime.calibration.is_none());
         assert!(e.read_with(cx, |s, _| !s.model.pending && s.calibration.is_none()));
+    }
+    #[gpui::test]
+    fn synthetic_shortcut_capture_cancels_registers_and_retains_binding_on_conflict(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, host, cx) = harness(cx);
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.fixture_shortcuts = true;
+                s.navigate(Page::Shortcuts, None, w, cx);
+            })
+        });
+        let t = tree(cx);
+        click(cx, named(&t, "Capture dictation shortcut (synthetic)"));
+        keys(cx, "escape");
+        assert_eq!(host.state.borrow().settings["doubleTapKey"], "shift_l");
+        assert!(e.read_with(cx, |s, _| s.fixture_capture.is_none()));
+        let t = tree(cx);
+        assert_eq!(t.focus, named(&t, "Capture dictation shortcut (synthetic)"));
+        click(cx, named(&t, "Capture dictation shortcut (synthetic)"));
+        keys(cx, "f20");
+        assert_eq!(host.state.borrow().settings["doubleTapKey"], "f20");
+        host.fail_shortcut.set(true);
+        let t = tree(cx);
+        click(cx, named(&t, "Capture dictation shortcut (synthetic)"));
+        keys(cx, "f19");
+        assert_eq!(host.state.borrow().settings["doubleTapKey"], "f20");
+        let t = tree(cx);
+        named(
+            &t,
+            "Synthetic shortcut registration conflict; previous binding retained",
+        );
+        host.fail_shortcut.set(false);
+        let t = tree(cx);
+        click(cx, named(&t, "Capture Paste last shortcut (synthetic)"));
+        keys(cx, "cmd-shift-v");
+        assert_eq!(
+            host.state.borrow().settings["pasteLastShortcut"],
+            "command_shift_v"
+        );
     }
     #[gpui::test]
     fn all_navigation_rows_fit_the_settings_navigation_surface(cx: &mut TestAppContext) {

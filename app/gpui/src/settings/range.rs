@@ -6,6 +6,7 @@ pub struct Range {
     pub state: Entity<SliderState>,
     pub draft: Rc<std::cell::Cell<Option<i64>>>,
     focus: FocusHandle,
+    pub(super) scroll_parent: Option<ScrollHandle>,
     label: &'static str,
     unit: &'static str,
     disabled: bool,
@@ -56,6 +57,7 @@ impl Range {
             state,
             draft,
             focus,
+            scroll_parent: None,
             label,
             unit,
             disabled: false,
@@ -88,7 +90,15 @@ impl Render for Range {
         let v = self.state.read(cx).value().end();
         let min = self.state.read(cx).min_value();
         let max = self.state.read(cx).max_value();
+        let reveal = crate::data_components::focus_reveal(
+            self.focus.clone(),
+            self.scroll_parent.clone(),
+            w,
+            cx,
+        );
         div()
+            .relative()
+            .child(reveal)
             .w_full()
             .flex()
             .flex_col()

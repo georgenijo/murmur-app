@@ -19,6 +19,14 @@ use inbox::Inbox;
 use model::*;
 use std::{collections::BTreeMap, ops::Range, rc::Rc, time::Instant};
 
+actions!(history, [NextRowAction, PreviousRowAction]);
+pub(crate) fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", NextRowAction, Some("HistoryList")),
+        KeyBinding::new("shift-tab", PreviousRowAction, Some("HistoryList")),
+    ]);
+}
+
 // The list callback only constructs visible rows. Detail pages independently
 // bound shaping/AX to 2048 scalars; a megabyte transcript never becomes one label.
 const DETAIL_PAGE: usize = 2048;
@@ -29,9 +37,9 @@ const ROW_HEIGHT: Pixels = px(112.);
 struct DetailPages {
     identity: Option<(u64, u64)>,
     boundaries: Vec<usize>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "gallery"))]
     scanned_bytes: usize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "gallery"))]
     shaped_bytes: usize,
 }
 impl DetailPages {
@@ -49,7 +57,7 @@ impl DetailPages {
         }
         self.boundaries.push(entry.text.len());
         self.identity = Some(identity);
-        #[cfg(test)]
+        #[cfg(any(test, feature = "gallery"))]
         {
             self.scanned_bytes += entry.text.len();
         }
@@ -76,6 +84,10 @@ pub struct History {
     detail_pages: DetailPages,
     scroll: UniformListScrollHandle,
     row_focus: BTreeMap<u64, FocusHandle>,
+    #[cfg(any(test, feature = "gallery"))]
+    pub fixture_clock: Option<Clock>,
+    #[cfg(any(test, feature = "gallery"))]
+    pub fixture_zone: Option<chrono_tz::Tz>,
     filters_open: bool,
     detail_page: usize,
     pub rendered: Range<usize>,
@@ -136,6 +148,10 @@ impl History {
             detail_pages: DetailPages::default(),
             scroll: UniformListScrollHandle::new(),
             row_focus: BTreeMap::new(),
+            #[cfg(any(test, feature = "gallery"))]
+            fixture_clock: None,
+            #[cfg(any(test, feature = "gallery"))]
+            fixture_zone: None,
             filters_open: false,
             detail_page: 0,
             rendered: 0..0,
@@ -179,12 +195,31 @@ impl History {
         );
         s
     }
+    fn refresh_clock(&mut self) {
+        #[cfg(any(test, feature = "gallery"))]
+        if let Some(clock) = self.fixture_clock {
+            self.model.set_clock(clock);
+            return;
+        }
+        self.model.set_clock(local_clock());
+    }
+    fn timestamp(&self, ms: i64) -> String {
+        #[cfg(any(test, feature = "gallery"))]
+        if let Some(zone) = self.fixture_zone {
+            return chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .with_timezone(&zone)
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string();
+        }
+        stamp(ms)
+    }
     pub fn attach(&mut self, cx: &mut Context<Self>) {
         if self.subscription.is_some() {
             return;
         }
         self.model.attach();
-        self.model.set_clock(local_clock());
+        self.refresh_clock();
         self.inbox = Inbox::default();
         self.authority.sync(&self.model);
         self.subscription = Some(self.host.subscribe(
@@ -233,7 +268,7 @@ impl History {
                             return false;
                         }
                         let old = s.model.ticket();
-                        s.model.set_clock(local_clock());
+                        s.refresh_clock();
                         let armed = s.model.confirmation.is_some();
                         s.model.expire(Instant::now());
                         s.drain(cx);
@@ -318,6 +353,14 @@ impl History {
     #[cfg(any(test, feature = "gallery"))]
     pub fn last_detail_page(&mut self) {
         self.detail_page = usize::MAX;
+    }
+    #[cfg(any(test, feature = "gallery"))]
+    pub fn cache_counters(&self) -> (usize, usize, usize) {
+        (
+            self.detail_pages.scanned_bytes,
+            self.detail_pages.shaped_bytes,
+            self.detail_pages.boundaries.len(),
+        )
     }
     pub fn prepare(&mut self, cx: &mut Context<Self>) {
         self.model.refresh();
@@ -495,6 +538,46 @@ impl History {
         w.focus(&self.focus, cx);
         cx.notify();
     }
+    fn row_action_focus(&mut self, key: u64, cx: &mut Context<Self>) -> FocusHandle {
+        self.row_focus
+            .entry(key)
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    }
+    /// Handle the bound Tab action before Root traverses only painted stops.
+    /// Returning false lets the outer Root binding own entry/exit traversal.
+    fn tab_row_action(&mut self, backwards: bool, w: &mut Window, cx: &mut Context<Self>) -> bool {
+        let focused = self
+            .row_focus
+            .iter()
+            .find_map(|(key, focus)| focus.is_focused(w).then_some(*key));
+        let position = focused.and_then(|key| {
+            self.model
+                .matches
+                .iter()
+                .position(|&i| self.model.entries[i].key == key)
+        });
+        let next = match (position, backwards) {
+            (Some(0), true) => {
+                w.focus(&self.focus, cx);
+                return true;
+            }
+            (Some(i), true) => Some(i - 1),
+            (Some(i), false) if i + 1 < self.model.matches.len() => Some(i + 1),
+            (None, false) if self.focus.is_focused(w) && !self.model.matches.is_empty() => Some(0),
+            _ => None,
+        };
+        let Some(position) = next else {
+            return false;
+        };
+        let key = self.model.entries[self.model.matches[position]].key;
+        let focus = self.row_action_focus(key, cx);
+        self.scroll
+            .scroll_to_item(position, ScrollStrategy::Nearest);
+        w.focus(&focus, cx);
+        cx.notify();
+        true
+    }
     fn list_key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) {
         if e.prefer_character_input
             || e.keystroke.modifiers.number_of_modifiers() != 0
@@ -554,26 +637,23 @@ impl History {
     ) -> Vec<AnyElement> {
         self.rendered = range.clone();
         let p = Palette::get(cx);
+        let scroll_parent = self.scroll.0.borrow().base_handle.clone();
         range
             .map(|position| {
+                let key = self.model.entries[self.model.matches[position]].key;
+                let action_focus = self.row_action_focus(key, cx);
                 let entry = &self.model.entries[self.model.matches[position]];
-                let key = entry.key;
-                let action_focus = self
-                    .row_focus
-                    .entry(key)
-                    .or_insert_with(|| cx.focus_handle())
-                    .clone();
                 let label = format!(
                     "Transcript {} of {} from {}. Enter or Space copies; Right opens details.",
                     position + 1,
                     self.model.matches.len(),
-                    stamp(entry.timestamp)
+                    self.timestamp(entry.timestamp)
                 );
                 let preview: String = entry.text.chars().take(PREVIEW_CHARS).collect();
                 let text = highlighted(&preview, &self.model.query.text, p);
                 let metadata = format!(
                     "{}{}{}{}",
-                    stamp(entry.timestamp),
+                    self.timestamp(entry.timestamp),
                     if entry.file {
                         format!(" · {}", entry.source_label())
                     } else {
@@ -657,6 +737,7 @@ impl History {
                                 .caption("Show more / actions")
                                 .size(ButtonSize::ExtraSmall)
                                 .track_focus(&action_focus)
+                                .with_scroll_parent(Some(&scroll_parent))
                                 .on_click(cx.listener(
                                     move |s, _, w, cx| {
                                         cx.stop_propagation();
@@ -717,7 +798,7 @@ impl History {
         self.detail_page = self.detail_page.min(pages - 1);
         let page = &entry.text[self.detail_pages.boundaries[self.detail_page]
             ..self.detail_pages.boundaries[self.detail_page + 1]];
-        #[cfg(test)]
+        #[cfg(any(test, feature = "gallery"))]
         {
             self.detail_pages.shaped_bytes += page.len();
         }
@@ -736,7 +817,7 @@ impl History {
                     .track_focus(&self.back_focus)
                     .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
             )
-            .child(stamp(entry.timestamp))
+            .child(self.timestamp(entry.timestamp))
             .child(
                 div()
                     .id("detail-text")
@@ -1046,6 +1127,17 @@ impl Render for History {
                 .flex_1()
                 .min_h_0()
                 .focus_visible(|d| d.border_1().border_color(p.focus))
+                .key_context("HistoryList")
+                .on_action(cx.listener(|s, _: &NextRowAction, w, cx| {
+                    if !s.tab_row_action(false, w, cx) {
+                        cx.propagate();
+                    }
+                }))
+                .on_action(cx.listener(|s, _: &PreviousRowAction, w, cx| {
+                    if !s.tab_row_action(true, w, cx) {
+                        cx.propagate();
+                    }
+                }))
                 .capture_key_down(cx.listener(Self::list_key))
                 .child(
                     uniform_list(

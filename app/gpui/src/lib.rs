@@ -35,6 +35,7 @@ pub fn init_with_preferences(
     preferences: Option<preferences::DisplayPreferences>,
 ) {
     gpui_component::init(cx);
+    history::init(cx);
     tokens::apply_appearance(false, cx);
     if let Some(preferences) = preferences {
         self::preferences::apply(preferences, cx);
