@@ -108,9 +108,21 @@ GPUI_JOB_SHA256 = {
 }
 
 
+# Workflow-level settings (env, defaults.run.shell, concurrency, permissions)
+# are inherited by every GPUI job, so they are pinned like the jobs. Pinning the
+# raw text also covers YAML escapes that only decode to `secrets` at load time.
+WORKFLOW_PRELUDE_SHA256 = "d8108a8616fccf955a51b252b152c3d389272f91713b16b613474204c0cd28e1"
+
+
+def workflow_prelude(workflow: str) -> str:
+    return workflow[:workflow.index("\njobs:\n") + 1]
+
+
 def validate_gpui_isolation(workflow: str) -> None:
     for env in mapping_blocks(workflow, "env", 0):
         assert not references_secrets(env), "GPUI compilation inherits workflow secrets"
+    assert hashlib.sha256(workflow_prelude(workflow).encode()).hexdigest() == WORKFLOW_PRELUDE_SHA256, \
+        "workflow-level settings must match their reviewed SHA-256 pin"
     guard = "github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'"
     jobs = {name: job_block(workflow, name) for name in ("gpui-build", "gpui-signer", "gpui-sign")}
     gpui_names = re.findall(r"^  (gpui-[A-Za-z0-9_-]+):\n", workflow, re.MULTILINE)

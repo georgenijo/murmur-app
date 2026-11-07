@@ -19,6 +19,10 @@ from finalize_macos_bundle import HELPERS
 
 BUILD_FILES = ("ui", *(f"{name}-aarch64-apple-darwin" for name in HELPERS))
 SIGNER_FILES = ("murmur-updater-signer",)
+# Release binaries are tens of MiB; the caps bound a hostile archive's memory
+# and disk use before the hash check rejects it.
+MAX_ZIP_BYTES = 1 << 30
+MAX_PAYLOAD_BYTES = 1 << 30
 
 
 def files(kind: str) -> tuple[str, ...]:
@@ -51,6 +55,8 @@ def pack(kind: str, archive: Path, binary: Path, helpers_dir: Path | None = None
 
 
 def verify(kind: str, archive: Path, expected_sha256: str, output: Path) -> None:
+    if archive.stat().st_size > MAX_PAYLOAD_BYTES:
+        raise ValueError("artifact payload exceeds the size limit")
     verify_tar(kind, archive.read_bytes(), expected_sha256, output)
 
 
@@ -58,13 +64,21 @@ def verify_zip(kind: str, archive: Path, expected_sha256: str, output: Path) -> 
     """Read the raw Actions ZIP as data; never extract its filesystem paths."""
     expected = f"gpui-{kind}.tar"
     files(kind)
+    if archive.stat().st_size > MAX_ZIP_BYTES:
+        raise ValueError("artifact ZIP exceeds the size limit")
     with zipfile.ZipFile(archive) as source:
         members = source.infolist()
         if (len(members) != 1 or members[0].filename != expected
                 or members[0].orig_filename != expected
                 or stat.S_IFMT(members[0].external_attr >> 16) not in (0, stat.S_IFREG)):
             raise ValueError("artifact ZIP must contain exactly the expected regular tar member")
-        payload = source.read(members[0])
+        if members[0].file_size > MAX_PAYLOAD_BYTES:
+            raise ValueError("artifact payload exceeds the size limit")
+        # The declared size can lie, so bound the decompressed stream itself.
+        with source.open(members[0]) as stream:
+            payload = stream.read(MAX_PAYLOAD_BYTES + 1)
+        if len(payload) > MAX_PAYLOAD_BYTES:
+            raise ValueError("artifact payload exceeds the size limit")
     verify_tar(kind, payload, expected_sha256, output)
 
 

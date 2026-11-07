@@ -18,9 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from bundle_gpui import TAURI, bundle, bundle_info, compare_bundles
 from finalize_macos_bundle import HELPERS, require_exact_macos_executables
+import gpui_artifacts
 from gpui_artifacts import BUILD_FILES, SIGNER_FILES, pack, sha256, verify, verify_zip
 from release_bundle_target import validate_target
-from validate_workflow_policy import GPUI_JOB_SHA256, job_block, references_secrets, validate_release_build, validate_promotion_policy
+from validate_workflow_policy import (GPUI_JOB_SHA256, WORKFLOW_PRELUDE_SHA256, job_block, references_secrets,
+                                      validate_release_build, validate_promotion_policy, workflow_prelude)
 from notarize_and_repackage_macos import native_sign, tauri_sign
 from rehearse_gpui_bundle import check_links
 
@@ -250,6 +252,18 @@ class ArtifactTests(unittest.TestCase):
                 with self.subTest(kind=kind, mutation=mutation), self.assertRaisesRegex(ValueError, "allowlisted regular binaries"):
                     verify_zip(kind, raw, hashlib.sha256(data).hexdigest(), self.root / "output")
                 self.assertFalse((self.root / "output").exists())
+
+    def test_oversized_archives_are_rejected_before_full_decompression(self):
+        # A small, highly compressible payload must not be inflated past the cap.
+        data = b"\0" * (64 * 1024)
+        raw = self.wrap_zip("signer", data)
+        with patch.object(gpui_artifacts, "MAX_PAYLOAD_BYTES", 1024), \
+             self.assertRaisesRegex(ValueError, "size limit"):
+            verify_zip("signer", raw, hashlib.sha256(data).hexdigest(), self.root / "output")
+        with patch.object(gpui_artifacts, "MAX_ZIP_BYTES", 16), \
+             self.assertRaisesRegex(ValueError, "size limit"):
+            verify_zip("signer", raw, hashlib.sha256(data).hexdigest(), self.root / "output")
+        self.assertFalse((self.root / "output").exists())
 
     def test_separate_archives_transfer_only_expected_payload_and_restore_executable_modes(self):
         for kind, names in (("build", BUILD_FILES), ("signer", SIGNER_FILES)):
@@ -485,6 +499,18 @@ minos 14.0
             self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), digest)
             with self.subTest(job=name), self.assertRaisesRegex(AssertionError, "SHA-256 pin"):
                 validate_release_build(workflow.replace(block, block + "    # Unreviewed edit\n"))
+
+    def test_workflow_level_settings_are_pinned(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        self.assertEqual(hashlib.sha256(workflow_prelude(workflow).encode()).hexdigest(), WORKFLOW_PRELUDE_SHA256)
+        shell = ("defaults:\n  run:\n    shell: bash --noprofile --norc -c 'source \"$1\"; "
+                 "if [ -f \"$RUNNER_TEMP/gpui-build/ui\" ]; then \"$RUNNER_TEMP/gpui-build/ui\"; fi' -- {0}\n\n")
+        for addition in (shell,
+                         'env:\n  PAYLOAD: "${{ toJSON(\\u0073ecrets) }}"\n\n',
+                         "env:\n  FLAG: harmless\n\n"):
+            mutated = workflow.replace("\njobs:\n", "\n" + addition + "jobs:\n", 1)
+            with self.subTest(addition=addition), self.assertRaisesRegex(AssertionError, "workflow-level settings"):
+                validate_release_build(mutated)
 
     def test_every_compilation_step_and_builder_job_are_secretless(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()

@@ -283,9 +283,12 @@ built updater signer is the sole executable transferred for use in signing.
 All three jobs have explicit `contents: read` permissions; only `gpui-sign` adds
 `actions: read` for the raw download. No signing secrets are present in that step.
 
-The workflow policy validator pins the exact content of all three GPUI jobs by
-SHA-256. Any edit, including appended shell commands, fails until its pin is
-deliberately updated after review. Semantic assertions additionally reject
+The workflow policy validator pins the exact content of all three GPUI jobs,
+and of the workflow-level settings every job inherits (`env`, `defaults`,
+`concurrency`, `permissions`), by SHA-256. Any edit, including appended shell
+commands, a default `run.shell`, or a YAML escape that decodes to `secrets`,
+fails until its pin is deliberately updated after review. Raw artifact ZIPs and
+their decompressed payloads are capped at 1 GiB before hashing. Semantic assertions additionally reject
 inherited workflow/job secret env and all secret-context references (including
 `toJSON(secrets)` and `secrets: inherit`) in either builder. They require the fresh
 checkout, minimal permissions, isolated raw downloads and hash verification.
