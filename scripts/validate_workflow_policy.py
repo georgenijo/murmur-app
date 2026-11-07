@@ -2,6 +2,7 @@
 """Validate Murmur's CI, trusted release-build, cache, and promotion policy."""
 
 from pathlib import Path
+import hashlib
 import re
 from typing import Optional
 
@@ -72,6 +73,126 @@ def named_step_block(text: str, name: str, indent: int) -> str:
     if next_step < 0:
         next_step = len(text)
     return text[start:next_step]
+
+
+def mapping_blocks(text: str, key: str, indent: int):
+    """Include inline values and nested block values at the exact YAML scope."""
+    lines = text.splitlines(keepends=True)
+    for start, line in enumerate(lines):
+        if not re.match(rf"^{' ' * indent}(?:{re.escape(key)}|'{re.escape(key)}'|\"{re.escape(key)}\"):", line):
+            continue
+        end = start + 1
+        while end < len(lines):
+            following = lines[end]
+            if following.strip() and not following.lstrip().startswith("#"):
+                if len(following) - len(following.lstrip()) <= indent:
+                    break
+            end += 1
+        yield "".join(lines[start:end])
+
+
+def references_secrets(text: str) -> bool:
+    # Include whole-context uses inside functions, not only property/index access.
+    # Quoted strings may contain }}; they do not terminate an Actions expression.
+    return any(re.search(r"\bsecrets\b", expression, re.IGNORECASE)
+               for expression in re.findall(r"\$\{\{((?:'(?:[^']|'')*'|[^'}]|}(?!}))*?)\}\}", text, re.DOTALL)) or bool(
+        re.search(r"\bsecrets\s*:\s*['\"]?inherit\b", text, re.IGNORECASE)
+    )
+
+
+# Deliberate updates require reviewing the entire job, including shell content.
+GPUI_JOB_SHA256 = {
+    "gpui-build": "6c771424f82f3fc52d7841c04692186def2a0e9e7a59a6f5ed1539b044dceb52",
+    "gpui-signer": "eb7ac7e93ae582b2da6df56dbfb205d9053ff8323e3cafe62d42a81b7678760a",
+    "gpui-sign": "17727ea273f3d5e5922c31d571fe8d1a7110c43bf8e311101b831750d0841888",
+}
+
+
+# The GPUI lane inherits workflow-level settings (env, defaults.run.shell) and
+# consumes context-job outputs (source-sha), and YAML can append root keys after
+# any job. Rather than chase each channel, pin the whole file: every edit to
+# release-build.yml must deliberately update this digest after review. It is
+# checked last so semantic failures report their specific cause first.
+RELEASE_BUILD_SHA256 = "8b41a63db43f23b5066f309d26400ccf7c0c231c08a2d004090061c6015b9dae"
+
+
+def validate_gpui_isolation(workflow: str) -> None:
+    for env in mapping_blocks(workflow, "env", 0):
+        assert not references_secrets(env), "GPUI compilation inherits workflow secrets"
+    guard = "github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'"
+    jobs = {name: job_block(workflow, name) for name in ("gpui-build", "gpui-signer", "gpui-sign")}
+    gpui_names = re.findall(r"^  (gpui-[A-Za-z0-9_-]+):\n", workflow, re.MULTILINE)
+    assert len(gpui_names) == len(jobs) and set(gpui_names) == set(jobs), "unexpected GPUI job"
+    for name, job in jobs.items():
+        assert hashlib.sha256(job.encode()).hexdigest() == GPUI_JOB_SHA256[name], f"{name} job content must match its reviewed SHA-256 pin"
+        assert scalar(job, "if") == guard
+        assert scalar(job, "runs-on") == "macos-latest", "GPUI requires fresh hosted runners"
+        for env in mapping_blocks(job, "env", 4):
+            assert not references_secrets(env), f"{name} must not inherit job secrets"
+        permissions = list(mapping_blocks(job, "permissions", 4))
+        expected_permissions = "    permissions:\n      contents: read\n" + ("      actions: read\n" if name == "gpui-sign" else "")
+        assert permissions == [expected_permissions], f"{name} must have minimal permissions"
+        assert "persist-credentials: false" in job
+        assert "ref: ${{ needs.context.outputs.source-sha }}" in job
+        assert "save-if:" not in job and "actions/cache" not in job and "rust-cache" not in job
+        for forbidden in ("macos-release-", "contents: write", "actions: write", "id-token: write",
+                          "gh release", "git tag", "tauri-action"):
+            assert forbidden not in job, f"{name} cannot publish or share promotion state"
+
+    for name, phase, artifact in (("gpui-build", "build", "build"), ("gpui-signer", "build-signer", "signer")):
+        job = jobs[name]
+        assert scalar(job, "needs") == "context"
+        assert not references_secrets(job), f"{name} must be entirely credential-free"
+        assert "security create-keychain" not in job
+        assert f"python3 scripts/release_gpui.py {phase}\n" in job
+        assert "sha256: ${{ steps.payload.outputs.sha256 }}" in job
+        assert "artifact-id: ${{ steps.artifact.outputs.artifact-id }}" in job
+        assert f"python3 scripts/gpui_artifacts.py pack {artifact}" in job
+        assert 'echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"' in job
+        assert f"name: gpui-{artifact}-${{{{ needs.context.outputs.source-sha }}}}" in job
+        assert f"path: ${{{{ runner.temp }}}}/gpui-{artifact}.tar" in job
+
+    helpers = named_step_block(jobs["gpui-build"], "Build capture helpers", 6)
+    assert "python3 scripts/build_capture_helpers.py --release" in helpers
+
+    sign = jobs["gpui-sign"]
+    assert scalar(sign, "needs") == "[context, gpui-build, gpui-signer]"
+    checkout = named_step_block(sign, "Check out trusted signing scripts", 6)
+    for marker in ("uses: actions/checkout@v4", "persist-credentials: false",
+                   "ref: ${{ needs.context.outputs.source-sha }}"):
+        assert marker in checkout
+    assert sign.count("actions/checkout@") == 1
+    verify = named_step_block(sign, "Verify artifact hashes and extract allowlisted binaries", 6)
+    assert "if:" not in verify and "continue-on-error:" not in verify
+    readonly = named_step_block(sign, "Make trusted checkout read-only", 6)
+    assert 'chmod -R a-w "$GITHUB_WORKSPACE"' in readonly
+    assert "actions/download-artifact" not in sign
+    download = named_step_block(sign, "Download raw isolated artifact ZIPs", 6)
+    assert not references_secrets(download), "downloads must have no signing secrets"
+    assert "GH_TOKEN: ${{ github.token }}" in download
+    assert sign.index(checkout) < sign.index(readonly) < sign.index(download) < sign.index(verify)
+    for kind, variable in (("build", "BUILD"), ("signer", "SIGNER")):
+        for marker in (f"{variable}_ARTIFACT_ID: ${{{{ needs.gpui-{kind}.outputs.artifact-id }}}}",
+                       f'gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/${variable}_ARTIFACT_ID/zip" > "$RUNNER_TEMP/gpui-{kind}.zip"'):
+            assert marker in download
+        for marker in (f"{variable}_SHA256: ${{{{ needs.gpui-{kind}.outputs.sha256 }}}}",
+                       f"python3 scripts/gpui_artifacts.py verify-zip {kind}",
+                       f'--archive "$RUNNER_TEMP/gpui-{kind}.zip"',
+                       f'--sha256 "${variable}_SHA256" --output "$RUNNER_TEMP/gpui-{kind}"'):
+            assert marker in verify
+        assert sign.index(download) < sign.index(verify)
+    assert sign.index(checkout) < sign.index(verify) < sign.index("- name: Import Developer ID certificate")
+    command = named_step_block(sign, "Sign, notarize and record GPUI rehearsal", 6)
+    assert sign.index(verify) < sign.index("- name: Import Developer ID certificate") < sign.index(command)
+    for marker in ("python3 scripts/release_gpui.py sign",
+                   '--binary "$RUNNER_TEMP/gpui-build/ui"',
+                   '--helpers-dir "$RUNNER_TEMP/gpui-build"',
+                   '--native-signer "$RUNNER_TEMP/gpui-signer/murmur-updater-signer"'):
+        assert marker in command
+    assert "name: gpui-rehearsal-${{ needs.context.outputs.source-sha }}" in sign
+    cleanup = named_step_block(sign, "Delete signing keychain", 6)
+    assert "if: always()" in cleanup
+    assert "security delete-keychain" in cleanup
 
 
 def should_run_ci(event_name: str, head_commit_message: Optional[str]) -> bool:
@@ -317,6 +438,14 @@ def validate_release_build(workflow: str) -> int:
         in workflow
     )
     assert scalar(job_block(workflow, "context"), "if") == RELEASE_BUILD_GUARD
+    assert "options: [tauri, gpui]\n        default: tauri" in workflow
+    context = job_block(workflow, "context")
+    assert "BUNDLE_TARGET: ${{ inputs.bundle_target || 'tauri' }}" in context
+    assert 'TARGET=$(python3 scripts/release_bundle_target.py) || exit 1' in context
+    assert 'echo "bundle_target=$TARGET" >> "$GITHUB_OUTPUT"' in context
+    assert "bundle-target: ${{ steps.context.outputs.bundle_target }}" in context
+    assert scalar(job_block(workflow, "release-macos"), "if") == "needs.context.outputs.bundle-target == 'tauri'"
+    validate_gpui_isolation(workflow)
     for job in ("typecheck", "release-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"
 
@@ -389,6 +518,8 @@ def validate_release_build(workflow: str) -> int:
     )
     for event_name, message, expected in cases:
         assert should_run_release_build(event_name, message) is expected
+    assert hashlib.sha256(workflow.encode()).hexdigest() == RELEASE_BUILD_SHA256, \
+        "release-build.yml must match its reviewed SHA-256 pin"
     return len(cases)
 
 
@@ -486,6 +617,7 @@ def validate_promotion_policy(workflow: str) -> int:
     assert "tags:\n      - 'v*'" in workflow
     assert "workflow_run:\n    workflows: [Release Build]\n    types: [completed]" in workflow
     assert "\n  workflow_dispatch:" in workflow
+    assert "gpui-" not in workflow, "promotion must never consume any GPUI artifact"
     assert "self-hosted" not in workflow
     canary = job_block(workflow, "ota-canary")
     assert "needs: [resolve, promote]" in canary
