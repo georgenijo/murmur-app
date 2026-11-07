@@ -1627,10 +1627,10 @@ fn synthetic_live_fixture_coalesces_and_stops_with_subscription() {
     let inbox = Inbox::default();
     let mut subscription =
         host.subscribe(murmur_core::events::Consumer::Diagnostics, 1, inbox.clone());
-    assert!(host.emit_live());
-    assert!(host.emit_live());
+    assert!(host.publish_live());
+    assert!(host.publish_live());
     assert_eq!(inbox.drain().len(), 1);
-    assert!(host.emit_live());
+    assert!(host.publish_live());
     let event = inbox.drain().pop_back().unwrap();
     assert!(matches!(
         event,
@@ -1641,9 +1641,9 @@ fn synthetic_live_fixture_coalesces_and_stops_with_subscription() {
         }
     ));
     subscription.stop();
-    assert!(!host.emit_live());
+    assert!(!host.publish_live());
     let _subscription =
         host.subscribe(murmur_core::events::Consumer::Diagnostics, 2, inbox.clone());
     inbox.close();
-    assert!(!host.emit_live());
+    assert!(!host.publish_live());
 }

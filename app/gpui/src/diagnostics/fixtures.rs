@@ -37,7 +37,7 @@ impl Drop for FixtureSubscription {
 impl FixtureHost {
     /// Called only by the opt-in QA timer. One coalesced synthetic batch per
     /// tick; no production data, thread, pasteboard or notification side effect.
-    pub fn emit_live(&self) -> bool {
+    pub fn publish_live(&self) -> bool {
         let delivery = self.delivery.borrow();
         let Some((attachment, inbox)) = delivery.as_ref() else {
             return false;

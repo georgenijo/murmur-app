@@ -128,7 +128,7 @@ fn main() {
             cx.spawn(async move |cx| {
                 loop {
                     cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
-                    if !cx.update(|_| host.emit_live()) { break; }
+                    if !cx.update(|_| host.publish_live()) { break; }
                 }
             }).detach();
         }

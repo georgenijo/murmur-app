@@ -257,3 +257,9 @@ were not reached, so their visual acceptance is not claimed.
 The PR notes link the immutable evidence. Checkout 66 and its targets are
 removed after evidence preservation. Native interactive/VoiceOver acceptance
 and independent Sol review remain with the lead; the PR stays draft/unmerged.
+
+The CI follow-up renames the synthetic helper from `emit_live` to `publish_live`:
+the repository reserves every `emit`/`emit_*` identifier for transport adapters.
+This changes no behavior or transport boundary. The existing guard is preserved;
+the follow-up rechecks it, its regressions, the GPUI suite and native selectors
+on the Mac mini. The final PR evidence supersedes the initial repair receipt.
