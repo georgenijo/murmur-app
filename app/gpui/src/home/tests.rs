@@ -78,7 +78,7 @@ fn tab_from_unfocused_home_enters_content_without_activation_focus(cx: &mut Test
     keys(cx, "tab");
     assert!(cx.update(|w, cx| e.read(cx).focus["sidebar-toggle"].is_focused(w)));
     keys(cx, "tab");
-    assert!(cx.update(|w, cx| e.read(cx).focus["palette"].is_focused(w)));
+    assert!(cx.update(|w, cx| e.read(cx).focus["settings"].is_focused(w)));
     cx.update(|w, cx| w.blur(cx));
     draw(cx);
     keys(cx, "shift-tab");
@@ -253,7 +253,7 @@ mod ax {
         for _ in 0..2 {
             let t = tree(cx);
             for text in [
-                "This month: 420 words, 7 dictations".to_string(),
+                "This month 420 words · 7 dictations".to_string(),
                 "Get more from Murmur · 0/5".to_string(),
                 "Try what is ready when you are".to_string(),
             ]
@@ -370,7 +370,7 @@ mod ax {
             let p = crate::tokens::Palette::get(cx);
             assert!(
                 w.painted_quads().iter().any(|q| q.bounds.size.width
-                    == gpui::px(6.).scale(w.scale_factor())
+                    == gpui::px(8.).scale(w.scale_factor())
                     && q.border_color == p.focus),
                 "splitter has no painted focus border"
             );

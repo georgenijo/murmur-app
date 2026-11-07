@@ -41,7 +41,6 @@ pub struct Button {
     id: ElementId,
     focus: Option<FocusHandle>,
     scroll_parent: Vec<ScrollHandle>,
-    focus_reveal: Option<crate::data_components::FocusRevealState>,
     label: SharedString,
     intent: ButtonIntent,
     size: ButtonSize,
@@ -67,7 +66,6 @@ impl Button {
             id,
             focus: None,
             scroll_parent: vec![],
-            focus_reveal: None,
             label,
             intent: ButtonIntent::Secondary,
             size: ButtonSize::Standard,
@@ -143,15 +141,6 @@ impl Button {
         self.scroll_parent = parents;
         self
     }
-    /// Virtualized owners retain this state and reset it when focus leaves,
-    /// including while the button is outside the rendered range.
-    pub(crate) fn with_focus_reveal(
-        mut self,
-        state: crate::data_components::FocusRevealState,
-    ) -> Self {
-        self.focus_reveal = Some(state);
-        self
-    }
     pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
         self.focus = Some(focus.clone());
         self.base = self.base.track_focus(focus);
@@ -174,7 +163,7 @@ impl RenderOnce for Button {
             Some(crate::data_components::focus_reveal(
                 focus,
                 self.scroll_parent.clone(),
-                self.focus_reveal.clone(),
+                None,
                 w,
                 cx,
             ))

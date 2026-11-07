@@ -245,7 +245,7 @@ fn host_subscribes_before_read_keyboard_virtualizes_and_copies_full_text(cx: &mu
     let (e, host, cx) = harness(cx);
     assert_eq!(host.calls.borrow()[0], "subscribe");
     let painted = e.read_with(cx, |s, _| s.rendered.len());
-    assert!(painted > 0 && painted < 20, "visible rows {painted}");
+    assert!(painted > 0 && painted < 40, "visible rows {painted}");
     tab_to_list(&e, cx);
     cx.simulate_keystrokes("home down up space");
     e.update(cx, |s, cx| s.drain(cx));
@@ -254,7 +254,7 @@ fn host_subscribes_before_read_keyboard_virtualizes_and_copies_full_text(cx: &mu
     cx.simulate_keystrokes("end");
     draw(cx);
     assert_eq!(e.read_with(cx, |s, _| s.model.selected), Some(1));
-    assert!(e.read_with(cx, |s, _| s.rendered.start) > 150);
+    assert!(e.read_with(cx, |s, _| s.scroll.state.logical_scroll_top().item_ix) > 150);
     cx.simulate_keystrokes("right");
     draw(cx);
     assert_eq!(e.read_with(cx, |s, _| s.model.detail), Some(1));
@@ -353,6 +353,8 @@ mod ax {
         let t = tree(cx);
         named(&t, "Copied");
         assert_eq!(*host.clipboard.borrow(), entry(200).text);
+        click(cx, named(&t, "More transcript actions"));
+        let t = tree(cx);
         click(cx, named(&t, "Delete transcript…"));
         let t = tree(cx);
         named(&t, "Confirm deletion");
@@ -868,11 +870,7 @@ fn tab_row_actions_reveal_forward_reverse_and_unrendered_rows(cx: &mut TestAppCo
         });
         if let Some(position) = position {
             e.read_with(cx, |s, _| {
-                let scroll = s.scroll.0.borrow();
-                let top = super::ROW_HEIGHT * position as f32 + scroll.base_handle.offset().y;
-                assert!(top >= -gpui::px(1.), "row {position} above viewport: {top:?}");
-                assert!(top + super::ROW_HEIGHT <= scroll.base_handle.bounds().size.height + gpui::px(1.),
-                    "focused row {position} below viewport: top={top:?} bounds={:?} item={:?} offset={:?}", scroll.base_handle.bounds(), scroll.last_item_size, scroll.base_handle.offset());
+                s.scroll.assert_visible(position);
             });
             visited.push(position);
             if position == 199 {
@@ -889,13 +887,7 @@ fn tab_row_actions_reveal_forward_reverse_and_unrendered_rows(cx: &mut TestAppCo
             e.read_with(cx, |s, _| {
                 let key = s.model.entries[s.model.matches[position]].key;
                 assert!(s.row_focus[&key].is_focused(w));
-                let scroll = s.scroll.0.borrow();
-                let top = super::ROW_HEIGHT * position as f32 + scroll.base_handle.offset().y;
-                assert!(top >= -gpui::px(1.));
-                assert!(
-                    top + super::ROW_HEIGHT
-                        <= scroll.base_handle.bounds().size.height + gpui::px(1.)
-                );
+                s.scroll.assert_visible(position);
             })
         });
     }
@@ -929,20 +921,19 @@ fn focused_row_remount_does_not_reveal_again(cx: &mut TestAppContext) {
     draw(cx);
     assert!(!e.read_with(cx, |s, _| s.rendered.contains(&30)));
     cx.update(|w, cx| assert!(e.read(cx).row_focus[&key].is_focused(w)));
-    let partial = -(super::ROW_HEIGHT * 30. + gpui::px(90.));
+    let partial = gpui::ListOffset {
+        item_ix: 30,
+        offset_in_item: gpui::px(20.),
+    };
     e.update(cx, |s, cx| {
-        s.scroll
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(gpui::point(gpui::px(0.), partial));
+        s.scroll.state.scroll_to(partial);
         cx.notify();
     });
     draw(cx);
     draw(cx);
     assert!(e.read_with(cx, |s, _| s.rendered.contains(&30)));
     assert_eq!(
-        e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y),
+        e.read_with(cx, |s, _| s.scroll.state.logical_scroll_top()),
         partial,
         "unchanged focus must not jump when a clipped row remounts"
     );
@@ -955,7 +946,14 @@ fn focused_row_remount_does_not_reveal_again(cx: &mut TestAppContext) {
     });
     draw(cx);
     draw(cx);
-    assert!(e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y) > partial);
+    assert!(
+        e.read_with(cx, |s, _| s
+            .scroll
+            .state
+            .logical_scroll_top()
+            .offset_in_item)
+            < partial.offset_in_item
+    );
 }
 
 #[gpui::test]
@@ -1008,11 +1006,7 @@ fn assert_row_action_visible(e: &Entity<History>, position: usize, cx: &mut Visu
                 "expected transcript {} action to own focus; boundary focused={}, focused rows={:?}", position + 1,
                 s.list_end_focus.is_focused(w),
                 s.row_focus.iter().filter_map(|(key, focus)| focus.is_focused(w).then_some(*key)).collect::<Vec<_>>());
-            assert!(s.rendered.contains(&position));
-            let scroll = s.scroll.0.borrow();
-            let top = super::ROW_HEIGHT * position as f32 + scroll.base_handle.offset().y;
-            assert!(top >= -gpui::px(1.));
-            assert!(top + super::ROW_HEIGHT <= scroll.base_handle.bounds().size.height + gpui::px(1.));
+            s.scroll.assert_visible(position);
         });
     });
 }
@@ -1137,12 +1131,21 @@ fn ax_focus_reveals_partially_clipped_row_action(cx: &mut TestAppContext) {
         w.resize(gpui::size(gpui::px(880.), gpui::px(720.)));
         w.bounds_changed(cx);
     });
+    let partial = gpui::ListOffset {
+        item_ix: 5,
+        offset_in_item: gpui::px(20.),
+    };
+    e.update(cx, |s, cx| {
+        s.scroll.state.scroll_to(partial);
+        cx.notify();
+    });
+    draw(cx);
     let tree = ax::tree(cx);
     let id = ax::named(&tree, "Show more for transcript 6");
     let window = cx.update(|w, _| w.window_handle());
     assert_eq!(
-        e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y),
-        gpui::px(0.)
+        e.read_with(cx, |s, _| s.scroll.state.logical_scroll_top()),
+        partial
     );
     cx.dispatch_accessibility_action(
         window,
@@ -1169,5 +1172,12 @@ fn ax_focus_reveals_partially_clipped_row_action(cx: &mut TestAppContext) {
         bounds.y1 <= 704. * scale,
         "AX-focused action below list viewport: {bounds:?}"
     );
-    assert!(e.read_with(cx, |s, _| s.scroll.0.borrow().base_handle.offset().y) < gpui::px(0.));
+    assert!(
+        e.read_with(cx, |s, _| s
+            .scroll
+            .state
+            .logical_scroll_top()
+            .offset_in_item)
+            < partial.offset_in_item
+    );
 }

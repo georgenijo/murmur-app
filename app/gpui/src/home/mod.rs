@@ -9,6 +9,7 @@ mod tests;
 use crate::{
     Button, ButtonIntent, ButtonSize,
     history::History,
+    icons::{Glyph, icon},
     onboarding::model::{Access, Permission},
     tokens::{self, Palette},
     workspace::Authority,
@@ -48,6 +49,7 @@ impl Home {
         let history = cx.new(|cx| {
             let mut history = History::new(history_host, w, cx);
             history.title = "Your dictations";
+            history.set_embedded();
             history
         });
         Self {
@@ -296,7 +298,20 @@ impl Render for Home {
         let width = if collapsed { 48. } else { self.expanded_width };
         let e = cx.entity();
         let header = div()
+            .relative()
             .h(px(40.))
+            .flex_shrink_0()
+            .when(!collapsed, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .h_full()
+                        .w(px(width))
+                        .bg(p.surface_container_low),
+                )
+            })
             .flex()
             .items_center()
             .gap(px(8.))
@@ -311,17 +326,16 @@ impl Render for Home {
                         "Collapse sidebar"
                     },
                 )
-                .caption("☰")
+                .icon_only(Glyph::PanelLeft)
+                .intent(ButtonIntent::Ghost)
                 .track_focus(&self.focus_for("sidebar-toggle", cx))
                 .on_click(move |_, w, cx| e.update(cx, |s, cx| s.toggle(w, cx))),
             )
             .child(div().flex_1())
             .child(
-                self.button("palette", "Command palette", Destination::Palette, cx)
-                    .size(ButtonSize::Compact),
-            )
-            .child(
                 self.button("settings", "Settings", Destination::General, cx)
+                    .icon_only(Glyph::Settings)
+                    .intent(ButtonIntent::Ghost)
                     .size(ButtonSize::Compact),
             );
         let mut nav = div()
@@ -331,43 +345,91 @@ impl Render for Home {
             .w(px(width))
             .h_full()
             .flex_shrink_0()
+            .bg(p.surface_container_low)
             .border_r_1()
-            .border_color(p.border)
+            .border_color(p.hairline)
             .flex()
             .flex_col()
             .p(px(8.))
-            .gap(px(8.));
-        if !collapsed {
-            nav = nav.child(
+            .gap(px(2.));
+        nav =
+            nav.child(
                 div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(text!("Murmur")),
+                    .h(px(if collapsed { 10. } else { 48. }))
+                    .pb(px(if collapsed { 0. } else { 6. }))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .px(px(6.))
+                    .gap(px(8.))
+                    .when(!collapsed, |d| {
+                        d.child(
+                            div()
+                                .size(px(26.))
+                                .flex_shrink_0()
+                                .rounded(px(9.))
+                                .bg(p.accent)
+                                .shadow(p.card_shadow())
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(2.))
+                                .children([7., 14., 17., 7.].map(|h| {
+                                    div().w(px(2.)).h(px(h)).rounded(px(1.)).bg(p.on_accent)
+                                })),
+                        )
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child("Murmur"))
+                    }),
             );
-        }
-        for (id, label, short, d) in [
-            ("nav-home", "Home", "H", Destination::Home),
-            ("nav-meetings", "Notetaker", "N", Destination::Meetings),
-            ("nav-insights", "Insights", "I", Destination::Insights),
+        for (id, label, glyph, destination) in [
+            ("nav-home", "Home", Glyph::House, Destination::Home),
+            (
+                "nav-meetings",
+                "Notetaker",
+                Glyph::Calendar,
+                Destination::Meetings,
+            ),
+            (
+                "nav-insights",
+                "Insights",
+                Glyph::Chart,
+                Destination::Insights,
+            ),
         ] {
             let b = self
-                .button(id, label, d, cx)
-                .toggled(id == "nav-home")
-                .intent(if id == "nav-home" {
-                    ButtonIntent::Secondary
-                } else {
-                    ButtonIntent::Ghost
-                });
-            nav = nav.child(if collapsed { b.caption(short) } else { b });
+                .button(id, label, destination, cx)
+                .nav_row()
+                .icon(glyph)
+                .toggled(id == "nav-home");
+            nav = nav.child(if collapsed { b.icon_only(glyph) } else { b });
         }
-        nav = nav.child(div().flex_1());
-        if !collapsed {
-            nav = nav.child(
-                div()
-                    .text_color(p.muted)
-                    .text_size(px(12.))
-                    .child(text!("Dictation stays on this Mac.")),
-            );
-        }
+        nav = nav.child(div().flex_1()).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .p(px(if collapsed { 8. } else { 10. }))
+                .rounded(tokens::CARD_RADIUS)
+                .when(!collapsed, |d| {
+                    d.border_1().border_color(p.hairline).bg(p.tint_raised)
+                })
+                .child(
+                    div()
+                        .size(px(6.))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(p.success),
+                )
+                .when(!collapsed, |d| {
+                    d.child(
+                        div()
+                            .text_color(p.muted)
+                            .text_size(tokens::MICRO_SIZE)
+                            .line_height(tokens::CAPTION_LEADING)
+                            .child("Dictation stays on this Mac."),
+                    )
+                }),
+        );
         let inc = cx.entity();
         let dec = inc.clone();
         let separator = div()
@@ -390,10 +452,20 @@ impl Render for Home {
             .aria_min_numeric_value(256.)
             .aria_max_numeric_value(384.)
             .track_focus(&self.focus_for("sidebar-width", cx).tab_stop(true))
-            .w(px(6.))
+            .w(px(8.))
             .h_full()
             .cursor_col_resize()
-            .bg(p.border.opacity(0.4))
+            .relative()
+            .bg(transparent_black())
+            .child(
+                div()
+                    .absolute()
+                    .left(px(3.))
+                    .top_0()
+                    .w(px(1.))
+                    .h_full()
+                    .bg(p.hairline),
+            )
             .border_1()
             .border_color(gpui::transparent_black())
             .focus_visible(|s| {
@@ -449,6 +521,9 @@ impl Render for Home {
                     cx.notify();
                 }),
             );
+        let nav = nav.relative().when(!collapsed, |d| {
+            d.child(separator.absolute().right(px(-4.)).top_0())
+        });
         let mut content = div()
             .id("home-content")
             .flex_1()
@@ -456,8 +531,9 @@ impl Render for Home {
             .h_full()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(if narrow { 16. } else { 24. }));
+            .gap(px(14.))
+            .p(px(16.))
+            .pt(px(18.));
         if let Some(problem) = self.model.problem {
             let e = cx.entity();
             content = content
@@ -576,73 +652,210 @@ impl Render for Home {
                         .bg(p.accent)
                 }),
             );
+            let record_focus = self.focus_for("home-record", cx);
+            let waiting = s.waiting() || self.model.pending;
+            let tile = div()
+                .size(px(32.))
+                .flex_shrink_0()
+                .rounded(tokens::CONTROL_RADIUS)
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if s.capturing() {
+                    p.danger
+                } else if waiting {
+                    p.surface_container_low
+                } else {
+                    p.accent
+                })
+                .text_color(if waiting { p.muted } else { p.on_accent })
+                .child(
+                    if waiting && crate::preferences::current(cx).reduce_motion {
+                        icon(Glyph::Spinner).into_any_element()
+                    } else if waiting {
+                        icon(Glyph::Spinner)
+                            .with_animation(
+                                "talk-spinner",
+                                Animation::new(Duration::from_millis(900)).repeat(),
+                                |i, delta| i.transform(Transformation::rotate(percentage(delta))),
+                            )
+                            .into_any_element()
+                    } else {
+                        icon(if s.capturing() {
+                            Glyph::Stop
+                        } else {
+                            Glyph::Mic
+                        })
+                        .into_any_element()
+                    },
+                );
+            let hint_view = div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(tokens::CAPTION_SIZE)
+                .line_height(tokens::CAPTION_LEADING)
+                .text_color(p.muted);
+            let hint_view = if s.status == Status::Idle && !s.waiting() {
+                // Keep the configured gesture/key from the shared model, with a technical key cap.
+                let key = s.settings["doubleTapKey"]
+                    .as_str()
+                    .unwrap_or("ControlRight");
+                let label = crate::settings::schema::ROWS
+                    .iter()
+                    .find(|r| r.key == "doubleTapKey")
+                    .and_then(|r| {
+                        if let crate::settings::schema::Kind::Choice(o) = r.kind {
+                            o.iter().find(|(v, _)| *v == key).map(|(_, l)| *l)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(key);
+                let gesture = match s.settings["recordingMode"].as_str() {
+                    Some("double_tap") => "or double-tap",
+                    Some("both") => "or hold or double-tap",
+                    _ => "or hold",
+                };
+                hint_view
+                    .child(gesture)
+                    .child(
+                        div()
+                            .font_family(tokens::MONO_FONT)
+                            .text_size(tokens::MICRO_SIZE)
+                            .line_height(px(14.))
+                            .px(px(4.))
+                            .rounded(px(3.))
+                            .border_1()
+                            .border_color(p.hairline_strong)
+                            .bg(p.surface_container_low)
+                            .child(if key.contains("Shift") {
+                                format!("⇧ {label}")
+                            } else {
+                                label.to_owned()
+                            }),
+                    )
+                    .child("in any app")
+            } else {
+                hint_view.child(hint)
+            };
             let talk = div()
                 .id("home-talk")
                 .role(Role::Group)
                 .aria_label("Dictation controls")
+                .flex_shrink_0()
                 .border_1()
-                .border_color(p.border)
+                .border_color(if s.capturing() {
+                    p.danger.opacity(0.4)
+                } else {
+                    p.hairline_strong
+                })
                 .rounded(tokens::CONTROL_RADIUS)
+                .bg(p.tint_raised)
+                .overflow_hidden()
                 .flex()
                 .flex_col()
-                .gap(px(8.))
-                .p(px(8.))
+                .shadow(p.card_shadow())
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(12.))
-                        .child(
-                            Button::new("home-record", name)
-                                .caption(if s.capturing() { "Stop" } else { "Start" })
-                                .track_focus(&self.focus_for("home-record", cx))
-                                .intent(ButtonIntent::Primary)
-                                .disabled(s.waiting() || self.model.pending)
-                                .on_click(move |_, _, cx| e.update(cx, |s, cx| s.record(cx))),
-                        )
+                    gpui_base::Button::new("home-record")
+                        .accessibility_label(name)
+                        .track_focus(&record_focus)
+                        .disabled(waiting)
+                        .capture_key_down(|e, w, cx| {
+                            if e.keystroke.key == "enter" {
+                                w.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        })
+                        .h(px(54.))
+                        .w_full()
+                        .px(px(12.))
+                        .hover(|d| d.bg(p.text.opacity(0.025)))
+                        .on_click(move |_, _, cx| e.update(cx, |s, cx| s.record(cx)))
                         .child(
                             div()
-                                .flex_1()
-                                .min_w(px(0.))
+                                .w_full()
                                 .flex()
-                                .flex_col()
+                                .items_center()
+                                .gap(px(12.))
+                                .child(tile)
                                 .child(
                                     div()
-                                        .id("dictation-status")
-                                        .role(Role::Status)
-                                        .aria_label(title.clone())
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(title),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(12.))
-                                        .line_height(px(16.))
-                                        .text_color(p.muted)
-                                        .child(text!(hint)),
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .id("dictation-status")
+                                                        .role(Role::Status)
+                                                        .aria_label(title.clone())
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .child(title),
+                                                )
+                                                .when(s.status == Status::Recording, |d| {
+                                                    d.child(waveform)
+                                                }),
+                                        )
+                                        .child(hint_view),
                                 ),
                         ),
                 )
-                .when(s.status == Status::Recording, |d| d.child(waveform))
                 .child(
                     div()
+                        .h(px(28.))
+                        .border_t_1()
+                        .border_color(p.hairline)
+                        .bg(p.surface_container_low)
+                        .px(px(12.))
                         .flex()
-                        .flex_wrap()
                         .items_center()
-                        .gap(px(8.))
-                        .child(text!(format!(
-                            "This month: {} words, {} {}",
-                            s.words_this_month,
-                            s.recordings_this_month,
-                            if s.recordings_this_month == 1 {
-                                "dictation"
-                            } else {
-                                "dictations"
-                            }
-                        )))
+                        .gap(px(4.))
+                        .text_size(tokens::CAPTION_SIZE)
+                        .text_color(p.muted)
+                        .child(
+                            div()
+                                .id("monthly-statistics")
+                                .role(Role::Label)
+                                .aria_value(format!(
+                                    "This month {} words · {} dictations",
+                                    s.words_this_month, s.recordings_this_month
+                                ))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .child("This month")
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(p.text)
+                                        .font_features(tokens::tabular_numbers())
+                                        .child(s.words_this_month.to_string()),
+                                )
+                                .child("words ·")
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(p.text)
+                                        .font_features(tokens::tabular_numbers())
+                                        .child(s.recordings_this_month.to_string()),
+                                )
+                                .child(if s.recordings_this_month == 1 {
+                                    "dictation"
+                                } else {
+                                    "dictations"
+                                }),
+                        )
+                        .child(div().flex_1())
                         .child(
                             self.button("insights", "View insights", Destination::Insights, cx)
-                                .size(ButtonSize::Compact)
+                                .caption("View insights  ›")
+                                .size(ButtonSize::ExtraSmall)
                                 .intent(ButtonIntent::Ghost),
                         ),
                 );
@@ -697,32 +910,67 @@ impl Render for Home {
                     .id("discovery")
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
-                    .p(px(12.))
-                    .rounded(tokens::CARD_RADIUS)
+                    .flex_shrink_0()
+                    .bg(p.tint_raised)
+                    .rounded(tokens::CONTROL_RADIUS)
                     .border_1()
-                    .border_color(p.border)
+                    .border_color(p.hairline_strong)
                     .child(
                         div()
+                            .h(px(40.))
+                            .px(px(12.))
+                            .border_b_1()
+                            .border_color(p.hairline)
                             .flex()
-                            .flex_wrap()
-                            .gap(px(8.))
-                            .child(text!(format!("Get more from Murmur · {count}/5")))
+                            .items_center()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .text_size(tokens::MICRO_SIZE)
+                                    .text_color(p.muted)
+                                    .id("discovery-progress")
+                                    .role(Role::Label)
+                                    .aria_value(format!("Get more from Murmur · {count}/5"))
+                                    .child("Get more from Murmur"),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(text!("Try what is ready when you are")),
+                            )
+                            .child(
+                                div()
+                                    .w(px(48.))
+                                    .h(px(4.))
+                                    .rounded_full()
+                                    .bg(p.raised)
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(px(count as f32 / 5. * 48.))
+                                            .rounded_full()
+                                            .bg(p.accent),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(tokens::CAPTION_SIZE)
+                                    .text_color(p.muted)
+                                    .child(format!("{count}/5")),
+                            )
                             .child(
                                 Button::new("dismiss-checklist", "Dismiss Get more from Murmur")
+                                    .icon_only(Glyph::Close)
+                                    .intent(ButtonIntent::Ghost)
+                                    .size(ButtonSize::ExtraSmall)
                                     .with_scroll_parent(Some(&self.scroll))
-                                    .size(ButtonSize::Compact)
                                     .on_click(move |_, _, cx| {
                                         e.update(cx, |s, cx| {
                                             s.request(Action::DismissChecklist, cx)
                                         })
                                     }),
                             ),
-                    )
-                    .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(text!("Try what is ready when you are")),
                     );
                 for (id, title, detail, action) in ITEMS {
                     let e = cx.entity();
@@ -732,7 +980,24 @@ impl Render for Home {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(px(10.))
+                            .px(px(12.))
+                            .py(px(6.))
+                            .child(
+                                div()
+                                    .size(px(14.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(if done { p.accent } else { p.border })
+                                    .when(done, |d| {
+                                        d.bg(p.accent).child(
+                                            icon(Glyph::Check)
+                                                .size(px(12.))
+                                                .text_color(p.on_accent),
+                                        )
+                                    }),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -745,20 +1010,23 @@ impl Render for Home {
                                                 "{title}: {}",
                                                 if done { "Complete" } else { "Not completed" }
                                             ))
-                                            .child(format!(
-                                                "{}{}",
-                                                if done { "✓ " } else { "" },
-                                                title
-                                            )),
+                                            .text_size(tokens::CAPTION_SIZE)
+                                            .line_height(tokens::CAPTION_LEADING)
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(title),
                                     )
-                                    .child(div().text_size(px(12.)).text_color(p.muted).child(
-                                        text!(
-                                            id = SharedString::from(format!(
-                                                "checklist-detail-{id}"
+                                    .child(
+                                        div()
+                                            .text_size(tokens::MICRO_SIZE)
+                                            .line_height(tokens::CAPTION_LEADING)
+                                            .text_color(p.muted)
+                                            .child(text!(
+                                                id = SharedString::from(format!(
+                                                    "checklist-detail-{id}"
+                                                )),
+                                                detail
                                             )),
-                                            detail
-                                        ),
-                                    )),
+                                    ),
                             )
                             .child(
                                 Button::new(
@@ -769,9 +1037,14 @@ impl Render for Home {
                                     ),
                                 )
                                 .caption(if done { "Open again" } else { action })
+                                .intent(if done {
+                                    ButtonIntent::Ghost
+                                } else {
+                                    ButtonIntent::Secondary
+                                })
                                 .track_focus(&focus)
                                 .with_scroll_parent(Some(&self.scroll))
-                                .size(ButtonSize::Compact)
+                                .size(ButtonSize::ExtraSmall)
                                 .disabled(self.model.pending)
                                 .on_click(move |_, _, cx| {
                                     e.update(cx, |s, cx| {
@@ -785,7 +1058,8 @@ impl Render for Home {
                 content = content.child(
                     div()
                         .id("discovery-scroll")
-                        .max_h(px(if narrow { 180. } else { 260. }))
+                        .max_h(px(if narrow { 180. } else { 272. }))
+                        .flex_shrink_0()
                         .overflow_y_scroll()
                         .track_scroll(&self.scroll)
                         .child(checklist),
@@ -839,7 +1113,6 @@ impl Render for Home {
                     .min_h(px(0.))
                     .flex()
                     .child(nav)
-                    .when(!collapsed, |d| d.child(separator))
                     .child(content),
             )
     }
