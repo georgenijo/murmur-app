@@ -470,10 +470,16 @@ impl Diagnostics {
                 .update(cx, |s, cx| s.replace_choices(values, cx));
         }
         self.baseline.update(cx, |s, cx| {
-            s.set_value(self.model.baseline.as_deref().unwrap_or(""), cx)
+            // set_value resets the keyboard highlight. Unrelated host updates
+            // must leave navigation in an open picker alone.
+            if s.value().map(|v| v.as_ref()) != self.model.baseline.as_deref() {
+                s.set_value(self.model.baseline.as_deref().unwrap_or(""), cx);
+            }
         });
         self.candidate.update(cx, |s, cx| {
-            s.set_value(self.model.candidate.as_deref().unwrap_or(""), cx)
+            if s.value().map(|v| v.as_ref()) != self.model.candidate.as_deref() {
+                s.set_value(self.model.candidate.as_deref().unwrap_or(""), cx);
+            }
         });
         let builds: BTreeSet<_> = self.model.latency.iter().map(|l| l.build.clone()).collect();
         self.build.update(cx, |s, cx| {

@@ -452,6 +452,252 @@ fn tabs_lists_charts_and_data_pickers_support_keyboard_without_native_windows(
     cx.simulate_keystrokes("end home right");
     draw(cx);
 }
+
+fn host_notification(
+    entity: &Entity<Diagnostics>,
+    cx: &mut VisualTestContext,
+    lane: Lane,
+    revision: u64,
+) {
+    entity.update(cx, |s, cx| {
+        s.receive(
+            Event::Notification {
+                attachment: s.model.ticket(lane).attachment,
+                lane,
+                revision,
+                store_epoch: 0,
+                payload: fixtures::payload(lane),
+            },
+            cx,
+        );
+    });
+    draw(cx);
+}
+
+#[gpui::test]
+fn report_picker_keyboard_commit_survives_unrelated_host_notifications(cx: &mut TestAppContext) {
+    let (entity, cx) = harness(cx);
+    entity.update(cx, |s, cx| {
+        s.model.navigate(Tab::Compare);
+        s.sync(cx);
+    });
+    draw(cx);
+    let mut revision = 100;
+    for baseline in [true, false] {
+        let picker = entity.read_with(cx, |s, _| {
+            if baseline {
+                s.baseline.clone()
+            } else {
+                s.candidate.clone()
+            }
+        });
+        // Also cover an explicitly cleared committed selection: None must not
+        // reset the uncommitted highlight to the first report on every sync.
+        for cleared in [false, true] {
+            if cleared {
+                entity.update(cx, |s, cx| {
+                    if baseline {
+                        s.model.baseline = None;
+                    } else {
+                        s.model.candidate = None;
+                    }
+                    s.sync(cx);
+                });
+            }
+            let (old, expected) = entity.read_with(cx, |s, _| {
+                let old = if baseline {
+                    &s.model.baseline
+                } else {
+                    &s.model.candidate
+                };
+                let index = old
+                    .as_ref()
+                    .and_then(|id| s.model.reports.iter().position(|r| r.id() == id))
+                    .unwrap_or(0);
+                (
+                    old.clone(),
+                    s.model.reports[(index + 1) % s.model.reports.len()]
+                        .id()
+                        .to_owned(),
+                )
+            });
+            cx.update(|w, cx| picker.update(cx, |s, cx| s.open(w, cx)));
+            draw(cx);
+            cx.simulate_keystrokes("down");
+            draw(cx);
+            for lane in [Lane::Events, Lane::Performance, Lane::Reports] {
+                host_notification(&entity, cx, lane, revision);
+                revision += 1;
+                assert!(picker.read_with(cx, |s, _| s.is_open()));
+                assert_eq!(
+                    picker.read_with(cx, |s, _| s.value().map(ToString::to_string)),
+                    old
+                );
+            }
+            cx.simulate_keystrokes("enter");
+            draw(cx);
+            assert!(!picker.read_with(cx, |s, _| s.is_open()));
+            assert_eq!(
+                picker.read_with(cx, |s, _| s.value().map(ToString::to_string)),
+                Some(expected.clone())
+            );
+            entity.read_with(cx, |s, _| {
+                assert_eq!(
+                    if baseline {
+                        &s.model.baseline
+                    } else {
+                        &s.model.candidate
+                    },
+                    &Some(expected)
+                );
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn report_removal_closes_open_picker_and_clears_missing_committed_identity(
+    cx: &mut TestAppContext,
+) {
+    let (entity, cx) = harness(cx);
+    for baseline in [true, false] {
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Compare);
+            s.receive(
+                Event::Notification {
+                    attachment: s.model.ticket(Lane::Reports).attachment,
+                    lane: Lane::Reports,
+                    revision: if baseline { 100 } else { 102 },
+                    store_epoch: 0,
+                    payload: fixtures::payload(Lane::Reports),
+                },
+                cx,
+            );
+            let id = s.model.reports[0].id().to_owned();
+            if baseline {
+                s.model.baseline = Some(id);
+            } else {
+                s.model.candidate = Some(id);
+            }
+            s.sync(cx);
+        });
+        let picker = entity.read_with(cx, |s, _| {
+            if baseline {
+                s.baseline.clone()
+            } else {
+                s.candidate.clone()
+            }
+        });
+        cx.update(|w, cx| picker.update(cx, |s, cx| s.open(w, cx)));
+        draw(cx);
+        cx.simulate_keystrokes("down");
+        draw(cx);
+        let expected = entity.update(cx, |s, cx| {
+            let remaining = s.model.reports[1].clone();
+            let expected = remaining.id().to_owned();
+            s.receive(
+                Event::Notification {
+                    attachment: s.model.ticket(Lane::Reports).attachment,
+                    lane: Lane::Reports,
+                    revision: if baseline { 101 } else { 103 },
+                    store_epoch: 0,
+                    payload: Payload::Reports(vec![remaining]),
+                },
+                cx,
+            );
+            assert!(
+                if baseline {
+                    &s.model.baseline
+                } else {
+                    &s.model.candidate
+                }
+                .is_none()
+            );
+            assert!(s.model.notice.unwrap().contains("no longer available"));
+            expected
+        });
+        draw(cx);
+        assert!(!picker.read_with(cx, |s, _| s.is_open()));
+        assert!(picker.read_with(cx, |s, _| s.value().is_none()));
+        assert!(cx.update(|w, cx| picker.read(cx).focus_handle(cx).is_focused(w)));
+        // A pending Enter cannot commit a disappeared report. It reopens the
+        // reconciled list; a second Enter deliberately chooses the valid report.
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(picker.read_with(cx, |s, _| s.is_open() && s.value().is_none()));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        entity.read_with(cx, |s, _| {
+            assert_eq!(
+                if baseline {
+                    &s.model.baseline
+                } else {
+                    &s.model.candidate
+                },
+                &Some(expected)
+            )
+        });
+    }
+}
+
+#[gpui::test]
+fn unrelated_sync_preserves_tabs_filters_disclosures_and_text_caret(cx: &mut TestAppContext) {
+    let (entity, cx) = harness(cx);
+    let list = entity.read_with(cx, |s, _| s.events.clone());
+    cx.update(|w, cx| w.focus(&list.read(cx).focus_handle(cx), cx));
+    cx.simulate_keystrokes("home space");
+    draw(cx);
+    host_notification(&entity, cx, Lane::Performance, 100);
+    assert!(list.read_with(cx, |s, _| s.is_expanded(61) && !s.following));
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    assert!(!list.read_with(cx, |s, _| s.is_expanded(61)));
+    let field = entity.read_with(cx, |s, _| s.correlation.clone());
+    cx.update(|w, cx| w.focus(&field.read(cx).focus_handle(cx), cx));
+    cx.simulate_input("synthetic");
+    cx.simulate_keystrokes("left");
+    host_notification(&entity, cx, Lane::Performance, 101);
+    cx.simulate_input("X");
+    draw(cx);
+    assert_eq!(
+        field.read_with(cx, |s, _| s.value().to_string()),
+        "synthetiXc"
+    );
+    entity.read_with(cx, |s, _| {
+        assert_eq!(s.model.filters.correlation, "synthetiXc")
+    });
+    for (index, (tab, filter)) in entity
+        .read_with(cx, |s, _| {
+            vec![
+                (Tab::Events, s.field.clone()),
+                (Tab::Runs, s.kind.clone()),
+                (Tab::Runs, s.outcome.clone()),
+                (Tab::Latency, s.build.clone()),
+            ]
+        })
+        .into_iter()
+        .enumerate()
+    {
+        entity.update(cx, |s, cx| {
+            s.model.navigate(tab);
+            s.sync(cx);
+        });
+        cx.update(|w, cx| filter.update(cx, |s, cx| s.open(w, cx)));
+        draw(cx);
+        cx.simulate_keystrokes("end");
+        host_notification(&entity, cx, Lane::Events, 200 + index as u64);
+        assert!(filter.read_with(cx, |s, _| s.is_open()));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(filter.read_with(cx, |s, _| s.value().is_some()));
+        entity.read_with(cx, |s, cx| {
+            assert_eq!(
+                s.tabs.read(cx).selected(),
+                Tab::ALL.iter().position(|t| *t == tab).unwrap()
+            )
+        });
+    }
+}
 #[gpui::test]
 fn destructive_confirmation_cancel_and_hide_revoke_the_current_request(cx: &mut TestAppContext) {
     let (entity, cx) = harness(cx);
