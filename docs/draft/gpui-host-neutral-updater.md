@@ -323,14 +323,14 @@ Test key:
 | uses the Rust command boundary schema for canary reads and writes | J, I |
 | canary uses the real download, install, and relaunch path | G asserts HTTP download, filesystem installation, a host relaunch request signal, and confirmation by a synthetic new-version owner. Actual process relaunch/OTA remains separate native acceptance. |
 | canary dry-run launches discovery and policy but never downloads or relaunches | G |
-| records production stages as pending until install evidence is available | G |
+| records production stages as pending until install evidence is available | G asserts every production stage stays pending in dry-run, and relaunch stays pending after installation until a synthetic new-version owner confirms it. It does not inspect a mid-install receipt. |
 | records policy failure without fabricating production stages | H asserts failed policy, one feed request with no archive transfer, and no production stage marked passed. The core failure receipt can also mark the first pending stage failed; it does not promise all later stages remain pending. |
 | records a canary download failure at the download stage | H |
 | records a canary relaunch failure after install evidence | H asserts the core failure-reporting seam after install evidence using an injected host-refusal message; it does not execute or fail an OS relaunch. |
 | recovers a pending canary only after the installed version matches | I, G |
 | opens a recovery modal after a failed manual check | K |
 | recovers from a transient updater-feed failure before showing an error | L, U |
-| offers a verified update as optional when policy cannot be verified | M, R |
+| offers a verified update as optional when policy cannot be verified | M asserts malformed policy stays optional at discovery; R asserts optional presentation. Archive signature verification occurs at download, not discovery; these tests do not claim an integrated malformed-policy/signature-verification assertion. |
 | uses an absent policy from the native response without a webview fetch | Retired: the separate WebView policy fetch no longer exists. M asserts absent policy parsing in the single native feed; X asserts intent forwarding only. |
 | opens a required update when the verified policy is above the installed version | R |
 | blocks installation before download when Gatekeeper translocated the app | N |
@@ -353,8 +353,8 @@ Test key:
 
 | Old test | Replacement |
 |---|---|
-| stays quiet throughout setup and starts the normal background check when ready | O, R, X, Y |
-| preserves explicit manual update checks while setup defers background work | X, K |
+| stays quiet throughout setup and starts the normal background check when ready | O, R, S, X, Y (S explicitly asserts the quiet dialog after setup restarts). |
+| preserves explicit manual update checks while setup defers background work | X, AA |
 | keeps an in-flight background result quiet after setup restarts (forced: %s) | S |
 | notifies a previously suppressed update after setup completes, once per version (forced: %s) | S, R |
 | rechecks readiness after waiting for native notification permission | Retired: permission continuation removed; native notification dispatch is synchronous. S asserts suppression after setup readiness changes during gated discovery, not a permission wait. |
@@ -374,7 +374,7 @@ Test key:
 | detects greater-than | M |
 | returns null for unparseable versions | M |
 | returns true when current < min | M |
-| returns false when current >= min | M |
+| returns false when current >= min | M (equal) and `minimum_policy_preserves_optional_malformed_metadata_and_forces_unparseable_strings` (greater). |
 | returns true (force update) when versions are unparseable | M |
 | returns 0 when no timestamp stored | O |
 | round-trips a timestamp | O |
@@ -393,7 +393,7 @@ Test key:
 | does not collapse missing or malformed native metadata into absence | M |
 | includes every missed release newest first and excludes installed/future/preview versions | V |
 | uses numeric version ordering and accepts v prefixes | M |
-| keeps single-release notes and falls back for missing or malformed history | M |
+| keeps single-release notes and falls back for missing or malformed history | AA asserts exact single-release notes with history absent; M asserts null/malformed-history fallback. |
 
 Additional review regressions: `nonexecutable_missing_symlinked_helpers_or_invalid_main_are_refused_before_swap`,
 `signed_bad_archive_can_be_corrected_at_same_version_without_restarting`,
@@ -418,5 +418,29 @@ asserts a missing timestamp defaults to zero and a saved timestamp round-trips;
 Z explicitly rejects malformed pending-note values through the generic source
 normalizer. G now asserts every production stage stays pending in dry-run and
 no relaunch is requested; H asserts policy failure performs no archive request
-and never marks a production stage passed. Retired WebView scenarios above state their replacement guarantees;
-core canary coverage does not claim an OS relaunch or real OTA acceptance.
+and never marks a production stage passed. Retired WebView scenarios above
+state their replacement guarantees; core canary coverage does not claim an OS
+relaunch or real OTA acceptance.
+
+
+### Re-check verification
+
+Executable fix `5922ecba` and final assertion update `184e3cc4`: Linux
+`cargo test -p murmur-core` passes all 259 tests, and the
+`updater-test-support` configuration passes all 260. Both complete suites were
+run five times on the final assertion revision; AA and AB passed all ten runs.
+No frontend file changed. Markdown/reference checks, updater fixture policy,
+restart source policy, and the all-target/all-feature core dependency check
+also pass.
+
+Mac mini, Rust 1.98.1, isolated `~/Builds/gpui-stack-36` checkout and
+`~/Builds/gpui-stack-36-target`: helpers built before strict workspace/all-target
+Clippy and full app Rust tests. Default and QA Clippy pass with the two requested
+lint allowances; full app suites pass 1,584/1,595 tests respectively, plus the
+main-thread harness. QA uses `tauri.shutdown-test.conf.json` and
+`shutdown-test-support`. Restart guards pass 18 foreign-source and 11 resolved
+fixtures in their default configuration. An extra fixture invocation with QA
+config but without its feature produced an ACL manifest mismatch; fixture
+commands must pair their configuration and features. These checks run no app
+GUI. Independent Sol re-check and native GUI/real OTA acceptance remain with
+the lead; this draft is not merged or marked ready.
