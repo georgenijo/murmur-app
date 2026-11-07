@@ -434,15 +434,19 @@ impl History {
         self.query(Query::default(), cx);
         w.focus(&self.search.read(cx).focus_handle(cx), cx);
     }
+    /// Main-workspace shortcut entry; never focuses a search hidden by detail.
+    pub fn focus_search(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.model.detail.is_some() {
+            self.back(w, cx);
+        }
+        w.focus(&self.search.read(cx).focus_handle(cx), cx);
+    }
     fn key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) {
         if e.prefer_character_input {
             return;
         }
         if e.keystroke.modifiers.platform && e.keystroke.key == "f" {
-            if self.model.detail.is_some() {
-                self.back(w, cx);
-            }
-            w.focus(&self.search.read(cx).focus_handle(cx), cx);
+            self.focus_search(w, cx);
         } else if e.keystroke.key == "escape" {
             // Open shared pickers own Escape and their focus/selection restore.
             if [&self.source, &self.date, &self.actions]

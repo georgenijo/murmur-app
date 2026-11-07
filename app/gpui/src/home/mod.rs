@@ -231,8 +231,7 @@ impl Home {
             w.prevent_default();
             cx.stop_propagation();
         } else if k.modifiers.platform && k.modifiers.number_of_modifiers() == 1 && k.key == "f" {
-            self.history
-                .update(cx, |h, cx| w.focus(&h.search.read(cx).focus_handle(cx), cx));
+            self.history.update(cx, |h, cx| h.focus_search(w, cx));
             w.prevent_default();
             cx.stop_propagation();
         } else if k.key == "escape" {

@@ -269,3 +269,29 @@ mod ax {
         assert!(e.read_with(cx, |s, _| s.collapsed()));
     }
 }
+
+#[gpui::test]
+fn home_command_f_exits_detail_and_searches_the_real_embedded_list(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    e.update(cx, |s, cx| {
+        s.history.update(cx, |h, cx| {
+            h.model.selected = Some(199);
+            h.model.detail = Some(199);
+            cx.notify();
+        })
+    });
+    draw(cx);
+    cx.update(|w, cx| w.focus(&e.read(cx).focus["settings"].clone(), cx));
+    keys(cx, "cmd-f");
+    assert!(e.read_with(cx, |s, cx| s.history.read(cx).model.detail.is_none()));
+    assert_eq!(
+        e.read_with(cx, |s, cx| s.history.read(cx).model.selected),
+        Some(199)
+    );
+    cx.simulate_input("transcript 199:");
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, cx| s.history.read(cx).model.matches.len()),
+        1
+    );
+}
