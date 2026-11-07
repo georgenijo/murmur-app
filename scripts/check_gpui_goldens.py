@@ -58,13 +58,13 @@ def check_inventory(stdout, prefix):
     if len(inventories) != 1:
         raise AssertionError('missing native process WebKit inventory')
     inventory = inventories[0]
-    for field in ('pid', 'webkitImages', 'axAttributed', 'unattributed',
+    for field in ('pid', 'webkitImages', 'axAttributed', 'writingToolsAttributed', 'unattributed',
                   'startupWebkitImages', 'linkageViolations'):
         if type(inventory[field]) is not int or inventory[field] < 0:
             raise AssertionError(f'invalid WebKit inventory field: {field}')
     if (inventory['unattributed'] != 0 or inventory['startupWebkitImages'] != 0
             or inventory['linkageViolations'] != 0
-            or inventory['webkitImages'] != inventory['axAttributed']):
+            or inventory['webkitImages'] != inventory['axAttributed'] + inventory['writingToolsAttributed']):
         raise AssertionError(f'unattributed/app-linked WebKit: {inventory}')
     return inventory
 

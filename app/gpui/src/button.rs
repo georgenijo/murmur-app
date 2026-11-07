@@ -40,7 +40,7 @@ pub struct Button {
     base: gpui_base::Button,
     id: ElementId,
     focus: Option<FocusHandle>,
-    scroll_parent: Option<ScrollHandle>,
+    scroll_parent: Vec<ScrollHandle>,
     label: SharedString,
     intent: ButtonIntent,
     size: ButtonSize,
@@ -60,7 +60,7 @@ impl Button {
             base: gpui_base::Button::new(id.clone()).accessibility_label(label.clone()),
             id,
             focus: None,
-            scroll_parent: None,
+            scroll_parent: vec![],
             label,
             intent: ButtonIntent::Secondary,
             size: ButtonSize::Standard,
@@ -104,7 +104,12 @@ impl Button {
         self
     }
     pub fn with_scroll_parent(mut self, parent: Option<&ScrollHandle>) -> Self {
-        self.scroll_parent = parent.cloned();
+        self.scroll_parent = parent.cloned().into_iter().collect();
+        self
+    }
+    /// Reveal through each viewport, ordered from innermost to outermost.
+    pub(crate) fn with_scroll_parents(mut self, parents: Vec<ScrollHandle>) -> Self {
+        self.scroll_parent = parents;
         self
     }
     pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
@@ -119,7 +124,7 @@ impl Button {
 }
 impl RenderOnce for Button {
     fn render(mut self, w: &mut Window, cx: &mut App) -> impl IntoElement {
-        let reveal = if self.scroll_parent.is_some() {
+        let reveal = if !self.scroll_parent.is_empty() {
             let focus = self.focus.clone().unwrap_or_else(|| {
                 w.use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
                     .read(cx)
