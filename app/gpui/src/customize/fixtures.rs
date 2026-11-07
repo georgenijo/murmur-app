@@ -7,6 +7,7 @@ pub fn snapshot() -> Snapshot {
         murmur_core::state::settings(murmur_core::state::settings_defaults()).unwrap();
     settings["vocabularyEntries"] = json!([{"id":"synthetic-spelling","written":"SyntheticTerm","aliases":["synthetic term"],"enabled":true,"scope":{"kind":"global"}}]);
     settings["codeVocabFolder"] = json!("/synthetic/project");
+    settings = murmur_core::state::settings(settings).unwrap();
     Snapshot {
         revision: 1,
         settings,
@@ -140,6 +141,7 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
             }
             _ => (),
         };
+        s.settings = murmur_core::state::settings(s.settings.clone()).unwrap();
         s.revision += 1;
         self.actions.borrow_mut().push(r.action);
         section::reply(&i, r.ticket, problem.map_or_else(|| Ok(s.clone()), Err));

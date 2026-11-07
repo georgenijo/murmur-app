@@ -12,14 +12,14 @@ pub mod meetings;
 pub mod motion;
 pub mod onboarding;
 pub mod overlay;
+pub mod palette;
 pub mod preferences;
 pub mod preview;
+mod section;
 pub mod settings;
 pub mod toggle;
 pub mod tokens;
 mod workspace;
-mod section;
-pub mod palette;
 
 pub use button::{Button, ButtonIntent, ButtonSize};
 pub use choice::{Choice, ChoiceKind, Choices, SelectionChanged};
@@ -58,15 +58,17 @@ unsafe extern "C" {
     fn murmur_install_focus_hook();
 }
 
+pub mod customize;
+mod form;
+pub mod insights;
+mod json;
+pub mod knowledge;
+pub mod models;
+pub mod modes;
+#[cfg(any(test, feature = "gallery"))]
+pub mod remaining;
+#[cfg(test)]
+mod remaining_tests;
 #[cfg(test)]
 mod tests;
-pub mod insights;
-pub mod models;
-mod form;
-pub mod knowledge;
-mod json;
-pub mod modes;
-
 pub mod themes;
-
-pub mod customize;

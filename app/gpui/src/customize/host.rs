@@ -93,7 +93,7 @@ impl Action {
 // Read includes get_ide_context_status only for configured opted-in profiles and
 // never launches scans or enumerates apps. Native panels are explicit/revocable;
 // roots max four, no persistence until the panel result is accepted under lease.
-// InspectSpellings uses read_vocabulary_file + vocabulary::parse/preview, keeps
+// InspectSpellings uses read_modes_file + vocabulary::parse/preview, keeps
 // reviewed bytes in memory; import repeats vocabulary::commit against current.
 // Export uses vocabulary::export + save_text_export (native save panel).
 // Scan progress is correlated by exact scan ID and settings generation. Hide/drop

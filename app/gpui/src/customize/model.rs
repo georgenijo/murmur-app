@@ -42,6 +42,9 @@ impl Projection for Snapshot {
             + section::bytes(&self.ide)
             + section::bytes(&self.scan)
             + self.preview.as_ref().map_or(0, String::len)
+            + self.import_preview.as_ref().map_or(0, |p| {
+                section::bytes(&json!(&p.entries)) + section::bytes(&p.baseline)
+            })
             + 32768
     }
     fn valid(&self) -> bool {
@@ -53,6 +56,9 @@ impl Projection for Snapshot {
                 .iter()
                 .all(crate::knowledge::model::valid_record)
             && self.command_total <= 10000
+            && self.scan["rankedTerms"]
+                .as_array()
+                .is_none_or(|a| a.len() <= 500)
             && self.running_apps.len() <= 64
             && self.running_apps.iter().all(|v| {
                 v["bundleId"]

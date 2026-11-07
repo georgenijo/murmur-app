@@ -205,3 +205,8 @@ required-features = ["gallery"]
 name = "meetings-qa"
 path = "src/bin/meetings-qa.rs"
 required-features = ["gallery"]
+
+[[bin]]
+name = "remaining-qa"
+path = "src/bin/remaining-qa.rs"
+required-features = ["gallery"]

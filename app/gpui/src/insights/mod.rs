@@ -92,12 +92,14 @@ impl Render for Insights {
                         .child(problem.message()),
                 )
                 .child(
-                    Button::new("insights-retry", "Retry").on_click(move |_, _, cx| {
-                        e.update(cx, |s, cx| {
-                            s.controller.request(Action::Read);
-                            cx.notify()
-                        })
-                    }),
+                    Button::new("insights-retry", "Retry")
+                        .with_scroll_parent(Some(&self.scroll))
+                        .on_click(move |_, _, cx| {
+                            e.update(cx, |s, cx| {
+                                s.controller.request(Action::Read);
+                                cx.notify()
+                            })
+                        }),
                 );
         }
         if let Some(snapshot) = &self.controller.model.snapshot {

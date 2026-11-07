@@ -6,6 +6,14 @@ fn exact(v: &Value, keys: &[&str]) -> bool {
     v.as_object()
         .is_some_and(|v| v.len() == keys.len() && keys.iter().all(|k| v.contains_key(*k)))
 }
+fn bundle(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| {
+        s.len() <= 255
+            && s.split('.').count() >= 2
+            && s.split('.')
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    })
+}
 fn text(v: &Value, max: usize) -> bool {
     v.as_str().is_some_and(|s| {
         !s.trim().is_empty() && s.chars().count() <= max && !s.chars().any(char::is_control)
@@ -63,10 +71,10 @@ pub fn validate(entries: &[Value], commands: &[Value]) -> Result<(), Problem> {
         let scope = &v["scope"];
         let valid = match scope["kind"].as_str() {
             Some("global") => exact(scope, &["kind"]),
-            Some("app") => exact(scope, &["kind", "bundleId"]) && text(&scope["bundleId"], 255),
+            Some("app") => exact(scope, &["kind", "bundleId"]) && bundle(&scope["bundleId"]),
             Some("project") => {
                 exact(scope, &["kind", "bundleId", "root"])
-                    && text(&scope["bundleId"], 255)
+                    && bundle(&scope["bundleId"])
                     && text(&scope["root"], 4096)
                     && scope["root"].as_str().unwrap().len() <= 4096
             }

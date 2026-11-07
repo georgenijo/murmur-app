@@ -369,3 +369,9 @@ fn package_identity_malformed_json_and_include_traversal_are_rejected() {
     ]);
     assert!(open_vsx::download(&m, &extension(), &|| true).is_err());
 }
+#[test]
+fn vscode_canvas_uses_opaque_channels_before_semantic_repair() {
+    let (_, _, theme) =
+        import::vscode(&json!({"colors":{"editor.background":"#80402080"}})).unwrap();
+    assert_eq!(theme["background"], "#804020");
+}

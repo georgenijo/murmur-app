@@ -27,7 +27,7 @@ pub struct Modes {
     site_edit: Option<Value>,
     confirm: Option<String>,
     scroll: ScrollHandle,
-    editing_revision: u64,
+    editing_source: Value,
     saving: bool,
     seen_revision: u64,
     notice: Option<&'static str>,
@@ -139,7 +139,7 @@ impl Modes {
             site_edit: None,
             confirm: None,
             scroll: ScrollHandle::new(),
-            editing_revision: 0,
+            editing_source: Value::Null,
             saving: false,
             seen_revision: 0,
             notice: None,
@@ -195,7 +195,13 @@ impl Modes {
         self.patch(json!({"modes":modes}), cx);
     }
     fn save(&mut self, cx: &mut Context<Self>) {
-        if self.editing_revision != self.controller.model.revision {
+        if self
+            .controller
+            .model
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| self.editing_source != s.settings["modes"])
+        {
             self.notice =
                 Some("Modes changed elsewhere. Cancel this edit and review the current mode.");
             cx.notify();
@@ -376,6 +382,7 @@ impl Render for Modes {
                     )
                     .child(
                         Button::new("mode-duplicate", "Duplicate")
+                            .with_scroll_parent(Some(&self.scroll))
                             .disabled(self.controller.model.pending)
                             .on_click(move |_, _, cx| {
                                 duplicate.update(cx, |s, cx| s.create(Some(source.clone()), cx))
@@ -435,7 +442,12 @@ impl Render for Modes {
                                         }
                                     }
                                     s.editor.update(cx, |f, cx| f.set(values, w, cx));
-                                    s.editing_revision = s.controller.model.revision;
+                                    s.editing_source = s
+                                        .controller
+                                        .model
+                                        .snapshot
+                                        .as_ref()
+                                        .map_or(Value::Null, |v| v.settings["modes"].clone());
                                     s.editing = Some(m.clone());
                                     s.editor.update(cx, |f, cx| f.focus_first(w, cx));
                                     cx.notify()
@@ -454,14 +466,16 @@ impl Render for Modes {
                                 .with_scroll_parent(Some(&self.scroll))
                                 .on_click(move |_, _, cx| e.update(cx, |s, cx| s.save(cx))),
                         )
-                        .child(Button::new("mode-cancel", "Cancel edit").on_click(
-                            move |_, _, cx| {
-                                cancel.update(cx, |s, cx| {
-                                    s.editing = None;
-                                    cx.notify()
-                                })
-                            },
-                        ));
+                        .child(
+                            Button::new("mode-cancel", "Cancel edit")
+                                .with_scroll_parent(Some(&self.scroll))
+                                .on_click(move |_, _, cx| {
+                                    cancel.update(cx, |s, cx| {
+                                        s.editing = None;
+                                        cx.notify()
+                                    })
+                                }),
+                        );
                 }
                 let e = cx.entity();
                 let id = self.selected.clone();

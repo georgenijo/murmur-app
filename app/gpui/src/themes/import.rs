@@ -59,6 +59,22 @@ pub fn color(raw: &str, base: Color) -> Option<Color> {
     };
     Some(composite([c[0], c[1], c[2]], base, alpha))
 }
+fn canvas_color(raw: &str) -> Option<Color> {
+    let raw = raw.trim();
+    let h = raw.strip_prefix('#').unwrap_or(raw);
+    if h.len() == 4 && h.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return color(&format!("#{}", &h[..3]), [0.; 3]);
+    }
+    if h.len() == 8 && h.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return color(&format!("#{}", &h[..6]), [0.; 3]);
+    }
+    if raw.starts_with("color(")
+        && let Some((before, _)) = raw.split_once('/')
+    {
+        return color(&format!("{})", before.trim()), [0.; 3]);
+    }
+    color(raw, [0.; 3])
+}
 pub fn vscode(v: &Value) -> Result<(String, bool, Value), Problem> {
     let colors = &v["colors"];
     let pick = |keys: &[&str], base| {
@@ -69,8 +85,15 @@ pub fn vscode(v: &Value) -> Result<(String, bool, Value), Problem> {
                 .and_then(|s| color(s, base))
         })
     };
-    let canvas =
-        pick(&["editor.background", "editorPane.background"], [0.; 3]).ok_or(Problem::Invalid)?;
+    let canvas = ["editor.background", "editorPane.background"]
+        .iter()
+        .find_map(|key| {
+            colors[*key]
+                .as_str()
+                .filter(|s| s.len() <= 128)
+                .and_then(canvas_color)
+        })
+        .ok_or(Problem::Invalid)?;
     let dark = match v["type"].as_str() {
         Some("dark" | "hc-black") => true,
         Some("light" | "hc-light") => false,

@@ -331,9 +331,15 @@ fn resolve(
     if !value.is_object() {
         return Err(Problem::Invalid);
     }
-    if let Some(include) = value.get("include") {
-        let include = include.as_str().ok_or(Problem::Invalid)?;
-        let parent = resolve(archive, &path(include, name)?, depth + 1, visiting, count)?;
+    if let Some(inherited_path) = value.get("include") {
+        let inherited_path = inherited_path.as_str().ok_or(Problem::Invalid)?;
+        let parent = resolve(
+            archive,
+            &path(inherited_path, name)?,
+            depth + 1,
+            visiting,
+            count,
+        )?;
         let mut colors = parent["colors"].as_object().cloned().unwrap_or_default();
         if let Some(own) = value["colors"].as_object() {
             for (k, v) in own {

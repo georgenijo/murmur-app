@@ -26,7 +26,7 @@ pub struct Customize {
     pub tester: Entity<Form>,
     pub search: Entity<Form>,
     editing: Option<Value>,
-    edit_revision: u64,
+    edit_source: Value,
     baseline: Value,
     saving: bool,
     discard: bool,
@@ -109,6 +109,16 @@ fn specs(page: Page) -> Vec<Spec> {
         Page::Scan => vec![],
     }
 }
+fn edit_source(page: Page, s: &Snapshot) -> Value {
+    match page {
+        Page::Spellings => {
+            json!({"vocabularyEntries":s.settings["vocabularyEntries"],"voiceCommands":s.settings["voiceCommands"]})
+        }
+        Page::Apps => s.settings["appProfiles"].clone(),
+        Page::Commands => Value::Null,
+        Page::Scan => Value::Null,
+    }
+}
 impl Customize {
     pub fn new(host: Rc<host::Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| Form::new(specs(Page::Spellings), w, cx));
@@ -163,7 +173,7 @@ impl Customize {
             tester,
             search,
             editing: None,
-            edit_revision: 0,
+            edit_source: Value::Null,
             baseline: Value::Null,
             saving: false,
             discard: false,
@@ -221,7 +231,12 @@ impl Customize {
     }
     fn open(&mut self, entry: Value, w: &mut Window, cx: &mut Context<Self>) {
         self.return_focus = w.focused(cx);
-        self.edit_revision = self.controller.model.revision;
+        self.edit_source = self
+            .controller
+            .model
+            .snapshot
+            .as_ref()
+            .map_or(Value::Null, |s| edit_source(self.page, s));
         self.discard = false;
         self.notice = None;
         let values = match self.page {
@@ -288,7 +303,13 @@ impl Customize {
         let Some(entry) = self.editing.clone() else {
             return;
         };
-        if self.edit_revision != self.controller.model.revision {
+        if self
+            .controller
+            .model
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| self.edit_source != edit_source(self.page, s))
+        {
             self.notice =
                 Some("State changed elsewhere. Cancel this edit and review the current value.");
             cx.notify();
@@ -459,15 +480,17 @@ impl Render for Customize {
             .flex_col()
             .gap(px(12.))
             .child(
-                Button::new("customize-back", "Back to Knowledge").on_click(move |_, w, cx| {
-                    e.update(cx, |s, cx| {
-                        s.hide(cx);
-                        if let Some(f) = s.return_to.take() {
-                            w.focus(&f, cx)
-                        }
-                        crate::events::publish(cx, Back)
-                    })
-                }),
+                Button::new("customize-back", "Back to Knowledge")
+                    .with_scroll_parent(Some(&self.scroll))
+                    .on_click(move |_, w, cx| {
+                        e.update(cx, |s, cx| {
+                            s.hide(cx);
+                            if let Some(f) = s.return_to.take() {
+                                w.focus(&f, cx)
+                            }
+                            crate::events::publish(cx, Back)
+                        })
+                    }),
             )
             .child(div().text_size(px(20.)).child(self.page.label()));
         let mut nav = div().flex().flex_wrap().gap(px(8.));
@@ -478,6 +501,7 @@ impl Render for Customize {
                     SharedString::from(format!("customize-{page:?}")),
                     page.label(),
                 )
+                .with_scroll_parent(Some(&self.scroll))
                 .toggled(self.page == page)
                 .on_click(move |_, w, cx| e.update(cx, |s, cx| s.set_page(page, w, cx))),
             );
@@ -516,16 +540,19 @@ impl Render for Customize {
                         .child("Discard changes?")
                         .child(
                             Button::new("discard-command", "Discard changes")
+                                .with_scroll_parent(Some(&self.scroll))
                                 .on_click(move |_, w, cx| e.update(cx, |s, cx| s.cancel(w, cx))),
                         )
-                        .child(Button::new("keep-command", "Keep editing").on_click(
-                            move |_, _, cx| {
-                                keep.update(cx, |s, cx| {
-                                    s.discard = false;
-                                    cx.notify()
-                                })
-                            },
-                        ));
+                        .child(
+                            Button::new("keep-command", "Keep editing")
+                                .with_scroll_parent(Some(&self.scroll))
+                                .on_click(move |_, _, cx| {
+                                    keep.update(cx, |s, cx| {
+                                        s.discard = false;
+                                        cx.notify()
+                                    })
+                                }),
+                        );
                 } else {
                     let save = cx.entity();
                     let cancel = save.clone();
@@ -538,6 +565,7 @@ impl Render for Customize {
                         )
                         .child(
                             Button::new("customize-cancel", "Cancel")
+                                .with_scroll_parent(Some(&self.scroll))
                                 .disabled(self.controller.model.pending)
                                 .on_click(move |_, w, cx| {
                                     cancel.update(cx, |s, cx| s.cancel(w, cx))

@@ -299,14 +299,15 @@ impl Render for Themes {
                             cx,
                         ))
                         .child(
-                            Button::new("theme-community", "Browse community…").on_click(
-                                move |_, w, cx| {
+                            Button::new("theme-community", "Browse community…")
+                                .with_scroll_parent(Some(&self.scroll))
+                                .on_click(move |_, w, cx| {
                                     e.update(cx, |s, cx| s.dialog(Dialog::Community, w, cx))
-                                },
-                            ),
+                                }),
                         )
                         .child(
                             Button::new("theme-import-close", "Cancel")
+                                .with_scroll_parent(Some(&self.scroll))
                                 .on_click(move |_, w, cx| local.update(cx, |s, cx| s.close(w, cx))),
                         );
                 }
@@ -402,6 +403,7 @@ impl Render for Themes {
                     let e = cx.entity();
                     content = content.child("Remove this saved theme?").child(
                         Button::new("theme-remove-confirm", "Confirm remove…")
+                            .with_scroll_parent(Some(&self.scroll))
                             .intent(ButtonIntent::Danger)
                             .on_click(move |_, _, cx| {
                                 e.update(cx, |s, cx| {
@@ -413,7 +415,7 @@ impl Render for Themes {
                 }
                 Dialog::Update(extension, expected) => {
                     let e = cx.entity();
-                    content=content.child("Replace the installed collection with this version? Local changes since this preview refuse the update.").child(Button::new("theme-update-confirm","Confirm update").on_click(move|_,_,cx|e.update(cx,|s,cx|{s.dialog=None;s.request(Action::Update{extension:(*extension).clone(),expected:expected.clone()},cx)})));
+                    content=content.child("Replace the installed collection with this version? Local changes since this preview refuse the update.").child(Button::new("theme-update-confirm","Confirm update").with_scroll_parent(Some(&self.scroll)).on_click(move|_,_,cx|e.update(cx,|s,cx|{s.dialog=None;s.request(Action::Update{extension:(*extension).clone(),expected:expected.clone()},cx)})));
                 }
             }
             if !import_choice {

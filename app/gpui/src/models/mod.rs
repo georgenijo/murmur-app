@@ -104,6 +104,7 @@ impl Render for Models {
                 )
                 .child(
                     Button::new("models-retry", "Retry")
+                        .with_scroll_parent(Some(&self.scroll))
                         .on_click(move |_, _, cx| e.update(cx, |s, cx| s.act(Action::Read, cx))),
                 );
         }
@@ -160,6 +161,7 @@ impl Render for Models {
                             SharedString::from(format!("select-{}", m.id)),
                             format!("Select {}", m.label),
                         )
+                        .with_scroll_parent(Some(&self.scroll))
                         .disabled(
                             snapshot.busy
                                 || snapshot.attempt.is_some()

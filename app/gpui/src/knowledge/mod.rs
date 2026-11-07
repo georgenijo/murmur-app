@@ -405,6 +405,7 @@ impl Render for Knowledge {
                 )
                 .child(
                     Button::new("knowledge-cancel", "Cancel")
+                        .with_scroll_parent(Some(&self.scroll))
                         .on_click(move |_, w, cx| cancel.update(cx, |s, cx| s.cancel(w, cx))),
                 );
             body = body.child(form);
@@ -475,6 +476,7 @@ impl Render for Knowledge {
                     let revision = s.store_revision;
                     actions = actions.child(
                         Button::new("knowledge-delete-all", "Delete all…")
+                            .with_scroll_parent(Some(&self.scroll))
                             .disabled(self.controller.model.pending)
                             .on_click(move |_, w, cx| {
                                 e.update(cx, |s, cx| {
