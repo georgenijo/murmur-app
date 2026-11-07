@@ -1,0 +1,60 @@
+--- a/src/platform/test/window.rs
++++ b/src/platform/test/window.rs
+@@ -19,6 +19,8 @@
+ };
+ 
+ pub(crate) struct TestWindowState {
++    pub(crate) a11y_callbacks: Option<crate::A11yCallbacks>,
++    pub(crate) a11y_tree: Option<accesskit::TreeUpdate>,
+     pub(crate) bounds: Bounds<Pixels>,
+     pub(crate) handle: AnyWindowHandle,
+     display: Rc<dyn PlatformDisplay>,
+@@ -95,6 +97,8 @@
+             None => Arc::new(HeadlessAtlas::default()),
+         };
+         Self(Rc::new(Mutex::new(TestWindowState {
++            a11y_callbacks: None,
++            a11y_tree: None,
+             bounds: params.bounds,
+             display,
+             platform,
+@@ -315,6 +319,13 @@
+ }
+ 
+ impl PlatformWindow for TestWindow {
++    fn a11y_init(&self, callbacks: crate::A11yCallbacks) {
++        // Test transport only: production tree construction/action dispatch.
++        self.0.lock().a11y_callbacks = Some(callbacks);
++    }
++    fn a11y_tree_update(&self, tree: accesskit::TreeUpdate) {
++        self.0.lock().a11y_tree = Some(tree);
++    }
+     fn visual_viewport_bounds(&self) -> Bounds<Pixels> {
+         let state = self.0.lock();
+         state
+--- a/src/app/test_context.rs
++++ b/src/app/test_context.rs
+@@ -190,6 +190,23 @@
+             fn_name,
+             on_quit: Rc::new(RefCell::new(Vec::default())),
+         }
++    }
++
++    /// Activate the real tree builder through the test platform transport.
++    pub fn activate_accessibility(&mut self, window: AnyWindowHandle) {
++        let test_window = self.test_window(window);
++        let state = test_window.0.lock();
++        (state.a11y_callbacks.as_ref().expect("AX initialized").activation)();
++    }
++
++    pub fn dispatch_accessibility_action(&mut self, window: AnyWindowHandle, request: accesskit::ActionRequest) {
++        let test_window = self.test_window(window);
++        let state = test_window.0.lock();
++        (state.a11y_callbacks.as_ref().expect("AX initialized").action)(request);
++    }
++
++    pub fn accessibility_tree(&self, window: AnyWindowHandle) -> accesskit::TreeUpdate {
++        self.test_window(window).0.lock().a11y_tree.clone().expect("AX frame drawn")
+     }
+ 
+     /// Disables accessibility for subsequently created test windows.

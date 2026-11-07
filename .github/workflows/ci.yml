@@ -27,6 +27,7 @@ jobs:
       verified: ${{ steps.verified.outputs.verified == 'true' }}
       frontend: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.frontend == 'true' }}
       rust: ${{ steps.verified.outputs.verified == 'true' && steps.filter.outputs.rust-cache == 'true' || steps.verified.outputs.verified != 'true' && steps.filter.outputs.rust == 'true' }}
+      gpui: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.gpui == 'true' }}
       github: ${{ steps.verified.outputs.verified != 'true' && steps.filter.outputs.github == 'true' }}
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +75,14 @@ jobs:
               - 'rustfmt.toml'
             github:
               - '.github/**'
+            gpui:
+              - 'app/gpui/**'
+              - 'app/src-tauri/crates/murmur-core/**'
+              - 'scripts/test_gpui.py'
+              - 'scripts/test_gpui_native.py'
+              - 'scripts/test_test_gpui.py'
+              - 'scripts/check_gpui_goldens.py'
+              - '.github/workflows/ci.yml'
             rust-cache:
               - 'scripts/configure_ci_rust_library.py'
               - '**/Cargo.toml'
@@ -405,6 +414,41 @@ jobs:
           target/debug/examples/murmur-eval deterministic
           --output target/murmur-eval/ci-report.json
 
+  gpui-macos:
+    needs: changes
+    if: needs.changes.outputs.gpui == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1
+      CARGO_TARGET_DIR: ${{ github.workspace }}/app/gpui/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check and lint the separate native workspace
+        working-directory: app/gpui
+        run: |
+          cargo check --locked -p murmur-ui --features gallery
+          cargo clippy --locked -p murmur-ui --all-targets --features gallery -- -D warnings
+          cargo fmt -p murmur-ui -- --check
+      - name: Keyboard, focus, AX tree and action tests (no live windows)
+        run: |
+          python3 -m unittest scripts/test_test_gpui.py scripts/test_gpui_native.py
+          python3 scripts/test_gpui.py -- --test-threads=1
+      - name: Deterministic offscreen Metal goldens
+        run: python3 scripts/check_gpui_goldens.py
+      - name: Preserve rendered goldens
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-control-goldens
+          path: app/gpui/target/goldens/
+
   dependency-audit:
     if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version') }}"
     runs-on: ubuntu-latest
@@ -426,6 +470,10 @@ jobs:
           cd app/src-tauri
           cargo audit
 
+      - name: Audit GPUI dependencies (advisory)
+        continue-on-error: true
+        run: cargo audit --file app/gpui/Cargo.lock
+
       - name: Audit npm dependencies (advisory)
         continue-on-error: true
         # npm audit reads the lockfile; it does not need node_modules.
@@ -434,7 +482,7 @@ jobs:
           npm audit --audit-level=high
 
   ci-pass:
-    needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos]
+    needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos, gpui-macos]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn
     # an intentionally skipped release-bump run into a failure.
     if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
@@ -456,7 +504,8 @@ jobs:
             "${{ needs.visual-linux.result }}" \
             "${{ needs.visual-regression.result }}" \
             "${{ needs.rust-lint.result }}" \
-            "${{ needs.rust-macos.result }}"; do
+            "${{ needs.rust-macos.result }}" \
+            "${{ needs.gpui-macos.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
               echo "required CI job failed or was cancelled: $result"
               exit 1

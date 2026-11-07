@@ -118,6 +118,18 @@ class TargetedEventsGuardTests(unittest.TestCase):
                     (root / 'src/lib.rs').write_text('mod ' + source.parent.name + ';')
                 self.assertTrue(any(failure.startswith(module + ':') for failure in check_repository(root)))
 
+    def test_patched_gpui_is_excluded_but_authored_inclusions_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'app/gpui/vendor/gpui/src/gpui.rs'
+            source.parent.mkdir(parents=True)
+            source.write_text('fn f() { app.emit("event", ()); }')
+            self.assertEqual(check_repository(root), [])
+            maintained = root / 'app/gpui/src/lib.rs'
+            maintained.parent.mkdir(parents=True)
+            maintained.write_text('include!("../vendor/gpui/src/gpui.rs");')
+            self.assertTrue(check_repository(root))
+
     def test_path_escape_outside_repository_and_excluded_sources(self):
         with tempfile.TemporaryDirectory() as directory:
             outer = Path(directory)
@@ -250,3 +262,35 @@ class TargetedEventsGuardTests(unittest.TestCase):
                 with self.subTest(build=build):
                     (root / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.1.0"\n' + build + '\n[lib]\npath="src/lib.rs"\n')
                     self.assertEqual(check_repository(root), [])
+
+    def test_gpui_entity_adapter_is_typed_and_does_not_admit_tauri(self):
+        call = 'gpui::Context::<T>::emit(cx, event);'
+        self.assertTrue(violations(call))
+        self.assertEqual(violations(call, gpui_adapter=True), [])
+        for source in ['cx.emit(event);', 'app.emit("event", ());',
+                       'tauri::Emitter::emit(cx, event);',
+                       'gpui::Context::<T>::emit(other, event);',
+                       'gpui::Context::<T>::emit(cx, "event", ());',
+                       'use tauri::Emitter;', 'use tauri::*;']:
+            with self.subTest(source=source):
+                self.assertTrue(violations(source, gpui_adapter=True))
+
+    def test_only_exact_gpui_dependency_and_output_trees_are_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for prefix in ['app/gpui/vendor/gpui-component',
+                           'app/gpui/vendor/accesskit_macos', 'app/gpui/vendor/gpui', 'app/gpui/target']:
+                path = root / prefix / 'nested/example.rs'
+                path.parent.mkdir(parents=True)
+                path.write_text('cx.emit(event);')
+            self.assertEqual(check_repository(root), [])
+            for prefix in ['app/gpui/src', 'app/gpui/vendor/maintained',
+                           'nested/app/gpui/vendor/gpui-component', 'nested/app/gpui/vendor/gpui']:
+                path = root / prefix / 'example.rs'
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('app.emit("event", ());')
+                self.assertTrue(check_repository(root))
+                path.unlink()
+            path = root / 'app/gpui/src/lib.rs'
+            path.write_text('#[path="../vendor/gpui-component/nested/example.rs"] mod hidden;')
+            self.assertTrue(check_repository(root))

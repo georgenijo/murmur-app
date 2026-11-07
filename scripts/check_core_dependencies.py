@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed if any target/feature/dev/build dependency of the core is Tauri."""
+"""Fail closed if any target/feature/dev/build dependency of the core is a UI host."""
 from pathlib import Path
 import subprocess
 import sys
@@ -22,11 +22,12 @@ def main() -> int:
     packages = {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
     if "murmur-core" not in packages:
         raise RuntimeError("cargo tree did not include murmur-core")
-    forbidden = sorted(name for name in packages if name == "tauri" or name.startswith("tauri-"))
+    forbidden = sorted(name for name in packages if name == "tauri" or name.startswith("tauri-")
+                       or name == "gpui" or name.startswith(("gpui-", "gpui_")))
     if forbidden:
         print("Core depends on forbidden host packages: " + ", ".join(forbidden), file=sys.stderr)
         return 1
-    print("murmur-core: no Tauri dependencies (all targets, features, dev/build edges)")
+    print("murmur-core: no Tauri or GPUI dependencies (all targets, features, dev/build edges)")
     return 0
 
 

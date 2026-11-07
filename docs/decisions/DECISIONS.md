@@ -1,5 +1,73 @@
 # Decisions Log
 
+## 2026-11-06: Patch deferred GPUI accessibility in production (#998)
+
+**Decision:** Vendor only the Apache-2.0 GPUI crate at the unchanged Phase 0
+revision `654efae441bc8eb117d0042bb28cd7cf3570bdc9`. The native workspace's
+Cargo git-source patch applies the recorded deferred-AX ancestry fix to
+ordinary library/gallery builds. Keep the test transport patch separate.
+
+**Rationale:** Pinned deferred rendering restores dispatch ancestry but loses
+AX ancestry, rejecting dropdown active descendants. Deferring the entire
+combobox also changes Tab order; inline rendering loses popup paint/hitbox
+stacking. The engine fix preserves these existing contracts together. Record
+the self-contained manifest and source changes as reproducible patch hunks.
+Single-line range geometry uses shaped, scrolled editor layout; unsupported
+multi-line/nonmonotonic layouts retain AXValue without advertising range APIs.
+
+**Status:** active (draft stack; native acceptance remains open). This refines
+the dependency source in the earlier isolated-workspace decision; its revision,
+UI/core boundary and test-transport isolation remain in force.
+
+**References:** #998, PR #1027,
+[component contract](../draft/gpui-accessible-components.md),
+`app/gpui/patches/gpui-deferred-accessibility.patch`
+
+---
+
+## 2026-11-06: Distinguish typed GPUI events from Tauri transport tokens (#998)
+
+**Decision:** Authored GPUI code remains in the repository-wide transport and
+restart source inventories. A native event adapter permits only the exact typed
+two-argument `gpui::Context::<T>::emit(cx, event)` call; Tauri emission APIs stay
+reserved to their existing targeted adapter. Exclude only the exact vendored
+GPUI Kit/AccessKit dependency roots and native Cargo output, following the
+existing Tao/build-output convention.
+
+**Why:** Upstream local entity events and animation variables use `emit` and
+`restart` without performing Tauri transport or process relaunch. Renaming the
+upstream API or exempting all native application code would obscure that
+boundary. Guard tests reject Tauri calls in the native adapter, maintained
+lookalike paths and Rust inclusions into excluded trees.
+
+**Status:** active (draft stack; independent review pending).
+
+**References:** #998, `scripts/check_targeted_events.py`,
+`app/gpui/src/events.rs`, [component contract](../draft/gpui-accessible-components.md)
+
+
+## 2026-11-06: Isolate the reusable GPUI component workspace (#998)
+
+**Decision:** Build the native presentation layer in `app/gpui`, a separate
+Cargo workspace/lockfile on Rust 1.98.1, with a one-way dependency on
+`murmur-core`. Vendor the four Apache-2.0 gpui-component v0.9.0 crates from the
+proven Phase 0 port. Keep its keyboard/editor infrastructure, add Murmur's
+styled wrappers and port the text-range patch to the existing editor owner.
+
+**Why:** Later screen ports need one reusable native layer while the shipping
+Tauri graph/toolchain remains independent. The pinned engine's TestWindow drops
+AX callbacks, so a test-only transport patch is applied to a private GPUI source
+copy in the task target directory; actual tree building and action dispatch are
+tested without live windows or modifying shared Cargo sources. Production GPUI
+continues to resolve to the exact Phase 0 git revision.
+
+**Status:** active (draft stack; live native and MacBook acceptance remain open).
+
+**References:** #998, #1011,
+[component contract](../draft/gpui-accessible-components.md),
+[Phase 0 exit](2026-11-05-gpui-phase-0-exit.md)
+
+
 ## 2026-11-06: Own the updater on minisign-verify 0.3 (#990)
 
 **Decision:** Use a Tauri-free in-house Rust updater on `minisign-verify`

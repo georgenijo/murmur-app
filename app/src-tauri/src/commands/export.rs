@@ -309,8 +309,9 @@ mod tests {
         let dir = temp_dir("publish_concurrent");
         let path = dir.join("meeting.zip");
         let barrier = Arc::new(Barrier::new(2));
-        let handles = [b'a', b'b']
-            .into_iter()
+        let handles = b"ab"
+            .iter()
+            .copied()
             .map(|byte| {
                 let (path, barrier) = (path.clone(), barrier.clone());
                 std::thread::spawn(move || {
