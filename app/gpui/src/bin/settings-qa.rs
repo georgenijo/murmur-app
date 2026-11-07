@@ -132,7 +132,20 @@ fn main() {
                     .await;
                 // Let controlled pickers/ranges finish their first layout and
                 // deferred notifications before the captured presentation turn.
-                cx.update_window(handle.into(), |_, w, cx| w.draw(cx).clear(cx))
+                cx.update_window(handle.into(), |_, w, cx| {
+                    // Fix only this headless view's hover state; never move the
+                    // shared desktop pointer or dispatch native HID input.
+                    w.dispatch_event(
+                        MouseMoveEvent {
+                            position: point(px(-1.), px(-1.)),
+                            pressed_button: None,
+                            modifiers: Modifiers::default(),
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    w.draw(cx).clear(cx);
+                })
                     .expect("settle Settings controls");
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(32))
