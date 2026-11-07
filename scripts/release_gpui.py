@@ -27,7 +27,7 @@ def is_credential(name: str) -> bool:
     return upper.startswith(CREDENTIAL_PREFIXES) or any(marker in upper for marker in CREDENTIAL_MARKERS)
 
 
-def build(target: Path) -> None:
+def build(target: Path, *, signer_only: bool = False) -> None:
     """Compile with no credentials, so dependency build code never sees them."""
     present = sorted(name for name in os.environ if is_credential(name))
     if present:
@@ -35,39 +35,47 @@ def build(target: Path) -> None:
     env = {name: value for name, value in os.environ.items() if not is_credential(name)}
     env.update({"CARGO_TARGET_DIR": str(target), "RUSTUP_TOOLCHAIN": "1.98.1",
                 "MACOSX_DEPLOYMENT_TARGET": "14.0"})
-    subprocess.run(["cargo", "build", "--locked", "--release", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
-    subprocess.run(["cargo", "build", "--locked", "--release", "--manifest-path", str(ROOT / "scripts/updater-signer/Cargo.toml")], env=env, check=True)
+    if signer_only:
+        subprocess.run(["cargo", "build", "--locked", "--release", "--manifest-path", str(ROOT / "scripts/updater-signer/Cargo.toml")], env=env, check=True)
+    else:
+        subprocess.run(["cargo", "build", "--locked", "--release", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("build", "sign"))
-    parser.add_argument("--target-dir", type=Path, required=True)
+    parser.add_argument("phase", choices=("build", "build-signer", "sign"))
+    parser.add_argument("--target-dir", type=Path)
+    parser.add_argument("--binary", type=Path)
+    parser.add_argument("--helpers-dir", type=Path)
+    parser.add_argument("--native-signer", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     validate_target(os.environ["GITHUB_EVENT_NAME"], "gpui")
     if os.environ["GITHUB_REF"] != "refs/heads/main":
         parser.error("signed rehearsals require trusted main")
-    target = args.target_dir.resolve()
-    if args.phase == "build":
-        build(target)
+    if args.phase in ("build", "build-signer"):
+        if args.target_dir is None:
+            parser.error("build requires --target-dir")
+        build(args.target_dir.resolve(), signer_only=args.phase == "build-signer")
         return
-    if args.output is None:
-        parser.error("sign requires --output")
-    sign(target, args.output.resolve())
+    if any(value is None for value in (args.binary, args.helpers_dir, args.native_signer, args.output)):
+        parser.error("sign requires --binary, --helpers-dir, --native-signer and --output")
+    if args.target_dir is not None:
+        parser.error("sign does not accept a build target directory")
+    sign(args.binary.resolve(), args.helpers_dir.resolve(), args.native_signer.resolve(), args.output.resolve())
 
 
-def sign(target: Path, output: Path) -> None:
-    """Package, sign and notarize the binaries the credential-free build made."""
+def sign(binary: Path, helpers_dir: Path, signer: Path, output: Path) -> None:
+    """Use verified prebuilt inputs from isolated app and signer jobs. Never compile."""
     output.mkdir(parents=True, exist_ok=False)
-    app = bundle(target / "release/ui", output / "bundle/Murmur.app")
+    app = bundle(binary, output / "bundle/Murmur.app", helpers_dir=helpers_dir)
     check_links(app / "Contents/MacOS/ui")
     finalize(app, os.environ["APPLE_SIGNING_IDENTITY"], os.environ["APPLE_TEAM_ID"])
     subprocess.run([sys.executable, "scripts/notarize_and_repackage_macos.py", "--app", str(app),
                     "--app-dir", str(ROOT / "app"), "--identity", os.environ["APPLE_SIGNING_IDENTITY"],
                     "--version", bundle_info()["CFBundleVersion"], "--arch", "aarch64",
                     "--dmg-out", str(output / "dmg"),
-                    "--native-signer", str(target / "release/murmur-updater-signer")], cwd=ROOT, check=True)
+                    "--native-signer", str(signer)], cwd=ROOT, check=True)
     subprocess.run(["xcrun", "stapler", "validate", str(app)], check=True)
     subprocess.run(["spctl", "--assess", "--type", "execute", "-vvv", str(app)], check=True)
     artifacts = output / "artifacts"

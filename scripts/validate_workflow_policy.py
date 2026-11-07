@@ -74,6 +74,99 @@ def named_step_block(text: str, name: str, indent: int) -> str:
     return text[start:next_step]
 
 
+def mapping_blocks(text: str, key: str, indent: int):
+    """Include inline values and nested block values at the exact YAML scope."""
+    lines = text.splitlines(keepends=True)
+    for start, line in enumerate(lines):
+        if not re.match(rf"^{' ' * indent}(?:{re.escape(key)}|'{re.escape(key)}'|\"{re.escape(key)}\"):", line):
+            continue
+        end = start + 1
+        while end < len(lines):
+            following = lines[end]
+            if following.strip() and not following.lstrip().startswith("#"):
+                if len(following) - len(following.lstrip()) <= indent:
+                    break
+            end += 1
+        yield "".join(lines[start:end])
+
+
+def validate_gpui_isolation(workflow: str) -> None:
+    secret = re.compile(r"\bsecrets\s*(?:\.|\[)", re.IGNORECASE)
+    for env in mapping_blocks(workflow, "env", 0):
+        assert not secret.search(env), "GPUI compilation inherits workflow secrets"
+    guard = "github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'"
+    jobs = {name: job_block(workflow, name) for name in ("gpui-build", "gpui-signer", "gpui-sign")}
+    gpui_names = re.findall(r"^  (gpui-[A-Za-z0-9_-]+):\n", workflow, re.MULTILINE)
+    assert len(gpui_names) == len(jobs) and set(gpui_names) == set(jobs), "unexpected GPUI job"
+    for name, job in jobs.items():
+        assert scalar(job, "if") == guard
+        assert scalar(job, "runs-on") == "macos-latest", "GPUI requires fresh hosted runners"
+        for env in mapping_blocks(job, "env", 4):
+            assert not secret.search(env), f"{name} must not inherit job secrets"
+        assert "persist-credentials: false" in job
+        assert "ref: ${{ needs.context.outputs.source-sha }}" in job
+        assert "save-if:" not in job and "actions/cache" not in job and "rust-cache" not in job
+        for forbidden in ("macos-release-", "contents: write", "actions: write", "id-token: write",
+                          "gh release", "git tag", "tauri-action"):
+            assert forbidden not in job, f"{name} cannot publish or share promotion state"
+
+    for name, phase, artifact in (("gpui-build", "build", "build"), ("gpui-signer", "build-signer", "signer")):
+        job = jobs[name]
+        assert scalar(job, "needs") == "context"
+        assert not secret.search(job), f"{name} must be entirely credential-free"
+        assert "security create-keychain" not in job
+        assert f"python3 scripts/release_gpui.py {phase}\n" in job
+        assert "sha256: ${{ steps.payload.outputs.sha256 }}" in job
+        assert f"python3 scripts/gpui_artifacts.py pack {artifact}" in job
+        assert 'echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"' in job
+        assert f"name: gpui-{artifact}-${{{{ needs.context.outputs.source-sha }}}}" in job
+        assert f"path: ${{{{ runner.temp }}}}/gpui-{artifact}.tar" in job
+
+    helpers = named_step_block(jobs["gpui-build"], "Build capture helpers", 6)
+    assert "python3 scripts/build_capture_helpers.py --release" in helpers
+
+    sign = jobs["gpui-sign"]
+    assert scalar(sign, "needs") == "[context, gpui-build, gpui-signer]"
+    # Scan the entire job, including additions to folded/multiline commands and
+    # steps preceding certificate import. Compilation belongs on other runners.
+    compile_command = re.compile(
+        r"\b(?:cargo|rustc|swiftc|swift|meson|cmake|ninja|make|clang|gcc|npm|npx|xcodebuild)\b"
+        r"|release_gpui\.py\s+build|build_capture_helpers\.py|rehearse_gpui_bundle\.py", re.IGNORECASE
+    )
+    assert not compile_command.search(sign), "gpui-sign must never compile"
+    checkout = named_step_block(sign, "Check out trusted signing scripts", 6)
+    for marker in ("uses: actions/checkout@v4", "persist-credentials: false",
+                   "ref: ${{ needs.context.outputs.source-sha }}"):
+        assert marker in checkout
+    assert sign.count("actions/checkout@") == 1
+    verify = named_step_block(sign, "Verify artifact hashes and extract allowlisted binaries", 6)
+    assert "if:" not in verify and "continue-on-error:" not in verify
+    for kind, variable in (("build", "BUILD"), ("signer", "SIGNER")):
+        download = named_step_block(sign, f"Download isolated {'app build' if kind == 'build' else 'updater signer'}", 6)
+        for marker in ("uses: actions/download-artifact@v4",
+                       f"name: gpui-{kind}-${{{{ needs.context.outputs.source-sha }}}}",
+                       f"path: ${{{{ runner.temp }}}}/gpui-{kind}-artifact"):
+            assert marker in download
+        for marker in (f"{variable}_SHA256: ${{{{ needs.gpui-{kind}.outputs.sha256 }}}}",
+                       f"python3 scripts/gpui_artifacts.py verify {kind}",
+                       f'--archive "$RUNNER_TEMP/gpui-{kind}-artifact/gpui-{kind}.tar"',
+                       f'--sha256 "${variable}_SHA256" --output "$RUNNER_TEMP/gpui-{kind}"'):
+            assert marker in verify
+        assert sign.index(download) < sign.index(verify)
+    assert sign.index(checkout) < sign.index(verify) < sign.index("- name: Import Developer ID certificate")
+    command = named_step_block(sign, "Sign, notarize and record GPUI rehearsal", 6)
+    assert sign.index(verify) < sign.index("- name: Import Developer ID certificate") < sign.index(command)
+    for marker in ("python3 scripts/release_gpui.py sign",
+                   '--binary "$RUNNER_TEMP/gpui-build/ui"',
+                   '--helpers-dir "$RUNNER_TEMP/gpui-build"',
+                   '--native-signer "$RUNNER_TEMP/gpui-signer/murmur-updater-signer"'):
+        assert marker in command
+    assert "name: gpui-rehearsal-${{ needs.context.outputs.source-sha }}" in sign
+    cleanup = named_step_block(sign, "Delete signing keychain", 6)
+    assert "if: always()" in cleanup
+    assert "security delete-keychain" in cleanup
+
+
 def should_run_ci(event_name: str, head_commit_message: Optional[str]) -> bool:
     return event_name != "push" or not (head_commit_message or "").startswith(
         "chore: bump version"
@@ -324,21 +417,7 @@ def validate_release_build(workflow: str) -> int:
     assert 'echo "bundle_target=$TARGET" >> "$GITHUB_OUTPUT"' in context
     assert "bundle-target: ${{ steps.context.outputs.bundle_target }}" in context
     assert scalar(job_block(workflow, "release-macos"), "if") == "needs.context.outputs.bundle-target == 'tauri'"
-    gpui = job_block(workflow, "gpui-macos")
-    assert scalar(gpui, "if") == "github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'"
-    assert "persist-credentials: false" in gpui
-    assert "name: gpui-rehearsal-${{ needs.context.outputs.source-sha }}" in gpui
-    assert "macos-release-" not in gpui
-    assert "scripts/release_gpui.py" in gpui
-    build = named_step_block(gpui, "Build GPUI rehearsal binaries without credentials", 6)
-    assert "python3 scripts/release_gpui.py build" in build
-    assert "secrets." not in build and "env:" not in build
-    sign = named_step_block(gpui, "Sign, notarize and record GPUI rehearsal", 6)
-    assert "python3 scripts/release_gpui.py sign" in sign
-    # Compilation precedes every credential and the signing keychain.
-    assert gpui.index("secrets.") > gpui.index("- name: Build GPUI rehearsal binaries without credentials")
-    assert gpui.index("security create-keychain") > gpui.index("python3 scripts/release_gpui.py build")
-    assert "save-if:" not in gpui  # no writes to trusted Tauri caches
+    validate_gpui_isolation(workflow)
     for job in ("typecheck", "release-macos"):
         assert scalar(job_block(workflow, job), "needs") == "context"
 
@@ -508,6 +587,7 @@ def validate_promotion_policy(workflow: str) -> int:
     assert "tags:\n      - 'v*'" in workflow
     assert "workflow_run:\n    workflows: [Release Build]\n    types: [completed]" in workflow
     assert "\n  workflow_dispatch:" in workflow
+    assert "gpui-" not in workflow, "promotion must never consume any GPUI artifact"
     assert "self-hosted" not in workflow
     canary = job_block(workflow, "ota-canary")
     assert "needs: [resolve, promote]" in canary

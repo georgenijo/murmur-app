@@ -431,13 +431,16 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/murmur-signing.keychain-db" 2>/dev/null || true
 
-  gpui-macos:
-    # Separate job/artifact namespace keeps this out of promotion.
+  gpui-build:
+    # App dependencies can write only this credential-free runner.
     needs: context
     if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
     runs-on: macos-latest
+    outputs:
+      sha256: ${{ steps.payload.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out app source
+        uses: actions/checkout@v4
         with:
           ref: ${{ needs.context.outputs.source-sha }}
           persist-credentials: false
@@ -454,12 +457,103 @@ jobs:
           CMAKE_OSX_DEPLOYMENT_TARGET: "14.0"
         run: python3 scripts/build_capture_helpers.py --release
 
-      # Compile before any credential or signing keychain exists in the job,
-      # so dependency build scripts and proc macros cannot reach them.
       - name: Build GPUI rehearsal binaries without credentials
         run: >-
           python3 scripts/release_gpui.py build
           --target-dir "$RUNNER_TEMP/gpui-release-target"
+
+      - name: Record app artifact hash
+        id: payload
+        run: |
+          SHA256=$(python3 scripts/gpui_artifacts.py pack build \
+            --archive "$RUNNER_TEMP/gpui-build.tar" \
+            --binary "$RUNNER_TEMP/gpui-release-target/release/ui" \
+            --helpers-dir app/src-tauri/binaries)
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload isolated app build
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-build-${{ needs.context.outputs.source-sha }}
+          path: ${{ runner.temp }}/gpui-build.tar
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  gpui-signer:
+    # Its locked dependency tree never builds or shares state with the app.
+    needs: context
+    if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
+    runs-on: macos-latest
+    outputs:
+      sha256: ${{ steps.payload.outputs.sha256 }}
+    steps:
+      - name: Check out signer source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Build independent updater signer without credentials
+        run: >-
+          python3 scripts/release_gpui.py build-signer
+          --target-dir "$RUNNER_TEMP/gpui-signer-target"
+
+      - name: Record signer artifact hash
+        id: payload
+        run: |
+          SHA256=$(python3 scripts/gpui_artifacts.py pack signer \
+            --archive "$RUNNER_TEMP/gpui-signer.tar" \
+            --binary "$RUNNER_TEMP/gpui-signer-target/release/murmur-updater-signer")
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload isolated updater signer
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-signer-${{ needs.context.outputs.source-sha }}
+          path: ${{ runner.temp }}/gpui-signer.tar
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  gpui-sign:
+    # Fresh runner and checkout: app build code cannot rewrite signing tooling.
+    needs: [context, gpui-build, gpui-signer]
+    if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
+    runs-on: macos-latest
+    steps:
+      - name: Check out trusted signing scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.context.outputs.source-sha }}
+          persist-credentials: false
+
+      - name: Download isolated app build
+        uses: actions/download-artifact@v4
+        with:
+          name: gpui-build-${{ needs.context.outputs.source-sha }}
+          path: ${{ runner.temp }}/gpui-build-artifact
+
+      - name: Download isolated updater signer
+        uses: actions/download-artifact@v4
+        with:
+          name: gpui-signer-${{ needs.context.outputs.source-sha }}
+          path: ${{ runner.temp }}/gpui-signer-artifact
+
+      - name: Verify artifact hashes and extract allowlisted binaries
+        env:
+          BUILD_SHA256: ${{ needs.gpui-build.outputs.sha256 }}
+          SIGNER_SHA256: ${{ needs.gpui-signer.outputs.sha256 }}
+        run: |
+          python3 scripts/gpui_artifacts.py verify build \
+            --archive "$RUNNER_TEMP/gpui-build-artifact/gpui-build.tar" \
+            --sha256 "$BUILD_SHA256" --output "$RUNNER_TEMP/gpui-build"
+          python3 scripts/gpui_artifacts.py verify signer \
+            --archive "$RUNNER_TEMP/gpui-signer-artifact/gpui-signer.tar" \
+            --sha256 "$SIGNER_SHA256" --output "$RUNNER_TEMP/gpui-signer"
 
       - name: Import Developer ID certificate
         env:
@@ -494,7 +588,9 @@ jobs:
           SIGNING_KEYCHAIN: ${{ runner.temp }}/murmur-signing.keychain-db
         run: >-
           python3 scripts/release_gpui.py sign
-          --target-dir "$RUNNER_TEMP/gpui-release-target"
+          --binary "$RUNNER_TEMP/gpui-build/ui"
+          --helpers-dir "$RUNNER_TEMP/gpui-build"
+          --native-signer "$RUNNER_TEMP/gpui-signer/murmur-updater-signer"
           --output "$RUNNER_TEMP/gpui-release"
 
       - name: Upload non-publishing GPUI artifacts

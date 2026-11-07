@@ -1,10 +1,12 @@
 """Packaging contracts, parity failures, and the publication boundary."""
 import hashlib
+import io
 import json
 from pathlib import Path
 import plistlib
 import shutil
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from bundle_gpui import TAURI, bundle, bundle_info, compare_bundles
 from finalize_macos_bundle import HELPERS, require_exact_macos_executables
+from gpui_artifacts import BUILD_FILES, SIGNER_FILES, pack, sha256, verify
 from release_bundle_target import validate_target
 from validate_workflow_policy import job_block, validate_release_build, validate_promotion_policy
 from notarize_and_repackage_macos import native_sign, tauri_sign
@@ -106,6 +109,16 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "new .app"):
             bundle(self.binary, self.app, self.tauri)
 
+    def test_signed_lane_uses_downloaded_helpers_instead_of_checkout_binaries(self):
+        helpers = self.root / "downloaded-helpers"
+        helpers.mkdir()
+        for name in HELPERS:
+            (helpers / f"{name}-aarch64-apple-darwin").write_bytes(b"downloaded " + name.encode())
+        shutil.rmtree(self.tauri / "binaries")
+        app = bundle(self.binary, self.root / "downloaded.app", self.tauri, helpers_dir=helpers)
+        for name in HELPERS:
+            self.assertEqual((app / "Contents/MacOS" / name).read_bytes(), b"downloaded " + name.encode())
+
     def test_signed_orchestration_wires_notarization_signer_and_helper_provenance(self):
         # All credentials and artifacts here are synthetic. No Apple/signing
         # command executes, but real provenance validation checks the result.
@@ -129,8 +142,8 @@ class BundleTests(unittest.TestCase):
             return f'designated => identifier "{HELPERS[name]}" and anchor apple generic and certificate leaf[subject.OU] = "ABCDEFGHIJ"'
 
         with patch.dict("os.environ", environment, clear=True), \
-             patch("sys.argv", ["release_gpui.py", "sign", "--target-dir", str(self.root / "target"), "--output", str(output)]), \
-             patch("release_gpui.bundle", side_effect=lambda binary, app: bundle(self.binary, app, self.tauri)), \
+             patch("sys.argv", ["release_gpui.py", "sign", "--binary", str(self.binary), "--helpers-dir", str(self.tauri / "binaries"), "--native-signer", str(self.root / "signer/murmur-updater-signer"), "--output", str(output)]), \
+             patch("release_gpui.bundle", side_effect=lambda binary, app, **kwargs: bundle(binary, app, self.tauri, **kwargs)), \
              patch("release_gpui.check_links"), patch("release_gpui.finalize") as finalize, \
              patch("release_gpui.subprocess.run", side_effect=process) as commands, \
              patch("release_gpui.run", side_effect=capture), \
@@ -143,7 +156,7 @@ class BundleTests(unittest.TestCase):
         notarize = next(call.args[0] for call in commands.call_args_list
                         if "scripts/notarize_and_repackage_macos.py" in call.args[0])
         self.assertIn("--native-signer", notarize)
-        self.assertEqual(notarize[-1], str(self.root / "target/release/murmur-updater-signer"))
+        self.assertEqual(notarize[-1], str(self.root / "signer/murmur-updater-signer"))
         provenance = json.loads((output / "artifacts/provenance.json").read_text())
         self.assertEqual(provenance["bundle_target"], "gpui")
         self.assertIs(provenance["publication"], False)
@@ -152,6 +165,85 @@ class BundleTests(unittest.TestCase):
         for name in ("capture_agent", "capture_helper", "capture_worker"):
             self.assertEqual(provenance[name]["team_id"], "ABCDEFGHIJ")
             self.assertEqual(provenance[name]["architecture"], "arm64")
+
+
+class ArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.inputs = self.root / "inputs"
+        self.inputs.mkdir()
+        for name in (*BUILD_FILES, *SIGNER_FILES):
+            (self.inputs / name).write_bytes(b"synthetic " + name.encode())
+
+    def test_separate_archives_transfer_only_expected_payload_and_restore_executable_modes(self):
+        for kind, names in (("build", BUILD_FILES), ("signer", SIGNER_FILES)):
+            with self.subTest(kind=kind):
+                archive = self.root / f"{kind}.tar"
+                digest = pack(kind, archive, self.inputs / names[0], self.inputs)
+                self.assertEqual(digest, hashlib.sha256(archive.read_bytes()).hexdigest())
+                output = self.root / kind
+                verify(kind, archive, digest, output)
+                self.assertEqual({p.name for p in output.iterdir()}, set(names))
+                for name in names:
+                    self.assertEqual((output / name).read_bytes(), (self.inputs / name).read_bytes())
+                    self.assertEqual((output / name).stat().st_mode & 0o777, 0o755)
+
+    def test_changed_or_missing_job_output_hash_is_rejected_before_extracting(self):
+        archive = self.root / "build.tar"
+        digest = pack("build", archive, self.inputs / "ui", self.inputs)
+        for expected in ("", "0" * 64, digest.upper()):
+            with self.subTest(expected=expected), self.assertRaisesRegex(ValueError, "sha256 mismatch"):
+                verify("build", archive, expected, self.root / "output")
+        archive.write_bytes(archive.read_bytes() + b"tampered")
+        with self.assertRaisesRegex(ValueError, "sha256 mismatch"):
+            verify("build", archive, digest, self.root / "output")
+        self.assertFalse((self.root / "output").exists())
+
+    def test_app_archive_cannot_supply_signer_scripts_links_or_traversal(self):
+        mutations = (("scripts/notarize_and_repackage_macos.py", tarfile.REGTYPE),
+                     ("murmur-updater-signer", tarfile.REGTYPE),
+                     ("../ui", tarfile.REGTYPE), ("/ui", tarfile.REGTYPE),
+                     ("ui", tarfile.SYMTYPE), ("ui", tarfile.LNKTYPE),
+                     ("ui", tarfile.DIRTYPE), ("ui", tarfile.REGTYPE))
+        for index, (name, kind) in enumerate(mutations):
+            with self.subTest(name=name, kind=kind):
+                archive = self.root / f"mutated-{index}.tar"
+                with tarfile.open(archive, "w") as output:
+                    for allowed in BUILD_FILES:
+                        member = tarfile.TarInfo(allowed)
+                        member.size = 1
+                        output.addfile(member, io.BytesIO(b"x"))
+                    extra = tarfile.TarInfo(name)
+                    extra.type = kind
+                    if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                        extra.linkname = "../trusted-script"
+                    output.addfile(extra)
+                with self.assertRaisesRegex(ValueError, "allowlisted regular binaries"):
+                    verify("build", archive, sha256(archive), self.root / "output")
+                self.assertFalse((self.root / "output").exists())
+
+    def test_link_replacing_expected_member_and_missing_member_are_rejected(self):
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, None):
+            archive = self.root / f"replace-{kind}.tar"
+            with tarfile.open(archive, "w") as output:
+                for name in BUILD_FILES:
+                    if name == "ui" and kind is None:
+                        continue
+                    member = tarfile.TarInfo(name)
+                    if name == "ui":
+                        member.type = kind
+                        member.linkname = "../trusted-script"
+                    output.addfile(member)
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "allowlisted regular binaries"):
+                verify("build", archive, sha256(archive), self.root / "output")
+
+    def test_build_artifact_is_not_a_signer_artifact(self):
+        archive = self.root / "app.tar"
+        digest = pack("build", archive, self.inputs / "ui", self.inputs)
+        with self.assertRaisesRegex(ValueError, "allowlisted regular binaries"):
+            verify("signer", archive, digest, self.root / "output")
 
 
 class WorkflowTests(unittest.TestCase):
@@ -232,7 +324,8 @@ minos 14.0
              patch("sys.argv", ["release_gpui.py", "build", "--target-dir", "/synthetic/target"]), \
              patch("release_gpui.subprocess.run") as process:
             release_gpui.main()
-        self.assertEqual([call.args[0][0] for call in process.call_args_list], ["cargo", "cargo"])
+        self.assertEqual([call.args[0] for call in process.call_args_list],
+                         [["cargo", "build", "--locked", "--release", "--bin", "ui"]])
         for call in process.call_args_list:
             env = call.kwargs["env"]
             self.assertEqual(env["CARGO_TARGET_DIR"], "/synthetic/target")
@@ -255,21 +348,93 @@ minos 14.0
                     release_gpui.main()
                 process.assert_not_called()
 
-    def test_workflow_rejects_credentials_or_keychain_before_the_build(self):
+    def test_signer_build_uses_only_its_independent_locked_tree(self):
+        import release_gpui
+        with patch.dict("os.environ", {}, clear=True), patch("release_gpui.subprocess.run") as process:
+            release_gpui.build(Path("/synthetic/signer-target"), signer_only=True)
+        process.assert_called_once()
+        self.assertEqual(process.call_args.args[0], ["cargo", "build", "--locked", "--release",
+                         "--manifest-path", str(ROOT / "scripts/updater-signer/Cargo.toml")])
+        self.assertEqual(process.call_args.kwargs["env"]["CARGO_TARGET_DIR"], "/synthetic/signer-target")
+        with patch.dict("os.environ", {"APPLE_PASSWORD": "synthetic"}, clear=True), \
+             patch("release_gpui.subprocess.run") as process:
+            with self.assertRaisesRegex(ValueError, "without credentials"):
+                release_gpui.build(Path("/synthetic/signer-target"), signer_only=True)
+            process.assert_not_called()
+
+    def test_inherited_workflow_and_job_secrets_are_rejected(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
-        validate_release_build(workflow)
-        build = "      - name: Build GPUI rehearsal binaries without credentials\n"
-        gpui = job_block(workflow, "gpui-macos")
-        self.assertLess(gpui.index(build), gpui.index("      - name: Import Developer ID certificate\n"))
-        with_secret = workflow.replace(
-            build + "        run: >-\n",
-            build + "        env:\n          APPLE_ID: ${{ secrets.APPLE_ID }}\n        run: >-\n")
-        with self.assertRaises(AssertionError):
-            validate_release_build(with_secret)
+        mutations = [workflow.replace("\njobs:\n", "\nenv:\n  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}\n\njobs:\n"),
+                     workflow.replace("\njobs:\n", "\nenv: { APPLE_PASSWORD: '${{ secrets.APPLE_PASSWORD }}' }\n\njobs:\n")]
+        for job in ("gpui-build", "gpui-signer", "gpui-sign"):
+            mutations.append(workflow.replace(f"  {job}:\n", f"  {job}:\n    env:\n      APPLE_PASSWORD: ${{{{ secrets.APPLE_PASSWORD }}}}\n"))
+        for mutated in mutations:
+            with self.subTest(mutation=mutated[-120:]):
+                self.assertNotEqual(workflow, mutated)
+                with self.assertRaises(AssertionError):
+                    validate_release_build(mutated)
+
+    def test_every_compilation_step_and_builder_job_are_secretless(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        for name in ("Build capture helpers", "Build GPUI rehearsal binaries without credentials",
+                     "Build independent updater signer without credentials"):
+            mutated = workflow.replace(f"      - name: {name}\n",
+                f"      - name: {name}\n        env:\n          APPLE_PASSWORD: ${{{{ secrets.APPLE_PASSWORD }}}}\n")
+            with self.subTest(step=name), self.assertRaises(AssertionError):
+                validate_release_build(mutated)
+        for job in ("gpui-build", "gpui-signer"):
+            block = job_block(workflow, job)
+            for extra in ("    environment: ${{ secrets.BUILD_ENVIRONMENT }}\n",
+                          "    env: { APPLE_ID: '${{ secrets.APPLE_ID }}' }\n"):
+                mutated = workflow.replace(block, extra + block)
+                with self.subTest(job=job, extra=extra), self.assertRaises(AssertionError):
+                    validate_release_build(mutated)
+
+    def test_signing_job_rejects_compilation_in_any_step_or_appended_to_sign_command(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        sign = job_block(workflow, "gpui-sign")
+        compilers = ("cargo build --locked --release --bin ui", "npm run build", "npx vite build",
+                     "meson setup build", "cmake --build build", "swift build", "swiftc main.swift",
+                     "python3 scripts/build_capture_helpers.py --release",
+                     "python3 scripts/release_gpui.py build --target-dir /tmp/target")
+        for command in compilers:
+            for modified in (sign.replace('--output "$RUNNER_TEMP/gpui-release"',
+                                          '--output "$RUNNER_TEMP/gpui-release" && ' + command),
+                             sign.replace("    steps:\n", "    steps:\n      - name: Hidden compilation\n        run: " + command + "\n")):
+                with self.subTest(command=command), self.assertRaisesRegex(AssertionError, "never compile"):
+                    validate_release_build(workflow.replace(sign, modified))
+
+    def test_isolation_hash_checkout_and_nonpublication_gates_cannot_be_removed(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        sign = job_block(workflow, "gpui-sign")
+        for marker in ("needs: [context, gpui-build, gpui-signer]", "Check out trusted signing scripts",
+                       "ref: ${{ needs.context.outputs.source-sha }}", "persist-credentials: false",
+                       "Verify artifact hashes and extract allowlisted binaries",
+                       "needs.gpui-build.outputs.sha256", "needs.gpui-signer.outputs.sha256",
+                       '--sha256 "$BUILD_SHA256"', '--sha256 "$SIGNER_SHA256"',
+                       "python3 scripts/gpui_artifacts.py verify build",
+                       "python3 scripts/gpui_artifacts.py verify signer",
+                       'path: ${{ runner.temp }}/gpui-build-artifact',
+                       'path: ${{ runner.temp }}/gpui-signer-artifact',
+                       '--native-signer "$RUNNER_TEMP/gpui-signer/murmur-updater-signer"'):
+            with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                validate_release_build(workflow.replace(sign, sign.replace(marker, "removed")))
+        for job in ("gpui-build", "gpui-signer", "gpui-sign"):
+            block = job_block(workflow, job)
+            for old, new in (("persist-credentials: false", "persist-credentials: true"),
+                             ("runs-on: macos-latest", "runs-on: ubuntu-latest"),
+                             ("    steps:\n", "    permissions:\n      contents: write\n    steps:\n"),
+                             ("name: gpui-", "name: macos-release-")):
+                with self.subTest(job=job, old=old), self.assertRaises(AssertionError):
+                    validate_release_build(workflow.replace(block, block.replace(old, new)))
+        promotion = (ROOT / ".github/workflows/release.yml").read_text()
+        for artifact in ("gpui-build-", "gpui-signer-", "gpui-rehearsal-"):
+            with self.subTest(artifact=artifact), self.assertRaises(AssertionError):
+                validate_promotion_policy(promotion.replace("macos-release-", artifact))
 
     def test_signed_script_rejects_non_manual_or_non_main_before_work(self):
         import release_gpui
-        for phase in ("build", "sign"):
+        for phase in ("build", "build-signer", "sign"):
             for event, ref, error in (("push", "refs/heads/main", ValueError),
                                       ("workflow_dispatch", "refs/heads/gpui/18-packaging", SystemExit)):
                 with self.subTest(phase=phase, event=event, ref=ref), \

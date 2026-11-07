@@ -54,12 +54,12 @@ def bundle_info(tauri: Path = TAURI) -> dict:
     return info
 
 
-def bundle(binary: Path, output: Path, tauri: Path = TAURI) -> Path:
+def bundle(binary: Path, output: Path, tauri: Path = TAURI, *, helpers_dir: Path | None = None) -> Path:
     info = bundle_info(tauri)
     if output.suffix != ".app" or output.exists():
         raise ValueError("output must be a new .app directory")
     sources = {"ui": binary, **{
-        name: tauri / "binaries" / f"{name}-aarch64-apple-darwin" for name in HELPERS
+        name: (helpers_dir if helpers_dir is not None else tauri / "binaries") / f"{name}-aarch64-apple-darwin" for name in HELPERS
     }}
     for source in sources.values():
         if not source.is_file():
