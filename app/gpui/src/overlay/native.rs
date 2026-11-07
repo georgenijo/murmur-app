@@ -79,27 +79,23 @@ thread_local! {
 }
 
 /// Global logical top-left coordinates, independent of a resizing window.
-pub fn pointer_position() -> Option<gpui::Point<gpui::Pixels>> {
+pub fn pointer_position(window: &Window) -> Option<gpui::Point<gpui::Pixels>> {
     #[cfg(all(test, feature = "a11y-tests"))]
     {
         if let Some(position) = TEST_POINTER_POSITION.get() {
             return Some(position);
         }
-        if TEST_POINTER_SAMPLE.get().is_some() {
-            return None;
-        }
     }
     #[cfg(target_os = "macos")]
-    {
+    if raw(window).is_some() {
         let mut position = [0.; 2];
         // SAFETY: main-thread, read-only cursor query with a two-double buffer.
         unsafe { murmur_overlay_pointer_position(position.as_mut_ptr()) };
-        Some(gpui::point(
+        return Some(gpui::point(
             gpui::px(position[0] as f32),
             gpui::px(position[1] as f32),
-        ))
+        ));
     }
-    #[cfg(not(target_os = "macos"))]
     None
 }
 

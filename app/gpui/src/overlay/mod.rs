@@ -96,7 +96,7 @@ impl Overlay {
         self.model.close(self.now, inside);
     }
     fn pointer_position(&self, window: &Window) -> Point<Pixels> {
-        native::pointer_position().unwrap_or(window.bounds().origin + window.mouse_position())
+        native::pointer_position(window).unwrap_or(window.bounds().origin + window.mouse_position())
     }
     fn observe_pointer_at(&mut self, inside: bool, position: Point<Pixels>, now: u64) -> bool {
         if !self.model.hover_suppressed() {
