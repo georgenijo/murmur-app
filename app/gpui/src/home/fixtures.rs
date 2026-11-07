@@ -100,13 +100,13 @@ impl Host for FixtureHost {
                     }
                 }
                 Action::DismissChecklist => s.discovery["checklistDismissed"] = json!(true),
-                Action::Checklist(id) if matches!(id, "command_palette" | "shortcuts") => {
-                    if !s.completed(id) {
-                        s.discovery["completed"]
-                            .as_array_mut()
-                            .unwrap()
-                            .push(json!(id));
-                    }
+                Action::Checklist(id)
+                    if matches!(id, "command_palette" | "shortcuts") && !s.completed(id) =>
+                {
+                    s.discovery["completed"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!(id));
                 }
                 _ => (),
             }

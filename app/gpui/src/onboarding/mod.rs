@@ -50,6 +50,7 @@ pub struct Onboarding {
     ax_requested: bool,
     seeded: bool,
     standalone: bool,
+    verified_model: Option<String>,
     cancelling: bool,
 }
 impl Onboarding {
@@ -129,6 +130,7 @@ impl Onboarding {
             ax_requested: false,
             seeded: false,
             standalone: false,
+            verified_model: None,
             cancelling: false,
         }
     }
@@ -171,6 +173,7 @@ impl Onboarding {
         self.finished = false;
         self.ax_requested = false;
         self.standalone = false;
+        self.verified_model = None;
         self.step = Step::Welcome;
         self.focused_step = None;
     }
@@ -234,6 +237,14 @@ impl Onboarding {
                             }
                         }
                         Some(Action::Reset(Permission::Microphone)) => self.mic_wait = None,
+                        Some(Action::Catalog) => {
+                            if let Some(snapshot) = &self.model.snapshot {
+                                self.selected_model = self
+                                    .verified_model
+                                    .clone()
+                                    .unwrap_or_else(|| snapshot.preferred());
+                            }
+                        }
                         _ => (),
                     }
                 }
@@ -319,6 +330,9 @@ impl Onboarding {
         cx.notify();
     }
     fn advance(&mut self, cx: &mut Context<Self>) {
+        if self.step == Step::Model {
+            self.verified_model = Some(self.selected_model.clone());
+        }
         if self.standalone {
             self.finish(cx);
         } else {
