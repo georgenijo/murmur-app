@@ -12,3 +12,7 @@ pub use overlay_retirement::OverlayRetirement;
 /// The same deallocation barrier for the independently replaced preview.
 #[cfg(target_os = "macos")]
 pub use overlay_retirement::OverlayRetirement as PreviewRetirement;
+
+/// Per-window destruction barrier for the independently replaced diagnostics view.
+#[cfg(target_os = "macos")]
+pub use overlay_retirement::OverlayRetirement as DiagnosticsRetirement;

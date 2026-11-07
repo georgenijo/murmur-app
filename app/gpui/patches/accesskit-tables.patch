@@ -1,0 +1,296 @@
+--- a/src/node.rs
++++ b/src/node.rs
+@@ -27,7 +27,7 @@
+     NSMutableDictionary, NSNumber, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSString,
+     NSURL, ns_string,
+ };
+-use std::rc::{Rc, Weak};
++use std::{cell::RefCell, rc::{Rc, Weak}};
+ 
+ use crate::{context::Context, filters::filter, util::*};
+ 
+@@ -397,9 +397,113 @@
+     (role, title, pressable, request)
+ }
+ 
++// Table structure is independent of selection support. Restrict traversal to
++// rows/row groups so a nested table cannot contribute rows to its parent.
++fn is_table(node: &Node) -> bool {
++    matches!(node.role(), Role::Table | Role::Grid | Role::TreeGrid)
++}
++
++fn table_rows<'a>(node: &Node<'a>) -> Vec<Node<'a>> {
++    let mut rows = Vec::new();
++    for child in node.filtered_children(filter) {
++        match child.role() {
++            Role::Row => rows.push(child),
++            Role::RowGroup => rows.extend(table_rows(&child)),
++            _ => (),
++        }
++    }
++    rows
++}
++
++fn table_headers<'a>(node: &Node<'a>, role: Role) -> Vec<Node<'a>> {
++    table_rows(node).into_iter().flat_map(|row| {
++        row.filtered_children(filter).filter(move |cell| cell.role() == role)
++    }).collect()
++}
++
++fn cell_index(node: &Node, row: bool) -> Option<usize> {
++    if row {
++        node.data().row_index().or_else(|| node.filtered_parent(&filter)
++            .filter(|parent| parent.role() == Role::Row)
++            .and_then(|parent| parent.data().row_index()))
++    } else {
++        node.data().column_index()
++    }
++}
++
++/// Windowless probe of the same table projection used by the native selectors.
++#[cfg(feature = "test-support")]
++pub fn test_table(update: accesskit::TreeUpdate, target: accesskit::NodeId)
++    -> (usize, usize, usize, usize, Vec<(usize, usize)>) {
++    let tree = Tree::new(update, false);
++    let node = tree.state().node_by_tree_local_id(target, accesskit::TreeId::ROOT)
++        .expect("adapter table exists");
++    assert!(is_table(&node));
++    let rows = table_rows(&node);
++    let indices = rows.iter().flat_map(|row| row.filtered_children(filter))
++        .filter_map(|cell| Some((cell_index(&cell, true)?, cell_index(&cell, false)?)))
++        .collect();
++    (rows.len(), node.data().column_count().unwrap_or(0),
++        table_headers(&node, Role::ColumnHeader).len(),
++        table_headers(&node, Role::RowHeader).len(), indices)
++}
++
++/// Main-thread, windowless test of the actual Objective-C table selectors.
++#[cfg(feature = "test-support")]
++pub fn test_native_table(update: accesskit::TreeUpdate, target: accesskit::NodeId) {
++    use crate::context::ActionHandlerNoMut;
++    use objc2::{msg_send, rc::WeakId};
++    use objc2_foundation::MainThreadMarker;
++    struct NoActions;
++    impl ActionHandlerNoMut for NoActions {
++        fn do_action(&self, _: ActionRequest) { panic!("read-only table probe dispatched an action"); }
++    }
++    let expected = test_table(update.clone(), target);
++    let tree = Tree::new(update, false);
++    let id = tree.state().node_by_tree_local_id(target, accesskit::TreeId::ROOT).unwrap().id();
++    let context = Context::new(WeakId::default(), tree, Rc::new(NoActions),
++        MainThreadMarker::new().expect("native table probe runs on main"));
++    let table = context.get_or_create_platform_node(id);
++    unsafe {
++        for selector in [sel!(accessibilityRows), sel!(accessibilityColumns),
++            sel!(accessibilityRowCount), sel!(accessibilityColumnCount),
++            sel!(accessibilityColumnHeaderUIElements), sel!(accessibilityCellForColumn:row:)] {
++            let allowed: bool = msg_send![&*table, isAccessibilitySelectorAllowed: selector];
++            assert!(allowed);
++        }
++        let rows: Id<NSArray<PlatformNode>> = msg_send_id![&*table, accessibilityRows];
++        let columns: Id<NSArray<NSAccessibilityElement>> = msg_send_id![&*table, accessibilityColumns];
++        let headers: Id<NSArray<PlatformNode>> = msg_send_id![&*table, accessibilityColumnHeaderUIElements];
++        let row_count: NSInteger = msg_send![&*table, accessibilityRowCount];
++        let column_count: NSInteger = msg_send![&*table, accessibilityColumnCount];
++        assert_eq!((rows.len(), columns.len(), headers.len()), (expected.0, expected.1, expected.2));
++        assert_eq!((row_count as usize, column_count as usize), (expected.0, expected.1));
++        for (row, column) in expected.4 {
++            let cell: Id<PlatformNode> = msg_send_id![&*table, accessibilityCellForColumn: column as NSInteger row: row as NSInteger];
++            let row_range: NSRange = msg_send![&*cell, accessibilityRowIndexRange];
++            let column_range: NSRange = msg_send![&*cell, accessibilityColumnIndexRange];
++            assert_eq!(row_range, NSRange::new(row, 1));
++            assert_eq!(column_range, NSRange::new(column, 1));
++            let headers: Id<NSArray<PlatformNode>> = msg_send_id![&*cell, accessibilityColumnHeaderUIElements];
++            assert_eq!(headers.len(), usize::from(expected.2 > 0));
++        }
++        for (index, column) in columns.to_vec().into_iter().enumerate() {
++            let role: Id<NSString> = msg_send_id![column, accessibilityRole];
++            let actual_index: NSInteger = msg_send![column, accessibilityIndex];
++            let cells: Id<NSArray<PlatformNode>> = msg_send_id![column, accessibilityChildren];
++            assert_eq!(&*role, NSAccessibilityColumnRole);
++            assert_eq!(actual_index as usize, index);
++            assert_eq!(cells.len(), expected.0);
++        }
++        let missing: Option<Id<PlatformNode>> = msg_send_id![&*table, accessibilityCellForColumn: -1isize row: 0isize];
++        assert!(missing.is_none());
++    }
++}
++
+ pub(crate) struct PlatformNodeIvars {
+     context: Weak<Context>,
+     node_id: NodeId,
++    columns: RefCell<Vec<Id<NSAccessibilityElement>>>,
+ }
+ 
+ declare_class!(
+@@ -1120,6 +1224,10 @@
+         fn rows(&self) -> Option<Id<NSArray<PlatformNode>>> {
+             self.resolve_with_context(|node, _, context| {
+                 let wrapper = NodeWrapper(node);
++                if is_table(node) {
++                    return Some(NSArray::from_vec(table_rows(node).into_iter()
++                        .map(|row| context.get_or_create_platform_node(row.id())).collect()));
++                }
+                 if !wrapper.is_container_with_selectable_children() {
+                     return None;
+                 }
+@@ -1130,6 +1238,91 @@
+                 Some(NSArray::from_vec(platform_nodes))
+             })
+             .flatten()
++        }
++
++        #[method_id(accessibilityColumns)]
++        fn columns(&self) -> Option<Id<NSArray<NSAccessibilityElement>>> {
++            self.resolve_with_context(|node, _, context| {
++                if !is_table(node) { return None; }
++                let rows = table_rows(node);
++                let headers = table_headers(node, Role::ColumnHeader);
++                let count = node.data().column_count().unwrap_or(headers.len());
++                let mut cached = self.ivars().columns.borrow_mut();
++                cached.truncate(count);
++                cached.resize_with(count, || unsafe { NSAccessibilityElement::new() });
++                let columns = cached.iter().enumerate().map(|(index, column)| {
++                    // AccessKit has no Column role. AppKit's ordinary virtual
++                    // elements project columns over the existing cell objects.
++                    let cells = rows.iter().flat_map(|row| row.filtered_children(filter))
++                        .filter(|cell| cell.data().column_index() == Some(index))
++                        .map(|cell| Id::into_super(Id::into_super(Id::into_super(context.get_or_create_platform_node(cell.id())))))
++                        .collect::<Vec<_>>();
++                    let cells = NSArray::from_vec(cells);
++                    let parent = context.get_or_create_platform_node(node.id());
++                    unsafe {
++                        column.setAccessibilityRole(Some(NSAccessibilityColumnRole));
++                        column.setAccessibilityParent(Some(&parent));
++                        column.setAccessibilityIndex(index as NSInteger);
++                        column.setAccessibilityChildren(Some(&cells));
++                        column.setAccessibilityHeader(None);
++                        if let Some(header) = headers.iter().find(|h| h.data().column_index() == Some(index)) {
++                            let header = context.get_or_create_platform_node(header.id());
++                            column.setAccessibilityHeader(Some(&header));
++                        }
++                    }
++                    column.clone()
++                }).collect();
++                Some(NSArray::from_vec(columns))
++            }).flatten()
++        }
++
++        #[method_id(accessibilityCellForColumn:row:)]
++        fn cell_for_column_and_row(&self, column: NSInteger, row: NSInteger) -> Option<Id<PlatformNode>> {
++            self.resolve_with_context(|node, _, context| {
++                if column < 0 || row < 0 || !is_table(node) { return None; }
++                table_rows(node).into_iter()
++                    .flat_map(|row| row.filtered_children(filter))
++                    .find(|cell| cell_index(cell, true) == Some(row as usize)
++                        && cell_index(cell, false) == Some(column as usize))
++                    .map(|cell| context.get_or_create_platform_node(cell.id()))
++            }).flatten()
++        }
++
++        #[method(accessibilityRowCount)]
++        fn row_count(&self) -> NSInteger {
++            self.resolve(|node| node.data().row_count().unwrap_or_else(|| table_rows(node).len()) as NSInteger).unwrap_or(0)
++        }
++
++        #[method(accessibilityColumnCount)]
++        fn column_count(&self) -> NSInteger {
++            self.resolve(|node| node.data().column_count().unwrap_or_else(|| table_headers(node, Role::ColumnHeader).len()) as NSInteger).unwrap_or(0)
++        }
++
++        #[method_id(accessibilityColumnHeaderUIElements)]
++        fn column_headers(&self) -> Option<Id<NSArray<PlatformNode>>> {
++            self.headers_internal(Role::ColumnHeader)
++        }
++
++        #[method_id(accessibilityRowHeaderUIElements)]
++        fn row_headers(&self) -> Option<Id<NSArray<PlatformNode>>> {
++            self.headers_internal(Role::RowHeader)
++        }
++
++        #[method(accessibilityIndex)]
++        fn index(&self) -> NSInteger {
++            self.resolve(|node| node.data().row_index().unwrap_or(0) as NSInteger).unwrap_or(0)
++        }
++
++        #[method(accessibilityRowIndexRange)]
++        fn row_index_range(&self) -> NSRange {
++            self.resolve(|node| NSRange::new(cell_index(node, true).unwrap_or(0), node.data().row_span().unwrap_or(1)))
++                .unwrap_or(NSRange::new(0, 0))
++        }
++
++        #[method(accessibilityColumnIndexRange)]
++        fn column_index_range(&self) -> NSRange {
++            self.resolve(|node| NSRange::new(cell_index(node, false).unwrap_or(0), node.data().column_span().unwrap_or(1)))
++                .unwrap_or(NSRange::new(0, 0))
+         }
+ 
+         #[method_id(accessibilitySelectedRows)]
+@@ -1295,8 +1488,25 @@
+                     let wrapper = NodeWrapper(node);
+                     return wrapper.is_item_like();
+                 }
+-                if selector == sel!(accessibilityRows)
+-                    || selector == sel!(accessibilitySelectedRows)
++                if selector == sel!(accessibilityRows) {
++                    return is_table(node) || NodeWrapper(node).is_container_with_selectable_children();
++                }
++                if selector == sel!(accessibilityCellForColumn:row:) { return is_table(node); }
++                if selector == sel!(accessibilityColumns)
++                    || selector == sel!(accessibilityRowCount)
++                    || selector == sel!(accessibilityColumnCount)
++                    || selector == sel!(accessibilityColumnHeaderUIElements)
++                    || selector == sel!(accessibilityRowHeaderUIElements) {
++                    return is_table(node) || (matches!(selector, s if s == sel!(accessibilityColumnHeaderUIElements) || s == sel!(accessibilityRowHeaderUIElements))
++                        && matches!(node.role(), Role::Cell | Role::GridCell | Role::ColumnHeader | Role::RowHeader));
++                }
++                if selector == sel!(accessibilityIndex) {
++                    return node.role() == Role::Row && node.data().row_index().is_some();
++                }
++                if selector == sel!(accessibilityRowIndexRange) || selector == sel!(accessibilityColumnIndexRange) {
++                    return matches!(node.role(), Role::Cell | Role::GridCell | Role::ColumnHeader | Role::RowHeader);
++                }
++                if selector == sel!(accessibilitySelectedRows)
+                 {
+                     let wrapper = NodeWrapper(node);
+                     return wrapper.is_container_with_selectable_children()
+@@ -1356,7 +1566,7 @@
+ 
+ impl PlatformNode {
+     pub(crate) fn new(context: Weak<Context>, node_id: NodeId) -> Id<Self> {
+-        let this = Self::alloc().set_ivars(PlatformNodeIvars { context, node_id });
++        let this = Self::alloc().set_ivars(PlatformNodeIvars { context, node_id, columns: RefCell::new(Vec::new()) });
+ 
+         unsafe { msg_send_id![super(this), init] }
+     }
+@@ -1379,6 +1589,22 @@
+         self.resolve_with_context(|node, _, _| f(node))
+     }
+ 
++    fn headers_internal(&self, role: Role) -> Option<Id<NSArray<PlatformNode>>> {
++        self.resolve_with_context(|node, _, context| {
++            let mut table = Some(node.clone());
++            while table.as_ref().is_some_and(|node| !is_table(node)) {
++                table = table.and_then(|node| node.filtered_parent(&filter));
++            }
++            let table = table?;
++            let headers = table_headers(&table, role).into_iter()
++                .filter(|header| is_table(node) || if role == Role::ColumnHeader {
++                    cell_index(header, false) == cell_index(node, false)
++                } else { cell_index(header, true) == cell_index(node, true) })
++                .map(|header| context.get_or_create_platform_node(header.id())).collect();
++            Some(NSArray::from_vec(headers))
++        }).flatten()
++    }
++
+     fn children_internal(&self) -> Option<Id<NSArray<PlatformNode>>> {
+         self.resolve_with_context(|node, _, context| {
+             let platform_nodes = node
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -25,4 +25,4 @@
+ pub use objc2_foundation::{NSArray, NSObject, NSPoint};
+ 
+ #[cfg(feature = "test-support")]
+-pub use node::test_press;
++pub use node::{test_native_table, test_press, test_table};

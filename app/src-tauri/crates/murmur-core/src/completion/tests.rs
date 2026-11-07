@@ -988,7 +988,7 @@ fn report_uuid_does_not_prevent_creation_time_and_content_deduplication() {
 #[test]
 fn report_schema_ports_legacy_v2_v3_metadata_and_rejects_future_or_malformed_fields() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../src/lib/__fixtures__/diagnostic-reports/benchmark-v2.json");
+        .join("../../../../tests/fixtures/diagnostic-reports/benchmark-v2.json");
     let mut v: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert!(valid_report(&v));
     v["reportVersion"] = json!(3);

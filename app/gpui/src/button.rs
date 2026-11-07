@@ -38,6 +38,9 @@ impl ButtonSize {
 #[derive(IntoElement)]
 pub struct Button {
     base: gpui_base::Button,
+    id: ElementId,
+    focus: Option<FocusHandle>,
+    scroll_parent: Vec<ScrollHandle>,
     label: SharedString,
     intent: ButtonIntent,
     size: ButtonSize,
@@ -47,13 +50,17 @@ pub struct Button {
 }
 impl Button {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+        let id = id.into();
         let label = label.into();
         assert!(
             !label.trim().is_empty(),
             "controls require an accessible name"
         );
         Self {
-            base: gpui_base::Button::new(id).accessibility_label(label.clone()),
+            base: gpui_base::Button::new(id.clone()).accessibility_label(label.clone()),
+            id,
+            focus: None,
+            scroll_parent: vec![],
             label,
             intent: ButtonIntent::Secondary,
             size: ButtonSize::Standard,
@@ -65,6 +72,13 @@ impl Button {
     /// Change visible copy while retaining the constructor's accessible name.
     pub fn caption(mut self, caption: impl Into<SharedString>) -> Self {
         self.label = caption.into();
+        self
+    }
+    /// Persistent filter state, exposed independently from its visible caption.
+    pub fn toggled(mut self, value: bool) -> Self {
+        self.base = self
+            .base
+            .aria_toggled(if value { Toggled::True } else { Toggled::False });
         self
     }
     pub fn intent(mut self, intent: ButtonIntent) -> Self {
@@ -89,7 +103,17 @@ impl Button {
         self.default_confirm = enabled;
         self
     }
+    pub fn with_scroll_parent(mut self, parent: Option<&ScrollHandle>) -> Self {
+        self.scroll_parent = parent.cloned().into_iter().collect();
+        self
+    }
+    /// Reveal through each viewport, ordered from innermost to outermost.
+    pub(crate) fn with_scroll_parents(mut self, parents: Vec<ScrollHandle>) -> Self {
+        self.scroll_parent = parents;
+        self
+    }
     pub fn track_focus(mut self, focus: &FocusHandle) -> Self {
+        self.focus = Some(focus.clone());
         self.base = self.base.track_focus(focus);
         self
     }
@@ -99,7 +123,23 @@ impl Button {
     }
 }
 impl RenderOnce for Button {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, w: &mut Window, cx: &mut App) -> impl IntoElement {
+        let reveal = if !self.scroll_parent.is_empty() {
+            let focus = self.focus.clone().unwrap_or_else(|| {
+                w.use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                    .read(cx)
+                    .clone()
+            });
+            self.base = self.base.track_focus(&focus);
+            Some(crate::data_components::focus_reveal(
+                focus,
+                self.scroll_parent.clone(),
+                w,
+                cx,
+            ))
+        } else {
+            None
+        };
         let p = self.palette.unwrap_or_else(|| Palette::get(cx));
         let (bg, fg) = match self.intent {
             ButtonIntent::Primary => (p.accent, p.on_accent),
@@ -110,6 +150,8 @@ impl RenderOnce for Button {
         let allow_return =
             self.default_confirm && self.intent != ButtonIntent::Danger && !self.disabled;
         self.base
+            .relative()
+            .children(reveal)
             .disabled(self.disabled)
             .h(self.size.height())
             .px(self.size.inset())

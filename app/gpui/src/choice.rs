@@ -39,6 +39,7 @@ pub struct SelectionChanged(pub SharedString);
 /// explicit selection (Space/Return), wrapping arrows, Home/End, and Escape.
 /// The owner subscribes to SelectionChanged; labels and stable values are separate.
 pub struct Choices {
+    pub(crate) scroll_parent: Option<ScrollHandle>,
     pub(crate) focus: FocusHandle,
     label: SharedString,
     kind: ChoiceKind,
@@ -79,6 +80,7 @@ impl Choices {
             }
         });
         Self {
+            scroll_parent: None,
             popup_bounds: Default::default(),
             focus,
             _blur: blur,
@@ -91,6 +93,26 @@ impl Choices {
             disabled: false,
             scroll: ScrollHandle::new(),
         }
+    }
+    /// Refresh bounded data-backed pickers without replacing their focus owner.
+    pub fn replace_choices(&mut self, choices: Vec<Choice>, cx: &mut Context<Self>) {
+        let selected = self.value().cloned();
+        if self
+            .choices
+            .iter()
+            .map(|c| (&c.value, &c.label, c.disabled))
+            .eq(choices.iter().map(|c| (&c.value, &c.label, c.disabled)))
+        {
+            return;
+        }
+        self.choices = choices;
+        self.selected = selected.and_then(|v| {
+            self.choices
+                .iter()
+                .position(|c| c.value == v && !c.disabled)
+        });
+        self.cancel();
+        cx.notify();
     }
     pub fn value(&self) -> Option<&SharedString> {
         self.selected.map(|i| &self.choices[i].value)
@@ -243,6 +265,12 @@ impl Render for Choices {
         let mut root = div()
             .id("choices")
             .relative()
+            .child(crate::data_components::focus_reveal(
+                self.focus.clone(),
+                self.scroll_parent.clone(),
+                window,
+                cx,
+            ))
             .w(tokens::SELECT_MAX)
             .role(role)
             .when(popup, |s| s.h(tokens::STANDARD_HEIGHT))

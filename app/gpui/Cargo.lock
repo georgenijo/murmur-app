@@ -4790,6 +4790,7 @@ dependencies = [
  "accesskit_macos",
  "accesskit_consumer",
  "cc",
+ "chrono",
  "gpui",
  "gpui-base",
  "gpui-component",
@@ -4798,6 +4799,7 @@ dependencies = [
  "murmur-core",
  "raw-window-handle",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

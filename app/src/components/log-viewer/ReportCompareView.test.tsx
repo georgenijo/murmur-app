@@ -4,8 +4,8 @@ import { loadStats } from '../../lib/stats';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import benchmarkV2 from '../../lib/__fixtures__/diagnostic-reports/benchmark-v2.json';
-import evaluationDeterministic from '../../lib/__fixtures__/diagnostic-reports/evaluation-v1-deterministic.json';
+import benchmarkV2 from '../../../../tests/fixtures/diagnostic-reports/benchmark-v2.json';
+import evaluationDeterministic from '../../../../tests/fixtures/diagnostic-reports/evaluation-v1-deterministic.json';
 import { MAX_DIAGNOSTIC_REPORT_BYTES } from '../../lib/diagnosticReports';
 import { ReportCompareView } from './ReportCompareView';
 

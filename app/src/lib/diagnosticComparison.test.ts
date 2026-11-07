@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import benchmarkLegacy from './__fixtures__/diagnostic-reports/benchmark-legacy.json';
-import benchmarkV2 from './__fixtures__/diagnostic-reports/benchmark-v2.json';
-import evaluationDeterministic from './__fixtures__/diagnostic-reports/evaluation-v1-deterministic.json';
-import evaluationHardware from './__fixtures__/diagnostic-reports/evaluation-v1-hardware.json';
+import benchmarkLegacy from '../../../tests/fixtures/diagnostic-reports/benchmark-legacy.json';
+import benchmarkV2 from '../../../tests/fixtures/diagnostic-reports/benchmark-v2.json';
+import evaluationDeterministic from '../../../tests/fixtures/diagnostic-reports/evaluation-v1-deterministic.json';
+import evaluationHardware from '../../../tests/fixtures/diagnostic-reports/evaluation-v1-hardware.json';
 import { compareDiagnosticReports } from './diagnosticComparison';
 import { parseDiagnosticReportJson } from './diagnosticReports';
 import type { NormalizedDiagnosticReport } from './diagnosticReports';

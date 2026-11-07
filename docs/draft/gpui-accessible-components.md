@@ -50,6 +50,7 @@ attribution are retained. See [third-party notices](../../THIRD_PARTY_NOTICES.md
 | `app/gpui/patches/component-review-fixes.patch` | Additive patch after `component-port.patch` and `component-accessibility.patch`: disabled-switch dispatch binding, current-layout single-line AX range geometry with source bidi and glyph-order guards, the existing `unicode-bidi` dependency wired into `gpui-base`, and explicit placeholder color. |
 | `app/gpui/patches/gpui-manifest.patch` | Makes only the Apache GPUI crate self-contained, resolving inherited workspace dependency tables against the unchanged upstream revision. Examples, benches and upstream test-only assets are not vendored. |
 | `app/gpui/patches/gpui-deferred-accessibility.patch` | Production fix: deferred draws capture their AX ancestry, append children to the finalized parent, and retain the focused-ancestor check. Ordinary builds use it through the workspace Cargo git-source patch. |
+| `app/gpui/patches/accesskit-tables.patch` | Additive after the expanded and press patches: nonselectable table rows, cached virtual AppKit columns (weak parent), counts, headers and cell index ranges/lookup. Includes feature-gated windowless probes; the native probe sends real Objective-C selectors on main. Runner tests reverse to the merged adapter hash and reproduce every vendored file byte-for-byte. |
 | `app/gpui/patches/accesskit-press-probe.patch` | Additive after the AccessKit section of `phase0-accessibility.patch`: extracts the existing native AXPress dispatch into a shared handler and adds a feature-gated windowless role/title/press probe. Production action behavior is unchanged. |
 | `app/gpui/patches/gpui-hidden-presentation.patch` | Additive production API after the existing GPUI patches: expose pending-scene presentation so an ordered-out preview can paint before admission without its paused display link. |
 | `app/gpui/patches/test-accessibility.patch` | Test transport only: retain TestWindow AX callbacks/tree updates, expose activation, tree retrieval and action dispatch on TestAppContext. Production tree building, focus calculation and action handlers remain unchanged. |
@@ -380,3 +381,10 @@ and typography**, and supported-macOS/hardware acceptance. The larger Phase 0
 hardware/dictation/notch/second-display gates remain with their screen ports.
 Do not equate AX tree assertions, 1× goldens or synthetic key tests with these
 native checks. No live AX or VoiceOver automation was run in this task.
+
+## Diagnostics data surfaces (stack layer 12)
+
+The [Diagnostics contract](gpui-diagnostics.md) adds reusable Tabs, DataTable,
+DetailList, Chart and Progress controls in `data_components`, plus controlled
+filter-button AX toggle state and focus-preserving data-backed picker refreshes.
+It records their keyboard, accessibility, bounds and native acceptance contracts.
