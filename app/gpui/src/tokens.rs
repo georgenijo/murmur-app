@@ -12,6 +12,8 @@ pub const STANDARD_HEIGHT: Pixels = px(32.);
 pub const COMPACT_HEIGHT: Pixels = px(28.);
 pub const XS_HEIGHT: Pixels = px(24.);
 pub const CONTROL_INSET: Pixels = px(11.);
+pub const CAPTION_SIZE: Pixels = px(11.);
+pub const CAPTION_LEADING: Pixels = px(16.);
 pub const BODY_SIZE: Pixels = px(14.);
 pub const BODY_LEADING: Pixels = px(20.);
 pub const DISABLED_OPACITY: f32 = 0.64;
@@ -36,6 +38,29 @@ pub struct Palette {
     pub focus: Hsla,
 }
 impl Palette {
+    /// Overlay utility windows follow system appearance; notch is always dark.
+    pub fn overlay(floating: bool, dark: bool, cx: &App) -> Self {
+        let dark = !floating || dark;
+        let color = |value| Hsla::from(gpui::rgb(value));
+        let (surface, text) = if dark {
+            (color(0x1c1c1e), color(0xf6f6f8))
+        } else {
+            (color(0xf6f6f8), color(0x1c1c1e))
+        };
+        let high = preferences::current(cx).increase_contrast;
+        Self {
+            surface,
+            raised: surface.blend(text.opacity(0.08)),
+            text,
+            muted: text.opacity(if high { 1. } else { 0.85 }),
+            border: text.opacity(if high { 1. } else { 0.2 }),
+            accent: text,
+            on_accent: surface,
+            danger: color(0xef4444),
+            focus: text,
+        }
+    }
+
     pub fn get(cx: &App) -> Self {
         let theme = cx.theme();
         let high_contrast = preferences::current(cx).increase_contrast;
@@ -114,4 +139,9 @@ pub fn apply_appearance(dark: bool, cx: &mut App) {
         theme.radius = CONTROL_RADIUS;
         theme.radius_lg = CARD_RADIUS;
     });
+}
+
+/// The notch stays dark regardless of the main appearance document.
+pub fn overlay_surface() -> Hsla {
+    Hsla::from(gpui::rgb(0x141414)).opacity(0.92)
 }

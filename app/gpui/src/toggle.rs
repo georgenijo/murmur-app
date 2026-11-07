@@ -8,6 +8,7 @@ pub struct Toggle {
     id: ElementId,
     checked: bool,
     disabled: bool,
+    palette: Option<Palette>,
 }
 impl Toggle {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>, checked: bool) -> Self {
@@ -24,7 +25,13 @@ impl Toggle {
                 .checked(checked),
             checked,
             disabled: false,
+            palette: None,
         }
+    }
+    /// Window-local roles (utility surfaces do not follow the main theme).
+    pub fn palette(mut self, palette: Palette) -> Self {
+        self.palette = Some(palette);
+        self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
@@ -41,7 +48,7 @@ impl Toggle {
 }
 impl RenderOnce for Toggle {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let p = Palette::get(cx);
+        let p = self.palette.unwrap_or_else(|| Palette::get(cx));
         let policy = crate::motion::Motion::Toggle.resolve(cx.reduce_motion());
         let position = gpui_base::transition(
             (self.id, "thumb"),

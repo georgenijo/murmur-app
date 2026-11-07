@@ -15,6 +15,13 @@ class TestSourceTests(unittest.TestCase):
         manifest.write_text('[package.metadata.murmur]\nupstream-revision = "' + revision + '"\n')
         return source, {'manifest_path': str(manifest)}
 
+    def test_neutral_overlay_geometry_fixture_matches_retained_frontend_fixture(self):
+        import json
+        root = Path(__file__).resolve().parents[1]
+        native = json.loads((root / 'tests/fixtures/overlay-geometry.json').read_text())
+        frontend = json.loads((root / 'app/src/components/overlay/overlay-geometry.fixture.json').read_text())
+        self.assertEqual(native, frontend)
+
     def test_accepts_the_patched_production_source_at_the_frozen_revision(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

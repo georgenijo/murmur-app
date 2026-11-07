@@ -6,6 +6,7 @@ pub enum Motion {
     Feedback,
     Toggle,
     Popup,
+    Overlay,
     SearchPulse,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +28,7 @@ impl Motion {
             Self::Feedback => (120, 0.97, 0.),
             Self::Toggle => (150, 1., 12.),
             Self::Popup => (120, 0.98, 0.),
+            Self::Overlay => (360, 1., 0.),
             Self::SearchPulse => (650, 1., 0.),
         };
         Transition {

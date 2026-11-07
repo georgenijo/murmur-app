@@ -42,6 +42,7 @@ pub struct Button {
     intent: ButtonIntent,
     size: ButtonSize,
     disabled: bool,
+    palette: Option<Palette>,
     default_confirm: bool,
 }
 impl Button {
@@ -57,8 +58,14 @@ impl Button {
             intent: ButtonIntent::Secondary,
             size: ButtonSize::Standard,
             disabled: false,
+            palette: None,
             default_confirm: false,
         }
+    }
+    /// Change visible copy while retaining the constructor's accessible name.
+    pub fn caption(mut self, caption: impl Into<SharedString>) -> Self {
+        self.label = caption.into();
+        self
     }
     pub fn intent(mut self, intent: ButtonIntent) -> Self {
         self.intent = intent;
@@ -66,6 +73,11 @@ impl Button {
     }
     pub fn size(mut self, size: ButtonSize) -> Self {
         self.size = size;
+        self
+    }
+    /// Window-local roles (utility surfaces do not follow the main theme).
+    pub fn palette(mut self, palette: Palette) -> Self {
+        self.palette = Some(palette);
         self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -88,7 +100,7 @@ impl Button {
 }
 impl RenderOnce for Button {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let p = Palette::get(cx);
+        let p = self.palette.unwrap_or_else(|| Palette::get(cx));
         let (bg, fg) = match self.intent {
             ButtonIntent::Primary => (p.accent, p.on_accent),
             ButtonIntent::Danger => (p.danger, p.on_accent),

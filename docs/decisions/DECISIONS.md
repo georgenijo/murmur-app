@@ -1,5 +1,30 @@
 # Decisions Log
 
+## 2026-11-06: Share overlay geometry and keep the native port host-independent (#999)
+
+**Decision:** Move the existing pure overlay geometry and its characterization
+tests into murmur-core, with the Tauri adapter re-exporting the same contracts.
+Build the GPUI screen in murmur-ui with a typed, bounded event inbox and an
+explicit service-intent boundary. Keep legacy WKWebView destruction in
+murmur-webkit, outside the native UI graph; require actual deallocation rather
+than hiding before treating a replaced overlay as retired.
+
+**Rationale:** Phase 0 selected native parity first, so this layer cannot embed
+GPUI into Tauri or silently flip the shipping host. Sharing geometry prevents
+notch, calibration, Dock and preview behavior from diverging. The presentation
+layer must consume the existing dictation, completion, settings and shutdown
+owners. A weak view listing and an own-process WebKit image inventory distinguish
+legacy destruction from the native renderer's lack of a WebKit dependency.
+
+**Status:** active (draft stack; native host integration, Sol review and native
+acceptance remain open).
+
+**References:** #999, #978, #1011,
+[overlay contract](../draft/gpui-overlay.md),
+[Phase 0 decision](2026-11-05-gpui-phase-0-exit.md)
+
+---
+
 ## 2026-11-06: Patch deferred GPUI accessibility in production (#998)
 
 **Decision:** Vendor only the Apache-2.0 GPUI crate at the unchanged Phase 0

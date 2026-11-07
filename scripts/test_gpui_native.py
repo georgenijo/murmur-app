@@ -70,6 +70,42 @@ int main(void) {
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
             subprocess.run([str(path / 'test')], check=True)
 
+    def test_overlay_never_key_hook_is_instance_local_and_idempotent(self):
+        source = r'''
+#import <AppKit/AppKit.h>
+#import <objc/runtime.h>
+#include <assert.h>
+#include <stdbool.h>
+@interface SyntheticPanel : NSObject
+@end
+@implementation SyntheticPanel
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+@end
+extern bool murmur_overlay_never_key(void *object);
+int main(void) {
+    @autoreleasepool {
+        SyntheticPanel *overlay = [SyntheticPanel new];
+        SyntheticPanel *other = [SyntheticPanel new];
+        Class original = object_getClass(overlay);
+        assert(murmur_overlay_never_key((__bridge void *)overlay));
+        assert(murmur_overlay_never_key((__bridge void *)overlay));
+        assert(!overlay.canBecomeKeyWindow && !overlay.canBecomeMainWindow);
+        assert(other.canBecomeKeyWindow && other.canBecomeMainWindow);
+        assert(object_getClass(other) == original);
+        assert(!murmur_overlay_never_key(NULL));
+    }
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-hook-') as directory:
+            path = Path(directory)
+            (path / 'test.m').write_text(source)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore',
+                            str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(path / 'test.m'), '-o', str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True)
+
 
 if __name__ == '__main__':
     unittest.main()

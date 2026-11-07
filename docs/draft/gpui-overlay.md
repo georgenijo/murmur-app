@@ -1,0 +1,204 @@
+# GPUI overlay contract (#999)
+
+Layer 10 of the draft stack, based on `gpui/09-accessible-components` at
+`0ad8c3afb1c1f1cab930ac88c3cd8d34a172a43c` (PR #1027). **Do not merge.**
+The [Phase 0 decision](../decisions/2026-11-05-gpui-phase-0-exit.md) selects
+native parity first: the native screen is built beside the shipping Tauri app;
+its host switch belongs to Phase 2. This layer does not remove the shipping
+React overlay or retire its tests.
+
+## Ownership and integration
+
+`murmur-ui::overlay` owns presentation, click recognition, hover intent, transient
+cues, native panel treatment and its accessible control tree. Its one-way core
+dependency supplies `dictation::Status`/`Input`, named waveform interest and the
+existing overlay geometry. No Tauri, WebKit, capture, text injection, settings
+writer, completion actor, updater or shutdown runtime is added to the UI.
+
+The original pure algorithms and 32 tests move from `commands/overlay.rs` to
+`murmur-core::overlay_geometry`. The Tauri adapter re-exports the public types
+and calls the same functions. Screen geometry, calibration intent, Dock limit,
+fixed capsule dimensions and preview anchoring therefore have one owner.
+The Rust fixture now lives in `tests/fixtures/overlay-geometry.json`; the
+frontend fixture remains until that renderer's tests retire.
+
+A native application host creates `Overlay::new(snapshot, host)`, wraps it in
+`gpui_base::Root`, calls `advance` in that main-thread window turn, and calls `follow` once. It retains the host's existing
+services and Tokio runtime through shutdown. The host must:
+
+1. Register its Overlay consumer before requesting the initial read. Clone the
+   view's `Inbox` for worker callbacks. Capture `Model::hydration_epoch` at the
+   start of an asynchronous read and deliver `Event::Hydrate` with that epoch;
+   an intervening lifecycle/visibility/geometry event rejects the old read.
+   Authoritative full snapshots carry increasing presentation revisions and
+   the current recording generation. `elapsed_ms` restores an ongoing timer.
+2. Forward typed lifecycle/cancellation/failure/delivery/stall events, committed
+   settings and Mode/meeting/Smart Auto read models. Keep generation IDs as u64.
+   The bounded queue returns rejected messages to the producer; retry or refresh
+   an authoritative snapshot on backpressure. Levels occupy one replaceable slot
+   and cannot displace lifecycle messages. Do not serialize payloads into logs.
+3. Route `Intent::Control` through the existing dictation controller/QueueGuard
+   and recheck its expected generation immediately before native execution.
+   `Control::input` maps lock, stop and starting-cancel to existing core inputs.
+   Retry uses the existing secure delivery service and returns its content-free
+   result with both generation and attempt. The UI never writes a clipboard,
+   infers paste success or submits a completion/History/statistics update.
+4. Merge only the requested Disabled/Auto-paste field through the existing
+   owned-field writer, then publish the committed snapshot. Cycle Mode through
+   its runtime owner. Revalidate meeting suggestion tokens, consent and busy
+   state in that service; UI single-flight is an additional presentation guard.
+5. Apply `WaveformConsumer::Overlay` interest to the existing targeted router.
+   Levels do not drive auto-stop here. Forward the applied collapsed anchor,
+   placement and lift to the separate Live Words/preview owner. Provisional text
+   is never part of this screen's event protocol or diagnostics.
+6. Feed `Event::Dock` from the existing Dock watcher. A Dock-only update retains
+   hover ownership; topology changes reset it. The native panel also polls the
+   primary NSScreen and static hidden-Dock reserve every 500 ms, including scale,
+   origin, safe area, work area and magnification preferences. Live Dock limits
+   remain authoritative until the display changes. No new AX client reads the
+   Dock, app names, window titles, clipboard or secure fields in this layer.
+7. Route Settings opening and all termination/relaunch intents to the existing
+   host owners. Dropping/replacing the view releases waveform interest and ends
+   its weak-entity watchdog; it does not quit a runtime or stop capture itself.
+
+The library is the screen integration boundary. `overlay-qa` is an explicitly
+synthetic host: its controls exercise the core controller with fake readiness,
+Mode and owned-field snapshots, and never record, paste or open user data.
+It cannot establish real dictation, Settings-window integration or meeting
+capture parity. Those service adapters must be connected in the native host.
+
+## Native treatment and webview destruction
+
+The #978/Phase 0a approach is recorded in the Phase 0 decision: a PopUp NSPanel,
+never key, prevents activation, level 25/all Spaces/full-screen auxiliary and a
+behind-window HUD material. The protected scratch prototype is not modified or
+included in this repository.
+
+`native/overlay.m` applies an instance-local subclass that returns NO from both
+key/main-window queries; other GPUI panels retain their behavior. It guards
+`_setPreventsActivation:`, includes Stationary/IgnoresCycle/CanJoinAllApplications,
+and refits the `.hudWindow` material and tint inside the main-thread frame
+transaction. GPUI's 360 ms value transitions refit the material mask on the same
+presentation frame. Reduced Motion uses zero-duration transitions and static
+pulses/spinners; Reduce Transparency uses opaque tint. The notch remains dark;
+the pill follows system window appearance, independently of the main theme.
+Shared buttons/toggles receive window-local semantic roles and keep their AX
+names when their visible captions are compact glyphs.
+
+The native UI links no WebKit. Every offscreen overlay capture inventories its
+own loaded images using dyld and requires zero WebKit images. It records only
+its PID and that count. This proves the native process's dependency/runtime
+absence, not destruction of another process's Tauri window.
+
+`murmur-webkit::OverlayRetirement::destroy` separately consumes the legacy
+host's retained view on main, stops navigation, disconnects delegates, removes
+it from its superview and releases it. Its weak-reference listing remains one
+if any other owner survives; only ObjC deallocation produces zero. The existing
+windowless `synthetic_store` integration target exercises an actual memory-only
+WKWebView and the extra-owner failure case, printing before=1/after=0.
+The native host must require this zero barrier when replacing an existing
+view. Never count hide/detach as destruction. This does not retire the website
+data store: unported windows and the existing migration importer retain their
+v1/v2/v3 and final no-webview barrier contracts. No production store is touched.
+
+## Parity and test map
+
+Tests named below are in `overlay/tests.rs`, except `overlay_geometry::*` in the
+core, `inbox::tests`, the Objective-C tests and the WebKit integration target.
+All fixtures and rendered captures are synthetic. Native acceptance is separate.
+
+| Current behavior / matrix row | GPUI implementation | Automated coverage and remaining acceptance |
+|---|---|---|
+| O01 notch, pretend notch, 1×/2×, nonzero origins, fixed pill | Shared geometry, `Model::frame`, primary NSScreen snapshot | 32 moved geometry tests; `both_placements_use_the_shared_geometry_and_live_dock_limit`; native physical notch/Retina/display pass remains |
+| O01 non-activation, all Spaces, fullscreen, Stage Manager | Instance-local never-key panel and guarded prevents-activation | `test_overlay_never_key_hook_is_instance_local_and_idempotent` uses inert NSObject doubles; native click-then-type/Space/fullscreen checks remain |
+| O01 Dock tracking, calibration intent, bottom anchoring | Shared Dock clearance; separate `Event::Dock`; static preference fallback | Shared live/unknown Dock and work-area tests; native magnification/reveal/side-Dock checks and live watcher connection remain |
+| O02 Idle, Starting/stalled, Recording, Recovering, Processing, meeting, Done | Core Status read model, priority derivation, bounded Done | `cue_priority_and_expiry_match_current_overlay`, `elapsed_starts_at_recording_not_hover_and_done_is_preemptible`; state goldens |
+| O02 7/18 bars; coalesced 16 ms levels; no idle animation | Single latest-level slot, generation/visibility check, one GPUI draw stream | `waveform_is_bounded_and_only_the_current_visible_owner_can_supply_samples`, inbox backpressure/coalescing test; no performance claim |
+| O02 HUD/tints, Reduce Motion/Transparency, appearance | Same-turn AppKit HUD and window-local palettes; shared motion engine | Inert shim compilation; deterministic offscreen goldens and existing motion/preference tests; live material and OS changes remain |
+| O03 150 ms dwell, acknowledged growth, 300 ms leave, delayed shrink | One main-thread surface writer and phase reducer | `hover_dwell_ack_leave_shrink_and_failed_grow`, `state_contractions_retain_native_bounds_then_release_without_anchor_drift`, `hidden_disabled_and_topology_reset_do_not_reopen_transparent_hit_area`; native clipping/hit-area check remains |
+| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents | `actual_overlay_tree_controls_and_actions` dispatches the emitted AX tree and excludes collapsed controls; native host field commits/Settings opening remain |
+| O04 250 ms click, double-click lock, disabled/processing/open guards | Click recognizer sends generation-bound core inputs | `click_delay_double_click_and_generation_ownership`, `starting_click_cancels_and_disabled_recording_remains_stoppable`; real capture/delivery remains host acceptance |
+| O05 Cancelled 800 ms, opt-in tap miss 500 ms, failure 5 s | Generation-scoped timed cues, fixed content-free announcements | Priority/expiry and stale-generation tests; actual VoiceOver speech remains |
+| O05 Clipboard-only/retry, duplicate/stale outcomes | Secure retry intent, attempt/generation guard, bounded result | `delivery_duplicates_never_extend_cue_and_only_confirmed_clipboard_installs_it`, `retry_is_single_flight_and_uses_a_fresh_bounded_result`, stale retry test; no clipboard access in test host |
+| O06 calibration cue and offset, no pointer dragging | Shared finite ±12 pt intent; pill zero travel; pretend-top clamp | Moved calibration tests and state priority test; Settings Save/Cancel remains its owner and a native acceptance flow |
+| O07 reattach during recording, subscribe-before-read | Snapshot revision + hydration epoch + current elapsed read model | `hydration_cannot_roll_back_a_same_generation_event_and_restores_elapsed`; actual host subscription ordering must follow the integration contract |
+| O08/O09 Live Words consent, generation, click-through and hover lift | Existing preview owner retained; anchor/lift interface only | Moved preview fitting/collapsed-anchor tests; text/rendering port belongs to #1000, with native click-through and consent checks retained |
+| M01/M13 meeting states/suggestions, accept/dismiss | Idle-only prompt, token recheck and single-flight action | `suggestion_requires_idle_and_retains_expanded_bounds_until_dismissal`, `suggestion_actions_recheck_current_token_and_are_single_flight`; live capture/token authority stays in meeting service |
+| A01 accessible names, roles, state changes, inactive announcements | Shared controls/AccessKit plus native content-free announcement notification | Emitted tree/actions test and component suite; VoiceOver spoken output cannot be established headlessly |
+| Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero WebKit images; production host replacement remains pending |
+
+No React assertion is retired. This table describes replacement implementation
+and executable tests; it does not mark the feature matrix's native rows passed.
+The native host/service connection, live Dock watcher integration, and production
+view replacement remain integration gaps until the host exists. The synthetic
+QA executable must not be presented as an end-to-end dictation implementation.
+
+## Checks and lead handoff
+
+Use Rust 1.98.1 and the isolated target directory. The existing `gpui-macos`
+job checks both gallery-gated binaries, strict all-target Clippy, rustfmt,
+`scripts/test_gpui.py` (real emitted AX tree/actions without native windows),
+Objective-C inert shims, and `scripts/check_gpui_goldens.py`. The latter now
+renders 19 overlay cases twice in addition to the 30 component cases: 49 cases,
+98 captures. It rejects blank/non-deterministic captures and missing/nonzero
+own-process WebKit inventories. The native workspace and core remain within
+the existing source/transport/restart dependency guards. The WebKit lifecycle
+target already runs under the existing `rust-macos` job; no new CI job is needed.
+
+The implementation worker runs headless checks only, never drives a real app,
+requests OS permissions, opens a user profile, or uses production signing keys.
+The lead must verify the integrated revision in an isolated native build:
+
+- Click every quick control and retry, single/double click each permitted and
+  refused state, then type in a synthetic target editor. The panel must never
+  become key, activate Murmur, reopen main unexpectedly or redirect delivery.
+- Graze/dwell/leave/re-enter during growth and shrink; disable while open;
+  hide/show and change display/scale while opening. Verify acknowledged reveal,
+  no clipping, restored collapsed hit area and background click-through.
+- Exercise physical notch and external displays, negative origins, Retina,
+  Spaces/fullscreen/Stage Manager, Dock autohide/magnification/side placement,
+  calibration draft/Cancel/Save, and Live Words following/lifting/click-through.
+- Check light/dark system changes, application theme isolation, HUD appearance,
+  Reduce Transparency/Motion, starting/stalled/recovery/failure/meeting and
+  delivery cues. Verify readable labels, waveform and no idle animation.
+- Use VoiceOver to inspect and activate every control and hear inactive-panel
+  announcements. Check hidden/disabled controls and restore focus to the target.
+- Connect real service adapters; verify generation races, current-state reattach,
+  secure Paste Last results, concurrent owned-field saves, meeting consent/token
+  revalidation, and exact-once completion/History/statistics through existing
+  owners. Verify the real replaced webview is destroyed and record its listing.
+
+The issue's frozen 60 MiB idle, ≤10% one-core recording CPU and ≤50 ms p95 frame
+interval criteria remain pending an explicitly requested run. No benchmark or
+performance harness is run or added as a gate in this layer.
+
+## Headless verification receipt (Mac mini, 2026-11-06)
+
+All Mac commands ran through Fleet via opti in the fresh
+`~/Builds/gpui-checkout-41`, with Rust 1.98.1 and task-owned targets. The capture
+helpers were built before application checks. The CI library-only manifest
+recipe was applied only in that temporary checkout.
+
+- Native workspace: locked check, strict all-target Clippy and rustfmt passed;
+  **53 GPUI tests** passed through `scripts/test_gpui.py`.
+- Python source/native shim tests: **6 passed**, including both inert Objective-C
+  runtime tests. The retained frontend and neutral geometry fixtures agree.
+- Metal: **49 cases / 98 captures**, same-host pairs byte-identical and nonblank.
+  All **38 overlay process inventories** reported zero loaded WebKit images.
+- Tauri: locked check, workspace/all-target Clippy with `-D warnings` and the
+  two requested newer-lint allowances passed. The default serial suite passed
+  **1,552 tests / 16 ignored**, plus the windowless main-queue and AppKit shutdown
+  integration harnesses. Rustfmt passed after the restart-fixture runner removed
+  its temporary source files.
+- Core on Mac: **292 passed** (257 unit + 35 integration), including the
+  **32 moved geometry tests**. The same core suite passed on Linux.
+- `murmur-webkit`: standalone synthetic lifecycle target passed, including the
+  real nonpersistent overlay view's **1 → 0 deallocated** listing and retained
+  owner failure case. This is separate from production host replacement.
+- Capture helper: **46 passed / 1 ignored**. Restart Clippy fixture runner passed.
+- Linux source/transport/restart/reference/Markdown/workflow validators passed;
+  **121 policy/regression tests** passed. No frontend source or test is changed.
+
+This receipt is headless evidence. Independent Sol review and all native lead
+acceptance listed above remain open. The issue is not claimed complete by this
+receipt, and no production application, data store or release was changed.
