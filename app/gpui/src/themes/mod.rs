@@ -805,6 +805,20 @@ impl Render for Themes {
                             .intent(crate::ButtonIntent::Ghost),
                         );
                 }
+                if let Some(url) = entry["source"]["sourceUrl"].as_str() {
+                    actions = actions.child(
+                        self.button(
+                            format!("source-{id}"),
+                            format!("Open {label} source…"),
+                            Action::OpenSource(url.into()),
+                            cx,
+                        )
+                        .icon_only(crate::icons::Glyph::File)
+                        .palette(Palette { text: p.muted, ..p })
+                        .size(crate::ButtonSize::ExtraSmall)
+                        .intent(crate::ButtonIntent::Ghost),
+                    );
+                }
                 if !["sonic", "opencode", "custom"].contains(&id.as_str()) {
                     let e = cx.entity();
                     let remove_id = id.clone();

@@ -524,6 +524,35 @@ mod ax {
         );
     }
     #[gpui::test]
+    fn regression_theme_card_keeps_source_action_for_community_themes(cx: &mut TestAppContext) {
+        let (e, cx) = harness(cx, 5);
+        let themes = e.read_with(cx, |s, _| s.themes.clone());
+        let labels = |cx: &mut gpui::VisualTestContext| {
+            tree(cx)
+                .nodes
+                .iter()
+                .filter_map(|(_, n)| n.label().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        assert!(!labels(cx).iter().any(|n| n.ends_with(" source…")));
+        themes.update(cx, |s, cx| {
+            let library = &mut s.controller.model.snapshot.as_mut().unwrap().library;
+            let entry = library["themes"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|v| v["id"] == "synthetic-orchid")
+                .unwrap();
+            entry["source"] = serde_json::json!({
+                "kind": "open-vsx",
+                "sourceUrl": "https://example.com/sample/orchid"
+            });
+            cx.notify();
+        });
+        draw(cx);
+        assert!(labels(cx).contains(&"Open Synthetic Orchid source…".to_string()));
+    }
+    #[gpui::test]
     fn regression_import_theme_focuses_visible_first_action(cx: &mut TestAppContext) {
         let (_, cx) = harness(cx, 5);
         activate(cx, "Import theme…");

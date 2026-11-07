@@ -732,13 +732,15 @@ impl Model {
     pub fn bars(&self, count: usize) -> Vec<f32> {
         if self.snapshot.placement == OverlayPlacement::FloatingPill {
             // React's VoiceIslandFixture freezes this per-bar profile. Apply it
-            // to the unsaturated audio level, preserving rhythm at louder input.
+            // after the live gain saturates, so quiet speech still moves the
+            // bars and loud speech keeps the rhythm.
             const PROFILE: [f32; 18] = [
                 0.3, 0.55, 0.8, 1., 0.7, 0.45, 0.6, 0.9, 0.5, 0.35, 0.75, 0.95, 0.65, 0.4, 0.85,
                 0.55, 0.3, 0.2,
             ];
+            let level = (self.level * 16.).clamp(0., 1.);
             return (0..count)
-                .map(|i| (self.level.clamp(0., 1.) * PROFILE[i % PROFILE.len()]).clamp(0.14, 1.))
+                .map(|i| (level * PROFILE[i % PROFILE.len()]).clamp(0.14, 1.))
                 .collect();
         }
         (0..count)
