@@ -436,7 +436,10 @@ jobs:
     needs: context
     if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
     runs-on: macos-latest
+    permissions:
+      contents: read
     outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
       sha256: ${{ steps.payload.outputs.sha256 }}
     steps:
       - name: Check out app source
@@ -472,6 +475,7 @@ jobs:
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Upload isolated app build
+        id: artifact
         uses: actions/upload-artifact@v4
         with:
           name: gpui-build-${{ needs.context.outputs.source-sha }}
@@ -485,7 +489,10 @@ jobs:
     needs: context
     if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
     runs-on: macos-latest
+    permissions:
+      contents: read
     outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
       sha256: ${{ steps.payload.outputs.sha256 }}
     steps:
       - name: Check out signer source
@@ -511,6 +518,7 @@ jobs:
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Upload isolated updater signer
+        id: artifact
         uses: actions/upload-artifact@v4
         with:
           name: gpui-signer-${{ needs.context.outputs.source-sha }}
@@ -524,6 +532,9 @@ jobs:
     needs: [context, gpui-build, gpui-signer]
     if: github.event_name == 'workflow_dispatch' && needs.context.outputs.bundle-target == 'gpui'
     runs-on: macos-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
       - name: Check out trusted signing scripts
         uses: actions/checkout@v4
@@ -531,28 +542,30 @@ jobs:
           ref: ${{ needs.context.outputs.source-sha }}
           persist-credentials: false
 
-      - name: Download isolated app build
-        uses: actions/download-artifact@v4
-        with:
-          name: gpui-build-${{ needs.context.outputs.source-sha }}
-          path: ${{ runner.temp }}/gpui-build-artifact
+      - name: Make trusted checkout read-only
+        run: chmod -R a-w "$GITHUB_WORKSPACE"
 
-      - name: Download isolated updater signer
-        uses: actions/download-artifact@v4
-        with:
-          name: gpui-signer-${{ needs.context.outputs.source-sha }}
-          path: ${{ runner.temp }}/gpui-signer-artifact
+      - name: Download raw isolated artifact ZIPs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ARTIFACT_ID: ${{ needs.gpui-build.outputs.artifact-id }}
+          SIGNER_ARTIFACT_ID: ${{ needs.gpui-signer.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_ARTIFACT_ID" =~ ^[0-9]+$ && "$SIGNER_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$BUILD_ARTIFACT_ID/zip" > "$RUNNER_TEMP/gpui-build.zip"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SIGNER_ARTIFACT_ID/zip" > "$RUNNER_TEMP/gpui-signer.zip"
 
       - name: Verify artifact hashes and extract allowlisted binaries
         env:
           BUILD_SHA256: ${{ needs.gpui-build.outputs.sha256 }}
           SIGNER_SHA256: ${{ needs.gpui-signer.outputs.sha256 }}
         run: |
-          python3 scripts/gpui_artifacts.py verify build \
-            --archive "$RUNNER_TEMP/gpui-build-artifact/gpui-build.tar" \
+          python3 scripts/gpui_artifacts.py verify-zip build \
+            --archive "$RUNNER_TEMP/gpui-build.zip" \
             --sha256 "$BUILD_SHA256" --output "$RUNNER_TEMP/gpui-build"
-          python3 scripts/gpui_artifacts.py verify signer \
-            --archive "$RUNNER_TEMP/gpui-signer-artifact/gpui-signer.tar" \
+          python3 scripts/gpui_artifacts.py verify-zip signer \
+            --archive "$RUNNER_TEMP/gpui-signer.zip" \
             --sha256 "$SIGNER_SHA256" --output "$RUNNER_TEMP/gpui-signer"
 
       - name: Import Developer ID certificate

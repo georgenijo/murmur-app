@@ -262,23 +262,36 @@ checking out the exact `source-sha` with `persist-credentials: false`:
   dependency tree and target directory. Its sole payload is the updater signer;
   no app dependency code runs on or can write to this runner.
 - `gpui-sign` needs both builders and `context`. Signing scripts, configuration,
-  finalizer and assets come from its fresh trusted source checkout. It downloads
-  both artifacts under `$RUNNER_TEMP`, outside that checkout, then verifies their
-  SHA-256 hashes against the respective builder job outputs before importing the
-  certificate. `gpui_artifacts.py` extracts only exact allowlisted regular files;
-  links, traversal paths, duplicates, extra files and swapped artifact kinds
+  finalizer and assets come from its fresh trusted source checkout, made read-only
+  before downloading. A step with no signing secrets uses `gh api` and the job's
+  `GITHUB_TOKEN` to fetch both raw artifact ZIPs under `$RUNNER_TEMP`, outside the
+  checkout. It never uses `download-artifact` extraction. The trusted stdlib
+  `gpui_artifacts.py` requires exactly one expected tar member in each ZIP and
+  verifies that tar's SHA-256 against the respective builder job output before
+  importing the certificate. It extracts only exact allowlisted regular files
+  into fresh directories under `$RUNNER_TEMP`. Links, traversal paths,
+  duplicates, extra files and swapped artifact kinds
   fail closed. The app artifact cannot replace a signing script or the signer.
   `release_gpui.py sign` takes explicit `--binary`, `--helpers-dir` and
   `--native-signer` paths. No app binary or helper is executed while signing.
   This job compiles nothing and uses no shared build caches. Its keychain is
   deleted even on failure.
 
-The workflow policy validator rejects inherited workflow/job secret env, all
-secret references in either builder, and compilation commands anywhere in the
-signing job (including appended commands). It requires the fresh checkout,
-isolated downloads and hash verification steps. Mutation tests cover these
-boundaries, including workflow-level `APPLE_PASSWORD` and `cargo` appended to
-the sign command. Promotion policy rejects every `gpui-*` artifact namespace;
+Builder output is integrity-checked data. App build output is never executed,
+and neither builder's output is extracted outside the allowlist. The independently
+built updater signer is the sole executable transferred for use in signing.
+All three jobs have explicit `contents: read` permissions; only `gpui-sign` adds
+`actions: read` for the raw download. No signing secrets are present in that step.
+
+The workflow policy validator pins the exact content of all three GPUI jobs by
+SHA-256. Any edit, including appended shell commands, fails until its pin is
+deliberately updated after review. Semantic assertions additionally reject
+inherited workflow/job secret env and all secret-context references (including
+`toJSON(secrets)` and `secrets: inherit`) in either builder. They require the fresh
+checkout, minimal permissions, isolated raw downloads and hash verification.
+Mutation tests cover whole-context secrets, obfuscated `c"ar"go`, `pip install`,
+`brew install`, and malicious outer ZIPs and inner tars. Promotion policy rejects
+every `gpui-*` artifact namespace;
 all three jobs keep the manual-only guard and cannot publish.
 
 The shared packager's default helper lookup is unchanged for secretless

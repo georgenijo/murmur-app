@@ -5,19 +5,22 @@ import json
 from pathlib import Path
 import plistlib
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
 import unittest
+import warnings
+import zipfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from bundle_gpui import TAURI, bundle, bundle_info, compare_bundles
 from finalize_macos_bundle import HELPERS, require_exact_macos_executables
-from gpui_artifacts import BUILD_FILES, SIGNER_FILES, pack, sha256, verify
+from gpui_artifacts import BUILD_FILES, SIGNER_FILES, pack, sha256, verify, verify_zip
 from release_bundle_target import validate_target
-from validate_workflow_policy import job_block, validate_release_build, validate_promotion_policy
+from validate_workflow_policy import GPUI_JOB_SHA256, job_block, references_secrets, validate_release_build, validate_promotion_policy
 from notarize_and_repackage_macos import native_sign, tauri_sign
 from rehearse_gpui_bundle import check_links
 
@@ -176,6 +179,77 @@ class ArtifactTests(unittest.TestCase):
         self.inputs.mkdir()
         for name in (*BUILD_FILES, *SIGNER_FILES):
             (self.inputs / name).write_bytes(b"synthetic " + name.encode())
+
+    def wrap_zip(self, kind, payload, members=None):
+        archive = self.root / "artifact.zip"
+        with warnings.catch_warnings(), zipfile.ZipFile(archive, "w") as output:
+            warnings.simplefilter("ignore", UserWarning)  # Deliberate duplicate members.
+            for name in members if members is not None else [f"gpui-{kind}.tar"]:
+                output.writestr(name, payload)
+        return archive
+
+    def test_raw_zip_roundtrip_and_hash_validation_for_both_builders(self):
+        for kind, names in (("build", BUILD_FILES), ("signer", SIGNER_FILES)):
+            archive = self.root / f"{kind}.tar"
+            digest = pack(kind, archive, self.inputs / names[0], self.inputs)
+            raw = self.wrap_zip(kind, archive.read_bytes())
+            with self.subTest(kind=kind):
+                output = self.root / kind
+                verify_zip(kind, raw, digest, output)
+                self.assertEqual({p.name for p in output.iterdir()}, set(names))
+                for expected in ("", "0" * 64, digest.upper()):
+                    with self.assertRaisesRegex(ValueError, "sha256 mismatch"):
+                        verify_zip(kind, raw, expected, self.root / "rejected")
+                self.assertFalse((self.root / "rejected").exists())
+
+    def test_raw_zip_rejects_traversal_extra_duplicate_absolute_and_link_members(self):
+        trusted = self.root / "murmur-app/murmur-app/scripts/notarize_and_repackage_macos.py"
+        trusted.parent.mkdir(parents=True)
+        trusted.write_bytes(b"trusted script")
+        for kind, names in (("build", BUILD_FILES), ("signer", SIGNER_FILES)):
+            tar = self.root / f"{kind}.tar"
+            digest = pack(kind, tar, self.inputs / names[0], self.inputs)
+            expected = f"gpui-{kind}.tar"
+            link = zipfile.ZipInfo(expected)
+            link.create_system = 3
+            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+            mutations = ([expected, "nested/../../../murmur-app/murmur-app/scripts/notarize_and_repackage_macos.py"],
+                         [expected, "extra"], [expected, expected], ["/" + expected],
+                         ["../" + expected], ["nested/../" + expected], [link], [])
+            for members in mutations:
+                with self.subTest(kind=kind, members=members):
+                    raw = self.wrap_zip(kind, tar.read_bytes(), members)
+                    with self.assertRaisesRegex(ValueError, "ZIP must contain exactly"):
+                        verify_zip(kind, raw, digest, self.root / "output")
+                    self.assertFalse((self.root / "output").exists())
+                    self.assertEqual(trusted.read_bytes(), b"trusted script")
+                    # The payload's valid hash must not make the outer ZIP acceptable.
+                    self.assertEqual(sha256(tar), digest)
+
+    def test_raw_zip_rejects_malicious_inner_tars_for_both_builders(self):
+        for kind, names in (("build", BUILD_FILES), ("signer", SIGNER_FILES)):
+            for mutation in ("traversal", "absolute", "extra", "duplicate", "symlink", "hardlink", "device", "fifo"):
+                payload = io.BytesIO()
+                with tarfile.open(fileobj=payload, mode="w") as output:
+                    for name in names:
+                        member = tarfile.TarInfo(name)
+                        if name == names[0]:
+                            if mutation == "traversal":
+                                member.name = "nested/../../" + name
+                            elif mutation == "absolute":
+                                member.name = "/" + name
+                            elif mutation in ("symlink", "hardlink", "device", "fifo"):
+                                member.type = {"symlink": tarfile.SYMTYPE, "hardlink": tarfile.LNKTYPE,
+                                               "device": tarfile.CHRTYPE, "fifo": tarfile.FIFOTYPE}[mutation]
+                                member.linkname = "../trusted-script"
+                        output.addfile(member)
+                    if mutation in ("extra", "duplicate"):
+                        output.addfile(tarfile.TarInfo("extra" if mutation == "extra" else names[0]))
+                data = payload.getvalue()
+                raw = self.wrap_zip(kind, data)
+                with self.subTest(kind=kind, mutation=mutation), self.assertRaisesRegex(ValueError, "allowlisted regular binaries"):
+                    verify_zip(kind, raw, hashlib.sha256(data).hexdigest(), self.root / "output")
+                self.assertFalse((self.root / "output").exists())
 
     def test_separate_archives_transfer_only_expected_payload_and_restore_executable_modes(self):
         for kind, names in (("build", BUILD_FILES), ("signer", SIGNER_FILES)):
@@ -374,6 +448,44 @@ minos 14.0
                 with self.assertRaises(AssertionError):
                     validate_release_build(mutated)
 
+    def test_all_secret_context_forms_are_rejected_even_after_deliberately_repinning_jobs(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        expressions = ("${{ secrets.APPLE_PASSWORD }}", "${{ secrets['APPLE_PASSWORD'] }}",
+                       "${{ secrets }}", "${{ toJSON(secrets) }}", "${{ format('{0}', toJSON(secrets)) }}",
+                       "${{ format('}}{0}', toJSON(secrets)) }}")
+        for expression in expressions:
+            self.assertTrue(references_secrets(expression), expression)
+            scopes = [workflow.replace("\njobs:\n", f"\nenv: {{ PAYLOAD: '{expression}' }}\n\njobs:\n")]
+            for name in GPUI_JOB_SHA256:
+                scopes.append(workflow.replace(f"  {name}:\n", f"  {name}:\n    env: {{ PAYLOAD: '{expression}' }}\n"))
+            for name in ("gpui-build", "gpui-signer"):
+                block = job_block(workflow, name)
+                scopes.append(workflow.replace(block, block.replace("    steps:\n", f"    environment: {expression}\n    steps:\n")))
+            for mutated in scopes:
+                pins = {name: hashlib.sha256(job_block(mutated, name).encode()).hexdigest() for name in GPUI_JOB_SHA256}
+                with self.subTest(expression=expression), patch.dict(GPUI_JOB_SHA256, pins), self.assertRaisesRegex(AssertionError, "secrets|credential-free"):
+                    validate_release_build(mutated)
+        for name in ("gpui-build", "gpui-signer", "gpui-sign"):
+            mutated = workflow.replace(f"  {name}:\n", f"  {name}:\n    secrets: inherit\n")
+            with self.subTest(job=name), self.assertRaises(AssertionError):
+                validate_release_build(mutated)
+        self.assertTrue(references_secrets("secrets: inherit"))
+        self.assertFalse(references_secrets("${{ github.token }}"))
+
+    def test_all_gpui_job_bytes_are_pinned(self):
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        expected = {
+            "gpui-build": "6c771424f82f3fc52d7841c04692186def2a0e9e7a59a6f5ed1539b044dceb52",
+            "gpui-signer": "eb7ac7e93ae582b2da6df56dbfb205d9053ff8323e3cafe62d42a81b7678760a",
+            "gpui-sign": "17727ea273f3d5e5922c31d571fe8d1a7110c43bf8e311101b831750d0841888",
+        }
+        self.assertEqual(GPUI_JOB_SHA256, expected)
+        for name, digest in expected.items():
+            block = job_block(workflow, name)
+            self.assertEqual(hashlib.sha256(block.encode()).hexdigest(), digest)
+            with self.subTest(job=name), self.assertRaisesRegex(AssertionError, "SHA-256 pin"):
+                validate_release_build(workflow.replace(block, block + "    # Unreviewed edit\n"))
+
     def test_every_compilation_step_and_builder_job_are_secretless(self):
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
         for name in ("Build capture helpers", "Build GPUI rehearsal binaries without credentials",
@@ -394,6 +506,7 @@ minos 14.0
         workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
         sign = job_block(workflow, "gpui-sign")
         compilers = ("cargo build --locked --release --bin ui", "npm run build", "npx vite build",
+                     'cd app/gpui && c"ar"go build', "python3 -m pip install malicious", "brew install malicious",
                      "meson setup build", "cmake --build build", "swift build", "swiftc main.swift",
                      "python3 scripts/build_capture_helpers.py --release",
                      "python3 scripts/release_gpui.py build --target-dir /tmp/target")
@@ -401,7 +514,7 @@ minos 14.0
             for modified in (sign.replace('--output "$RUNNER_TEMP/gpui-release"',
                                           '--output "$RUNNER_TEMP/gpui-release" && ' + command),
                              sign.replace("    steps:\n", "    steps:\n      - name: Hidden compilation\n        run: " + command + "\n")):
-                with self.subTest(command=command), self.assertRaisesRegex(AssertionError, "never compile"):
+                with self.subTest(command=command), self.assertRaisesRegex(AssertionError, "SHA-256 pin"):
                     validate_release_build(workflow.replace(sign, modified))
 
     def test_isolation_hash_checkout_and_nonpublication_gates_cannot_be_removed(self):
@@ -412,10 +525,10 @@ minos 14.0
                        "Verify artifact hashes and extract allowlisted binaries",
                        "needs.gpui-build.outputs.sha256", "needs.gpui-signer.outputs.sha256",
                        '--sha256 "$BUILD_SHA256"', '--sha256 "$SIGNER_SHA256"',
-                       "python3 scripts/gpui_artifacts.py verify build",
-                       "python3 scripts/gpui_artifacts.py verify signer",
-                       'path: ${{ runner.temp }}/gpui-build-artifact',
-                       'path: ${{ runner.temp }}/gpui-signer-artifact',
+                       "python3 scripts/gpui_artifacts.py verify-zip build",
+                       "python3 scripts/gpui_artifacts.py verify-zip signer",
+                       '"$RUNNER_TEMP/gpui-build.zip"',
+                       '"$RUNNER_TEMP/gpui-signer.zip"',
                        '--native-signer "$RUNNER_TEMP/gpui-signer/murmur-updater-signer"'):
             with self.subTest(marker=marker), self.assertRaises(AssertionError):
                 validate_release_build(workflow.replace(sign, sign.replace(marker, "removed")))

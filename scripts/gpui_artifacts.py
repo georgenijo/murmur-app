@@ -7,10 +7,13 @@ or extra entries may overwrite the fresh signing checkout or signer tool.
 """
 import argparse
 import hashlib
+import io
 from pathlib import Path
 import re
 import shutil
+import stat
 import tarfile
+import zipfile
 
 from finalize_macos_bundle import HELPERS
 
@@ -48,13 +51,32 @@ def pack(kind: str, archive: Path, binary: Path, helpers_dir: Path | None = None
 
 
 def verify(kind: str, archive: Path, expected_sha256: str, output: Path) -> None:
-    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or sha256(archive) != expected_sha256:
+    verify_tar(kind, archive.read_bytes(), expected_sha256, output)
+
+
+def verify_zip(kind: str, archive: Path, expected_sha256: str, output: Path) -> None:
+    """Read the raw Actions ZIP as data; never extract its filesystem paths."""
+    expected = f"gpui-{kind}.tar"
+    files(kind)
+    with zipfile.ZipFile(archive) as source:
+        members = source.infolist()
+        if (len(members) != 1 or members[0].filename != expected
+                or members[0].orig_filename != expected
+                or stat.S_IFMT(members[0].external_attr >> 16) not in (0, stat.S_IFREG)):
+            raise ValueError("artifact ZIP must contain exactly the expected regular tar member")
+        payload = source.read(members[0])
+    verify_tar(kind, payload, expected_sha256, output)
+
+
+def verify_tar(kind: str, payload: bytes, expected_sha256: str, output: Path) -> None:
+    if (not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
+            or hashlib.sha256(payload).hexdigest() != expected_sha256):
         raise ValueError("artifact sha256 mismatch")
-    with tarfile.open(archive, "r:") as source:
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as source:
         members = source.getmembers()
         expected = files(kind)
         if (len(members) != len(expected) or {m.name for m in members} != set(expected)
-                or any(not m.isfile() for m in members)):
+                or any(m.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) for m in members)):
             raise ValueError("artifact must contain exactly the allowlisted regular binaries")
         output.mkdir(parents=True, exist_ok=False)
         for member in members:
@@ -66,7 +88,7 @@ def verify(kind: str, archive: Path, expected_sha256: str, output: Path) -> None
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("pack", "verify"))
+    parser.add_argument("operation", choices=("pack", "verify", "verify-zip"))
     parser.add_argument("kind", choices=("build", "signer"))
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--binary", type=Path)
@@ -81,7 +103,8 @@ def main() -> None:
     else:
         if args.sha256 is None or args.output is None:
             parser.error("verify requires --sha256 and --output")
-        verify(args.kind, args.archive, args.sha256, args.output)
+        verifier = verify_zip if args.operation == "verify-zip" else verify
+        verifier(args.kind, args.archive, args.sha256, args.output)
 
 
 if __name__ == "__main__":
