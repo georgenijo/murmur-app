@@ -82,6 +82,7 @@ impl Preview {
                         floating: a.above,
                         hidden: ticket.is_none() || ticket != self.presented,
                         reduce_transparency: prefs.reduce_transparency,
+                        increase_contrast: prefs.increase_contrast,
                         dark: self.dark(window),
                         surface_height: height as f64,
                         radius: 14.,
@@ -100,7 +101,7 @@ impl Preview {
             // Preserve the last painted clip during the visibility transaction;
             // render refits it on the same presentation frame as text/lift.
             let card = self.painted_card.unwrap_or_default();
-            if self.offscreen() || native::apply_preview(window, surface, card) {
+            if self.offscreen() || native::apply_preview(window, surface, card, cx) {
                 self.last_surface = Some(surface);
             } else {
                 if let Some(ticket) = ticket {
@@ -200,6 +201,7 @@ impl Preview {
                             let prefs = preferences::current(cx);
                             let restyle = s.last_surface.is_some_and(|surface| {
                                 surface.reduce_transparency != prefs.reduce_transparency
+                                    || surface.increase_contrast != prefs.increase_contrast
                                     || surface.dark != s.dark(w)
                             });
                             if s.inbox.pending()
@@ -330,19 +332,19 @@ impl Render for Preview {
                 .rounded(px(14.))
                 .border_1()
                 .border_color(palette.border)
-                .when(
-                    !anchor.above
-                        || self.offscreen()
-                        || !native::has_native_window(window)
-                        || prefs.reduce_transparency,
-                    |s| {
-                        s.bg(if anchor.above {
-                            palette.surface
+                // Tint stays above the sibling AppKit material. Accessibility
+                // modes hide that material and require an opaque foreground.
+                .bg(if anchor.above {
+                    palette.surface.opacity(
+                        if prefs.reduce_transparency || prefs.increase_contrast {
+                            1.
                         } else {
-                            tokens::preview_surface(prefs.reduce_transparency)
-                        })
-                    },
-                )
+                            0.76
+                        },
+                    )
+                } else {
+                    tokens::preview_surface(prefs.reduce_transparency || prefs.increase_contrast)
+                })
                 .px(px(14.))
                 .py(px(10.))
                 .overflow_hidden()

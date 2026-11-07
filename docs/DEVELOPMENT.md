@@ -253,7 +253,15 @@ before resolving a path. On macOS the path is:
 `process_start_id` is a UUID generated once when that process initializes its
 coordinator. At the permitted terminal callback, after the hold and before the
 native terminal action, a dedicated worker syncs a staging file, atomically
-publishes an immutable JSON name, and syncs the directory. The terminal caller
+publishes an immutable JSON name with exclusive rename, and syncs the directory.
+On macOS this uses `renamex_np(RENAME_EXCL)`; Linux uses
+`renameat2(RENAME_NOREPLACE)`, and other platforms fail closed. Unsupported
+filesystems never fall back to a clobbering rename or hard-link/unlink pair.
+The rename removes staging at the same instant it publishes JSON, so a terminal
+timeout during the final directory sync cannot strand both names. An uncertain
+directory-sync failure retains the complete JSON and rejects replacement on
+retry. There are three syncs: the evidence directory's parent, the staging file,
+and the evidence directory after rename. The terminal caller
 waits at most 100 ms in total for this worker, shared across both entry routes.
 Repeated callbacks cannot overwrite the receipt. The permitted runtime terminal event also attempts the same write,
 covering native termination that observes the permit before the queued terminal
