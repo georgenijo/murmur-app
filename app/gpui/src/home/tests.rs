@@ -229,6 +229,94 @@ mod ax {
         draw(cx);
     }
     #[gpui::test]
+    fn compact_checklist_keyboard_focus_stays_inside_scroll_viewport(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness(cx);
+        cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
+        draw(cx);
+        for reduce_motion in [false, true] {
+            cx.update(|_, cx| {
+                crate::preferences::apply(
+                    crate::preferences::DisplayPreferences {
+                        reduce_motion,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            let origin = e.read_with(cx, |s, _| s.focus["sidebar-toggle"].clone());
+            cx.update(|w, cx| w.focus(&origin, cx));
+            let mut visited = std::collections::BTreeSet::new();
+            for key in ["tab", "shift-tab"] {
+                for _ in 0..45 {
+                    keys(cx, key);
+                    cx.update(|w, cx| w.simulate_next_frame(cx));
+                    draw(cx);
+                    let t = tree(cx);
+                    let n = &t
+                        .nodes
+                        .iter()
+                        .find(|(id, _)| *id == t.focus)
+                        .expect("focus")
+                        .1;
+                    if let Some(label) = n.label()
+                        && (super::ITEMS
+                            .iter()
+                            .any(|(_, title, _, _)| label.starts_with(title))
+                            || label == "Dismiss Get more from Murmur")
+                    {
+                        visited.insert(label.to_owned());
+                        let b = n.bounds().unwrap();
+                        let scale = cx.update(|w, _| f64::from(w.scale_factor()));
+                        let v = e.read_with(cx, |s, _| s.scroll.bounds());
+                        assert!(
+                            b.y0 >= scale * f64::from(f32::from(v.top()))
+                                && b.y1 <= scale * f64::from(f32::from(v.bottom())),
+                            "{label} {b:?} outside {v:?}"
+                        );
+                    }
+                    if cx.update(|w, _| origin.is_focused(w)) {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(visited.len(), 6, "all checklist controls reached");
+        }
+    }
+    #[gpui::test]
+    fn sidebar_splitter_paints_focus_ring_and_keeps_ax_contract(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness(cx);
+        let t = tree(cx);
+        let id = named(&t, "Sidebar width");
+        let node = &t.nodes.iter().find(|(i, _)| *i == id).unwrap().1;
+        assert_eq!(node.role(), gpui::Role::Splitter);
+        assert_eq!(node.numeric_value(), Some(256.));
+        cx.update(|w, cx| w.focus(&e.read(cx).focus["nav-insights"].clone(), cx));
+        keys(cx, "tab");
+        assert!(
+            cx.update(|w, cx| e.read(cx).focus["sidebar-width"].is_focused(w)),
+            "Tab must reach the splitter"
+        );
+        keys(cx, "right");
+        let t = tree(cx);
+        let node = &t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Sidebar width"))
+            .unwrap()
+            .1;
+        assert_eq!(node.numeric_value(), Some(272.));
+        cx.update(|w, cx| {
+            w.draw(cx).clear(cx);
+            let p = crate::tokens::Palette::get(cx);
+            assert!(
+                w.painted_quads().iter().any(|q| q.bounds.size.width
+                    == gpui::px(6.).scale(w.scale_factor())
+                    && q.border_color == p.focus),
+                "splitter has no painted focus border"
+            );
+        });
+    }
+    #[gpui::test]
     fn ax_record_button_navigation_and_discovery_actions(cx: &mut TestAppContext) {
         let (e, h, cx) = harness(cx);
         let t = tree(cx);

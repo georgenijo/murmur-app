@@ -57,10 +57,11 @@ def render_onboarding_home(target, output, policy_log):
     families = {
         'onboarding': ('welcome', 'microphone', 'accessibility', 'system-audio', 'calendar',
                        'model', 'hotkey', 'done', 'denied', 'waiting', 'restricted',
-                       'unsupported', 'relaunch', 'catalog-error', 'download', 'compact', 'loading', 'error'),
+                       'unsupported', 'relaunch', 'catalog-error', 'download', 'compact', 'loading', 'error',
+                       'read-error', 'cancel-error', 'compact-model', 'compact-hotkey'),
         'home': ('idle', 'starting', 'recording', 'processing', 'recovering', 'meeting',
                  'initializing', 'destination', 'denied', 'checklist', 'collapsed', 'compact', 'loading', 'error',
-                 'hint-double_tap_timing', 'hint-correct_and_teach', 'hint-browser_modes'),
+                 'hint-double_tap_timing', 'hint-correct_and_teach', 'hint-browser_modes', 'compact-checklist'),
     }
     for family, states in families.items():
         prefix = f'MURMUR_{family.upper()}_INVENTORY'
@@ -159,13 +160,13 @@ def check_inventory(stdout, prefix):
     if len(inventories) != 1:
         raise AssertionError('missing native process WebKit inventory')
     inventory = inventories[0]
-    for field in ('pid', 'webkitImages', 'axAttributed', 'unattributed',
+    for field in ('pid', 'webkitImages', 'axAttributed', 'writingToolsAttributed', 'unattributed',
                   'startupWebkitImages', 'linkageViolations'):
         if type(inventory[field]) is not int or inventory[field] < 0:
             raise AssertionError(f'invalid WebKit inventory field: {field}')
     if (inventory['unattributed'] != 0 or inventory['startupWebkitImages'] != 0
             or inventory['linkageViolations'] != 0
-            or inventory['webkitImages'] != inventory['axAttributed']):
+            or inventory['webkitImages'] != inventory['axAttributed'] + inventory['writingToolsAttributed']):
         raise AssertionError(f'unattributed/app-linked WebKit: {inventory}')
     return inventory
 

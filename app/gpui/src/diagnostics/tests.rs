@@ -785,6 +785,318 @@ mod ax {
             .unwrap_or("")
     }
 
+    fn settle_focus(cx: &mut VisualTestContext) {
+        draw(cx);
+        cx.update(|w, cx| w.simulate_next_frame(cx));
+        draw(cx);
+    }
+    fn assert_focused_control_visible(cx: &mut VisualTestContext) {
+        let t = tree(cx);
+        let n = &t
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == t.focus)
+            .expect("focused control")
+            .1;
+        if n.role() == Role::Tab {
+            return;
+        }
+        let bounds = n.bounds().expect("focused control bounds");
+        let panel = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == Role::TabPanel)
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        assert!(
+            bounds.x0 >= panel.x0
+                && bounds.x1 <= panel.x1
+                && bounds.y0 >= panel.y0
+                && bounds.y1 <= panel.y1,
+            "focused {:?} {:?} outside viewport {:?}",
+            n.label(),
+            bounds,
+            panel
+        );
+    }
+    #[gpui::test]
+    fn focus_entry_reveals_charts_tables_actions_and_paused_event_row(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        for compact in [false, true] {
+            cx.simulate_resize(gpui::size(
+                gpui::px(if compact { 480. } else { 1120. }),
+                gpui::px(if compact { 440. } else { 820. }),
+            ));
+            for tab in Tab::ALL {
+                entity.update(cx, |s, cx| {
+                    s.model.navigate(tab);
+                    s.sync(cx);
+                    s.events.update(cx, |list, cx| {
+                        list.following = false;
+                        list.scroll.scroll_to_bottom();
+                        cx.notify();
+                    });
+                    s.panel_scroll.set_offset(gpui::Point::default());
+                    cx.notify();
+                });
+                settle_focus(cx);
+                let tabs = entity.read_with(cx, |s, cx| s.tabs.read(cx).focus_handle(cx));
+                cx.update(|w, cx| w.focus(&tabs, cx));
+                for key in ["tab", "shift-tab"] {
+                    for _ in 0..30 {
+                        cx.simulate_keystrokes(key);
+                        settle_focus(cx);
+                        assert_focused_control_visible(cx);
+                        if cx.update(|w, _| tabs.is_focused(w)) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[gpui::test]
+    fn runs_end_then_tab_reveals_details_through_both_scroll_containers(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        cx.simulate_resize(gpui::size(gpui::px(480.), gpui::px(440.)));
+        entity.update(cx, |s, cx| {
+            s.model.runs = (0..40)
+                .map(|i| {
+                    let mut run = fixtures::run();
+                    run.id = format!("synthetic-run-{i}");
+                    run.finished_ms -= i;
+                    run
+                })
+                .collect();
+            s.model.navigate(Tab::Runs);
+            s.sync(cx);
+            cx.notify();
+        });
+        for reduce_motion in [false, true] {
+            cx.update(|w, cx| {
+                crate::preferences::apply(
+                    crate::preferences::DisplayPreferences {
+                        reduce_motion,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                w.blur(cx);
+                w.focus_next(cx);
+            });
+            let mut reached = false;
+            for _ in 0..12 {
+                cx.simulate_keystrokes("tab");
+                settle_focus(cx);
+                let t = tree(cx);
+                if t.nodes.iter().any(|(id, n)| {
+                    *id == t.focus && matches!(n.role(), Role::Cell | Role::ColumnHeader)
+                }) {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached, "Runs table must have a Tab stop");
+            cx.simulate_keystrokes("end");
+            settle_focus(cx);
+            let t = tree(cx);
+            let cell = &t.nodes.iter().find(|(id, _)| *id == t.focus).unwrap().1;
+            assert_eq!((cell.row_index(), cell.column_index()), (Some(40), Some(6)));
+            let table = named(&t, "Performance runs").1.bounds().unwrap();
+            let first = named(&t, "View details for Dictation · synthetic-run-0")
+                .1
+                .bounds()
+                .unwrap();
+            assert!(first.x0 < table.x0, "End must scroll the inner table right");
+            cx.simulate_keystrokes("tab");
+            settle_focus(cx);
+            assert_eq!(
+                focused_label(&tree(cx)),
+                "View details for Dictation · synthetic-run-0"
+            );
+            assert_focused_control_visible(cx);
+            // Re-entry must reveal the remembered bottom-right active cell too.
+            cx.simulate_keystrokes("shift-tab");
+            settle_focus(cx);
+            assert_eq!(focused_label(&tree(cx)), "Peak resources");
+            assert_focused_control_visible(cx);
+            // Test-window input only: a manual scroll must stay put even when
+            // a live run refresh re-renders the currently focused table.
+            let t = tree(cx);
+            let table = named(&t, "Performance runs").1.bounds().unwrap();
+            let scale = cx.update(|w, _| w.scale_factor()) as f64;
+            cx.simulate_event(gpui::ScrollEvent {
+                position: gpui::point(
+                    gpui::px(((table.x0 + table.x1) / (2. * scale)) as f32),
+                    gpui::px(420.),
+                ),
+                delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(80.), gpui::px(0.))),
+                touch_phase: gpui::TouchPhase::Moved,
+                ..Default::default()
+            });
+            entity.update(cx, |s, cx| {
+                let offset = s.panel_scroll.offset();
+                s.panel_scroll
+                    .set_offset(gpui::point(offset.x, offset.y + gpui::px(80.)));
+                cx.notify();
+            });
+            settle_focus(cx);
+            let manually_scrolled = tree(cx);
+            let manual_cell = manually_scrolled
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == manually_scrolled.focus)
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            assert!(
+                manual_cell.x1 > table.x1,
+                "manual horizontal scroll must persist"
+            );
+            let panel_offset = entity.read_with(cx, |s, _| s.panel_scroll.offset());
+            entity.update(cx, |s, cx| {
+                let mut run = s.model.runs[0].clone();
+                run.latency = Measurement::Measured(121.);
+                s.receive(
+                    Event::Notification {
+                        attachment: s.model.ticket(Lane::Performance).attachment,
+                        lane: Lane::Performance,
+                        revision: if reduce_motion { 101 } else { 100 },
+                        store_epoch: 0,
+                        payload: Payload::Run(run),
+                    },
+                    cx,
+                );
+            });
+            settle_focus(cx);
+            let refreshed = tree(cx);
+            assert_eq!(refreshed.focus, manually_scrolled.focus);
+            assert_eq!(
+                refreshed
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == refreshed.focus)
+                    .unwrap()
+                    .1
+                    .bounds(),
+                Some(manual_cell)
+            );
+            assert_eq!(
+                entity.read_with(cx, |s, _| s.panel_scroll.offset()),
+                panel_offset
+            );
+        }
+    }
+    #[gpui::test]
+    fn run_detail_keyboard_entry_and_back_restore_a_mounted_control(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Runs);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        click(
+            cx,
+            named(&t, "View details for Dictation · synthetic-run").0,
+        );
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Back to runs");
+        cx.simulate_keystrokes("tab");
+        settle_focus(cx);
+        assert_ne!(focused_label(&tree(cx)), "Back to runs");
+        cx.simulate_keystrokes("shift-tab");
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Back to runs");
+        let keystroke = gpui::Keystroke::parse("space").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        settle_focus(cx);
+        assert_eq!(
+            focused_label(&tree(cx)),
+            "View details for Dictation · synthetic-run"
+        );
+    }
+    #[gpui::test]
+    fn deferred_run_focus_rejects_navigation_before_remount(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Runs);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        click(
+            cx,
+            named(&t, "View details for Dictation · synthetic-run").0,
+        );
+        cx.update(|w, cx| {
+            entity.update(cx, |s, cx| {
+                s.model.navigate(Tab::Performance);
+                s.sync(cx);
+                w.focus(&s.tabs.read(cx).focus_handle(cx), cx);
+                cx.notify();
+            })
+        });
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Performance");
+    }
+
+    #[gpui::test]
+    fn deferred_run_focus_revalidates_a_run_removed_before_remount(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Runs);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        click(
+            cx,
+            named(&t, "View details for Dictation · synthetic-run").0,
+        );
+        entity.update(cx, |s, cx| {
+            s.model.runs.clear();
+            s.sync(cx);
+            cx.notify();
+        });
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Runs");
+    }
+
+    #[gpui::test]
+    fn following_event_tail_is_visible_before_keyboard_entry(cx: &mut TestAppContext) {
+        let (_, cx) = harness(cx);
+        let t = tree(cx);
+        // Fixture timestamps repeat every minute; select the retained tail,
+        // rather than an older row with the same accessible label.
+        let label = fixtures::event(160).label();
+        let row = t
+            .nodes
+            .iter()
+            .rev()
+            .find(|(_, n)| n.label() == Some(label.as_str()))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let list = named(&t, "Diagnostic events").1.bounds().unwrap();
+        assert!(
+            row.y0 >= list.y0 && row.y1 <= list.y1,
+            "following tail {row:?} outside list viewport {list:?}"
+        );
+    }
+
     #[gpui::test]
     fn tab_order_reaches_tabs_event_list_and_every_chart(cx: &mut TestAppContext) {
         let (entity, cx) = harness(cx);
