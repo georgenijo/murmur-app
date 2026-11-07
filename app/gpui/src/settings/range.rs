@@ -62,6 +62,14 @@ impl Range {
             _subscriptions: vec![change, blur, activation],
         }
     }
+    /// Change timeline bounds only when the source duration changes.
+    pub fn set_max(&mut self, max: i64, cx: &mut Context<Self>) {
+        if self.state.read(cx).max_value() != max.max(1) as f32 {
+            self.state.update(cx, |s, _| {
+                *s = SliderState::new().min(0.).max(max.max(1) as f32).step(100.)
+            });
+        }
+    }
     pub fn value(&self, cx: &App) -> i64 {
         self.state.read(cx).value().end() as i64
     }
