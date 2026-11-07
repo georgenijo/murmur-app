@@ -59,7 +59,7 @@ bool murmur_meeting_output_push(void *ptr,uint64_t generation,const float *sampl
     MurmurMeetingOutput *o=(__bridge MurmurMeetingOutput *)ptr;
     if(!count||count>1600)return false;
     @synchronized(o) {
-        if(generation!=o->generation||!o->engine.running||atomic_load(&o->epoch->queued)>=4800)return false;
+        if(generation!=o->generation||!o->engine.running||atomic_load(&o->epoch->queued)+count>4800)return false;
         AVAudioPCMBuffer *buffer=[[AVAudioPCMBuffer alloc] initWithPCMFormat:o->format frameCapacity:(AVAudioFrameCount)count];
         if(!buffer)return false;
         buffer.frameLength=(AVAudioFrameCount)count;memcpy(buffer.floatChannelData[0],samples,count*sizeof(float));

@@ -437,3 +437,28 @@ fn multiline_metadata_and_editor_change_are_submitted_as_visible(cx: &mut TestAp
     assert_eq!(d.session.attendees, vec!["Fixture one", "Fixture two"]);
     assert!(!e.read_with(cx, |s, _| s.naming));
 }
+#[test]
+fn live_segment_rechecks_recording_generation_and_session_before_mutating() {
+    let mut state = fixtures::snapshot();
+    let segment = state.detail.as_ref().unwrap().segments[0].clone();
+    state.phase = Phase::Recording;
+    state.recording_generation = 42;
+    state.recording_session = Some("fixture-1".into());
+    assert!(!state.live_segment(41, segment.clone()));
+    let mut other = segment.clone();
+    other.session_id = "fixture-2".into();
+    assert!(!state.live_segment(42, other));
+    assert!(state.live_segment(42, segment));
+    assert_eq!(state.detail.as_ref().unwrap().segments.len(), 4);
+    for i in 10..310 {
+        let mut segment = state.detail.as_ref().unwrap().segments[0].clone();
+        segment.id = i;
+        segment.start_ms = i * 1000;
+        segment.end_ms = i * 1000 + 500;
+        assert!(state.live_segment(42, segment));
+    }
+    assert_eq!(state.detail.as_ref().unwrap().segments.len(), 200);
+    state.phase = Phase::Idle;
+    let segment = state.detail.as_ref().unwrap().segments[0].clone();
+    assert!(!state.live_segment(42, segment));
+}

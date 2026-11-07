@@ -161,7 +161,11 @@ pub trait Host {
     /// Stop checks the requested generation under the recording transition lock.
     /// List rebuilds from offset zero in <=100-row pages, retaining the loaded
     /// window atomically. Events include meeting status/segment/speakers-updated,
-    /// audio invalidation and all native busy owners; no inference or text transforms
+    /// audio invalidation and all native busy owners. Start selects its returned
+    /// session; live segments use Snapshot::live_segment to recheck generation
+    /// and session, deduplicate/order and bound the live tail to 200. Terminal
+    /// status hydrates the full durable detail once, guarded by that same owner.
+    /// No inference or text transforms
     /// live here. Capture/recovery/import/preview exclusion stays authoritative.
     /// CalendarLookup explicitly checks get_calendar_permission_status, requests
     /// request_calendar_permission only for notDetermined, then queries. Apply

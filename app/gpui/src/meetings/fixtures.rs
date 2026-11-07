@@ -188,6 +188,20 @@ impl Host for FixtureHost {
                     s.recording_session = Some("fixture-capture".into());
                     s.microphone_active = true;
                     s.system_audio_active = true;
+                    let mut d = snapshot().detail.unwrap();
+                    d.session.id = "fixture-capture".into();
+                    d.session.status = "active".into();
+                    d.session.title = None;
+                    d.session.retain_audio = false;
+                    d.segments.clear();
+                    d.remote.clear();
+                    s.meetings.insert(0, d.session.clone());
+                    s.total = s.meetings.len();
+                    s.detail = Some(d);
+                    s.audio = Audio {
+                        state: AudioState::NotFinished,
+                        ..Default::default()
+                    };
                 }
                 Action::Stop { generation }
                     if s.phase.active() && s.recording_generation == generation =>

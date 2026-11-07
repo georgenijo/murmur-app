@@ -12,7 +12,10 @@ The native workspace covers capture status, explicit System Audio checks,
 permission denial/unsupported/relaunch guidance, elapsed time, independent
 Me/Them indicators, echo-reduction notices, saved meeting search/pagination,
 metadata naming, Calendar selection, channel and remote speaker names,
-transcript review, native playback and all five export formats. Empty, loading,
+transcript review, native playback and all five export formats. Live segment
+projection rechecks recording generation and session, deduplicates/orders the
+200-row live tail and leaves durable transcript publication in core. Explicit
+overlay suggestion acceptance carries its opaque token to normal start admission. Empty, loading,
 service failure/retry, pending/failed transcript segments, unretained audio,
 busy output, bundle omissions and limits remain explicit states.
 
@@ -41,7 +44,8 @@ the Calendar picker and restores the originating control. Search has the React
 250 ms debounce plus Enter and Escape; Cmd-F focuses search. Deletion requires
 two distinct activations within four seconds, and Return is never a destructive
 default. Compact layout stacks the list and review rather than clipping them.
-Transcript shaping is bounded to 24 segments per page and 2,048 characters per
+The saved-meeting list renders only visible rows and can page through the
+existing 10,000-session retention ceiling. Transcript shaping is bounded to 24 segments per page and 2,048 characters per
 text page; all text remains reachable. Semantic palettes/shared controls carry
 focus, contrast and reduced-motion behavior. Rust retains native window geometry.
 

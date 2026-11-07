@@ -222,6 +222,33 @@ impl Snapshot {
     pub fn busy(&self) -> bool {
         self.phase.busy() || self.capture_busy
     }
+    /// A targeted live event must still own this recording and selected session.
+    /// This changes presentation only; durable publication/transforms stay in core.
+    pub fn live_segment(&mut self, generation: u64, segment: Segment) -> bool {
+        if generation != self.recording_generation
+            || !self.phase.busy()
+            || self.recording_session.as_deref() != Some(segment.session_id.as_str())
+        {
+            return false;
+        }
+        let Some(detail) = self
+            .detail
+            .as_mut()
+            .filter(|d| d.session.id == segment.session_id)
+        else {
+            return false;
+        };
+        if let Some(existing) = detail.segments.iter_mut().find(|s| s.id == segment.id) {
+            *existing = segment;
+        } else {
+            detail.segments.push(segment);
+        }
+        detail.segments.sort_by_key(|s| (s.start_ms, s.id));
+        if detail.segments.len() > 200 {
+            detail.segments.drain(..detail.segments.len() - 200);
+        }
+        true
+    }
 }
 fn text_ok(s: &str, max: usize) -> bool {
     s.len() <= max && !s.contains('\0')
