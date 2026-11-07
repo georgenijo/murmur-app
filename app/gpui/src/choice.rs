@@ -44,6 +44,7 @@ pub struct Choices {
     label: SharedString,
     trigger_icon: Option<crate::icons::Glyph>,
     pub(crate) compact: bool,
+    pub(crate) square_corners: bool,
     kind: ChoiceKind,
     choices: Vec<Choice>,
     selected: Option<usize>,
@@ -90,6 +91,7 @@ impl Choices {
             label,
             trigger_icon: None,
             compact: false,
+            square_corners: false,
             kind,
             choices,
             selected: None,
@@ -355,7 +357,7 @@ impl Render for Choices {
             } else {
                 p.surface
             })
-            .rounded(if self.compact {
+            .rounded(if self.compact && !self.square_corners {
                 px(999.)
             } else {
                 tokens::CONTROL_RADIUS

@@ -81,6 +81,7 @@ impl Meetings {
         });
         format_control.update(cx, |s, cx| {
             s.compact = true;
+            s.square_corners = true;
             s.set_width(px(124.), cx);
             s.set_value("markdown", cx)
         });
@@ -98,7 +99,7 @@ impl Meetings {
         });
         channel_control.update(cx, |s, cx| {
             s.compact = true;
-            s.set_width(px(108.), cx);
+            s.set_width(px(140.), cx);
             s.set_value("all", cx)
         });
         let seek = cx.new(|cx| {

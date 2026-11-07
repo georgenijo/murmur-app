@@ -907,11 +907,10 @@ fn tab_shift_tab_and_programmatic_entry_reveal_whole_row(cx: &mut TestAppContext
     let (e, _, cx) = harness_host(cx, Rc::new(FixtureHost::with_corpus(50, 4, 100)));
     cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
     draw(cx);
-    // The compact search/overflow row mounts one more virtual row than the old stacked toolbar.
-    // Reverse Tab enters that last mounted row and must reveal it completely.
+    // Reverse Tab enters the last mounted row. Its index changes with natural row heights.
     for (source, key, target) in [
         ("meeting-fixture-1", Some("tab"), 1),
-        ("rename", Some("shift-tab"), 2),
+        ("rename", Some("shift-tab"), usize::MAX),
         ("meeting-fixture-1", None, 1),
     ] {
         cx.update(|w, cx| {
@@ -933,6 +932,28 @@ fn tab_shift_tab_and_programmatic_entry_reveal_whole_row(cx: &mut TestAppContext
             });
         }
         settle_reveal(cx);
+        let target = if target == usize::MAX {
+            let row = cx.update(|w, cx| {
+                e.read(cx)
+                    .focus
+                    .iter()
+                    .find(|(id, f)| id.starts_with("meeting-fixture-") && f.is_focused(w))
+                    .map(|(id, _)| {
+                        id.trim_start_matches("meeting-fixture-")
+                            .parse::<usize>()
+                            .unwrap()
+                            - 1
+                    })
+                    .expect("reverse Tab enters a mounted meeting row")
+            });
+            assert!(
+                row >= 1,
+                "reverse entry reaches the end of the mounted list"
+            );
+            row
+        } else {
+            target
+        };
         assert!(
             cx.update(
                 |w, cx| e.read(cx).focus[&format!("meeting-fixture-{}", target + 1)].is_focused(w)

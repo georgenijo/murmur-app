@@ -88,6 +88,11 @@ impl Meetings {
                             .nav_row()
                             .toggled(selected)
                             .when(selected, |b| b.bordered())
+                            .padding_y(px(5.))
+                            .palette(Palette {
+                                tint_raised: p.surface.blend(p.accent.opacity(0.06)),
+                                ..p
+                            })
                             .content(
                                 div()
                                     .w_full()
@@ -136,6 +141,7 @@ impl Meetings {
                                                     .min_w_0()
                                                     .truncate()
                                                     .text_size(tokens::CAPTION_SIZE)
+                                                    .line_height(tokens::CAPTION_LEADING)
                                                     .text_color(p.muted)
                                                     .child(meeting.preview.clone()),
                                             )
@@ -354,7 +360,11 @@ impl Meetings {
                     )
                     .size(ButtonSize::Compact)
                     .icon_only(crate::icons::Glyph::Trash)
-                    .destructive_text()
+                    .pill()
+                    .palette(Palette {
+                        text: if confirming { p.danger } else { p.muted },
+                        ..p
+                    })
                     .disabled(self.model.pending || !self.allowed(&Action::Delete(id.clone())))
                     .on_click(cx.listener(|s, _, _, cx| s.delete(false, cx))),
                 ),
@@ -615,7 +625,7 @@ impl Meetings {
             .child(self.detail_button("cancel-bundle","Cancel").size(ButtonSize::Compact).on_click(cx.listener(|s,_,_,cx|{if let Some(s)=&mut s.model.snapshot{s.bundle=None;}cx.notify();}))));
         }
         if self.format.captions() {
-            content=content.child(Self::notice(if d.finished(){"One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included."}else{"Stop this meeting before exporting captions."},false));
+            content=content.child(Self::notice(if d.finished(){"One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included."}else{"Stop this meeting before exporting captions."},false).rounded(tokens::CONTROL_RADIUS).bg(p.surface_container_low).px(px(10.)).py(px(8.)).text_size(tokens::CAPTION_SIZE).line_height(tokens::CAPTION_LEADING).text_color(p.muted));
         }
         content = content.child(
             div()
@@ -735,7 +745,8 @@ impl Meetings {
                 .flex()
                 .items_start()
                 .gap(px(12.))
-                .py(px(6.))
+                .px(px(10.))
+                .py(px(8.))
                 .border_b_1()
                 .border_color(p.hairline);
             let text = if segment.status == "final" {
@@ -749,7 +760,7 @@ impl Meetings {
             let index = *self.text_pages.entry(segment.id).or_default();
             let index = index.min(pieces - 1);
             let mut time = div()
-                .w(px(52.))
+                .w(px(60.))
                 .flex_shrink_0()
                 .font_family(tokens::MONO_FONT)
                 .text_size(tokens::CAPTION_SIZE)
@@ -763,6 +774,12 @@ impl Meetings {
                         format!("Play segment at {}, {canonical} channel", timestamp(start)),
                     )
                     .caption(timestamp(start))
+                    .icon(crate::icons::Glyph::Play)
+                    .padding_x(px(0.))
+                    .palette(Palette {
+                        text: p.accent,
+                        ..p
+                    })
                     .intent(crate::ButtonIntent::Ghost)
                     .size(ButtonSize::ExtraSmall)
                     .disabled(
@@ -785,7 +802,7 @@ impl Meetings {
                 .child(time)
                 .child(
                     div()
-                        .w(px(112.))
+                        .w(px(88.))
                         .flex_shrink_0()
                         .text_size(tokens::CAPTION_SIZE)
                         .text_color(if segment.channel == Channel::Me {
@@ -951,59 +968,66 @@ impl Render for Meetings {
                 .confirmation
                 .as_ref()
                 .is_some_and(|(key, end)| key == "*" && Instant::now() < *end);
-            let mut list =
-                div()
-                    .id("saved-meetings")
-                    .role(Role::Group)
-                    .aria_label("Saved meetings")
-                    .relative()
-                    .child(crate::data_components::focus_reveal(
-                        self.search.read(cx).focus_handle(cx),
-                        Some(self.content_scroll.clone()),
-                        None,
-                        w,
-                        cx,
-                    ))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .p(px(12.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(div().flex_1().min_w_0().child(
-                                TextField::new(&self.search, "Search meetings").search_chrome(),
-                            ))
-                            .child(
-                                Button::new("meeting-more", "More meeting actions")
-                                    .icon_only(crate::icons::Glyph::More)
-                                    .intent(crate::ButtonIntent::Ghost)
-                                    .size(ButtonSize::Compact)
-                                    .on_click(cx.listener(|s, _, _, cx| {
-                                        s.list_actions_open = !s.list_actions_open;
-                                        cx.notify();
-                                    })),
+            let mut list = div()
+                .id("saved-meetings")
+                .role(Role::Group)
+                .aria_label("Saved meetings")
+                .relative()
+                .child(crate::data_components::focus_reveal(
+                    self.search.read(cx).focus_handle(cx),
+                    Some(self.content_scroll.clone()),
+                    None,
+                    w,
+                    cx,
+                ))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .p(px(12.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div().flex_1().min_w_0().child(
+                                TextField::new(&self.search, "Search meetings")
+                                    .search_chrome()
+                                    .search_radius(px(999.)),
                             ),
-                    )
-                    .when(self.list_actions_open, |v| {
-                        v.child(
-                            Button::new(
-                                "delete-all",
-                                if confirm {
-                                    "Click again to delete all meetings"
-                                } else {
-                                    "Delete all meetings…"
-                                },
-                            )
-                            .size(ButtonSize::Compact)
-                            .destructive_text()
-                            .with_scroll_parent(Some(&self.content_scroll))
-                            .disabled(s.phase.busy() || self.model.pending || s.meetings.is_empty())
-                            .on_click(cx.listener(|s, _, _, cx| s.delete(true, cx))),
                         )
-                    });
+                        .child(
+                            Button::new("meeting-more", "More meeting actions")
+                                .icon_only(crate::icons::Glyph::More)
+                                .intent(crate::ButtonIntent::Ghost)
+                                .size(ButtonSize::Compact)
+                                .on_click(cx.listener(|s, _, _, cx| {
+                                    s.list_actions_open = !s.list_actions_open;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .when(self.list_actions_open, |v| {
+                    v.child(
+                        Button::new(
+                            "delete-all",
+                            if confirm {
+                                "Click again to delete all meetings"
+                            } else {
+                                "Delete all meetings…"
+                            },
+                        )
+                        .size(ButtonSize::Compact)
+                        .pill()
+                        .palette(Palette {
+                            text: if confirm { p.danger } else { p.muted },
+                            ..p
+                        })
+                        .with_scroll_parent(Some(&self.content_scroll))
+                        .disabled(s.phase.busy() || self.model.pending || s.meetings.is_empty())
+                        .on_click(cx.listener(|s, _, _, cx| s.delete(true, cx))),
+                    )
+                });
             if s.meetings.is_empty() {
                 list=list.child(if s.query.is_empty(){"No meeting transcripts yet. Start one to capture microphone and Mac playback as separate speakers."}else{"No meetings match this search. Try another word or clear the search."});
             }
