@@ -362,6 +362,41 @@ fn downcast_ref<T: ClassType>(obj: &NSObject) -> Option<&T> {
         .then(|| unsafe { &*(obj as *const NSObject).cast::<T>() })
 }
 
+// Shared by accessibilityPerformPress and the windowless adapter harness.
+// Keep target lookup and action mapping here so tests exercise the adapter,
+// rather than constructing AccessKit Click requests in the UI test.
+fn perform_press(node: &Node, tree: &Tree, dispatch: impl FnOnce(ActionRequest)) -> bool {
+    let clickable = node.is_clickable(&filter);
+    if clickable {
+        if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+            dispatch(ActionRequest {
+                action: Action::Click,
+                target_tree,
+                target_node,
+                data: None,
+            });
+        }
+    }
+    clickable
+}
+
+/// Windowless adapter probe. Uses the same role/title mapping, action predicate
+/// and press handler as the native AX object; creates no NSView or NSWindow.
+#[cfg(feature = "test-support")]
+pub fn test_press(
+    update: accesskit::TreeUpdate,
+    target: accesskit::NodeId,
+) -> (String, Option<String>, bool, Option<ActionRequest>) {
+    let tree = Tree::new(update, false);
+    let node = tree.state().node_by_tree_local_id(target, accesskit::TreeId::ROOT)
+        .expect("adapter target exists");
+    let role = ns_role(&node).to_string();
+    let title = NodeWrapper(&node).title();
+    let mut request = None;
+    let pressable = perform_press(&node, &tree, |action| request = Some(action));
+    (role, title, pressable, request)
+}
+
 pub(crate) struct PlatformNodeIvars {
     context: Weak<Context>,
     node_id: NodeId,
@@ -668,18 +703,7 @@ declare_class!(
         #[method(accessibilityPerformPress)]
         fn press(&self) -> bool {
             self.resolve_with_context(|node, tree, context| {
-                let clickable = node.is_clickable(&filter);
-                if clickable {
-                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
-                        context.do_action(ActionRequest {
-                            action: Action::Click,
-                            target_tree,
-                            target_node,
-                            data: None,
-                        });
-                    }
-                }
-                clickable
+                perform_press(node, tree, |request| context.do_action(request))
             })
             .unwrap_or(false)
         }

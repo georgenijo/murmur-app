@@ -293,6 +293,7 @@ impl Render for Overlay {
         native::refit_material(window, width, height, radius);
         let mut card = div()
             .id("overlay-surface")
+            .relative()
             .flex()
             .flex_col()
             .items_center()
@@ -321,37 +322,42 @@ impl Render for Overlay {
                 s.model.hover(*inside, s.now);
                 s.advance(w, cx);
             }));
+        // This never-key panel cannot receive keyboard disclosure commands.
+        // Keep a nonvisual AX button present even in the idle notch cutout.
+        // No pointer hitbox or focus owner: status clicks keep their existing
+        // recording behavior, while AXPress exclusively toggles quick settings.
+        let disclosure = cx.entity().downgrade();
+        card = card.child(
+            div()
+                .id("overlay-quick-settings-disclosure")
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .role(Role::Button)
+                .aria_label(if expanded {
+                    "Quick settings, expanded"
+                } else {
+                    "Quick settings, collapsed"
+                })
+                .on_a11y_action(AccessibleAction::Click, move |_, w, cx| {
+                    let _ = disclosure.update(cx, |s, cx| {
+                        if s.model.phase == Phase::Open {
+                            s.model.close(s.now);
+                        } else {
+                            s.model.expand(s.now);
+                        }
+                        s.advance(w, cx);
+                    });
+                }),
+        );
         let accessible = cx.entity().downgrade();
-        let disclosure = accessible.clone();
-        let collapse = accessible.clone();
         let mut status = div()
             .id("overlay-status")
             .debug_selector(|| "overlay-status".into())
             .role(Role::Status)
             .aria_label(indicator.label())
-            .aria_description("Start locked dictation, or stop the current recording. Down arrow opens Quick settings; Escape closes them")
-            .aria_expanded(expanded)
-            .tab_index(0)
-            .on_a11y_action(AccessibleAction::Expand, move |_, w, cx| {
-                let _ = disclosure.update(cx, |s, cx| {
-                    s.model.expand(s.now);
-                    s.advance(w, cx);
-                });
-            })
-            .on_a11y_action(AccessibleAction::Collapse, move |_, w, cx| {
-                let _ = collapse.update(cx, |s, cx| {
-                    s.model.close(s.now);
-                    s.advance(w, cx);
-                });
-            })
-            .on_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
-                if e.keystroke.key == "down" {
-                    s.model.expand(s.now);
-                    cx.stop_propagation();
-                    w.prevent_default();
-                    s.advance(w, cx);
-                }
-            }))
+            .aria_description("Start locked dictation, or stop the current recording")
             .on_a11y_action(AccessibleAction::Click, move |_, w, cx| {
                 let _ = accessible.update(cx, |s, cx| {
                     let action = s.model.accessible_activate(s.now);

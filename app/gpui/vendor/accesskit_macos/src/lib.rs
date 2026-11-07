@@ -23,3 +23,6 @@ mod subclass;
 pub use subclass::SubclassingAdapter;
 
 pub use objc2_foundation::{NSArray, NSObject, NSPoint};
+
+#[cfg(feature = "test-support")]
+pub use node::test_press;

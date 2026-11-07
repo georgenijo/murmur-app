@@ -76,3 +76,6 @@ features = [
     "NSValue",
     "NSThread",
 ]
+
+[features]
+test-support = []

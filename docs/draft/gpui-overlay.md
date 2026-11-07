@@ -31,7 +31,12 @@ services and Tokio runtime through shutdown. The host must:
    start of an asynchronous read and deliver `Event::Hydrate` with that epoch;
    an intervening lifecycle/visibility/geometry event rejects the old read.
    Authoritative full snapshots carry increasing presentation revisions and
-   the current recording generation. Every accepted recording snapshot rebases
+   the current recording generation. Only a strictly greater revision with a
+   non-stale generation is accepted;
+   the constructor snapshot counts as already applied. Initial asynchronous
+   hydration must have a newer revision, and a current hydration epoch does
+   not make a duplicate revision new. An epoch mismatch rejects even a newer
+   revision. Every accepted recording snapshot rebases
    the local timer at receipt: `elapsed_ms` is the authoritative base, including
    a refresh with unchanged status/generation. Rejected snapshots change neither
    the elapsed base nor its local clock anchor.
@@ -119,12 +124,12 @@ All fixtures and rendered captures are synthetic. Native acceptance is separate.
 | O02 7/18 bars; coalesced 16 ms levels; no idle animation | Single latest-level slot, generation/visibility check, one GPUI draw stream | `waveform_is_bounded_and_only_the_current_visible_owner_can_supply_samples`, inbox backpressure/coalescing test; no performance claim |
 | O02 HUD/tints, Reduce Motion/Transparency, appearance | Same-turn AppKit HUD and window-local palettes; shared motion engine | Inert shim compilation; deterministic offscreen goldens and existing motion/preference tests; live material and OS changes remain |
 | O03 150 ms dwell, acknowledged growth, 300 ms leave, delayed shrink | One main-thread surface writer and phase reducer; disabled state retains hover; shrink retains a pending re-entry dwell | `hover_dwell_ack_leave_shrink_and_failed_grow`, `disabled_hover_can_reopen_quick_settings_but_cannot_start_recording`, `shrink_preserves_a_pending_dwell_in_the_persistent_top_band` (1000 ms enter → 1080 ms shrink → 1150 ms open), `state_contractions_retain_native_bounds_then_release_without_anchor_drift`, `hidden_and_topology_reset_do_not_reopen_transparent_hit_area`; native clipping/hit-area check remains |
-| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents; collapsed status exposes AX Expand/Collapse and expanded state, Tab focus and Down/Escape disclosure | `actual_overlay_tree_controls_and_actions` starts collapsed, dispatches emitted Expand and all four control actions, and excludes collapsed controls; `disabled_collapsed_overlay_opens_with_keyboard_and_exposes_enable_action` dispatches Focus, Down, Enable and Escape; native host field commits/Settings opening remain |
+| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents; a dedicated nonvisual Button is always present on the visible collapsed surface; its AX title conveys collapsed/expanded and AXPress toggles disclosure without key focus or dictation activation | `actual_overlay_tree_controls_and_actions` and `disabled_collapsed_overlay_opens_and_closes_through_macos_adapter` pass emitted nodes through the vendored macOS adapter role/title mapping and shared production AXPress handler, then transport only its generated actions; collapsed/disabled → open → Enable Murmur → close and unchanged focus/intents are asserted; native host field commits/Settings opening remain |
 | O04 250 ms click, double-click lock, disabled/processing/open guards | Click recognizer sends generation-bound core inputs | `click_delay_double_click_and_generation_ownership`, `starting_click_cancels_and_disabled_recording_remains_stoppable`; real capture/delivery remains host acceptance |
 | O05 Cancelled 800 ms, opt-in tap miss 500 ms, failure 5 s | Generation-scoped timed cues, fixed content-free announcements | Priority/expiry and stale-generation tests; actual VoiceOver speech remains |
 | O05 Clipboard-only/retry, duplicate/stale outcomes | Secure retry intent, attempt/generation guard, bounded result | `delivery_duplicates_never_extend_cue_and_only_confirmed_clipboard_installs_it`, `retry_is_single_flight_and_uses_a_fresh_bounded_result`, stale retry test; no clipboard access in test host |
 | O06 calibration cue and offset, no pointer dragging | Shared finite ±12 pt intent; pill zero travel; pretend-top clamp | Moved calibration tests and state priority test; Settings Save/Cancel remains its owner and a native acceptance flow |
-| O07 reattach during recording, subscribe-before-read | Snapshot revision + hydration epoch + current elapsed read model | `hydration_cannot_roll_back_a_same_generation_event_and_restores_elapsed`, `accepted_recording_snapshots_rebase_elapsed_even_without_lifecycle_change`; actual host subscription ordering must follow the integration contract |
+| O07 reattach during recording, subscribe-before-read | Snapshot revision + hydration epoch + current elapsed read model | `hydration_cannot_roll_back_a_same_generation_event_and_restores_elapsed`, `accepted_recording_snapshots_rebase_elapsed_even_without_lifecycle_change`, `duplicate_snapshot_and_hydration_do_not_rewind_the_recording_timer`, `initial_hydration_and_current_epoch_refresh_accept_newer_revisions`; actual host subscription ordering must follow the integration contract |
 | O08/O09 Live Words consent, generation, click-through and hover lift | Existing preview owner retained; anchor/lift interface only | Moved preview fitting/collapsed-anchor tests; text/rendering port belongs to #1000, with native click-through and consent checks retained |
 | M01/M13 meeting states/suggestions, accept/dismiss | Idle-only prompt, token recheck and single-flight action | `suggestion_requires_idle_and_retains_expanded_bounds_until_dismissal`, `suggestion_actions_recheck_current_token_and_are_single_flight`; live capture/token authority stays in meeting service |
 | A01 accessible names, roles, state changes, inactive announcements | Shared controls/AccessKit plus native content-free announcement notification | Emitted tree/actions test and component suite; VoiceOver spoken output cannot be established headlessly |
@@ -136,10 +141,20 @@ commits. `OverlayPill` and its tests reserve independent notch wings and center
 the floating row. Native status uses those same content slots: seven bars occupy
 23 pt centered in the right 28 pt wing; eighteen bars occupy 61.5 pt in the pill.
 The idle, collapsed notch has no exposed wings and paints no status content in
-the cutout. The native disclosure action adds a non-pointer route to the same
+the cutout. The native Quick settings Button adds a non-pointer route to the same
 Quick settings group and names used by the React dropdown. It grows through the
 same acknowledged writer as hover and does not activate recording. Disabled
 state gates recording starts, never access to the Enable control.
+
+The disclosure Button is nonvisual and occupies the surface bounds without a
+pointer handler or focus owner, preserving the idle notch and existing click
+regions. Its adapter-exported title is “Quick settings, collapsed” or “Quick
+settings, expanded”; AXPress is Click, already supported by the pinned macOS
+adapter. The status retains its recording activation, but no longer advertises
+unsupported Expand/Collapse or a keyboard fallback on the never-key panel.
+The windowless adapter probe shares the production press target resolution and
+dispatch function; it creates no NSView/NSWindow and makes no AX client calls.
+It establishes adapter mapping/action handling, not VoiceOver spoken behavior.
 
 No React assertion is retired. This table describes replacement implementation
 and executable tests; it does not mark the feature matrix's native rows passed.
@@ -257,3 +272,43 @@ This is headless evidence only. No real application was driven, no OS permission
 or production data was accessed, and no other worker's checkout or GUI session
 was touched. Independent review of these corrections and the lead's native
 acceptance remain separate; the PR stays draft and unmerged.
+
+## Adapter disclosure and duplicate-snapshot corrections (checkout 44)
+
+This supersedes the earlier receipt's disclosure evidence: injecting GPUI Expand
+or keyboard events did not establish a usable route through the macOS adapter on
+a never-key panel. Quick settings now has a persistent nonvisual AX Button with
+an adapter-exported collapsed/expanded title. Its press opens/closes the same
+acknowledged surface without focus changes or recording intents. The disabled
+case presses Enable Murmur through that adapter path before collapsing again.
+The adapter's original press logic is shared with the windowless probe; the
+additive `accesskit-press-probe.patch` records every vendor change.
+
+Equal snapshot revisions are rejected, including hydration replay after an epoch
+change. Newer initial hydration and current-epoch refreshes still restore/rebase
+elapsed time; outdated epochs and generations remain rejected. Both regressions
+fail against the original `4c230b58` UI/model: the disclosure control is missing,
+and replaying revision 1/generation 7/61000 ms reports 1:01 instead of 1:02.
+
+Headless gates on the Mac mini, Rust 1.98.1, fresh
+`~/Builds/gpui-checkout-44` and private `~/Builds/gpui-target-44`, via Fleet/opti:
+
+- Package rustfmt, locked gallery check, and strict all-target gallery Clippy:
+  **3 gates passed**.
+- `scripts/test_gpui.py -- --test-threads=1`: **60 passed, 0 failed,
+  0 ignored**; **0 doc tests**. Includes both adapter flows and two new timer /
+  hydration regressions; existing recording activation remains covered.
+- Runner-source and inert native-shim unittests: **6 passed, 0 skipped**.
+- `scripts/check_gpui_goldens.py`: **63 cases / 126 captures**, byte-identical
+  within each pair; **33 overlay cases / 66 captures**, each with zero loaded
+  WebKit images.
+- Patch reproduction: **102 GPUI files**, **7 component patch-target files**,
+  and **all 16 AccessKit files** match upstream plus their recorded patches
+  byte-for-byte. Forward and reverse patch checks pass.
+- Local Markdown (**72 maintained docs**), reference (**189 commands**),
+  core dependency boundary and `git diff --check` pass.
+
+Gate logs and the golden receipt are preserved before removing checkout 44 and
+its target. No real app, GUI session, AX client automation, permissions or user
+data were touched. Independent review and native acceptance remain with the
+lead; this PR stays draft and unmerged.

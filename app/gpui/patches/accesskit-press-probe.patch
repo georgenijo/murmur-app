@@ -1,0 +1,88 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 7ceef543..02f66f8c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -76,3 +76,6 @@ features = [
+     "NSValue",
+     "NSThread",
+ ]
++
++[features]
++test-support = []
+diff --git a/src/lib.rs b/src/lib.rs
+index 5b795424..f37390c8 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -23,3 +23,6 @@ mod subclass;
+ pub use subclass::SubclassingAdapter;
+ 
+ pub use objc2_foundation::{NSArray, NSObject, NSPoint};
++
++#[cfg(feature = "test-support")]
++pub use node::test_press;
+diff --git a/src/node.rs b/src/node.rs
+index e23f21ec..625b492b 100644
+--- a/src/node.rs
++++ b/src/node.rs
+@@ -362,6 +362,41 @@ fn downcast_ref<T: ClassType>(obj: &NSObject) -> Option<&T> {
+         .then(|| unsafe { &*(obj as *const NSObject).cast::<T>() })
+ }
+ 
++// Shared by accessibilityPerformPress and the windowless adapter harness.
++// Keep target lookup and action mapping here so tests exercise the adapter,
++// rather than constructing AccessKit Click requests in the UI test.
++fn perform_press(node: &Node, tree: &Tree, dispatch: impl FnOnce(ActionRequest)) -> bool {
++    let clickable = node.is_clickable(&filter);
++    if clickable {
++        if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
++            dispatch(ActionRequest {
++                action: Action::Click,
++                target_tree,
++                target_node,
++                data: None,
++            });
++        }
++    }
++    clickable
++}
++
++/// Windowless adapter probe. Uses the same role/title mapping, action predicate
++/// and press handler as the native AX object; creates no NSView or NSWindow.
++#[cfg(feature = "test-support")]
++pub fn test_press(
++    update: accesskit::TreeUpdate,
++    target: accesskit::NodeId,
++) -> (String, Option<String>, bool, Option<ActionRequest>) {
++    let tree = Tree::new(update, false);
++    let node = tree.state().node_by_tree_local_id(target, accesskit::TreeId::ROOT)
++        .expect("adapter target exists");
++    let role = ns_role(&node).to_string();
++    let title = NodeWrapper(&node).title();
++    let mut request = None;
++    let pressable = perform_press(&node, &tree, |action| request = Some(action));
++    (role, title, pressable, request)
++}
++
+ pub(crate) struct PlatformNodeIvars {
+     context: Weak<Context>,
+     node_id: NodeId,
+@@ -668,18 +703,7 @@ declare_class!(
+         #[method(accessibilityPerformPress)]
+         fn press(&self) -> bool {
+             self.resolve_with_context(|node, tree, context| {
+-                let clickable = node.is_clickable(&filter);
+-                if clickable {
+-                    if let Some((target_node, target_tree)) = tree.state().locate_node(node.id()) {
+-                        context.do_action(ActionRequest {
+-                            action: Action::Click,
+-                            target_tree,
+-                            target_node,
+-                            data: None,
+-                        });
+-                    }
+-                }
+-                clickable
++                perform_press(node, tree, |request| context.do_action(request))
+             })
+             .unwrap_or(false)
+         }

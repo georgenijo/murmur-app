@@ -281,7 +281,7 @@ impl Model {
                 observed_epoch,
             } if observed_epoch == self.event_epoch => self.event(Event::Snapshot(snapshot), now),
             Event::Snapshot(next)
-                if next.revision >= self.snapshot.revision
+                if next.revision > self.snapshot.revision
                     && next.generation >= self.snapshot.generation =>
             {
                 let changed = next.generation != self.snapshot.generation

@@ -4787,6 +4787,7 @@ dependencies = [
 name = "murmur-ui"
 version = "0.1.0"
 dependencies = [
+ "accesskit_macos",
  "accesskit_consumer",
  "cc",
  "gpui",

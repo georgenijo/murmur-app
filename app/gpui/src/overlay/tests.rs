@@ -358,9 +358,35 @@ impl Host for FakeHost {
     fn preview_anchor(&self, _: OverlayFrame, _: bool, _: f64) {}
 }
 #[cfg(feature = "a11y-tests")]
+fn adapter_press(cx: &mut gpui::VisualTestContext, name: &str) {
+    let window = cx.update(|w, _| w.window_handle());
+    cx.update(|w, cx| w.draw(cx).clear(cx));
+    let tree = cx.accessibility_tree(window);
+    let id = tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.label() == Some(name))
+        .unwrap()
+        .0;
+    // Run the emitted tree through the vendored macOS adapter's role/title
+    // mapping and production AXPress handler. Only its returned request crosses
+    // the test-window transport; no test constructs a Click request.
+    let (role, title, pressable, request) = accesskit_macos::test_press(tree, id);
+    assert_eq!(role, "AXButton");
+    assert_eq!(title.as_deref(), Some(name));
+    assert!(pressable, "adapter must support AXPress for {name}");
+    let request = request.expect("AXPress must dispatch");
+    assert_eq!(request.action, AccessibleAction::Click);
+    assert_eq!(request.target_node, id);
+    assert_eq!(request.target_tree, gpui::accesskit::TreeId::ROOT);
+    cx.dispatch_accessibility_action(window, request);
+    cx.run_until_parked();
+    cx.update(|w, cx| w.draw(cx).clear(cx));
+}
+
+#[cfg(feature = "a11y-tests")]
 #[gpui::test]
 fn actual_overlay_tree_controls_and_actions(cx: &mut TestAppContext) {
-    use gpui::accesskit::{ActionRequest, TreeId};
     cx.update(crate::init);
     cx.update(|cx| {
         crate::preferences::apply(
@@ -381,47 +407,26 @@ fn actual_overlay_tree_controls_and_actions(cx: &mut TestAppContext) {
     cx.activate_accessibility(window);
     cx.run_until_parked();
     cx.update(|w, cx| w.draw(cx).clear(cx));
-    let tree = cx.accessibility_tree(window);
     assert!(
-        !tree
+        !cx.accessibility_tree(window)
             .nodes
             .iter()
-            .any(|(_, n)| n.label() == Some("Quick settings"))
+            .any(|(_, n)| n.role() == Role::Group && n.label() == Some("Quick settings"))
     );
-    let (status_id, status) = tree
-        .nodes
-        .iter()
-        .find(|(_, n)| n.label() == Some("Ready"))
-        .unwrap();
-    assert_eq!(status.is_expanded(), Some(false));
-    assert!(status.supports_action(AccessibleAction::Expand));
-    assert!(status.supports_action(AccessibleAction::Focus));
-    cx.dispatch_accessibility_action(
-        window,
-        ActionRequest {
-            action: AccessibleAction::Expand,
-            target_tree: TreeId::ROOT,
-            target_node: *status_id,
-            data: None,
-        },
-    );
-    cx.run_until_parked();
-    cx.update(|w, cx| w.draw(cx).clear(cx));
-    let tree = cx.accessibility_tree(window);
+    let focus = cx.accessibility_tree(window).focus;
+    adapter_press(cx, "Quick settings, collapsed");
     assert_eq!(
-        tree.nodes
-            .iter()
-            .find(|(_, n)| n.label() == Some("Ready"))
-            .unwrap()
-            .1
-            .is_expanded(),
-        Some(true)
+        cx.accessibility_tree(window).focus,
+        focus,
+        "disclosure must not move key focus"
     );
     assert!(
         host.intents.borrow().is_empty(),
-        "expansion must not start recording"
+        "disclosure must not start dictation"
     );
+    let tree = cx.accessibility_tree(window);
     for (name, role) in [
+        ("Quick settings, expanded", Role::Button),
         ("Quick settings", Role::Group),
         ("Mode: Everyday. Click to cycle", Role::Button),
         ("Disable Murmur", Role::Button),
@@ -439,54 +444,33 @@ fn actual_overlay_tree_controls_and_actions(cx: &mut TestAppContext) {
     for name in [
         "Mode: Everyday. Click to cycle",
         "Disable Murmur",
-        "Auto-paste",
         "Open settings",
     ] {
-        cx.update(|w, cx| w.draw(cx).clear(cx));
-        let tree = cx.accessibility_tree(window);
-        let id = tree
-            .nodes
-            .iter()
-            .find(|(_, n)| n.label() == Some(name))
-            .unwrap()
-            .0;
-        cx.dispatch_accessibility_action(
-            window,
-            ActionRequest {
-                action: AccessibleAction::Click,
-                target_tree: TreeId::ROOT,
-                target_node: id,
-                data: None,
-            },
-        );
-        cx.run_until_parked();
+        adapter_press(cx, name);
     }
+    // Switches map to AXCheckBox rather than AXButton, but share AXPress.
+    let tree = cx.accessibility_tree(window);
+    let id = tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.label() == Some("Auto-paste"))
+        .unwrap()
+        .0;
+    let (role, _, pressable, request) = accesskit_macos::test_press(tree, id);
+    assert_eq!(role, "AXCheckBox");
+    assert!(pressable);
+    cx.dispatch_accessibility_action(window, request.unwrap());
+    cx.run_until_parked();
     assert_eq!(
         *host.intents.borrow(),
         vec![
             Intent::CycleMode,
             Intent::Disabled(true),
-            Intent::AutoPaste(false),
-            Intent::OpenSettings
+            Intent::OpenSettings,
+            Intent::AutoPaste(false)
         ]
     );
-    let id = tree
-        .nodes
-        .iter()
-        .find(|(_, n)| n.label() == Some("Ready"))
-        .unwrap()
-        .0;
-    cx.dispatch_accessibility_action(
-        window,
-        ActionRequest {
-            action: AccessibleAction::Collapse,
-            target_tree: TreeId::ROOT,
-            target_node: id,
-            data: None,
-        },
-    );
-    cx.run_until_parked();
-    cx.update(|w, cx| w.draw(cx).clear(cx));
+    adapter_press(cx, "Quick settings, expanded");
     let tree = cx.accessibility_tree(window);
     assert!(
         !tree
@@ -495,21 +479,21 @@ fn actual_overlay_tree_controls_and_actions(cx: &mut TestAppContext) {
             .any(|(_, n)| n.label() == Some("Quick settings")),
         "collapsed controls must leave AX tree"
     );
+    assert!(
+        tree.nodes
+            .iter()
+            .any(|(_, n)| n.label() == Some("Quick settings, collapsed"))
+    );
     let id = tree
         .nodes
         .iter()
         .find(|(_, n)| n.label() == Some("Ready"))
         .unwrap()
         .0;
-    cx.dispatch_accessibility_action(
-        window,
-        ActionRequest {
-            action: AccessibleAction::Click,
-            target_tree: TreeId::ROOT,
-            target_node: id,
-            data: None,
-        },
-    );
+    let (role, _, pressable, request) = accesskit_macos::test_press(tree, id);
+    assert_eq!(role, "AXGroup");
+    assert!(pressable);
+    cx.dispatch_accessibility_action(window, request.unwrap());
     cx.run_until_parked();
     assert_eq!(
         host.intents.borrow().last(),
@@ -789,10 +773,7 @@ fn painted_status_content_stays_in_notch_wings_and_centers_in_the_pill(cx: &mut 
 
 #[cfg(feature = "a11y-tests")]
 #[gpui::test]
-fn disabled_collapsed_overlay_opens_with_keyboard_and_exposes_enable_action(
-    cx: &mut TestAppContext,
-) {
-    use gpui::accesskit::{ActionRequest, TreeId};
+fn disabled_collapsed_overlay_opens_and_closes_through_macos_adapter(cx: &mut TestAppContext) {
     cx.update(crate::init);
     cx.update(|cx| {
         crate::preferences::apply(
@@ -820,54 +801,107 @@ fn disabled_collapsed_overlay_opens_with_keyboard_and_exposes_enable_action(
     cx.activate_accessibility(window);
     cx.run_until_parked();
     cx.update(|w, cx| w.draw(cx).clear(cx));
-    let tree = cx.accessibility_tree(window);
-    let id = tree
-        .nodes
-        .iter()
-        .find(|(_, n)| n.label() == Some("Ready"))
-        .unwrap()
-        .0;
-    cx.dispatch_accessibility_action(
-        window,
-        ActionRequest {
-            action: AccessibleAction::Focus,
-            target_tree: TreeId::ROOT,
-            target_node: id,
-            data: None,
-        },
-    );
-    cx.run_until_parked();
-    cx.update(|w, cx| w.draw(cx).clear(cx));
-    assert_eq!(cx.accessibility_tree(window).focus, id);
-    cx.simulate_keystrokes("down");
-    cx.run_until_parked();
-    cx.update(|w, cx| w.draw(cx).clear(cx));
-    assert!(host.intents.borrow().is_empty());
-    let tree = cx.accessibility_tree(window);
-    let id = tree
-        .nodes
-        .iter()
-        .find(|(_, n)| n.label() == Some("Enable Murmur"))
-        .unwrap()
-        .0;
-    cx.dispatch_accessibility_action(
-        window,
-        ActionRequest {
-            action: AccessibleAction::Click,
-            target_tree: TreeId::ROOT,
-            target_node: id,
-            data: None,
-        },
-    );
-    cx.run_until_parked();
-    assert_eq!(*host.intents.borrow(), vec![Intent::Disabled(false)]);
-    cx.simulate_keystrokes("escape");
-    cx.run_until_parked();
-    cx.update(|w, cx| w.draw(cx).clear(cx));
+    let focus = cx.accessibility_tree(window).focus;
     assert!(
         !cx.accessibility_tree(window)
             .nodes
             .iter()
-            .any(|(_, n)| n.label() == Some("Quick settings"))
+            .any(|(_, n)| n.label() == Some("Enable Murmur"))
     );
+    adapter_press(cx, "Quick settings, collapsed");
+    assert_eq!(cx.accessibility_tree(window).focus, focus);
+    assert!(host.intents.borrow().is_empty());
+    adapter_press(cx, "Enable Murmur");
+    assert_eq!(*host.intents.borrow(), vec![Intent::Disabled(false)]);
+    adapter_press(cx, "Quick settings, expanded");
+    let tree = cx.accessibility_tree(window);
+    assert!(
+        tree.nodes
+            .iter()
+            .any(|(_, n)| n.label() == Some("Quick settings, collapsed"))
+    );
+    assert!(!tree.nodes.iter().any(|(_, n)| n.label() == Some("Enable Murmur") || n.label() == Some("Quick settings")));
+    assert_eq!(tree.focus, focus);
+    assert_eq!(
+        *host.intents.borrow(),
+        vec![Intent::Disabled(false)],
+        "collapse must not send a recording or settings intent"
+    );
+}
+
+#[test]
+fn duplicate_snapshot_and_hydration_do_not_rewind_the_recording_timer() {
+    let snapshot = Snapshot {
+        revision: 1,
+        generation: 7,
+        status: Status::Recording,
+        elapsed_ms: 61000,
+        ..Default::default()
+    };
+    let mut m = Model::new(snapshot.clone());
+    assert_eq!(m.elapsed(1000), "1:02");
+    m.event(Event::Snapshot(snapshot.clone()), 1000);
+    assert_eq!(m.elapsed(1000), "1:02");
+    m.event(
+        Event::Hydrate {
+            snapshot: snapshot.clone(),
+            observed_epoch: m.hydration_epoch(),
+        },
+        2000,
+    );
+    assert_eq!(m.elapsed(2000), "1:03");
+    m.event(Event::Visible(true), 2500);
+    m.event(
+        Event::Hydrate {
+            snapshot,
+            observed_epoch: m.hydration_epoch(),
+        },
+        3000,
+    );
+    assert_eq!(m.elapsed(3000), "1:04");
+    assert_eq!(m.started_ms, Some(0));
+}
+
+#[test]
+fn initial_hydration_and_current_epoch_refresh_accept_newer_revisions() {
+    let mut m = Model::new(Snapshot::default());
+    m.event(
+        Event::Hydrate {
+            snapshot: Snapshot {
+                revision: 1,
+                generation: 7,
+                status: Status::Recording,
+                elapsed_ms: 61000,
+                ..Default::default()
+            },
+            observed_epoch: m.hydration_epoch(),
+        },
+        5000,
+    );
+    assert_eq!(m.elapsed(6000), "1:02");
+    let old_epoch = m.hydration_epoch();
+    m.event(Event::Visible(true), 6000);
+    let refresh = Snapshot {
+        revision: 2,
+        elapsed_ms: 63000,
+        ..m.snapshot.clone()
+    };
+    m.event(
+        Event::Hydrate {
+            snapshot: refresh.clone(),
+            observed_epoch: old_epoch,
+        },
+        7000,
+    );
+    assert_eq!(m.snapshot.revision, 1);
+    assert_eq!(m.elapsed(7000), "1:03");
+    m.event(
+        Event::Hydrate {
+            snapshot: refresh,
+            observed_epoch: m.hydration_epoch(),
+        },
+        8000,
+    );
+    assert_eq!(m.snapshot.revision, 2);
+    assert_eq!(m.elapsed(9000), "1:04");
 }
