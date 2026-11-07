@@ -385,7 +385,7 @@ impl Render for Home {
             .aria_numeric_value(width as f64)
             .aria_min_numeric_value(256.)
             .aria_max_numeric_value(384.)
-            .track_focus(&self.focus_for("sidebar-width", cx))
+            .track_focus(&self.focus_for("sidebar-width", cx).tab_stop(true))
             .w(px(6.))
             .h_full()
             .cursor_col_resize()

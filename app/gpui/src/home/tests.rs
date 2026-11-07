@@ -290,7 +290,12 @@ mod ax {
         let node = &t.nodes.iter().find(|(i, _)| *i == id).unwrap().1;
         assert_eq!(node.role(), gpui::Role::Splitter);
         assert_eq!(node.numeric_value(), Some(256.));
-        cx.update(|w, cx| w.focus(&e.read(cx).focus["sidebar-width"].clone(), cx));
+        cx.update(|w, cx| w.focus(&e.read(cx).focus["nav-insights"].clone(), cx));
+        keys(cx, "tab");
+        assert!(
+            cx.update(|w, cx| e.read(cx).focus["sidebar-width"].is_focused(w)),
+            "Tab must reach the splitter"
+        );
         keys(cx, "right");
         let t = tree(cx);
         let node = &t
