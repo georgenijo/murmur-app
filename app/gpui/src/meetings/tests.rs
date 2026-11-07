@@ -441,6 +441,29 @@ mod ax {
     }
 
     #[gpui::test]
+    fn ax_focus_without_arrows_reveals_whole_partially_visible_row(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness_host(cx, Rc::new(FixtureHost::with_corpus(50, 4, 100)));
+        cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
+        draw(cx);
+        super::partially_visible_second_row(&e, cx);
+        let t = tree(cx);
+        let id = named(&t, "Untitled meeting");
+        let w = cx.update(|w, _| w.window_handle());
+        cx.dispatch_accessibility_action(
+            w,
+            ActionRequest {
+                action: gpui::accesskit::Action::Focus,
+                target_node: id,
+                target_tree: TreeId::ROOT,
+                data: None,
+            },
+        );
+        super::settle_reveal(cx);
+        assert_eq!(tree(cx).focus, id);
+        super::assert_row_visible(&e, cx, 1);
+    }
+
+    #[gpui::test]
     fn long_fixture_pages_expose_complete_text_and_later_segments(cx: &mut TestAppContext) {
         let (e, _, cx) = harness_host(cx, Rc::new(FixtureHost::with_corpus(250, 80, 5000)));
         let expected = fixtures::corpus(250, 80, 5000).detail.unwrap().segments[0]
@@ -850,6 +873,114 @@ fn assert_row_visible(e: &Entity<Meetings>, cx: &mut VisualTestContext, index: u
             "row {index} clipped: top={top:?}, viewport={viewport:?}"
         );
     });
+}
+
+// Place row 1 at the bottom with its title visible but its metadata clipped.
+fn partially_visible_second_row(e: &Entity<Meetings>, cx: &mut VisualTestContext) {
+    e.update(cx, |s, cx| {
+        let scroll = s.list_scroll.0.borrow();
+        let height = scroll.base_handle.bounds().size.height;
+        assert!(height >= gpui::px(112.));
+        scroll
+            .base_handle
+            .set_offset(gpui::point(gpui::px(0.), height - gpui::px(48. + 112.)));
+        cx.notify();
+    });
+    draw(cx);
+}
+fn settle_reveal(cx: &mut VisualTestContext) {
+    draw(cx);
+    cx.update(|w, cx| w.simulate_next_frame(cx));
+    draw(cx);
+}
+#[gpui::test]
+fn tab_shift_tab_and_programmatic_entry_reveal_whole_row(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness_host(cx, Rc::new(FixtureHost::with_corpus(50, 4, 100)));
+    cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
+    draw(cx);
+    for (source, key) in [
+        ("meeting-fixture-1", Some("tab")),
+        ("rename", Some("shift-tab")),
+        ("meeting-fixture-1", None),
+    ] {
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                let f = s.focus_for(source, cx);
+                w.focus(&f, cx);
+            });
+        });
+        settle_reveal(cx);
+        partially_visible_second_row(&e, cx);
+        if let Some(key) = key {
+            cx.simulate_keystrokes(key);
+        } else {
+            cx.update(|w, cx| {
+                e.update(cx, |s, cx| {
+                    let f = s.focus_for("meeting-fixture-2", cx);
+                    w.focus(&f, cx);
+                });
+            });
+        }
+        settle_reveal(cx);
+        assert!(
+            cx.update(|w, cx| e.read(cx).focus["meeting-fixture-2"].is_focused(w)),
+            "{key:?} must enter the partially visible second row"
+        );
+        assert_row_visible(&e, cx, 1);
+    }
+}
+#[gpui::test]
+fn compact_permission_relaunch_and_error_keep_both_panes_reachable(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
+    for state in ["denied", "relaunch", "error", "combined"] {
+        e.update(cx, |s, cx| {
+            let snapshot = s.model.snapshot.as_mut().unwrap();
+            snapshot.permission = if matches!(state, "denied" | "combined") {
+                Permission::Denied
+            } else {
+                Permission::Granted
+            };
+            snapshot.needs_relaunch = matches!(state, "relaunch" | "combined");
+            snapshot.failure = matches!(state, "denied" | "error" | "combined")
+                .then_some("Synthetic capture failure. Check access and try again.");
+            cx.notify();
+        });
+        settle_reveal(cx);
+        e.read_with(cx, |s, _| {
+            assert!(
+                s.detail_scroll.bounds().size.height >= gpui::px(160.),
+                "{state}: usable detail"
+            );
+            assert!(
+                s.list_scroll.0.borrow().base_handle.bounds().size.height >= gpui::px(112.),
+                "{state}: complete list row"
+            );
+            crate::data_components::reveal_bounds(s.detail_scroll.bounds(), [&s.content_scroll]);
+        });
+        settle_reveal(cx);
+        e.read_with(cx, |s, _| {
+            let detail = s.detail_scroll.bounds();
+            let outer = s.content_scroll.bounds();
+            assert!(
+                detail.top() >= outer.top() && detail.bottom() <= outer.bottom(),
+                "{state}: detail must be reachable: {detail:?}, page {outer:?}"
+            );
+            crate::data_components::reveal_bounds(
+                s.list_scroll.0.borrow().base_handle.bounds(),
+                [&s.content_scroll],
+            );
+        });
+        settle_reveal(cx);
+        e.read_with(cx, |s, _| {
+            let list = s.list_scroll.0.borrow().base_handle.bounds();
+            let outer = s.content_scroll.bounds();
+            assert!(
+                list.top() >= outer.top() && list.bottom() <= outer.bottom(),
+                "{state}: list must be reachable: {list:?}, page {outer:?}"
+            );
+        });
+    }
 }
 
 #[gpui::test]
