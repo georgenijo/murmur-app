@@ -124,7 +124,7 @@ All fixtures and rendered captures are synthetic. Native acceptance is separate.
 | O02 7/18 bars; coalesced 16 ms levels; no idle animation | Single latest-level slot, generation/visibility check, one GPUI draw stream | `waveform_is_bounded_and_only_the_current_visible_owner_can_supply_samples`, inbox backpressure/coalescing test; no performance claim |
 | O02 HUD/tints, Reduce Motion/Transparency, appearance | Same-turn AppKit HUD and window-local palettes; shared motion engine | Inert shim compilation; deterministic offscreen goldens and existing motion/preference tests; live material and OS changes remain |
 | O03 150 ms dwell, acknowledged growth, 300 ms leave, delayed shrink | One main-thread surface writer and phase reducer; disabled state retains hover; shrink retains a pending re-entry dwell | `hover_dwell_ack_leave_shrink_and_failed_grow`, `disabled_hover_can_reopen_quick_settings_but_cannot_start_recording`, `shrink_preserves_a_pending_dwell_in_the_persistent_top_band` (1000 ms enter → 1080 ms shrink → 1150 ms open), `state_contractions_retain_native_bounds_then_release_without_anchor_drift`, `hidden_and_topology_reset_do_not_reopen_transparent_hit_area`; native clipping/hit-area check remains |
-| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents; a dedicated nonvisual Button is always present on the visible collapsed surface; its AX title conveys collapsed/expanded and AXPress toggles disclosure without key focus or dictation activation | `actual_overlay_tree_controls_and_actions` and `disabled_collapsed_overlay_opens_and_closes_through_macos_adapter` pass emitted nodes through the vendored macOS adapter role/title mapping and shared production AXPress handler, then transport only its generated actions; collapsed/disabled → open → Enable Murmur → close and unchanged focus/intents are asserted; native host field commits/Settings opening remain |
+| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents; a dedicated bounded disclosure Button is present in the status row of each visible surface; its AX title conveys collapsed/expanded and AXPress toggles disclosure without key focus or dictation activation | `actual_overlay_tree_controls_and_actions` and `disabled_collapsed_overlay_opens_and_closes_through_macos_adapter` pass emitted nodes through the vendored macOS adapter role/title mapping and shared production AXPress handler, then transport only its generated actions; collapsed/disabled → open → Enable Murmur → close and unchanged focus/intents are asserted; native host field commits/Settings opening remain |
 | O04 250 ms click, double-click lock, disabled/processing/open guards | Click recognizer sends generation-bound core inputs | `click_delay_double_click_and_generation_ownership`, `starting_click_cancels_and_disabled_recording_remains_stoppable`; real capture/delivery remains host acceptance |
 | O05 Cancelled 800 ms, opt-in tap miss 500 ms, failure 5 s | Generation-scoped timed cues, fixed content-free announcements | Priority/expiry and stale-generation tests; actual VoiceOver speech remains |
 | O05 Clipboard-only/retry, duplicate/stale outcomes | Secure retry intent, attempt/generation guard, bounded result | `delivery_duplicates_never_extend_cue_and_only_confirmed_clipboard_installs_it`, `retry_is_single_flight_and_uses_a_fresh_bounded_result`, stale retry test; no clipboard access in test host |
@@ -140,18 +140,26 @@ pointer timing, including keeping the close shrink armed until a re-entry dwell
 commits. `OverlayPill` and its tests reserve independent notch wings and center
 the floating row. Native status uses those same content slots: seven bars occupy
 23 pt centered in the right 28 pt wing; eighteen bars occupy 61.5 pt in the pill.
-The idle, collapsed notch has no exposed wings and paints no status content in
-the cutout. The native Quick settings Button adds a non-pointer route to the same
-Quick settings group and names used by the React dropdown. It grows through the
-same acknowledged writer as hover and does not activate recording. Disabled
+The idle, collapsed notch has no exposed wings and omits the recording status
+content. A 12×24 pt chevron in the leading status slot toggles Quick settings;
+the active state glyph retains its separate recording/status click behavior.
+The disclosure fits beside that glyph inside the fixed 28 pt notch wing and
+inside the existing floating pill, without changing native geometry. Disabled
 state gates recording starts, never access to the Enable control.
 
-The disclosure Button is nonvisual and occupies the surface bounds without a
-pointer handler or focus owner, preserving the idle notch and existing click
-regions. Its adapter-exported title is “Quick settings, collapsed” or “Quick
-settings, expanded”; AXPress is Click, already supported by the pinned macOS
-adapter. The status retains its recording activation, but no longer advertises
-unsupported Expand/Collapse or a keyboard fallback on the never-key panel.
+The disclosure's AX frame is its actual pointer hitbox; it does not cover the
+status row or quick controls. Pointer clicks and AXPress use the same toggle
+and acknowledged resize path, with no focus owner. Its adapter-exported title
+is “Quick settings, collapsed” or “Quick settings, expanded”. Mouse-down and
+click propagation stop at the chevron so it cannot start/stop dictation. The
+status retains its recording activation and the panel remains never-key.
+
+`disclosure_ax_frame_is_its_pointer_target_in_both_placements` compares the emitted
+AX frame to the laid-out hitbox, clicks its center and near-corners, and reverses
+each click through the macOS adapter's AXPress route. It covers both placements,
+disabled state, repeated growth/shrink, unchanged focus, no delayed recording
+intent, the adjacent recording action and hidden-surface exclusion. Removing the
+pointer handler makes the regression fail while AXPress remains available.
 The windowless adapter probe shares the production press target resolution and
 dispatch function; it creates no NSView/NSWindow and makes no AX client calls.
 It establishes adapter mapping/action handling, not VoiceOver spoken behavior.

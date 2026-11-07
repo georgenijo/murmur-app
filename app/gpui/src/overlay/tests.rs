@@ -736,7 +736,10 @@ fn painted_status_content_stays_in_notch_wings_and_centers_in_the_pill(cx: &mut 
                             "overlay-waveform"
                         })
                         .unwrap();
-                    assert!(leading.left() >= row.left());
+                    assert!(
+                        leading.left() >= row.left(),
+                        "placement={placement:?} physical={physical} expanded={expanded} delivery={delivery} row={row:?} leading={leading:?} trailing={trailing:?}"
+                    );
                     assert!(content.left() >= trailing.left());
                     assert!(content.right() <= trailing.right());
                     assert!(trailing.right() <= row.right());
@@ -1173,4 +1176,192 @@ fn resized_overlay_ax_frames_match_viewport_and_mode_pointer_target(cx: &mut Tes
             ));
         }
     }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn disclosure_ax_frame_is_its_pointer_target_in_both_placements(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let host = Rc::new(FakeHost::default());
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, host.clone()));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for disabled in [false, true] {
+            for expanded in [false, true, false, true] {
+                for (x, y) in [(0.5, 0.5), (0.1, 0.1), (0.9, 0.9)] {
+                    cx.update(|w, cx| {
+                        overlay.update(cx, |s, cx| {
+                            s.model = active();
+                            s.model.snapshot.placement = placement;
+                            s.model.snapshot.disabled = disabled;
+                            s.model.phase = if expanded {
+                                Phase::Open
+                            } else {
+                                Phase::Collapsed
+                            };
+                            s.advance(w, cx);
+                        });
+                        w.draw(cx).clear(cx);
+                    });
+                    let tree = cx.accessibility_tree(window);
+                    let focus = tree.focus;
+                    let name = if expanded {
+                        "Quick settings, expanded"
+                    } else {
+                        "Quick settings, collapsed"
+                    };
+                    let (id, node) = tree
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| n.label() == Some(name))
+                        .unwrap();
+                    assert_eq!(node.role(), Role::Button);
+                    let ax = node.bounds().unwrap();
+                    let id = *id;
+                    let hit = cx
+                        .debug_bounds("overlay-quick-settings-disclosure")
+                        .unwrap();
+                    let scale = cx.update(|w, _| w.scale_factor()) as f64;
+                    assert_eq!(ax.x0 / scale, f32::from(hit.left()) as f64);
+                    assert_eq!(ax.y0 / scale, f32::from(hit.top()) as f64);
+                    assert_eq!(ax.width() / scale, 12.);
+                    assert_eq!(ax.height() / scale, 24.);
+                    // The disclosure owns no Mode/power/paste/settings area.
+                    for (_, other) in &tree.nodes {
+                        if other.label().is_some_and(|label| {
+                            label.starts_with("Mode:")
+                                || matches!(
+                                    label,
+                                    "Disable Murmur"
+                                        | "Enable Murmur"
+                                        | "Auto-paste"
+                                        | "Open settings"
+                                )
+                        }) {
+                            let bounds = other.bounds().unwrap();
+                            assert!(
+                                ax.x1 <= bounds.x0
+                                    || ax.x0 >= bounds.x1
+                                    || ax.y1 <= bounds.y0
+                                    || ax.y0 >= bounds.y1
+                            );
+                        }
+                    }
+                    let (_, _, pressable, request) = accesskit_macos::test_press(tree, id);
+                    assert!(pressable);
+                    assert!(request.is_some());
+                    let before = host.intents.borrow().len();
+                    cx.simulate_click(
+                        gpui::point(
+                            gpui::px(((ax.x0 + ax.width() * x) / scale) as f32),
+                            gpui::px(((ax.y0 + ax.height() * y) / scale) as f32),
+                        ),
+                        gpui::Modifiers::default(),
+                    );
+                    cx.run_until_parked();
+                    cx.update(|_, cx| {
+                        overlay.update(cx, |s, _| {
+                            let action = s.model.tick(s.now + 300, true, |_, _| true);
+                            s.send(action);
+                        });
+                    });
+                    assert_eq!(
+                        overlay.read_with(cx, |s, _| s.model.phase),
+                        if expanded {
+                            Phase::Collapsed
+                        } else {
+                            Phase::Open
+                        }
+                    );
+                    assert_eq!(
+                        host.intents.borrow().len(),
+                        before,
+                        "disclosure cannot activate dictation or quick controls"
+                    );
+                    assert_eq!(cx.accessibility_tree(window).focus, focus);
+                    // The same exported native AXPress target reverses the click.
+                    adapter_press(
+                        cx,
+                        if expanded {
+                            "Quick settings, collapsed"
+                        } else {
+                            "Quick settings, expanded"
+                        },
+                    );
+                    assert_eq!(
+                        overlay.read_with(cx, |s, _| s.model.phase),
+                        if expanded {
+                            Phase::Open
+                        } else {
+                            Phase::Collapsed
+                        }
+                    );
+                    assert_eq!(host.intents.borrow().len(), before);
+                }
+            }
+        }
+    }
+    // The adjacent state indicator still stops a recording, without toggling
+    // disclosure or sending the action twice through its parent status row.
+    cx.update(|w, cx| {
+        overlay.update(cx, |s, cx| {
+            s.model = active();
+            s.model.snapshot.placement = OverlayPlacement::FloatingPill;
+            s.advance(w, cx);
+        });
+        w.draw(cx).clear(cx);
+    });
+    let glyph = cx.debug_bounds("overlay-state-glyph").unwrap();
+    let before = host.intents.borrow().len();
+    cx.simulate_click(glyph.center(), gpui::Modifiers::default());
+    cx.update(|_, cx| {
+        overlay.update(cx, |s, _| {
+            assert_eq!(s.model.phase, Phase::Collapsed);
+            let action = s.model.tick(s.now + 300, true, |_, _| true);
+            s.send(action);
+        });
+    });
+    assert_eq!(host.intents.borrow().len(), before + 1);
+    assert_eq!(
+        host.intents.borrow().last(),
+        Some(&Intent::Control {
+            generation: 7,
+            input: Control::Stop
+        })
+    );
+    // A hidden floating surface exports neither a disclosure nor a hitbox.
+    cx.update(|w, cx| {
+        overlay.update(cx, |s, cx| {
+            s.model = Model::new(Snapshot {
+                placement: OverlayPlacement::FloatingPill,
+                ..Snapshot::default()
+            });
+            s.advance(w, cx);
+        });
+        w.draw(cx).clear(cx);
+    });
+    assert!(!cx.accessibility_tree(window).nodes.iter().any(|(_, n)| {
+        n.label()
+            .is_some_and(|label| label.starts_with("Quick settings"))
+    }));
+    assert!(
+        cx.debug_bounds("overlay-quick-settings-disclosure")
+            .is_none()
+    );
 }
