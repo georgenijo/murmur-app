@@ -162,6 +162,34 @@ establish real dictation or a connected production settings adapter. Phase 2
 must wire those adapters and prove actual production-view deallocation before
 O08–O10 and #1000 can be marked complete.
 
+## Native QA regression fixes (#1029)
+
+The original default titled/resizable popup can crash in AppKit's structural
+tracking update. An own-process trace identifies the NULL object as the return
+of `CGRegionCreateWithRect`: `_trackingRegionWindowRectFlipped:` supplies a
+rectangle about 2.1 billion points wide, and AppKit unconditionally calls
+`CFRelease` on the failed region allocation. Disabling resizing or removing
+the normal titlebar separately prevents the reproduced trap. Preview hosts
+use `Preview::window_options` for a fixed full-content popup; the native
+preview setup also normalizes a default panel before resizing or revealing it.
+This preserves the content view and leaves other panels unchanged.
+
+Use `Preview::root` around the preview entity. It overrides the component
+Root's theme background on this instance, so the card's surrounding reservation
+stays clear. The existing Root style API is sufficient; no vendored change or
+new patch is needed. Render-level regression coverage checks every painted
+quad against the card bounds in both placements, themes and lift positions,
+then verifies a separate ordinary Root still paints its opaque background.
+All preview goldens additionally assert transparent margin pixels.
+
+With the Mac GUI owner's agreement, run
+`RUSTUP_TOOLCHAIN=1.98.1 python3 scripts/check_gpui_preview_native.py`.
+It builds and launches only the synthetic smoke host, captures its own windows
+with `screencapture -l`, and uses OCR to require actual synthetic text through
+three stop/start cycles before clean exit. Receipts include the binary/source
+hashes. It drives no HID, AX actions, VoiceOver or system settings. The live
+editor/HID retest and VoiceOver speech acceptance remain separate.
+
 ## Verification receipt (Mac mini, checkout 45)
 
 Headless Fleet route through opti, Rust 1.98.1, fresh
