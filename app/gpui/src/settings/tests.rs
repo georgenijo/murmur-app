@@ -458,6 +458,248 @@ mod ax {
                 .any(|(_, n)| n.label() == Some("Auto-paste") && n.is_disabled())
         );
     }
+    fn publish(
+        e: &Entity<Settings>,
+        host: &FixtureHost,
+        cx: &mut VisualTestContext,
+        change: impl FnOnce(&mut super::super::model::Snapshot),
+    ) {
+        let mut snapshot = host.state.borrow().clone();
+        snapshot.revision += 1;
+        change(&mut snapshot);
+        *host.state.borrow_mut() = snapshot.clone();
+        e.update(cx, |s, cx| {
+            s.receive(
+                Event::Changed {
+                    attachment: s.model.attachment,
+                    snapshot,
+                },
+                cx,
+            )
+        });
+        draw(cx);
+    }
+    #[gpui::test]
+    fn regression_manual_microphone_disables_auto_even_for_saved_device(cx: &mut TestAppContext) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.settings["smartAutoMicrophoneEnabled"] = json!(true)
+        });
+        let row = *ROWS.iter().find(|r| r.key == "microphone").unwrap();
+        // Direct control callback hook: no native HID input or real microphone.
+        cx.update(|w, cx| e.update(cx, |s, cx| s.edit(row, json!("system_default"), w, cx)));
+        assert_eq!(
+            host.state.borrow().settings["smartAutoMicrophoneEnabled"],
+            false
+        );
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.settings["smartAutoMicrophoneEnabled"] = json!(true)
+        });
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.edit(row, json!("synthetic.microphone"), w, cx)
+            })
+        });
+        let settings = &host.state.borrow().settings;
+        assert_eq!(settings["microphone"], "synthetic.microphone");
+        assert_eq!(settings["smartAutoMicrophoneEnabled"], false);
+        assert_eq!(settings["microphoneIdMigrationComplete"], true);
+    }
+    #[gpui::test]
+    fn regression_prefer_moves_device_to_front_and_marks_only_first(cx: &mut TestAppContext) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.settings["smartAutoMicrophoneEnabled"] = json!(true);
+            snapshot.settings["smartAutoApprovedDeviceIds"] =
+                json!(["synthetic.microphone", "synthetic.phone"]);
+            snapshot.settings["smartAutoPreferredDeviceIds"] = json!(["synthetic.microphone"]);
+            snapshot.disclosure["panes"]["recording"] = json!(true);
+        });
+        cx.update(|w, cx| e.update(cx, |s, cx| s.navigate(Page::Recording, None, w, cx)));
+        e.update(cx, |s, cx| {
+            s.scroll.scroll_to_bottom();
+            cx.notify();
+        });
+        let t = tree(cx);
+        click(cx, named(&t, "Prefer Synthetic phone"));
+        assert_eq!(
+            host.state.borrow().settings["smartAutoPreferredDeviceIds"],
+            json!(["synthetic.phone", "synthetic.microphone"])
+        );
+        let t = tree(cx);
+        let preferred = |label| {
+            t.nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(label))
+                .unwrap()
+                .1
+                .toggled()
+        };
+        assert_eq!(
+            preferred("Prefer Synthetic phone"),
+            Some(gpui::accesskit::Toggled::True)
+        );
+        assert_eq!(
+            preferred("Prefer Synthetic microphone"),
+            Some(gpui::accesskit::Toggled::False)
+        );
+        click(cx, named(&t, "Prefer Synthetic microphone"));
+        assert_eq!(
+            host.state.borrow().settings["smartAutoPreferredDeviceIds"],
+            json!(["synthetic.microphone", "synthetic.phone"])
+        );
+    }
+    #[gpui::test]
+    fn regression_calibration_preview_failure_then_save_keeps_acknowledged_requested_offset(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.disclosure["panes"]["general"] = json!(true);
+        });
+        for acknowledged in [0, 1] {
+            let t = tree(cx);
+            click(cx, named(&t, "Calibrate overlay position…"));
+            if acknowledged == 1 {
+                let t = tree(cx);
+                click(cx, named(&t, "Move overlay down one point"));
+            }
+            assert_eq!(
+                host.state.borrow().runtime.calibration.unwrap().applied,
+                acknowledged
+            );
+
+            host.fail.set(Some(Problem::Unavailable));
+            let t = tree(cx);
+            click(cx, named(&t, "Move overlay down one point"));
+            assert_eq!(
+                e.read_with(cx, |s, _| s.model.problem),
+                Some(Problem::Unavailable)
+            );
+            assert!(e.read_with(cx, |s, _| !s.model.pending));
+            assert_eq!(
+                host.state.borrow().runtime.calibration.unwrap().applied,
+                acknowledged
+            );
+
+            let t = tree(cx);
+            click(cx, named(&t, "Save position"));
+            assert_eq!(
+                host.actions.borrow().last(),
+                Some(&Action::Calibration {
+                    offset: acknowledged,
+                    finish: true,
+                })
+            );
+            assert_eq!(
+                host.state.borrow().settings["overlayVerticalOffset"],
+                acknowledged
+            );
+            assert!(e.read_with(cx, |s, _| s.calibration.is_none()));
+        }
+    }
+    #[gpui::test]
+    fn regression_calibration_save_preserves_requested_display_clamped_offset(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.settings["overlayVerticalOffset"] = json!(4);
+            snapshot.disclosure["panes"]["general"] = json!(true);
+            snapshot.runtime.calibration = Some(super::super::model::Calibration {
+                requested: 4,
+                applied: 2,
+                min: -2,
+                max: 2,
+            });
+        });
+        let t = tree(cx);
+        click(cx, named(&t, "Calibrate overlay position…"));
+        let t = tree(cx);
+        click(cx, named(&t, "Save position"));
+        assert_eq!(host.state.borrow().settings["overlayVerticalOffset"], 4);
+        assert!(e.read_with(cx, |s, _| s.calibration.is_none()));
+    }
+    #[gpui::test]
+    fn regression_folder_reset_restores_empty_default_through_owner(cx: &mut TestAppContext) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.settings["saveTranscript"] = json!(true);
+            snapshot.settings["outputDir"] = json!("/synthetic/output");
+            snapshot.settings["benchmarkOutputDir"] = json!("/synthetic/reports");
+        });
+        for (page, label, key) in [
+            (Page::Delivery, "Output folder", "outputDir"),
+            (Page::Performance, "Report folder", "benchmarkOutputDir"),
+        ] {
+            cx.update(|w, cx| e.update(cx, |s, cx| s.navigate(page, None, w, cx)));
+            let t = tree(cx);
+            click(cx, named(&t, &format!("Reset {label} to default")));
+            assert_eq!(host.state.borrow().settings[key], "");
+            let t = tree(cx);
+            assert!(
+                !t.nodes
+                    .iter()
+                    .any(|(_, n)| n.label() == Some(&format!("Reset {label} to default")))
+            );
+        }
+    }
+    #[gpui::test]
+    fn regression_escape_revokes_delayed_preview_and_keeps_retry_on_cancel_failure(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::host::Host;
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.disclosure["panes"]["general"] = json!(true)
+        });
+        host.delay_preview.set(true);
+        let t = tree(cx);
+        click(cx, named(&t, "Calibrate overlay position…"));
+        assert!(e.read_with(cx, |s, _| s.model.pending));
+        assert!(host.delayed.borrow()[0].0.lease.is_current());
+        let t = tree(cx);
+        assert!(
+            !t.nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some("Cancel calibration"))
+                .unwrap()
+                .1
+                .is_disabled()
+        );
+        host.fail.set(Some(Problem::Unavailable));
+        // Invoke the actual Escape handler as a test hook; no native HID input.
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.key(
+                    &gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse_with_os("escape", cx.platform_info().os)
+                            .unwrap(),
+                        is_held: false,
+                        prefer_character_input: false,
+                    },
+                    w,
+                    cx,
+                )
+            })
+        });
+        assert!(!host.delayed.borrow()[0].0.lease.is_current());
+        assert!(e.read_with(cx, |s, _| s.calibration.is_some()));
+        let t = tree(cx);
+        click(cx, named(&t, "Cancel calibration"));
+        assert_eq!(
+            host.actions.borrow().last(),
+            Some(&Action::CancelCalibration)
+        );
+        assert!(e.read_with(cx, |s, _| s.calibration.is_none()));
+        // Resolve the old continuation after cancellation; its lease must reject it.
+        host.delay_preview.set(false);
+        let (request, inbox) = host.delayed.borrow_mut().pop().unwrap();
+        host.request(request, inbox);
+        e.update(cx, |s, cx| s.drain(cx));
+        assert!(host.state.borrow().runtime.calibration.is_none());
+        assert!(e.read_with(cx, |s, _| !s.model.pending && s.calibration.is_none()));
+    }
     #[gpui::test]
     fn all_navigation_rows_fit_the_settings_navigation_surface(cx: &mut TestAppContext) {
         let (_, _, cx) = harness(cx);
@@ -797,4 +1039,37 @@ fn runtime_notifications_preserve_open_picker_and_numeric_drafts(cx: &mut TestAp
             .to_string()),
         "72"
     );
+}
+
+#[test]
+fn regression_enabled_smart_stop_can_be_disabled_without_dependencies() {
+    use super::model::Install;
+    let row = *ROWS
+        .iter()
+        .find(|r| r.key == "smartAutoStopEnabled")
+        .unwrap();
+    for install in [
+        Install::Missing,
+        Install::Unknown,
+        Install::Busy,
+        Install::Failed,
+        Install::Installed,
+    ] {
+        for silence in [0, 1500] {
+            let mut m = Model::default();
+            let mut snapshot = fixtures::snapshot();
+            snapshot.runtime.smart_turn = install;
+            snapshot.settings["autoStopSilenceMs"] = json!(silence);
+            snapshot.settings["smartAutoStopEnabled"] = json!(true);
+            m.snapshot = Some(snapshot);
+            assert!(!m.disabled(row), "must allow disabling enabled preference");
+            m.snapshot.as_mut().unwrap().settings["smartAutoStopEnabled"] = json!(false);
+            assert_eq!(
+                m.disabled(row),
+                silence == 0 || install != Install::Installed
+            );
+            m.snapshot.as_mut().unwrap().runtime.recording = true;
+            assert!(m.disabled(row), "capture lock remains authoritative");
+        }
+    }
 }

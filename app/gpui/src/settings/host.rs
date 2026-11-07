@@ -51,8 +51,19 @@ pub enum Action {
 }
 pub enum RequestKind {
     Read,
-    Patch { key: &'static str, value: Value },
-    Disclosure { page: Page, open: bool },
+    /// One durable intent: set the stable device ID, finish ID migration and
+    /// disable Smart Auto together, including when reselecting the saved ID.
+    ManualMicrophone {
+        id: String,
+    },
+    Patch {
+        key: &'static str,
+        value: Value,
+    },
+    Disclosure {
+        page: Page,
+        open: bool,
+    },
     Action(Action),
 }
 pub struct Request {
@@ -75,10 +86,12 @@ pub trait Host {
     /// Preference/disclosure requests admit synchronously while lease/revision are
     /// current, then the EXISTING owner retains that accepted intent until durable
     /// publication (including close/hide). A UI lease never cancels an accepted
-    /// preference. Reads, panels and preview actions remain revocable until effect.
+    /// preference. ManualMicrophone is an atomic preference intent too.
+    /// Reads, panels and preview actions remain revocable until effect.
     /// Background service work. Under SOURCE_WRITE_LOCK recover/read current
     /// sources, compare accepted intent and native recording ownership,
-    /// merge only the requested field, validate and publish via core save_source.
+    /// merge only the requested field (or the ManualMicrophone fields together),
+    /// validate and publish via core save_source.
     /// Complete launch-at-login/shortcut registration before publishing; failure
     /// leaves the previous working value selected. Never log private values.
     /// Emit current source/runtime snapshot on success; errors are typed/content-free.
@@ -87,7 +100,11 @@ pub trait Host {
     /// Recording may monitor the exact saved device, yield to dictation and resume;
     /// leaving/hiding/drop must stop it and discard PCM. No monitor persistence.
     /// Calibration cancellation restores the durable position. NSWindow work is
-    /// queued on the main thread. No global input, OS settings or pasteboard writes.
+    /// queued on the main thread. Recheck preview leases in async continuations,
+    /// including on the main thread immediately before applying geometry. A new
+    /// CancelCalibration request revokes any outstanding preview lease and must
+    /// restore the durable position even if an earlier preview already moved it.
+    /// No global input, OS settings or pasteboard writes.
     fn page(&self, page: Option<Page>, attachment: u64);
 }
 #[derive(Default)]

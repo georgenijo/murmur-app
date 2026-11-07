@@ -61,7 +61,6 @@ impl Settings {
                                     .disabled(self.model.pending || !(min..=max).contains(&next))
                                     .on_click(move |_, _, cx| {
                                         e.update(cx, |s, cx| {
-                                            s.calibration = Some(next);
                                             s.action(
                                                 Action::Calibration {
                                                     offset: next,
@@ -79,7 +78,7 @@ impl Settings {
                             "cal-save",
                             "Save position",
                             Action::Calibration {
-                                offset,
+                                offset: requested,
                                 finish: true
                             },
                             false,
@@ -286,10 +285,36 @@ impl Settings {
                                 let id = device.id.clone();
                                 let preferred = settings["smartAutoPreferredDeviceIds"]
                                     .as_array()
-                                    .is_some_and(|a| a.contains(&json!(id)));
+                                    .is_some_and(|a| a.first() == Some(&json!(id)));
                                 let label = format!("Prefer {}", device.label);
                                 let e = cx.entity();
-                                out.push(div().flex().items_center().justify_between().gap(px(12.)).child(label.clone()).child(Toggle::new(SharedString::from(format!("prefer-{id}")),label,preferred).disabled(self.model.pending||r.recording).on_change(move|v,_,cx|e.update(cx,|s,cx|{let mut ids=s.model.settings()["smartAutoPreferredDeviceIds"].as_array().cloned().unwrap_or_default();ids.retain(|x|x!=&json!(id));if *v{ids.push(json!(id));}s.request(RequestKind::Patch{key:"smartAutoPreferredDeviceIds",value:json!(ids)},cx);}))).into_any_element());
+                                out.push(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap(px(12.))
+                                        .child(label.clone())
+                                        .child(
+                                            Button::new(SharedString::from(format!("prefer-{id}")), label)
+                                                .caption(if preferred { "Preferred" } else { "Prefer" })
+                                                .toggled(preferred)
+                                                .disabled(self.model.pending || r.recording)
+                                                .on_click(move |_, _, cx| e.update(cx, |s, cx| {
+                                                    let settings = s.model.settings();
+                                                    let mut ids = settings["smartAutoPreferredDeviceIds"]
+                                                        .as_array().cloned().unwrap_or_default();
+                                                    ids.retain(|x| x != &json!(id) && settings["smartAutoApprovedDeviceIds"]
+                                                        .as_array().is_some_and(|a| a.contains(x)));
+                                                    ids.insert(0, json!(id));
+                                                    s.request(RequestKind::Patch {
+                                                        key: "smartAutoPreferredDeviceIds",
+                                                        value: json!(ids),
+                                                    }, cx);
+                                                })),
+                                        )
+                                        .into_any_element(),
+                                );
                             }
                         }
                     }

@@ -284,6 +284,16 @@ impl Settings {
                 self.invalidate_changed_drafts();
                 self.synced_revision = None;
                 self.authority.sync(&self.model);
+                // Save the acknowledged request, not a failed preview or the
+                // display-clamped applied position. The model fences stale replies.
+                if self.model.problem.is_none()
+                    && let Some(Action::Calibration {
+                        offset,
+                        finish: false,
+                    }) = &completion
+                {
+                    self.calibration = Some(*offset);
+                }
                 if matches!(
                     completion,
                     Some(Action::CancelCalibration | Action::Calibration { finish: true, .. })
@@ -343,7 +353,11 @@ impl Settings {
             cx.notify();
             return;
         }
-        if current[row.key] == value {
+        if current[row.key] == value
+            && !(row.key == "microphone"
+                && (current["smartAutoMicrophoneEnabled"] == true
+                    || current["microphoneIdMigrationComplete"] != true))
+        {
             return;
         }
         // Immediately remove hidden branches from input/AX. Restore contained focus
@@ -358,13 +372,17 @@ impl Settings {
                 }
             }
         }
-        self.request(
+        let kind = if row.key == "microphone" {
+            RequestKind::ManualMicrophone {
+                id: value.as_str().unwrap().to_string(),
+            }
+        } else {
             RequestKind::Patch {
                 key: row.key,
                 value,
-            },
-            cx,
-        );
+            }
+        };
+        self.request(kind, cx);
     }
     fn flush_ranges(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         for &row in ROWS {
@@ -618,7 +636,23 @@ impl Settings {
             cx,
         );
     }
+    fn preview_pending(&self) -> bool {
+        self.model.pending
+            && self.operation.as_ref().is_some_and(|(action, ticket)| {
+                matches!(action, Action::Calibration { finish: false, .. })
+                    && *ticket == self.model.ticket()
+            })
+    }
     fn action(&mut self, action: Action, destructive: bool, cx: &mut Context<Self>) {
+        if action == Action::CancelCalibration && self.preview_pending() {
+            // Cancellation supersedes the revocable preview. A delayed host
+            // continuation must recheck its lease before moving the window.
+            self.authority.revoke();
+            self.model.generation += 1;
+            self.model.pending = false;
+            self.operation = None;
+            self.authority.sync(&self.model);
+        }
         if self.model.pending || self.model.snapshot.is_none() {
             return;
         }
@@ -657,7 +691,7 @@ impl Settings {
             }
             if self.confirmation.take().is_some() {
                 cx.notify();
-            } else if self.calibration.take().is_some() {
+            } else if self.calibration.is_some() {
                 self.action(Action::CancelCalibration, false, cx);
             } else if !self.model.query.is_empty() {
                 self.model.query.clear();
@@ -692,7 +726,12 @@ impl Settings {
             },
         )
         .track_focus(&self.focus_for(id, cx))
-        .disabled(disabled || self.model.pending || self.model.snapshot.is_none())
+        .disabled(
+            disabled
+                || (self.model.pending
+                    && !(action == Action::CancelCalibration && self.preview_pending()))
+                || self.model.snapshot.is_none(),
+        )
         .intent(if destructive {
             ButtonIntent::Danger
         } else {
@@ -806,7 +845,7 @@ impl Settings {
         // Reserve reset space even when unchanged; reset uses the exact same owner.
         let default = murmur_core::state::settings_defaults()[row.key].clone();
         let mut reset = div().w(px(28.));
-        if default != value && !matches!(row.kind, Kind::Folder) {
+        if default != value {
             let e = cx.entity();
             reset = reset.child(
                 Button::new(
