@@ -26,8 +26,13 @@ class TestSourceTests(unittest.TestCase):
             env = {**os.environ, 'GIT_CEILING_DIRECTORIES': str(target.parent)}
             patch_file = root / 'patches/accesskit-expanded.patch'
             # Layer 10 adds the separately recorded press probe to node.rs.
-            # Remove both additive patches before comparing layer 9's pin.
+            # Remove the table and press layers before comparing layer 9's pin.
             press_patch = root / 'patches/accesskit-press-probe.patch'
+            tables_patch = root / 'patches/accesskit-tables.patch'
+            subprocess.run(['git', 'apply', '--reverse', str(tables_patch)],
+                           cwd=target, env=env, check=True)
+            self.assertEqual(hashlib.sha256((target / 'src/node.rs').read_bytes()).hexdigest(),
+                             '45ced32335b40ec92b928afb44ef44a8cd8beece2352a9db232b279c01b0bb95')
             subprocess.run(['git', 'apply', '--reverse', str(press_patch)],
                            cwd=target, env=env, check=True)
             subprocess.run(['git', 'apply', '--reverse', str(patch_file)],
@@ -36,6 +41,7 @@ class TestSourceTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256((target / name).read_bytes()).hexdigest(), digest)
             subprocess.run(['git', 'apply', str(patch_file)], cwd=target, env=env, check=True)
             subprocess.run(['git', 'apply', str(press_patch)], cwd=target, env=env, check=True)
+            subprocess.run(['git', 'apply', str(tables_patch)], cwd=target, env=env, check=True)
             for path in (root / 'vendor/accesskit_macos').rglob('*'):
                 if path.is_file():
                     self.assertEqual((target / path.relative_to(root / 'vendor/accesskit_macos')).read_bytes(),

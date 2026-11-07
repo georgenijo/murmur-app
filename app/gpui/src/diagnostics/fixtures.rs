@@ -1,26 +1,85 @@
 //! Synthetic standalone adapter. No application data, recording, clipboard,
 //! permissions, network, telemetry or production service is opened.
 use super::{host::*, inbox::Inbox, model::*, reports::*};
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+};
 #[derive(Default)]
 pub struct FixtureHost {
     revisions: RefCell<BTreeMap<Lane, u64>>,
     epochs: RefCell<BTreeMap<Lane, u64>>,
     cleared: RefCell<std::collections::BTreeSet<Lane>>,
+    delivery: Rc<RefCell<Option<(u64, Inbox)>>>,
+    sequence: Cell<u64>,
 }
-struct FixtureSubscription;
+struct FixtureSubscription {
+    delivery: Rc<RefCell<Option<(u64, Inbox)>>>,
+    attachment: u64,
+}
 impl Subscription for FixtureSubscription {
-    fn stop(&mut self) {}
+    fn stop(&mut self) {
+        let mut delivery = self.delivery.borrow_mut();
+        if delivery
+            .as_ref()
+            .is_some_and(|(a, _)| *a == self.attachment)
+        {
+            *delivery = None;
+        }
+    }
+}
+impl Drop for FixtureSubscription {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+impl FixtureHost {
+    /// Called only by the opt-in QA timer. One coalesced synthetic batch per
+    /// tick; no production data, thread, pasteboard or notification side effect.
+    pub fn emit_live(&self) -> bool {
+        let delivery = self.delivery.borrow();
+        let Some((attachment, inbox)) = delivery.as_ref() else {
+            return false;
+        };
+        if inbox.is_closed() {
+            return false;
+        }
+        if inbox.pending() {
+            return true;
+        } // retry on the next tick, no backlog
+        let mut revisions = self.revisions.borrow_mut();
+        let revision = revisions.entry(Lane::Events).or_insert(0);
+        *revision += 1;
+        let sequence = self.sequence.get().max(160) + 1;
+        let accepted = inbox
+            .publish(Event::Notification {
+                attachment: *attachment,
+                lane: Lane::Events,
+                revision: *revision,
+                store_epoch: *self.epochs.borrow().get(&Lane::Events).unwrap_or(&0),
+                payload: Payload::Event(event(sequence)),
+            })
+            .is_ok();
+        if accepted {
+            self.sequence.set(sequence);
+        }
+        true
+    }
 }
 impl Host for FixtureHost {
     fn subscribe(
         &self,
         consumer: murmur_core::events::Consumer,
-        _: u64,
-        _: Inbox,
+        attachment: u64,
+        inbox: Inbox,
     ) -> Box<dyn Subscription> {
         assert_eq!(consumer, murmur_core::events::Consumer::Diagnostics);
-        Box::new(FixtureSubscription)
+        *self.delivery.borrow_mut() = Some((attachment, inbox));
+        Box::new(FixtureSubscription {
+            delivery: self.delivery.clone(),
+            attachment,
+        })
     }
     fn request(&self, r: Request, inbox: Inbox) {
         if !r.lease.is_current() {

@@ -169,3 +169,9 @@ required-features = ["gallery"]
 name = "diagnostics-qa"
 path = "src/bin/diagnostics-qa.rs"
 required-features = ["gallery"]
+
+[[test]]
+name = "native_tables"
+path = "tests/native_tables.rs"
+harness = false
+required-features = ["a11y-tests"]

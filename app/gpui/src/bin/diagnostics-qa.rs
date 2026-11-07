@@ -32,10 +32,13 @@ fn main() {
         }
         murmur_ui::tokens::apply_appearance(std::env::var_os("MURMUR_DARK").is_some(), cx);
         let state = std::env::var("MURMUR_DIAGNOSTICS_STATE").unwrap_or_else(|_| "events".into());
+        let host = Rc::new(FixtureHost::default());
+        let fixture_host = host.clone();
         let mut entity = None;
         let handle = cx
             .open_window(
                 WindowOptions {
+                    window_min_size: Some(size(px(480.), px(440.))),
                     show: !headless,
                     focus: false,
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -58,7 +61,7 @@ fn main() {
                         w.observe_window_appearance(apply).detach();
                     }
                     let d = cx.new(|cx| {
-                        let mut d = Diagnostics::new(Rc::new(FixtureHost::default()), w, cx);
+                        let mut d = Diagnostics::new(fixture_host.clone(), w, cx);
                         d.fixture = headless;
                         d
                     });
@@ -118,6 +121,17 @@ fn main() {
                 })
             })
             .expect("initialize diagnostics");
+        if !headless && std::env::var_os("MURMUR_DIAGNOSTICS_LIVE").is_some() {
+            // Explicit synthetic live stream for the GUI QA owner. Goldens stay
+            // deterministic. Updates coalesce under backpressure, at two-second
+            // intervals, and the adapter announces no per-event live region.
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+                    if !cx.update(|_| host.emit_live()) { break; }
+                }
+            }).detach();
+        }
         if !headless && std::env::var_os("MURMUR_DIAGNOSTICS_NATIVE_SMOKE").is_some() {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(std::time::Duration::from_secs(20)).await;

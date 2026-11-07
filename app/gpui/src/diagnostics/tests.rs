@@ -775,6 +775,236 @@ mod ax {
         );
         draw(cx);
     }
+    fn focused_label(t: &TreeUpdate) -> &str {
+        t.nodes
+            .iter()
+            .find(|(id, _)| *id == t.focus)
+            .unwrap()
+            .1
+            .label()
+            .unwrap_or("")
+    }
+
+    #[gpui::test]
+    fn tab_order_reaches_tabs_event_list_and_every_chart(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        cx.update(|w, cx| {
+            w.blur(cx);
+            w.focus_next(cx);
+        });
+        assert_eq!(focused_label(&tree(cx)), "Events");
+        for label in ["Copy filtered events", "Clear events…"] {
+            cx.simulate_keystrokes("tab");
+            assert_eq!(focused_label(&tree(cx)), label);
+        }
+        // Filters and text entry precede the single bounded-list stop.
+        for _ in 0..Stream::ALL.len() + Level::ALL.len() + 2 {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+        }
+        let field = entity.read_with(cx, |s, cx| s.correlation.read(cx).focus_handle(cx));
+        cx.update(|w, _| assert!(field.is_focused(w)));
+        cx.simulate_keystrokes("tab");
+        let list = entity.read_with(cx, |s, cx| s.events.read(cx).focus_handle(cx));
+        cx.update(|w, _| assert!(list.is_focused(w)));
+        cx.simulate_keystrokes("end space");
+        assert!(entity.read_with(cx, |s, cx| s.events.read(cx).is_expanded(160)));
+        cx.simulate_keystrokes("shift-tab");
+        // Manual keyboard navigation reveals Resume before the list.
+        assert_eq!(focused_label(&tree(cx)), "Resume auto-scroll");
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Performance);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|w, cx| {
+            w.blur(cx);
+            w.focus_next(cx);
+        });
+        cx.simulate_keystrokes("tab");
+        assert_eq!(focused_label(&tree(cx)), "Refresh performance");
+        let charts = entity.read_with(cx, |s, _| s.charts.clone());
+        for chart in &charts {
+            cx.simulate_keystrokes("tab");
+            draw(cx);
+            cx.update(|w, cx| assert!(chart.read(cx).focus_handle(cx).is_focused(w)));
+            cx.simulate_keystrokes("right end home");
+            draw(cx);
+        }
+        for chart in charts.iter().rev().skip(1) {
+            cx.simulate_keystrokes("shift-tab");
+            draw(cx);
+            cx.update(|w, cx| assert!(chart.read(cx).focus_handle(cx).is_focused(w)));
+        }
+    }
+
+    #[gpui::test]
+    fn table_adapter_exposes_rows_columns_headers_and_keyboard_cell_indices(
+        cx: &mut TestAppContext,
+    ) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Latency);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|w, cx| {
+            w.blur(cx);
+            w.focus_next(cx);
+        });
+        draw(cx);
+        // Tab group, build selector, refresh/copy/clear, then the table.
+        let mut reached = false;
+        for _ in 0..12 {
+            cx.simulate_keystrokes("tab");
+            let t = tree(cx);
+            if t.nodes
+                .iter()
+                .any(|(id, n)| *id == t.focus && n.role() == Role::ColumnHeader)
+            {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "latency table must have an ordinary Tab stop");
+        let t = tree(cx);
+        let table_id = named(&t, "UI latency edges").0;
+        let projection = accesskit_macos::test_table(t, table_id);
+        assert!(projection.0 > 1);
+        assert!(projection.1 > 1);
+        assert_eq!(projection.2, projection.1);
+        assert_eq!(projection.4.len(), projection.0 * projection.1);
+        cx.simulate_keystrokes("down right");
+        let t = tree(cx);
+        let cell = &t.nodes.iter().find(|(id, _)| *id == t.focus).unwrap().1;
+        assert_eq!(cell.role(), Role::Cell);
+        assert_eq!((cell.row_index(), cell.column_index()), (Some(1), Some(1)));
+        cx.simulate_keystrokes("home");
+        assert_eq!(focused_label(&tree(cx)), "Build / route");
+        cx.simulate_keystrokes("end");
+        let t = tree(cx);
+        let cell = &t.nodes.iter().find(|(id, _)| *id == t.focus).unwrap().1;
+        assert_eq!(
+            (cell.row_index(), cell.column_index()),
+            (Some(projection.0 - 1), Some(projection.1 - 1))
+        );
+    }
+
+    #[gpui::test]
+    fn confirmation_restores_keyboard_and_ax_origins_after_remount(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        cx.update(|w, cx| {
+            w.blur(cx);
+            w.focus_next(cx);
+        });
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        assert_eq!(focused_label(&tree(cx)), "Clear events…");
+        let keystroke = cx.update(|_, cx| {
+            gpui::Keystroke::parse_with_os("space", cx.platform_info().os).unwrap()
+        });
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        draw(cx);
+        assert!(
+            entity.read_with(cx, |s, _| s.confirm.is_some()),
+            "Space must open confirmation"
+        );
+        assert_eq!(focused_label(&tree(cx)), "Cancel");
+        cx.simulate_keystrokes("tab");
+        assert_eq!(focused_label(&tree(cx)), "Confirm");
+        cx.simulate_keystrokes("shift-tab escape");
+        draw(cx);
+        cx.update(|w, cx| {
+            w.simulate_next_frame(cx);
+        });
+        draw(cx);
+        assert_eq!(focused_label(&tree(cx)), "Clear events…");
+        for choice in ["Cancel", "Confirm"] {
+            let t = tree(cx);
+            click(cx, named(&t, "Clear events…").0);
+            let t = tree(cx);
+            click(cx, named(&t, choice).0);
+            draw(cx);
+            cx.update(|w, cx| {
+                w.simulate_next_frame(cx);
+            });
+            draw(cx);
+            assert_eq!(focused_label(&tree(cx)), "Clear events…");
+        }
+    }
+
+    #[gpui::test]
+    fn confirmation_falls_back_when_live_update_removes_the_origin(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Dictation);
+            s.sync(cx);
+            cx.notify();
+        });
+        let t = tree(cx);
+        click(cx, named(&t, "Delete local capture for recording 7…").0);
+        entity.update(cx, |s, cx| {
+            s.model.captures.clear();
+            cx.notify();
+        });
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|w, cx| {
+            w.simulate_next_frame(cx);
+        });
+        draw(cx);
+        assert_eq!(focused_label(&tree(cx)), "Dictation");
+    }
+
+    #[gpui::test]
+    fn minimum_window_scroll_reaches_events_and_resume_with_bounded_inner_list(
+        cx: &mut TestAppContext,
+    ) {
+        let (entity, cx) = harness(cx);
+        cx.simulate_resize(gpui::size(gpui::px(480.), gpui::px(440.)));
+        entity.update(cx, |s, cx| {
+            s.events.update(cx, |list, cx| {
+                list.following = false;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        entity.update(cx, |s, cx| {
+            assert!(s.panel_scroll.max_offset().y > gpui::px(0.));
+            s.panel_scroll.scroll_to_bottom();
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        for label in ["Resume auto-scroll", "Diagnostic events"] {
+            let bounds = named(&t, label)
+                .1
+                .bounds()
+                .expect("visible synthetic control bounds");
+            let scale = cx.update(|w, _| w.scale_factor()) as f64;
+            assert!(
+                bounds.y0 >= 0. && bounds.y1 <= 440. * scale,
+                "{label}: {bounds:?}"
+            );
+        }
+        entity.read_with(cx, |s, cx| {
+            let list = s.events.read(cx);
+            assert_eq!(list.rendered_len(), 100);
+            assert!(list.scroll.max_offset().y > gpui::px(0.));
+        });
+    }
+
     #[gpui::test]
     fn emitted_tree_exposes_tabs_bounded_disclosures_tables_progress_and_confirmation(
         cx: &mut TestAppContext,
@@ -1388,4 +1618,32 @@ fn latency_identity_and_route_strings_are_bounded_before_retention() {
     }
     assert!(notify(&mut m, Lane::Latency, 4, 0, Payload::Latency(rows)));
     assert_eq!(m.latency.len(), 1);
+}
+
+#[test]
+fn synthetic_live_fixture_coalesces_and_stops_with_subscription() {
+    use super::host::Host;
+    let host = fixtures::FixtureHost::default();
+    let inbox = Inbox::default();
+    let mut subscription =
+        host.subscribe(murmur_core::events::Consumer::Diagnostics, 1, inbox.clone());
+    assert!(host.emit_live());
+    assert!(host.emit_live());
+    assert_eq!(inbox.drain().len(), 1);
+    assert!(host.emit_live());
+    let event = inbox.drain().pop_back().unwrap();
+    assert!(matches!(
+        event,
+        Event::Notification {
+            revision: 2,
+            payload: Payload::Event(_),
+            ..
+        }
+    ));
+    subscription.stop();
+    assert!(!host.emit_live());
+    let _subscription =
+        host.subscribe(murmur_core::events::Consumer::Diagnostics, 2, inbox.clone());
+    inbox.close();
+    assert!(!host.emit_live());
 }

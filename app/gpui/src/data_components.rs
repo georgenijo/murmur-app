@@ -31,7 +31,7 @@ impl Tabs {
         assert!(!label.trim().is_empty() && !labels.is_empty());
         assert!(labels.iter().all(|s| !s.trim().is_empty()));
         Self {
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             label,
             labels,
             selected: 0,
@@ -148,11 +148,28 @@ impl DataTable {
         self
     }
 }
+struct TableNavigation {
+    focus: FocusHandle,
+    row: usize,
+    column: usize,
+}
 impl RenderOnce for DataTable {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, w: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = Palette::get(cx);
         let cols = self.headers.len();
+        let navigation = w.use_keyed_state(self.id.clone(), cx, |_, cx| TableNavigation {
+            focus: cx.focus_handle().tab_stop(true),
+            row: 0,
+            column: 0,
+        });
+        let focus = navigation.read(cx).focus.clone();
+        let table_focused = focus.is_focused(w);
         let row_count = self.rows.len() + 1;
+        navigation.update(cx, |s, _| {
+            s.row = s.row.min(row_count - 1);
+            s.column = s.column.min(cols - 1);
+        });
+        let active = (navigation.read(cx).row, navigation.read(cx).column);
         let mut actions = self.actions.into_iter();
         let header = div()
             .id("headers")
@@ -164,16 +181,58 @@ impl RenderOnce for DataTable {
                 div()
                     .id(i)
                     .role(Role::ColumnHeader)
+                    .when(active == (0, i), |d| {
+                        d.aria_active_descendant()
+                            .when(table_focused, |d| d.bg(p.focus.opacity(0.15)))
+                    })
                     .aria_label(h.clone())
                     .flex_1()
                     .min_w(px(90.))
                     .p(px(8.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .a11y_synthetic_children(move |b| b.parent_node().set_column_index(i))
+                    .a11y_synthetic_children(move |b| {
+                        b.parent_node().set_column_index(i);
+                        b.parent_node().set_row_index(0);
+                    })
                     .child(h.clone())
             }));
         div()
             .id(self.id)
+            .track_focus(&focus)
+            .focus_visible(|d| d.border_color(p.focus))
+            .capture_key_down(move |e, w, cx| {
+                if !focus.is_focused(w)
+                    || e.prefer_character_input
+                    || e.keystroke.modifiers.number_of_modifiers() != 0
+                {
+                    return;
+                }
+                let key = e.keystroke.key.as_str();
+                if !matches!(key, "up" | "down" | "left" | "right" | "home" | "end") {
+                    return;
+                }
+                navigation.update(cx, |s, cx| {
+                    match key {
+                        "up" => s.row = s.row.saturating_sub(1),
+                        "down" => s.row = (s.row + 1).min(row_count - 1),
+                        "left" => s.column = s.column.saturating_sub(1),
+                        "right" => s.column = (s.column + 1).min(cols - 1),
+                        "home" => {
+                            s.row = 0;
+                            s.column = 0;
+                        }
+                        "end" => {
+                            s.row = row_count - 1;
+                            s.column = cols - 1;
+                        }
+                        _ => unreachable!(),
+                    }
+                    cx.notify();
+                });
+                w.prevent_default();
+                cx.stop_propagation();
+                w.refresh();
+            })
             .role(Role::Table)
             .overflow_x_scroll()
             .flex_shrink_0()
@@ -201,9 +260,16 @@ impl RenderOnce for DataTable {
                         div()
                             .id(i)
                             .role(Role::Cell)
+                            .when(active == (r + 1, i), |d| {
+                                d.aria_active_descendant()
+                                    .when(table_focused, |d| d.bg(p.focus.opacity(0.15)))
+                            })
                             .aria_label(self.headers[i].clone())
                             .aria_value(c.clone())
-                            .a11y_synthetic_children(move |b| b.parent_node().set_column_index(i))
+                            .a11y_synthetic_children(move |b| {
+                                b.parent_node().set_column_index(i);
+                                b.parent_node().set_row_index(r + 1);
+                            })
                             .flex_1()
                             .min_w(px(90.))
                             .p(px(8.))
@@ -263,7 +329,7 @@ impl DetailList {
             limit,
             expanded: BTreeSet::new(),
             active: 0,
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
             following: true,
         }
@@ -521,7 +587,7 @@ impl Chart {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let focus = cx.focus_handle();
+        let focus = cx.focus_handle().tab_stop(true);
         let blur = cx.on_blur(&focus, w, |s, _, cx| {
             s.shown = false;
             cx.notify();
