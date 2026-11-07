@@ -6,6 +6,11 @@ use murmur_ui::{
 };
 use std::rc::Rc;
 fn main() {
+    murmur_ui::overlay::native::start_webkit_policy();
+    if std::env::var_os("MURMUR_WEBKIT_BASELINE_ONLY").is_some() {
+        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_HISTORY_INVENTORY");
+        return;
+    }
     println!(
         "MURMUR_HISTORY_REVISION={}",
         option_env!("MURMUR_QA_REVISION").unwrap_or("development")
@@ -125,14 +130,7 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank History capture"
                     );
-                    // Preserve frames and inventory for diagnosing OS-injected
-                    // accessibility frameworks. The golden runner owns the
-                    // strict zero-WebKit gate; this executable reports facts.
-                    let images = murmur_ui::overlay::native::webkit_images();
-                    println!(
-                        "MURMUR_HISTORY_INVENTORY={{\"pid\":{},\"webkitImages\":{images}}}",
-                        std::process::id()
-                    );
+                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_HISTORY_INVENTORY");
                     image.save(path).expect("synthetic capture");
                     cx.quit();
                 })
@@ -144,6 +142,7 @@ fn main() {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(30))
                     .await;
+                murmur_ui::overlay::native::assert_webkit_policy("MURMUR_HISTORY_INVENTORY");
                 cx.update(|cx| cx.quit());
             })
             .detach();

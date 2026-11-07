@@ -15,6 +15,7 @@ exclude = ["vendor/accesskit_macos", "vendor/gpui"]
 
 [dependencies]
 chrono = "0.4"
+sha2 = "0.10.9"
 serde_json = "1"
 raw-window-handle = "0.6.2"
 murmur-core = { path = "../src-tauri/crates/murmur-core" }
@@ -24,6 +25,7 @@ gpui-base = { path = "vendor/gpui-component/crates/base" }
 gpui-component = { path = "vendor/gpui-component/crates/component" }
 
 [dev-dependencies]
+chrono-tz = "0.10"
 accesskit_consumer = "=0.38.0"
 serde_json = "1"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", default-features = false, features = ["test-support"] }
@@ -178,3 +180,9 @@ required-features = ["gallery"]
 name = "settings-qa"
 path = "src/bin/settings-qa.rs"
 required-features = ["gallery"]
+
+[[test]]
+name = "native_tables"
+path = "tests/native_tables.rs"
+harness = false
+required-features = ["a11y-tests"]

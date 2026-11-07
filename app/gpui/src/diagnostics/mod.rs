@@ -17,7 +17,10 @@ use gpui::{prelude::*, *};
 use host::{Authority, Host, Request, RequestKind};
 use inbox::Inbox;
 use model::*;
-use std::{collections::BTreeSet, rc::Rc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 #[derive(Clone)]
 enum Confirm {
     Events,
@@ -83,7 +86,11 @@ pub struct Diagnostics {
     confirm_focus: FocusHandle,
     cancel_focus: FocusHandle,
     restore_focus: Option<FocusHandle>,
-    report_titles: Vec<String>,
+    confirmation_origins: BTreeMap<String, FocusHandle>,
+    panel_scroll: ScrollHandle,
+    report_titles: Vec<(String, String)>,
+    navigation: u64,
+    pending_reads: BTreeMap<Lane, (Ticket, Option<String>)>,
     pub fixture: bool,
 }
 impl Diagnostics {
@@ -178,16 +185,25 @@ impl Diagnostics {
             confirm_focus: cx.focus_handle(),
             cancel_focus: cx.focus_handle(),
             restore_focus: None,
+            confirmation_origins: [
+                "clear-events",
+                "clear-performance",
+                "clear-latency",
+                "recover",
+                "upload-capture",
+            ]
+            .into_iter()
+            .map(|id| (id.to_owned(), cx.focus_handle().tab_stop(true)))
+            .collect(),
+            panel_scroll: ScrollHandle::new(),
             report_titles: vec![],
+            navigation: 0,
+            pending_reads: BTreeMap::new(),
             fixture: false,
         };
         s.subscriptions
             .push(cx.subscribe(&tabs, |s, _, e: &TabChanged, cx| {
-                s.model.tab = Tab::ALL[e.0];
-                s.model.selected_run = None;
-                s.model.selected_capture = None;
-                s.model.capture_detail = None;
-                s.confirm = None;
+                s.model.navigate(Tab::ALL[e.0]);
                 s.sync(cx);
                 cx.notify();
             }));
@@ -219,12 +235,12 @@ impl Diagnostics {
             }));
         s.subscriptions
             .push(cx.subscribe(&baseline, |s, _, e: &SelectionChanged, cx| {
-                s.model.baseline = e.0.parse().unwrap_or(0);
+                s.model.baseline = Some(e.0.to_string());
                 cx.notify();
             }));
         s.subscriptions
             .push(cx.subscribe(&candidate, |s, _, e: &SelectionChanged, cx| {
-                s.model.candidate = e.0.parse().unwrap_or(1);
+                s.model.candidate = Some(e.0.to_string());
                 cx.notify();
             }));
         s.subscriptions
@@ -261,8 +277,10 @@ impl Diagnostics {
             subscription.stop();
         }
         self.model.detach();
+        self.pending_reads.clear();
         self.confirm = None;
         self.confirm_ticket = None;
+        self.restore_focus = None;
     }
     pub fn follow(&self, cx: &mut Context<Self>) {
         let attachment = self.model.ticket(Lane::Events).attachment;
@@ -310,28 +328,64 @@ impl Diagnostics {
         cx.notify();
     }
     fn drain(&mut self, cx: &mut Context<Self>) {
-        let mut retry = BTreeSet::new();
+        let mut retry = BTreeMap::new();
         for event in self.inbox.drain() {
             let read = if let Event::Read { ticket, .. } = &event {
                 Some(*ticket)
             } else {
                 None
             };
-            if !self.model.event(event)
-                && let Some(t) = read
-                && self.model.ticket(t.lane).attachment == t.attachment
+            let accepted = self.model.event(event);
+            if let Some(t) = read
+                && self
+                    .pending_reads
+                    .get(&t.lane)
+                    .is_some_and(|(pending, _)| *pending == t)
             {
-                retry.insert(t.lane);
+                if accepted {
+                    self.pending_reads.remove(&t.lane);
+                } else {
+                    retry.insert(t.lane, t);
+                }
             }
         }
+        self.sync_navigation();
         self.authority.sync(&self.model);
-        for lane in retry {
-            self.request(lane, RequestKind::Read);
+        for (lane, ticket) in retry {
+            if let Some((pending, capture_id)) = self.pending_reads.get(&lane)
+                && *pending == ticket
+                && self.model.ticket(lane).attachment == ticket.attachment
+            {
+                let kind = match capture_id {
+                    Some(id) if self.model.selected_capture.as_ref() == Some(id) => {
+                        Some(RequestKind::ReadCapture {
+                            capture_id: id.clone(),
+                        })
+                    }
+                    Some(_) => None,
+                    None => Some(RequestKind::Read),
+                };
+                self.pending_reads.remove(&lane);
+                if let Some(kind) = kind {
+                    self.request(lane, kind);
+                }
+            }
         }
         cx.notify();
     }
     fn request(&mut self, lane: Lane, kind: RequestKind) {
         let ticket = self.model.begin_read(lane);
+        self.pending_reads.remove(&lane);
+        match &kind {
+            RequestKind::Read => {
+                self.pending_reads.insert(lane, (ticket, None));
+            }
+            RequestKind::ReadCapture { capture_id } => {
+                self.pending_reads
+                    .insert(lane, (ticket, Some(capture_id.clone())));
+            }
+            _ => {}
+        }
         self.authority.sync(&self.model);
         self.host.request(
             Request {
@@ -342,7 +396,17 @@ impl Diagnostics {
             self.inbox.clone(),
         );
     }
+    fn sync_navigation(&mut self) {
+        if self.navigation != self.model.navigation {
+            self.navigation = self.model.navigation;
+            self.confirm = None;
+            self.confirm_ticket = None;
+            self.restore_focus = None;
+        }
+    }
     fn sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_navigation();
+        self.authority.sync(&self.model);
         let rows = self
             .model
             .filtered_events()
@@ -402,7 +466,7 @@ impl Diagnostics {
             .reports
             .iter()
             .enumerate()
-            .map(|(i, r)| format!("{} · {}", i + 1, r.title()))
+            .map(|(i, r)| (r.id().to_owned(), format!("{} · {}", i + 1, r.title())))
             .collect();
         if titles != self.report_titles {
             // Recreate only when membership changes. Ordinary refreshes preserve
@@ -411,20 +475,25 @@ impl Diagnostics {
             let values: Vec<_> = self
                 .report_titles
                 .iter()
-                .enumerate()
-                .map(|(i, t)| Choice::new(i.to_string(), t.clone()))
+                .map(|(id, title)| Choice::new(id.clone(), title.clone()))
                 .collect();
             self.baseline
                 .update(cx, |s, cx| s.replace_choices(values.clone(), cx));
             self.candidate
                 .update(cx, |s, cx| s.replace_choices(values, cx));
-            self.baseline.update(cx, |s, cx| {
-                s.set_value(&self.model.baseline.to_string(), cx)
-            });
-            self.candidate.update(cx, |s, cx| {
-                s.set_value(&self.model.candidate.to_string(), cx)
-            });
         }
+        self.baseline.update(cx, |s, cx| {
+            // set_value resets the keyboard highlight. Unrelated host updates
+            // must leave navigation in an open picker alone.
+            if s.value().map(|v| v.as_ref()) != self.model.baseline.as_deref() {
+                s.set_value(self.model.baseline.as_deref().unwrap_or(""), cx);
+            }
+        });
+        self.candidate.update(cx, |s, cx| {
+            if s.value().map(|v| v.as_ref()) != self.model.candidate.as_deref() {
+                s.set_value(self.model.candidate.as_deref().unwrap_or(""), cx);
+            }
+        });
         let builds: BTreeSet<_> = self.model.latency.iter().map(|l| l.build.clone()).collect();
         self.build.update(cx, |s, cx| {
             s.replace_choices(
@@ -437,7 +506,10 @@ impl Diagnostics {
         });
         self.tabs.update(cx, |s, cx| {
             s.set_selected(
-                Tab::ALL.iter().position(|t| *t == self.model.tab).unwrap(),
+                Tab::ALL
+                    .iter()
+                    .position(|t| *t == self.model.tab())
+                    .unwrap(),
                 cx,
             )
         });
@@ -449,17 +521,86 @@ impl Diagnostics {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.restore_focus = w.focused(cx);
+        self.restore_focus = Some(
+            match &confirm {
+                Confirm::Events => &self.confirmation_origins["clear-events"],
+                Confirm::Performance => &self.confirmation_origins["clear-performance"],
+                Confirm::Latency => &self.confirmation_origins["clear-latency"],
+                Confirm::Reinitialize => &self.confirmation_origins["recover"],
+                Confirm::Upload(_) => &self.confirmation_origins["upload-capture"],
+                Confirm::Delete(id) => &self.confirmation_origins[&format!("delete-{id}")],
+            }
+            .clone(),
+        );
         self.confirm_ticket = Some(self.model.ticket(lane));
         self.confirm = Some(confirm);
         w.focus(&self.cancel_focus, cx);
         cx.notify();
     }
+    // All registered origins are ordinary focusable Buttons. Re-evaluate their
+    // render/disabled conditions at callback time, even if no draw has happened
+    // since a host notification changed the model.
+    fn restorable_origin(&self, focus: &FocusHandle) -> bool {
+        let Some((id, _)) = self.confirmation_origins.iter().find(|(_, h)| *h == focus) else {
+            return false;
+        };
+        match id.as_str() {
+            "clear-events" => self.model.tab() == Tab::Events,
+            "clear-performance" => {
+                self.model.tab() == Tab::Runs && self.model.selected_run.is_none()
+            }
+            "clear-latency" => self.model.tab() == Tab::Latency,
+            "recover" => {
+                matches!(self.model.tab(), Tab::Runs | Tab::Performance)
+                    && !(self.model.tab() == Tab::Runs && self.model.selected_run.is_some())
+                    && !self.model.errors.contains(&Lane::Health)
+                    && !self.model.loading.contains(&Lane::Health)
+                    && self.model.health.as_ref().is_some_and(Health::can_recover)
+            }
+            "upload-capture" => {
+                self.model.tab() == Tab::Dictation
+                    && self
+                        .model
+                        .capture_detail
+                        .as_ref()
+                        .is_some_and(|c| self.model.selected_capture.as_ref() == Some(&c.id))
+            }
+            _ => {
+                self.model.tab() == Tab::Dictation
+                    && self.model.capture_detail.is_none()
+                    && self
+                        .model
+                        .captures
+                        .iter()
+                        .any(|c| id == &format!("delete-{}", c.id))
+            }
+        }
+    }
     fn dismiss(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.confirm = None;
         self.confirm_ticket = None;
         if let Some(focus) = self.restore_focus.take() {
-            w.focus(&focus, cx);
+            // Background controls are remounted by this draw. Focusing before
+            // then would target a handle absent from the current dispatch tree.
+            let entity = cx.entity().downgrade();
+            let navigation = self.navigation;
+            let attachment = self.model.ticket(Lane::Events).attachment;
+            w.on_next_frame(move |w, cx| {
+                let _ = entity.update(cx, |s, cx| {
+                    if s.confirm.is_none()
+                        && s.model.navigation == navigation
+                        && s.subscription.is_some()
+                        && s.model.ticket(Lane::Events).attachment == attachment
+                    {
+                        let target = if s.restorable_origin(&focus) {
+                            focus.clone()
+                        } else {
+                            s.tabs.read(cx).focus_handle(cx)
+                        };
+                        w.focus(&target, cx);
+                    }
+                });
+            });
         }
         cx.notify();
     }
@@ -498,6 +639,13 @@ impl Diagnostics {
             Confirm::Delete(capture_id) => RequestKind::DeleteCapture { capture_id },
             Confirm::Upload(capture_id) => RequestKind::UploadCapture { capture_id },
         };
+        if matches!(
+            kind,
+            RequestKind::DeleteCapture { .. } | RequestKind::Recover { .. }
+        ) {
+            // Successful deletion/recovery may remove the originating control.
+            self.restore_focus = Some(self.tabs.read(cx).focus_handle(cx));
+        }
         self.request(ticket.lane, kind);
         self.dismiss(w, cx);
     }
@@ -519,6 +667,7 @@ impl Diagnostics {
                 .map(|r| r.into_iter().map(Into::into).collect())
                 .collect(),
         )
+        .with_scroll_parent(&self.panel_scroll)
     }
     fn health(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut d = div()
@@ -567,6 +716,7 @@ impl Diagnostics {
                         "Retry store"
                     },
                 )
+                .track_focus(&self.confirmation_origins["recover"])
                 .disabled(self.model.loading.contains(&Lane::Health))
                 .on_click(cx.listener(|s, _, w, cx| {
                     if s.model
@@ -644,8 +794,7 @@ impl Diagnostics {
         div()
             .flex()
             .flex_col()
-            .min_h_0()
-            .flex_1()
+            .flex_shrink_0()
             .gap(px(8.))
             .child(
                 self.toolbar()
@@ -660,9 +809,11 @@ impl Diagnostics {
                             })),
                     )
                     .child(
-                        Button::new("clear-events", "Clear events…").on_click(cx.listener(
-                            |s, _, w, cx| s.open_confirm(Confirm::Events, Lane::Events, w, cx),
-                        )),
+                        Button::new("clear-events", "Clear events…")
+                            .track_focus(&self.confirmation_origins["clear-events"])
+                            .on_click(cx.listener(|s, _, w, cx| {
+                                s.open_confirm(Confirm::Events, Lane::Events, w, cx)
+                            })),
                     ),
             )
             .child(filters)
@@ -681,7 +832,7 @@ impl Diagnostics {
             .when(self.model.events.is_empty(), |d| {
                 d.child("No events to display")
             })
-            .child(self.events.clone())
+            .child(div().h(px(320.)).flex_shrink_0().child(self.events.clone()))
             .into_any_element()
     }
     fn runs_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -766,7 +917,7 @@ impl Diagnostics {
                                 s.model.filters.correlation = r.correlation.1.clone();
                                 s.model.filters.streams = Stream::ALL.into();
                                 s.model.filters.levels = Level::ALL.into();
-                                s.model.tab = Tab::Events;
+                                s.model.navigate(Tab::Events);
                                 s.field.update(cx, |f, cx| {
                                     f.set_value(
                                         &CorrelationField::ALL
@@ -810,11 +961,11 @@ impl Diagnostics {
                         cx.listener(|s, _, _, _| s.request(Lane::Performance, RequestKind::Read)),
                     ))
                     .child(
-                        Button::new("clear-performance", "Clear performance data…").on_click(
-                            cx.listener(|s, _, w, cx| {
+                        Button::new("clear-performance", "Clear performance data…")
+                            .track_focus(&self.confirmation_origins["clear-performance"])
+                            .on_click(cx.listener(|s, _, w, cx| {
                                 s.open_confirm(Confirm::Performance, Lane::Performance, w, cx)
-                            }),
-                        ),
+                            })),
                     ),
             )
             .child("Newest 200 local, content-free performance records")
@@ -937,10 +1088,10 @@ impl Diagnostics {
             d = d.child(div().id("error").role(Role::Alert).child(e.message()));
         }
         for (title, index) in [
-            ("Baseline", self.model.baseline),
-            ("Candidate", self.model.candidate),
+            ("Baseline", &self.model.baseline),
+            ("Candidate", &self.model.candidate),
         ] {
-            if let Some(r) = self.model.reports.get(index) {
+            if let Some(r) = self.model.report(index) {
                 d = d
                     .child(format!("{title}: {}", r.title()))
                     .child(r.privacy_notice())
@@ -956,14 +1107,19 @@ impl Diagnostics {
                     ));
             }
         }
+        if self.model.baseline.is_none() || self.model.candidate.is_none() {
+            return d
+                .child("Choose a baseline and candidate report to compare.")
+                .into_any_element();
+        }
         if self.model.baseline == self.model.candidate {
             return d
                 .child("Choose two different reports to compare.")
                 .into_any_element();
         }
         if let (Some(a), Some(b)) = (
-            self.model.reports.get(self.model.baseline),
-            self.model.reports.get(self.model.candidate),
+            self.model.report(&self.model.baseline),
+            self.model.report(&self.model.candidate),
         ) {
             let c = reports::compare(a, b);
             d = d.child(
@@ -1044,7 +1200,7 @@ impl Diagnostics {
             .child(self.toolbar().child(self.build.clone()).child(Button::new("copy-latency","Copy latency JSON").disabled(filtered.is_empty()).on_click(cx.listener(|s,_,_,_|{
                 let values:Vec<_>=s.model.latency.iter().filter(|l|s.build_filter.as_ref().is_none_or(|b|b==&l.build)).map(|l|serde_json::json!({"build":l.build,"from":l.from,"to":l.to,"count":l.count,"firstFrameMs":l.first_frame.value(),"commitMs":l.commit.value(),"paintedMs":l.painted.value(),"p95Ms":l.p95.value()})).collect();
                 s.request(Lane::Latency,RequestKind::CopyLatency(serde_json::json!({"schemaVersion":1,"edges":values}).to_string()));
-            }))).child(Button::new("clear-latency","Clear latency samples…").on_click(cx.listener(|s,_,w,cx|s.open_confirm(Confirm::Latency,Lane::Latency,w,cx)))))
+            }))).child(Button::new("clear-latency","Clear latency samples…").track_focus(&self.confirmation_origins["clear-latency"]).on_click(cx.listener(|s,_,w,cx|s.open_confirm(Confirm::Latency,Lane::Latency,w,cx)))))
             .child(self.table("latency-table","UI latency edges",&["Build / route","Samples","First frame","Commit","Paint proxy","p95"],filtered.iter().map(|l|vec![format!("{} · {} → {}",l.build,l.from,l.to),l.count.to_string(),l.first_frame.display("ms"),l.commit.display("ms"),l.painted.display("ms"),l.p95.display("ms")]).collect()))
             .when(filtered.is_empty(),|d|d.child("No latency samples for this build")).into_any_element()
     }
@@ -1056,8 +1212,8 @@ impl Diagnostics {
             d = d.child(
                 Button::new("back-captures", "Back to private captures").on_click(cx.listener(
                     |s, _, _, cx| {
-                        s.model.selected_capture = None;
-                        s.model.capture_detail = None;
+                        s.model.clear_capture_review();
+                        s.authority.sync(&s.model);
                         cx.notify();
                     },
                 )),
@@ -1083,11 +1239,11 @@ impl Diagnostics {
             }
             let id = c.id.clone();
             d = d.child(
-                Button::new("upload-capture", "Upload reviewed private capture…").on_click(
-                    cx.listener(move |s, _, w, cx| {
+                Button::new("upload-capture", "Upload reviewed private capture…")
+                    .track_focus(&self.confirmation_origins["upload-capture"])
+                    .on_click(cx.listener(move |s, _, w, cx| {
                         s.open_confirm(Confirm::Upload(id.clone()), Lane::Captures, w, cx)
-                    }),
-                ),
+                    })),
             );
         } else {
             for c in &self.model.captures {
@@ -1121,6 +1277,7 @@ impl Diagnostics {
                         SharedString::from(format!("delete-{id}")),
                         format!("Delete local capture for recording {}…", c.recording_id),
                     )
+                    .track_focus(&self.confirmation_origins[&format!("delete-{id}")])
                     .on_click(cx.listener(move |s, _, w, cx| {
                         s.open_confirm(Confirm::Delete(id.clone()), Lane::Captures, w, cx)
                     })),
@@ -1143,8 +1300,21 @@ impl Render for Diagnostics {
         if !self.fixture {
             crate::preferences::refresh(cx);
         }
+        self.confirmation_origins.retain(|id, _| {
+            !id.starts_with("delete-")
+                || self
+                    .model
+                    .captures
+                    .iter()
+                    .any(|c| id == &format!("delete-{}", c.id))
+        });
+        for capture in &self.model.captures {
+            self.confirmation_origins
+                .entry(format!("delete-{}", capture.id))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true));
+        }
         let p = Palette::get(cx);
-        let panel = match self.model.tab {
+        let panel = match self.model.tab() {
             Tab::Events => self.event_view(cx),
             Tab::Runs => self.runs_view(cx),
             Tab::Performance => self.performance_view(cx),
@@ -1217,7 +1387,7 @@ impl Render for Diagnostics {
         if let Some(notice) = self.model.notice {
             root = root.child(div().id("notice").role(Role::Status).child(notice));
         }
-        if self.model.errors.contains(&match self.model.tab {
+        if self.model.errors.contains(&match self.model.tab() {
             Tab::Events => Lane::Events,
             Tab::Runs | Tab::Performance => Lane::Performance,
             Tab::Latency => Lane::Latency,
@@ -1230,10 +1400,11 @@ impl Render for Diagnostics {
             div()
                 .id("diagnostics-panel")
                 .role(Role::TabPanel)
-                .aria_label(self.model.tab.label())
+                .aria_label(self.model.tab().label())
                 .flex_1()
                 .min_h_0()
-                .when(self.model.tab != Tab::Events, |d| d.overflow_y_scroll())
+                .overflow_y_scroll()
+                .track_scroll(&self.panel_scroll)
                 .flex()
                 .flex_col()
                 .child(panel),

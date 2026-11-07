@@ -16,19 +16,18 @@ pub struct Surface {
     pub floating: bool,
     pub hidden: bool,
     pub reduce_transparency: bool,
+    pub increase_contrast: bool,
     pub dark: bool,
     pub surface_height: f64,
     pub radius: f64,
 }
-pub fn has_native_window(window: &Window) -> bool {
-    raw(window).is_some()
-}
-pub fn apply(window: &mut Window, surface: Surface) -> bool {
+pub fn apply(window: &mut Window, surface: Surface, cx: &mut gpui::App) -> bool {
     let Surface {
         frame,
         floating,
         hidden,
         reduce_transparency,
+        increase_contrast,
         dark,
         surface_height,
         radius,
@@ -37,7 +36,7 @@ pub fn apply(window: &mut Window, surface: Surface) -> bool {
     if let Some(raw) = raw(window) {
         // SAFETY: GPUI retains the view, the main-thread native transaction
         // rejects a missing window and updates frame/material together.
-        return unsafe {
+        let applied = unsafe {
             murmur_overlay_apply(
                 raw,
                 frame.x,
@@ -47,11 +46,19 @@ pub fn apply(window: &mut Window, surface: Surface) -> bool {
                 floating,
                 hidden,
                 reduce_transparency,
+                increase_contrast,
                 dark,
                 radius,
                 surface_height,
             )
         };
+        if applied {
+            // AppKit's resize callback is queued while this window is borrowed.
+            // Refresh before revealing controls, so paint, hits and AX all use
+            // the acknowledged size in this same turn, never the old viewport.
+            window.bounds_changed(cx);
+        }
+        return applied;
     }
     // TestWindow / HeadlessWindow have no NSWindow and need their layout size
     // updated through GPUI itself. The native path receives its resize callback.
@@ -59,7 +66,17 @@ pub fn apply(window: &mut Window, surface: Surface) -> bool {
         gpui::px(frame.width as f32),
         gpui::px(frame.height as f32),
     ));
+    window.bounds_changed(cx);
     true
+}
+
+pub fn pointer_inside(window: &Window) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    if let Some(raw) = raw(window) {
+        // SAFETY: main-thread query of the retained view's presentation rect.
+        return Some(unsafe { murmur_overlay_pointer_inside(raw) });
+    }
+    None
 }
 pub fn announce(window: &Window, label: &'static str) {
     #[cfg(target_os = "macos")]
@@ -123,11 +140,13 @@ unsafe extern "C" {
         floating: bool,
         hidden: bool,
         reduced_transparency: bool,
+        high_contrast: bool,
         dark: bool,
         radius: f64,
         surface_height: f64,
     ) -> bool;
     fn murmur_overlay_screen(out: *mut f64) -> bool;
+    fn murmur_overlay_pointer_inside(view: *mut std::ffi::c_void) -> bool;
     fn murmur_overlay_announce(view: *mut std::ffi::c_void, message: *const std::ffi::c_char);
 }
 
@@ -150,7 +169,13 @@ unsafe extern "C" {
 
 /// Refit the mask from the same main-thread presentation frame as GPUI's
 /// value transition; window geometry still follows the acknowledged frame.
-pub fn refit_material(window: &Window, width: gpui::Pixels, height: gpui::Pixels, radius: f32) {
+pub fn refit_material(
+    window: &Window,
+    width: gpui::Pixels,
+    height: gpui::Pixels,
+    radius: f32,
+    floating: bool,
+) {
     #[cfg(target_os = "macos")]
     if let Some(raw) = raw(window) {
         // SAFETY: view lives for this window update; main-thread-only function.
@@ -160,13 +185,20 @@ pub fn refit_material(window: &Window, width: gpui::Pixels, height: gpui::Pixels
                 f32::from(width) as f64,
                 f32::from(height) as f64,
                 radius as f64,
+                floating,
             )
         };
     }
 }
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
-    fn murmur_overlay_refit_hud(view: *mut std::ffi::c_void, width: f64, height: f64, radius: f64);
+    fn murmur_overlay_refit_hud(
+        view: *mut std::ffi::c_void,
+        width: f64,
+        height: f64,
+        radius: f64,
+        floating: bool,
+    );
 }
 
 /// Same main-thread panel path, with permanent click-through and a card-sized
@@ -175,8 +207,11 @@ pub fn apply_preview(
     window: &mut Window,
     surface: Surface,
     card: gpui::Bounds<gpui::Pixels>,
+    cx: &mut gpui::App,
 ) -> bool {
-    if !apply(window, surface) {
+    // Mark permanent click-through before AppKit can reenter on resize.
+    refit_preview_material(window, card);
+    if !apply(window, surface, cx) {
         return false;
     }
     refit_preview_material(window, card);
@@ -207,4 +242,36 @@ pub fn refit_preview_material(window: &Window, card: gpui::Bounds<gpui::Pixels>)
 unsafe extern "C" {
     fn murmur_preview_visibility(view: *mut std::ffi::c_void, hidden: bool);
     fn murmur_preview_refit(view: *mut std::ffi::c_void, x: f64, y: f64, width: f64, height: f64);
+}
+
+/// Install/check the QA-only policy before constructing NSApplication or windows.
+#[cfg(feature = "gallery")]
+pub fn start_webkit_policy() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: the native constructor registered the observer before main.
+    assert!(
+        unsafe { murmur_webkit_start() },
+        "nonzero WebKit startup/linkage baseline"
+    );
+}
+
+/// Print backward-compatible counts and fail closed on app/unknown loads.
+/// Additional load records contain image paths and symbols only, never AX data.
+#[cfg(feature = "gallery")]
+pub fn assert_webkit_policy(prefix: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let prefix = std::ffi::CString::new(prefix).expect("inventory prefix");
+        // SAFETY: borrowed string; native snapshot synchronizes with dyld.
+        assert!(
+            unsafe { murmur_webkit_inventory(prefix.as_ptr()) },
+            "unattributed or app-linked WebKit"
+        );
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "gallery"))]
+unsafe extern "C" {
+    fn murmur_webkit_start() -> bool;
+    fn murmur_webkit_inventory(prefix: *const std::ffi::c_char) -> bool;
 }

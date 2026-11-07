@@ -30,7 +30,10 @@ Supply `host::Host`, using existing core/service owners. The host must:
    notifications and error results, including same-record updates. Hydration
    returns its exact `Ticket`; notifications carry the attachment and service
    clear epoch. Notifications invalidate hydration epochs. Rejected same-session
-   reads are retried with a fresh ticket; duplicate revisions never replay.
+   reads are retried with a fresh ticket and their original read kind. Capture
+   detail retries retain their UUID and stop when that selection is cleared or
+   superseded; older replies cannot replace a newer pending read. Duplicate
+   revisions never replay.
    Revisions must remain monotonic across hide/reopen. Never reset counters on
    subscription creation. A host restart creates a new screen/model.
 3. Preserve distinct event and performance clear epochs. A clear notification
@@ -61,6 +64,14 @@ Supply `host::Host`, using existing core/service owners. The host must:
    enforcing the 8 MiB bounded read. Imports remain session-only (20 maximum),
    never adopted into run history or the completion store. Do not retain file
    paths, raw JSON, parser errors, transcript text or evaluator failures.
+   Every JSON string and key is limited to 4 KiB before schema/identity work,
+   including nullable and subsequently stripped fields. Comparison preflight
+   caps metrics at 8,192, shared scope storage at 4 MiB and pair-matching work at
+   1,000,000 before generating metrics. Legal larger reports remain importable
+   but visibly block comparison. Metrics share their model/fixture scope via
+   `Arc<str>`. Report selections use source-qualified SHA-256 identities of the
+   normalized content; saved-report refreshes preserve selections across order
+   changes and visibly clear a selection whose report disappears.
 7. A native report-panel cancellation returns `Import { result: Ok(None) }`.
    Copy writes only explicit filtered Events or content-free latency JSON.
    The synthetic adapter never reads or writes the real pasteboard.
@@ -116,8 +127,12 @@ production view with the synthetic adapter, rendered to offscreen Metal.
 The four portable-report fixtures now live in `tests/fixtures/diagnostic-reports`;
 Rust/core and React use the same unchanged synthetic files. CI watches that
 neutral directory for all three consumers.
-Every Diagnostics capture inventories only its own loaded images and requires
-zero WebKit images. Tests and fixtures never inspect production app data.
+Every Diagnostics capture inventories only its own loaded images through the
+shared overlay/preview WebKit attribution policy. Launch-only baselines require
+zero WebKit images and clean native linkage; later accessibility-attributed
+loads are allowed, while app-owned and unknown loads fail closed. The golden
+policy log preserves each inventory. Tests and fixtures never inspect
+production app data.
 
 | Rows | This layer | Native acceptance still required with the integrated host |
 |---|---|---|
@@ -180,3 +195,75 @@ The PR records final-head CI and any additional read-only native observations.
 These results do not establish the native interaction checklist or production
 host integration. Independent Sol review remains a lead gate; this implementation
 sub-agent does not delegate another agent. The PR stays draft and unmerged.
+
+## Sol finding repair receipt (Mac mini, checkout 61)
+
+The four review findings are repaired: bounded report strings/comparison work and
+shared metric scopes; centralized route/tab cleanup (including queued routes
+before confirmation); UUID-preserving current-selection detail retries; stable
+report identities across saved-report refreshes. The same-pattern scan also
+bounds latency strings, includes identities in inbox accounting, preserves early
+import selection and removes private text from synthetic review goldens.
+
+Rust 1.98.1, fresh `~/Builds/gpui-checkout-61`, via opti only:
+**104 GPUI tests**, **8 runner/native-shim tests**, locked default/gallery checks,
+strict all-target gallery Clippy, rustfmt, TypeScript, **28 React report tests**
+and the relocated core report-schema fixture test pass. Helpers build first for
+the core test. No native interaction is claimed; the other worker owns the GUI.
+
+The full golden run passed the first **30 control cases / 60 captures**, then
+stopped at the overlay host's unchanged zero-WebKit-image assertion: **5 loaded
+images**. A separate Diagnostics probe fails the same guard. Rebuilding and
+running the original `a327c29b` overlay host reproduces the identical failure.
+The guard is unchanged; Diagnostics golden acceptance remains blocked on this
+Mac mini. Test output and both failure receipts are published with the PR.
+Checkout 61 and its targets are removed after evidence collection. Sol recheck
+and the native interaction checklist remain with the lead. The PR stays draft.
+
+## Native QA defect repairs (Mac mini, checkout 66)
+
+The merged stack head `7e9910c1` passed the locked gallery build and all
+115 GPUI tests before these repairs; no semantic merge fallout was found.
+
+- Tabs, bounded lists and charts now participate in Tab/Shift-Tab traversal.
+  Tables add a composite Tab stop, visible selected-cell highlight and
+  arrow/Home/End cell navigation, with explicit row/column indices.
+- The macOS adapter exposes nonselectable table rows, stable virtual columns,
+  counts, header associations and indexed cell lookup/ranges. The additive
+  `accesskit-tables.patch` reproduces the vendored files byte-for-byte after
+  the existing expanded/press patches; the runner verifies the original hashes.
+- Confirmation origins own persistent focus handles. Escape/Cancel and ordinary
+  confirmation restore focus after remount; disappearing origins fall back to
+  the selected tab. Deferred restoration rechecks navigation and attachment.
+- Events now allows outer scrolling around its independently bounded 320-point
+  list. The QA window declares a 480×440 minimum; a resized layout test proves
+  that Events and Resume can both fit in the scrolled viewport.
+- `MURMUR_DIAGNOSTICS_LIVE=1` enables an opt-in, synthetic-only QA event every
+  two seconds. Pending updates coalesce; closed/detached subscriptions stop the
+  producer. It adds no per-event live region or production service access.
+
+Rust 1.98.1, fresh `~/Builds/gpui-checkout-66`, Mac mini via opti only:
+**121 GPUI tests**, the separate main-thread native Objective-C table-selector
+executable (flat/grouped fixtures), **13 runner/native tests**, locked
+normal/gallery checks, strict all-target gallery Clippy, rustfmt, TypeScript
+and **28 React report tests** pass. The adapter test creates no NSWindow or
+AX client and performs no action. No HID, VoiceOver, focus automation,
+production data, pasteboard access or benchmark was used.
+
+Goldens completed **30 control cases / 60 captures** with identical pairs on
+both attempts, then the unchanged overlay guard aborted with **5 WebKit
+images**. The single permitted retry reproduced it; the independent WebKit
+investigation retains ownership. No golden baseline was edited. The expected
+Diagnostics visual change is the bounded Events viewport and outer overflow;
+table cell highlights appear only under keyboard focus. Diagnostics captures
+were not reached, so their visual acceptance is not claimed.
+
+The PR notes link the immutable evidence. Checkout 66 and its targets are
+removed after evidence preservation. Native interactive/VoiceOver acceptance
+and independent Sol review remain with the lead; the PR stays draft/unmerged.
+
+The CI follow-up renames the synthetic helper from `emit_live` to `publish_live`:
+the repository reserves every `emit`/`emit_*` identifier for transport adapters.
+This changes no behavior or transport boundary. The existing guard is preserved;
+the follow-up rechecks it, its regressions, the GPUI suite and native selectors
+on the Mac mini. The final PR evidence supersedes the initial repair receipt.

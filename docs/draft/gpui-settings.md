@@ -2,6 +2,8 @@
 
 Part of #1003 / #1011. Stack layer 14 starts at `ab58ac46` on
 `gpui/13-history` (#1031), through #1030 and the earlier layers to #1015.
+The moving base was merged forward at `4a8dfb04` to carry its shared WebKit
+attribution/native accessibility fixes and resolve stack conflicts.
 **Draft; do not merge independently.** The Phase 0 native-parity decision still
 applies: this workspace is a native view inside `gpui_base::Root`, not a new
 production host or an intermediate mixed WebKit window.
@@ -77,7 +79,8 @@ remain independent of disclosure. Reduce Motion introduces no delayed motion.
   after dismissal; Settings never steals focus when opening an editor is
   merely acknowledged. Nested shortcut-owner navigation keeps the return stack.
 - Calibration sends bounded one-point preview requests and explicit Save/Cancel.
-  Only Save publishes a durable offset. Page exit/hide restores the durable
+  Save and the explicit Reset publish a durable offset. Native applied bounds
+  and the acknowledged preview position drive the visible one-point controls. Page exit/hide restores the durable
   placement through the host's page-lifetime teardown. Rust/native code owns
   geometry and queues all NSWindow mutations on the main thread.
 
@@ -101,7 +104,12 @@ No existing React, Tauri or native-control suite is retired.
 all 11 destinations, drill-ins, six Advanced panes, compact/search/loading/error
 states in light, dark and Increase Contrast. `--settings-only` runs that family
 independently when a pre-existing earlier-family failure prevents reaching it;
-the default runner and every zero-WebKit assertion remain strict.
+the default runner and the inherited startup/linkage/AX-attribution policy remain
+strict. Settings uses the same `start_webkit_policy` / `assert_webkit_policy`
+transport and `check_inventory` validator as History. No allowlist or shared
+guard was changed by the Settings layer. Pre-update zero-image failures from
+the VoiceOver session remain in the evidence; the final run uses the policy
+carried from the updated base.
 
 Verification uses the Mac mini through Fleet via opti with Rust 1.98.1 and the
 fresh task checkout `~/Builds/gpui-checkout-68`. Exact final counts, source hashes,

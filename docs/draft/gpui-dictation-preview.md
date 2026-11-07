@@ -123,15 +123,17 @@ and O10 in the [feature matrix](gpui-feature-matrix.md). Tests below live in
 | O09 notch dark; pill system appearance/HUD clip; reduced motion/transparency/contrast | Shared palette/preferences/motion; per-card native HUD mask | Notch, light/dark pill, contrast and lift offscreen cases; existing preference/motion tests | Live system changes and material alignment while lifting/shrink-wrapping |
 | O09 accessible text/status; no editing/copy/focus or press action | Emitted AccessKit status/text, shared production macOS adapter probe; dedicated preview announcement bridge matching the current polite text live region | `actual_preview_adapter_tree_is_informational_and_lifecycle_clears_text` checks actual text, no press dispatch, unchanged focus and immediate AX removal | VoiceOver speech/rotor and timing; the preview-only bridge sends words only after consent/current-generation admission, matching existing React aria-live |
 | O08/O10 no logs/copy/paste/transforms/persistence/export/telemetry; clearing releases content | No such APIs; bounded ephemeral text; no Debug/serde on events/model | Source boundary validators, model clears, closed-inbox teardown, AX removal and synthetic-only captures | Confirm integrated adapter never duplicates partials into diagnostics or final pipeline |
-| Webview destroyed, not hidden | `PreviewRetirement` aliases existing main-thread weak barrier; own-process dyld inventory | `murmur-webkit` real nonpersistent WKWebView extra-owner 1 → 0 test; every preview golden requires zero WebKit images | Phase 2 host must invoke barrier on actual replaced view; production removal is not claimed |
+| Webview destroyed, not hidden | `PreviewRetirement` aliases existing main-thread weak barrier; own-process dyld inventory | `murmur-webkit` real nonpersistent WKWebView extra-owner 1 → 0 test; every preview golden requires zero unattributed WebKit-family images | Phase 2 host must invoke barrier on actual replaced view; production removal is not claimed |
 
 ## Headless checks and native handoff
 
 The existing `gpui-macos` CI job already runs strict fmt/check/Clippy,
 `scripts/test_gpui.py`, compiled native shims, and
 `scripts/check_gpui_goldens.py`. The golden runner includes the preview binary
-and requires same-host byte-identical pairs, nonblank frames and zero loaded
-WebKit images in **each** preview process. It does not inspect other apps.
+and requires same-host byte-identical pairs, nonblank frames and the shared
+[attributed WebKit policy](gpui-overlay.md#qa-webkit-attribution-policy) in each
+preview process. Its separate launch-only baseline requires zero images before
+AX exposure. It does not inspect other apps.
 The offscreen fixture explicitly bypasses native panel mutation and announcements,
 as the overlay QA host does; it never orders a window onto the GUI owner’s screen.
 The standalone WebKit lifecycle test is already wired into `rust-macos`.
@@ -159,6 +161,34 @@ VoiceOver. The standalone QA executable shows synthetic words only; it does not
 establish real dictation or a connected production settings adapter. Phase 2
 must wire those adapters and prove actual production-view deallocation before
 O08–O10 and #1000 can be marked complete.
+
+## Native QA regression fixes (#1029)
+
+The original default titled/resizable popup can crash in AppKit's structural
+tracking update. An own-process trace identifies the NULL object as the return
+of `CGRegionCreateWithRect`: `_trackingRegionWindowRectFlipped:` supplies a
+rectangle about 2.1 billion points wide, and AppKit unconditionally calls
+`CFRelease` on the failed region allocation. Disabling resizing or removing
+the normal titlebar separately prevents the reproduced trap. Preview hosts
+use `Preview::window_options` for a fixed full-content popup; the native
+preview setup also normalizes a default panel before resizing or revealing it.
+This preserves the content view and leaves other panels unchanged.
+
+Use `Preview::root` around the preview entity. It overrides the component
+Root's theme background on this instance, so the card's surrounding reservation
+stays clear. The existing Root style API is sufficient; no vendored change or
+new patch is needed. Render-level regression coverage checks every painted
+quad against the card bounds in both placements, themes and lift positions,
+then verifies a separate ordinary Root still paints its opaque background.
+All preview goldens additionally assert transparent margin pixels.
+
+With the Mac GUI owner's agreement, run
+`RUSTUP_TOOLCHAIN=1.98.1 python3 scripts/check_gpui_preview_native.py`.
+It builds and launches only the synthetic smoke host, captures its own windows
+with `screencapture -l`, and uses OCR to require actual synthetic text through
+three stop/start cycles before clean exit. Receipts include the binary/source
+hashes. It drives no HID, AX actions, VoiceOver or system settings. The live
+editor/HID retest and VoiceOver speech acceptance remain separate.
 
 ## Verification receipt (Mac mini, checkout 45)
 
@@ -205,3 +235,16 @@ not claimed complete. No performance harness or benchmark was run; memory and
 frame/CPU acceptance awaits George's explicit request. Checkout 45 and its
 private targets are removed after the gates; protected directories, the GUI
 owner's session and production application data remain untouched.
+
+### Shared QA WebKit policy
+
+Preview QA uses the overlay's [attributed WebKit policy](gpui-overlay.md#qa-webkit-attribution-policy)
+at startup, offscreen capture, and native-smoke completion. The golden suite
+also runs `MURMUR_WEBKIT_BASELINE_ONLY=1 preview-qa` before NSApplication/window
+creation and requires zero images. Runtime inventories preserve numeric
+`pid`/`webkitImages`, add `axAttributed`/`unattributed` plus startup/linkage counts,
+and retain path/symbol load evidence. Apple accessibility bundle loads reached
+through incoming AX Mach/runloop dispatch are allowed; app-owned or unexplained
+loads fail. No accessibility suppression or production diagnostic overhead is
+introduced. This policy concerns the GPUI process; legacy-view retirement remains
+a separate lifetime check.

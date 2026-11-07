@@ -43,12 +43,14 @@ attribution are retained. See [third-party notices](../../THIRD_PARTY_NOTICES.md
 |---|---|
 | `app/gpui/patches/component-port.patch` | Original proven dependency rewiring (21 errors) and the one macro resolver line recognizing the real `gpui` package. The ported dependency tables now live in the native workspace manifest. |
 | `app/gpui/patches/phase0-accessibility.patch` | Original 89-line focus hook, scratch input bridge and AccessKit patch. Kept as provenance, not a script to apply wholesale to gpui-component. |
-| `app/gpui/native/ax_focus_fix.m` | Production hook forwards GPUIApplication and both GPUIWindow/GPUIPanel's `accessibilityFocusedUIElement` to the window content view's AccessKit adapter, with the original application fallback. Called idempotently on GPUI's main thread after platform initialization. No Tauri process installs it. |
+| `app/gpui/native/ax_focus_fix.m` | Production hook forwards GPUIApplication and both GPUIWindow/GPUIPanel's `accessibilityFocusedUIElement` to the window content view's AccessKit adapter, with the original application fallback. Window legacy AX attribute names/value lookup also exposes `AXFocusedUIElement`, preserving AppKit’s other attributes. Called idempotently on GPUI's main thread after platform initialization. No Tauri process installs it. |
 | `app/gpui/vendor/accesskit_macos/src/node.rs` | Phase 0 selected-text setter bridge; exposes `setAccessibilitySelectedText:` only for an editable text-range node advertising ReplaceSelectedText. |
+| `app/gpui/patches/accesskit-expanded.patch` | Additive to the Phase 0 adapter: exposes `isAccessibilityExpanded` only for nodes with an expanded property and emits AppKit row-expanded/row-collapsed notifications on state changes. Runner tests reverse to the recorded base hashes and reproduce both files byte-for-byte. |
 | `app/gpui/patches/component-accessibility.patch` | Ports the scratch text-range bridge to the component's existing editor; adds TextRun, UTF-8 grapheme lengths, directed selection, SetTextSelection and ReplaceSelectedText. Disabled editor focus remains dispatchable but is excluded from Tab order. |
 | `app/gpui/patches/component-review-fixes.patch` | Additive patch after `component-port.patch` and `component-accessibility.patch`: disabled-switch dispatch binding, current-layout single-line AX range geometry with source bidi and glyph-order guards, the existing `unicode-bidi` dependency wired into `gpui-base`, and explicit placeholder color. |
 | `app/gpui/patches/gpui-manifest.patch` | Makes only the Apache GPUI crate self-contained, resolving inherited workspace dependency tables against the unchanged upstream revision. Examples, benches and upstream test-only assets are not vendored. |
 | `app/gpui/patches/gpui-deferred-accessibility.patch` | Production fix: deferred draws capture their AX ancestry, append children to the finalized parent, and retain the focused-ancestor check. Ordinary builds use it through the workspace Cargo git-source patch. |
+| `app/gpui/patches/accesskit-tables.patch` | Additive after the expanded and press patches: nonselectable table rows, cached virtual AppKit columns (weak parent), counts, headers and cell index ranges/lookup. Includes feature-gated windowless probes; the native probe sends real Objective-C selectors on main. Runner tests reverse to the merged adapter hash and reproduce every vendored file byte-for-byte. |
 | `app/gpui/patches/accesskit-press-probe.patch` | Additive after the AccessKit section of `phase0-accessibility.patch`: extracts the existing native AXPress dispatch into a shared handler and adds a feature-gated windowless role/title/press probe. Production action behavior is unchanged. |
 | `app/gpui/patches/gpui-hidden-presentation.patch` | Additive production API after the existing GPUI patches: expose pending-scene presentation so an ordered-out preview can paint before admission without its paused display link. |
 | `app/gpui/patches/test-accessibility.patch` | Test transport only: retain TestWindow AX callbacks/tree updates, expose activation, tree retrieval and action dispatch on TestAppContext. Production tree building, focus calculation and action handlers remain unchanged. |
@@ -139,9 +141,12 @@ empty field across preference changes.
 
 Focused controls show an accent border and ring; disabled opacity is 64%.
 Normal switch motion uses Base transitions, whose engine also reads
-`App::reduce_motion`. The native initializer reads NSWorkspace preferences on
-the main thread and checks for changes every 500ms, invalidating windows only
-when values change. Deterministic/headless hosts inject preferences through
+`App::reduce_motion`. The native initializer reads NSWorkspace preferences and NSApplication’s
+effective appearance on the main thread and checks for changes every 500ms,
+invalidating windows only when values change. Light/dark changes replace the
+semantic theme live; high-contrast Aqua variants select the corresponding base
+appearance. The gallery follows this path, with explicit light/dark injection
+reserved for offscreen goldens. Deterministic/headless hosts inject preferences through
 `init_with_preferences` and do not start that OS watcher. Hosts must call the
 initializer once, not per window or render.
 
@@ -194,12 +199,16 @@ python3 scripts/check_gpui_goldens.py
 python3 scripts/check_core_dependencies.py
 ```
 
-The native shim test compiles the production Objective-C source against inert
+The native bridge tests verify process-local effective appearances without
+windows, activation or System Settings changes. The focus shim test compiles
+the production Objective-C source against inert
 NSObject-based GPUIWindow/GPUIPanel/GPUIApplication doubles. It asserts both
-window classes forward to the content adapter and retain window/application
+window classes forward direct selectors and legacy AX attribute lookups to the
+content adapter, preserve other attributes, and retain window/application
 fallbacks. It creates no AppKit windows and does not drive any native UI.
 
-The AX runner validates the production vendored source path and revision marker,
+The AX runner also runs the vendored adapter’s expansion-notification unit test.
+It validates the production vendored source path and revision marker,
 then copies that Apache-2.0 crate to the task target directory and adds only the
 test transport patch. The production ancestry fix is already present in that
 copy. Cargo's source patch is redirected to the private copy only for the test

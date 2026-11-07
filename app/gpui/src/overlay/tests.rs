@@ -736,7 +736,10 @@ fn painted_status_content_stays_in_notch_wings_and_centers_in_the_pill(cx: &mut 
                             "overlay-waveform"
                         })
                         .unwrap();
-                    assert!(leading.left() >= row.left());
+                    assert!(
+                        leading.left() >= row.left(),
+                        "placement={placement:?} physical={physical} expanded={expanded} delivery={delivery} row={row:?} leading={leading:?} trailing={trailing:?}"
+                    );
                     assert!(content.left() >= trailing.left());
                     assert!(content.right() <= trailing.right());
                     assert!(trailing.right() <= row.right());
@@ -764,6 +767,220 @@ fn painted_status_content_stays_in_notch_wings_and_centers_in_the_pill(cx: &mut 
                         if !delivery {
                             assert_eq!(content.size.width, gpui::px(61.5));
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "a11y-tests", target_os = "macos"))]
+#[gpui::test]
+fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppContext) {
+    // Use the production CoreText shaper: the default test font cannot expose
+    // the width/wrapping regression in the two-character clipboard shortcut.
+    let mut shaped = TestAppContext::build_with_text_system(
+        cx.dispatcher.clone(),
+        None,
+        std::sync::Arc::new(gpui_apple::AppleTextSystem::new()),
+    );
+    shaped.update(crate::init);
+    shaped.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let mut entity = None;
+    let (_, cx) = shaped.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, Rc::new(FakeHost::default())));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    let indicators = [
+        Indicator::Idle,
+        Indicator::Starting,
+        Indicator::Slow,
+        Indicator::Recording,
+        Indicator::Recovering,
+        Indicator::Processing,
+        Indicator::Done,
+        Indicator::Cancelled,
+        Indicator::TapMissed,
+        Indicator::Failure(Failure::Retry),
+        Indicator::Failure(Failure::Permission),
+        Indicator::Failure(Failure::ChooseInput),
+        Indicator::Failure(Failure::Partial),
+        Indicator::Calibrating,
+        Indicator::Meeting,
+        Indicator::MeetingProcessing,
+        Indicator::Delivery(Delivery::Clipboard),
+        Indicator::Delivery(Delivery::Retrying),
+        Indicator::Delivery(Delivery::Pasted),
+        Indicator::Delivery(Delivery::Nothing),
+        Indicator::Delivery(Delivery::Retry),
+    ];
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for physical in [true, false] {
+            for expanded in [false, true] {
+                for indicator in indicators {
+                    if placement == OverlayPlacement::FloatingPill && indicator == Indicator::Idle {
+                        continue; // The idle pill is intentionally hidden.
+                    }
+                    cx.update(|w, cx| {
+                        overlay.update(cx, |s, cx| {
+                            s.now = 0;
+                            s.model = Model::new(Snapshot {
+                                generation: 7,
+                                hotkey_feedback: true,
+                                placement,
+                                ..Snapshot::default()
+                            });
+                            s.model.screen.notch = Some(NotchInfo {
+                                width: 185.,
+                                height: 24.,
+                                physical_notch: physical,
+                                menu_bar_visible: true,
+                            });
+                            s.model.phase = if expanded {
+                                Phase::Open
+                            } else {
+                                Phase::Collapsed
+                            };
+                            match indicator {
+                                Indicator::Starting | Indicator::Slow => {
+                                    s.model.snapshot.status = Status::Starting;
+                                    if indicator == Indicator::Slow {
+                                        s.model.event(Event::Stalled(7), 0);
+                                    }
+                                }
+                                Indicator::Recording => s.model.snapshot.status = Status::Recording,
+                                Indicator::Recovering => {
+                                    s.model.snapshot.status = Status::Recovering
+                                }
+                                Indicator::Processing => {
+                                    s.model.snapshot.status = Status::Processing
+                                }
+                                Indicator::Done => {
+                                    s.model.snapshot.status = Status::Processing;
+                                    s.model.event(
+                                        Event::Lifecycle {
+                                            generation: 7,
+                                            status: Status::Idle,
+                                            at_ms: 0,
+                                        },
+                                        0,
+                                    );
+                                }
+                                Indicator::Cancelled => s.model.event(Event::Cancelled(7), 0),
+                                Indicator::TapMissed => s.model.event(Event::TapMissed, 0),
+                                Indicator::Failure(f) => s.model.event(Event::Failure(7, f), 0),
+                                Indicator::Calibrating => s.model.calibrating = true,
+                                Indicator::Meeting => s.model.snapshot.meeting = Meeting::Recording,
+                                Indicator::MeetingProcessing => {
+                                    s.model.snapshot.meeting = Meeting::Processing
+                                }
+                                Indicator::Delivery(d) => {
+                                    s.model.event(Event::Delivery(7, Delivery::Clipboard), 0);
+                                    if d != Delivery::Clipboard {
+                                        s.model.retry(0).unwrap();
+                                        if d != Delivery::Retrying {
+                                            s.model.event(
+                                                Event::RetryResult {
+                                                    generation: 7,
+                                                    attempt: s.model.retry_attempt,
+                                                    result: d,
+                                                },
+                                                0,
+                                            );
+                                        }
+                                    }
+                                }
+                                Indicator::Idle => {}
+                            }
+                            assert_eq!(s.model.indicator(0), indicator);
+                            cx.notify();
+                        });
+                        w.draw(cx).clear(cx);
+                    });
+                    let card = cx.debug_bounds("overlay-surface").unwrap();
+                    let row = cx.debug_bounds("overlay-status").unwrap();
+                    assert_eq!(
+                        row.size.height,
+                        gpui::px(if placement == OverlayPlacement::Notch {
+                            24.
+                        } else {
+                            34.
+                        })
+                    );
+                    let contains =
+                        |outer: gpui::Bounds<gpui::Pixels>, inner: gpui::Bounds<gpui::Pixels>| {
+                            assert!(
+                                inner.left() >= outer.left()
+                                    && inner.right() <= outer.right()
+                                    && inner.top() >= outer.top()
+                                    && inner.bottom() <= outer.bottom(),
+                                "{indicator:?} {placement:?} physical={physical} expanded={expanded}: {inner:?} outside {outer:?}"
+                            );
+                        };
+                    contains(card, row);
+                    contains(card, cx.debug_bounds("overlay-leading").unwrap());
+                    assert_eq!(
+                        cx.debug_bounds("overlay-state-symbol").is_some(),
+                        !matches!(
+                            indicator,
+                            Indicator::Processing
+                                | Indicator::Recovering
+                                | Indicator::MeetingProcessing
+                        ) && (expanded || indicator != Indicator::Idle),
+                        "{indicator:?} must expose its rendered symbol bounds"
+                    );
+                    if let Some(symbol) = cx.debug_bounds("overlay-state-symbol") {
+                        // Measure the intrinsic text child, not just its fixed
+                        // 8 pt parent: nowrap must not conceal horizontal spill.
+                        assert_eq!(
+                            symbol.size.height,
+                            crate::tokens::CAPTION_LEADING,
+                            "{indicator:?}"
+                        );
+                        contains(card, symbol);
+                        contains(cx.debug_bounds("overlay-leading").unwrap(), symbol);
+                        let disclosure = cx
+                            .debug_bounds("overlay-quick-settings-disclosure")
+                            .unwrap();
+                        // The 8 pt chevron is centered in a 20 pt hit target.
+                        assert!(symbol.right() <= disclosure.left() + gpui::px(6.));
+                        if placement == OverlayPlacement::Notch
+                            && indicator == Indicator::Delivery(Delivery::Clipboard)
+                        {
+                            contains(cx.debug_bounds("overlay-state-glyph").unwrap(), symbol);
+                        }
+                    }
+                    if let Some(trailing) = cx.debug_bounds("overlay-trailing") {
+                        contains(card, trailing);
+                        assert!(
+                            trailing.size.height <= gpui::px(24.),
+                            "{indicator:?}: {trailing:?}"
+                        );
+                    }
+                    let tree = cx.accessibility_tree(window);
+                    assert!(
+                        tree.nodes.iter().any(|(_, n)| n.role() == Role::Status
+                            && n.label() == Some(indicator.label()))
+                    );
+                    if indicator == Indicator::Delivery(Delivery::Clipboard) {
+                        assert!(
+                            tree.nodes
+                                .iter()
+                                .any(|(_, n)| n.label()
+                                    == Some("Copied. Paste manually or try again"))
+                        );
                     }
                 }
             }
@@ -904,4 +1121,643 @@ fn initial_hydration_and_current_epoch_refresh_accept_newer_revisions() {
     );
     assert_eq!(m.snapshot.revision, 2);
     assert_eq!(m.elapsed(9000), "1:04");
+}
+
+#[test]
+fn sampled_pointer_recovers_missed_exit_and_releases_expanded_hit_area() {
+    for reduced in [false, true] {
+        let mut m = active();
+        m.snapshot.placement = OverlayPlacement::FloatingPill;
+        let mut pointer = PointerPresence::default();
+        let mut sample = |m: &mut Model, inside, now| {
+            if pointer.observe(inside) {
+                m.hover(inside, now);
+            }
+        };
+        sample(&mut m, true, 0);
+        sample(&mut m, true, 149);
+        m.tick(149, reduced, |_, _| panic!("dwell"));
+        m.tick(150, reduced, |_, _| true);
+        assert_eq!(m.phase, Phase::Open);
+        // No tracking exit is delivered. The next watchdog sample finds the
+        // pointer outside even if resize or rapid movement lost the event.
+        sample(&mut m, false, 183);
+        for now in [216, 249, 282, 315, 348, 381, 414, 447] {
+            sample(&mut m, false, now);
+            m.tick(now, reduced, |_, _| panic!("leave delay"));
+        }
+        let mut applied = m.frame(true, 150);
+        m.tick(483, reduced, |frame, _| {
+            applied = frame;
+            true
+        });
+        m.tick(863, reduced, |frame, _| {
+            applied = frame;
+            true
+        });
+        assert_eq!(m.phase, Phase::Collapsed);
+        assert_eq!(applied, m.frame(false, 863));
+        assert_eq!((applied.width, applied.height), (120., 34.));
+    }
+}
+
+#[test]
+fn pointer_samples_do_not_undo_ax_disclosure_or_restart_stationary_dwell() {
+    let mut m = active();
+    let mut pointer = PointerPresence::default();
+    assert!(!pointer.observe(false));
+    m.expand(0);
+    m.tick(0, false, |_, _| true);
+    assert!(!pointer.observe(false), "AX opening is not a pointer exit");
+    assert_eq!(m.phase, Phase::Open);
+    assert!(pointer.observe(true));
+    m.hover(true, 1);
+    m.close(2);
+    m.tick(2, false, |_, _| true);
+    assert!(
+        !pointer.observe(true),
+        "stationary pointer must not reopen AX close"
+    );
+    m.tick(382, false, |_, _| true);
+    assert_eq!(m.phase, Phase::Collapsed);
+    assert!(pointer.observe(false));
+    m.hover(false, 400);
+    assert!(pointer.observe(true));
+    m.hover(true, 500);
+    assert!(pointer.observe(false));
+    m.hover(false, 510);
+    m.tick(1000, false, |_, _| panic!("a graze cannot open"));
+    assert_eq!(m.phase, Phase::Collapsed);
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn delivered_hover_exits_between_watchdog_ticks_restart_continuous_dwell(
+    test_cx: &mut TestAppContext,
+) {
+    test_cx.update(crate::init);
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for reduced in [false, true] {
+            test_cx.update(|cx| {
+                crate::preferences::apply(
+                    crate::preferences::DisplayPreferences {
+                        reduce_motion: reduced,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            });
+            let mut entity = None;
+            let (_, cx) = test_cx.add_window_view(|w, cx| {
+                let overlay = cx.new(|_| {
+                    let mut overlay = Overlay::new(active().snapshot, Rc::new(FakeHost::default()));
+                    overlay.model.snapshot.placement = placement;
+                    overlay
+                });
+                entity = Some(overlay.clone());
+                gpui_base::Root::new(overlay, w, cx)
+            });
+            let overlay = entity.unwrap();
+            cx.update(|w, cx| {
+                overlay.update(cx, |s, cx| s.advance(w, cx));
+                w.draw(cx).clear(cx);
+                w.simulate_mouse_move(gpui::point(gpui::px(-10.), gpui::px(-10.)), cx);
+                overlay.update(cx, |s, _| {
+                    s.model.collapse();
+                    s.pointer = PointerPresence::default();
+                });
+            });
+            let band = cx.debug_bounds("overlay-status").unwrap().center();
+            let deliver = |cx: &mut gpui::VisualTestContext, inside, at| {
+                cx.update(|w, cx| {
+                    overlay.update(cx, |s, _| {
+                        s.epoch = std::time::Instant::now() - std::time::Duration::from_millis(at);
+                    });
+                    // Deliver the actual GPUI hover callback, not an outside
+                    // sample: the watchdog sees only inside on both sides.
+                    w.simulate_mouse_move(
+                        if inside {
+                            band
+                        } else {
+                            gpui::point(gpui::px(-10.), gpui::px(-10.))
+                        },
+                        cx,
+                    );
+                    overlay.read(cx).now
+                })
+            };
+            deliver(cx, true, 0);
+            cx.update(|_, cx| {
+                overlay.update(cx, |s, _| {
+                    assert!(
+                        !s.observe_pointer(true, 99),
+                        "event and poll share presence"
+                    );
+                    s.model.tick(99, reduced, |_, _| panic!("early dwell"));
+                });
+            });
+            // Recreate 99/132 ms samples surrounding an exit at 110 and a
+            // re-entry at 120. Also repeat brief grazes across later ticks.
+            let mut last_entry = 0;
+            for (exit, enter, sample) in [(110, 120, 132), (175, 185, 198), (241, 251, 264)] {
+                deliver(cx, false, exit);
+                let entered = deliver(cx, true, enter);
+                assert!(
+                    entered >= enter,
+                    "delivered events must use the current clock"
+                );
+                last_entry = enter;
+                cx.update(|_, cx| {
+                    overlay.update(cx, |s, _| {
+                        assert!(!s.observe_pointer(true, sample));
+                        s.model
+                            .tick(sample, reduced, |_, _| panic!("a graze cannot open"));
+                        s.model
+                            .tick(sample + 33, reduced, |_, _| panic!("cancelled dwell"));
+                        assert_eq!(s.model.phase, Phase::Collapsed);
+                    });
+                });
+            }
+            let entered = overlay.read_with(cx, |s, _| s.now);
+            cx.update(|_, cx| {
+                overlay.update(cx, |s, _| {
+                    assert!(!s.observe_pointer(true, last_entry + 149));
+                    // Bound the event timestamp between clock setup and the
+                    // completed callback, allowing a slow frame on CI.
+                    s.model.tick(last_entry + 149, reduced, |_, _| {
+                        panic!("full dwell required")
+                    });
+                    s.model.tick(entered + 150, reduced, |_, _| true);
+                    assert_eq!(s.model.phase, Phase::Open);
+                });
+            });
+        }
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn resized_overlay_ax_frames_match_viewport_and_mode_pointer_target(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let host = Rc::new(FakeHost::default());
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| {
+            let mut overlay = Overlay::new(active().snapshot, host.clone());
+            overlay.model.snapshot.placement = OverlayPlacement::FloatingPill;
+            overlay.model.screen.bounds = (-1920., -200., 0., 880.);
+            overlay.model.screen.work = (-1920., -176., 0., 840.);
+            overlay
+        });
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    for expanded in [false, true, false, true] {
+        cx.update(|w, cx| {
+            overlay.update(cx, |s, cx| {
+                s.model.phase = if expanded {
+                    Phase::Open
+                } else {
+                    Phase::Collapsed
+                };
+                s.advance(w, cx);
+                let frame = s.applied.unwrap().frame;
+                assert_eq!(
+                    w.viewport_size(),
+                    gpui::size(gpui::px(frame.width as f32), gpui::px(frame.height as f32)),
+                    "layout must refresh before returning from native transaction"
+                );
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|w, cx| w.draw(cx).clear(cx));
+        let tree = cx.accessibility_tree(window);
+        let (frame, scale) = cx.update(|w, cx| {
+            (
+                overlay.read(cx).applied.unwrap().frame,
+                w.scale_factor() as f64,
+            )
+        });
+        for (_, node) in &tree.nodes {
+            if let Some(bounds) = node.bounds() {
+                assert!(
+                    bounds.x0 >= 0. && bounds.y0 >= 0.,
+                    "outside window: {:?} {bounds:?}",
+                    node.label()
+                );
+                assert!(
+                    bounds.x1 / scale <= frame.width + 0.5
+                        && bounds.y1 / scale <= frame.height + 0.5,
+                    "outside window: {:?} {bounds:?}, {frame:?}",
+                    node.label()
+                );
+            }
+        }
+        if expanded {
+            let mode = tree
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some("Mode: Everyday. Click to cycle"))
+                .unwrap()
+                .1
+                .bounds()
+                .unwrap();
+            let before = host.intents.borrow().len();
+            cx.simulate_click(
+                gpui::point(
+                    gpui::px(((mode.x0 + mode.x1) / (2. * scale)) as f32),
+                    gpui::px(((mode.y0 + mode.y1) / (2. * scale)) as f32),
+                ),
+                gpui::Modifiers::default(),
+            );
+            cx.run_until_parked();
+            assert_eq!(host.intents.borrow().len(), before + 1);
+            assert!(matches!(
+                host.intents.borrow().last(),
+                Some(Intent::CycleMode)
+            ));
+        }
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn disclosure_ax_frame_is_its_pointer_target_in_both_placements(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let host = Rc::new(FakeHost::default());
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, host.clone()));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for disabled in [false, true] {
+            for expanded in [false, true, false, true] {
+                for (x, y) in [(0.5, 0.5), (0.1, 0.1), (0.9, 0.9)] {
+                    cx.update(|w, cx| {
+                        overlay.update(cx, |s, cx| {
+                            s.model = active();
+                            s.model.snapshot.placement = placement;
+                            s.model.snapshot.disabled = disabled;
+                            s.model.phase = if expanded {
+                                Phase::Open
+                            } else {
+                                Phase::Collapsed
+                            };
+                            s.advance(w, cx);
+                        });
+                        w.draw(cx).clear(cx);
+                    });
+                    let tree = cx.accessibility_tree(window);
+                    let focus = tree.focus;
+                    let name = if expanded {
+                        "Quick settings, expanded"
+                    } else {
+                        "Quick settings, collapsed"
+                    };
+                    let (id, node) = tree
+                        .nodes
+                        .iter()
+                        .find(|(_, n)| n.label() == Some(name))
+                        .unwrap();
+                    assert_eq!(node.role(), Role::Button);
+                    let ax = node.bounds().unwrap();
+                    let id = *id;
+                    let hit = cx
+                        .debug_bounds("overlay-quick-settings-disclosure")
+                        .unwrap();
+                    let scale = cx.update(|w, _| w.scale_factor()) as f64;
+                    assert_eq!(ax.x0 / scale, f32::from(hit.left()) as f64);
+                    assert_eq!(ax.y0 / scale, f32::from(hit.top()) as f64);
+                    assert_eq!(ax.width() / scale, 20.);
+                    assert_eq!(ax.height() / scale, 24.);
+                    // The disclosure owns no Mode/power/paste/settings area.
+                    for (_, other) in &tree.nodes {
+                        if other.label().is_some_and(|label| {
+                            label.starts_with("Mode:")
+                                || matches!(
+                                    label,
+                                    "Disable Murmur"
+                                        | "Enable Murmur"
+                                        | "Auto-paste"
+                                        | "Open settings"
+                                )
+                        }) {
+                            let bounds = other.bounds().unwrap();
+                            assert!(
+                                ax.x1 <= bounds.x0
+                                    || ax.x0 >= bounds.x1
+                                    || ax.y1 <= bounds.y0
+                                    || ax.y0 >= bounds.y1
+                            );
+                        }
+                    }
+                    cx.simulate_mouse_move(
+                        gpui::point(gpui::px(-10.), gpui::px(-10.)),
+                        None,
+                        gpui::Modifiers::default(),
+                    );
+                    cx.simulate_mouse_move(
+                        gpui::point(hit.right() - gpui::px(1.), hit.center().y),
+                        None,
+                        gpui::Modifiers::default(),
+                    );
+                    overlay.update(cx, |s, _| {
+                        assert!(
+                            !s.observe_pointer(true, s.now),
+                            "hovering the enlarged disclosure counts as inside the card"
+                        );
+                    });
+                    let (_, _, pressable, request) = accesskit_macos::test_press(tree, id);
+                    assert!(pressable);
+                    assert!(request.is_some());
+                    let before = host.intents.borrow().len();
+                    cx.simulate_click(
+                        gpui::point(
+                            gpui::px(((ax.x0 + ax.width() * x) / scale) as f32),
+                            gpui::px(((ax.y0 + ax.height() * y) / scale) as f32),
+                        ),
+                        gpui::Modifiers::default(),
+                    );
+                    cx.run_until_parked();
+                    cx.update(|_, cx| {
+                        overlay.update(cx, |s, _| {
+                            let action = s.model.tick(s.now + 300, true, |_, _| true);
+                            s.send(action);
+                        });
+                    });
+                    assert_eq!(
+                        overlay.read_with(cx, |s, _| s.model.phase),
+                        if expanded {
+                            Phase::Collapsed
+                        } else {
+                            Phase::Open
+                        }
+                    );
+                    assert_eq!(
+                        host.intents.borrow().len(),
+                        before,
+                        "disclosure cannot activate dictation or quick controls"
+                    );
+                    assert_eq!(cx.accessibility_tree(window).focus, focus);
+                    // The same exported native AXPress target reverses the click.
+                    adapter_press(
+                        cx,
+                        if expanded {
+                            "Quick settings, collapsed"
+                        } else {
+                            "Quick settings, expanded"
+                        },
+                    );
+                    assert_eq!(
+                        overlay.read_with(cx, |s, _| s.model.phase),
+                        if expanded {
+                            Phase::Open
+                        } else {
+                            Phase::Collapsed
+                        }
+                    );
+                    assert_eq!(host.intents.borrow().len(), before);
+                }
+            }
+        }
+    }
+    // The adjacent state indicator still stops a recording, without toggling
+    // disclosure or sending the action twice through its parent status row.
+    cx.update(|w, cx| {
+        overlay.update(cx, |s, cx| {
+            s.model = active();
+            s.model.snapshot.placement = OverlayPlacement::FloatingPill;
+            s.advance(w, cx);
+        });
+        w.draw(cx).clear(cx);
+    });
+    let glyph = cx.debug_bounds("overlay-state-glyph").unwrap();
+    let before = host.intents.borrow().len();
+    cx.simulate_click(glyph.center(), gpui::Modifiers::default());
+    cx.update(|_, cx| {
+        overlay.update(cx, |s, _| {
+            assert_eq!(s.model.phase, Phase::Collapsed);
+            let action = s.model.tick(s.now + 300, true, |_, _| true);
+            s.send(action);
+        });
+    });
+    assert_eq!(host.intents.borrow().len(), before + 1);
+    assert_eq!(
+        host.intents.borrow().last(),
+        Some(&Intent::Control {
+            generation: 7,
+            input: Control::Stop
+        })
+    );
+    // A hidden floating surface exports neither a disclosure nor a hitbox.
+    cx.update(|w, cx| {
+        overlay.update(cx, |s, cx| {
+            s.model = Model::new(Snapshot {
+                placement: OverlayPlacement::FloatingPill,
+                ..Snapshot::default()
+            });
+            s.advance(w, cx);
+        });
+        w.draw(cx).clear(cx);
+    });
+    assert!(!cx.accessibility_tree(window).nodes.iter().any(|(_, n)| {
+        n.label()
+            .is_some_and(|label| label.starts_with("Quick settings"))
+    }));
+    assert!(
+        cx.debug_bounds("overlay-quick-settings-disclosure")
+            .is_none()
+    );
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn disclosure_stays_hittable_and_precedes_controls_during_motion(cx: &mut TestAppContext) {
+    use std::time::Duration;
+
+    cx.update(crate::init);
+    let host = Rc::new(FakeHost::default());
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, host.clone()));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for disabled in [false, true] {
+            for opening in [true, false] {
+                for sample_ms in [0, 16, 60, 120, 180, 240, 270, 360] {
+                    for (x, y) in [(0.05, 0.05), (0.5, 0.5), (0.95, 0.95)] {
+                        // Settle the starting geometry, then enable the real
+                        // transition engine and advance its simulated clock.
+                        cx.update(|w, cx| {
+                            crate::preferences::apply(
+                                crate::preferences::DisplayPreferences {
+                                    reduce_motion: true,
+                                    ..Default::default()
+                                },
+                                cx,
+                            );
+                            overlay.update(cx, |s, cx| {
+                                s.model = active();
+                                s.model.snapshot.placement = placement;
+                                s.model.snapshot.disabled = disabled;
+                                s.model.phase = if opening {
+                                    Phase::Collapsed
+                                } else {
+                                    Phase::Open
+                                };
+                                s.advance(w, cx);
+                            });
+                            w.draw(cx).clear(cx);
+                            crate::preferences::apply(Default::default(), cx);
+                            assert!(!cx.reduce_motion());
+                            overlay.update(cx, |s, cx| s.toggle_quick_settings(w, cx));
+                            w.draw(cx).clear(cx);
+                        });
+                        cx.executor()
+                            .advance_clock(Duration::from_millis(sample_ms));
+                        cx.update(|w, cx| w.draw(cx).clear(cx));
+                        let card = cx.debug_bounds("overlay-surface").unwrap();
+                        let hit = cx
+                            .debug_bounds("overlay-quick-settings-disclosure")
+                            .unwrap();
+                        let g = overlay.read_with(cx, |s, _| s.model.geometry(opening, s.now));
+                        let height = f32::from(card.size.height) as f64;
+                        if sample_ms > 0 && sample_ms < 360 {
+                            assert!(
+                                height > g.collapsed_h && height < g.expanded_h,
+                                "must sample a real intermediate frame: {height}, sample={sample_ms}, opening={opening}, placement={placement:?}"
+                            );
+                        }
+                        // Overflow hit-testing clips to this rectangle. The
+                        // entire AX target must stay within it, not just its center.
+                        assert!(hit.left() >= card.left() && hit.right() <= card.right());
+                        assert!(hit.top() >= card.top() && hit.bottom() <= card.bottom());
+                        if placement == OverlayPlacement::FloatingPill {
+                            assert_eq!(hit.bottom() + gpui::px(5.), card.bottom());
+                        } else {
+                            assert_eq!(
+                                hit.top() - card.top(),
+                                gpui::px((g.collapsed_h as f32 - 24.) / 2.)
+                            );
+                        }
+                        let tree = cx.accessibility_tree(window);
+                        let focus = tree.focus;
+                        let name = if opening {
+                            "Quick settings, expanded"
+                        } else {
+                            "Quick settings, collapsed"
+                        };
+                        let (disclosure_id, node) = tree
+                            .nodes
+                            .iter()
+                            .find(|(_, n)| n.label() == Some(name))
+                            .unwrap();
+                        let scale = cx.update(|w, _| w.scale_factor()) as f64;
+                        let ax = node.bounds().unwrap();
+                        assert_eq!(ax.x0 / scale, f32::from(hit.left()) as f64);
+                        assert_eq!(ax.y0 / scale, f32::from(hit.top()) as f64);
+                        assert_eq!(ax.width() / scale, 20.);
+                        assert_eq!(ax.height() / scale, 24.);
+                        if opening {
+                            // Walk actual AX child links. Node emission order
+                            // alone is not the navigation order consumed by VO.
+                            fn walk(
+                                tree: &gpui::accesskit::TreeUpdate,
+                                id: gpui::accesskit::NodeId,
+                                order: &mut Vec<gpui::accesskit::NodeId>,
+                            ) {
+                                order.push(id);
+                                let node = &tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1;
+                                for child in node.children() {
+                                    walk(tree, *child, order);
+                                }
+                            }
+                            let mut order = Vec::new();
+                            walk(&tree, tree.tree.as_ref().unwrap().root, &mut order);
+                            let disclosure_index =
+                                order.iter().position(|id| id == disclosure_id).unwrap();
+                            for label in [
+                                "Mode: Everyday. Click to cycle",
+                                if disabled {
+                                    "Enable Murmur"
+                                } else {
+                                    "Disable Murmur"
+                                },
+                                "Auto-paste",
+                                "Open settings",
+                            ] {
+                                let id = tree
+                                    .nodes
+                                    .iter()
+                                    .find(|(_, n)| n.label() == Some(label))
+                                    .unwrap()
+                                    .0;
+                                assert!(
+                                    disclosure_index < order.iter().position(|n| *n == id).unwrap(),
+                                    "disclosure must precede {label} in AX child order"
+                                );
+                            }
+                        }
+                        let before = host.intents.borrow().len();
+                        cx.simulate_click(
+                            gpui::point(
+                                gpui::px(((ax.x0 + ax.width() * x) / scale) as f32),
+                                gpui::px(((ax.y0 + ax.height() * y) / scale) as f32),
+                            ),
+                            gpui::Modifiers::default(),
+                        );
+                        assert_eq!(
+                            overlay.read_with(cx, |s, _| s.model.phase),
+                            if opening { Phase::Closing } else { Phase::Open }
+                        );
+                        adapter_press(
+                            cx,
+                            if opening {
+                                "Quick settings, collapsed"
+                            } else {
+                                "Quick settings, expanded"
+                            },
+                        );
+                        assert_eq!(
+                            overlay.read_with(cx, |s, _| s.model.phase),
+                            if opening { Phase::Open } else { Phase::Closing }
+                        );
+                        assert_eq!(cx.accessibility_tree(window).focus, focus);
+                        assert_eq!(host.intents.borrow().len(), before);
+                    }
+                }
+            }
+        }
+    }
 }
