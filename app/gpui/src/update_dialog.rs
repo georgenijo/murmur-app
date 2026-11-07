@@ -35,7 +35,7 @@ pub fn header(
         .flex()
         .items_start()
         .gap(px(12.))
-        .p(px(24.))
+        .p(px(16.))
         .border_b_1()
         .border_color(p.hairline)
         .flex_shrink_0()
@@ -79,12 +79,13 @@ pub fn notes() -> Stateful<Div> {
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
-        .p(px(24.))
+        .p(px(20.))
         .flex()
         .flex_col()
-        .gap(px(12.))
+        .gap(px(8.))
         .child(
             div()
+                .text_size(px(16.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(gpui::text!("What's Changed")),
         )
@@ -109,11 +110,11 @@ pub fn scrim() -> Stateful<Div> {
         .on_click(|_, _, cx| cx.stop_propagation())
         .absolute()
         .inset_0()
-        .p(px(24.))
+        .p(px(20.))
         .flex()
         .items_center()
         .justify_center()
-        .bg(black().opacity(0.36))
+        .bg(black().opacity(0.45))
 }
 
 #[cfg(test)]

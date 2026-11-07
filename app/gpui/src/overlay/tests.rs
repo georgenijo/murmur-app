@@ -947,7 +947,11 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
                         assert_eq!(
                             symbol.size.height,
                             if indicator == Indicator::Recording {
-                                gpui::px(6.)
+                                gpui::px(if placement == OverlayPlacement::FloatingPill {
+                                    10.
+                                } else {
+                                    6.
+                                })
                             } else {
                                 crate::tokens::CAPTION_LEADING
                             },

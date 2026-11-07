@@ -1277,13 +1277,14 @@ impl Render for Settings {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(TextField::new(&self.search, "Search settings"))
+                    .child(TextField::new(&self.search, "Search settings").search_chrome())
                     .child(content);
             }
         } else {
             nav = nav
                 .child(
                     TextField::new(&self.search, "Search settings")
+                        .search_chrome()
                         .with_scroll_parent(&self.nav_scroll),
                 )
                 .child(self.navigation.clone());
@@ -1313,7 +1314,7 @@ impl Render for Settings {
                     .flex_col()
                     .child(
                         div()
-                            .h(px(38.))
+                            .h(px(43.))
                             .flex_shrink_0()
                             .flex()
                             .justify_end()
@@ -1331,10 +1332,18 @@ impl Render for Settings {
                                 div()
                                     .id("settings-title")
                                     .role(Role::Heading)
-                                    .aria_label(self.model.page.label())
+                                    .aria_label(if self.model.page == Page::Customize {
+                                        "Customize Murmur"
+                                    } else {
+                                        self.model.page.label()
+                                    })
                                     .text_size(px(20.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.model.page.label()),
+                                    .child(if self.model.page == Page::Customize {
+                                        "Customize Murmur"
+                                    } else {
+                                        self.model.page.label()
+                                    }),
                             ),
                     )
                     .child(content),

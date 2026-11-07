@@ -41,6 +41,7 @@ impl Render for Review {
             },
         )
         .pill()
+        .height(px(38.))
         .full_width()
         .intent(ButtonIntent::Primary)
         .disabled(self.downloading)
@@ -50,6 +51,7 @@ impl Render for Review {
         }));
         let later = Button::new("update-later", "Later")
             .pill()
+            .height(px(38.))
             .full_width()
             .intent(ButtonIntent::Secondary)
             .on_click(cx.listener(|s, _, _, cx| {

@@ -19,7 +19,36 @@ impl Settings {
         }
         card = card.child(
             self.route_button("shortcuts", "Keyboard shortcuts", Page::Shortcuts, cx)
-                .description("See global and main-window shortcuts in one place")
+                .full_width()
+                .content(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child("Keyboard shortcuts"),
+                                )
+                                .child(
+                                    div()
+                                        .mt(px(4.))
+                                        .text_size(tokens::CAPTION_SIZE)
+                                        .line_height(px(18.))
+                                        .text_color(p.muted)
+                                        .child("See global and main-window shortcuts in one place"),
+                                ),
+                        )
+                        .child(
+                            crate::icons::icon(crate::icons::Glyph::ChevronRight)
+                                .size(px(12.))
+                                .text_color(p.muted),
+                        ),
+                )
                 .trailing_icon(crate::icons::Glyph::ChevronRight)
                 .intent(ButtonIntent::Ghost),
         );
@@ -35,6 +64,7 @@ impl Settings {
                 .child(
                     div().w_full().child(
                         self.editor_button("setup", "Run setup assistant…", Destination::Setup, cx)
+                            .bordered()
                             .full_width(),
                     ),
                 )
@@ -305,6 +335,7 @@ impl Settings {
                 }
             }
             Page::Customize => {
+                out.push(div().h(px(12.)).into_any_element());
                 let p = Palette::get(cx);
                 let destinations = [
                     (

@@ -106,8 +106,15 @@ fn main() {
                     s.attach(cx);
                     s.drain(cx);
                     if let Some(snapshot) = s.model.snapshot.as_mut() {
-                        snapshot.discovery["checklistDismissed"] =
-                            serde_json::json!(state != "checklist" && state != "compact-checklist");
+                        snapshot.discovery["checklistDismissed"] = serde_json::json!(
+                            std::env::var_os("MURMUR_QA_CHECKLIST").is_none()
+                                && state != "checklist"
+                                && state != "compact-checklist"
+                        );
+                        if std::env::var_os("MURMUR_QA_CHECKLIST").is_some() {
+                            snapshot.discovery["completed"] =
+                                serde_json::json!(["meeting", "correction"]);
+                        }
                         match state.as_str() {
                             "starting" => {
                                 snapshot.status = Status::Starting;

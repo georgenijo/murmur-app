@@ -489,7 +489,7 @@ impl Render for Overlay {
             .when(g.floating, |s| {
                 let plain_recording = indicator == Indicator::Recording && !expanded;
                 s.justify_center()
-                    .gap(px(if plain_recording { 10. } else { 2. }))
+                    .gap(px(if plain_recording { 8. } else { 2. }))
                     .px(px(if plain_recording { 12. } else { 4. }))
             })
             .on_click(cx.listener(|s, e: &ClickEvent, w, cx| {
@@ -551,13 +551,15 @@ impl Render for Overlay {
                 })
             })
             .when(indicator == Indicator::Recording, |s| {
-                s.size(px(6.)).rounded_full().bg(p.danger)
+                s.size(px(if g.floating { 10. } else { 6. }))
+                    .rounded_full()
+                    .bg(p.danger)
             })
             .when(indicator == Indicator::Recording, |s| {
                 s.child(
                     div()
                         .debug_selector(|| "overlay-state-symbol".into())
-                        .size(px(6.))
+                        .size(px(if g.floating { 10. } else { 6. }))
                         .rounded_full()
                         .bg(p.danger),
                 )

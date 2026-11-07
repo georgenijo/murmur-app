@@ -476,8 +476,7 @@ impl Render for Themes {
                 .flex()
                 .gap(px(2.))
                 .p(px(2.))
-                .rounded(tokens::CONTROL_RADIUS)
-                .bg(p.surface_container_low);
+                .rounded(tokens::CONTROL_RADIUS);
             for (mode, label) in [("system", "System"), ("light", "Light"), ("dark", "Dark")] {
                 let mut doc = s.appearance.clone();
                 doc["mode"] = json!(mode);
@@ -513,7 +512,6 @@ impl Render for Themes {
                     .child(mode_buttons),
             );
             let create = cx.entity();
-            let edit = create.clone();
             let import = create.clone();
             body = body.child(
                 div()
@@ -524,6 +522,9 @@ impl Render for Themes {
                     .child(div().flex_1().child("Themes"))
                     .child(
                         Button::new("theme-create", "Create theme…")
+                            .caption("Create theme")
+                            .size(crate::ButtonSize::Compact)
+                            .intent(crate::ButtonIntent::Ghost)
                             .icon(crate::icons::Glyph::Plus)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
@@ -533,33 +534,15 @@ impl Render for Themes {
                             }),
                     )
                     .child(
-                        Button::new("theme-edit", "Edit colors…")
-                            .icon_only(crate::icons::Glyph::Palette)
-                            .intent(crate::ButtonIntent::Ghost)
-                            .with_scroll_parent(Some(&self.scroll))
-                            .on_click(move |_, w, cx| {
-                                edit.update(cx, |s, cx| {
-                                    s.dialog(Dialog::Edit { create: false }, w, cx)
-                                })
-                            }),
-                    )
-                    .child(
                         Button::new("theme-import", "Import theme…")
+                            .caption("Import theme")
+                            .size(crate::ButtonSize::Compact)
+                            .intent(crate::ButtonIntent::Ghost)
                             .icon(crate::icons::Glyph::Download)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
                                 import.update(cx, |s, cx| s.dialog(Dialog::Import, w, cx))
                             }),
-                    )
-                    .child(
-                        self.button(
-                            "theme-export".into(),
-                            "Export current…".into(),
-                            Action::ExportCurrent,
-                            cx,
-                        )
-                        .icon_only(crate::icons::Glyph::Upload)
-                        .intent(crate::ButtonIntent::Ghost),
                     ),
             );
             if !s.library_available {
@@ -592,39 +575,64 @@ impl Render for Themes {
                         let swatch = colors.get("primary").map(|[r, g, b]| {
                             Hsla::from(rgb(((*r as u32) << 16) | ((*g as u32) << 8) | *b as u32))
                         });
-                        let mut orb = div()
-                            .size(px(38.))
+                        let color = swatch.unwrap_or(p.accent);
+                        let orb = div()
+                            .relative()
+                            .size(px(36.))
                             .rounded_full()
                             .border_1()
                             .border_color(p.hairline_strong)
-                            .bg(p.tint_raised)
-                            .shadow(p.card_shadow())
-                            .flex()
-                            .items_center()
-                            .justify_center();
-                        if let Some(color) = swatch {
-                            orb = orb.bg(linear_gradient(
+                            .bg(linear_gradient(
                                 135.,
-                                linear_color_stop(color.blend(white().opacity(0.8)), 0.),
-                                linear_color_stop(color.blend(black().opacity(0.55)), 1.),
-                            ));
-                        }
+                                linear_color_stop(color.blend(white().opacity(0.80)), 0.),
+                                linear_color_stop(color.blend(black().opacity(0.42)), 1.),
+                            ))
+                            .shadow(p.card_shadow())
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(4.))
+                                    .top(px(3.))
+                                    .size(px(22.))
+                                    .rounded_full()
+                                    .bg(linear_gradient(
+                                        140.,
+                                        linear_color_stop(white().opacity(0.50), 0.),
+                                        linear_color_stop(color.opacity(0.), 1.),
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .right(px(-3.))
+                                    .bottom(px(-3.))
+                                    .size(px(15.))
+                                    .rounded_full()
+                                    .bg(p.tint_raised)
+                                    .border_1()
+                                    .border_color(p.hairline)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        crate::icons::icon(if mode == "dark" {
+                                            crate::icons::Glyph::Moon
+                                        } else {
+                                            crate::icons::Glyph::Sun
+                                        })
+                                        .size(px(10.))
+                                        .text_color(p.muted),
+                                    ),
+                            );
                         orbs = orbs.child(
-                            orb.child(
-                                self.button(
-                                    format!("theme-{id}-{mode}"),
-                                    format!("{label} {mode} variant"),
-                                    Action::Appearance(doc),
-                                    cx,
-                                )
-                                .intent(crate::ButtonIntent::Ghost)
-                                .size(crate::ButtonSize::ExtraSmall)
-                                .icon_only(if mode == "dark" {
-                                    crate::icons::Glyph::Moon
-                                } else {
-                                    crate::icons::Glyph::Sun
-                                }),
-                            ),
+                            self.button(
+                                format!("theme-{id}-{mode}"),
+                                format!("{label} {mode} variant"),
+                                Action::Appearance(doc),
+                                cx,
+                            )
+                            .intent(crate::ButtonIntent::Ghost)
+                            .content(orb),
                         );
                     }
                 }
@@ -651,6 +659,7 @@ impl Render for Themes {
                             cx,
                         )
                         .icon_only(crate::icons::Glyph::Copy)
+                        .palette(Palette { text: p.muted, ..p })
                         .size(crate::ButtonSize::ExtraSmall)
                         .intent(crate::ButtonIntent::Ghost),
                     )
@@ -662,6 +671,7 @@ impl Render for Themes {
                             cx,
                         )
                         .icon_only(crate::icons::Glyph::Upload)
+                        .palette(Palette { text: p.muted, ..p })
                         .size(crate::ButtonSize::ExtraSmall)
                         .intent(crate::ButtonIntent::Ghost),
                     );
@@ -674,14 +684,30 @@ impl Render for Themes {
                             format!("Remove {label}…"),
                         )
                         .icon_only(crate::icons::Glyph::Trash)
+                        .palette(Palette { text: p.muted, ..p })
                         .size(crate::ButtonSize::ExtraSmall)
-                        .destructive_text()
+                        .intent(crate::ButtonIntent::Ghost)
                         .with_scroll_parent(Some(&self.scroll))
                         .on_click(move |_, w, cx| {
                             e.update(cx, |s, cx| {
                                 s.dialog(Dialog::Remove(remove_id.clone()), w, cx)
                             })
                         }),
+                    );
+                }
+                if selected {
+                    let edit = cx.entity();
+                    actions = actions.child(
+                        Button::new("theme-edit", "Edit colors…")
+                            .icon_only(crate::icons::Glyph::Palette)
+                            .size(crate::ButtonSize::ExtraSmall)
+                            .intent(crate::ButtonIntent::Ghost)
+                            .with_scroll_parent(Some(&self.scroll))
+                            .on_click(move |_, w, cx| {
+                                edit.update(cx, |s, cx| {
+                                    s.dialog(Dialog::Edit { create: false }, w, cx)
+                                })
+                            }),
                     );
                 }
                 if let Some(url) = entry["source"]["sourceUrl"].as_str() {
@@ -707,11 +733,7 @@ impl Render for Themes {
                         } else {
                             p.hairline_strong
                         })
-                        .bg(if selected {
-                            p.tint_raised.blend(p.accent.opacity(0.08))
-                        } else {
-                            p.tint_raised
-                        })
+                        .bg(p.tint_raised)
                         .rounded(tokens::CARD_RADIUS)
                         .shadow(p.card_shadow())
                         .child(orbs)

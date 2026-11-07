@@ -734,7 +734,8 @@ impl Render for Onboarding {
                     .id("permission-status")
                     .role(Role::Status)
                     .aria_label(format!("{} access {text}", permission.label()))
-                    .p(px(16.))
+                    .px(px(16.))
+                    .py(px(12.))
                     .border_1()
                     .border_color(p.hairline_strong)
                     .bg(p.tint_raised)
@@ -1113,7 +1114,7 @@ impl Render for Onboarding {
             .flex()
             .flex_col()
             .px(px(24.))
-            .pt(px(80.))
+            .pt(px(100.))
             .pb(px(48.))
             .child(
                 div()

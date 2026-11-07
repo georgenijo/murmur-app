@@ -819,6 +819,7 @@ impl Render for Main {
                     div().flex_1().child(
                         Button::new("updater-primary", label)
                             .pill()
+                            .height(px(38.))
                             .full_width()
                             .intent(crate::ButtonIntent::Primary)
                             .on_click(cx.listener(move |s, _, _, _| s.update_action(action))),
@@ -831,6 +832,7 @@ impl Render for Main {
                         Button::new("updater-later", "Close")
                             .caption("Later")
                             .pill()
+                            .height(px(38.))
                             .full_width()
                             .intent(crate::ButtonIntent::Secondary)
                             .on_click(cx.listener(|s, _, _, cx| {

@@ -203,6 +203,16 @@ impl Review {
             self.insights.update(cx, |s, _| s.embedded = true);
         }
         if index == 4 || index == 5 {
+            // Settings navigation can switch between either embedded destination.
+            // Keep both synthetic service owners attached, as production does.
+            self.modes.update(cx, |s, cx| {
+                s.attach(cx);
+                s.follow(cx);
+            });
+            self.themes.update(cx, |s, cx| {
+                s.attach(cx);
+                s.follow(cx);
+            });
             self.settings.update(cx, |s, cx| {
                 s.navigate(
                     if index == 4 {
