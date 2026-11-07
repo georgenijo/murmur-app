@@ -438,3 +438,75 @@ fn missing_noncurated_selection_uses_curated_default_and_installed_choice_wins()
         .installed = true;
     assert_eq!(s.preferred(), "medium.en");
 }
+
+#[gpui::test]
+fn cancellation_failure_and_source_revision_keep_back_locked_until_termination(
+    cx: &mut TestAppContext,
+) {
+    let (e, h, cx) = harness(cx);
+    e.update(cx, |s, cx| s.visit(Step::Model, cx));
+    draw(cx);
+    h.hold.set(true);
+    e.update(cx, |s, cx| {
+        s.selected_model = CURATED[0].into();
+        s.activate(cx);
+    });
+    let (original, _) = h.held.borrow_mut().pop().unwrap();
+    let mut changed = h.state.borrow().clone();
+    changed.revision += 1;
+    e.update(cx, |s, cx| {
+        assert!(
+            s.inbox
+                .publish(Event::Changed {
+                    attachment: s.model.attachment,
+                    snapshot: changed
+                })
+                .is_ok()
+        );
+        s.drain(cx);
+    });
+    let (cancel, inbox) = h.held.borrow_mut().pop().unwrap();
+    assert!(matches!(cancel.action, Action::CancelDownload(_)));
+    assert!(!original.lease.is_current());
+    assert!(
+        inbox
+            .publish(Event::Reply {
+                ticket: cancel.ticket,
+                result: Err(Problem::Unavailable)
+            })
+            .is_ok()
+    );
+    draw(cx);
+    e.update(cx, |s, cx| s.visit(Step::Calendar, cx));
+    assert_eq!(e.read_with(cx, |s, _| s.step), Step::Model);
+    e.update(cx, |s, cx| s.cancel_download(cx));
+    let (retry, inbox) = h.held.borrow_mut().pop().unwrap();
+    assert_ne!(cancel.ticket, retry.ticket);
+    let mut state = h.state.borrow().clone();
+    state.revision = retry.ticket.revision;
+    assert!(
+        inbox
+            .publish(Event::Reply {
+                ticket: retry.ticket,
+                result: Ok(state)
+            })
+            .is_ok()
+    );
+    draw(cx);
+    e.update(cx, |s, cx| s.visit(Step::Calendar, cx));
+    assert_eq!(e.read_with(cx, |s, _| s.step), Step::Calendar);
+}
+#[gpui::test]
+fn leaving_microphone_clears_its_wait_without_reprompting(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    e.update(cx, |s, cx| {
+        s.visit(Step::Microphone, cx);
+        s.drain(cx);
+        s.mic_wait = Some(Instant::now());
+        s.visit(Step::Welcome, cx);
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.mic_wait.is_none() && s.mic_auto_consumed));
+    keys(cx, "enter");
+    assert_eq!(e.read_with(cx, |s, _| s.step), Step::Microphone);
+}

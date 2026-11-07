@@ -214,6 +214,19 @@ impl Onboarding {
                 continue;
             }
             self.authority.sync(&self.model);
+            if !terminal && !self.model.pending && self.downloading() {
+                // A source revision revoked the download lease. Keep navigation
+                // locked while the attachment's exact native owner is cancelled.
+                self.cancelling = false;
+                self.cancel_download(cx);
+            }
+            if terminal && self.cancelling && !ok {
+                // A failed cancellation is not a termination receipt. Keep the
+                // download owner/Back lock and offer another explicit Cancel.
+                self.cancelling = false;
+                cx.notify();
+                continue;
+            }
             if terminal {
                 self.operation = None;
                 if ok {
@@ -311,6 +324,7 @@ impl Onboarding {
         }
         if self.step == Step::Microphone {
             self.mic_auto_consumed = true;
+            self.mic_wait = None;
         }
         self.model.invalidate();
         self.authority.sync(&self.model);
@@ -456,7 +470,7 @@ impl Onboarding {
         "Continue".into()
     }
     fn activate(&mut self, cx: &mut Context<Self>) {
-        if self.model.pending || self.mic_wait.is_some() || self.finished {
+        if self.model.pending || self.downloading() || self.mic_wait.is_some() || self.finished {
             return;
         }
         if self.step == Step::Done {
@@ -508,6 +522,10 @@ impl Onboarding {
             return;
         }
         self.cancelling = true;
+        if !self.model.pending {
+            let _ = self.model.begin();
+            self.authority.sync(&self.model);
+        }
         let ticket = self.model.ticket();
         self.host.request(
             Request {
@@ -918,6 +936,7 @@ impl Render for Onboarding {
         }
         let e = cx.entity();
         let disabled = self.model.pending
+            || self.downloading()
             || self.mic_wait.is_some()
             || self.model.snapshot.is_none()
             || self.finished

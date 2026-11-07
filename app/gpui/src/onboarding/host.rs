@@ -74,7 +74,9 @@ pub trait Host {
     /// Recheck lease/revision and exact native generation before every effect.
     /// Probe replies carry their original visit ticket. Download progress additionally
     /// checks native request ID + monotonic attempt; cancellation confirms that exact
-    /// child's termination before terminal Reply unlocks Back. Hide/drop cancels only
+    /// child's termination before terminal Reply unlocks Back. Cancellation maps
+    /// the attachment/model back to its originally retained native request ID,
+    /// including retries after a newer source revision revoked the first lease. Hide/drop cancels only
     /// that attachment's download; it never cancels someone else's operation.
     /// Complete validates/reprobes installed model, serially configures the existing
     /// backend and resumes listener admission BEFORE saving settingsVersion=7,
