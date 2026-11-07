@@ -730,12 +730,22 @@ impl Model {
         format!("{}:{:02}", seconds / 60, seconds % 60)
     }
     pub fn bars(&self, count: usize) -> Vec<f32> {
+        if self.snapshot.placement == OverlayPlacement::FloatingPill {
+            // React's VoiceIslandFixture freezes this per-bar profile. Apply it
+            // to the unsaturated audio level, preserving rhythm at louder input.
+            const PROFILE: [f32; 18] = [
+                0.3, 0.55, 0.8, 1., 0.7, 0.45, 0.6, 0.9, 0.5, 0.35, 0.75, 0.95, 0.65, 0.4, 0.85,
+                0.55, 0.3, 0.2,
+            ];
+            return (0..count)
+                .map(|i| (self.level.clamp(0., 1.) * PROFILE[i % PROFILE.len()]).clamp(0.14, 1.))
+                .collect();
+        }
         (0..count)
             .map(|i| {
                 let center = (count - 1) as f32 / 2.;
                 let envelope = 1. - 0.5 * (i as f32 - center).abs() / center.max(1.);
                 let level = (self.level * 16.).clamp(0., 1.);
-                // Stable per-bar variation keeps offscreen fixtures deterministic.
                 let variation = ((i * 17 + 11) % 23) as f32 / 23.;
                 (0.08 + 0.07 * variation + level * envelope + level * level * 0.4 * variation)
                     .clamp(0.14, 1.)

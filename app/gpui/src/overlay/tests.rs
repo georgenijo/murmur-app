@@ -285,6 +285,21 @@ fn waveform_is_bounded_and_only_the_current_visible_owner_can_supply_samples() {
     assert_eq!(m.level, 1.);
 }
 #[test]
+fn pill_waveform_retains_per_bar_rhythm_and_responds_without_saturation() {
+    let mut m = active();
+    m.snapshot.placement = OverlayPlacement::FloatingPill;
+    m.sample(7, 1., 0);
+    let loud = m.bars(18);
+    assert_eq!(loud, m.bars(18)); // repeatable offscreen fixtures
+    assert_eq!(&loud[..5], &[0.3, 0.55, 0.8, 1., 0.7]);
+    m.sample(7, 0.5, 0);
+    let quiet = m.bars(18);
+    assert!(quiet.iter().zip(&loud).all(|(a, b)| a < b));
+    m.sample(7, 0., 0);
+    assert_eq!(m.bars(18), vec![0.14; 18]);
+    assert!(m.bars(0).is_empty());
+}
+#[test]
 fn both_placements_use_the_shared_geometry_and_live_dock_limit() {
     let mut m = active();
     m.screen = Screen {
