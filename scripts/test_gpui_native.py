@@ -516,17 +516,25 @@ class WebkitSourcePolicyTests(unittest.TestCase):
 @unittest.skipUnless(platform.system() == 'Darwin', 'dyld policy requires macOS')
 class WebkitPolicyTests(unittest.TestCase):
     def test_recorded_writing_tools_chain_is_narrow_and_counted(self):
+        self.check_recorded_writing_tools_chain('webkit-appkit-writing-tools.json')
+
+    def test_recorded_macos26_writing_tools_chain_is_narrow_and_counted(self):
+        self.check_recorded_writing_tools_chain('webkit-appkit-writing-tools-macos26.json')
+
+    def check_recorded_writing_tools_chain(self, fixture):
         import json
         from scripts.check_gpui_goldens import check_inventory
-        recorded = json.loads((ROOT / 'tests/fixtures/gpui/webkit-appkit-writing-tools.json').read_text())
+        recorded = json.loads((ROOT / 'tests/fixtures/gpui' / fixture).read_text())
+        text_input = json.loads((ROOT / 'tests/fixtures/gpui/webkit-appkit-writing-tools.json').read_text())
         frames = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
                              for f in recorded['chain'])
         negative = ',\n'.join('{' + json.dumps(f['image']) + ',' + json.dumps(f['symbol']) + '}'
-                               for f in recorded['negativeChain'])
+                               for f in text_input['negativeChain'])
         source = r'''
 #include "webkit_policy.m"
 #include <assert.h>
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argv;
     assert(murmur_webkit_start());
     WebkitFrame chain[] = { FRAMES };
     unsigned n=sizeof(chain)/sizeof(*chain);
@@ -551,14 +559,26 @@ int main(void) {
         chain[i]=saved;
     }
     for (unsigned i=0; i<n; i++) {
-        if (!strstr(chain[i].image,"/AppKit.framework/")) continue;
+        if (strcmp(chain[i].image,"/usr/lib/dyld") &&
+            !strstr(chain[i].image,"/AppKit.framework/") &&
+            !strstr(chain[i].image,"/SoftLinking.framework/")) continue;
         WebkitFrame saved=chain[i];
         strcpy(chain[i].image,"/synthetic/AppKit.framework/AppKit");
         assert(!murmur_webkit_writing_tools_chain(chain,n,false));
         chain[i]=saved;
+        if (!strcmp(chain[i].image,"/usr/lib/dyld")) continue;
         strcpy(chain[i].symbol,"unrelated_probe");
         assert(!murmur_webkit_writing_tools_chain(chain,n,false));
         chain[i]=saved;
+        // Each probe/launch frame is required, in its recorded position.
+        memmove(&chain[i],&chain[i+1],(n-i-1)*sizeof(*chain));
+        assert(!murmur_webkit_writing_tools_chain(chain,n-1,false));
+        memmove(&chain[i+1],&chain[i],(n-i-1)*sizeof(*chain));
+        chain[i]=saved;
+        WebkitFrame next=chain[i+1];
+        chain[i]=next; chain[i+1]=saved;
+        assert(!murmur_webkit_writing_tools_chain(chain,n,false));
+        chain[i]=saved; chain[i+1]=next;
     }
     WebkitFrame text_input[]={ NEGATIVE_FRAMES };
     assert(!murmur_webkit_writing_tools_chain(text_input,sizeof(text_input)/sizeof(*text_input),false));
@@ -581,6 +601,7 @@ int main(void) {
     memcpy(load->frames,chain,sizeof(chain)); load->count=n;
     load->writing_tools=murmur_webkit_writing_tools_chain(chain,n,false);
     assert(murmur_webkit_inventory("MURMUR_TEST_WRITING_TOOLS_INVENTORY"));
+    if (argc>1) image_added(NULL,0); // Even an attributed inventory closes observation.
 }
 '''.replace('NEGATIVE_FRAMES', negative).replace('FRAMES', frames)
         with tempfile.TemporaryDirectory(prefix='murmur-writing-tools-') as directory:
@@ -593,6 +614,8 @@ int main(void) {
             inventory = check_inventory(output, 'MURMUR_TEST_WRITING_TOOLS_INVENTORY')
             self.assertEqual(inventory['writingToolsAttributed'], 1)
             self.assertEqual(inventory['axAttributed'], 0)
+            late = subprocess.run([str(path / 'test'), 'late'], capture_output=True, timeout=30)
+            self.assertEqual(late.returncode, 86)
 
     def test_appkit_main_menu_launch_inventory(self):
         # A real AppKit startup regression: no HID, clipboard, text view, or
@@ -626,8 +649,11 @@ int main(void) { @autoreleasepool {
             subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
                             '-framework', 'AppKit', '-I', str(ROOT / 'app/gpui/native'),
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
-            output = subprocess.check_output([str(path / 'test')], text=True, timeout=30)
-            check_inventory(output, 'MURMUR_TEST_APPKIT_INVENTORY')
+            result = subprocess.run([str(path / 'test')], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0,
+                             f'AppKit launch exited {result.returncode}\n'
+                             f'stdout:\n{result.stdout}\nstderr:\n{result.stderr}')
+            check_inventory(result.stdout, 'MURMUR_TEST_APPKIT_INVENTORY')
 
     def test_classifier_linkage_and_zero_baseline(self):
         source = r'''
