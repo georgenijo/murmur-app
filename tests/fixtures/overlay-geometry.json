@@ -1,0 +1,382 @@
+{
+  "expandedMeetingNotched": {
+    "collapsedH": 32.0,
+    "dropdownH": 136.0,
+    "expandedH": 168.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 32.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 320.0,
+    "pillIdleW": 320.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 320.0,
+    "wingW": 28.0
+  },
+  "expandedNotched": {
+    "collapsedH": 32.0,
+    "dropdownH": 64.0,
+    "expandedH": 96.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 32.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 241.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "external": {
+    "collapsedH": 30.0,
+    "dropdownH": 64.0,
+    "expandedH": 94.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 30.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 28.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "fallback": {
+    "collapsedH": 37.0,
+    "dropdownH": 64.0,
+    "expandedH": 101.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 37.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 28.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "idleExternal": {
+    "collapsedH": 30.0,
+    "dropdownH": 64.0,
+    "expandedH": 94.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 30.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 185.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 185.0,
+    "wingW": 28.0
+  },
+  "idleNotched": {
+    "collapsedH": 32.0,
+    "dropdownH": 64.0,
+    "expandedH": 96.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 32.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 185.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 185.0,
+    "wingW": 28.0
+  },
+  "meetingSuggestionExternal": {
+    "collapsedH": 30.0,
+    "dropdownH": 136.0,
+    "expandedH": 166.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 30.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 320.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 39.5,
+    "windowW": 320.0,
+    "wingW": 28.0
+  },
+  "meetingSuggestionFallback": {
+    "collapsedH": 37.0,
+    "dropdownH": 136.0,
+    "expandedH": 173.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 37.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 320.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 39.5,
+    "windowW": 320.0,
+    "wingW": 28.0
+  },
+  "meetingSuggestionNotched": {
+    "collapsedH": 32.0,
+    "dropdownH": 136.0,
+    "expandedH": 168.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 32.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 320.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 39.5,
+    "windowW": 320.0,
+    "wingW": 28.0
+  },
+  "notched": {
+    "collapsedH": 32.0,
+    "dropdownH": 64.0,
+    "expandedH": 96.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 32.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 185.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 28.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "pillExpanded": {
+    "collapsedH": 34.0,
+    "dropdownH": 64.0,
+    "expandedH": 98.0,
+    "floating": true,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 0.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 241.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "pillIdle": {
+    "collapsedH": 34.0,
+    "dropdownH": 64.0,
+    "expandedH": 98.0,
+    "floating": true,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 0.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 120.0,
+    "pillIdleW": 120.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 120.0,
+    "wingW": 28.0
+  },
+  "pillMeetingSuggestion": {
+    "collapsedH": 34.0,
+    "dropdownH": 136.0,
+    "expandedH": 170.0,
+    "floating": true,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 0.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 320.0,
+    "pillIdleW": 320.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 320.0,
+    "wingW": 28.0
+  },
+  "pillProcessing": {
+    "collapsedH": 34.0,
+    "dropdownH": 64.0,
+    "expandedH": 98.0,
+    "floating": true,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 0.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 120.0,
+    "pillIdleW": 120.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 120.0,
+    "wingW": 28.0
+  },
+  "pillRecording": {
+    "collapsedH": 34.0,
+    "dropdownH": 64.0,
+    "expandedH": 98.0,
+    "floating": true,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 0.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 120.0,
+    "pillIdleW": 120.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 120.0,
+    "wingW": 28.0
+  },
+  "processingExternal": {
+    "collapsedH": 30.0,
+    "dropdownH": 64.0,
+    "expandedH": 94.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 30.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 241.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "processingNotched": {
+    "collapsedH": 32.0,
+    "dropdownH": 64.0,
+    "expandedH": 96.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 32.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 241.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "recordingExternal": {
+    "collapsedH": 30.0,
+    "dropdownH": 64.0,
+    "expandedH": 94.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 30.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 241.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  },
+  "recordingNotched": {
+    "collapsedH": 32.0,
+    "dropdownH": 64.0,
+    "expandedH": 96.0,
+    "floating": false,
+    "island": {
+      "cornerActive": 12.0,
+      "cornerIdle": 8.0,
+      "notchH": 32.0,
+      "notchW": 185.0,
+      "pillH": 34.0,
+      "pillW": 120.0
+    },
+    "pillActiveW": 241.0,
+    "pillIdleW": 241.0,
+    "pillMarginActive": 0.0,
+    "pillMarginIdle": 0.0,
+    "windowW": 241.0,
+    "wingW": 28.0
+  }
+}

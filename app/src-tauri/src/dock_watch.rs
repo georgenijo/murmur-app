@@ -37,15 +37,7 @@ const MAX_ITEMS: usize = 96;
 const SAMPLE_BUDGET: Duration = Duration::from_millis(40);
 
 /// Where the pill must stay above, in global logical y (top-left origin).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum DockLimit {
-    /// No live reading: use the static preference reserve.
-    Unknown,
-    /// The Dock is hidden, elsewhere, or within the work area already.
-    Clear,
-    /// The revealed Dock (with magnification and label room) starts here.
-    Above(f64),
-}
+pub(crate) use murmur_core::overlay_geometry::DockLimit;
 
 /// The published limit and the display it was measured against.
 static LIMIT: Mutex<(DockLimit, Option<PillDisplay>)> = Mutex::new((DockLimit::Unknown, None));

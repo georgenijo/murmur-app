@@ -17,3 +17,5 @@ pub mod shutdown;
 pub mod source_order;
 
 pub mod updater;
+
+pub mod overlay_geometry;
