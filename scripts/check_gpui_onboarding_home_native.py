@@ -54,6 +54,13 @@ int main(int argc,const char **argv) { @autoreleasepool {
     pid_t pid=atoi(argv[1]); if (pid<=1) return 2;
     AXUIElementRef app=AXUIElementCreateApplication(pid);
     AXUIElementSetMessagingTimeout(app,3);
+    if (!strcmp(argv[2],"close")) {
+        NSArray *windows=attr(app,kAXWindowsAttribute);
+        AXUIElementRef window=windows.count?(__bridge AXUIElementRef)windows.firstObject:NULL;
+        id button=window?attr(window,kAXCloseButtonAttribute):nil;
+        int result=button && AXUIElementPerformAction((__bridge AXUIElementRef)button,kAXPressAction)==kAXErrorSuccess?0:4;
+        CFRelease(app);return result;
+    }
     AXUIElementRef node=find(app,@(argv[3]),0);
     if (!node) {CFRelease(app);return 3;}
     int result=0;
@@ -124,6 +131,11 @@ def main():
                                 subprocess.run(['screencapture', '-x', '-o', '-l', window.stdout.strip(), str(image)],
                                                check=True, timeout=10)
                         time.sleep(0.15)
+                    subprocess.run([str(observer), str(host.pid), 'close', '-'], check=True, timeout=8)
+                    host.wait(timeout=15)
+                    if host.returncode != 0:
+                        raise RuntimeError(f'{family}: window close did not exit cleanly: {host.returncode}')
+                    observations.append(dict(family=family, pid=host.pid, action='close', label='own test window'))
                 finally:
                     if host.poll() is None:
                         host.terminate()

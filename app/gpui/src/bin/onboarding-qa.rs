@@ -23,6 +23,7 @@ fn main() {
         gpui_platform::application()
     };
     app.run(move |cx| {
+        cx.set_quit_mode(QuitMode::LastWindowClosed);
         if headless {
             murmur_ui::init_with_preferences(
                 cx,
