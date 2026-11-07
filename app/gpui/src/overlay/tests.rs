@@ -1190,6 +1190,85 @@ fn pointer_samples_do_not_undo_ax_disclosure_or_restart_stationary_dwell() {
     assert_eq!(m.phase, Phase::Collapsed);
 }
 
+#[test]
+fn rapid_disclosure_close_rejects_late_stationary_enter_until_real_exit() {
+    rapid_disclosure_close_for_motion(false);
+}
+
+#[test]
+fn rapid_disclosure_close_rejects_late_stationary_enter_with_reduced_motion() {
+    rapid_disclosure_close_for_motion(true);
+}
+
+fn rapid_disclosure_close_for_motion(reduced: bool) {
+    for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
+        for interval in [49, 101, 197] {
+            let mut m = active();
+            m.snapshot.placement = placement;
+            for cycle in 0..10 {
+                let start = cycle * 2000;
+                m.expand(start);
+                assert!(m.tick(start, reduced, |_, _| true).is_none());
+                assert_eq!(m.phase, Phase::Open);
+                // Both releases precede the end of the 360 ms animation.
+                m.close(start + interval);
+                m.tick(start + interval, reduced, |_, _| true);
+                // A never-key panel can deliver its first enter/poll after
+                // both clicks. It is still the same stationary pointer,
+                // not permission to undo the explicit disclosure close.
+                m.hover(true, start + interval + 33);
+                for elapsed in (33..=1254).step_by(33) {
+                    assert!(
+                        m.tick(start + interval + elapsed, reduced, |_, _| true)
+                            .is_none()
+                    );
+                    assert_ne!(
+                        m.phase,
+                        Phase::Open,
+                        "cycle={cycle}, reduced={reduced}, interval={interval}"
+                    );
+                }
+                assert_eq!(m.phase, Phase::Collapsed);
+                // A deliberate click can reopen without a pointer exit.
+                m.expand(start + 1500);
+                m.tick(start + 1500, reduced, |_, _| true);
+                assert_eq!(m.phase, Phase::Open);
+                m.close(start + 1550);
+                m.tick(start + 1550, reduced, |_, _| true);
+                m.tick(start + 1930, reduced, |_, _| true);
+                m.hover(false, start + 1940);
+            }
+            // Actual exit/re-entry restores the ordinary 150 ms dwell.
+            m.hover(true, 21000);
+            m.tick(21149, reduced, |_, _| panic!("early dwell"));
+            m.tick(21150, reduced, |_, _| true);
+            assert_eq!(m.phase, Phase::Open);
+        }
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn explicit_close_without_an_enter_rearms_on_an_outside_sample(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    cx.update(|cx| {
+        let overlay = cx.new(|_| Overlay::new(active().snapshot, Rc::new(FakeHost::default())));
+        overlay.update(cx, |s, _| {
+            s.model.expand(0);
+            s.model.tick(0, false, |_, _| true);
+            s.model.close(50);
+            s.model.tick(50, false, |_, _| true);
+            s.model.tick(430, false, |_, _| true);
+            // AX close while outside: no enter/exit transition was delivered.
+            assert!(!s.observe_pointer(false, 450));
+            assert!(s.observe_pointer(true, 500));
+            s.model.tick(649, false, |_, _| panic!("early dwell"));
+            s.model.tick(650, false, |_, _| true);
+            assert_eq!(s.model.phase, Phase::Open);
+        });
+    });
+}
+
 #[cfg(feature = "a11y-tests")]
 #[gpui::test]
 fn delivered_hover_exits_between_watchdog_ticks_restart_continuous_dwell(

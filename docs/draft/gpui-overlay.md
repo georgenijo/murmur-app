@@ -186,6 +186,18 @@ frames in both placements and disabled states. It checks full target containment
 in the card clip, the 20×24 pt AX/hit bounds, near-corner and center clicks,
 AXPress reversal, unchanged focus/intents and traversal of actual AX child
 links before all four quick controls.
+An explicit disclosure close suppresses hover expansion for the current pointer
+visit, including an enter delivered after both rapid clicks. A current native
+outside sample or a genuine exit rearms the ordinary dwell; another deliberate
+disclosure click can reopen immediately. Deferred GPUI hover callbacks recheck
+the current native painted surface before changing presence, because their
+layout snapshot can report an exit during a centered resize even while the
+screen pointer remains inside. The normal- and reduced-motion
+`rapid_disclosure_close_rejects_late_stationary_enter_*` regressions exercise
+49/101/197 ms open/close pairs ten times in both placements, settlement beyond
+the animation/dwell deadlines, deliberate reopening and real exit/re-entry.
+`explicit_close_without_an_enter_rearms_on_an_outside_sample` covers an AX close
+before any pointer-enter transition.
 The windowless adapter probe shares the production press target resolution and
 dispatch function; it creates no NSView/NSWindow and makes no AX client calls.
 It establishes adapter mapping/action handling, not VoiceOver spoken behavior.
@@ -436,9 +448,11 @@ our GPUI source gate also forbids web-view class construction references.
 After launch, a WebKit-family load is allowed only when its captured image/symbol
 chain contains Apple's AccessibilityBundles/AXBBundleManager activation and
 HIServices bundle loading followed by an incoming `_AXXMIG` request and Apple
-Mach/source-1 runloop dispatch. Unknown,
-non-system or app frames before that dispatch boundary, any web-view frame, truncated
-records, and inventory overflow fail closed. Ordinary app event-loop frames below
+Mach/source-1 runloop dispatch and continues to a recognized dyld process or
+libsystem_pthread thread root. Every captured frame must have a nonempty image
+and a resolved, non-redacted symbol, including frames below dispatch. Unknown,
+non-system or app frames before that dispatch boundary, any web-view frame,
+incomplete/truncated records, and inventory overflow fail closed. Ordinary app event-loop frames below
 the incoming dispatch boundary are not the initiator. No AX clients, text, audio,
 clipboard contents or other process data are collected. QA stores only bounded
 image paths/symbol names; production builds contain no observer or backtraces.
@@ -449,5 +463,14 @@ image paths/symbol names; production builds contain no observer or backtraces.
 loads do not mean Murmur constructs a web view. The policy is attribution to an
 incoming AX request, not proof of a particular client's identity. The golden
 script checks this policy and a separate deterministic zero-image launch run.
+Inventory waits for callbacks counted at entry (before capture/symbolication),
+then serializes records and rechecks both arrivals and published counters. The
+last stable check closes observation under the policy mutex. Any later dyld
+callback exits the QA process with status 86, including during summary output,
+after flush, or after inventory returns; callers must check process status as
+well as inventory JSON. Callbacks never wait for finalization or hold the policy
+mutex across loader/symbol/serialization calls. The shared C/Rust policy API
+and inventory fields are unchanged; inventory is terminal and runs once per QA
+host process.
 A bounded native diagnostic (`MURMUR_WEBKIT_QA_SECONDS=3 overlay-qa`) checks the
 same policy before quitting, without HID input or altering accessibility.
