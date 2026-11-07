@@ -510,7 +510,33 @@ class WebkitSourcePolicyTests(unittest.TestCase):
             for path in (root / directory).rglob('*'):
                 if path.suffix not in ('.rs', '.m', '.h') or path.name == 'webkit_policy.m':
                     continue
+                if path == root / 'native/legacy.m':
+                    # Phase 2's permanent legacy transport runs only in the
+                    # selected disposable worker; it never presents a GPUI view.
+                    self.assertIn('dlopen("/System/Library/Frameworks/WebKit.framework/WebKit",RTLD_NOW|RTLD_LOCAL)', path.read_text())
+                    self.assertIn('NSClassFromString(@"WKWebView")', path.read_text())
+                    self.assertNotRegex(path.read_text(), r'\[WKWebView\s|#import <WebKit/WebKit.h>')
+                    continue
                 self.assertNotRegex(path.read_text(), r'WKWebView|\bWebView\b', str(path))
+
+    def test_legacy_webkit_transport_is_confined_to_worker_dispatch(self):
+        root = ROOT / 'app/gpui'
+        main = (root / 'src/main.rs').read_text()
+        self.assertLess(main.index('services::legacy::worker()'), main.index('services::run(identifier, home)'))
+        worker = (root / 'src/host/services/legacy.rs').read_text()
+        self.assertIn('"--native-legacy-import-worker"', worker)
+        self.assertIn('"--native-legacy-fixture"', worker)
+        self.assertIn('cfg!(feature = "native-host-qa")', worker)
+        self.assertIn('os::identity() != "com.localdictation.gpui-host-qa110"', worker)
+        self.assertLess(worker.index('return None;'), worker.index('Some(run_worker(synthetic)'))
+        callers = [path for path in (root / 'src').rglob('*.rs')
+                   if 'murmur_legacy_start(' in path.read_text()]
+        self.assertEqual(callers, [root / 'src/host/services/legacy.rs'])
+        self.assertEqual(worker.count('murmur_legacy_start('), 2)  # declaration + worker invocation
+        bridge = (root / 'native/legacy.m').read_text()
+        self.assertIn('NSApplicationActivationPolicyProhibited', bridge)
+        self.assertIn('tauri://localhost/', bridge)
+        self.assertNotIn('rustc-link-lib=framework=WebKit', (root / 'build.rs').read_text())
 
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'dyld policy requires macOS')
