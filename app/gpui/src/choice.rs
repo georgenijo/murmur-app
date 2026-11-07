@@ -48,6 +48,7 @@ pub struct Choices {
     open: bool,
     disabled: bool,
     scroll: ScrollHandle,
+    width: Pixels,
     _blur: Subscription,
     popup_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
 }
@@ -90,6 +91,7 @@ impl Choices {
             open: false,
             disabled: false,
             scroll: ScrollHandle::new(),
+            width: tokens::SELECT_MAX,
         }
     }
     /// Refresh bounded data-backed pickers without replacing their focus owner.
@@ -112,6 +114,12 @@ impl Choices {
         self.cancel();
         cx.notify();
     }
+    pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
+        if self.width != width {
+            self.width = width;
+            cx.notify();
+        }
+    }
     pub fn value(&self) -> Option<&SharedString> {
         self.selected.map(|i| &self.choices[i].value)
     }
@@ -128,6 +136,7 @@ impl Choices {
     fn reset_active(&mut self) {
         self.active = self
             .selected
+            .filter(|&i| !self.choices[i].disabled)
             .or_else(|| self.choices.iter().position(|c| !c.disabled));
     }
     fn begin_open(&mut self) {
@@ -167,6 +176,20 @@ impl Choices {
             .position(|c| c.value == value && !c.disabled);
         self.active = self
             .selected
+            .filter(|&i| !self.choices[i].disabled)
+            .or_else(|| self.choices.iter().position(|c| !c.disabled));
+        cx.notify();
+    }
+    /// Display an unavailable durable selection without making it activatable.
+    /// Device inventory can lose a saved input; do not present that as default.
+    pub fn set_saved_value(&mut self, value: &str, cx: &mut Context<Self>) {
+        if self.value().is_some_and(|current| current == value) {
+            return;
+        }
+        self.selected = self.choices.iter().position(|c| c.value == value);
+        self.active = self
+            .selected
+            .filter(|&i| !self.choices[i].disabled)
             .or_else(|| self.choices.iter().position(|c| !c.disabled));
         cx.notify();
     }
@@ -263,7 +286,7 @@ impl Render for Choices {
         let mut root = div()
             .id("choices")
             .relative()
-            .w(tokens::SELECT_MAX)
+            .w(self.width)
             .role(role)
             .when(popup, |s| s.h(tokens::STANDARD_HEIGHT))
             .aria_label(self.label.clone())
@@ -313,7 +336,7 @@ impl Render for Choices {
                 .when(popup, |s| {
                     s.role(Role::ListBox)
                         .aria_label(self.label.clone())
-                        .w(tokens::SELECT_MAX)
+                        .w(self.width)
                         .rounded(tokens::CONTROL_RADIUS)
                         .border_1()
                         .border_color(p.border)

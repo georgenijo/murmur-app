@@ -11,6 +11,7 @@ pub mod motion;
 pub mod overlay;
 pub mod preferences;
 pub mod preview;
+pub mod settings;
 pub mod toggle;
 pub mod tokens;
 

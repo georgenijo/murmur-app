@@ -1,0 +1,101 @@
+--- a/crates/base/src/slider.rs
++++ b/crates/base/src/slider.rs
+@@ -281,6 +281,21 @@
+         cx.notify();
+     }
+ 
++    /// Whether a pointer gesture currently owns the draft value.
++    pub fn is_dragging(&self) -> bool {
++        self.dragging
++    }
++
++    /// Keyboard and assistive actions use the same change event as the pointer.
++    /// Controlled programmatic updates through set_value remain silent.
++    pub fn set_user_value(&mut self, value: f32, window: &mut Window, cx: &mut Context<Self>) {
++        let value = ((value / self.step).round() * self.step).clamp(self.min, self.max);
++        if value != self.value.end() {
++            self.set_value(value, window, cx);
++            cx.emit(SliderEvent::Change(self.value));
++        }
++    }
++
+     /// Get the value of the slider.
+     pub fn value(&self) -> SliderValue {
+         self.value
+@@ -444,6 +459,7 @@
+     axis: Axis,
+     disabled: bool,
+     accessibility_label: Option<SharedString>,
++    focus: Option<gpui::FocusHandle>,
+     base: Div,
+     children: Vec<AnyElement>,
+ }
+@@ -455,9 +471,16 @@
+             axis: Axis::Horizontal,
+             disabled: false,
+             accessibility_label: None,
++            focus: None,
+             base: div(),
+             children: Vec::new(),
+         }
++    }
++
++    /// Supply the application's persistent keyboard focus owner.
++    pub fn track_focus(mut self, focus: &gpui::FocusHandle) -> Self {
++        self.focus = Some(focus.clone());
++        self
+     }
+ 
+     pub fn horizontal(mut self) -> Self {
+@@ -512,6 +535,33 @@
+             .role(Role::Slider)
+             .when_some(self.accessibility_label, |this, label| {
+                 this.aria_label(label)
++            })
++            .when_some(self.focus, |this, focus| {
++                this.track_focus(&focus.clone().tab_stop(!self.disabled))
++                    .when(!self.disabled, |this| {
++                        this.on_mouse_down(MouseButton::Left, move |_, w, cx| w.focus(&focus, cx))
++                            .capture_key_down({
++                                let state = slider_state.clone();
++                                move |e, w, cx| {
++                                    if e.prefer_character_input
++                                        || e.keystroke.modifiers.number_of_modifiers() != 0
++                                    {
++                                        return;
++                                    }
++                                    let s = state.read(cx);
++                                    let value = match e.keystroke.key.as_str() {
++                                        "right" | "up" => s.value().end() + s.step_value(),
++                                        "left" | "down" => s.value().end() - s.step_value(),
++                                        "home" => s.min_value(),
++                                        "end" => s.max_value(),
++                                        _ => return,
++                                    };
++                                    state.update(cx, |s, cx| s.set_user_value(value, w, cx));
++                                    w.prevent_default();
++                                    cx.stop_propagation();
++                                }
++                            })
++                    })
+             })
+             .aria_numeric_value(state.value().end() as f64)
+             .aria_min_numeric_value(state.min_value() as f64)
+@@ -531,7 +581,7 @@
+                         state.update(cx, |state, cx| {
+                             let value =
+                                 (state.value().end() + state.step_value()).min(state.max_value());
+-                            state.set_value(value, window, cx);
++                            state.set_user_value(value, window, cx);
+                         });
+                     }
+                 })
+@@ -541,7 +591,7 @@
+                         state.update(cx, |state, cx| {
+                             let value =
+                                 (state.value().end() - state.step_value()).max(state.min_value());
+-                            state.set_value(value, window, cx);
++                            state.set_user_value(value, window, cx);
+                         });
+                     }
+                 })

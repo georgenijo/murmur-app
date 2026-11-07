@@ -379,3 +379,11 @@ The [Diagnostics contract](gpui-diagnostics.md) adds reusable Tabs, DataTable,
 DetailList, Chart and Progress controls in `data_components`, plus controlled
 filter-button AX toggle state and focus-preserving data-backed picker refreshes.
 It records their keyboard, accessibility, bounds and native acceptance contracts.
+
+Settings adds `settings-slider.patch` after the patches above. Its opt-in focus
+handle supplies one keyboard stop, arrows/Home/End, and the same value-change
+notification for AX increment/decrement as pointer movement. Controlled
+`set_value` stays silent. The Settings range wrapper owns drag coalescing,
+release/blur/deactivation commits and semantic styling; the base retains its
+existing pointer/touch transport. Reapply and verify this delta on every pin
+refresh along with the existing component patches.
