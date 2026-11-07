@@ -122,6 +122,7 @@ fn main() {
                         host: host.clone(),
                         visible: true,
                         controls,
+                        native: !headless,
                         allocations: 0,
                         guarded_redraws: 0,
                     });
@@ -269,6 +270,7 @@ struct Qa {
     host: Rc<fixtures::FixtureHost>,
     visible: bool,
     controls: bool,
+    native: bool,
     allocations: usize,
     guarded_redraws: usize,
 }
@@ -294,6 +296,10 @@ impl Render for Qa {
             .size_full()
             .flex()
             .flex_col()
+            .when(self.native, |d| {
+                d.pt(px(40.))
+                    .bg(murmur_ui::tokens::Palette::get(cx).surface)
+            })
             .when(self.controls, |d| {
                 d.child(
                     div()
