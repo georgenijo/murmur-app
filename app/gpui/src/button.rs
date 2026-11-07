@@ -56,6 +56,10 @@ pub struct Button {
     description: Option<SharedString>,
     destructive_text: bool,
     trailing: Option<crate::icons::Glyph>,
+    content: Option<AnyElement>,
+    bordered: bool,
+    height: Option<Pixels>,
+    padding_y: Option<Pixels>,
 }
 impl Button {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
@@ -85,7 +89,16 @@ impl Button {
             description: None,
             destructive_text: false,
             trailing: None,
+            content: None,
+            bordered: false,
+            height: None,
+            padding_y: None,
         }
+    }
+    /// Custom visual layout; the button still owns its name, state, focus and actions.
+    pub fn content(mut self, content: impl IntoElement) -> Self {
+        self.content = Some(content.into_any_element());
+        self
     }
     /// Change visible copy while retaining the constructor's accessible name.
     pub fn caption(mut self, caption: impl Into<SharedString>) -> Self {
@@ -113,6 +126,14 @@ impl Button {
         self.pill = true;
         self
     }
+    pub fn padding_y(mut self, inset: Pixels) -> Self {
+        self.padding_y = Some(inset);
+        self
+    }
+    pub fn height(mut self, height: Pixels) -> Self {
+        self.height = Some(height);
+        self
+    }
     pub fn full_width(mut self) -> Self {
         self.full_width = true;
         self
@@ -130,6 +151,10 @@ impl Button {
     }
     pub fn trailing_icon(mut self, glyph: crate::icons::Glyph) -> Self {
         self.trailing = Some(glyph);
+        self
+    }
+    pub fn bordered(mut self) -> Self {
+        self.bordered = true;
         self
     }
     pub fn destructive_text(mut self) -> Self {
@@ -202,7 +227,14 @@ impl RenderOnce for Button {
         let (bg, fg) = match self.intent {
             ButtonIntent::Primary => (p.accent, p.on_accent),
             ButtonIntent::Danger => (p.danger, p.on_accent),
-            ButtonIntent::Ghost => (gpui::transparent_black(), p.text),
+            ButtonIntent::Ghost => (
+                gpui::transparent_black(),
+                if self.nav && !self.selected {
+                    p.muted
+                } else {
+                    p.text
+                },
+            ),
             ButtonIntent::Secondary => (p.tint_raised, p.text),
         };
         let fg = if self.destructive_text { p.danger } else { fg };
@@ -234,14 +266,25 @@ impl RenderOnce for Button {
             .min_w_0()
             .overflow_hidden()
             .self_start()
-            .h(if card { px(76.) } else { self.size.height() })
-            .px(if self.nav { px(8.) } else { self.size.inset() })
+            .h(self.height.unwrap_or_else(|| self.size.height()))
+            .when(card || self.content.is_some(), |s| {
+                s.h_auto()
+                    .min_h(self.size.height())
+                    .py(self.padding_y.unwrap_or(px(12.)))
+            })
+            .px(if card {
+                px(16.)
+            } else if self.nav {
+                px(8.)
+            } else {
+                self.size.inset()
+            })
             .rounded(if self.pill {
                 px(999.)
             } else {
                 tokens::CONTROL_RADIUS
             })
-            .when(self.intent != ButtonIntent::Ghost, |s| {
+            .when(self.intent != ButtonIntent::Ghost || self.bordered, |s| {
                 s.border_1().border_color(p.hairline_strong)
             })
             .when(self.intent == ButtonIntent::Secondary, |s| {
@@ -264,6 +307,13 @@ impl RenderOnce for Button {
                 s.w_full().text_size(tokens::LABEL_SIZE)
             })
             .bg(bg)
+            .when(self.intent == ButtonIntent::Primary, |s| {
+                s.bg(linear_gradient(
+                    180.,
+                    linear_color_stop(bg.blend(white().opacity(0.10)), 0.),
+                    linear_color_stop(bg, 1.),
+                ))
+            })
             .text_color(fg)
             .text_size(if self.nav {
                 tokens::LABEL_SIZE
@@ -275,7 +325,7 @@ impl RenderOnce for Button {
                 }
             })
             .line_height(tokens::BODY_LEADING)
-            .font_weight(if card {
+            .font_weight(if card && !self.nav {
                 FontWeight::SEMIBOLD
             } else {
                 FontWeight::MEDIUM
@@ -305,7 +355,9 @@ impl RenderOnce for Button {
                     cx.stop_propagation();
                 }
             })
-            .child(
+            .child(if let Some(content) = self.content {
+                content
+            } else {
                 div()
                     .flex()
                     .min_w_0()
@@ -349,8 +401,9 @@ impl RenderOnce for Button {
                                 .when_some(self.description, |s, copy| {
                                     s.child(
                                         div()
+                                            .mt(px(4.))
                                             .text_size(tokens::CAPTION_SIZE)
-                                            .line_height(tokens::CAPTION_LEADING)
+                                            .line_height(px(18.))
                                             .font_weight(FontWeight::NORMAL)
                                             .text_color(p.muted)
                                             .child(copy),
@@ -359,8 +412,9 @@ impl RenderOnce for Button {
                         )
                     })
                     .when_some(self.trailing, |s, glyph| {
-                        s.child(crate::icons::icon(glyph).text_color(p.muted))
-                    }),
-            )
+                        s.child(crate::icons::icon(glyph).size(px(12.)).text_color(p.muted))
+                    })
+                    .into_any_element()
+            })
     }
 }

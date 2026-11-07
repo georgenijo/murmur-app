@@ -852,7 +852,7 @@ fn tab_row_actions_reveal_forward_reverse_and_unrendered_rows(cx: &mut TestAppCo
     draw(cx);
     let initial_end = e.read_with(cx, |s, _| s.rendered.end);
     let mut visited = Vec::new();
-    for _ in 0..215 {
+    for _ in 0..415 {
         cx.simulate_keystrokes("tab");
         draw(cx);
         let position = cx.update(|w, cx| {
@@ -881,7 +881,7 @@ fn tab_row_actions_reveal_forward_reverse_and_unrendered_rows(cx: &mut TestAppCo
     assert_eq!(visited, (0..200).collect::<Vec<_>>());
     assert!(initial_end < 199);
     for position in (0..199).rev() {
-        cx.simulate_keystrokes("shift-tab");
+        cx.simulate_keystrokes("shift-tab shift-tab");
         draw(cx);
         cx.update(|w, cx| {
             e.read_with(cx, |s, _| {
@@ -970,10 +970,10 @@ fn fresh_reverse_entry_wraps_to_unrendered_last_row(cx: &mut TestAppContext) {
     draw(cx);
     draw(cx);
     assert_row_action_visible(&e, 199, cx);
-    cx.simulate_keystrokes("shift-tab");
+    cx.simulate_keystrokes("shift-tab shift-tab");
     draw(cx);
     assert_row_action_visible(&e, 198, cx);
-    cx.simulate_keystrokes("tab tab");
+    cx.simulate_keystrokes("tab tab tab");
     draw(cx);
     cx.update(|w, cx| assert!(e.read(cx).search.read(cx).focus_handle(cx).is_focused(w)));
 }
@@ -1180,4 +1180,29 @@ fn ax_focus_reveals_partially_clipped_row_action(cx: &mut TestAppContext) {
             .offset_in_item)
             < partial.offset_in_item
     );
+}
+
+#[gpui::test]
+fn row_copy_is_a_keyboard_stop_and_activates_once_with_space_and_enter(cx: &mut TestAppContext) {
+    let (e, host, cx) = harness(cx);
+    tab_to_list(&e, cx);
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    let key = e.read_with(cx, |s, _| s.model.entries[s.model.matches[0]].key);
+    cx.update(|w, cx| assert!(e.read(cx).row_copy_focus[&key].is_focused(w)));
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.model.detail.is_none()));
+    assert_eq!(e.read_with(cx, |s, _| s.copied_key), Some(key));
+    let count = host.calls.borrow().len();
+    cx.simulate_keystrokes("enter");
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.model.detail.is_none()));
+    assert_eq!(host.calls.borrow().len(), count + 1);
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    cx.update(|w, cx| assert!(e.read(cx).row_focus[&key].is_focused(w)));
+    cx.simulate_keystrokes("shift-tab");
+    draw(cx);
+    cx.update(|w, cx| assert!(e.read(cx).row_copy_focus[&key].is_focused(w)));
 }

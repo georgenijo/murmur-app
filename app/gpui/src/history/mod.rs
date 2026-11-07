@@ -11,7 +11,7 @@ use crate::{
     Toggle,
     data_components::Progress,
     field::{InputEvent, TextFieldState},
-    icons::{Glyph, icon},
+    icons::Glyph,
     tokens::{self, Palette},
 };
 use gpui::{prelude::*, *};
@@ -32,7 +32,7 @@ pub(crate) fn init(cx: &mut App) {
 // The list callback only constructs visible rows. Detail pages independently
 // bound shaping/AX to 2048 scalars; a megabyte transcript never becomes one label.
 const DETAIL_PAGE: usize = 2048;
-const PREVIEW_CHARS: usize = 160;
+const PREVIEW_CHARS: usize = 2048;
 const ROW_HEIGHT_HINT: Pixels = px(64.);
 struct HistoryScroll {
     state: ListState,
@@ -135,6 +135,7 @@ pub struct History {
     detail_pages: DetailPages,
     scroll: HistoryScroll,
     row_focus: BTreeMap<u64, FocusHandle>,
+    row_copy_focus: BTreeMap<u64, FocusHandle>,
     row_reveal: BTreeMap<u64, bool>,
     list_identity: Vec<u64>,
     list_revision: u64,
@@ -223,6 +224,7 @@ impl History {
             list_identity: vec![],
             list_revision: 0,
             row_focus: BTreeMap::new(),
+            row_copy_focus: BTreeMap::new(),
             row_reveal: BTreeMap::new(),
             list_end_focus: cx.focus_handle().tab_stop(true),
             #[cfg(any(test, feature = "gallery"))]
@@ -385,6 +387,7 @@ impl History {
         }
         self.model.detach();
         self.row_focus.clear();
+        self.row_copy_focus.clear();
         self.row_reveal.clear();
         self.filters_open = false;
         self.detail_page = 0;
@@ -513,6 +516,8 @@ impl History {
         self.model.refresh();
         self.row_focus
             .retain(|key, _| self.model.entries.iter().any(|e| e.key == *key));
+        self.row_copy_focus
+            .retain(|key, _| self.row_focus.contains_key(key));
         self.row_reveal
             .retain(|key, _| self.row_focus.contains_key(key));
         self.authority.sync(&self.model);
@@ -687,10 +692,36 @@ impl History {
     /// Handle the bound Tab action before Root traverses only painted stops.
     /// Returning false lets the outer Root binding own entry/exit traversal.
     fn tab_row_action(&mut self, backwards: bool, w: &mut Window, cx: &mut Context<Self>) -> bool {
-        let focused = self
-            .row_focus
+        let copy_focused = self
+            .row_copy_focus
             .iter()
             .find_map(|(key, focus)| focus.is_focused(w).then_some(*key));
+        if let Some(key) = copy_focused
+            && !backwards
+        {
+            let f = self.row_action_focus(key, cx);
+            w.focus(&f, cx);
+            cx.notify();
+            return true;
+        }
+        let focused = copy_focused.or_else(|| {
+            self.row_focus
+                .iter()
+                .find_map(|(key, focus)| focus.is_focused(w).then_some(*key))
+        });
+        if backwards
+            && copy_focused.is_none()
+            && let Some(key) = focused
+        {
+            let f = self
+                .row_copy_focus
+                .entry(key)
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            w.focus(&f, cx);
+            cx.notify();
+            return true;
+        }
         let position = focused.and_then(|key| {
             self.model
                 .matches
@@ -717,6 +748,15 @@ impl History {
             return false;
         };
         self.focus_row_action(position, w, cx);
+        if !backwards {
+            let key = self.model.entries[self.model.matches[position]].key;
+            let f = self
+                .row_copy_focus
+                .entry(key)
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
+            w.focus(&f, cx);
+        }
         true
     }
     fn focus_row_action(&mut self, position: usize, w: &mut Window, cx: &mut Context<Self>) {
@@ -738,6 +778,19 @@ impl History {
             // A deferred uniform-list Button can expose the correct AX focus
             // without installing its automatic keyboard-click listener. Route
             // only this owned row action; never copy from a descendant key.
+            if matches!(e.keystroke.key.as_str(), "space" | "enter")
+                && !e.is_held
+                && let Some(key) = self
+                    .row_copy_focus
+                    .iter()
+                    .find_map(|(key, focus)| focus.is_focused(w).then_some(*key))
+            {
+                self.copy(key, false);
+                w.prevent_default();
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
             if e.keystroke.key == "space"
                 && !e.is_held
                 && let Some(key) = self
@@ -795,7 +848,12 @@ impl History {
             .map(|position| {
                 let key = self.model.entries[self.model.matches[position]].key;
                 let action_focus = self.row_action_focus(key, cx);
-                let focused = action_focus.is_focused(w);
+                let copy_focus = self
+                    .row_copy_focus
+                    .entry(key)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone();
+                let focused = action_focus.is_focused(w) || copy_focus.is_focused(w);
                 let entered = focused && !self.row_reveal[&key];
                 self.row_reveal.insert(key, focused);
                 if entered {
@@ -820,7 +878,14 @@ impl History {
                     self.model.matches.len(),
                     self.timestamp(entry.timestamp)
                 );
-                let preview: String = entry.text.chars().take(PREVIEW_CHARS).collect();
+                let preview = if entry.text.chars().take(PREVIEW_CHARS + 1).count() <= PREVIEW_CHARS
+                {
+                    entry.text.clone()
+                } else {
+                    let prefix: String = entry.text.chars().take(PREVIEW_CHARS).collect();
+                    let end = prefix.rfind(char::is_whitespace).unwrap_or(prefix.len());
+                    format!("{}…", prefix[..end].trim_end())
+                };
                 let text = highlighted(&preview, &self.model.query.text, p);
                 let day = self.date_parts(entry.timestamp).0;
                 let first = position == 0
@@ -906,7 +971,14 @@ impl History {
                                         .child(entry.source_label().to_owned()),
                                 )
                             })
-                            .child(div().w_full().max_h(px(40.)).overflow_hidden().child(text)),
+                            .child(
+                                div()
+                                    .w_full()
+                                    .max_w(px(640.))
+                                    .line_clamp(2)
+                                    .text_ellipsis()
+                                    .child(text),
+                            ),
                     );
                 div()
                     .id(("row", key))
@@ -934,10 +1006,10 @@ impl History {
                             .role(Role::ListItem)
                             .aria_position_in_set(position + 1)
                             .aria_size_of_set(self.model.matches.len())
-                            .min_h(px(44.))
+                            .min_h(px(60.))
                             .overflow_hidden()
                             .px(px(12.))
-                            .py(px(8.))
+                            .py(px(12.))
                             .border_l_1()
                             .border_r_1()
                             .border_b_1()
@@ -980,6 +1052,7 @@ impl History {
                                     .opacity(
                                         if copied
                                             || action_focus.is_focused(w)
+                                            || copy_focus.is_focused(w)
                                             || (self.model.selected == Some(key)
                                                 && self.focus.is_focused(w))
                                         {
@@ -998,21 +1071,21 @@ impl History {
                                         )
                                     })
                                     .child(
-                                        div()
-                                            .id(("copy-action", key))
-                                            .role(Role::Button)
-                                            .aria_label(format!("Copy transcript {}", position + 1))
-                                            .size(px(24.))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor_pointer()
-                                            .child(icon(Glyph::Copy))
-                                            .on_click(cx.listener(move |s, _, _, cx| {
+                                        Button::new(
+                                            ("copy-action", key),
+                                            format!("Copy transcript {}", position + 1),
+                                        )
+                                        .icon_only(Glyph::Copy)
+                                        .intent(ButtonIntent::Ghost)
+                                        .size(ButtonSize::ExtraSmall)
+                                        .track_focus(&copy_focus)
+                                        .on_click(
+                                            cx.listener(move |s, _, _, cx| {
                                                 cx.stop_propagation();
                                                 s.copy(key, false);
                                                 cx.notify();
-                                            })),
+                                            }),
+                                        ),
                                     )
                                     .child(
                                         Button::new(
@@ -1122,7 +1195,8 @@ impl History {
             .gap(px(8.))
             .child(
                 Button::new("back", "Back to transcripts")
-                    .caption("‹ Back")
+                    .caption("Back")
+                    .icon(crate::icons::Glyph::ChevronLeft)
                     .intent(ButtonIntent::Ghost)
                     .track_focus(&self.back_focus)
                     .on_click(cx.listener(|s, _, w, cx| s.back(w, cx))),
@@ -1229,7 +1303,12 @@ impl Render for History {
         // Observe blur outside the virtualized rows. A focused row disappearing
         // is not a focus change; another control receiving focus is.
         for (key, state) in &mut self.row_reveal {
-            if !self.row_focus[key].is_focused(w) {
+            if !self.row_focus[key].is_focused(w)
+                && !self
+                    .row_copy_focus
+                    .get(key)
+                    .is_some_and(|f| f.is_focused(w))
+            {
                 *state = false;
             }
         }
@@ -1327,7 +1406,7 @@ impl Render for History {
                 .child(
                     div()
                         .flex_1()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .child(self.title),
                 )
                 .child(
@@ -1335,14 +1414,6 @@ impl Render for History {
                         .relative()
                         .w(px(208.))
                         .child(TextField::new(&self.search, "Search transcripts").search_chrome())
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(8.))
-                                .top(px(8.))
-                                .text_color(p.muted)
-                                .child(icon(Glyph::Search).size(px(12.))),
-                        )
                         .when(self.model.query.text.is_empty(), |d| {
                             d.child(
                                 div()
@@ -1377,7 +1448,8 @@ impl Render for History {
                 )
                 .child(
                     Button::new("filter", self.model.query.filter_label())
-                        .caption("Filter  ⌄")
+                        .caption("Filter")
+                        .trailing_icon(crate::icons::Glyph::ChevronDown)
                         .icon(Glyph::Filter)
                         .size(ButtonSize::Compact)
                         .toggled(self.filters_open)

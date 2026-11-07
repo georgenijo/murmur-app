@@ -73,7 +73,7 @@ impl Palette {
             border: text.opacity(if high { 1. } else { 0.2 }),
             accent: text,
             on_accent: surface,
-            danger: color(0xef4444),
+            danger: color(0xff453a),
             focus: text,
         }
     }

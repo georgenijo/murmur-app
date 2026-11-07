@@ -39,9 +39,25 @@ pub enum Glyph {
     Upload,
     Sun,
     Moon,
+    Pencil,
+    ClipboardCheck,
+    CircleDot,
+    Panels,
 }
 pub fn icon(glyph: Glyph) -> Icon {
     let bytes: &'static [u8] = match glyph {
+        Glyph::Pencil => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/pencil.svg")
+        }
+        Glyph::ClipboardCheck => include_bytes!(
+            "../vendor/gpui-component/crates/assets/assets/icons/clipboard-check.svg"
+        ),
+        Glyph::CircleDot => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/circle-dot.svg")
+        }
+        Glyph::Panels => include_bytes!(
+            "../vendor/gpui-component/crates/assets/assets/icons/panels-top-left.svg"
+        ),
         Glyph::File => {
             include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/file.svg")
         }
@@ -146,14 +162,14 @@ pub fn icon(glyph: Glyph) -> Icon {
 
 pub fn settings_glyph(label: &str) -> Glyph {
     match label {
-        "General" => Glyph::Settings,
+        "General" => Glyph::CircleDot,
         "Recording" => Glyph::Mic,
-        "Customize" => Glyph::Wand,
-        "Delivery" => Glyph::Send,
+        "Customize" => Glyph::Pencil,
+        "Delivery" => Glyph::ClipboardCheck,
         "Meetings" => Glyph::Calendar,
         "Text & vocabulary" => Glyph::Type,
-        "AI & models" => Glyph::Cpu,
-        "Modes" => Glyph::Sliders,
+        "AI & models" => Glyph::Sun,
+        "Modes" => Glyph::Panels,
         "Appearance" => Glyph::Palette,
         "Performance Lab" => Glyph::Gauge,
         "Diagnostics" => Glyph::Bug,

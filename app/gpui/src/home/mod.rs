@@ -245,7 +245,11 @@ impl Home {
             self.keyboard_return = focus;
             w.prevent_default();
             cx.stop_propagation();
-        } else if k.modifiers.platform && k.modifiers.number_of_modifiers() == 1 && k.key == "f" {
+        } else if self.workspace.is_none()
+            && k.modifiers.platform
+            && k.modifiers.number_of_modifiers() == 1
+            && k.key == "f"
+        {
             self.history.update(cx, |h, cx| h.focus_search(w, cx));
             w.prevent_default();
             cx.stop_propagation();
@@ -416,9 +420,9 @@ impl Render for Home {
                 .gap(px(6.))
                 .p(px(if collapsed { 8. } else { 10. }))
                 .rounded(tokens::CARD_RADIUS)
-                .when(!collapsed, |d| {
-                    d.border_1().border_color(p.hairline).bg(p.tint_raised)
-                })
+                .border_1()
+                .border_color(p.hairline)
+                .bg(p.tint_raised)
                 .child(
                     div()
                         .size(px(6.))
@@ -700,8 +704,8 @@ impl Render for Home {
                 .flex()
                 .items_center()
                 .gap(px(4.))
-                .text_size(tokens::CAPTION_SIZE)
-                .line_height(tokens::CAPTION_LEADING)
+                .text_size(tokens::LABEL_SIZE)
+                .line_height(tokens::BODY_LEADING)
                 .text_color(p.muted);
             let hint_view = if s.status == Status::Idle && !s.waiting() {
                 // Keep the configured gesture/key from the shared model, with a technical key cap.
@@ -768,13 +772,22 @@ impl Render for Home {
                         .accessibility_label(name)
                         .track_focus(&record_focus)
                         .disabled(waiting)
+                        .focus_visible(|s| {
+                            s.shadow(vec![BoxShadow {
+                                inset: true,
+                                color: p.focus,
+                                offset: point(px(0.), px(0.)),
+                                blur_radius: px(0.),
+                                spread_radius: tokens::FOCUS_WIDTH,
+                            }])
+                        })
                         .capture_key_down(|e, w, cx| {
                             if e.keystroke.key == "enter" {
                                 w.prevent_default();
                                 cx.stop_propagation();
                             }
                         })
-                        .h(px(54.))
+                        .h(px(64.))
                         .w_full()
                         .px(px(12.))
                         .hover(|d| d.bg(p.text.opacity(0.025)))
@@ -802,7 +815,7 @@ impl Render for Home {
                                                         .id("dictation-status")
                                                         .role(Role::Status)
                                                         .aria_label(title.clone())
-                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .font_weight(FontWeight::MEDIUM)
                                                         .child(title),
                                                 )
                                                 .when(s.status == Status::Recording, |d| {
@@ -861,7 +874,8 @@ impl Render for Home {
                         .child(div().flex_1())
                         .child(
                             self.button("insights", "View insights", Destination::Insights, cx)
-                                .caption("View insights  ›")
+                                .caption("View insights")
+                                .trailing_icon(crate::icons::Glyph::ChevronRight)
                                 .size(ButtonSize::ExtraSmall)
                                 .intent(ButtonIntent::Ghost),
                         ),

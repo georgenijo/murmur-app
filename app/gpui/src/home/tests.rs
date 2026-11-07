@@ -471,3 +471,73 @@ fn palette_shortcut_restores_the_originating_history_editor(cx: &mut TestAppCont
             .is_focused(w)
     }));
 }
+
+#[gpui::test]
+fn command_f_in_embedded_meetings_focuses_visible_meeting_search(cx: &mut TestAppContext) {
+    let (home, _, cx) = harness(cx);
+    let meetings = cx.update(|w, cx| {
+        cx.new(|cx| {
+            crate::meetings::Meetings::new(
+                Rc::new(crate::meetings::fixtures::FixtureHost::default()),
+                w,
+                cx,
+            )
+        })
+    });
+    home.update(cx, |s, cx| {
+        s.workspace = Some((Destination::Meetings, meetings.clone().into()));
+        cx.notify();
+    });
+    meetings.update(cx, |s, cx| {
+        s.attach(cx);
+        s.drain(cx);
+    });
+    draw(cx);
+    cx.update(|w, cx| w.focus(&meetings.read(cx).search.read(cx).focus_handle(cx), cx));
+    keys(cx, "tab");
+    assert!(cx.update(|w, cx| {
+        !meetings
+            .read(cx)
+            .search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(w)
+    }));
+    keys(cx, "cmd-f");
+    cx.update(|w, cx| {
+        assert!(
+            meetings
+                .read(cx)
+                .search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(w)
+        );
+        assert!(
+            !home
+                .read(cx)
+                .history
+                .read(cx)
+                .search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(w)
+        );
+    });
+}
+#[gpui::test]
+fn talk_control_is_reached_by_keyboard_without_starting_recording(cx: &mut TestAppContext) {
+    let (home, host, cx) = harness(cx);
+    cx.update(|w, cx| w.focus(&home.read(cx).focus["settings"].clone(), cx));
+    let count = host.actions.borrow().len();
+    let mut reached = false;
+    for _ in 0..20 {
+        keys(cx, "tab");
+        if cx.update(|w, cx| home.read(cx).focus["home-record"].is_focused(w)) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached);
+    assert_eq!(host.actions.borrow().len(), count);
+}

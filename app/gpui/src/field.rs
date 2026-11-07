@@ -53,22 +53,46 @@ impl RenderOnce for TextField {
         let p = Palette::get(cx);
         let focus = self.state.read(cx).focus_handle(cx);
         let reveal = crate::data_components::focus_reveal(focus, self.scroll_parent, None, w, cx);
-        div().relative().child(reveal).child(
-            Input::new(&self.state)
-                .aria_label(self.label)
-                .placeholder_color(p.muted)
-                .disabled(self.disabled)
-                .readonly(self.readonly)
-                .h(tokens::INPUT_HEIGHT)
-                .px(tokens::CONTROL_INSET)
-                .when(self.search_chrome, |s| s.pl(px(28.)).pr(px(28.)))
-                .rounded(tokens::CONTROL_RADIUS)
-                .text_size(tokens::BODY_SIZE)
-                .line_height(tokens::BODY_LEADING)
-                .bg(p.surface)
-                .border_1()
-                .border_color(p.border)
-                .when(self.disabled, |s| s.opacity(tokens::DISABLED_OPACITY)),
-        )
+        div()
+            .relative()
+            .child(reveal)
+            .child(
+                Input::new(&self.state)
+                    .aria_label(self.label)
+                    .placeholder_color(p.muted)
+                    .disabled(self.disabled)
+                    .readonly(self.readonly)
+                    .h(if self.search_chrome {
+                        tokens::STANDARD_HEIGHT
+                    } else {
+                        tokens::INPUT_HEIGHT
+                    })
+                    .px(tokens::CONTROL_INSET)
+                    .when(self.search_chrome, |s| s.pl(px(28.)).pr(px(28.)))
+                    .rounded(if self.search_chrome {
+                        px(999.)
+                    } else {
+                        tokens::CONTROL_RADIUS
+                    })
+                    .text_size(tokens::BODY_SIZE)
+                    .line_height(tokens::BODY_LEADING)
+                    .bg(p.surface)
+                    .border_1()
+                    .border_color(if self.search_chrome {
+                        p.hairline_strong
+                    } else {
+                        p.border
+                    })
+                    .when(self.disabled, |s| s.opacity(tokens::DISABLED_OPACITY)),
+            )
+            .when(self.search_chrome, |d| {
+                d.child(
+                    div().absolute().left(px(10.)).top(px(8.)).child(
+                        crate::icons::icon(crate::icons::Glyph::Search)
+                            .size(px(16.))
+                            .text_color(p.muted),
+                    ),
+                )
+            })
     }
 }

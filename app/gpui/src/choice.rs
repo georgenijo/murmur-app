@@ -43,6 +43,7 @@ pub struct Choices {
     pub(crate) focus: FocusHandle,
     label: SharedString,
     trigger_icon: Option<crate::icons::Glyph>,
+    pub(crate) compact: bool,
     kind: ChoiceKind,
     choices: Vec<Choice>,
     selected: Option<usize>,
@@ -88,6 +89,7 @@ impl Choices {
             _blur: blur,
             label,
             trigger_icon: None,
+            compact: false,
             kind,
             choices,
             selected: None,
@@ -319,7 +321,7 @@ impl Render for Choices {
             })
             .role(role)
             .when(popup, |s| {
-                s.h(if self.trigger_icon.is_some() {
+                s.h(if self.trigger_icon.is_some() || self.compact {
                     tokens::COMPACT_HEIGHT
                 } else {
                     tokens::STANDARD_HEIGHT
@@ -341,7 +343,11 @@ impl Render for Choices {
                 s.track_focus(&self.focus.clone().tab_stop(!disabled))
             })
             .when(disabled, |s| s.opacity(tokens::DISABLED_OPACITY))
-            .text_size(tokens::BODY_SIZE)
+            .text_size(if self.compact {
+                tokens::CAPTION_SIZE
+            } else {
+                tokens::BODY_SIZE
+            })
             .line_height(tokens::BODY_LEADING)
             .text_color(p.text)
             .bg(if self.kind == ChoiceKind::Navigation {
@@ -349,7 +355,11 @@ impl Render for Choices {
             } else {
                 p.surface
             })
-            .rounded(tokens::CONTROL_RADIUS)
+            .rounded(if self.compact {
+                px(999.)
+            } else {
+                tokens::CONTROL_RADIUS
+            })
             .border_1()
             .border_color(
                 if self.trigger_icon.is_some() || self.kind == ChoiceKind::Navigation {
@@ -431,7 +441,20 @@ impl Render for Choices {
                     .flex()
                     .items_center()
                     .font_weight(FontWeight::MEDIUM)
-                    .when(self.selected == Some(i), |s| s.bg(p.raised))
+                    .text_color(
+                        if self.kind == ChoiceKind::Navigation && self.selected != Some(i) {
+                            p.muted
+                        } else {
+                            p.text
+                        },
+                    )
+                    .when(self.selected == Some(i), |s| {
+                        s.bg(if self.kind == ChoiceKind::Navigation {
+                            p.tint_raised
+                        } else {
+                            p.raised
+                        })
+                    })
                     .when(
                         self.active == Some(i) && self.focus.is_focused(window),
                         |s| s.border_1().border_color(p.focus),
@@ -471,12 +494,18 @@ impl Render for Choices {
         }
         if popup {
             let trigger = div()
-                .h(if self.trigger_icon.is_some() {
+                .h(if self.trigger_icon.is_some() || self.compact {
                     tokens::COMPACT_HEIGHT
                 } else {
                     tokens::STANDARD_HEIGHT
                 })
-                .px(px(if self.trigger_icon.is_some() { 6. } else { 11. }))
+                .px(px(if self.trigger_icon.is_some() {
+                    6.
+                } else if self.compact {
+                    8.
+                } else {
+                    11.
+                }))
                 .flex()
                 .items_center()
                 .justify_between()
@@ -485,11 +514,17 @@ impl Render for Choices {
                 })
                 .when(self.trigger_icon.is_none(), |s| {
                     s.child(
-                        self.selected
-                            .map(|i| self.choices[i].label.clone())
-                            .unwrap_or_else(|| "Choose…".into()),
+                        div().flex_1().min_w_0().truncate().child(
+                            self.selected
+                                .map(|i| self.choices[i].label.clone())
+                                .unwrap_or_else(|| "Choose…".into()),
+                        ),
                     )
-                    .child(crate::icons::icon(crate::icons::Glyph::ChevronDown))
+                    .child(
+                        crate::icons::icon(crate::icons::Glyph::ChevronDown)
+                            .size(px(12.))
+                            .text_color(p.muted),
+                    )
                 });
             root = root
                 .child(

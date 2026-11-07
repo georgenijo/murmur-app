@@ -94,8 +94,12 @@ impl RenderOnce for Toggle {
             .h(tokens::SWITCH_HEIGHT)
             .rounded_full()
             .border_1()
-            .border_color(p.border)
-            .bg(if self.checked { p.accent } else { p.raised })
+            .border_color(p.hairline_strong)
+            .bg(if self.checked {
+                p.accent
+            } else {
+                p.surface.blend(p.text.opacity(0.20))
+            })
             .when(self.disabled, |s| s.opacity(tokens::DISABLED_OPACITY))
             .focus_visible(|s| {
                 s.border_color(p.focus).shadow(vec![BoxShadow {
@@ -111,7 +115,7 @@ impl RenderOnce for Toggle {
                     .ml(position)
                     .size(tokens::SWITCH_THUMB)
                     .rounded_full()
-                    .bg(p.surface),
+                    .bg(gpui::white()),
             )
     }
 }
