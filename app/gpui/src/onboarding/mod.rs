@@ -655,6 +655,7 @@ impl Render for Onboarding {
                     .child(crate::data_components::focus_reveal(
                         self.heading.clone(),
                         Some(self.scroll.clone()),
+                        None,
                         w,
                         cx,
                     ))
