@@ -87,7 +87,11 @@ impl<S: Projection> Inbox<S> {
             _ => 128,
         };
         let mut p = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        if p.closed || p.queue.len() >= 8 || p.bytes.saturating_add(size) > 4 * 1024 * 1024 {
+        if p.closed
+            || p.queue.len() >= 8
+            || p.bytes.saturating_add(size)
+                > 4 * murmur_core::state::source_size_limit("dictation-settings") + 32768
+        {
             return Err(Box::new(event));
         }
         p.bytes += size;

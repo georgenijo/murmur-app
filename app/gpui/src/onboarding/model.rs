@@ -183,8 +183,9 @@ impl Projection for Snapshot {
         let known = |id: &str| {
             crate::settings::schema::ROWS.iter().find(|r|r.key == "model").is_some_and(|r| matches!(r.kind, crate::settings::schema::Kind::Choice(options) if options.iter().any(|(v,_)| *v == id)))
         };
-        murmur_core::state::settings(self.settings.clone()).is_ok_and(|v| v == self.settings)
-            && self.bytes() <= 2 * 1024 * 1024
+        murmur_core::state::normalize("dictation-settings", self.settings.clone())
+            .is_ok_and(|v| v == self.settings)
+            && self.bytes() <= murmur_core::state::source_size_limit("dictation-settings") + 16384
             && self.download_percent.is_none_or(|p| p <= 100)
             && self.catalog.as_ref().is_none_or(|c| {
                 c.len() <= 7

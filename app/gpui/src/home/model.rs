@@ -217,10 +217,14 @@ impl Projection for Snapshot {
             .saturating_add(1024)
     }
     fn valid(&self) -> bool {
-        murmur_core::state::settings(self.settings.clone()).is_ok_and(|v| v == self.settings)
+        murmur_core::state::normalize("dictation-settings", self.settings.clone())
+            .is_ok_and(|v| v == self.settings)
             && murmur_core::state::normalize("murmur_discovery_v1", self.discovery.clone())
                 .is_ok_and(|v| v == self.discovery)
-            && self.bytes() <= 2 * 1024 * 1024
+            && self.bytes()
+                <= murmur_core::state::source_size_limit("dictation-settings")
+                    + murmur_core::state::source_size_limit("murmur_discovery_v1")
+                    + 1024
             && self.audio_level.is_finite()
             && (0. ..=1.).contains(&self.audio_level)
             && (!self.capturing() || self.recording_generation.is_some_and(|g| g > 0))
