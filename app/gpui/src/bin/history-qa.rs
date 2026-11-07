@@ -124,6 +124,18 @@ fn main() {
                     .timer(std::time::Duration::from_millis(100))
                     .await;
                 cx.update_window(handle.into(), |_, w, cx| {
+                    // Headless windows can inherit the shared desktop pointer.
+                    // Keep golden hover state fixed using in-process GPUI input;
+                    // this never moves the OS pointer or sends native HID input.
+                    w.dispatch_event(
+                        MouseMoveEvent {
+                            position: point(px(-1.), px(-1.)),
+                            pressed_button: None,
+                            modifiers: Modifiers::default(),
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
                     w.draw(cx).clear(cx);
                     let image = w.render_to_image().expect("offscreen History");
                     assert!(
