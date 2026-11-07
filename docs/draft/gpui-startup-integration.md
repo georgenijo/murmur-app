@@ -2,7 +2,8 @@
 
 Layer 23 follows #1037 → #1038 → #1039 → #1040. Together the layers supply the
 native shell, shared service ownership, OS services, production view adapters and
-startup. Packaging remains in parallel layer 18. Shipping Tauri remains intact.
+startup. Layer 19 includes the packaging work from layer 18; layer 24 connects
+that packaging to this production startup. Shipping Tauri remains intact.
 
 Main stays on a loading card until its existing completion owner is available,
 legacy import finishes, and production configuration is applied. Failure keeps a
@@ -54,3 +55,23 @@ Interactive native acceptance, signed installation/identity continuity and the
 installed update/downgrade rehearsal remain assigned to the GUI QA worker and
 the coordinated final stack with #994. These are acceptance work, not missing
 production adapter implementations.
+
+## Packaged production entry (layer 24)
+
+`ui` is the only production executable and Cargo's default run target. Its
+explicit target maps to `src/main.rs` and requires `production-host`; the former
+`src/bin/ui.rs` rehearsal shell is removed. Both packaging build scripts enable
+that feature. Artifact payloads, Info.plist and updater relaunch continue to use
+`ui`, so the packaging/executable contract does not change.
+
+`ui --version` returns `MURMUR_APP_VERSION` from `tauri.conf.json` before identity,
+workers, storage or native application initialization. The normal entry keeps
+identity initialization before worker dispatch and full service startup.
+Non-production bundle identifiers retain their namespaced paths and private
+pasteboard; there is no packaging-specific fallback to production identity.
+
+The secretless packaging rehearsal compares unchanged production metadata, then
+launches an ad-hoc signed disposable copy with a test identifier and synthetic
+HOME. It never launches the production-identity parity bundle. Full native
+acceptance uses the same `ui` entry in an isolated bundle; see
+[the layer 24 QA record](gpui-packaged-production-qa.md).

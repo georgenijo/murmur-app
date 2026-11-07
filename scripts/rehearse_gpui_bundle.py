@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 
 from bundle_gpui import ROOT, TAURI, bundle, bundle_info, compare_bundles
 from finalize_macos_bundle import HELPERS, require_exact_macos_executables
@@ -61,6 +62,41 @@ def check_links(binary: Path) -> dict:
             "foundation_models": "weak" if fm else "SDK unavailable"}
 
 
+def isolated_launch(native: Path, output: Path, env: dict[str, str]) -> str:
+    # The parity bundle keeps production metadata but must never run the full
+    # service host against the invoking user's profile. Launch a disposable copy
+    # with an unknown/non-production identifier and a synthetic HOME instead.
+    with tempfile.TemporaryDirectory(prefix="murmur-gpui-test-packaging-") as temp:
+        test_root = Path(temp)
+        test_app = test_root / "Murmur Packaging QA.app"
+        shutil.copytree(native, test_app)
+        plist = test_app / "Contents/Info.plist"
+        info = plistlib.loads(plist.read_bytes())
+        info["CFBundleIdentifier"] = "com.localdictation.gpui-packaging-qa"
+        plist.write_bytes(plistlib.dumps(info))
+        finalize(test_app, "-")
+        home = test_root / "home"
+        home.mkdir()
+        launch_env = {**env, "HOME": str(home), "CFFIXED_USER_HOME": str(home)}
+        with (output / "launch.log").open("w") as log:
+            child = subprocess.Popen([str(test_app / "Contents/MacOS/ui")],
+                                     stdout=log, stderr=log, env=launch_env)
+            try:
+                time.sleep(3)
+                if child.poll() is not None:
+                    raise ValueError("packaged production entry exited during isolated launch check")
+                result = "production entry; isolated identity/HOME; exact test PID terminated"
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target-dir", type=Path, required=True)
@@ -90,7 +126,7 @@ def main() -> None:
         helper_env = env.copy()
         helper_env.pop("CARGO_TARGET_DIR")
         subprocess.run([sys.executable, "scripts/build_capture_helpers.py", "--release"], cwd=ROOT, env=helper_env, check=True)
-        subprocess.run(["cargo", "build", "--locked", "--release", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
+        subprocess.run(["cargo", "build", "--locked", "--release", "--features", "production-host", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
     binary = target / "release/ui"
     native = bundle(binary, output / "native/Murmur.app")
     links = check_links(native / "Contents/MacOS/ui")
@@ -125,23 +161,7 @@ def main() -> None:
     version = run([str(native / "Contents/MacOS/ui"), "--version"]).strip()
     if version != bundle_info()["CFBundleVersion"]:
         raise ValueError("native binary and bundle versions differ")
-    # Invoke this exact bundle binary; no LaunchServices registration, input,
-    # user storage or helper registration. Terminate only our child PID.
-    with (output / "launch.log").open("w") as log:
-        child = subprocess.Popen([str(native / "Contents/MacOS/ui")], stdout=log, stderr=log, env=env)
-        try:
-            time.sleep(3)
-            if child.poll() is not None:
-                raise ValueError("packaged native shell exited during launch check")
-            evidence["launch"] = "survived 3s; exact test PID terminated"
-        finally:
-            if child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
+    evidence["launch"] = isolated_launch(native, output, env)
     assessment = subprocess.run(["spctl", "--assess", "--type", "execute", str(native)], capture_output=True, text=True)
     evidence.update({"source_sha": run(["git", "rev-parse", "HEAD"], cwd=ROOT).strip(),
                      "vendor_manifest": str(expected), "version": version, "links": links,

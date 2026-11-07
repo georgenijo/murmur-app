@@ -9,6 +9,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 import warnings
 import zipfile
@@ -24,14 +25,14 @@ from release_bundle_target import validate_target
 from validate_workflow_policy import (GPUI_JOB_SHA256, RELEASE_BUILD_SHA256, job_block, references_secrets,
                                       validate_release_build, validate_promotion_policy)
 from notarize_and_repackage_macos import native_sign, tauri_sign
-from rehearse_gpui_bundle import check_links
+from rehearse_gpui_bundle import check_links, isolated_launch
 
 
 class BundleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.tauri = self.root / "tauri"
         self.tauri.mkdir()
         for name in ("tauri.conf.json", "macos/Info.plist", "macos/com.localdictation.capture-agent.plist", "icons/icon.icns"):
@@ -60,6 +61,46 @@ class BundleTests(unittest.TestCase):
         config["version"] = "99.98.97"
         (self.tauri / "tauri.conf.json").write_text(json.dumps(config))
         self.assertEqual(bundle_info(self.tauri)["CFBundleVersion"], "99.98.97")
+
+    def test_only_production_entry_is_packaged(self):
+        manifest = tomllib.loads((ROOT / "app/gpui/Cargo.toml").read_text())
+        self.assertFalse(manifest["package"]["autobins"])
+        self.assertEqual(manifest["package"]["default-run"], "ui")
+        entry = next(target for target in manifest["bin"] if target["name"] == "ui")
+        self.assertEqual(entry["path"], "src/main.rs")
+        self.assertEqual(entry["required-features"], ["production-host"])
+        self.assertFalse((ROOT / "app/gpui/src/bin/ui.rs").exists())
+        self.assertEqual(BUILD_FILES[0], bundle_info()["CFBundleExecutable"])
+
+    def test_rehearsal_launch_isolates_identity_and_home_and_terminates_exact_child(self):
+        original = (self.app / "Contents/Info.plist").read_bytes()
+        observed = {}
+
+        def launch(command, **kwargs):
+            executable = Path(command[0])
+            info = plistlib.loads((executable.parent.parent / "Info.plist").read_bytes())
+            self.assertEqual(info["CFBundleIdentifier"], "com.localdictation.gpui-packaging-qa")
+            self.assertNotEqual(executable, self.app / "Contents/MacOS/ui")
+            home = Path(kwargs["env"]["HOME"])
+            self.assertTrue(home.is_dir())
+            self.assertEqual(kwargs["env"]["CFFIXED_USER_HOME"], str(home))
+            observed["home"] = home
+            return child
+
+        from unittest.mock import Mock
+        child = Mock()
+        child.poll.return_value = None
+        with patch("rehearse_gpui_bundle.finalize") as finalize, \
+             patch("rehearse_gpui_bundle.subprocess.Popen", side_effect=launch), \
+             patch("rehearse_gpui_bundle.time.sleep"):
+            result = isolated_launch(self.app, self.root, {"HOME": "/synthetic/original"})
+        self.assertIn("production entry", result)
+        self.assertEqual(finalize.call_args.args[1], "-")
+        child.terminate.assert_called_once_with()
+        child.wait.assert_called_once_with(timeout=10)
+        child.kill.assert_not_called()
+        self.assertFalse(observed["home"].exists())
+        self.assertEqual((self.app / "Contents/Info.plist").read_bytes(), original)
 
     def test_exact_parity_and_code_signature_seal_exception(self):
         seal = self.oracle / "Contents/_CodeSignature"
@@ -155,7 +196,7 @@ class BundleTests(unittest.TestCase):
              patch("release_gpui.signature_details", return_value="TeamIdentifier=ABCDEFGHIJ\n"), \
              patch("release_gpui.entitlements", return_value={}):
             release_gpui.main()
-        finalize.assert_called_once_with(output / "bundle/Murmur.app", "synthetic identity", "ABCDEFGHIJ")
+        finalize.assert_called_once_with(output.resolve() / "bundle/Murmur.app", "synthetic identity", "ABCDEFGHIJ")
         self.assertFalse(any(call.args[0][0] == "cargo" for call in commands.call_args_list),
                          "the credentialed sign phase must not compile")
         notarize = next(call.args[0] for call in commands.call_args_list
@@ -176,7 +217,7 @@ class ArtifactTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.inputs = self.root / "inputs"
         self.inputs.mkdir()
         for name in (*BUILD_FILES, *SIGNER_FILES):
@@ -413,7 +454,7 @@ minos 14.0
              patch("release_gpui.subprocess.run") as process:
             release_gpui.main()
         self.assertEqual([call.args[0] for call in process.call_args_list],
-                         [["cargo", "build", "--locked", "--release", "--bin", "ui"]])
+                         [["cargo", "build", "--locked", "--release", "--features", "production-host", "--bin", "ui"]])
         for call in process.call_args_list:
             env = call.kwargs["env"]
             self.assertEqual(env["CARGO_TARGET_DIR"], "/synthetic/target")

@@ -38,7 +38,7 @@ def build(target: Path, *, signer_only: bool = False) -> None:
     if signer_only:
         subprocess.run(["cargo", "build", "--locked", "--release", "--manifest-path", str(ROOT / "scripts/updater-signer/Cargo.toml")], env=env, check=True)
     else:
-        subprocess.run(["cargo", "build", "--locked", "--release", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
+        subprocess.run(["cargo", "build", "--locked", "--release", "--features", "production-host", "--bin", "ui"], cwd=ROOT / "app/gpui", env=env, check=True)
 
 
 def main() -> None:

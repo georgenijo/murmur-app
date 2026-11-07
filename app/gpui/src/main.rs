@@ -23,6 +23,12 @@ impl Workers for NativeWorkers {
     }
 }
 fn main() -> ExitCode {
+    // Version queries are metadata-only, including from a production bundle.
+    // Return before identity initialization, workers, storage or AppKit.
+    if std::env::args_os().any(|arg| arg == "--version") {
+        println!("{}", env!("MURMUR_APP_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let identifier = services::os::identity();
     let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
         return ExitCode::FAILURE;
