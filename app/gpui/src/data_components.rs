@@ -234,6 +234,8 @@ pub(crate) fn focus_reveal(
         |_, _, _, _| {},
     )
     .absolute()
+    .top_0()
+    .left_0()
     .size_full()
 }
 
@@ -613,92 +615,107 @@ impl Render for DetailList {
             })
             .child(
                 div()
-                    .id("rows")
                     .relative()
-                    .role(Role::List)
-                    .aria_label(self.label.clone())
-                    .track_focus(&self.focus)
+                    .flex()
+                    .flex_col()
                     .min_h_0()
                     .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .on_scroll(cx.listener(|s, _, _, cx| {
-                        // Scroll listeners run after GPUI has applied the wheel offset.
-                        s.following = s.scroll.max_offset().y + s.scroll.offset().y > -px(40.)
-                            && (s.scroll.max_offset().y + s.scroll.offset().y).abs() < px(40.);
-                        cx.notify();
-                    }))
-                    .focus_visible(|d| d.border_1().border_color(p.focus))
-                    .capture_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
-                        if s.rows.is_empty()
-                            || e.prefer_character_input
-                            || e.keystroke.modifiers.number_of_modifiers() != 0
-                        {
-                            return;
-                        }
-                        match e.keystroke.key.as_str() {
-                            "down" => s.active = (s.active + 1).min(s.rows.len() - 1),
-                            "up" => s.active = s.active.saturating_sub(1),
-                            "home" => s.active = 0,
-                            "end" => s.active = s.rows.len() - 1,
-                            "enter" | "space" if !e.is_held => s.toggle(s.active, w, cx),
-                            "escape" => {
-                                s.expanded.clear();
-                            }
-                            _ => return,
-                        }
-                        s.following = false;
-                        s.scroll.scroll_to_item(s.active);
-                        w.prevent_default();
-                        cx.stop_propagation();
-                        cx.notify();
-                    }))
-                    .children(self.rows.iter().enumerate().map(|(i, r)| {
-                        let open = self.expanded.contains(&r.id);
+                    .child(reveal)
+                    .child(
                         div()
-                            .id(r.id)
-                            .role(Role::ListItem)
-                            .border_b_1()
-                            .border_color(p.border)
-                            .font_family("Menlo")
-                            .text_size(tokens::CAPTION_SIZE)
-                            .line_height(tokens::CAPTION_LEADING)
-                            .child(
+                            .id("rows")
+                            .role(Role::List)
+                            .aria_label(self.label.clone())
+                            .track_focus(&self.focus)
+                            .min_h_0()
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .on_scroll(cx.listener(|s, _, _, cx| {
+                                // Scroll listeners run after GPUI has applied the wheel offset.
+                                s.following = s.scroll.max_offset().y + s.scroll.offset().y
+                                    > -px(40.)
+                                    && (s.scroll.max_offset().y + s.scroll.offset().y).abs()
+                                        < px(40.);
+                                cx.notify();
+                            }))
+                            .focus_visible(|d| d.border_1().border_color(p.focus))
+                            .capture_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
+                                if s.rows.is_empty()
+                                    || e.prefer_character_input
+                                    || e.keystroke.modifiers.number_of_modifiers() != 0
+                                {
+                                    return;
+                                }
+                                match e.keystroke.key.as_str() {
+                                    "down" => s.active = (s.active + 1).min(s.rows.len() - 1),
+                                    "up" => s.active = s.active.saturating_sub(1),
+                                    "home" => s.active = 0,
+                                    "end" => s.active = s.rows.len() - 1,
+                                    "enter" | "space" if !e.is_held => s.toggle(s.active, w, cx),
+                                    "escape" => {
+                                        s.expanded.clear();
+                                    }
+                                    _ => return,
+                                }
+                                s.following = false;
+                                s.scroll.scroll_to_item(s.active);
+                                w.prevent_default();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
+                            .children(self.rows.iter().enumerate().map(|(i, r)| {
+                                let open = self.expanded.contains(&r.id);
                                 div()
-                                    .id(("summary", r.id))
-                                    .role(Role::Button)
-                                    .aria_label(r.label.clone())
-                                    .aria_expanded(open)
-                                    .when(i == self.active, |d| {
-                                        d.aria_active_descendant()
-                                            .border_l_2()
-                                            .border_color(p.focus)
+                                    .id(r.id)
+                                    .role(Role::ListItem)
+                                    .border_b_1()
+                                    .border_color(p.border)
+                                    .font_family("Menlo")
+                                    .text_size(tokens::CAPTION_SIZE)
+                                    .line_height(tokens::CAPTION_LEADING)
+                                    .child(
+                                        div()
+                                            .id(("summary", r.id))
+                                            .role(Role::Button)
+                                            .aria_label(r.label.clone())
+                                            .aria_expanded(open)
+                                            .when(i == self.active, |d| {
+                                                d.aria_active_descendant()
+                                                    .border_l_2()
+                                                    .border_color(p.focus)
+                                            })
+                                            .p(px(8.))
+                                            .hover(|d| d.bg(p.raised))
+                                            .child(format!(
+                                                "{} {}",
+                                                if open { "▾" } else { "▸" },
+                                                r.label
+                                            ))
+                                            .on_click(
+                                                cx.listener(move |s, _, w, cx| s.toggle(i, w, cx)),
+                                            )
+                                            .on_a11y_action(AccessibleAction::Click, {
+                                                let entity = cx.entity();
+                                                move |_, w, cx| {
+                                                    entity.update(cx, |s, cx| s.toggle(i, w, cx))
+                                                }
+                                            }),
+                                    )
+                                    .when(open, |d| {
+                                        d.child(
+                                            div()
+                                                .id("event-data")
+                                                .role(Role::Label)
+                                                .aria_label("Event data")
+                                                .aria_value(r.detail.clone())
+                                                .p(px(12.))
+                                                .bg(p.raised)
+                                                .child(r.detail.clone()),
+                                        )
                                     })
-                                    .p(px(8.))
-                                    .hover(|d| d.bg(p.raised))
-                                    .child(format!("{} {}", if open { "▾" } else { "▸" }, r.label))
-                                    .on_click(cx.listener(move |s, _, w, cx| s.toggle(i, w, cx)))
-                                    .on_a11y_action(AccessibleAction::Click, {
-                                        let entity = cx.entity();
-                                        move |_, w, cx| {
-                                            entity.update(cx, |s, cx| s.toggle(i, w, cx))
-                                        }
-                                    }),
-                            )
-                            .when(open, |d| {
-                                d.child(
-                                    div()
-                                        .id("event-data")
-                                        .role(Role::Label)
-                                        .aria_label("Event data")
-                                        .aria_value(r.detail.clone())
-                                        .p(px(12.))
-                                        .bg(p.raised)
-                                        .child(r.detail.clone()),
-                                )
-                            })
-                    }))
-                    .child(reveal),
+                            })),
+                    ),
             )
     }
 }

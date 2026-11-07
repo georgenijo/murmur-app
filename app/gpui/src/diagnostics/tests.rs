@@ -939,6 +939,29 @@ mod ax {
     }
 
     #[gpui::test]
+    fn following_event_tail_is_visible_before_keyboard_entry(cx: &mut TestAppContext) {
+        let (_, cx) = harness(cx);
+        let t = tree(cx);
+        // Fixture timestamps repeat every minute; select the retained tail,
+        // rather than an older row with the same accessible label.
+        let label = fixtures::event(160).label();
+        let row = t
+            .nodes
+            .iter()
+            .rev()
+            .find(|(_, n)| n.label() == Some(label.as_str()))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let list = named(&t, "Diagnostic events").1.bounds().unwrap();
+        assert!(
+            row.y0 >= list.y0 && row.y1 <= list.y1,
+            "following tail {row:?} outside list viewport {list:?}"
+        );
+    }
+
+    #[gpui::test]
     fn tab_order_reaches_tabs_event_list_and_every_chart(cx: &mut TestAppContext) {
         let (entity, cx) = harness(cx);
         cx.update(|w, cx| {
