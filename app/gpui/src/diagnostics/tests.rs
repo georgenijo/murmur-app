@@ -785,6 +785,182 @@ mod ax {
             .unwrap_or("")
     }
 
+    fn settle_focus(cx: &mut VisualTestContext) {
+        draw(cx);
+        cx.update(|w, cx| w.simulate_next_frame(cx));
+        draw(cx);
+    }
+    fn assert_focused_control_visible(cx: &mut VisualTestContext) {
+        let t = tree(cx);
+        let n = &t
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == t.focus)
+            .expect("focused control")
+            .1;
+        if n.role() == Role::Tab {
+            return;
+        }
+        let bounds = n.bounds().expect("focused control bounds");
+        let panel = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == Role::TabPanel)
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        assert!(
+            bounds.y0 >= panel.y0 && bounds.y1 <= panel.y1,
+            "focused {:?} {:?} outside viewport {:?}",
+            n.label(),
+            bounds,
+            panel
+        );
+    }
+    #[gpui::test]
+    fn focus_entry_reveals_charts_tables_actions_and_paused_event_row(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        for compact in [false, true] {
+            cx.simulate_resize(gpui::size(
+                gpui::px(if compact { 480. } else { 1120. }),
+                gpui::px(if compact { 440. } else { 820. }),
+            ));
+            for tab in Tab::ALL {
+                entity.update(cx, |s, cx| {
+                    s.model.navigate(tab);
+                    s.sync(cx);
+                    s.events.update(cx, |list, cx| {
+                        list.following = false;
+                        list.scroll.scroll_to_bottom();
+                        cx.notify();
+                    });
+                    s.panel_scroll.set_offset(gpui::Point::default());
+                    cx.notify();
+                });
+                settle_focus(cx);
+                let tabs = entity.read_with(cx, |s, cx| s.tabs.read(cx).focus_handle(cx));
+                cx.update(|w, cx| w.focus(&tabs, cx));
+                for key in ["tab", "shift-tab"] {
+                    for _ in 0..30 {
+                        cx.simulate_keystrokes(key);
+                        settle_focus(cx);
+                        assert_focused_control_visible(cx);
+                        if cx.update(|w, _| tabs.is_focused(w)) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[gpui::test]
+    fn run_detail_keyboard_entry_and_back_restore_a_mounted_control(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Runs);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        click(
+            cx,
+            named(&t, "View details for Dictation · synthetic-run").0,
+        );
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Back to runs");
+        cx.simulate_keystrokes("tab");
+        settle_focus(cx);
+        assert_ne!(focused_label(&tree(cx)), "Back to runs");
+        cx.simulate_keystrokes("shift-tab");
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Back to runs");
+        let keystroke = gpui::Keystroke::parse("space").unwrap();
+        cx.simulate_event(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(gpui::KeyUpEvent { keystroke });
+        settle_focus(cx);
+        assert_eq!(
+            focused_label(&tree(cx)),
+            "View details for Dictation · synthetic-run"
+        );
+    }
+    #[gpui::test]
+    fn deferred_run_focus_rejects_navigation_before_remount(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Runs);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        click(
+            cx,
+            named(&t, "View details for Dictation · synthetic-run").0,
+        );
+        cx.update(|w, cx| {
+            entity.update(cx, |s, cx| {
+                s.model.navigate(Tab::Performance);
+                s.sync(cx);
+                w.focus(&s.tabs.read(cx).focus_handle(cx), cx);
+                cx.notify();
+            })
+        });
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Performance");
+    }
+
+    #[gpui::test]
+    fn deferred_run_focus_revalidates_a_run_removed_before_remount(cx: &mut TestAppContext) {
+        let (entity, cx) = harness(cx);
+        entity.update(cx, |s, cx| {
+            s.model.navigate(Tab::Runs);
+            s.sync(cx);
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        click(
+            cx,
+            named(&t, "View details for Dictation · synthetic-run").0,
+        );
+        entity.update(cx, |s, cx| {
+            s.model.runs.clear();
+            s.sync(cx);
+            cx.notify();
+        });
+        settle_focus(cx);
+        assert_eq!(focused_label(&tree(cx)), "Runs");
+    }
+
+    #[gpui::test]
+    fn following_event_tail_is_visible_before_keyboard_entry(cx: &mut TestAppContext) {
+        let (_, cx) = harness(cx);
+        let t = tree(cx);
+        // Fixture timestamps repeat every minute; select the retained tail,
+        // rather than an older row with the same accessible label.
+        let label = fixtures::event(160).label();
+        let row = t
+            .nodes
+            .iter()
+            .rev()
+            .find(|(_, n)| n.label() == Some(label.as_str()))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let list = named(&t, "Diagnostic events").1.bounds().unwrap();
+        assert!(
+            row.y0 >= list.y0 && row.y1 <= list.y1,
+            "following tail {row:?} outside list viewport {list:?}"
+        );
+    }
+
     #[gpui::test]
     fn tab_order_reaches_tabs_event_list_and_every_chart(cx: &mut TestAppContext) {
         let (entity, cx) = harness(cx);

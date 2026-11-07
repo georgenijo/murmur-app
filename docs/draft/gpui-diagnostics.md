@@ -267,3 +267,57 @@ the repository reserves every `emit`/`emit_*` identifier for transport adapters.
 This changes no behavior or transport boundary. The existing guard is preserved;
 the follow-up rechecks it, its regressions, the GPUI suite and native selectors
 on the Mac mini. The final PR evidence supersedes the initial repair receipt.
+
+## Native QA repairs (checkout 82)
+
+The focused-control visibility and Run detail keyboard failures are repaired.
+**The standard-launch WebKit failure remains a blocking native QA failure.**
+No WebKit attribution rule is relaxed. An opt-in native regression now catches
+this failure after standard launch, real text focus/typing and orderly quit.
+
+The original load chain is `finishLaunching → _customizeMainMenu →
+_addTextInputMenuItems: → NSWritingToolsCoordinator.isWritingToolsAvailable →
+WritingToolsUI → WebKit`. A separate activation path is `NSTextInputContext.activate
+→ _startDwellingCheck → _shouldSuppressWritingToolsAffordanceWithCompletionHandler:
+→ NSCampoLightweightUIController.isEligible`.
+
+The Mac mini still loaded seven unattributed images after trying early menu
+`automaticallyInsertsWritingToolsItems = NO`, the GPUI view's
+`writingToolsBehavior = none`, optional `NSTextInputTraits` adoption, and the
+[custom-input affordance gate used by WebKit](https://commits.webkit.org/315560@main).
+Those ineffective hooks were removed; the attempted diff and exact load chains
+are retained in the Fleet artifact. A run that loads the same images via AX first
+can pass attribution and mask the Writing Tools path, so it does not establish
+prevention. The shared editor/initialization shim originates in layer 9
+(`d2b38b70`, `app/gpui/src/field.rs` and `app/gpui/native/ax_focus_fix.m`), and GPUI's
+native client is in pinned `gpui_macos/src/window.rs` at `654efae4`.
+Diagnostics adds no alternate editor. The lead must resolve this remaining
+native boundary before accepting the PR; this repair does not whitelist it.
+
+The QA host finalizes its inventory at orderly quit, after startup and input.
+Finalization seals the observer; doing that inside the launch callback caused
+legitimate later framework loads to terminate the host with exit 86. Headless
+captures still finalize at capture completion. The observer, load-chain checks,
+startup/linkage baselines and rejection of unattributed Writing Tools loads are
+unchanged.
+
+Charts, pickers, text fields, actions and table focus entry share the existing
+table reveal calculation. Focus entry reveals the active paused event row inside
+its nested viewport. Scrolling is immediate, including under Reduce Motion;
+wheel scrolling while focused does not snap back. Run detail entry defers focus
+to Back until remount, and Back restores the run action. Both reuse confirmation
+focus revalidation and fall back to the selected tab if the run disappears.
+
+For the opt-in standard native launch regression, while owning the Mac GUI:
+
+```sh
+python3 scripts/check_gpui_diagnostics_native.py \
+  --binary "$CARGO_TARGET_DIR/debug/diagnostics-qa" \
+  --output /path/to/new/synthetic-evidence
+```
+
+It requires existing Accessibility permission, uses only its exact synthetic
+process, types `7` through native events, quits normally and requires zero
+unattributed WebKit images. It currently fails with seven unattributed images. It does not change VoiceOver or the pasteboard.
+The independent Sol review and final PR CI remain lead gates; no merge is
+part of this implementation handoff.
