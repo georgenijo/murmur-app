@@ -102,6 +102,38 @@ def main():
             raise AssertionError('preview lift did not move the painted card')
     if results['preview-pill-light-short'] == results['preview-pill-dark-short']:
         raise AssertionError('preview system appearance fixtures did not differ')
+    # Diagnostics uses only the synthetic adapter, with no visible AppKit window.
+    for mode in ('light', 'dark', 'contrast'):
+        for state in ('events', 'events-expanded', 'empty', 'loading', 'runs', 'run-detail',
+                      'performance', 'latency', 'reports', 'reports-blocked', 'dictation',
+                      'private-detail', 'store-unavailable'):
+            case = f'diagnostics-{mode}-{state}'
+            paths = [output / f'{case}-{i}.png' for i in (1, 2)]
+            for path in paths:
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ('MURMUR_DARK', 'MURMUR_CONTRAST', 'MURMUR_DIAGNOSTICS_STATE')}
+                env.update(MURMUR_GOLDEN=str(path), MURMUR_DIAGNOSTICS_STATE=state)
+                if mode == 'dark':
+                    env['MURMUR_DARK'] = '1'
+                if mode == 'contrast':
+                    env['MURMUR_CONTRAST'] = '1'
+                stdout = subprocess.check_output([str(target / 'debug/diagnostics-qa')],
+                                                 env=env, cwd=UI, timeout=60, text=True)
+                inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
+                             if line.startswith('MURMUR_DIAGNOSTICS_INVENTORY=')]
+                if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
+                    raise AssertionError('missing or nonempty Diagnostics WebKit inventory')
+            if paths[0].read_bytes() != paths[1].read_bytes():
+                raise AssertionError(f'non-deterministic {case}')
+            results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+            print(f'PASS {case}: identical offscreen Metal images')
+        if results[f'diagnostics-{mode}-events'] == results[f'diagnostics-{mode}-events-expanded']:
+            raise AssertionError('diagnostics disclosure did not change its frame')
+        if len({results[f'diagnostics-{mode}-{s}'] for s in
+                ('events', 'runs', 'run-detail', 'performance', 'latency', 'reports', 'dictation', 'private-detail')}) != 8:
+            raise AssertionError('diagnostics screens rendered identically')
+    if len({results[f'diagnostics-{mode}-events'] for mode in ('light', 'dark', 'contrast')}) != 3:
+        raise AssertionError('diagnostics appearance variants rendered identically')
     (output / 'receipt.json').write_text(json.dumps({
         'os': platform.platform(), 'gpui': '654efae441bc8eb117d0042bb28cd7cf3570bdc9',
         'comparison': 'same-host repeated render, strict byte equality',

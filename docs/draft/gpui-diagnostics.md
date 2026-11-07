@@ -1,0 +1,182 @@
+# GPUI Diagnostics contract (#1001)
+
+Stack layer 12 of #1011, based on `gpui/11-dictation-preview` at
+`6ab0ca8a86c3f5141aa569a6c941f59ba54765f0` (PR #1029). This is a standalone
+`murmur-ui` surface and synthetic QA executable. It does not replace a production
+window or retire any React, Tauri, Vitest or visual suite. Native application
+host integration belongs to #994/#996/#997.
+
+The #993 dependency is moot: the ownership matrix gives step 1.9 no work under
+the selected native-parity route. This layer does not change legacy lazy-window
+behavior. The plan's memory criterion remains pending explicit authorization;
+no performance run or new performance gate is part of this layer.
+
+## Services and admission
+
+Create `Diagnostics` inside `gpui_base::Root` after `murmur_ui::init`, on GPUI's
+main thread. Call `attach` and `follow` after window creation. Call `detach` when
+hidden and `attach`/`follow` when reopening; drop also detaches. Rust and the
+native host own window size, position, traffic lights, fullscreen and activation.
+There are no JavaScript geometry operations or off-thread NSWindow mutations.
+
+Supply `host::Host`, using existing core/service owners. The host must:
+
+1. Subscribe as `Consumer::Diagnostics` before any read. `subscribe` must finish
+   registering listeners before returning its subscription. `attach` drains
+   queued notifications before capturing read tickets. Stop every subscription
+   synchronously in `Subscription::stop`. Stop producers on terminal inbox
+   closure, and retry backpressure without formatting payloads.
+2. Give each lane positive, strictly increasing revisions across snapshots,
+   notifications and error results, including same-record updates. Hydration
+   returns its exact `Ticket`; notifications carry the attachment and service
+   clear epoch. Notifications invalidate hydration epochs. Rejected same-session
+   reads are retried with a fresh ticket; duplicate revisions never replay.
+   Revisions must remain monotonic across hide/reopen. Never reset counters on
+   subscription creation. A host restart creates a new screen/model.
+3. Preserve distinct event and performance clear epochs. A clear notification
+   must advance the appropriate service epoch; work started before that epoch
+   cannot publish a run/sample/event afterward. Publish the clear after durable
+   service success, including clears from another consumer. Event clears leave
+   runs alone; Performance clears leave Events alone. Do not invent revisions
+   or epochs from completion order of asynchronous reads.
+4. Offload blocking reads, JSON parsing, file panels, copy and recovery work.
+   `Request::lease.is_current()` must be checked immediately before a side
+   effect, on the owning service. Also revalidate the recording generation,
+   service clear epoch and capture UUID where applicable. The screen revokes
+   leases on superseding reads, notifications, clear boundaries, hide and drop.
+   A rejected lease must not copy, recover, delete or upload. Late replies must
+   use their original ticket; never relabel them with the current attachment.
+5. Project existing sanitized telemetry into `EventRow`, not a second tracing
+   sink. Never feed dictation partials or private-capture text into Events.
+   `Run`, `Sample`, `Health` and `Latency` are content-free presentation DTOs
+   projected from the existing V1 service types; unavailable and not-applicable
+   measurements remain distinct. Include the existing runtime, input-size,
+   production cohort/startup, follow-up and resource-range facts in run details.
+   Map the last-failure classification into StoreProblem so corrupt data, invalid
+   records and schema migration failures have distinct guidance; newer stores
+   remain restart-only. The repository still owns retention, interruption, schema validation,
+   quarantine/recovery and safe service errors.
+6. Read only the last 500 events, 200 runs, 600 resource observations and 10
+   saved Lab reports. Map a selected report file through `Report::parse` after
+   enforcing the 8 MiB bounded read. Imports remain session-only (20 maximum),
+   never adopted into run history or the completion store. Do not retain file
+   paths, raw JSON, parser errors, transcript text or evaluator failures.
+7. A native report-panel cancellation returns `Import { result: Ok(None) }`.
+   Copy writes only explicit filtered Events or content-free latency JSON.
+   The synthetic adapter never reads or writes the real pasteboard.
+8. Only list private capture summaries initially. Read exact text after a
+   selected `ReadCapture` request, return `CaptureDetail`, and bind it to the
+   selected UUID and request ticket. Keep it out of logs, serialization, Events,
+   general copy, charts, goldens and reports. Clear the review on Back, tab
+   navigation, hide and drop. Local deletion and reviewed upload require their
+   own confirmation; upload still uses the existing restricted receiver and
+   seven-day retention. Arming/disarming remains main-window-only: this host
+   interface has neither operation. Benchmark, microphone startup, recorder,
+   updater, delivery and arbitrary command APIs are absent too.
+9. Before replacing the real legacy Diagnostics window, consume its retained
+   WKWebView on main through `murmur_webkit::DiagnosticsRetirement::destroy`.
+   Release every other strong owner and require `remaining_webviews == 0`.
+   Hiding or removing the view is insufficient. Per-window retirement does not
+   purge a website store still used by other windows or the migration importer.
+
+The ordered inbox has both a 64-message and 96 MiB budget and rejects oversized
+batches. Model/event/report/private-text containers implement neither Debug nor
+serialization. Clearing releases allocations; it does not claim secure RAM
+erasure. The host remains responsible for the source service's consent,
+redaction and data-retention contracts.
+
+## Reusable data components
+
+`data_components` adds screen-independent controls alongside the #1027 kit:
+
+| Component | Contract |
+|---|---|
+| `Tabs` | Horizontal wrapping tablist, selected tab and active descendant, one Tab stop, wrapping arrows, Home/End, pointer and AX activation; controlled updates preserve focus. |
+| `DataTable` | Named Table, ColumnHeader, Row and Cell nodes; column/row counts and indices; per-cell column names and exact text values. Row actions are named Buttons inside their corresponding first cells. |
+| `DetailList` | Explicit newest-N bound (Diagnostics paints 100 of 500 retained events), stable identities, one keyboard stop, arrows/Home/End, Enter/Space disclosure and Escape collapse, monospace expandable data, AX expanded state; wheel/keyboard scroll pauses following and Resume restores it. Copy includes all filtered retained events. |
+| `Chart` | At most 600 exact-value points, one keyboard stop, arrows/Home/End, shared hover/click/AX values, fixed value region separate from plot, missing values visibly unavailable rather than zero; unit-bearing labels. |
+| `Progress` | Named ProgressIndicator, optional clamped finite 0–100 value and bounds; indeterminate state is explicit. No perpetual animation, including Reduced Motion. |
+| `Choices::replace_choices` | Refresh data-backed choices while preserving the existing focus owner and valid selection; unchanged data does not close an open picker. |
+
+Controls use the shared semantic Palette, system font, explicit Menlo data text,
+8px control/12px card radii, 32px actions and 28px filters from the
+[design system](../features/ui-design-system.md). Live system light/dark and
+Increase Contrast follow the existing appearance/preferences owners; the screen
+never overwrites an application theme during rendering. The standalone QA host
+owns its system-appearance observer. Surfaces are opaque,
+including Reduce Transparency. Charts/disclosures do not animate. Confirmation
+mounts only its named AlertDialog, removes background controls from AX/Tab order,
+starts on Cancel, traps Tab between Cancel/Confirm, supports Escape and restores
+originating focus. Destructive actions never become a Return default.
+
+## Matrix acceptance and native checklist
+
+The automated tests live in `app/gpui/src/diagnostics/tests.rs`. Goldens use the
+production view with the synthetic adapter, rendered to offscreen Metal.
+The four portable-report fixtures now live in `tests/fixtures/diagnostic-reports`;
+Rust/core and React use the same unchanged synthetic files. CI watches that
+neutral directory for all three consumers.
+Every Diagnostics capture inventories only its own loaded images and requires
+zero WebKit images. Tests and fixtures never inspect production app data.
+
+| Rows | This layer | Native acceptance still required with the integrated host |
+|---|---|---|
+| G01 Events | Six tabs; stream/level/correlation filters; bounded expandable rows; manual-scroll pause/resume; copy/clear; attachment cleanup; read/notification/clear admission and host capability restrictions. | Open from menu/palette/Settings and select requested tab. Filter synthetic events, expand with keyboard/AX, manually scroll, copy to a disposable test clipboard adapter, confirm clear, hide/reopen and prove no duplicate listeners. Verify native focus, resize and fullscreen. Companion windows must fail main-only operations. |
+| G02 Runs / Performance | Kind/outcome filters, detail, stages, resource ranges, exact-value CPU/memory charts, correlated Events; distinct loading/error/empty states; store-health guidance and explicit permitted recovery; clear epochs. | Complete synthetic dictation/import; inspect every stage/runtime/input/cohort/startup/resource/follow-up fact. Clear while work is pending and prove old work cannot repopulate. In isolated corrupt/invalid/newer-schema fixtures verify guidance, quarantine and forbidden reinitialization for newer stores. Test retry failure and confirmation cancellation. |
+| G03 Reports | Strict legacy/v2 benchmark and evaluation-v1 parser, bounds/uniqueness/consistency checks, text stripping, compatibility before deltas, machine/app warnings, zero-baseline handling, session imports, local saved-report adapter and clear. | Use native file panel with two synthetic compatible reports; cancel panel; import incompatible/oversized/malformed/unknown-version/unknown-field reports. Confirm blockers precede deltas, warnings prevent recommendations, import cap, clear during a read, and relaunch leaves files/durable runs unchanged. |
+| G04 Lab | Saved-report read/comparison only. Engine, explicit Run/Cancel, configuration selection, export/clear lifecycle and ten-report store remain with 3.5b and their existing service owners. | Separately authorized 3.5b tool validation; do not start a run by opening Diagnostics. |
+| G05 Startup / recorder | No automatic or exposed start APIs. Main-settings tools and internal distribution boundary remain with 3.5b. | Separately authorized 3.5b stub/native validation; recorder absent in normal builds. |
+| Current Latency / Dictation tabs | Build-filtered content-free latency edges/copy/clear; summary-only private-capture listing, explicit review, confirmed delete/upload; no arm/disarm capability. | Synthetic latency values and build selection; main-only consent/status, exact UUID/epoch races, expiry, private review/Back, delete cancellation, upload confirmation/cancellation and receiver retention. Never use real capture content. |
+| Retirement | Shared main-thread weak-deallocation barrier, real windowless nonpersistent WKWebView extra-owner 1 → 0 test, per-capture native-process inventory. | Invoke barrier on the actual replaced production view, verify its deallocation and process listing. Production retirement is not claimed here. |
+
+For every affected native flow, also verify Tab/Shift-Tab, arrows, Space, Return,
+Escape, VoiceOver roles/names/values/actions/announcements, focus restoration,
+narrow-window wrapping and scroll reachability, and live light/dark, Reduce
+Motion, Increase Contrast and Reduce Transparency. Confirm the running build
+contains the reviewed head. Native interactions remain a lead handoff: another
+worker owns the Mac mini GUI, so this implementation worker must not generate
+HID, AX actions, focus changes, permission changes or System Settings actions.
+Only a task-owned background host, read-only AX inspection and its own-window
+noninteractive capture are permitted. Headless tests do not establish completion
+of this native checklist.
+
+## Verification receipt (Mac mini, checkout 54)
+
+All native builds/checks ran through Fleet via opti, with Rust 1.98.1, fresh
+`~/Builds/gpui-checkout-54` and task-owned targets. Capture helpers were built
+first. The CI library-only recipe was used only in this disposable checkout;
+policy tests used an unchanged-manifest source snapshot inside its target tree.
+
+- GPUI: locked gallery/default checks, strict all-target gallery Clippy with
+  `-D warnings`, rustfmt, **98 unit/keyboard/AX tests**, and **8 runner/native-shim
+  tests** pass. The new screen never rewrites the application's shared theme
+  while rendering; the standalone QA host owns its appearance observer.
+- Offscreen Metal: **123 cases / 246 captures**, including **39 Diagnostics
+  cases / 78 captures**. Every same-host pair is byte-identical and nonblank.
+  Each Diagnostics process inventories zero WebKit images. Light, dark and
+  Increase Contrast differ; disclosure, detail, empty/loading and blocked-report
+  states have separate captures. Only synthetic fixture content is used.
+- Tauri: **1,535 library tests passed / 14 ignored**; strict workspace/all-target
+  Clippy on Rust 1.98.1 (without lint allowances), rustfmt, windowless main-queue
+  and shutdown integration, and capture-helper **46 passed / 1 ignored** pass.
+  Restart-policy Clippy fixtures pass. The standalone WebKit lifecycle test
+  passes, including the Diagnostics retained-owner **1 → 0** barrier.
+- Core: the moved neutral-report fixture test passes. The initial default
+  parallel suite passed 255 unit tests and timed out in two unchanged updater
+  gating tests; the serial retry and final CI results are recorded in the PR.
+- React: TypeScript and the full **1,833-test Vitest suite** pass. After moving
+  fixtures, TypeScript and all **28 report parser/comparison/view tests** pass.
+  The retained visual suite passed **521/522** initially; its unchanged knowledge
+  editor hit a screenshot-stability timeout, and that case passes on retry on a
+  dedicated port. No screenshots or baseline expectations were changed.
+- Source/dependency/transport/restart/reference/Markdown/workflow policy checks,
+  their Python/Node regression suites and **25 canary unit tests** pass. The
+  manifest-shape test runs against the unchanged manifest; the sender-identity
+  test uses a task-local canonical temporary path to avoid macOS `/var` aliasing.
+- No vendored source changed; existing patch records remain untouched. The four
+  relocated report fixtures are byte-identical to the stack base.
+
+The PR records final-head CI and any additional read-only native observations.
+These results do not establish the native interaction checklist or production
+host integration. Independent Sol review remains a lead gate; this implementation
+sub-agent does not delegate another agent. The PR stays draft and unmerged.

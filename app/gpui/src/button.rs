@@ -67,6 +67,13 @@ impl Button {
         self.label = caption.into();
         self
     }
+    /// Persistent filter state, exposed independently from its visible caption.
+    pub fn toggled(mut self, value: bool) -> Self {
+        self.base = self
+            .base
+            .aria_toggled(if value { Toggled::True } else { Toggled::False });
+        self
+    }
     pub fn intent(mut self, intent: ButtonIntent) -> Self {
         self.intent = intent;
         self

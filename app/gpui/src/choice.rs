@@ -92,6 +92,26 @@ impl Choices {
             scroll: ScrollHandle::new(),
         }
     }
+    /// Refresh bounded data-backed pickers without replacing their focus owner.
+    pub fn replace_choices(&mut self, choices: Vec<Choice>, cx: &mut Context<Self>) {
+        let selected = self.value().cloned();
+        if self
+            .choices
+            .iter()
+            .map(|c| (&c.value, &c.label, c.disabled))
+            .eq(choices.iter().map(|c| (&c.value, &c.label, c.disabled)))
+        {
+            return;
+        }
+        self.choices = choices;
+        self.selected = selected.and_then(|v| {
+            self.choices
+                .iter()
+                .position(|c| c.value == v && !c.disabled)
+        });
+        self.cancel();
+        cx.notify();
+    }
     pub fn value(&self) -> Option<&SharedString> {
         self.selected.map(|i| &self.choices[i].value)
     }

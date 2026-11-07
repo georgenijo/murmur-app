@@ -372,3 +372,10 @@ and typography**, and supported-macOS/hardware acceptance. The larger Phase 0
 hardware/dictation/notch/second-display gates remain with their screen ports.
 Do not equate AX tree assertions, 1× goldens or synthetic key tests with these
 native checks. No live AX or VoiceOver automation was run in this task.
+
+## Diagnostics data surfaces (stack layer 12)
+
+The [Diagnostics contract](gpui-diagnostics.md) adds reusable Tabs, DataTable,
+DetailList, Chart and Progress controls in `data_components`, plus controlled
+filter-button AX toggle state and focus-preserving data-backed picker refreshes.
+It records their keyboard, accessibility, bounds and native acceptance contracts.

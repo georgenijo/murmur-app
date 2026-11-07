@@ -1,6 +1,8 @@
 //! Murmur's shared native presentation layer. Core never depends on this crate.
 pub mod button;
 pub mod choice;
+pub mod data_components;
+pub mod diagnostics;
 mod events;
 pub mod field;
 pub mod gallery;
