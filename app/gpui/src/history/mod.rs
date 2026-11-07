@@ -17,13 +17,13 @@ use gpui::{prelude::*, *};
 use host::{Authority, Host, Request, RequestKind};
 use inbox::Inbox;
 use model::*;
-use std::{ops::Range, rc::Rc, time::Instant};
+use std::{collections::BTreeMap, ops::Range, rc::Rc, time::Instant};
 
 // The list callback only constructs visible rows. Detail pages independently
 // bound shaping/AX to 2048 scalars; a megabyte transcript never becomes one label.
 const DETAIL_PAGE: usize = 2048;
 const PREVIEW_CHARS: usize = 160;
-const ROW_HEIGHT: Pixels = px(108.);
+const ROW_HEIGHT: Pixels = px(112.);
 pub struct History {
     pub model: Model,
     host: Rc<dyn Host>,
@@ -39,6 +39,7 @@ pub struct History {
     filter_focus: FocusHandle,
     back_focus: FocusHandle,
     scroll: UniformListScrollHandle,
+    row_focus: BTreeMap<u64, FocusHandle>,
     filters_open: bool,
     detail_page: usize,
     pub rendered: Range<usize>,
@@ -94,6 +95,7 @@ impl History {
             filter_focus: cx.focus_handle(),
             back_focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
+            row_focus: BTreeMap::new(),
             filters_open: false,
             detail_page: 0,
             rendered: 0..0,
@@ -161,6 +163,7 @@ impl History {
             s.stop();
         }
         self.model.detach();
+        self.row_focus.clear();
         self.filters_open = false;
         self.detail_page = 0;
         self.rendered = 0..0;
@@ -275,6 +278,8 @@ impl History {
     }
     pub fn prepare(&mut self, cx: &mut Context<Self>) {
         self.model.refresh();
+        self.row_focus
+            .retain(|key, _| self.model.entries.iter().any(|e| e.key == *key));
         self.authority.sync(&self.model);
         let count = self.model.matches.len();
         let mut choices = vec![
@@ -392,6 +397,13 @@ impl History {
         if e.keystroke.modifiers.platform && e.keystroke.key == "f" {
             w.focus(&self.search.read(cx).focus_handle(cx), cx);
         } else if e.keystroke.key == "escape" {
+            // Open shared pickers own Escape and their focus/selection restore.
+            if [&self.source, &self.date, &self.actions]
+                .iter()
+                .any(|picker| picker.read(cx).is_open())
+            {
+                return;
+            }
             if self.model.confirmation.take().is_some() {
             } else if self.model.detail.is_some() {
                 self.back(w, cx);
@@ -439,6 +451,23 @@ impl History {
         {
             return;
         }
+        if !self.focus.is_focused(w) {
+            // A deferred uniform-list Button can expose the correct AX focus
+            // without installing its automatic keyboard-click listener. Route
+            // only this owned row action; never copy from a descendant key.
+            if e.keystroke.key == "space"
+                && !e.is_held
+                && let Some(key) = self
+                    .row_focus
+                    .iter()
+                    .find_map(|(key, focus)| focus.is_focused(w).then_some(*key))
+            {
+                self.open_detail(key, w, cx);
+                w.prevent_default();
+                cx.stop_propagation();
+            }
+            return;
+        }
         let mut i = self
             .model
             .matches
@@ -478,6 +507,11 @@ impl History {
             .map(|position| {
                 let entry = &self.model.entries[self.model.matches[position]];
                 let key = entry.key;
+                let action_focus = self
+                    .row_focus
+                    .entry(key)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone();
                 let label = format!(
                     "Transcript {} of {} from {}. Enter or Space copies; Right opens details.",
                     position + 1,
@@ -486,22 +520,73 @@ impl History {
                 );
                 let preview: String = entry.text.chars().take(PREVIEW_CHARS).collect();
                 let text = highlighted(&preview, &self.model.query.text, p);
+                let metadata = format!(
+                    "{}{}{}{}",
+                    stamp(entry.timestamp),
+                    if entry.file {
+                        format!(" · {}", entry.source_label())
+                    } else {
+                        String::new()
+                    },
+                    if entry.pinned { " · Pinned" } else { "" },
+                    if entry.interrupted {
+                        " · Interrupted · partial"
+                    } else {
+                        ""
+                    }
+                );
+                // Copy and detail are siblings. GPUI's automatic keyboard click
+                // dispatch must never treat another focused button as card copy.
+                let copy = div()
+                    .id(("copy", key))
+                    .role(Role::Button)
+                    .aria_label(label)
+                    .aria_value(preview)
+                    .when(self.model.selected == Some(key), |d| {
+                        d.aria_active_descendant()
+                    })
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .on_click(cx.listener(move |s, _, w, cx| {
+                        s.model.selected = Some(key);
+                        w.focus(&s.focus, cx);
+                        s.copy(key, false);
+                        cx.notify();
+                    }))
+                    .on_a11y_action(AccessibleAction::Click, {
+                        let entity = cx.entity();
+                        move |_, w, cx| {
+                            entity.update(cx, |s, cx| {
+                                s.model.selected = Some(key);
+                                w.focus(&s.focus, cx);
+                                s.copy(key, false);
+                                cx.notify();
+                            })
+                        }
+                    })
+                    .child(
+                        div()
+                            .text_size(tokens::CAPTION_SIZE)
+                            .text_color(p.muted)
+                            .child(metadata),
+                    )
+                    .child(div().h(px(40.)).overflow_hidden().child(text));
                 div()
                     .id(("row", key))
                     .h(ROW_HEIGHT)
                     .pb(tokens::LIST_GAP)
                     .child(
                         div()
-                            .id(("copy", key))
-                            .role(Role::Button)
-                            .aria_label(label)
-                            .aria_value(preview)
+                            .id(("card", key))
+                            .role(Role::ListItem)
                             .aria_position_in_set(position + 1)
                             .aria_size_of_set(self.model.matches.len())
                             .when(self.model.selected == Some(key), |d| {
-                                d.aria_active_descendant()
-                                    .border_l_2()
-                                    .border_color(p.focus)
+                                d.border_l_2().border_color(p.focus)
                             })
                             .h_full()
                             .overflow_hidden()
@@ -512,44 +597,7 @@ impl History {
                             .flex_col()
                             .gap(px(4.))
                             .hover(|d| d.bg(p.surface))
-                            .on_click(cx.listener(move |s, _, w, cx| {
-                                s.model.selected = Some(key);
-                                w.focus(&s.focus, cx);
-                                s.copy(key, false);
-                                cx.notify();
-                            }))
-                            .on_a11y_action(AccessibleAction::Click, {
-                                let entity = cx.entity();
-                                move |_, w, cx| {
-                                    entity.update(cx, |s, cx| {
-                                        s.model.selected = Some(key);
-                                        w.focus(&s.focus, cx);
-                                        s.copy(key, false);
-                                        cx.notify();
-                                    })
-                                }
-                            })
-                            .child(
-                                div()
-                                    .text_size(tokens::CAPTION_SIZE)
-                                    .text_color(p.muted)
-                                    .child(format!(
-                                        "{}{}{}{}",
-                                        stamp(entry.timestamp),
-                                        if entry.file {
-                                            format!(" · {}", entry.source_label())
-                                        } else {
-                                            String::new()
-                                        },
-                                        if entry.pinned { " · Pinned" } else { "" },
-                                        if entry.interrupted {
-                                            " · Interrupted · partial"
-                                        } else {
-                                            ""
-                                        }
-                                    )),
-                            )
-                            .child(div().h(px(40.)).overflow_hidden().child(text))
+                            .child(copy)
                             .child(
                                 Button::new(
                                     ("detail", key),
@@ -557,6 +605,7 @@ impl History {
                                 )
                                 .caption("Show more / actions")
                                 .size(ButtonSize::ExtraSmall)
+                                .track_focus(&action_focus)
                                 .on_click(cx.listener(
                                     move |s, _, w, cx| {
                                         cx.stop_propagation();

@@ -82,7 +82,7 @@ The Phase 2 host (#994/#996/#997) must implement `history::host::Host`:
 ## Bounded rendering and accessibility
 
 The list uses GPUI's `uniform_list`, constructing only the viewport's fixed
-108pt rows. Each row shapes at most 160 preview scalars. Filtering/search scans
+112pt rows. Each row shapes at most 160 preview scalars. Filtering/search scans
 all retained entries before virtualization. Detail renders one 2,048-scalar page;
 Previous/Next exposes every part of long text without an unbounded label or text
 layout. Copy always includes the full transcript. Detail mode removes the list,
@@ -94,6 +94,14 @@ The List is one keyboard stop with Up/Down, Home/End, Page Up/Down, Enter/Space
 copy and Right for detail. Stable row keys preserve selection across updates;
 Back/Escape restores list focus and scrolls the selection into view. Visible rows
 expose button action, position/set size, preview value and active descendant.
+The final regression observed an automatic keyboard-click gap for a focused
+Button rendered inside a deferred `uniform_list` callback: AX Focus correctly
+changed the real focus handle, but Space did not activate the Button. History
+routes Space for its exact owned row-action focus handle and preserves the
+shared Button for pointer/AX activation. The bounded handle map survives data
+refreshes and is pruned on snapshot changes/hide. This is an observed lower-layer
+integration gap, not a vendored fix; no lower-layer source is changed.
+
 Previous/Next transcript controls make offscreen rows reachable with AX actions
 without relying on a screen reader synthesizing wheel events. Show more and
 other nested controls stop row-copy propagation. Detail exposes named paged text,

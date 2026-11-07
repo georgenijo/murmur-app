@@ -425,3 +425,50 @@ fn a_new_clear_epoch_releases_old_text_even_if_refresh_fails_or_is_invalid() {
         }));
     }
 }
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn nested_row_keyboard_and_open_picker_escape_keep_their_own_behavior(cx: &mut TestAppContext) {
+    use gpui::Focusable;
+    let (e, host, cx) = harness(cx);
+    use gpui::{
+        AccessibleAction,
+        accesskit::{ActionRequest, TreeId},
+    };
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    draw(cx);
+    let tree = cx.accessibility_tree(window);
+    let id = tree
+        .nodes
+        .iter()
+        .find(|(_, n)| n.label() == Some("Show more for transcript 1"))
+        .unwrap()
+        .0;
+    cx.dispatch_accessibility_action(
+        window,
+        ActionRequest {
+            action: AccessibleAction::Focus,
+            target_tree: TreeId::ROOT,
+            target_node: id,
+            data: None,
+        },
+    );
+    draw(cx);
+    assert_eq!(cx.accessibility_tree(window).focus, id);
+    cx.update(|w, cx| assert!(e.read(cx).row_focus[&200].is_focused(w)));
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.detail), Some(200));
+    assert!(host.clipboard.borrow().is_empty());
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    let actions = e.read_with(cx, |s, _| s.actions.clone());
+    cx.update(|w, cx| w.focus(&actions.read(cx).focus_handle(cx), cx));
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    assert!(actions.read_with(cx, |s, _| s.is_open()));
+    cx.simulate_keystrokes("escape");
+    draw(cx);
+    assert!(!actions.read_with(cx, |s, _| s.is_open()));
+}
