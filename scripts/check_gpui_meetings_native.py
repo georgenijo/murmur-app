@@ -27,7 +27,7 @@ def main():
     parser.add_argument('--binary', type=Path, help='Exact gallery QA binary, including one inside a review app bundle')
     parser.add_argument('--evidence', type=Path, help='Separate output directory for packaged/unbundled receipts')
     args = parser.parse_args()
-    evidence = args.evidence or target / 'meetings-native' 
+    evidence = args.evidence or target / 'meetings-native'
     evidence.mkdir(parents=True, exist_ok=True)
     source = evidence / 'observer.m'
     source.write_text(OBSERVER)

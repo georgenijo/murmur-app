@@ -128,3 +128,8 @@ Use `check_gpui_meetings_native.py --binary <review.app>/Contents/MacOS/meetings
 unbundled gate. Repeat it after the shared AppKit fix reaches this stack. No
 policy allowance, production identity or OS setting was changed. This dependency
 and the user-reserved interactive/VoiceOver pass remain explicit gates.
+
+Native review app, window recording, passing unbundled checks and failing packaged
+Writing Tools inventories: [immutable Fleet artifact](https://george-ubuntu.tail1fdfb0.ts.net:8844/a/art_20261107T085056Z_685f66750f/),
+ID `art_20261107T085056Z_685f66750f`. Product build `da2cbbad`; subsequent
+changes only document the blocker and expose packaged QA CLI arguments.
