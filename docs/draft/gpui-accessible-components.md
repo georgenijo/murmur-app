@@ -66,9 +66,16 @@ AccessKit's physical window coordinates. The editor fills that geometry during
 prepaint before its parent's synthetic AX children are emitted, including on
 first layout and after text/scroll changes. Consumer tests exercise non-ASCII
 substring and caret bounds and compare the caret to the painted editor layout.
-Multi-line and nonmonotonic bidirectional layouts require multiple visual runs;
-until supported, they expose AXValue without TextRun, TextSelection,
-SetTextSelection or ReplaceSelectedText. They do not advertise zero-geometry
+RTL/mixed-direction fallback and LTR character-bound tests use the pinned
+CoreText shaper directly in test windows, without a native platform or NSWindow;
+the default no-op test shaper cannot reproduce glyph reordering.
+Range geometry requires source-ordered shaped glyph byte indices across font
+runs, checked before calling `x_for_index`: that API can map reversed RTL glyphs
+to nondecreasing but incorrect character positions. Equal glyph indices within
+one cluster remain valid, preserving LTR combining characters and emoji.
+Multi-line, reordered RTL/mixed-direction and nonmonotonic layouts require
+multiple visual runs; until supported, they expose AXValue without TextRun,
+TextSelection, SetTextSelection or ReplaceSelectedText. They do not advertise zero-geometry
 range APIs. Masked fields continue to expose none of these values.
 
 The review-fixes patch applies after the existing port and accessibility patches;

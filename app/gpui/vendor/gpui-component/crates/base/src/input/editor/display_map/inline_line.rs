@@ -33,6 +33,23 @@ impl From<ShapedLine> for InputLine {
     }
 }
 impl InputLine {
+    pub(crate) fn has_ltr_glyph_order(&self) -> bool {
+        let ordered = |line: &ShapedLine| {
+            line.runs
+                .iter()
+                .flat_map(|run| &run.glyphs)
+                .map(|glyph| glyph.index)
+                .is_sorted()
+        };
+        match &self.content {
+            Content::Text(line) => ordered(line),
+            Content::Inline(fragments) => fragments
+                .iter()
+                .filter_map(|fragment| fragment.text.as_ref())
+                .all(ordered),
+        }
+    }
+
     pub(crate) fn inline(text: SharedString, fragments: Vec<InlineFragment>) -> Self {
         let width = fragments.last().map_or(px(0.), |f| f.x + f.width);
         Self {

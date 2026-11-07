@@ -38,7 +38,7 @@
          PrepaintState {
              token_elements,
              hitbox,
-@@ -6155,3 +6179,61 @@
+@@ -6155,3 +6179,68 @@
          );
      }
  }
@@ -53,6 +53,13 @@
 +    scale: f32,
 +) -> Option<gpui::accesskit::Node> {
 +    let line = layout.lines.first()?;
++    // x_for_index returns the first glyph with index >= the requested byte.
++    // RTL glyphs can therefore produce nondecreasing but incorrect positions.
++    // Check glyph order across font runs before using those positions. Equal
++    // indices are valid for multiple glyphs belonging to one LTR cluster.
++    if line.wrapped_lines.len() != 1 || !line.wrapped_lines[0].has_ltr_glyph_order() {
++        return None;
++    }
 +    let offsets = super::state::murmur_character_offsets(text);
 +    let positions = offsets
 +        .iter()
@@ -306,6 +313,32 @@
      }
      offsets.push(text.len());
      offsets
+--- a/crates/base/src/input/editor/display_map/inline_line.rs
++++ b/crates/base/src/input/editor/display_map/inline_line.rs
+@@ -33,6 +33,23 @@
+     }
+ }
+ impl InputLine {
++    pub(crate) fn has_ltr_glyph_order(&self) -> bool {
++        let ordered = |line: &ShapedLine| {
++            line.runs
++                .iter()
++                .flat_map(|run| &run.glyphs)
++                .map(|glyph| glyph.index)
++                .is_sorted()
++        };
++        match &self.content {
++            Content::Text(line) => ordered(line),
++            Content::Inline(fragments) => fragments
++                .iter()
++                .filter_map(|fragment| fragment.text.as_ref())
++                .all(ordered),
++        }
++    }
++
+     pub(crate) fn inline(text: SharedString, fragments: Vec<InlineFragment>) -> Self {
+         let width = fragments.last().map_or(px(0.), |f| f.x + f.width);
+         Self {
 --- a/crates/base/src/switch.rs
 +++ b/crates/base/src/switch.rs
 @@ -373,11 +373,11 @@

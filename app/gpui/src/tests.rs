@@ -818,6 +818,148 @@ mod accessibility {
         assert!(((boxes[1].x0 - boxes[0].x0) - f64::from(expected)).abs() < 1.);
         assert!((boxes[1].width() - boxes[0].width()).abs() < 1.);
     }
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn rtl_value_does_not_advertise_range_geometry(cx: &mut TestAppContext) {
+        assert_unsupported_direction(cx, &["אבג", "مرحبا"]);
+    }
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn mixed_direction_value_does_not_advertise_range_geometry(cx: &mut TestAppContext) {
+        assert_unsupported_direction(cx, &["abc אבג def", "abc مرحبا 日", "אבג abc"]);
+    }
+    #[cfg(target_os = "macos")]
+    fn shaped_context(cx: &TestAppContext) -> TestAppContext {
+        // The default NoopTextSystem never produces RTL glyph order. Use the
+        // production shaper directly, without constructing a native platform.
+        TestAppContext::build_with_text_system(
+            cx.dispatcher.clone(),
+            None,
+            std::sync::Arc::new(gpui_apple::AppleTextSystem::new()),
+        )
+    }
+    #[cfg(target_os = "macos")]
+    fn assert_unsupported_direction(cx: &mut TestAppContext, samples: &[&str]) {
+        let mut shaped = shaped_context(cx);
+        let (h, cx) = harness(&mut shaped, ChoiceKind::List);
+        focus(&h, cx, 2);
+        for &sample in samples {
+            cx.update(|w, cx| {
+                h.update(cx, |h, cx| {
+                    h.field.update(cx, |f, cx| f.set_value(sample, w, cx))
+                })
+            });
+            let t = tree(cx);
+            let (id, n) = named(&t, "Example text");
+            assert_eq!(n.value(), Some(sample));
+            assert!(n.supports_action(AccessibleAction::SetValue));
+            assert!(n.text_selection().is_none(), "{sample}");
+            assert!(!n.supports_action(AccessibleAction::SetTextSelection));
+            assert!(!n.supports_action(AccessibleAction::ReplaceSelectedText));
+            assert!(!t.nodes.iter().any(|(_, n)| n.role() == Role::TextRun));
+            let consumer = accesskit_consumer::Tree::new(t, true);
+            assert!(
+                !consumer
+                    .state()
+                    .node_by_tree_local_id(id, TreeId::ROOT)
+                    .unwrap()
+                    .supports_text_ranges(),
+                "{sample}"
+            );
+        }
+        // A later supported value must regain ranges on its first layout.
+        cx.update(|w, cx| {
+            h.update(cx, |h, cx| {
+                h.field.update(cx, |f, cx| f.set_value("abc", w, cx))
+            })
+        });
+        assert!(
+            named(&tree(cx), "Example text")
+                .1
+                .text_selection()
+                .is_some()
+        );
+    }
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    fn ltr_character_bounds_match_painted_carets(cx: &mut TestAppContext) {
+        let mut shaped = shaped_context(cx);
+        let (h, cx) = harness(&mut shaped, ChoiceKind::List);
+        focus(&h, cx, 2);
+        for sample in ["ASCII", "é日🙂", "e\u{301}👩‍💻Z"] {
+            cx.update(|w, cx| {
+                h.update(cx, |h, cx| {
+                    h.field.update(cx, |f, cx| f.set_value(sample, w, cx))
+                })
+            });
+            keys(cx, "cmd-left");
+            let t = tree(cx);
+            let (id, n) = named(&t, "Example text");
+            assert!(n.supports_action(AccessibleAction::SetTextSelection));
+            assert!(n.supports_action(AccessibleAction::ReplaceSelectedText));
+            let run_id = n.text_selection().unwrap().anchor.node;
+            let run = &t.nodes.iter().find(|(id, _)| *id == run_id).unwrap().1;
+            assert_eq!(
+                run.text_direction(),
+                Some(gpui::accesskit::TextDirection::LeftToRight)
+            );
+            let lengths = run.character_lengths().to_vec();
+            let consumer = accesskit_consumer::Tree::new(t, true);
+            let node = consumer
+                .state()
+                .node_by_tree_local_id(id, TreeId::ROOT)
+                .unwrap();
+            assert!(node.supports_text_ranges());
+            let scale = cx.update(|w, _| f64::from(w.scale_factor()));
+            let caret_x = |cx: &VisualTestContext| {
+                h.read_with(cx, |h, cx| {
+                    f64::from(f32::from(
+                        h.field.read(cx).cursor_layout().unwrap().0.origin.x,
+                    )) * scale
+                })
+            };
+            let mut start_x = caret_x(cx);
+            let (mut byte, mut utf16) = (0, 0);
+            for (index, length) in lengths.into_iter().enumerate() {
+                let end_byte = byte + usize::from(length);
+                let character = &sample[byte..end_byte];
+                let end_utf16 = utf16 + character.encode_utf16().count();
+                let mut range = node.document_range();
+                range.set_start(node.text_position_from_global_utf16_index(utf16).unwrap());
+                range.set_end(
+                    node.text_position_from_global_utf16_index(end_utf16)
+                        .unwrap(),
+                );
+                assert_eq!(range.text(), character);
+                let rects = range.bounding_boxes();
+                assert_eq!(rects.len(), 1);
+                assert!(
+                    rects[0].width() > 0. && rects[0].height() > 0.,
+                    "{character}"
+                );
+                let end = TextPosition {
+                    node: run_id,
+                    character_index: index + 1,
+                };
+                action(
+                    cx,
+                    id,
+                    AccessibleAction::SetTextSelection,
+                    Some(ActionData::SetTextSelection(TextSelection {
+                        anchor: end,
+                        focus: end,
+                    })),
+                );
+                let end_x = caret_x(cx);
+                assert!((rects[0].x0 - start_x).abs() < 1., "{character}");
+                assert!((rects[0].x1 - end_x).abs() < 1., "{character}");
+                start_x = end_x;
+                byte = end_byte;
+                utf16 = end_utf16;
+            }
+            assert_eq!(byte, sample.len());
+        }
+    }
     #[gpui::test]
     fn multiline_value_does_not_advertise_unimplemented_range_geometry(cx: &mut TestAppContext) {
         struct Multiline {

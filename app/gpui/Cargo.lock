@@ -4791,6 +4791,7 @@ dependencies = [
  "gpui",
  "gpui-base",
  "gpui-component",
+ "gpui_apple",
  "gpui_platform",
  "murmur-core",
  "serde_json",

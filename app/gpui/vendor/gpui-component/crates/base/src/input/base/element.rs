@@ -6190,6 +6190,13 @@ fn single_line_accessibility_run(
     scale: f32,
 ) -> Option<gpui::accesskit::Node> {
     let line = layout.lines.first()?;
+    // x_for_index returns the first glyph with index >= the requested byte.
+    // RTL glyphs can therefore produce nondecreasing but incorrect positions.
+    // Check glyph order across font runs before using those positions. Equal
+    // indices are valid for multiple glyphs belonging to one LTR cluster.
+    if line.wrapped_lines.len() != 1 || !line.wrapped_lines[0].has_ltr_glyph_order() {
+        return None;
+    }
     let offsets = super::state::murmur_character_offsets(text);
     let positions = offsets
         .iter()
