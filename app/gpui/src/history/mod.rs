@@ -56,6 +56,8 @@ impl DetailPages {
     }
 }
 pub struct History {
+    /// Heading supplied by a containing workspace; data ownership is unchanged.
+    pub title: &'static str,
     pub model: Model,
     host: Rc<dyn Host>,
     inbox: Inbox,
@@ -115,6 +117,7 @@ impl History {
         let actions =
             cx.new(|cx| Choices::new("More history actions", ChoiceKind::Dropdown, vec![], w, cx));
         let mut s = Self {
+            title: "History",
             model: Model::default(),
             host,
             inbox: Inbox::default(),
@@ -925,7 +928,7 @@ impl Render for History {
                 .flex_wrap()
                 .items_center()
                 .gap(px(8.))
-                .child("History")
+                .child(self.title)
                 .child(
                     div()
                         .w(px(200.))

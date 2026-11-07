@@ -7,13 +7,16 @@ mod events;
 pub mod field;
 pub mod gallery;
 pub mod history;
+pub mod home;
 pub mod motion;
+pub mod onboarding;
 pub mod overlay;
 pub mod preferences;
 pub mod preview;
 pub mod settings;
 pub mod toggle;
 pub mod tokens;
+mod workspace;
 
 pub use button::{Button, ButtonIntent, ButtonSize};
 pub use choice::{Choice, ChoiceKind, Choices, SelectionChanged};

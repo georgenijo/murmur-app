@@ -351,3 +351,8 @@ The behavior layer, complete 22-pane before/after audit, search/permission
 boundaries, UI-only persistence contract and verification map are documented in
 [Settings progressive disclosure](settings-progressive-disclosure.md). Geometry
 continues to use the #848 measurements above.
+
+The 3.5c native-parity Onboarding and Home views use the same controls and
+semantic roles; [their parity notes](../draft/gpui-onboarding-home.md) document
+wizard defaults, Home composition, synthetic review apps, golden coverage and
+the remaining native interactive/VoiceOver acceptance pass.

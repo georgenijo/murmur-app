@@ -275,3 +275,19 @@ Japanese IME, real dictation, Low Power Mode, physical notch, second display,
 Retina behavior, and the matched overlay baseline. Unit/GPUI goldens cannot
 claim those results. No new feature, retired-flow revival, or hybrid bridge is
 authorized by this inventory.
+
+
+## Layer 15 native-parity evidence
+
+[Onboarding and Home implementation/acceptance handoff](gpui-onboarding-home.md)
+covers N01–N03, U01, and Home's current monthly strip in U04. The Root interaction
+and AccessKit tests live in `app/gpui/src/onboarding/tests.rs` and
+`app/gpui/src/home/tests.rs`; gallery-gated QA hosts and the golden runner cover
+all eight steps, permission/model failures and Home states in Light, Dark,
+Midnight and Increase Contrast. Home composes the existing History owner.
+
+These are native-parity development checks, not retirement receipts. The
+interactive/VoiceOver and real service/permission flows above remain with the
+lead's separate QA pass and the Phase 2 adapters. The unused legacy
+`UsageDashboard` and personalization components are not mounted by React Home;
+the Insights/chart/manager work stays with 3.5e. No React or Tauri test is retired.
