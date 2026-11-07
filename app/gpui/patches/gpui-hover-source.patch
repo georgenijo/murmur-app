@@ -1,0 +1,137 @@
+diff --git a/src/elements/div.rs b/src/elements/div.rs
+index 9b34aa23..fbfa30e6 100644
+--- a/src/elements/div.rs
++++ b/src/elements/div.rs
+@@ -704,7 +704,21 @@ impl Interactivity {
+             self.hover_listener.is_none(),
+             "calling on_hover more than once on the same element is not supported"
+         );
++        self.hover_listener = Some(Box::new(move |inside, _, window, cx| {
++            listener(inside, window, cx)
++        }));
++    }
++
++    /// Observe layout reconciliation separately from delivered pointer events.
++    /// Pointer events are delivered even when the hover value is unchanged, so
++    /// an exit cannot be lost after a deferred layout callback changed it.
++    pub fn on_hover_with_source(
++        &mut self,
++        listener: impl Fn(&bool, HoverEventSource, &mut Window, &mut App) + 'static,
++    ) {
++        debug_assert!(self.hover_listener.is_none());
+         self.hover_listener = Some(Box::new(listener));
++        self.hover_listener_includes_events = true;
+     }
+ 
+     /// Sets how [`Self::on_hover`] responds to key presses while the mouse is stationary.
+@@ -1713,6 +1727,18 @@ pub trait StatefulInteractiveElement: InteractiveElement {
+         self
+     }
+ 
++    /// Observe hover with the source of each layout or pointer observation.
++    fn on_hover_with_source(
++        mut self,
++        listener: impl Fn(&bool, HoverEventSource, &mut Window, &mut App) + 'static,
++    ) -> Self
++    where
++        Self: Sized,
++    {
++        self.interactivity().on_hover_with_source(listener);
++        self
++    }
++
+     /// Sets how [`Self::on_hover`] responds to key presses while the mouse is stationary.
+     /// This affects only the hover listener, not hover styles or tooltips. The fluent API
+     /// equivalent to [`Interactivity::hover_listener_mode`].
+@@ -1786,6 +1812,17 @@ pub(crate) type BackGestureListener =
+ 
+ pub(crate) type ClickListener = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
+ 
++/// Origin of a hover observation. Layout callbacks can be deferred; pointer
++/// observations preserve the order of delivered input, even if the native
++/// pointer has moved again before dispatch.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum HoverEventSource {
++    /// A deferred observation from painting or layout.
++    Layout,
++    /// A delivered mouse move or window-exit event.
++    Pointer,
++}
++
+ /// Controls how [`StatefulInteractiveElement::on_hover`] responds to key presses while the mouse
+ /// is stationary.
+ #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+@@ -2231,7 +2268,8 @@ pub struct Interactivity {
+     pub(crate) click_listeners: Vec<ClickListener>,
+     pub(crate) aux_click_listeners: Vec<ClickListener>,
+     pub(crate) drag_listener: Option<DragListener>,
+-    pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
++    pub(crate) hover_listener: Option<Box<dyn Fn(&bool, HoverEventSource, &mut Window, &mut App)>>,
++    pub(crate) hover_listener_includes_events: bool,
+     pub(crate) hover_listener_mode: HoverListenerMode,
+     pub(crate) tooltip_builder: Option<TooltipBuilder>,
+     pub(crate) tooltip_show_delay: Option<Duration>,
+@@ -3202,12 +3240,18 @@ impl Interactivity {
+                     .clone();
+                 let hover_listener = Rc::new(hover_listener);
+                 let hover_listener_state = was_hovered.clone();
+-                let update_hover = move |is_hovered: bool, window: &mut Window, cx: &mut App| {
++                let includes_events = self.hover_listener_includes_events;
++                let update_hover = move |is_hovered: bool,
++                                         source: HoverEventSource,
++                                         window: &mut Window,
++                                         cx: &mut App| {
+                     let mut was_hovered = hover_listener_state.borrow_mut();
+-                    if is_hovered != *was_hovered {
++                    if is_hovered != *was_hovered
++                        || (includes_events && source == HoverEventSource::Pointer)
++                    {
+                         *was_hovered = is_hovered;
+                         drop(was_hovered);
+-                        hover_listener(&is_hovered, window, cx);
++                        hover_listener(&is_hovered, source, window, cx);
+                     }
+                 };
+                 let hover_listener_mode = self.hover_listener_mode;
+@@ -3218,7 +3262,7 @@ impl Interactivity {
+                     if is_hovered != *was_hovered.borrow() {
+                         let update_hover = update_hover.clone();
+                         window.defer(cx, move |window, cx| {
+-                            update_hover(is_hovered, window, cx);
++                            update_hover(is_hovered, HoverEventSource::Layout, window, cx);
+                         });
+                     }
+                 }
+@@ -3226,12 +3270,18 @@ impl Interactivity {
+                 window.on_mouse_event({
+                     let update_hover = update_hover.clone();
+                     let hitbox = hitbox.clone();
+-                    move |_: &MouseMoveEvent, phase, window, cx| {
++                    move |event: &MouseMoveEvent, phase, window, cx| {
+                         if phase == DispatchPhase::Bubble {
+-                            let is_hovered = has_mouse_down.borrow().is_none()
+-                                && !cx.has_active_drag()
+-                                && hover_listener_mode.is_hovered(&hitbox, window);
+-                            update_hover(is_hovered, window, cx);
++                            let is_hovered = if includes_events {
++                                // Report pointer presence, not drag/down hover
++                                // styling: those filters are not physical exits.
++                                hitbox.is_hovered_at(event.position, window)
++                            } else {
++                                has_mouse_down.borrow().is_none()
++                                    && !cx.has_active_drag()
++                                    && hover_listener_mode.is_hovered(&hitbox, window)
++                            };
++                            update_hover(is_hovered, HoverEventSource::Pointer, window, cx);
+                         }
+                     }
+                 });
+@@ -3240,7 +3290,7 @@ impl Interactivity {
+                 // clear hover on MouseExited.
+                 window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                     if phase == DispatchPhase::Bubble {
+-                        update_hover(false, window, cx);
++                        update_hover(false, HoverEventSource::Pointer, window, cx);
+                     }
+                 });
+             }

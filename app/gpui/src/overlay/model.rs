@@ -502,8 +502,8 @@ impl Model {
             }
         }
     }
-    pub fn close(&mut self, now: u64) {
-        self.hover_closed = true;
+    pub fn close(&mut self, now: u64, pointer_inside: bool) {
+        self.hover_closed = pointer_inside;
         self.hover_due = None;
         if self.phase == Phase::Open && self.suggestion.is_none() {
             self.leave_due = Some(now);
@@ -742,6 +742,9 @@ pub struct PointerPresence {
     inside: bool,
 }
 impl PointerPresence {
+    pub fn inside(&self) -> bool {
+        self.inside
+    }
     pub fn observe(&mut self, inside: bool) -> bool {
         let changed = self.inside != inside;
         self.inside = inside;
