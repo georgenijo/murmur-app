@@ -1,5 +1,26 @@
 # Decisions Log
 
+## 2026-11-06: Distinguish typed GPUI events from Tauri transport tokens (#998)
+
+**Decision:** Authored GPUI code remains in the repository-wide transport and
+restart source inventories. A native event adapter permits only the exact typed
+two-argument `gpui::Context::<T>::emit(cx, event)` call; Tauri emission APIs stay
+reserved to their existing targeted adapter. Exclude only the exact vendored
+GPUI Kit/AccessKit dependency roots and native Cargo output, following the
+existing Tao/build-output convention.
+
+**Why:** Upstream local entity events and animation variables use `emit` and
+`restart` without performing Tauri transport or process relaunch. Renaming the
+upstream API or exempting all native application code would obscure that
+boundary. Guard tests reject Tauri calls in the native adapter, maintained
+lookalike paths and Rust inclusions into excluded trees.
+
+**Status:** active (draft stack; independent review pending).
+
+**References:** #998, `scripts/check_targeted_events.py`,
+`app/gpui/src/events.rs`, [component contract](../draft/gpui-accessible-components.md)
+
+
 ## 2026-11-06: Isolate the reusable GPUI component workspace (#998)
 
 **Decision:** Build the native presentation layer in `app/gpui`, a separate

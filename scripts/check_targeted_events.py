@@ -13,11 +13,15 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTER = Path('app/src-tauri/src/events.rs')
+GPUI_ADAPTER = Path('app/gpui/src/events.rs')
 # Exact repository-relative build/dependency paths only. Nested maintained
-# modules named vendor/target/etc. must still be inspected. No third-party Rust
-# trees are currently exempted. .git is Git metadata, not a source directory.
+# modules named vendor/target/etc. must still be inspected. The exact vendored
+# Tao, GPUI Kit and AccessKit dependencies are third-party code, not Tauri
+# transport owners. Authored GPUI sources remain scanned. .git is metadata.
 EXCLUDED = {Path('.git'), Path('app/node_modules'), Path('node_modules'),
-            Path('app/src-tauri/target'), Path('target'), Path('app/src-tauri/patches/tao')}
+            Path('app/src-tauri/target'), Path('target'), Path('app/src-tauri/patches/tao'),
+            Path('app/gpui/target'), Path('app/gpui/vendor/gpui-component'),
+            Path('app/gpui/vendor/accesskit_macos')}
 
 
 def excluded(path: Path, root: Path) -> bool:
@@ -77,7 +81,7 @@ def mask_literals(source: str) -> str:
     return ''.join(chars)
 
 
-def violations(source: str, *, adapter: bool = False) -> list[int]:
+def violations(source: str, *, adapter: bool = False, gpui_adapter: bool = False) -> list[int]:
     code = mask_literals(source)
     # Preserve offsets when normalizing raw identifiers.
     code = re.sub(r'\br#(?=[^\W\d])', '  ', code)
@@ -85,6 +89,14 @@ def violations(source: str, *, adapter: bool = False) -> list[int]:
     for token in IDENTIFIER.finditer(code):
         name = token.group()
         if TRANSPORT.fullmatch(name):
+            # This exact two-argument UFCS call can only publish a typed local
+            # GPUI entity event. Never permit a method call or Tauri emitter
+            # through the native adapter; it remains in the source inventory.
+            local_gpui = (gpui_adapter and name == 'emit'
+                          and re.search(r'\bgpui\s*::\s*Context\s*::\s*<\s*T\s*>\s*::\s*$', code[:token.start()])
+                          and re.match(r'\s*\(\s*cx\s*,\s*event\s*\)', code[token.end():]))
+            if local_gpui:
+                continue
             if not adapter or name not in {'emit_to', 'emit_str_to'}:
                 offsets.add(token.start())
             elif not re.match(
@@ -251,7 +263,8 @@ def check_repository(root: Path) -> list[str]:
             continue
         source = path.read_text()
         failures.extend(f'{relative}:{line}: reserved transport token/import/target'
-                        for line in violations(source, adapter=relative == ADAPTER))
+                        for line in violations(source, adapter=relative == ADAPTER,
+                                               gpui_adapter=relative == GPUI_ADAPTER))
         failures.extend(f'{relative}:{line}: Rust inclusion outside scanned sources or nonliteral path'
                         for line in source_references(source, path, scanned))
     return failures
@@ -262,7 +275,7 @@ def main() -> int:
     if failures:
         print('\n'.join(failures), file=sys.stderr)
         return 1
-    print('repository Rust: emit/emit_* tokens and Emitter confined to the constrained sink adapter; source inclusions and Cargo roots checked')
+    print('repository Rust: Tauri emission confined to the constrained sink; typed GPUI entity adapter, source inclusions and Cargo roots checked')
     return 0
 
 

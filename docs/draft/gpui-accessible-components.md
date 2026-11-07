@@ -79,6 +79,16 @@ they retain subscriptions for the screen's lifetime.
 | `Choices(ChoiceKind::Navigation)` | Settings navigation: 32px rows, 8px radius, 10px inset, 14/20px medium type; selected surface without a shadow; manual selection with arrows plus Space/Return and a Tab exit. Layout-specific 240/56px rails belong to the main-window port. |
 | `Motion`, `DisplayPreferences`, `Palette` | Shared fast/standard, switch, popup and search-pulse policies; Reduce Motion collapses scale, travel and duration to the final state. Increase Contrast strengthens borders and secondary text; Reduce Transparency makes popup surfaces opaque. |
 
+`events.rs` contains one typed `gpui::Context::<T>::emit(cx, event)` adapter.
+The repository's Tauri transport guard permits only that exact UFCS call there;
+a method call, Tauri Emitter, extra payload argument or different receiver is
+still rejected. Authored native code, manifests and source inclusions remain
+scanned. Only the exact vendored GPUI Kit/AccessKit roots and native Cargo target
+output are added to the existing third-party/build-output inventory exclusions.
+Rust inclusion from maintained code into an excluded tree remains forbidden.
+The new guard tests exercise these rejection paths as well as the local event
+adapter. No Tauri event destination or restart exception is added.
+
 `tokens.rs` owns geometry and semantic role mapping; the default light/dark
 Sonic colors match `app/src/lib/appearance/palettes.ts`. `Theme::update` is the
 injection boundary for the future appearance port, not a new persistence owner.
@@ -181,7 +191,7 @@ component-level replacement exists.
   the two newer lint allowances are unnecessary after the direct source fixes.
   `check_restart_clippy.py` passes all **29** foreign/resolved fixtures.
 - Core dependency boundary, reference docs, Markdown links, rustfmt, and
-  **41 workflow-policy tests** pass. Existing dependency warnings are reported
+  **41 workflow-policy tests**, **17 transport-guard tests**, and **22 restart-guard tests** pass. Existing dependency warnings are reported
   by their owning upstream crates; no root lint suppression was added.
 
 The capture-helper publisher assumes its fixed workspace `target/debug` path,

@@ -132,7 +132,7 @@ impl Choices {
         self.active = Some(index);
         self.open = false;
         window.focus(&self.focus, cx);
-        cx.emit(SelectionChanged(self.choices[index].value.clone()));
+        crate::events::publish(cx, SelectionChanged(self.choices[index].value.clone()));
         cx.notify();
     }
     fn move_active(&mut self, backwards: bool) {
