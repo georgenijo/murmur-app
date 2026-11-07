@@ -881,7 +881,9 @@ mod knowledge_action {
     };
     pub fn admit(b: &Backend, a: &Action, _: u64) -> Accepted {
         if let Action::List { filter, offset } = a {
-            *b.knowledge_page.lock().unwrap_or_else(|p| p.into_inner()) = (filter.clone(), *offset);
+            let mut page = b.knowledge_page.lock().unwrap_or_else(|p| p.into_inner());
+            *page = (page.0.wrapping_add(1), filter.clone(), *offset);
+            b.events.publish("main", "native-services-changed", "null");
         }
         None
     }
@@ -893,12 +895,7 @@ mod knowledge_action {
     ) -> Result<Option<Snapshot>, String> {
         let mut snapshot = read::knowledge(b.clone()).await?;
         match a {
-            Action::List { filter, offset } => {
-                let result = b
-                    .call("list_knowledge", json!({"request":filter.wire(offset)}))
-                    .await?;
-                return Ok(Some(read::knowledge_page(b, result, offset).await?));
-            }
+            Action::List { .. } => return Ok(Some(snapshot)),
             Action::Collect { filter, action } => {
                 let mut offset = 0;
                 let mut bulk = None;

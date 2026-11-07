@@ -81,15 +81,19 @@ pub fn themes(b: Backend) -> Read<crate::themes::model::Snapshot> {
 }
 pub fn knowledge(b: Backend) -> Read<crate::knowledge::model::Snapshot> {
     Box::pin(async move {
-        let (filter, offset) = b
-            .knowledge_page
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let ((generation, filter, offset), revision) = {
+            let page = b.knowledge_page.lock().unwrap_or_else(|p| p.into_inner());
+            (page.clone(), b.events.revision())
+        };
         let result = b
             .call("list_knowledge", json!({"request":filter.wire(offset)}))
             .await?;
-        knowledge_page(&b, result, offset).await
+        let mut snapshot = knowledge_page(&b, result, offset).await?;
+        if b.knowledge_page.lock().unwrap_or_else(|p| p.into_inner()).0 != generation {
+            return Err("Knowledge query changed".into());
+        }
+        snapshot.revision = revision;
+        Ok(snapshot)
     })
 }
 pub async fn knowledge_page(

@@ -160,7 +160,7 @@ pub struct Backend {
     pub downloads: Arc<super::downloads::Downloads>,
     pub preview: Arc<super::microphone::Preview>,
     pub history_keys: Arc<super::history::Keys>,
-    pub knowledge_page: Arc<Mutex<(crate::knowledge::model::Filter, usize)>>,
+    pub knowledge_page: Arc<Mutex<(u64, crate::knowledge::model::Filter, usize)>>,
     pub knowledge_reviews: Arc<super::knowledge::Reviews>,
     pub meetings: Arc<super::meetings::Presentation>,
     pub diagnostics: Arc<super::diagnostics::Clocks>,

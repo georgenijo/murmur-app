@@ -160,10 +160,14 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
                 break;
             }
         }
-        let selected = selection
-            .id
-            .as_deref()
-            .or_else(|| status["sessionId"].as_str());
+        let selected = selection.id.as_deref().or_else(|| {
+            matches!(
+                status["phase"].as_str(),
+                Some("starting" | "recording" | "stopping" | "processing")
+            )
+            .then(|| status["sessionId"].as_str())
+            .flatten()
+        });
         let detail = if let Some(id) = selected {
             Some(detail(&b.call("get_meeting", json!({"id":id})).await?)?)
         } else {
