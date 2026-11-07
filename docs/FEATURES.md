@@ -209,6 +209,11 @@ sessions, supports copy/text export, and deletes one or all sessions locally.
 Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mic tab; recording expands with a red dot and a 7-bar waveform driven by real audio levels at 60fps via direct DOM writes; processing shows a spinner. Hover for 150ms opens a compact quick-settings card (intent-gated, so a graze doesn't pop it). Single click stops; double-click toggles locked mode. Non-activating — clicks never steal focus. Geometry comes entirely from Rust and re-derives on display changes. Settings provides a native live calibration preview with one-point controls, explicit Save/Cancel, Reset, and a bounded ±12pt durable offset.
 
 ### Settings — [reference/settings.md](reference/settings.md)
+
+The parallel native GPUI Settings workspace and its pane/host ownership contract
+are documented in [GPUI Settings](draft/gpui-settings.md). The shipping React
+workspace and its existing test suites remain active.
+
 Settings opens on **General**. The **Customize** page is a compact hub of
 independent destinations: **Text & vocabulary**, **Voice commands**, **App
 overrides**, and **Modes**. Every hub destination has

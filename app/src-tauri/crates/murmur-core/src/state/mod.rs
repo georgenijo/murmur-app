@@ -177,6 +177,36 @@ pub fn settings(mut v: Value) -> Result<Value> {
     p.insert("settingsVersion".into(), json!(7));
     Ok(v)
 }
+/// Validate a single explicit Settings edit without accepting the normalizer's
+/// fallback as the user's requested value. Callers serialize current-read,
+/// expected-revision comparison and publication under SOURCE_WRITE_LOCK.
+/// Unknown/metadata fields are not editable preferences. Other settings,
+/// including opaque future fields in the current version, remain preserved.
+pub fn settings_edit(current: &Value, key: &str, value: Value) -> Result<Value> {
+    if !settings_defaults().as_object().unwrap().contains_key(key)
+        || matches!(
+            key,
+            "microphoneIdMigrationComplete"
+                | "codeVocabLastScan"
+                | "customVocabulary"
+                | "voiceCommands"
+        )
+    {
+        return Err(Error::Invalid);
+    }
+    if settings(current.clone())? != *current {
+        return Err(Error::Invalid);
+    }
+    let mut candidate = current.clone();
+    let object = candidate.as_object_mut().ok_or(Error::Invalid)?;
+    object.insert(key.into(), value.clone());
+    let normalized = settings(candidate)?;
+    if normalized[key] != value {
+        return Err(Error::Invalid);
+    }
+    Ok(normalized)
+}
+
 /// Validate durable source state. Derived appearance caches are deliberately
 /// excluded: the renderer regenerates them from the complete source theme.
 pub fn source_size_limit(key: &str) -> usize {
@@ -297,6 +327,32 @@ pub(crate) fn file(key: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_settings_edits_reject_fallbacks_and_preserve_other_fields() {
+        let mut current = settings(settings_defaults()).unwrap();
+        current["opaqueFutureValue"] = json!({"nested":"synthetic"});
+        for (key, value) in [
+            ("autoPasteDelayMs", json!(501)),
+            ("soundCueVolume", json!("loud")),
+            ("model", json!("unknown")),
+            ("pasteLastShortcut", json!("command_q")),
+            ("capturePreRollMs", json!(301)),
+            ("meetingMaxSessions", json!(0)),
+            ("settingsVersion", json!(8)),
+            ("microphoneIdMigrationComplete", json!(false)),
+        ] {
+            assert!(settings_edit(&current, key, value).is_err(), "{key}");
+        }
+        let edited = settings_edit(&current, "autoPaste", json!(true)).unwrap();
+        let mut expected = current.clone();
+        expected["autoPaste"] = json!(true);
+        assert_eq!(edited, expected);
+        assert_eq!(settings(edited.clone()).unwrap(), edited);
+        let mut future = current.clone();
+        future["settingsVersion"] = json!(8);
+        assert!(settings_edit(&future, "autoPaste", json!(true)).is_err());
+    }
+
     #[test]
     fn legacy_appearance_parity_table() {
         // Literal oracles independently transcribed from fa2be313 themeLibrary.ts.

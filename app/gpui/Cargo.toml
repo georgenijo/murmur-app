@@ -177,6 +177,11 @@ name = "history-qa"
 path = "src/bin/history-qa.rs"
 required-features = ["gallery"]
 
+[[bin]]
+name = "settings-qa"
+path = "src/bin/settings-qa.rs"
+required-features = ["gallery"]
+
 [[test]]
 name = "native_tables"
 path = "tests/native_tables.rs"

@@ -11,9 +11,45 @@ import json
 import os
 import platform
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / 'app/gpui'
+
+
+def render_settings(target, output, policy_log):
+    results = {}
+    states = ('general', 'recording', 'customize', 'delivery', 'meetings', 'text', 'ai',
+              'modes', 'appearance', 'performance', 'diagnostics', 'ai-transcription',
+              'shortcuts', 'general-advanced', 'recording-advanced', 'delivery-advanced',
+              'meetings-advanced', 'text-advanced', 'ai-transcription-advanced', 'compact',
+              'search', 'loading', 'error')
+    for mode in ('light', 'dark', 'contrast'):
+        for state in states:
+            case = f'settings-{mode}-{state}'
+            paths = [output / f'{case}-{i}.png' for i in (1, 2)]
+            for path in paths:
+                env = {k: v for k, v in os.environ.items()
+                       if k not in ('MURMUR_DARK', 'MURMUR_CONTRAST', 'MURMUR_SETTINGS_STATE')}
+                env.update(MURMUR_GOLDEN=str(path), MURMUR_SETTINGS_STATE=state, TZ='UTC')
+                if mode == 'dark':
+                    env['MURMUR_DARK'] = '1'
+                if mode == 'contrast':
+                    env['MURMUR_CONTRAST'] = '1'
+                stdout = subprocess.check_output([str(target / 'debug/settings-qa')],
+                                                 env=env, cwd=UI, timeout=60, text=True)
+                check_inventory(stdout, 'MURMUR_SETTINGS_INVENTORY')
+                policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
+            if paths[0].read_bytes() != paths[1].read_bytes():
+                raise AssertionError(f'non-deterministic {case}')
+            results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+            print(f'PASS {case}: identical offscreen Metal images')
+        if len({results[f'settings-{mode}-{s}'] for s in
+                ('general', 'recording', 'delivery', 'meetings', 'text', 'search', 'loading', 'error')}) != 8:
+            raise AssertionError('Settings panes/states rendered identically')
+    if len({results[f'settings-{mode}-general'] for mode in ('light', 'dark', 'contrast')}) != 3:
+        raise AssertionError('Settings appearance variants rendered identically')
+    return results
 
 
 def check_inventory(stdout, prefix):
@@ -51,6 +87,15 @@ def main():
     print('PASS zero-image launch baseline and native linkage policy')
     policy_log = baseline.splitlines()
     results = {}
+    if sys.argv[1:] == ['--settings-only']:
+        results = render_settings(target, output, policy_log)
+        (output / 'settings-webkit-policy.log').write_text('\n'.join(policy_log) + '\n')
+        (output / 'settings-receipt.json').write_text(json.dumps({
+            'os': platform.platform(), 'comparison': 'same-host strict byte equality',
+            'sha256': results}, indent=2) + '\n')
+        return
+    if sys.argv[1:]:
+        raise SystemExit('usage: check_gpui_goldens.py [--settings-only]')
     cases = [(mode, state) for mode in ('light', 'dark', 'contrast')
              for state in ('rest', 'hover', 'pressed', 'button', 'toggle', 'field', 'dropdown', 'popup', 'list', 'navigation')]
     for mode, state in cases:
@@ -201,6 +246,9 @@ def main():
             raise AssertionError('History states rendered identically')
     if len({results[f'history-{mode}-list'] for mode in ('light', 'dark', 'contrast')}) != 3:
         raise AssertionError('History appearance variants rendered identically')
+    results.update(render_settings(target, output, policy_log))
+
+
     (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')
     (output / 'receipt.json').write_text(json.dumps({
         'os': platform.platform(), 'gpui': '654efae441bc8eb117d0042bb28cd7cf3570bdc9',

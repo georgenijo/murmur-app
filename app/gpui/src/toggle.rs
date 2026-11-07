@@ -9,6 +9,8 @@ pub struct Toggle {
     checked: bool,
     disabled: bool,
     palette: Option<Palette>,
+    focus: Option<FocusHandle>,
+    scroll_parent: Option<ScrollHandle>,
 }
 impl Toggle {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>, checked: bool) -> Self {
@@ -26,6 +28,8 @@ impl Toggle {
             checked,
             disabled: false,
             palette: None,
+            focus: None,
+            scroll_parent: None,
         }
     }
     /// Window-local roles (utility surfaces do not follow the main theme).
@@ -38,7 +42,12 @@ impl Toggle {
         self
     }
     pub fn track_focus(mut self, f: &FocusHandle) -> Self {
+        self.focus = Some(f.clone());
         self.base = self.base.track_focus(f);
+        self
+    }
+    pub fn with_scroll_parent(mut self, parent: &ScrollHandle) -> Self {
+        self.scroll_parent = Some(parent.clone());
         self
     }
     pub fn on_change(mut self, f: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
@@ -47,7 +56,25 @@ impl Toggle {
     }
 }
 impl RenderOnce for Toggle {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let reveal = if let Some(parent) = self.scroll_parent.take() {
+            let focus = self.focus.clone().unwrap_or_else(|| {
+                window
+                    .use_keyed_state(self.id.clone(), cx, |_, cx| cx.focus_handle())
+                    .read(cx)
+                    .clone()
+            });
+            self.base = self.base.track_focus(&focus);
+            Some(crate::data_components::focus_reveal(
+                focus,
+                Some(parent),
+                None,
+                window,
+                cx,
+            ))
+        } else {
+            None
+        };
         let p = self.palette.unwrap_or_else(|| Palette::get(cx));
         let policy = crate::motion::Motion::Toggle.resolve(cx.reduce_motion());
         let position = gpui_base::transition(
@@ -58,6 +85,8 @@ impl RenderOnce for Toggle {
             cx,
         );
         self.base
+            .relative()
+            .children(reveal)
             .disabled(self.disabled)
             .flex()
             .items_center()
