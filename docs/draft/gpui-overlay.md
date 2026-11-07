@@ -190,7 +190,8 @@ An explicit disclosure or Escape close samples the current native painted
 surface and synchronizes stored presence before closing. Only a pointer inside
 at that instant suppresses hover for its current visit; an outside AX/keyboard
 close cannot claim the next visit before the watchdog samples again. A real
-outside sample or delivered pointer exit releases suppression, and another
+outside sample or delivered pointer exit with changed global pointer coordinates
+releases suppression, and another
 explicit disclosure activation can reopen immediately.
 
 The additive `gpui-hover-source.patch` distinguishes deferred layout observations
@@ -487,3 +488,15 @@ and inventory fields are unchanged; inventory is terminal and runs once per QA
 host process.
 A bounded native diagnostic (`MURMUR_WEBKIT_QA_SECONDS=3 overlay-qa`) checks the
 same policy before quitting, without HID input or altering accessibility.
+
+The close visit retains its last global logical pointer position. An exit at
+that same position (including a resize-generated AppKit tracking exit) cannot
+rearm hover; inside observations update that position without releasing the
+visit. The watchdog and deferred layout observations read the OS cursor, while
+delivered events retain their own coordinates so a fast exit/re-entry between
+samples still releases suppression. `stationary_pointer_exit_notifications_cannot_undo_disclosure_close`
+drives twelve disclosure toggles, a stationary exit/re-entry notification, and
+33 ms pointer observations at a fixed screen position for more than 1.2 seconds, with Reduce Motion on and off.
+The React overlay's `useOverlayExpansion` only exposes hover entry/leave; it has
+no explicit disclosure toggle or Escape-close path to suppress. Its ordinary
+150 ms entry dwell and leave behavior are unchanged.

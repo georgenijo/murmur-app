@@ -1815,12 +1815,12 @@ pub(crate) type ClickListener = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 
 /// Origin of a hover observation. Layout callbacks can be deferred; pointer
 /// observations preserve the order of delivered input, even if the native
 /// pointer has moved again before dispatch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HoverEventSource {
     /// A deferred observation from painting or layout.
     Layout,
-    /// A delivered mouse move or window-exit event.
-    Pointer,
+    /// A delivered mouse move or window-exit event, with window-local position.
+    Pointer(Point<Pixels>),
 }
 
 /// Controls how [`StatefulInteractiveElement::on_hover`] responds to key presses while the mouse
@@ -3247,7 +3247,7 @@ impl Interactivity {
                                          cx: &mut App| {
                     let mut was_hovered = hover_listener_state.borrow_mut();
                     if is_hovered != *was_hovered
-                        || (includes_events && source == HoverEventSource::Pointer)
+                        || (includes_events && matches!(source, HoverEventSource::Pointer(_)))
                     {
                         *was_hovered = is_hovered;
                         drop(was_hovered);
@@ -3281,16 +3281,26 @@ impl Interactivity {
                                     && !cx.has_active_drag()
                                     && hover_listener_mode.is_hovered(&hitbox, window)
                             };
-                            update_hover(is_hovered, HoverEventSource::Pointer, window, cx);
+                            update_hover(
+                                is_hovered,
+                                HoverEventSource::Pointer(event.position),
+                                window,
+                                cx,
+                            );
                         }
                     }
                 });
 
                 // The pointer can leave the window without a final MouseMove, so also
                 // clear hover on MouseExited.
-                window.on_mouse_event(move |_: &MouseExitEvent, phase, window, cx| {
+                window.on_mouse_event(move |event: &MouseExitEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble {
-                        update_hover(false, HoverEventSource::Pointer, window, cx);
+                        update_hover(
+                            false,
+                            HoverEventSource::Pointer(event.position),
+                            window,
+                            cx,
+                        );
                     }
                 });
             }
