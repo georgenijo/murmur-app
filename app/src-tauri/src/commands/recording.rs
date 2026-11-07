@@ -3638,6 +3638,60 @@ pub(crate) fn configure_dictation_for_host(
     })
 }
 
+#[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+pub(crate) fn configure_dictation_transaction<T>(
+    options: serde_json::Value,
+    previous: serde_json::Value,
+    state: &State,
+    app_handle: &crate::host::Context,
+    publish: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    configure_dictation_transaction_with_effects(
+        options,
+        previous,
+        state,
+        Some(app_handle),
+        publish,
+        |model, guard| spawn_idle_model_preparation(app_handle.clone(), model, Some(guard)),
+    )
+}
+
+#[cfg(any(test, all(feature = "native-host", not(feature = "tauri-host"))))]
+fn configure_dictation_transaction_with_effects<T>(
+    options: serde_json::Value,
+    previous: serde_json::Value,
+    state: &State,
+    app_handle: Option<&crate::host::Context>,
+    publish: impl FnOnce() -> Result<T, String>,
+    idle_prepare: impl FnOnce(String, SharedBackendChangeGuard),
+) -> Result<T, String> {
+    // Keep the model-change lease here until shortcut registration and source
+    // publication commit. No warmup worker may take it before rollback settles.
+    let mut pending = None;
+    configure_dictation_with_effects(options, state, app_handle, |model, guard| {
+        pending = Some((model, guard));
+    })?;
+    match publish() {
+        Ok(published) => {
+            if let Some((model, guard)) = pending {
+                idle_prepare(model, guard);
+            }
+            Ok(published)
+        }
+        Err(error) => {
+            let guard = pending.map(|(_, guard)| guard);
+            if configure_dictation_with_change_guard(previous, state, app_handle, |_, _| {}, guard)
+                .is_err()
+            {
+                // Do not expose settings, paths or backend error content.
+                tracing::error!(target: "pipeline", "native dictation configuration rollback unavailable");
+                return Err(format!("{error}; dictation rollback unavailable"));
+            }
+            Err(error)
+        }
+    }
+}
+
 // The command and regression tests execute the same configuration body. Tests
 // omit native notifications and inject only the queued preparation effect.
 fn configure_dictation_with_effects(
@@ -3645,6 +3699,16 @@ fn configure_dictation_with_effects(
     state: &State,
     app_handle: Option<&crate::host::Context>,
     idle_prepare: impl FnOnce(String, SharedBackendChangeGuard),
+) -> Result<serde_json::Value, String> {
+    configure_dictation_with_change_guard(options, state, app_handle, idle_prepare, None)
+}
+
+fn configure_dictation_with_change_guard(
+    options: serde_json::Value,
+    state: &State,
+    app_handle: Option<&crate::host::Context>,
+    idle_prepare: impl FnOnce(String, SharedBackendChangeGuard),
+    mut model_change_guard: Option<SharedBackendChangeGuard>,
 ) -> Result<serde_json::Value, String> {
     crate::audio::prepare::configuration_changed();
     crate::launch::frontend_configuring();
@@ -3728,9 +3792,10 @@ fn configure_dictation_with_effects(
     let staged_vocabulary =
         stage_vocabulary_configuration(&options, &dictation, &repository_commands)?;
 
-    let mut model_change_guard = if model
+    if model
         .as_deref()
         .is_some_and(|requested| requested != dictation.model_name)
+        && model_change_guard.is_none()
     {
         if !state.benchmark.try_start_shared_backend_change() {
             return Err(
@@ -3741,13 +3806,11 @@ fn configure_dictation_with_effects(
         if let Some(app) = app_handle {
             crate::meeting_suggestions::busy_changed(app);
         }
-        Some(SharedBackendChangeGuard(
+        model_change_guard = Some(SharedBackendChangeGuard(
             state.benchmark.clone(),
             app_handle.cloned(),
-        ))
-    } else {
-        None
-    };
+        ));
+    }
 
     // Command phrases and vocabulary aliases form one conflict domain. Commit
     // them together only after the combined requested state has validated.
@@ -6779,6 +6842,95 @@ pub(crate) mod tests {
                 overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
 
             }
+    }
+
+    #[test]
+    fn failed_native_publication_restores_model_before_coreml_warmup() {
+        for failure in [
+            "Settings publication unavailable",
+            "Configuration unavailable",
+        ] {
+            let state = warmup_test_state();
+            let model = "parakeet-tdt-0.6b-v3-coreml";
+            let result = configure_dictation_transaction_with_effects(
+                serde_json::json!({"disabled":false,"model":model}),
+                serde_json::json!({"disabled":false,"model":"base.en"}),
+                &state,
+                None,
+                || {
+                    // Fail after selection, at the point where an installed
+                    // Core ML model previously handed its lease to warmup.
+                    assert_eq!(
+                        state.app_state.dictation.lock_or_recover().model_name,
+                        model
+                    );
+                    assert!(!state.benchmark.try_start_shared_backend_change());
+                    Err::<(), _>(failure.to_owned())
+                },
+                |_, _| panic!("uncommitted model must not start warmup"),
+            );
+            assert_eq!(result.unwrap_err(), failure);
+            assert_eq!(
+                state.app_state.dictation.lock_or_recover().model_name,
+                "base.en"
+            );
+            assert!(
+                !state.benchmark.is_busy(),
+                "rollback must release the model lease"
+            );
+        }
+    }
+
+    #[test]
+    fn native_model_warmup_starts_only_after_publication_commits() {
+        let state = warmup_test_state();
+        let model = "parakeet-tdt-0.6b-v3-coreml";
+        let committed = std::cell::Cell::new(false);
+        let mut queued = None;
+        configure_dictation_transaction_with_effects(
+            serde_json::json!({"disabled":false,"model":model}),
+            serde_json::json!({"disabled":false,"model":"base.en"}),
+            &state,
+            None,
+            || {
+                assert!(state.benchmark.is_busy());
+                committed.set(true);
+                Ok(())
+            },
+            |name, guard| {
+                assert!(committed.get());
+                queued = Some((IdleModelPreparation::claim(&state, name).unwrap(), guard));
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            state.app_state.dictation.lock_or_recover().model_name,
+            model
+        );
+        assert!(
+            state.benchmark.is_busy(),
+            "committed warmup must retain the lease"
+        );
+        drop(queued);
+        assert!(!state.benchmark.is_busy());
+    }
+
+    #[test]
+    fn native_model_rollback_failure_is_surfaced() {
+        let state = warmup_test_state();
+        let result = configure_dictation_transaction_with_effects(
+            serde_json::json!({"disabled":false,"model":"parakeet-tdt-0.6b-v3-coreml"}),
+            serde_json::json!({"model":"invalid-model"}),
+            &state,
+            None,
+            || Err::<(), _>("Settings publication unavailable".to_owned()),
+            |_, _| panic!("failed transaction must not start warmup"),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Settings publication unavailable; dictation rollback unavailable"
+        );
+        assert!(!state.benchmark.is_busy());
     }
 
     #[test]
