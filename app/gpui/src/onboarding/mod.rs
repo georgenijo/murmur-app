@@ -535,6 +535,11 @@ impl Onboarding {
         }
         cx.notify();
     }
+    /// Enter the real cancellation path without native UI input in QA.
+    #[cfg(feature = "gallery")]
+    pub fn fixture_cancel_download(&mut self, cx: &mut Context<Self>) {
+        self.cancel_download(cx);
+    }
     fn cancel_download(&mut self, cx: &mut Context<Self>) {
         let Some(Action::Download(id)) = self.operation.clone() else {
             return;
@@ -544,10 +549,15 @@ impl Onboarding {
         }
         self.cancelling = true;
         if !self.model.pending {
+            // Cancelling is still part of the failed download. Keep its
+            // explanation and disabled fallback choices until the terminal
+            // receipt, rather than hiding them as if a retry had begun.
+            let problem = self.model.problem;
             if self.model.begin().is_none() {
                 self.cancelling = false;
                 return;
             }
+            self.model.problem = problem;
             self.authority.sync(&self.model);
         }
         let ticket = self.model.ticket();
@@ -645,6 +655,7 @@ impl Render for Onboarding {
                     .child(crate::data_components::focus_reveal(
                         self.heading.clone(),
                         Some(self.scroll.clone()),
+                        None,
                         w,
                         cx,
                     ))
@@ -653,12 +664,24 @@ impl Render for Onboarding {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             )
-            .child(self.step.subtitle());
+            .child(text!(self.step.subtitle()));
         if self.model.snapshot.is_none() {
-            body = body.child("Loading setup…");
+            body = body.child(text!("Loading setup…"));
         }
         if let Some(problem) = self.model.problem {
-            body=body.child(div().id("setup-error").role(Role::Alert).aria_label(problem.message()).text_color(p.danger).child(if self.step==Step::Done {"Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model."}else{problem.message()}));
+            let message = if self.step == Step::Done {
+                "Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model."
+            } else {
+                problem.message()
+            };
+            body = body.child(
+                div()
+                    .id("setup-error")
+                    .role(Role::Alert)
+                    .aria_label(message)
+                    .text_color(p.danger)
+                    .child(message),
+            );
         }
         if self.model.snapshot.is_none() && self.model.problem.is_some() {
             let e = cx.entity();
@@ -725,7 +748,7 @@ impl Render for Onboarding {
                 Permission::Calendar => "Calendar details stay on this Mac.",
                 _ => "",
             };
-            body = body.child(div().text_color(p.muted).child(detail));
+            body = body.child(div().text_color(p.muted).child(text!(detail)));
             if self
                 .model
                 .snapshot
@@ -733,7 +756,7 @@ impl Render for Onboarding {
                 .is_some_and(|s| s.needs_relaunch)
                 && permission == Permission::SystemAudio
             {
-                body=body.child("macOS lists Murmur as allowed, but the permission has not reached this session yet. Quit and reopen Murmur, then check again.");
+                body=body.child(text!("macOS lists Murmur as allowed, but the permission has not reached this session yet. Quit and reopen Murmur, then check again."));
             }
             if access == Access::Denied && permission != Permission::SystemAudio
                 || permission == Permission::Accessibility
@@ -777,16 +800,18 @@ impl Render for Onboarding {
             }
         }
         if self.step == Step::Welcome {
-            body=body.child("Setup covers permissions, an offline transcription model, and your recording shortcut.");
+            body=body.child(text!("Setup covers permissions, an offline transcription model, and your recording shortcut."));
         }
         if self.step == Step::Model
             && let Some(snapshot) = &self.model.snapshot
         {
             if let Some(summary) = &snapshot.hardware_summary {
-                body = body.child(summary.clone());
+                body = body.child(text!(summary.clone()));
             }
             if snapshot.catalog_error {
-                body = body.child("Could not check installed models. Retry to continue setup.");
+                body = body.child(text!(
+                    "Could not check installed models. Retry to continue setup."
+                ));
             }
             if let Some(models) = &snapshot.catalog {
                 for id in CURATED.iter().copied().chain(
@@ -837,23 +862,22 @@ impl Render for Onboarding {
                                         },
                                     ),
                                 )
-                                .child(
-                                    div()
-                                        .text_color(p.muted)
-                                        .text_size(px(12.))
-                                        .child(model.detail.clone()),
-                                ),
+                                .child(div().text_color(p.muted).text_size(px(12.)).child(text!(
+                                    id = SharedString::from(format!("model-detail-{}", model.id)),
+                                    model.detail.clone()
+                                ))),
                         );
                     }
                 }
             }
             if snapshot.warned_models.contains(&self.selected_model) {
-                body =
-                    body.child("Higher memory — choose a smaller model if other apps need memory.");
+                body = body.child(text!(
+                    "Higher memory — choose a smaller model if other apps need memory."
+                ));
             }
             if self.downloading() {
                 let e = cx.entity();
-                body=body.child(Progress::new("Model installation in progress",snapshot.download_percent.map(|v|f64::from(v)/100.))).child(self.body_button("cancel-download",if self.cancelling{"Cancelling…"}else{"Cancel download"}).disabled(self.cancelling).on_click(move|_,_,cx|e.update(cx,|s,cx|s.cancel_download(cx)))).child("Cancel to go back or choose another model. Retry resumes supported downloads.");
+                body=body.child(Progress::new("Model installation in progress",snapshot.download_percent.map(|v|f64::from(v)/100.))).child(self.body_button("cancel-download",if self.cancelling{"Cancelling…"}else{"Cancel download"}).disabled(self.cancelling).on_click(move|_,_,cx|e.update(cx,|s,cx|s.cancel_download(cx)))).child(text!("Cancel to go back or choose another model. Retry resumes supported downloads."));
             }
             if self.model.problem.is_some() && self.selected_model == CURATED[0] {
                 for (id, label) in [
@@ -876,7 +900,7 @@ impl Render for Onboarding {
         if self.step == Step::Hotkey {
             body = body.child(self.modes.clone()).child(self.keys.clone());
             if self.trigger_key.starts_with('f') && self.trigger_key[1..].parse::<u8>().is_ok() {
-                body=body.child("On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur does not suppress the key's normal system or app action.");
+                body=body.child(text!("On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur does not suppress the key's normal system or app action."));
             }
         }
         if self.step == Step::Done {
@@ -896,24 +920,27 @@ impl Render for Onboarding {
                     ),
                     (Permission::Calendar, "Optional — name meetings manually"),
                 ] {
-                    body = body.child(format!(
-                        "{} · {}",
-                        p.label(),
-                        if s.permissions[p.index()] == Access::Granted {
-                            "Granted"
-                        } else {
-                            missing
-                        }
+                    body = body.child(text!(
+                        id = SharedString::from(format!("permission-summary-{p:?}")),
+                        format!(
+                            "{} · {}",
+                            p.label(),
+                            if s.permissions[p.index()] == Access::Granted {
+                                "Granted"
+                            } else {
+                                missing
+                            }
+                        )
                     ));
                 }
-                body = body.child(format!(
+                body = body.child(text!(format!(
                     "Model · {}",
                     if s.installed(&self.selected_model) {
                         "Installed"
                     } else {
                         "Not verified"
                     }
-                ));
+                )));
             }
             let label = crate::settings::schema::ROWS
                 .iter()
@@ -928,7 +955,7 @@ impl Render for Onboarding {
                     }
                 })
                 .unwrap_or(&self.trigger_key);
-            body = body.child("Try it out").child(format!(
+            body = body.child(text!("Try it out")).child(text!(format!(
                 "{} {label}{}. Your words are transcribed and copied to the clipboard.",
                 if self.recording_mode == "double_tap" {
                     "Double-tap"
@@ -940,7 +967,7 @@ impl Render for Onboarding {
                     "both" => " and speak, then release (or double-tap to toggle)",
                     _ => " and speak, then release",
                 }
-            ));
+            )));
         }
         let mut nav = div()
             .id("setup-actions")

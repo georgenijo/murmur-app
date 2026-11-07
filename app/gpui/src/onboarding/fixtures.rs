@@ -73,6 +73,7 @@ pub struct FixtureHost {
     pub stops: Rc<Cell<usize>>,
     pub fail: Cell<bool>,
     pub hold: Cell<bool>,
+    pub hold_cancel: Cell<bool>,
     pub held: RefCell<Vec<(Request, Inbox)>>,
     pub root: Option<std::path::PathBuf>,
 }
@@ -85,6 +86,7 @@ impl Default for FixtureHost {
             stops: Default::default(),
             fail: Cell::new(false),
             hold: Cell::new(false),
+            hold_cancel: Cell::new(false),
             held: RefCell::new(vec![]),
             root: None,
         }
@@ -116,7 +118,9 @@ impl Host for FixtureHost {
         }
         self.calls.borrow_mut().push("request");
         self.actions.borrow_mut().push(r.action.clone());
-        if self.hold.get() {
+        if self.hold.get()
+            || self.hold_cancel.get() && matches!(r.action, Action::CancelDownload(_))
+        {
             self.held.borrow_mut().push((r, inbox));
             return;
         }

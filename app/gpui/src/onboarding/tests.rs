@@ -335,6 +335,93 @@ mod ax {
         );
         draw(cx);
     }
+    fn static_text(t: &TreeUpdate, text: &str) {
+        assert_eq!(t.nodes.iter().filter(|(_, n)| n.role() == gpui::accesskit::Role::Label && n.value() == Some(text)).count(), 1, "missing or duplicated static text: {text}");
+    }
+    #[gpui::test]
+    fn prose_and_done_summary_survive_fresh_ax_reads(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness(cx);
+        static_text(
+            &tree(cx),
+            "Setup covers permissions, an offline transcription model, and your recording shortcut.",
+        );
+        for step in Step::ALL {
+            e.update(cx, |s, cx| s.visit(step, cx));
+            static_text(&tree(cx), step.subtitle());
+        }
+        for _ in 0..2 {
+            let t = tree(cx);
+            for text in [
+                "Microphone · Not granted — enable later in Settings",
+                "Accessibility · Not granted — shortcut unavailable outside Murmur",
+                "System audio · Optional — enable later in Meetings",
+                "Calendar · Optional — name meetings manually",
+                "Model · Installed",
+                "Try it out",
+                "Hold Left Shift and speak, then release. Your words are transcribed and copied to the clipboard.",
+            ] {
+                static_text(&t, text);
+            }
+        }
+        e.update(cx, |s, cx| s.visit(Step::Accessibility, cx));
+        static_text(
+            &tree(cx),
+            "Turn on Murmur in System Settings, then come back. This screen updates automatically.",
+        );
+        e.update(cx, |s, cx| s.visit(Step::Model, cx));
+        static_text(
+            &tree(cx),
+            "Fastest on Apple Silicon — multilingual, Apple Neural Engine",
+        );
+    }
+    #[gpui::test]
+    fn held_cancel_fixture_retains_disabled_fallbacks_until_receipt(cx: &mut TestAppContext) {
+        let (e, h, cx) = harness(cx);
+        e.update(cx, |s, cx| s.visit(Step::Model, cx));
+        draw(cx);
+        h.hold_cancel.set(true);
+        // Same failed active download as cancel-error in onboarding-qa.
+        h.hold.set(true);
+        e.update(cx, |s, cx| {
+            s.selected_model = CURATED[0].into();
+            s.activate(cx);
+            s.model.pending = false;
+            s.model.problem = Some(Problem::Unavailable);
+        });
+        h.hold.set(false);
+        let t = tree(cx);
+        click(cx, named(&t, "Cancel download"));
+        for _ in 0..2 {
+            let t = tree(cx);
+            for label in [
+                "Cancelling…",
+                "Back",
+                "Use Whisper base",
+                "Use CPU Parakeet",
+            ] {
+                let id = named(&t, label);
+                let node = &t.nodes.iter().find(|(i, _)| *i == id).unwrap().1;
+                assert!(
+                    node.is_disabled(),
+                    "{label} enabled before cancellation receipt"
+                );
+            }
+            assert!(e.read_with(cx, |s, _| s.cancelling && s.downloading()));
+        }
+        let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+        assert!(matches!(r.action, Action::CancelDownload(_)));
+        let mut snapshot = h.state.borrow().clone();
+        snapshot.revision = r.ticket.revision;
+        inbox
+            .publish(Event::Reply {
+                ticket: r.ticket,
+                result: Ok(snapshot),
+            })
+            .unwrap_or_else(|_| panic!("reply"));
+        draw(cx);
+        assert!(!e.read_with(cx, |s, _| s.cancelling || s.downloading()));
+    }
+
     #[gpui::test]
     fn failed_initial_read_has_keyboard_retry_and_recovers(cx: &mut TestAppContext) {
         let (e, h, cx) = harness(cx);

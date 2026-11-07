@@ -106,3 +106,38 @@ sub-agent starts no delegates, watches no PR, never merges, and leaves independe
 Sol high review to the lead. Exact Mac mini test counts, captures, source/binary
 hashes, native AX observations and remaining CI state belong in the draft PR
 and immutable Fleet artifact.
+
+## H16/H17 native QA corrections
+
+Onboarding and Home prose uses GPUI `Text`/`text!` static-text nodes rather than
+raw string children (which intentionally draw without AX nodes). Repeated model,
+permission-summary and checklist rows have stable distinct IDs. Monthly totals
+are one text value, “This month: 420 words, 7 dictations” for the synthetic fixture;
+existing status/control labels keep their own announcements. The audit also fixes
+the shared Settings pane prose macro, so higher stack layers inherit accessible
+runtime advice and summaries. No global string rendering behavior changes.
+
+Shared `gpui_base::Root` handles an unhandled Tab/Shift-Tab when its own window
+has no focused target. It uses the existing focus traversal/trap policy and never
+focuses content merely on window activation. The Home QA host no longer seeds
+focus before its headless key sequence, so tests exercise the same entry path.
+
+For a sustained synthetic cancellation state, launch gallery-only `onboarding-qa`
+with `MURMUR_ONBOARDING_STATE=cancel-error MURMUR_ONBOARDING_HOLD_CANCEL=1`.
+The preset starts cancellation and retains its synthetic reply: “Cancelling…”
+remains disabled, along with Back, model choices and both fallbacks. Cancellation
+retains the download failure explanation until its terminal receipt, keeping
+those disabled fallbacks visible. Close only
+the task's own test process to end the held fixture. No production host changes.
+
+Follow-up verification after merging `gpui/14-settings` at `6dfa0169` and
+passing `None` for onboarding’s retained focus-reveal state: on the Mac mini
+(Rust 1.98.1, fresh
+`~/Builds/murmur-gpui-100`, capture helpers built first): 143 regular Rust tests,
+228 AccessKit-enabled tests, 15 native glue tests, strict all-target/gallery
+Clippy and formatting passed. Twenty-five exact-PID native AX assertions verified
+static-text values (including two fresh Done/total reads) and disabled controls
+in the held cancellation preset, without activation, focus requests or HID.
+Tab entry was exercised in GPUI test windows; no desktop keyboard input was sent.
+The shared Cargo cache was preserved; checks used a private build directory after
+shared-cache build-script contamination was detected.

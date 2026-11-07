@@ -170,13 +170,6 @@ fn main() {
                 // actions settle before the next key. This targets only this
                 // task's offscreen window and never sends desktop HID input.
                 if let Ok(keys) = std::env::var("MURMUR_QA_KEYS") {
-                    cx.update_window(handle.into(), |_, w, cx| {
-                        if w.focused(cx).is_none() {
-                            w.focus_next(cx);
-                            w.draw(cx).clear(cx);
-                        }
-                    })
-                    .expect("synthetic QA initial focus");
                     for key in keys.split_whitespace() {
                         cx.update_window(handle.into(), |_, w, cx| {
                             let keystroke = Keystroke::parse_with_os(key, cx.platform_info().os)

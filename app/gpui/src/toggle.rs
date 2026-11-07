@@ -68,6 +68,7 @@ impl RenderOnce for Toggle {
             Some(crate::data_components::focus_reveal(
                 focus,
                 Some(parent),
+                None,
                 window,
                 cx,
             ))

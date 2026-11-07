@@ -1,0 +1,46 @@
+diff --git a/crates/base/src/root.rs b/crates/base/src/root.rs
+index 633899d7..31b77ea6 100644
+--- a/crates/base/src/root.rs
++++ b/crates/base/src/root.rs
+@@ -121,6 +121,7 @@ pub struct Root {
+     view: AnyView,
+     style: StyleRefinement,
+     plugins: Vec<Plugin>,
++    _unfocused_tab: gpui::Subscription,
+ }
+ 
+ impl Root {
+@@ -179,7 +180,33 @@ impl Root {
+             .try_global::<PluginRegistry>()
+             .map(|e| e.0.clone())
+             .unwrap_or_default();
++        // With no focused element GPUI dispatches at its window root, above
++        // this view's Root key context. Recover only an otherwise unhandled
++        // Tab in this window; activation alone must never move content focus.
++        let handle = window.window_handle();
++        let unfocused_tab = cx.observe_keystrokes(move |_, event, window, cx| {
++            let key = &event.keystroke;
++            if window.window_handle() != handle
++                || event.action.is_some()
++                || window.focused(cx).is_some()
++                || key.key != "tab"
++                || key.modifiers.number_of_modifiers() != u8::from(key.modifiers.shift)
++                || event.input_preference == gpui::InputPreference::CharacterInput
++            {
++                return;
++            }
++            advance_focus(
++                window,
++                cx,
++                if key.modifiers.shift {
++                    Window::focus_prev
++                } else {
++                    Window::focus_next
++                },
++            );
++        });
+         Self {
++            _unfocused_tab: unfocused_tab,
+             view: view.into(),
+             style: StyleRefinement::default(),
+             plugins: factories

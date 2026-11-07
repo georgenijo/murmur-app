@@ -67,6 +67,25 @@ fn state_copy_and_permission_denial_parity() {
     assert_eq!(s.warning().unwrap().1, Permission::SystemAudio);
 }
 #[gpui::test]
+fn tab_from_unfocused_home_enters_content_without_activation_focus(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    // Match focus:false in the native host. Merely drawing leaves focus alone.
+    cx.update(|w, cx| w.blur(cx));
+    draw(cx);
+    assert!(cx.update(|w, cx| w.focused(cx).is_none()));
+    keys(cx, "cmd-tab");
+    assert!(cx.update(|w, cx| w.focused(cx).is_none()));
+    keys(cx, "tab");
+    assert!(cx.update(|w, cx| e.read(cx).focus["sidebar-toggle"].is_focused(w)));
+    keys(cx, "tab");
+    assert!(cx.update(|w, cx| e.read(cx).focus["palette"].is_focused(w)));
+    cx.update(|w, cx| w.blur(cx));
+    draw(cx);
+    keys(cx, "shift-tab");
+    assert!(cx.update(|w, cx| w.focused(cx).is_some()));
+}
+
+#[gpui::test]
 fn subscribe_before_read_without_capture_and_embedded_history(cx: &mut TestAppContext) {
     let (e, h, cx) = harness(cx);
     assert_eq!(h.calls.borrow()[0], "subscribe");
@@ -228,6 +247,47 @@ mod ax {
         );
         draw(cx);
     }
+    #[gpui::test]
+    fn monthly_totals_checklist_and_hints_have_static_text(cx: &mut TestAppContext) {
+        let (e, _, cx) = harness(cx);
+        for _ in 0..2 {
+            let t = tree(cx);
+            for text in [
+                "This month: 420 words, 7 dictations".to_string(),
+                "Get more from Murmur · 0/5".to_string(),
+                "Try what is ready when you are".to_string(),
+            ]
+            .into_iter()
+            .chain(ITEMS.into_iter().flat_map(|(_, title, detail, _)| {
+                [format!("{title}: Not completed"), detail.to_string()]
+            })) {
+                let matching: Vec<_> = t
+                    .nodes
+                    .iter()
+                    .filter(|(_, n)| {
+                        n.role() == gpui::accesskit::Role::Label && n.value() == Some(text.as_str())
+                    })
+                    .collect();
+                assert_eq!(
+                    matching.len(),
+                    1,
+                    "missing or duplicated static text: {text}"
+                );
+            }
+        }
+        for (id, _, detail, _) in HINTS {
+            e.update(cx, |s, cx| {
+                s.model.snapshot.as_mut().unwrap().discovery["pendingHints"] =
+                    serde_json::json!([id]);
+                cx.notify();
+            });
+            let t = tree(cx);
+            assert!(t.nodes.iter().any(
+                |(_, n)| n.role() == gpui::accesskit::Role::Label && n.value() == Some(detail)
+            ));
+        }
+    }
+
     #[gpui::test]
     fn compact_checklist_keyboard_focus_stays_inside_scroll_viewport(cx: &mut TestAppContext) {
         let (e, _, cx) = harness(cx);
