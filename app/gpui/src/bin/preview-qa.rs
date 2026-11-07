@@ -10,6 +10,11 @@ impl Host for Current {
     }
 }
 fn main() {
+    murmur_ui::overlay::native::start_webkit_policy();
+    if std::env::var_os("MURMUR_WEBKIT_BASELINE_ONLY").is_some() {
+        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_PREVIEW_INVENTORY");
+        return;
+    }
     let output = std::env::var_os("MURMUR_GOLDEN");
     let headless = output.is_some();
     let native_smoke = std::env::var_os("MURMUR_PREVIEW_NATIVE_SMOKE").is_some();
@@ -93,6 +98,7 @@ fn main() {
                     println!("MURMUR_PREVIEW_STAGE=stopped-{generation}");
                     cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
                 }
+                murmur_ui::overlay::native::assert_webkit_policy("MURMUR_PREVIEW_INVENTORY");
                 cx.update(|cx| cx.quit());
             }).detach();
         }
@@ -109,9 +115,7 @@ fn main() {
                         assert!(image.enumerate_pixels().all(|(x, _, p)|
                             (8..image.width()-8).contains(&x) || p[3] == 0),
                             "preview root painted over the transparent reservation");
-                        let images = murmur_ui::overlay::native::webkit_images();
-                        assert_eq!(images,0);
-                        println!("MURMUR_PREVIEW_INVENTORY={{\"pid\":{},\"webkitImages\":{}}}",std::process::id(),images);
+                        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_PREVIEW_INVENTORY");
                         image.save(path).expect("synthetic capture"); cx.quit();
                     }).expect("capture preview");
                 }).detach();

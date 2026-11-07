@@ -243,3 +243,35 @@ unsafe extern "C" {
     fn murmur_preview_visibility(view: *mut std::ffi::c_void, hidden: bool);
     fn murmur_preview_refit(view: *mut std::ffi::c_void, x: f64, y: f64, width: f64, height: f64);
 }
+
+/// Install/check the QA-only policy before constructing NSApplication or windows.
+#[cfg(feature = "gallery")]
+pub fn start_webkit_policy() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: the native constructor registered the observer before main.
+    assert!(
+        unsafe { murmur_webkit_start() },
+        "nonzero WebKit startup/linkage baseline"
+    );
+}
+
+/// Print backward-compatible counts and fail closed on app/unknown loads.
+/// Additional load records contain image paths and symbols only, never AX data.
+#[cfg(feature = "gallery")]
+pub fn assert_webkit_policy(prefix: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let prefix = std::ffi::CString::new(prefix).expect("inventory prefix");
+        // SAFETY: borrowed string; native snapshot synchronizes with dyld.
+        assert!(
+            unsafe { murmur_webkit_inventory(prefix.as_ptr()) },
+            "unattributed or app-linked WebKit"
+        );
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "gallery"))]
+unsafe extern "C" {
+    fn murmur_webkit_start() -> bool;
+    fn murmur_webkit_inventory(prefix: *const std::ffi::c_char) -> bool;
+}
