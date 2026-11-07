@@ -266,6 +266,7 @@ def tag_action(existing_sha: Optional[str], source_sha: str) -> str:
 def validate_ci(ci: str) -> int:
     assert "push:\n    branches: [main]" in ci and "\n  pull_request:" in ci
     assert "setup-node" not in ci and "npm " not in ci
+    assert ci.count("save-if: ${{ github.ref == 'refs/heads/main' }}") == ci.count("uses: swatinem/rust-cache@v2")
     sentinel = job_block(ci, "ci-pass")
     for job in ("changes", "policy", *CI_BUILD_JOBS):
         job_block(ci, job)
@@ -280,6 +281,7 @@ def validate_ci(ci: str) -> int:
     assert "dtolnay/rust-toolchain@1.98.1" in lint
     assert "cargo clippy --locked" in lint and "--all-targets --features gallery,production-host -- -D warnings" in lint
     assert "cargo fmt --manifest-path app/Cargo.toml" in lint and "-- --check" in lint
+    assert "cargo clippy --locked --manifest-path app/sidecars/capture/Cargo.toml --all-targets -- -D warnings" in lint
     native = job_block(ci, "rust-macos")
     assert "-p murmur-services -p murmur-core -p murmur-webkit -p murmur-capture-helper-protocol -- --test-threads=1" in native
     assert "cargo test --locked --manifest-path app/sidecars/capture/Cargo.toml" in native

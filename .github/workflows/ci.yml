@@ -51,6 +51,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: |
           cargo check --locked --manifest-path app/Cargo.toml -p murmur-core -p murmur-capture-helper-protocol
           cargo clippy --locked --manifest-path app/Cargo.toml -p murmur-core -p murmur-capture-helper-protocol --all-targets -- -D warnings
@@ -68,11 +69,14 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: |
           brew install meson ninja pkg-config
           python3 scripts/build_capture_helpers.py
           cargo fmt --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-ui -p murmur-webkit -p murmur-capture-helper-protocol -- --check
           cargo clippy --locked --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-ui -p murmur-webkit -p murmur-capture-helper-protocol --all-targets --features gallery,production-host -- -D warnings
+          cargo check --locked --manifest-path app/sidecars/capture/Cargo.toml
+          cargo clippy --locked --manifest-path app/sidecars/capture/Cargo.toml --all-targets -- -D warnings
   rust-macos:
     runs-on: macos-latest
     timeout-minutes: 45
@@ -85,6 +89,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: |
           brew install meson ninja pkg-config
           python3 scripts/build_capture_helpers.py
@@ -104,6 +109,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: |
           brew install meson ninja pkg-config
           python3 scripts/build_capture_helpers.py
@@ -125,6 +131,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: |
           case "${{ matrix.shard }}" in
             1) python3 scripts/check_gpui_goldens.py --settings-only ;;
@@ -147,6 +154,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: python3 scripts/check_gpui_goldens.py --core-only
       - uses: actions/upload-artifact@v4
         if: always()
