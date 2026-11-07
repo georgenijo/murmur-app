@@ -68,3 +68,5 @@ mod json;
 pub mod modes;
 
 pub mod themes;
+
+pub mod customize;
