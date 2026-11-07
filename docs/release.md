@@ -243,6 +243,12 @@ or generate updater signatures. It refuses release-credential environments.
 shutdown, and updater integration belong to the subsequent native host work
 (#996/#997); a passing packaging rehearsal does not establish product parity.
 
+The [Mac mini receipt](draft/gpui-packaging-rehearsal.json) at source
+`a7110f223401220ab25990785b34e86817e4779f` records 19 matching plist keys,
+12 matching layout entries, the expected ad-hoc Gatekeeper rejection and a
+successful native-shell launch. It establishes packaging at that revision,
+not the deferred signed gate.
+
 The future signed lane invokes `scripts/release_gpui.py`: it builds the native
 app and independent `scripts/updater-signer` Rust tool, uses the same finalizer,
 notarizes and staples the app and DMG, checks Gatekeeper, signs the updater

@@ -129,6 +129,8 @@ jobs:
           node --test scripts/test_check_targeted_frontend.mjs
 
       - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          components: clippy, rustfmt
       - name: Verify native and installed-client signature compatibility
         run: |
           cargo fmt --manifest-path scripts/updater-signer/Cargo.toml -- --check
