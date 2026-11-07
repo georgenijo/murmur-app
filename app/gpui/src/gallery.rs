@@ -155,3 +155,23 @@ impl Render for Gallery {
             .child("Focus: Tab / Shift-Tab · Select: arrows, Home, End, Space · Dropdown: Return / Escape")
     }
 }
+
+/// Imported Midnight fixture: semantic roles only, no appearance persistence.
+/// Used by review hosts alongside Sonic Light/Dark and Increase Contrast.
+pub fn apply_midnight(cx: &mut gpui::App) {
+    crate::tokens::apply_appearance(true, cx);
+    gpui_component::Theme::update(cx, |theme| {
+        let c = &mut theme.colors;
+        c.background = gpui::rgb(0x000000).into();
+        c.secondary = gpui::rgb(0x10121a).into();
+        c.foreground = gpui::rgb(0xf5f5f5).into();
+        c.muted_foreground = gpui::rgb(0xb7b8d0).into();
+        c.border = gpui::rgb(0x53566e).into();
+        c.input = c.border;
+        c.primary = gpui::rgb(0x74a9d8).into();
+        c.primary_foreground = gpui::rgb(0x140d2a).into();
+        c.ring = c.primary;
+        c.popover = c.secondary;
+        c.popover_foreground = c.foreground;
+    });
+}

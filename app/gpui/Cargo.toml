@@ -187,3 +187,13 @@ name = "native_tables"
 path = "tests/native_tables.rs"
 harness = false
 required-features = ["a11y-tests"]
+
+[[bin]]
+name = "onboarding-qa"
+path = "src/bin/onboarding-qa.rs"
+required-features = ["gallery"]
+
+[[bin]]
+name = "home-qa"
+path = "src/bin/home-qa.rs"
+required-features = ["gallery"]
