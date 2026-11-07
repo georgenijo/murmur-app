@@ -14,6 +14,7 @@ pub struct TextField {
     disabled: bool,
     readonly: bool,
     search_chrome: bool,
+    search_radius: Pixels,
 }
 impl TextField {
     pub fn new(state: &Entity<InputState>, label: impl Into<SharedString>) -> Self {
@@ -29,6 +30,7 @@ impl TextField {
             disabled: false,
             readonly: false,
             search_chrome: false,
+            search_radius: px(8.),
         }
     }
     pub fn with_scroll_parent(mut self, parent: &ScrollHandle) -> Self {
@@ -37,6 +39,10 @@ impl TextField {
     }
     pub fn search_chrome(mut self) -> Self {
         self.search_chrome = true;
+        self
+    }
+    pub fn search_radius(mut self, radius: Pixels) -> Self {
+        self.search_radius = radius;
         self
     }
     pub fn disabled(mut self, value: bool) -> Self {
@@ -70,7 +76,7 @@ impl RenderOnce for TextField {
                     .px(tokens::CONTROL_INSET)
                     .when(self.search_chrome, |s| s.pl(px(28.)).pr(px(28.)))
                     .rounded(if self.search_chrome {
-                        px(999.)
+                        self.search_radius
                     } else {
                         tokens::CONTROL_RADIUS
                     })

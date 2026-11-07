@@ -337,6 +337,49 @@ impl Render for Home {
                 .track_focus(&self.focus_for("sidebar-toggle", cx))
                 .on_click(move |_, w, cx| e.update(cx, |s, cx| s.toggle(w, cx))),
             )
+            .when(self.workspace.is_some(), |d| {
+                let label = self
+                    .model
+                    .snapshot
+                    .as_ref()
+                    .map(|s| match s.status {
+                        Status::Idle => {
+                            if s.initialized {
+                                "Ready"
+                            } else {
+                                "Initializing"
+                            }
+                        }
+                        Status::Starting => "Connecting",
+                        Status::Recording => "Recording",
+                        Status::Processing => "Processing",
+                        Status::Recovering => "Recovering",
+                    })
+                    .unwrap_or("Ready");
+                d.child(
+                    div()
+                        .id("workspace-status")
+                        .role(Role::Status)
+                        .aria_label(label)
+                        .rounded_full()
+                        .px(px(8.))
+                        .py(px(3.))
+                        .text_size(tokens::CAPTION_SIZE)
+                        .text_color(p.muted)
+                        .bg(p.tint_raised)
+                        .border_1()
+                        .border_color(p.hairline_strong)
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(div().size(px(7.)).rounded_full().bg(if label == "Ready" {
+                            p.success
+                        } else {
+                            p.accent
+                        }))
+                        .child(label),
+                )
+            })
             .child(div().flex_1())
             .child(
                 self.button("settings", "Settings", Destination::General, cx)
@@ -787,7 +830,7 @@ impl Render for Home {
                                 cx.stop_propagation();
                             }
                         })
-                        .h(px(64.))
+                        .h(px(54.))
                         .w_full()
                         .px(px(12.))
                         .hover(|d| d.bg(p.text.opacity(0.025)))
@@ -993,16 +1036,24 @@ impl Render for Home {
                                     }),
                             ),
                     );
+                // CSS auto-fit minmax(min(100%, 19rem), 1fr), including its insets.
+                let available = f32::from(w.viewport_size().width) - width - 32. - 24.;
+                let columns = ((available + 12.) / (304. + 12.)).floor().max(1.) as u16;
+                let mut items = div()
+                    .grid()
+                    .grid_cols(columns)
+                    .gap_x(px(12.))
+                    .px(px(12.))
+                    .py(px(6.));
                 for (id, title, detail, action) in ITEMS {
                     let e = cx.entity();
                     let done = s.completed(id);
                     let focus = self.focus_for(id, cx);
-                    checklist = checklist.child(
+                    items = items.child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(10.))
-                            .px(px(12.))
                             .py(px(6.))
                             .child(
                                 div()
@@ -1033,7 +1084,12 @@ impl Render for Home {
                                             ))
                                             .text_size(tokens::CAPTION_SIZE)
                                             .line_height(tokens::CAPTION_LEADING)
-                                            .font_weight(FontWeight::MEDIUM)
+                                            .font_weight(if done {
+                                                FontWeight::MEDIUM
+                                            } else {
+                                                FontWeight::SEMIBOLD
+                                            })
+                                            .text_color(if done { p.muted } else { p.text })
                                             .child(title),
                                     )
                                     .child(
@@ -1076,6 +1132,7 @@ impl Render for Home {
                             ),
                     );
                 }
+                checklist = checklist.child(items);
                 content = content.child(
                     div()
                         .id("discovery-scroll")
