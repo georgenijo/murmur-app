@@ -16,6 +16,7 @@ from finalize_macos_bundle import HELPERS, require_exact_macos_executables
 from release_bundle_target import validate_target
 from validate_workflow_policy import job_block, validate_release_build, validate_promotion_policy
 from notarize_and_repackage_macos import native_sign, tauri_sign
+from rehearse_gpui_bundle import check_links
 
 
 class BundleTests(unittest.TestCase):
@@ -105,6 +106,51 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "new .app"):
             bundle(self.binary, self.app, self.tauri)
 
+    def test_signed_orchestration_wires_notarization_signer_and_helper_provenance(self):
+        # All credentials and artifacts here are synthetic. No Apple/signing
+        # command executes, but real provenance validation checks the result.
+        import release_gpui
+        output = self.root / "signed"
+        environment = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+                       "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "42",
+                       "APPLE_SIGNING_IDENTITY": "synthetic identity", "APPLE_TEAM_ID": "ABCDEFGHIJ"}
+
+        def process(command, **kwargs):
+            if "scripts/notarize_and_repackage_macos.py" in command:
+                (output / "dmg").mkdir()
+                (output / "dmg/Murmur_0.62.1_aarch64.dmg").write_bytes(b"synthetic dmg")
+                (output / "bundle/Murmur.app.tar.gz").write_bytes(b"synthetic archive")
+                (output / "bundle/Murmur.app.tar.gz.sig").write_text("synthetic-signature")
+
+        def capture(command, **kwargs):
+            if command[0] == "lipo":
+                return "arm64"
+            name = Path(command[-1]).name
+            return f'designated => identifier "{HELPERS[name]}" and anchor apple generic and certificate leaf[subject.OU] = "ABCDEFGHIJ"'
+
+        with patch.dict("os.environ", environment, clear=True), \
+             patch("sys.argv", ["release_gpui.py", "--target-dir", str(self.root / "target"), "--output", str(output)]), \
+             patch("release_gpui.bundle", side_effect=lambda binary, app: bundle(self.binary, app, self.tauri)), \
+             patch("release_gpui.check_links"), patch("release_gpui.finalize") as finalize, \
+             patch("release_gpui.subprocess.run", side_effect=process) as commands, \
+             patch("release_gpui.run", side_effect=capture), \
+             patch("release_gpui.signature_details", return_value="TeamIdentifier=ABCDEFGHIJ\n"), \
+             patch("release_gpui.entitlements", return_value={}):
+            release_gpui.main()
+        finalize.assert_called_once_with(output / "bundle/Murmur.app", "synthetic identity", "ABCDEFGHIJ")
+        notarize = next(call.args[0] for call in commands.call_args_list
+                        if "scripts/notarize_and_repackage_macos.py" in call.args[0])
+        self.assertIn("--native-signer", notarize)
+        self.assertEqual(notarize[-1], str(self.root / "target/release/murmur-updater-signer"))
+        provenance = json.loads((output / "artifacts/provenance.json").read_text())
+        self.assertEqual(provenance["bundle_target"], "gpui")
+        self.assertIs(provenance["publication"], False)
+        self.assertEqual(provenance["commit_sha"], "a" * 40)
+        self.assertEqual(provenance["workflow_run_id"], 42)
+        for name in ("capture_agent", "capture_helper", "capture_worker"):
+            self.assertEqual(provenance[name]["team_id"], "ABCDEFGHIJ")
+            self.assertEqual(provenance[name]["architecture"], "arm64")
+
 
 class WorkflowTests(unittest.TestCase):
     def test_target_event_matrix(self):
@@ -150,6 +196,45 @@ class WorkflowTests(unittest.TestCase):
             with patch.dict("os.environ", {"TAURI_SIGNING_PRIVATE_KEY": "synthetic"}), patch("notarize_and_repackage_macos.run") as run:
                 tauri_sign(archive, ROOT / "app")
                 self.assertEqual(run.call_args.args[0][:5], ["npx", "--no-install", "tauri", "signer", "sign"])
+
+    def test_macho_contract_rejects_missing_rpath_strong_framework_or_newer_minimum(self):
+        loads = """Load command 0
+cmd LC_RPATH
+path /usr/lib/swift (offset 12)
+Load command 1
+cmd LC_LOAD_WEAK_DYLIB
+name /System/Library/Frameworks/FoundationModels.framework/Versions/A/FoundationModels
+Load command 2
+cmd LC_BUILD_VERSION
+minos 14.0
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            sdk = Path(temp)
+            (sdk / "System/Library/Frameworks/FoundationModels.framework").mkdir(parents=True)
+            for content, error in ((loads, None),
+                                   (loads.replace("/usr/lib/swift", "/wrong/rpath"), "rpath missing"),
+                                   (loads.replace("LC_LOAD_WEAK_DYLIB", "LC_LOAD_DYLIB"), "weak-linked"),
+                                   (loads.replace("minos 14.0", "minos 15.0"), "minimum")):
+                with self.subTest(error=error), patch("rehearse_gpui_bundle.run", side_effect=[content, str(sdk)]):
+                    if error:
+                        with self.assertRaisesRegex(ValueError, error):
+                            check_links(Path("/synthetic/ui"))
+                    else:
+                        self.assertEqual(check_links(Path("/synthetic/ui"))["foundation_models"], "weak")
+
+    def test_signed_script_rejects_non_manual_or_non_main_before_work(self):
+        import release_gpui
+        for event, ref, error in (("push", "refs/heads/main", ValueError),
+                                  ("workflow_dispatch", "refs/heads/gpui/18-packaging", SystemExit)):
+            with self.subTest(event=event, ref=ref), \
+                 patch.dict("os.environ", {"GITHUB_EVENT_NAME": event, "GITHUB_REF": ref}, clear=True), \
+                 patch("sys.argv", ["release_gpui.py", "--target-dir", "/synthetic/target", "--output", "/synthetic/output"]), \
+                 patch("release_gpui.bundle") as bundle_mock, \
+                 patch("release_gpui.subprocess.run") as process:
+                with self.assertRaises(error):
+                    release_gpui.main()
+                bundle_mock.assert_not_called()
+                process.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ import sys
 from bundle_gpui import ROOT, bundle, bundle_info
 from finalize_macos_bundle import HELPERS, entitlements, signature_details
 from rehearse_gpui_bundle import check_links, finalize, run
-from release_artifacts import record_platform
+from release_artifacts import create_provenance
 from release_bundle_target import validate_target
 
 
@@ -53,14 +54,13 @@ def main() -> None:
         team = re.search(r"^TeamIdentifier=(.+)$", signature_details(path), re.M)
         if not dr or not team:
             raise ValueError("missing signed helper requirement or Team ID")
-        import plistlib
         helpers[name.removeprefix("murmur-").replace("-", "_")] = {
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "architecture": run(["lipo", "-archs", str(path)]).strip(),
             "designated_requirement": dr.group(1), "team_id": team.group(1),
             "entitlement_sha256": hashlib.sha256(plistlib.dumps(entitlements(path), sort_keys=True)).hexdigest(),
         }
-    provenance = record_platform("macos", "darwin-aarch64", artifacts,
+    provenance = create_provenance("macos", "darwin-aarch64", artifacts,
                                  os.environ["GITHUB_SHA"], os.environ["GITHUB_RUN_ID"], **helpers)
     provenance.update({"bundle_target": "gpui", "publication": False})
     (artifacts / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
