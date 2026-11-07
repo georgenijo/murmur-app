@@ -513,22 +513,95 @@ class WebkitSourcePolicyTests(unittest.TestCase):
 class WebkitPolicyTests(unittest.TestCase):
     def test_classifier_linkage_and_zero_baseline(self):
         source = r'''
+#include <pthread.h>
+#include <stdbool.h>
+#include <assert.h>
 static void snapshot_hook(void);
+static void capture_hook(void);
+static void wait_hook(void);
+static void output_hook(void);
+static void flush_hook(void);
 #define MURMUR_WEBKIT_SNAPSHOT_HOOK snapshot_hook
+#define MURMUR_WEBKIT_CAPTURE_HOOK capture_hook
+#define MURMUR_WEBKIT_WAIT_HOOK wait_hook
+#define MURMUR_WEBKIT_OUTPUT_HOOK output_hook
+#define MURMUR_WEBKIT_FLUSH_HOOK flush_hook
 #include "webkit_policy.m"
 #include <assert.h>
 static WebkitLoad pending;
-static bool inject;
+static bool inject, pause_capture, capture_entered, resume_capture, waited, join_loader;
+static int late_stage;
+static pthread_t loader;
+static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ready = PTHREAD_COND_INITIALIZER;
+static void capture_hook(void) {
+    pthread_mutex_lock(&gate);
+    if (pause_capture) {
+        pause_capture=false;
+        capture_entered=true;
+        pthread_cond_broadcast(&ready);
+        while (!resume_capture) pthread_cond_wait(&ready,&gate);
+    }
+    pthread_mutex_unlock(&gate);
+}
+static void wait_hook(void) {
+    assert(in_flight && !observation_closed);
+    pthread_mutex_lock(&gate);
+    waited=true;
+    resume_capture=true;
+    pthread_cond_broadcast(&ready);
+    pthread_mutex_unlock(&gate);
+}
+static void output_hook(void) {
+    if (late_stage==1) image_added(NULL,0);
+}
+static void flush_hook(void) {
+    if (late_stage==2) image_added(NULL,0);
+}
+static void *background_load(void *unused) {
+    (void)unused;
+    assert(dlopen("/System/Library/Frameworks/WebKit.framework/WebKit",RTLD_LAZY|RTLD_LOCAL));
+    return NULL;
+}
+static void reopen_test_observation(void) {
+    // Tests run several isolated inventories in one process. QA hosts finalize
+    // once; their terminal boundary is intentionally never reopened.
+    assert(!in_flight && !late_load);
+    observation_closed=false;
+}
 static void snapshot_hook(void) {
+    if (join_loader) {
+        join_loader=false;
+        assert(!pthread_join(loader,NULL));
+    }
     if (!inject) return;
     inject=false;
     pthread_mutex_lock(&lock);
     loads[load_count++]=pending;
     pthread_mutex_unlock(&lock);
 }
-int main(void) {
+int main(int argc, char **argv) {
     assert(murmur_webkit_start());
+    if (argc==2 && !strcmp(argv[1],"mid-capture")) {
+        pause_capture=true;
+        assert(!pthread_create(&loader,NULL,background_load,NULL));
+        pthread_mutex_lock(&gate);
+        while (!capture_entered) pthread_cond_wait(&ready,&gate);
+        pthread_mutex_unlock(&gate);
+        join_loader=true;
+        assert(!murmur_webkit_inventory("MURMUR_TEST_MID_CAPTURE_INVENTORY"));
+        assert(waited && load_count && !in_flight);
+        return 0;
+    }
+    if (argc==2) {
+        late_stage=!strcmp(argv[1],"during-output") ? 1 :
+            !strcmp(argv[1],"after-flush") ? 2 : 0;
+        assert(murmur_webkit_inventory("MURMUR_TEST_TERMINAL_INVENTORY"));
+        image_added(NULL,0); // Must also fail after inventory has returned.
+        return 1;
+    }
     assert(murmur_webkit_inventory("MURMUR_TEST_INVENTORY"));
+    reopen_test_observation();
     // Synthetic chain follows the captured VoiceOver/Apple AX bundle stack.
     WebkitFrame ax[] = {
         {"/usr/lib/dyld", "dlopen"},
@@ -545,6 +618,7 @@ int main(void) {
             "__CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__"},
         {"/System/Library/Frameworks/AppKit.framework/AppKit", "-[NSApplication run]"},
         {"/synthetic/Murmur", "main"},
+        {"/usr/lib/dyld", "start"},
     };
     unsigned n=sizeof(ax)/sizeof(*ax);
     assert(murmur_webkit_ax_chain(ax,n,false));
@@ -554,10 +628,29 @@ int main(void) {
     pending.ax=murmur_webkit_ax_chain(ax,n,false);
     inject=true;
     assert(murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_AX_INVENTORY"));
-    assert(load_count==1); load_count=0;
+    assert(load_count==1); load_count=0; reopen_test_observation();
     pending.ax=false; inject=true;
     assert(!murmur_webkit_inventory("MURMUR_TEST_CONCURRENT_UNKNOWN_INVENTORY"));
-    assert(load_count==1); load_count=0;
+    assert(load_count==1); load_count=0; reopen_test_observation();
+    // Every frame must resolve, including those below dispatch. A missing
+    // constructor symbol must never be hidden by surviving AX markers.
+    for (unsigned i=0; i<n; i++) {
+        WebkitFrame frame=ax[i];
+        ax[i].symbol[0]=0;
+        assert(!murmur_webkit_ax_chain(ax,n,false));
+        strcpy(ax[i].symbol,"<redacted>");
+        assert(!murmur_webkit_ax_chain(ax,n,false));
+        ax[i]=frame;
+        ax[i].image[0]=0;
+        assert(!murmur_webkit_ax_chain(ax,n,false));
+        ax[i]=frame;
+    }
+    assert(!murmur_webkit_ax_chain(ax,7,false)); // Ends exactly at dispatch.
+    assert(!murmur_webkit_ax_chain(ax,n-1,false)); // No recognized unwind root.
+    WebkitFrame root=ax[n-1];
+    strcpy(ax[n-1].image,"/synthetic/Murmur");
+    assert(!murmur_webkit_ax_chain(ax,n,false)); // Root symbol path spoof.
+    ax[n-1]=root;
     assert(!murmur_webkit_ax_chain(ax,n,true)); // Truncated evidence.
     assert(!murmur_webkit_ax_chain(ax,0,false));
     assert(!murmur_webkit_ax_chain(ax,4,false)); // No incoming AX IPC.
@@ -610,7 +703,11 @@ int main(void) {
             subprocess.run(['clang', '-fobjc-arc', '-fno-omit-frame-pointer', '-Werror',
                             '-framework', 'Foundation', '-I', str(ROOT / 'app/gpui/native'),
                             str(path / 'test.m'), '-o', str(path / 'test')], check=True)
-            subprocess.run([str(path / 'test')], check=True)
+            subprocess.run([str(path / 'test')], check=True, timeout=30)
+            subprocess.run([str(path / 'test'), 'mid-capture'], check=True, timeout=30)
+            for schedule in ('during-output', 'after-flush', 'after-return'):
+                result = subprocess.run([str(path / 'test'), schedule], timeout=30)
+                self.assertEqual(result.returncode, 86, schedule)
 
 
 if __name__ == '__main__':
