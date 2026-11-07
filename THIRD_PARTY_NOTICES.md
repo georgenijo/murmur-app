@@ -527,10 +527,15 @@ SOFTWARE.
 v0.9.0 (copyright its contributors, Apache-2.0). The vendored base, component,
 component-macros and assets crates retain their license files. Lucide's ISC
 license is retained with its icons. Upstream documentation is credited to
-GPUI Kit under its retained CC BY 4.0 documentation license.
+GPUI Kit under its retained CC BY 4.0 documentation license. GPUI Kit's
+`base/src/text/format/html5minify` is a fork of Martin Gallagher's MIT-licensed
+[html5minify](https://github.com/martingallagher/html5minify); its MIT terms
+are retained beside it.
 
 The vendored `accesskit_macos` 0.26.3 is MIT OR Apache-2.0, copyright the
-AccessKit contributors. Both license texts are retained. Murmur's focused
-UI element forwarding and text-selection fixes are recorded in
+AccessKit contributors. Both license texts are retained. Its `src/node.rs`
+derives from Chromium's accessibility abstraction, copyright The Chromium
+Authors, under the BSD-style license retained as `LICENSE.chromium`.
+Murmur's focused UI element forwarding and text-selection fixes are recorded in
 [the native component contract](docs/draft/gpui-accessible-components.md).
 Zed's GPL `ui`, `editor`, and `ui_input` crates are not included.
