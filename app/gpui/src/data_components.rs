@@ -175,6 +175,80 @@ fn reveal_axis(start: Pixels, end: Pixels, low: Pixels, high: Pixels) -> Pixels 
         px(0.)
     }
 }
+/// Shared immediate reveal, also used by table arrow navigation. No animation,
+/// so keyboard focus obeys Reduced Motion without an extra motion path.
+pub(crate) fn reveal_bounds<'a>(
+    mut bounds: Bounds<Pixels>,
+    parents: impl IntoIterator<Item = &'a ScrollHandle>,
+) -> bool {
+    let mut changed = false;
+    // Innermost first. Carry the actual movement into the enclosing viewport;
+    // it must not reveal the stale bounds from before the inner scroll.
+    for scroll in parents {
+        let viewport = scroll.bounds();
+        let old = scroll.offset();
+        let max = scroll.max_offset();
+        let next = point(
+            (old.x
+                + reveal_axis(
+                    bounds.left(),
+                    bounds.right(),
+                    viewport.left(),
+                    viewport.right(),
+                ))
+            .clamp(-max.x, px(0.)),
+            (old.y
+                + reveal_axis(
+                    bounds.top(),
+                    bounds.bottom(),
+                    viewport.top(),
+                    viewport.bottom(),
+                ))
+            .clamp(-max.y, px(0.)),
+        );
+        if next != old {
+            scroll.set_offset(next);
+            bounds.origin += next - old;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Paint-time bounds include wrapping and the current scroll offsets. Reveal
+/// only on focus entry: wheel scrolling must remain possible while focused.
+pub(crate) fn focus_reveal<P: IntoIterator<Item = ScrollHandle>>(
+    focus: FocusHandle,
+    parents: P,
+    w: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement + use<P> {
+    let parents: Vec<_> = parents.into_iter().collect();
+    let state = w.use_keyed_state(
+        SharedString::from(format!("focus-reveal-{focus:?}")),
+        cx,
+        |_, _| false,
+    );
+    canvas(
+        move |bounds, w, cx| {
+            let focused = focus.is_focused(w);
+            let entered = state.update(cx, |was, _| {
+                let entered = focused && !*was;
+                *was = focused;
+                entered
+            });
+            if entered && reveal_bounds(bounds.dilate(px(1.)), &parents) {
+                w.on_next_frame(|w, _| w.refresh());
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
 impl RenderOnce for DataTable {
     fn render(self, w: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = Palette::get(cx);
@@ -188,6 +262,11 @@ impl RenderOnce for DataTable {
         });
         let scroll = navigation.read(cx).scroll.clone();
         let parent = self.scroll_parent;
+        let focus_entry = w.use_keyed_state(
+            SharedString::from(format!("table-entry-{:?}", self.id)),
+            cx,
+            |_, _| false,
+        );
         let focus = navigation.read(cx).focus.clone();
         let table_focused = focus.is_focused(w);
         let row_count = self.rows.len() + 1;
@@ -197,6 +276,9 @@ impl RenderOnce for DataTable {
             s.cells.resize(row_count, vec![]);
         });
         let active = (navigation.read(cx).row, navigation.read(cx).column);
+        let action_parents: Vec<_> = std::iter::once(scroll.clone())
+            .chain(parent.clone())
+            .collect();
         let mut actions = self.actions.into_iter();
         let header = div()
             .on_children_prepainted({
@@ -231,6 +313,29 @@ impl RenderOnce for DataTable {
         // Keep the border outside the scroll viewport: ScrollHandle measures
         // content against its full bounds, including any border on that element.
         div()
+            .relative()
+            .on_children_prepainted({
+                let navigation = navigation.clone();
+                let parent = parent.clone();
+                move |_, w, cx| {
+                    let s = navigation.read(cx);
+                    let focused = s.focus.is_focused(w);
+                    let cell = s.cells.get(s.row).and_then(|r| r.get(s.column)).copied();
+                    let scroll = s.scroll.clone();
+                    let entered = focus_entry.update(cx, |was, _| {
+                        let entered = focused && !*was;
+                        *was = focused;
+                        entered
+                    });
+                    if entered && let Some(cell) = cell {
+                        let changed =
+                            reveal_bounds(cell, std::iter::once(&scroll).chain(parent.as_ref()));
+                        if changed {
+                            w.on_next_frame(|w, _| w.refresh());
+                        }
+                    }
+                }
+            })
             .flex_shrink_0()
             .border_1()
             .border_color(if table_focused { p.focus } else { p.border })
@@ -294,26 +399,10 @@ impl RenderOnce for DataTable {
                                 }
                                 if let Some(cell) = s.cells.get(s.row).and_then(|r| r.get(s.column))
                                 {
-                                    let viewport = s.scroll.bounds();
-                                    let mut offset = s.scroll.offset();
-                                    offset.x += reveal_axis(
-                                        cell.left(),
-                                        cell.right(),
-                                        viewport.left(),
-                                        viewport.right(),
+                                    reveal_bounds(
+                                        *cell,
+                                        std::iter::once(&s.scroll).chain(parent.as_ref()),
                                     );
-                                    s.scroll.set_offset(offset);
-                                    if let Some(parent) = &parent {
-                                        let viewport = parent.bounds();
-                                        let mut offset = parent.offset();
-                                        offset.y += reveal_axis(
-                                            cell.top(),
-                                            cell.bottom(),
-                                            viewport.top(),
-                                            viewport.bottom(),
-                                        );
-                                        parent.set_offset(offset);
-                                    }
                                 }
                                 cx.notify();
                             });
@@ -336,7 +425,9 @@ impl RenderOnce for DataTable {
                     .line_height(tokens::CAPTION_LEADING)
                     .child(header)
                     .children(self.rows.into_iter().enumerate().map(|(r, cells)| {
-                        let mut action = actions.next();
+                        let mut action = actions
+                            .next()
+                            .map(|a| a.with_scroll_parents(action_parents.clone()));
                         div()
                             .on_children_prepainted({
                                 let navigation = navigation.clone();
@@ -399,6 +490,8 @@ pub struct DetailRow {
 /// Bounded accessible list with one keyboard stop and independently expandable
 /// monospace rows. Producers own the retained history; this paints its newest N.
 pub struct DetailList {
+    pub(crate) scroll_parent: Option<ScrollHandle>,
+    focus_was_inside: bool,
     label: SharedString,
     rows: Vec<DetailRow>,
     total: usize,
@@ -419,6 +512,8 @@ impl DetailList {
         let label = label.into();
         assert!(!label.trim().is_empty() && limit > 0);
         Self {
+            scroll_parent: None,
+            focus_was_inside: false,
             label,
             rows: vec![],
             total: 0,
@@ -487,7 +582,13 @@ impl DetailList {
     }
 }
 impl Render for DetailList {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = self.focus.is_focused(w);
+        if focused && !self.focus_was_inside {
+            self.scroll.scroll_to_item(self.active);
+        }
+        self.focus_was_inside = focused;
+        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), w, cx);
         let p = Palette::get(cx);
         div()
             .id("bounded-detail-list")
@@ -520,90 +621,107 @@ impl Render for DetailList {
             })
             .child(
                 div()
-                    .id("rows")
-                    .role(Role::List)
-                    .aria_label(self.label.clone())
-                    .track_focus(&self.focus)
+                    .relative()
+                    .flex()
+                    .flex_col()
                     .min_h_0()
                     .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .on_scroll(cx.listener(|s, _, _, cx| {
-                        // Scroll listeners run after GPUI has applied the wheel offset.
-                        s.following = s.scroll.max_offset().y + s.scroll.offset().y > -px(40.)
-                            && (s.scroll.max_offset().y + s.scroll.offset().y).abs() < px(40.);
-                        cx.notify();
-                    }))
-                    .focus_visible(|d| d.border_1().border_color(p.focus))
-                    .capture_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
-                        if s.rows.is_empty()
-                            || e.prefer_character_input
-                            || e.keystroke.modifiers.number_of_modifiers() != 0
-                        {
-                            return;
-                        }
-                        match e.keystroke.key.as_str() {
-                            "down" => s.active = (s.active + 1).min(s.rows.len() - 1),
-                            "up" => s.active = s.active.saturating_sub(1),
-                            "home" => s.active = 0,
-                            "end" => s.active = s.rows.len() - 1,
-                            "enter" | "space" if !e.is_held => s.toggle(s.active, w, cx),
-                            "escape" => {
-                                s.expanded.clear();
-                            }
-                            _ => return,
-                        }
-                        s.following = false;
-                        s.scroll.scroll_to_item(s.active);
-                        w.prevent_default();
-                        cx.stop_propagation();
-                        cx.notify();
-                    }))
-                    .children(self.rows.iter().enumerate().map(|(i, r)| {
-                        let open = self.expanded.contains(&r.id);
+                    .child(reveal)
+                    .child(
                         div()
-                            .id(r.id)
-                            .role(Role::ListItem)
-                            .border_b_1()
-                            .border_color(p.border)
-                            .font_family("Menlo")
-                            .text_size(tokens::CAPTION_SIZE)
-                            .line_height(tokens::CAPTION_LEADING)
-                            .child(
+                            .id("rows")
+                            .role(Role::List)
+                            .aria_label(self.label.clone())
+                            .track_focus(&self.focus)
+                            .min_h_0()
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .on_scroll(cx.listener(|s, _, _, cx| {
+                                // Scroll listeners run after GPUI has applied the wheel offset.
+                                s.following = s.scroll.max_offset().y + s.scroll.offset().y
+                                    > -px(40.)
+                                    && (s.scroll.max_offset().y + s.scroll.offset().y).abs()
+                                        < px(40.);
+                                cx.notify();
+                            }))
+                            .focus_visible(|d| d.border_1().border_color(p.focus))
+                            .capture_key_down(cx.listener(|s, e: &KeyDownEvent, w, cx| {
+                                if s.rows.is_empty()
+                                    || e.prefer_character_input
+                                    || e.keystroke.modifiers.number_of_modifiers() != 0
+                                {
+                                    return;
+                                }
+                                match e.keystroke.key.as_str() {
+                                    "down" => s.active = (s.active + 1).min(s.rows.len() - 1),
+                                    "up" => s.active = s.active.saturating_sub(1),
+                                    "home" => s.active = 0,
+                                    "end" => s.active = s.rows.len() - 1,
+                                    "enter" | "space" if !e.is_held => s.toggle(s.active, w, cx),
+                                    "escape" => {
+                                        s.expanded.clear();
+                                    }
+                                    _ => return,
+                                }
+                                s.following = false;
+                                s.scroll.scroll_to_item(s.active);
+                                w.prevent_default();
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
+                            .children(self.rows.iter().enumerate().map(|(i, r)| {
+                                let open = self.expanded.contains(&r.id);
                                 div()
-                                    .id(("summary", r.id))
-                                    .role(Role::Button)
-                                    .aria_label(r.label.clone())
-                                    .aria_expanded(open)
-                                    .when(i == self.active, |d| {
-                                        d.aria_active_descendant()
-                                            .border_l_2()
-                                            .border_color(p.focus)
+                                    .id(r.id)
+                                    .role(Role::ListItem)
+                                    .border_b_1()
+                                    .border_color(p.border)
+                                    .font_family("Menlo")
+                                    .text_size(tokens::CAPTION_SIZE)
+                                    .line_height(tokens::CAPTION_LEADING)
+                                    .child(
+                                        div()
+                                            .id(("summary", r.id))
+                                            .role(Role::Button)
+                                            .aria_label(r.label.clone())
+                                            .aria_expanded(open)
+                                            .when(i == self.active, |d| {
+                                                d.aria_active_descendant()
+                                                    .border_l_2()
+                                                    .border_color(p.focus)
+                                            })
+                                            .p(px(8.))
+                                            .hover(|d| d.bg(p.raised))
+                                            .child(format!(
+                                                "{} {}",
+                                                if open { "▾" } else { "▸" },
+                                                r.label
+                                            ))
+                                            .on_click(
+                                                cx.listener(move |s, _, w, cx| s.toggle(i, w, cx)),
+                                            )
+                                            .on_a11y_action(AccessibleAction::Click, {
+                                                let entity = cx.entity();
+                                                move |_, w, cx| {
+                                                    entity.update(cx, |s, cx| s.toggle(i, w, cx))
+                                                }
+                                            }),
+                                    )
+                                    .when(open, |d| {
+                                        d.child(
+                                            div()
+                                                .id("event-data")
+                                                .role(Role::Label)
+                                                .aria_label("Event data")
+                                                .aria_value(r.detail.clone())
+                                                .p(px(12.))
+                                                .bg(p.raised)
+                                                .child(r.detail.clone()),
+                                        )
                                     })
-                                    .p(px(8.))
-                                    .hover(|d| d.bg(p.raised))
-                                    .child(format!("{} {}", if open { "▾" } else { "▸" }, r.label))
-                                    .on_click(cx.listener(move |s, _, w, cx| s.toggle(i, w, cx)))
-                                    .on_a11y_action(AccessibleAction::Click, {
-                                        let entity = cx.entity();
-                                        move |_, w, cx| {
-                                            entity.update(cx, |s, cx| s.toggle(i, w, cx))
-                                        }
-                                    }),
-                            )
-                            .when(open, |d| {
-                                d.child(
-                                    div()
-                                        .id("event-data")
-                                        .role(Role::Label)
-                                        .aria_label("Event data")
-                                        .aria_value(r.detail.clone())
-                                        .p(px(12.))
-                                        .bg(p.raised)
-                                        .child(r.detail.clone()),
-                                )
-                            })
-                    })),
+                            })),
+                    ),
             )
     }
 }
@@ -663,6 +781,7 @@ pub struct ChartPoint {
     pub value: Option<f64>,
 }
 pub struct Chart {
+    pub(crate) scroll_parent: Option<ScrollHandle>,
     label: SharedString,
     unit: SharedString,
     points: Vec<ChartPoint>,
@@ -689,6 +808,7 @@ impl Chart {
             cx.notify();
         });
         Self {
+            scroll_parent: None,
             label: label.into(),
             unit: unit.into(),
             points: vec![],
@@ -728,7 +848,8 @@ impl Chart {
     }
 }
 impl Render for Chart {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let reveal = focus_reveal(self.focus.clone(), self.scroll_parent.clone(), w, cx);
         let p = Palette::get(cx);
         let max = self
             .points
@@ -738,6 +859,8 @@ impl Render for Chart {
             .fold(1., f64::max);
         div()
             .id("chart")
+            .relative()
+            .child(reveal)
             .role(Role::Group)
             .aria_label(self.label.clone())
             .track_focus(&self.focus)

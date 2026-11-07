@@ -62,3 +62,7 @@ unsafe extern "C" {
 mod tests;
 pub mod insights;
 pub mod models;
+mod form;
+pub mod knowledge;
+mod json;
+pub mod modes;
