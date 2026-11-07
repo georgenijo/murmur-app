@@ -67,24 +67,31 @@ export function sanitizeTheme(value: unknown): ThemeConfigV1 {
 
 /** Durable v1 normalization preserves fields owned by newer hosts. The
  * sanitizers above remain projections for portable imports/exports and UI use.
+ * A prior source carries only opaque fields; all known values (including
+ * intentional removals) come from the supplied replacement.
  */
-export function normalizeStoredTheme(value: unknown): ThemeConfigV1 {
+export function normalizeStoredTheme(value: unknown, source: unknown = value): ThemeConfigV1 {
   const sanitized = sanitizeTheme(value);
-  if (!isRecord(value) || value.version !== APPEARANCE_VERSION) return sanitized;
-  const theme = preserveUnknownFields(value, sanitized, [
+  const previous = isRecord(source) && source.version === APPEARANCE_VERSION ? source : {};
+  const supplied = isRecord(value) && value.version === APPEARANCE_VERSION ? value : {};
+  const knownKeys = [
     'version', 'presetId', 'accent', 'background', 'foreground', 'contrast', 'light', 'dark',
-  ]);
+  ];
+  const theme = preserveUnknownFields(previous,
+    preserveUnknownFields(supplied, sanitized, knownKeys), knownKeys);
   for (const mode of ['light', 'dark'] as const) {
-    if (!isRecord(value[mode])) continue;
-    const overrides = preserveUnknownFields(value[mode], sanitized[mode] ?? {}, MURMUR_TOKEN_NAMES);
+    const overrides = preserveUnknownFields(previous[mode],
+      preserveUnknownFields(supplied[mode], sanitized[mode] ?? {}, MURMUR_TOKEN_NAMES),
+      MURMUR_TOKEN_NAMES);
     if (Object.keys(overrides).length) theme[mode] = overrides;
   }
   return theme;
 }
 
-export function normalizeStoredSelection(value: unknown): AppearanceSelectionV1 | undefined {
+export function normalizeStoredSelection(value: unknown, source: unknown = value): AppearanceSelectionV1 | undefined {
   const selection = sanitizeAppearanceSelection(value);
-  return selection ? preserveUnknownFields(value, selection, ['light', 'dark']) : undefined;
+  return selection ? preserveUnknownFields(source,
+    preserveUnknownFields(value, selection, ['light', 'dark']), ['light', 'dark']) : undefined;
 }
 
 export function sanitizeRevision(value: unknown): number {

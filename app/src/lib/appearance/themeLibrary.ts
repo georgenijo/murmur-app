@@ -135,7 +135,7 @@ function parseSource(value: unknown): ThemeLibrarySourceV1 | null {
   }, knownKeys);
 }
 
-export function parseThemeLibraryEntry(value: unknown): ThemeLibraryEntryV1 | null {
+export function parseThemeLibraryEntry(value: unknown, previous?: ThemeLibraryEntryV1): ThemeLibraryEntryV1 | null {
   if (!isRecord(value) || value.version !== THEME_LIBRARY_VERSION) return null;
   if (!isThemeId(value.id) || !isLabel(value.label)) return null;
   const modes = parseModes(value.modes);
@@ -145,15 +145,17 @@ export function parseThemeLibraryEntry(value: unknown): ThemeLibraryEntryV1 | nu
     return null;
   }
   if (value.theme.presetId !== 'sonic' && value.theme.presetId !== 'custom') return null;
-  return preserveUnknownFields<ThemeLibraryEntryV1>(value, {
+  const knownKeys = ['version', 'id', 'label', 'modes', 'theme', 'source', 'collection'];
+  return preserveUnknownFields(previous, preserveUnknownFields<ThemeLibraryEntryV1>(value, {
     version: 1,
     id: value.id,
     label: value.label.trim(),
     modes,
-    theme: normalizeStoredTheme(value.theme),
-    source,
-    ...(collection ? { collection } : {}),
-  }, ['version', 'id', 'label', 'modes', 'theme', 'source', 'collection']);
+    theme: normalizeStoredTheme(value.theme, previous?.theme),
+    source: preserveUnknownFields(previous?.source, source,
+      ['kind', 'extensionId', 'version', 'license', 'sourceUrl']),
+    ...(collection ? { collection: preserveUnknownFields(previous?.collection, collection, ['id', 'label']) } : {}),
+  }, knownKeys), knownKeys);
 }
 
 export function emptyThemeLibrary(): ThemeLibraryDocumentV1 {
@@ -300,7 +302,14 @@ function publishMutation(
     ...current,
     version: 1,
     revision: nextLibraryRevision(current.revision),
-    themes: [...themes],
+    // Stable IDs retain opaque entry and nested metadata during replacement or
+    // rename. Removed IDs are deliberately absent; other themes stay intact.
+    themes: themes.map((theme) => {
+      const previous = current.themes.find((entry) => entry.id === theme.id);
+      const parsed = parseThemeLibraryEntry(theme, previous);
+      if (!parsed) throw new Error(`The theme library entry "${theme.label}" is invalid.`);
+      return parsed;
+    }),
   };
   writeThemeLibrary(next, storage);
   return next;
@@ -402,7 +411,7 @@ export function makeLocalThemeEntry(
     id,
     label,
     modes: [...modes],
-    theme: sanitizeTheme(theme),
+    theme: normalizeStoredTheme(theme),
     source: { kind: 'local' },
   };
   const parsed = parseThemeLibraryEntry(entry);

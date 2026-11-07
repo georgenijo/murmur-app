@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import fixtures from '../../src-tauri/crates/murmur-core/src/state/gpui-downgrade-fixtures.json';
-import type { AppearanceController } from './appearance/types';
+import type { AppearanceController, AppearanceDocumentV1, ThemeLibraryEntryV1 } from './appearance/types';
 
 // Production decoders, controller, storage and queued writer; only the native
 // invoke boundary is replaced. All source data is checked-in and synthetic.
@@ -103,6 +103,185 @@ it('loads GPUI appearance/library without repair writes and preserves opaque fie
   const exportedLibrary = JSON.parse(storage.exportThemeLibraryEntryText(controller().library.document.themes[0]));
   expect(exportedLibrary).toEqual({ version: 2, name: 'Synthetic', modes: ['dark'], theme: { version: 1, presetId: 'custom' } });
   expect(JSON.stringify([exportedAppearance, exportedLibrary])).not.toContain('future');
+});
+
+it.each([
+  'mode', 'custom edits', 'reset', 'import', 'single selection', 'paired selection',
+  'save current', 'save preview', 'install', 'duplicate', 'rename collection entry',
+  'remove selected', 'replace selected', 'remove unselected',
+])('preserves nested GPUI metadata through %s and the native save payloads', async (edit) => {
+  const library = structuredClone(fixtures.library);
+  // A distinct retained entry catches deletion/replacement accidentally wiping
+  // another theme's metadata. Use only derivatives of the synthetic fixture.
+  const other = { ...structuredClone(library.themes[0]), id: 'retained-theme', futureEntry: 99 };
+  library.themes.push(other);
+  const { disk, ipc, lifecycle, storage, mount } = await setup(fixtures.appearance, library);
+  const controller = await mount();
+  const targetId = library.themes[0].id;
+  let deletedId: string | undefined;
+  const imported = storage.previewAppearanceImport(JSON.stringify({
+    version: 1, mode: 'light', theme: { version: 1, presetId: 'custom', accent: '#112233' },
+  }));
+  const run = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    let result!: T;
+    await act(async () => { result = await operation(); });
+    return result;
+  };
+  switch (edit) {
+    case 'mode':
+      await run(() => controller().setMode('dark'));
+      expect(controller().document.mode).toBe('dark');
+      break;
+    case 'custom edits':
+      await run(() => controller().updateTheme({ accent: '#112233' }));
+      expect(controller().document.theme.accent).toBe('#112233');
+      expect(storage.sanitizeTheme(controller().document.theme).dark).toBeUndefined();
+      await run(() => controller().updateTheme({ background: '#223344' }));
+      expect(controller().document.theme).toMatchObject({ accent: '#112233', background: '#223344' });
+      await run(() => controller().updateTheme({ accent: undefined }));
+      expect(controller().document.theme).not.toHaveProperty('accent');
+      expect(controller().document.theme.background).toBe('#223344');
+      expect(controller().document.selection).toMatchObject({ light: 'custom', dark: 'custom' });
+      await run(() => controller().updateTheme({ dark: { background: '#334455' } }));
+      expect(controller().document.theme.dark?.background).toBe('#334455');
+      await run(() => controller().updateTheme({ dark: undefined }));
+      expect(storage.sanitizeTheme(controller().document.theme).dark).toBeUndefined();
+      break;
+    case 'reset':
+      await run(() => controller().reset());
+      expect(storage.sanitizeTheme(controller().document.theme)).toEqual({ version: 1, presetId: 'sonic' });
+      expect(controller().document.selection).toMatchObject({ light: 'sonic', dark: 'sonic' });
+      break;
+    case 'import':
+      await run(() => controller().commitImport(imported));
+      expect(storage.sanitizeTheme(controller().document.theme)).toEqual(imported.theme);
+      expect(controller().document.mode).toBe('light');
+      break;
+    case 'single selection':
+    case 'paired selection': {
+      const paired = edit === 'paired selection';
+      await run(() => controller().commitImport(controller().library.previewSelection(paired ? 'opencode' : targetId)));
+      expect(controller().document.selection).toMatchObject({
+        light: paired ? 'opencode' : 'custom', dark: paired ? 'opencode' : targetId,
+      });
+      break;
+    }
+    case 'save current': {
+      const saved = await run(() => controller().library.saveCurrent('Saved synthetic'));
+      expect(saved.label).toBe('Saved synthetic');
+      expectOpaqueUnchanged(fixtures.appearance.theme, saved.theme);
+      expect(storage.sanitizeTheme(saved.theme)).toEqual(storage.sanitizeTheme(fixtures.appearance.theme));
+      break;
+    }
+    case 'save preview': {
+      const saved = await run(() => controller().library.savePreview('Imported synthetic', imported));
+      expect(saved).toMatchObject({ label: 'Imported synthetic', theme: imported.theme });
+      break;
+    }
+    case 'install':
+      await run(() => controller().library.install([storage.makeLocalThemeEntry('new-synthetic', 'New synthetic', imported.theme)]));
+      expect(controller().library.document.themes.map(entry => entry.id)).toContain('new-synthetic');
+      break;
+    case 'duplicate': {
+      // Same makeLocalThemeEntry + install path as the Duplicate card action.
+      const source = controller().library.document.themes[0];
+      const copy = storage.makeLocalThemeEntry('copy-synthetic', 'Copy of Synthetic', source.theme, source.modes);
+      await run(() => controller().library.install([copy]));
+      expectOpaqueUnchanged(source.theme, controller().library.document.themes[2].theme);
+      expect(controller().library.document.themes[2]).toMatchObject({ id: copy.id, label: copy.label });
+      break;
+    }
+    case 'rename collection entry':
+    case 'replace selected': {
+      await run(() => controller().commitImport(controller().library.previewSelection(targetId)));
+      const previous = controller().library.document.themes.filter(entry => entry.collection?.id === 'synthetic');
+      const old = previous[0];
+      // Replacements contain validated known fields only: preservation must
+      // come from the stored entry with the same ID, never from an array index.
+      const replacement: ThemeLibraryEntryV1 = {
+        version: 1, id: old.id, label: 'Renamed synthetic', modes: ['dark'],
+        theme: { version: 1, presetId: 'custom', accent: '#112233' },
+        source: { kind: 'local' }, collection: { id: 'synthetic', label: 'Renamed collection' },
+      };
+      if (edit === 'replace selected') {
+        replacement.id = 'replacement-synthetic';
+        deletedId = targetId;
+      }
+      await run(() => controller().library.replaceCollection('synthetic', [replacement, other as ThemeLibraryEntryV1], previous));
+      expect(controller().library.document.themes[0]).toMatchObject(replacement);
+      if (deletedId) expect(controller().document.selection?.dark).toBe('sonic');
+      else expect(controller().document.theme.dark?.primary).toBe(storage.resolveTheme(replacement.theme, 'dark').tokens.primary);
+      break;
+    }
+    case 'remove selected':
+    case 'remove unselected':
+      if (edit === 'remove selected') await run(() => controller().commitImport(controller().library.previewSelection(targetId)));
+      await run(() => controller().library.remove([targetId]));
+      deletedId = targetId;
+      expect(controller().library.document.themes.map(entry => entry.id)).toEqual([other.id]);
+      expect(controller().document.selection?.dark).toBe(edit === 'remove selected' ? 'sonic' : 'custom');
+      break;
+  }
+  await lifecycle.flushSourceState();
+  const saves = ipc.mock.calls.filter(([command]) => command.startsWith('save_'));
+  expect(saves.length).toBeGreaterThan(0);
+  const expectLibraryOpaque = (written: unknown) => {
+    const actual = written as { themes: ThemeLibraryEntryV1[] };
+    expectOpaqueUnchanged({ ...library, themes: [] }, actual);
+    for (const original of library.themes) {
+      if (original.id !== deletedId) {
+        expectOpaqueUnchanged(original, actual.themes.find(entry => entry.id === original.id));
+      }
+    }
+  };
+  // Inspect every native write, including intermediate edits, rather than just
+  // checking the final in-memory snapshot or a localStorage cache.
+  for (const [command, args] of saves) {
+    if (command === 'save_webkit_source') {
+      expect(args!.key).toBe('murmur-appearance');
+      expectOpaqueUnchanged(fixtures.appearance, args!.value);
+    } else if (command === 'save_theme_library_blob') {
+      expectLibraryOpaque(JSON.parse(args!.blob as string));
+    }
+  }
+  expectOpaqueUnchanged(fixtures.appearance, disk['murmur-appearance']);
+  expectLibraryOpaque(disk['murmur-theme-library']);
+  const persisted = disk['murmur-appearance'] as AppearanceDocumentV1;
+  expect(storage.sanitizeTheme(persisted.theme)).toEqual(storage.sanitizeTheme(controller().document.theme));
+  expect(persisted.mode).toBe(controller().document.mode);
+  expect(persisted.selection).toEqual(controller().document.selection);
+  expect(disk['murmur-theme-library']).toEqual(controller().library.document);
+  expect(storage.loadAppearanceDocument().needsRepair).toBe(false);
+  expect(storage.loadThemeLibrary()).toMatchObject({ needsRepair: false });
+  expect(controller().error).toBeNull();
+  expect(controller().library.error).toBeNull();
+  const exported = [controller().exportText(), ...controller().library.document.themes.map(storage.exportThemeLibraryEntryText)];
+  expect(exported.join('')).not.toContain('future');
+});
+
+it('keeps nested opaque metadata during automatic library ID rename and selection repair', async () => {
+  const library = structuredClone(fixtures.library);
+  library.themes[0].id = 'opencode';
+  const appearance = structuredClone(fixtures.appearance);
+  appearance.selection.dark = 'opencode';
+  const { ipc, lifecycle, storage, mount } = await setup(appearance, library);
+  const controller = await mount();
+  await lifecycle.flushSourceState();
+  const renamed = controller().library.document.themes[0];
+  expect(renamed.id).toBe('synthetic');
+  expectOpaqueUnchanged(library.themes[0], renamed);
+  expect(controller().document.selection?.dark).toBe(renamed.id);
+  for (const [, args] of ipc.mock.calls.filter(([command]) => command === 'save_webkit_source')) {
+    expectOpaqueUnchanged(appearance, args!.value);
+  }
+  expect(ipc.mock.calls.some(([command]) => command === 'save_webkit_source')).toBe(true);
+  // The library's repaired IDs are persisted by its next user mutation.
+  await act(async () => { await controller().library.saveCurrent('Synthetic copy'); });
+  await lifecycle.flushSourceState();
+  const writes = ipc.mock.calls.filter(([command]) => command === 'save_theme_library_blob');
+  expect(writes).toHaveLength(1);
+  expectOpaqueUnchanged(library, JSON.parse(writes[0][1]!.blob as string));
+  expect(storage.loadThemeLibrary()).toMatchObject({ needsRepair: false });
 });
 
 it('repairs invalid known appearance fields without dropping opaque fields in the repair write', async () => {

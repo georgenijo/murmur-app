@@ -60,8 +60,12 @@ export function createAppearanceDocument(
   selection?: AppearanceSelectionV1,
   source?: unknown,
 ): AppearanceDocumentV1 {
-  const sanitizedTheme = normalizeStoredTheme(theme);
-  const sanitizedSelection = normalizeStoredSelection(selection);
+  // Edits may supply fresh known-field projections (reset, import, selection,
+  // custom controls). Carry opaque nested source data across those replacements
+  // without restoring known overrides that the edit intentionally removed.
+  const previous = isRecord(source) ? source : {};
+  const sanitizedTheme = normalizeStoredTheme(theme, previous.theme);
+  const sanitizedSelection = normalizeStoredSelection(selection, previous.selection);
   return preserveUnknownFields(source, {
     version: 1,
     revision: Number.isSafeInteger(revision)

@@ -286,7 +286,8 @@ function useMainAppearanceController(): AppearanceController {
   const updateTheme = useCallback((updates: Partial<ThemeConfigV1>) =>
     commit('user', (current) => {
       const selection = appearanceSelection(current);
-      const hasCompiledOverrides = Boolean(current.theme.light || current.theme.dark);
+      const knownTheme = sanitizeTheme(current.theme);
+      const hasCompiledOverrides = Boolean(knownTheme.light || knownTheme.dark);
       const isLibraryOwned = selection.light !== 'custom' || selection.dark !== 'custom';
       const rendered = current.cache[concreteAppearance(current.mode)];
       const editableBase: ThemeConfigV1 = hasCompiledOverrides || isLibraryOwned
