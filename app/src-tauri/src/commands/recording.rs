@@ -7090,6 +7090,7 @@ pub(crate) mod tests {
         assert_eq!(warmups, ["parakeet-tdt-0.6b-v3-coreml"]);
     }
 
+    #[cfg(feature = "tauri-host")]
     pub(crate) fn partial_lease_fixture() -> (tauri::App<tauri::test::MockRuntime>, impl Send) {
         let recording_id = 41;
         let app_state = AppState::default();
@@ -7634,6 +7635,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn runtime_failure_bridge_emits_recovery_before_failure_and_records_one_failed_run() {
         let root = tempfile::tempdir().expect("performance diagnostics temp dir");
         let performance = crate::performance_metrics::PerformanceMetrics::default();
@@ -7776,6 +7778,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn idle_after_a_timed_out_stop_clears_processing_for_the_current_recording() {
         let recording_id = 384;
         let app_state = AppState::default();

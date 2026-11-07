@@ -406,6 +406,18 @@ pub mod runtime {
         RUNTIME.set(handle)
     }
     fn handle() -> &'static tokio::runtime::Handle {
+        // Unit tests exercise shared async owners without launching an app.
+        // Production still requires the executable-owned runtime explicitly.
+        #[cfg(test)]
+        {
+            static TEST_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+            RUNTIME.get().unwrap_or_else(|| {
+                TEST_RUNTIME
+                    .get_or_init(|| tokio::runtime::Runtime::new().expect("test runtime"))
+                    .handle()
+            })
+        }
+        #[cfg(not(test))]
         RUNTIME.get().expect("host runtime must be installed")
     }
     pub fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>

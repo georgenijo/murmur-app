@@ -45,6 +45,7 @@ pub(crate) fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn generated_clipboard_acl_matches_build_configuration() {
         let mut context = crate::generated_context();
         let authority = context.runtime_authority_mut();

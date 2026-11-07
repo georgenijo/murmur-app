@@ -628,11 +628,11 @@ mod tests {
             // Simulate Tao's conversion while the window is still on the 2x
             // launch monitor. Physical inputs used to halve both values here.
             assert_eq!(
-                crate::host::Size::from(restored.inner_size).to_logical::<f64>(2.0),
+                dpi::Size::from(restored.inner_size).to_logical::<f64>(2.0),
                 LogicalSize::new(1100.0, 780.0)
             );
             assert_eq!(
-                crate::host::Position::from(LogicalPosition::new(bounds.x, bounds.y))
+                dpi::Position::from(LogicalPosition::new(bounds.x, bounds.y))
                     .to_logical::<f64>(2.0),
                 LogicalPosition::new(2000.0, 100.0)
             );
@@ -652,11 +652,11 @@ mod tests {
         // On the 1x launch display, Physical inputs used to double the size and
         // send x=-3600 rather than x=-1800 to AppKit.
         assert_eq!(
-            crate::host::Size::from(restored.inner_size).to_logical::<f64>(1.0),
+            dpi::Size::from(restored.inner_size).to_logical::<f64>(1.0),
             LogicalSize::new(1100.0, 780.0)
         );
         assert_eq!(
-            crate::host::Position::from(LogicalPosition::new(restored.bounds.x, restored.bounds.y))
+            dpi::Position::from(LogicalPosition::new(restored.bounds.x, restored.bounds.y))
                 .to_logical::<f64>(1.0),
             LogicalPosition::new(-1800.0, -100.0)
         );

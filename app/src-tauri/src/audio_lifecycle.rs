@@ -4600,8 +4600,10 @@ mod tests {
         shutdown(&supervisor);
     }
 
+    #[cfg(feature = "tauri-host")]
     struct WaveformFactory(Sender<Arc<audio::CaptureActivity>>);
 
+    #[cfg(feature = "tauri-host")]
     impl WorkerFactory for WaveformFactory {
         fn spawn(
             &self,
@@ -4624,6 +4626,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tauri-host")]
     fn waveform_supervisor() -> (AudioSupervisor, Receiver<Arc<audio::CaptureActivity>>) {
         let (sender, receiver) = mpsc::channel();
         (
@@ -4636,6 +4639,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "tauri-host")]
     fn start_waveform(
         supervisor: &AudioSupervisor,
         activities: &Receiver<Arc<audio::CaptureActivity>>,
@@ -4656,6 +4660,7 @@ mod tests {
         activity
     }
 
+    #[cfg(feature = "tauri-host")]
     fn stop_waveform(supervisor: &AudioSupervisor, generation: u64) {
         let (sender, receiver) = mpsc::channel();
         supervisor
@@ -4674,6 +4679,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn stop_before_main_drain_drops_queued_waveform() {
         let levels = crate::events::tests::DeferredLevels::new();
         let (supervisor, activities) = waveform_supervisor();
@@ -4687,6 +4693,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn cancel_before_main_drain_drops_queued_waveform() {
         let levels = crate::events::tests::DeferredLevels::new();
         let (supervisor, activities) = waveform_supervisor();
@@ -4706,6 +4713,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn replacement_before_main_drain_drops_old_waveform_and_delivers_new_generation() {
         let levels = crate::events::tests::DeferredLevels::new();
         let (supervisor, activities) = waveform_supervisor();

@@ -502,8 +502,14 @@ mod tests {
         assert_eq!(MODEL_SHA256.len(), 64);
         assert!(MODEL_URL.ends_with(MODEL_FILENAME));
         assert!(MODEL_URL.contains("/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/"));
-        let path = installed_model_path().unwrap();
-        assert!(path.ends_with(Path::new(MODEL_SHA256).join(MODEL_FILENAME)));
+        #[cfg(feature = "tauri-host")]
+        {
+            let path = installed_model_path().unwrap();
+            assert!(path.ends_with(Path::new(MODEL_SHA256).join(MODEL_FILENAME)));
+        }
+        // Native paths are injected by the executable, never inferred from HOME.
+        #[cfg(all(feature = "native-host", not(feature = "tauri-host")))]
+        assert!(installed_model_path().is_none());
     }
 
     /// Real-model check and synthetic end-of-turn measurement. Needs the

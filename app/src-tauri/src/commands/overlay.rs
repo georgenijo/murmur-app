@@ -1303,7 +1303,7 @@ pub fn hide_overlay(app: crate::host::Context) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tauri-host"))]
 mod tests {
     use super::*;
     #[test]

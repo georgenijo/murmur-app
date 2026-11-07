@@ -124,7 +124,7 @@ pub(crate) fn initialize(app: &crate::host::Context) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tauri-host"))]
 mod tests {
     #[test]
     fn quit_dispatch_remains_available_while_startup_reader_is_stalled() {

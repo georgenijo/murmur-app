@@ -302,7 +302,7 @@ pub(crate) fn set_waveform_subscription<R: crate::host::Runtime>(
 
 /// Synthetic regression observers replace Tauri's former listen_any test hooks.
 /// They inspect the transport seam without creating a production broadcast route.
-#[cfg(test)]
+#[cfg(all(test, feature = "tauri-host"))]
 pub(crate) fn observe_for_test<R: crate::host::Runtime>(
     app: &crate::host::Context<R>,
     event: EventKind,
@@ -342,7 +342,7 @@ pub(crate) fn transport_send_str<R: crate::host::Runtime>(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tauri-host"))]
 pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

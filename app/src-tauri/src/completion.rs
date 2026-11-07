@@ -430,7 +430,7 @@ pub(crate) fn native_copy_history(
         .map_err(|_| "History changed or clipboard unavailable".into())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tauri-host"))]
 mod dispatch_tests {
     use super::*;
     use std::{

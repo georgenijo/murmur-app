@@ -318,6 +318,7 @@ mod tests {
         );
     }
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn generated_updater_fixture_acl_is_qa_only_and_main_only() {
         let mut context = crate::generated_context();
         let authority = context.runtime_authority_mut();

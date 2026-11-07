@@ -596,6 +596,7 @@ mod tests {
         state
     }
 
+    #[cfg(feature = "tauri-host")]
     fn take_wake(coordinator: &MeetingSuggestions) -> bool {
         use std::future::Future;
         let future = coordinator.0.changed.notified();
@@ -605,7 +606,9 @@ mod tests {
     }
 
     // Asserts that the last preview Arc is destroyed while its lease is held.
+    #[cfg(feature = "tauri-host")]
     struct PartialPreviewResource(crate::host::Context<tauri::test::MockRuntime>);
+    #[cfg(feature = "tauri-host")]
     impl Drop for PartialPreviewResource {
         fn drop(&mut self) {
             let state = self.0.services();
@@ -621,6 +624,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tauri-host")]
     async fn partial_lease_survives_cancelled_wrapper_until_worker_cleanup_finishes() {
         let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
         let state = app.services();
@@ -680,6 +684,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn partial_pre_spawn_exits_drop_preview_before_lease_before_and_after_preparation() {
         fn prepare(lease: impl Send, preview: Arc<PartialPreviewResource>, no_context: bool) {
             let (_transcription, _lease, _retained_preview) = {
@@ -719,6 +724,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn stale_partial_lease_neither_releases_nor_wakes_a_new_owner() {
         let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
         let state = app.services();
@@ -744,6 +750,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "tauri-host")]
     async fn partial_lease_releases_on_worker_early_return_and_panic_without_clearing_prompt() {
         for panic in [false, true] {
             let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();

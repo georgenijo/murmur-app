@@ -4365,6 +4365,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn terminal_teardown_retires_samples_before_it_can_block() {
         let levels = crate::events::tests::DeferredLevels::new();
         let activity = Arc::new(CaptureActivity::default());

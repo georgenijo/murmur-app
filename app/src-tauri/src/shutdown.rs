@@ -699,6 +699,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     #[test]
+    #[cfg(feature = "tauri-host")]
     fn generated_shutdown_acl_is_feature_gated_and_main_only() {
         let mut context = crate::generated_context();
         let authority = context.runtime_authority_mut();
