@@ -434,7 +434,7 @@ mod dispatch_tests {
             ])
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
-        let window = crate::host::WindowBuilder::new(&app, "main", Default::default())
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .unwrap();
         let request = |cmd: &str| tauri::webview::InvokeRequest {

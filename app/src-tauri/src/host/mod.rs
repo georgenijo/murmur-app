@@ -2,12 +2,36 @@
 //! slots, never an AppHandle-style erased service registry. Tauri keeps its
 //! managed-state adapter and command ABI until Phase 4.
 #[cfg(feature = "tauri-host")]
-pub use tauri::async_runtime as runtime;
+pub mod runtime {
+    pub fn spawn<F: std::future::Future + Send + 'static>(
+        future: F,
+    ) -> tauri::async_runtime::JoinHandle<F::Output>
+    where
+        F::Output: Send + 'static,
+    {
+        tauri::async_runtime::spawn(future)
+    }
+    pub fn spawn_blocking<F: FnOnce() -> T + Send + 'static, T: Send + 'static>(
+        work: F,
+    ) -> tauri::async_runtime::JoinHandle<T> {
+        tauri::async_runtime::spawn_blocking(work)
+    }
+    pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tauri::async_runtime::block_on(future)
+    }
+}
 #[cfg(feature = "tauri-host")]
-pub use tauri::{
-    AppHandle as Context, Runtime, State as StateRef, WebviewWindow as Window,
-    Wry as DefaultRuntime,
-};
+pub trait Runtime: tauri::Runtime {}
+#[cfg(feature = "tauri-host")]
+impl<R: tauri::Runtime> Runtime for R {}
+#[cfg(feature = "tauri-host")]
+pub type Context<R = DefaultRuntime> = tauri::AppHandle<R>;
+#[cfg(feature = "tauri-host")]
+pub type StateRef<'a, T> = tauri::State<'a, T>;
+#[cfg(feature = "tauri-host")]
+pub type Window<R = DefaultRuntime> = tauri::WebviewWindow<R>;
+#[cfg(feature = "tauri-host")]
+pub type DefaultRuntime = tauri::Wry;
 
 pub(crate) trait ServiceAccess<R: Runtime> {
     fn services(&self) -> StateRef<'_, crate::State>;
@@ -135,9 +159,21 @@ pub use native::*;
 #[cfg(not(feature = "tauri-host"))]
 pub use dpi::{LogicalPosition, LogicalSize};
 #[cfg(feature = "tauri-host")]
-pub use tauri::window;
+pub mod window {
+    pub type Color = tauri::window::Color;
+}
 #[cfg(feature = "tauri-host")]
-pub use tauri::{LogicalPosition, LogicalSize, Monitor, Result, Window as HostWindow, WindowEvent};
+pub type LogicalPosition<T> = tauri::LogicalPosition<T>;
+#[cfg(feature = "tauri-host")]
+pub type LogicalSize<T> = tauri::LogicalSize<T>;
+#[cfg(feature = "tauri-host")]
+pub type Monitor = tauri::Monitor;
+#[cfg(feature = "tauri-host")]
+pub type Result<T> = tauri::Result<T>;
+#[cfg(feature = "tauri-host")]
+pub type HostWindow<R = DefaultRuntime> = tauri::Window<R>;
+#[cfg(feature = "tauri-host")]
+pub type WindowEvent = tauri::WindowEvent;
 
 pub(crate) fn send<R: Runtime, P: serde::Serialize>(
     app: &Context<R>,
@@ -147,8 +183,7 @@ pub(crate) fn send<R: Runtime, P: serde::Serialize>(
 ) -> Result<()> {
     #[cfg(feature = "tauri-host")]
     {
-        use tauri::Emitter;
-        app.emit_to(tauri::EventTarget::webview_window(label), event, payload)
+        crate::events::transport_send(app, label, event, payload)
     }
     #[cfg(not(feature = "tauri-host"))]
     {
@@ -164,21 +199,16 @@ pub(crate) fn send_str<R: Runtime>(
 ) -> Result<()> {
     #[cfg(feature = "tauri-host")]
     {
-        use tauri::Emitter;
-        app.emit_str_to(
-            tauri::EventTarget::webview_window(label),
-            event,
-            payload.to_owned(),
-        )
+        crate::events::transport_send_str(app, label, event, payload)
     }
     #[cfg(not(feature = "tauri-host"))]
     {
         app.send(label, event, payload)
     }
 }
-
 #[cfg(feature = "tauri-host")]
-pub use tauri::ipc::Response as BinaryResponse;
-
+pub type BinaryResponse = tauri::ipc::Response;
 #[cfg(all(test, feature = "tauri-host"))]
-pub use tauri::{Position, Size, WebviewWindowBuilder as WindowBuilder};
+pub type Position = tauri::Position;
+#[cfg(all(test, feature = "tauri-host"))]
+pub type Size = tauri::Size;

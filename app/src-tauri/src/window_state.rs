@@ -727,7 +727,7 @@ mod tests {
     fn native_background_refuses_transparency_and_invalid_input() {
         assert_eq!(
             parse_background("#123456").unwrap(),
-            crate::host::window::Color(18, 52, 86, 255)
+            "#123456ff".parse::<crate::host::window::Color>().unwrap()
         );
         for invalid in ["#12345600", "transparent", "rgb(0,0,0)", "é0", ""] {
             assert!(parse_background(invalid).is_err());

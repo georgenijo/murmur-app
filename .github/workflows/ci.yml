@@ -316,6 +316,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2

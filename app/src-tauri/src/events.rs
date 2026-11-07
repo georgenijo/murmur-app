@@ -315,6 +315,33 @@ pub(crate) fn observe_for_test<R: crate::host::Runtime>(
         .push((event, Arc::new(callback)));
 }
 
+// The only concrete Tauri transport remains in this constrained sink. The host
+// capability facade forwards here; it cannot expose Emitter or EventTarget.
+#[cfg(feature = "tauri-host")]
+pub(crate) fn transport_send<R: crate::host::Runtime, P: serde::Serialize>(
+    app: &crate::host::Context<R>,
+    label: &str,
+    event: &str,
+    payload: &P,
+) -> crate::host::Result<()> {
+    use tauri::Emitter;
+    app.emit_to(tauri::EventTarget::webview_window(label), event, payload)
+}
+#[cfg(feature = "tauri-host")]
+pub(crate) fn transport_send_str<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
+    label: &str,
+    event: &str,
+    payload: &str,
+) -> crate::host::Result<()> {
+    use tauri::Emitter;
+    app.emit_str_to(
+        tauri::EventTarget::webview_window(label),
+        event,
+        payload.to_owned(),
+    )
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -330,7 +357,7 @@ pub(crate) mod tests {
     impl DeferredLevels {
         pub(crate) fn new() -> Self {
             let app = mock_app();
-            let overlay = crate::host::WindowBuilder::new(&app, "overlay", Default::default())
+            let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
                 .build()
                 .unwrap();
             set_waveform_subscription(
@@ -383,10 +410,10 @@ pub(crate) mod tests {
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         initialize(app.handle());
-        let diagnostics = crate::host::WindowBuilder::new(&app, "diagnostics", Default::default())
+        let diagnostics = tauri::WebviewWindowBuilder::new(&app, "diagnostics", Default::default())
             .build()
             .unwrap();
-        let unrelated = crate::host::WindowBuilder::new(&app, "unrelated", Default::default())
+        let unrelated = tauri::WebviewWindowBuilder::new(&app, "unrelated", Default::default())
             .build()
             .unwrap();
         let received = Arc::new(AtomicUsize::new(0));
@@ -436,7 +463,7 @@ pub(crate) mod tests {
         let app = mock_app();
         let activity = Arc::new(crate::audio::CaptureActivity::default());
         activity.set_active(true);
-        let overlay = crate::host::WindowBuilder::new(&app, "overlay", Default::default())
+        let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
             .build()
             .unwrap();
         set_waveform_subscription(
@@ -591,10 +618,10 @@ pub(crate) mod tests {
         let app = mock_app();
         let activity = Arc::new(crate::audio::CaptureActivity::default());
         activity.set_active(true);
-        let main = crate::host::WindowBuilder::new(&app, "main", Default::default())
+        let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .unwrap();
-        let overlay = crate::host::WindowBuilder::new(&app, "overlay", Default::default())
+        let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
             .build()
             .unwrap();
         for (window, consumer) in [
@@ -676,10 +703,10 @@ pub(crate) mod tests {
         let root = tempfile::tempdir().unwrap();
         let service = CompletionService::start(root.path().into(), false).unwrap();
         crate::completion::initialize_with_service(app.handle(), service.clone());
-        let overlay = crate::host::WindowBuilder::new(&app, "overlay", Default::default())
+        let overlay = tauri::WebviewWindowBuilder::new(&app, "overlay", Default::default())
             .build()
             .unwrap();
-        let diagnostics = crate::host::WindowBuilder::new(&app, "diagnostics", Default::default())
+        let diagnostics = tauri::WebviewWindowBuilder::new(&app, "diagnostics", Default::default())
             .build()
             .unwrap();
         set_waveform_subscription(
