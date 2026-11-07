@@ -69,3 +69,46 @@ fn mode_and_spelling_exports_exclude_retained_opaque_fields() {
             .is_some()
     );
 }
+
+#[test]
+fn editing_site_browser_preserves_latest_host_and_opaque_fields() {
+    let latest = json!([{"id":"site.test","host":"new.example","browserBundleId":"com.apple.Safari","modeId":"builtin.technical","enabled":false,"future":"keep"}]);
+    let updated = super::edited_site_rules(
+        latest.as_array().unwrap(),
+        "site.test",
+        "browser",
+        "com.google.Chrome",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(updated[0]["host"], "new.example");
+    assert_eq!(updated[0]["browserBundleId"], "com.google.Chrome");
+    assert_eq!(updated[0]["future"], "keep");
+    assert_eq!(updated[0]["enabled"], false);
+    let updated = super::edited_site_rules(&updated, "site.test", "host", " GitHub.COM ")
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated[0]["host"], "github.com");
+    assert_eq!(updated[0]["browserBundleId"], "com.google.Chrome");
+    assert!(
+        super::edited_site_rules(&updated, "site.test", "host", "https://bad.example").is_err()
+    );
+    assert!(
+        super::edited_site_rules(&updated, "removed", "host", "old.example")
+            .unwrap()
+            .is_none()
+    );
+}
+#[test]
+fn site_field_edit_checks_duplicates_against_current_pair() {
+    let latest = json!([{"id":"a","host":"new.example","browserBundleId":"com.apple.Safari"},{"id":"b","host":"new.example","browserBundleId":"com.google.Chrome"}]);
+    assert!(
+        super::edited_site_rules(
+            latest.as_array().unwrap(),
+            "a",
+            "browser",
+            "com.google.Chrome"
+        )
+        .is_err()
+    );
+}

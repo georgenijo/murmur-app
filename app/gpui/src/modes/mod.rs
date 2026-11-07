@@ -16,6 +16,100 @@ use host::Action;
 use model::*;
 use serde_json::{Value, json};
 use std::rc::Rc;
+fn edited_site_rules(
+    rules: &[Value],
+    id: &str,
+    field: &str,
+    value: &str,
+) -> Result<Option<Vec<Value>>, &'static str> {
+    let Some(index) = rules.iter().position(|r| r["id"] == id) else {
+        return Ok(None);
+    };
+    let mut updated = rules[index].clone();
+    let key = match field {
+        "host" => "host",
+        "browser" => "browserBundleId",
+        _ => return Ok(None),
+    };
+    let value = if field == "host" {
+        normalize_host(value).ok_or("Enter an exact host such as github.com.")?
+    } else {
+        value.to_owned()
+    };
+    if updated[key] == value {
+        return Ok(None);
+    }
+    updated[key] = json!(value);
+    if rules.iter().enumerate().any(|(i, r)| {
+        i != index
+            && r["host"] == updated["host"]
+            && r["browserBundleId"] == updated["browserBundleId"]
+    }) {
+        return Err("That browser and host already have a rule.");
+    }
+    let mut next = rules.to_vec();
+    next[index] = updated;
+    Ok(Some(next))
+}
+fn card(p: Palette) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .border_1()
+        .border_color(p.hairline_strong)
+        .rounded(tokens::CARD_RADIUS)
+        .bg(p.tint_raised)
+        .shadow(p.card_shadow())
+}
+fn copy(title: impl Into<SharedString>, description: impl Into<SharedString>, p: Palette) -> Div {
+    let title = title.into();
+    let description = description.into();
+    let title_id = SharedString::from(format!("mode-row-title-{title}"));
+    let description_id = SharedString::from(format!("mode-row-description-{title}"));
+    div()
+        .flex_1()
+        .min_w_0()
+        .child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(gpui::text!(id = title_id, title)),
+        )
+        .child(
+            div()
+                .mt(px(4.))
+                .text_size(tokens::CAPTION_SIZE)
+                .line_height(px(18.))
+                .text_color(p.muted)
+                .child(gpui::text!(id = description_id, description)),
+        )
+}
+fn row(p: Palette) -> Div {
+    div()
+        .px(px(16.))
+        .py(px(12.))
+        .border_b_1()
+        .border_color(p.hairline)
+        .flex()
+        .items_center()
+        .gap(px(16.))
+}
+fn group(title: &'static str, content: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(
+            div()
+                .id(title)
+                .role(Role::Heading)
+                .aria_label(title)
+                .px(px(16.))
+                .text_size(px(16.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+        .child(content)
+}
 pub struct Modes {
     pub embedded: bool,
     _forms: Vec<Subscription>,
@@ -114,6 +208,7 @@ impl Modes {
         });
         site.update(cx, |s, cx| {
             s.inline = true;
+            s.set_placeholder("host", "github.com", w, cx);
             s.set(json!({"browser":BROWSERS[0].0,"host":""}), w, cx)
         });
         let sample = cx.new(|cx| {
@@ -286,40 +381,37 @@ impl Modes {
                 })
             })
     }
-    fn save_site_row(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn save_site_row(&mut self, id: &str, field: &str, cx: &mut Context<Self>) {
         let Some(form) = self.site_rows.get(id) else {
             return;
         };
-        let Some(host) = normalize_host(form.read(cx).value("host")) else {
-            self.notice = Some("Enter an exact host such as github.com.");
-            cx.notify();
-            return;
-        };
-        let browser = form.read(cx).value("browser").to_string();
         let Some(snapshot) = self.controller.model.snapshot.as_ref() else {
             return;
         };
-        let mut rules = snapshot.settings["browserSiteRules"]
-            .as_array()
-            .unwrap()
-            .clone();
-        if rules
-            .iter()
-            .any(|r| r["id"] != id && r["host"] == host && r["browserBundleId"] == browser)
-        {
-            self.notice = Some("That browser and host already have a rule.");
-            cx.notify();
-            return;
-        }
-        let Some(rule) = rules.iter_mut().find(|r| r["id"] == id) else {
+        let Some(rules) = snapshot.settings["browserSiteRules"].as_array() else {
             return;
         };
-        if rule["host"] == host && rule["browserBundleId"] == browser {
+        let value = form.read(cx).value(field);
+        let source_key = if field == "browser" {
+            "browserBundleId"
+        } else {
+            "host"
+        };
+        if self
+            .site_sources
+            .get(id)
+            .is_some_and(|source| source[source_key] == value)
+        {
             return;
         }
-        rule["host"] = json!(host);
-        rule["browserBundleId"] = json!(browser);
-        self.patch(json!({"browserSiteRules":rules}), cx);
+        match edited_site_rules(rules, id, field, value) {
+            Ok(Some(rules)) => self.patch(json!({"browserSiteRules":rules}), cx),
+            Ok(None) => (),
+            Err(notice) => {
+                self.notice = Some(notice);
+                cx.notify();
+            }
+        }
     }
     fn add_site(&mut self, cx: &mut Context<Self>) {
         let f = self.site.read(cx);
@@ -375,7 +467,7 @@ impl Render for Modes {
         let mut body = div()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(px(32.))
             .when(!self.embedded, |d| {
                 d.child(div().text_size(px(20.)).child(gpui::text!("Modes")))
             });
@@ -404,7 +496,7 @@ impl Render for Modes {
                 .unwrap_or_else(|| builtins().remove(0));
             self.selected = selected["id"].as_str().unwrap().into();
             let custom = selected["builtIn"] == false;
-            let mut list = div().flex().flex_wrap().gap(px(8.));
+            let mut list = div().grid().grid_cols(3).gap(px(8.)).p(px(12.));
             for m in all {
                 let id = m["id"].as_str().unwrap().to_string();
                 let e = cx.entity();
@@ -413,6 +505,20 @@ impl Render for Modes {
                         SharedString::from(format!("mode-{id}")),
                         m["name"].as_str().unwrap_or("Untitled mode").to_string(),
                     )
+                    .nav_row()
+                    .palette(Palette {
+                        tint_raised: p.surface.blend(p.accent.opacity(0.12)),
+                        ..p
+                    })
+                    .padding_y(px(8.))
+                    .bordered()
+                    .description(if m["builtIn"] == true {
+                        "Built-in"
+                    } else if m["enabled"] == true {
+                        "Enabled"
+                    } else {
+                        "Disabled"
+                    })
                     .toggled(id == self.selected)
                     .with_scroll_parent(Some(&self.scroll))
                     .on_click(move |_, _, cx| {
@@ -426,34 +532,49 @@ impl Render for Modes {
                     }),
                 );
             }
-            body = body.child(gpui::text!("Library")).child(list);
+            let mut library = card(p).child(list);
             let create = cx.entity();
             let duplicate = create.clone();
             let source = selected.clone();
-            body = body.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .child(
-                        Button::new("mode-create", "Create mode")
-                            .with_scroll_parent(Some(&self.scroll))
-                            .disabled(self.controller.model.pending)
-                            .on_click(move |_, _, cx| {
-                                create.update(cx, |s, cx| s.create(None, cx))
-                            }),
-                    )
-                    .child(
-                        Button::new("mode-duplicate", "Duplicate")
-                            .with_scroll_parent(Some(&self.scroll))
-                            .disabled(self.controller.model.pending)
-                            .on_click(move |_, _, cx| {
-                                duplicate.update(cx, |s, cx| s.create(Some(source.clone()), cx))
-                            }),
-                    )
-                    .child(self.button("modes-import", "Import modes…", Action::InspectImport, cx))
-                    .child(self.button("modes-export", "Export custom modes…", Action::Export, cx)),
-            );
+            library = library
+                .child(
+                    row(p)
+                        .child(copy(
+                            "Custom mode",
+                            "Start from your global settings, or duplicate a selected mode",
+                            p,
+                        ))
+                        .child(
+                            Button::new("mode-create", "Create mode")
+                                .intent(ButtonIntent::Primary)
+                                .with_scroll_parent(Some(&self.scroll))
+                                .disabled(self.controller.model.pending)
+                                .on_click(move |_, _, cx| {
+                                    create.update(cx, |s, cx| s.create(None, cx))
+                                }),
+                        ),
+                )
+                .child(
+                    row(p)
+                        .child(copy(
+                            "Import and export",
+                            "Share custom modes with their app and site bindings as a JSON file",
+                            p,
+                        ))
+                        .child(self.button(
+                            "modes-import",
+                            "Import modes…",
+                            Action::InspectImport,
+                            cx,
+                        ))
+                        .child(self.button(
+                            "modes-export",
+                            "Export custom modes…",
+                            Action::Export,
+                            cx,
+                        )),
+                );
+            body = body.child(group("Library", library));
             if let Some(preview) = s.import_preview.clone() {
                 let stale = preview.baseline != exchange::subset(&s.settings);
                 body = body.child(
@@ -481,17 +602,67 @@ impl Render for Modes {
                         ),
                 );
             }
-            body = body.child(gpui::text!("Selected mode")).child(gpui::text!(
-                selected["name"]
+            let mut parts = vec![
+                selected["writingStyle"]
                     .as_str()
-                    .unwrap_or("Untitled mode")
-                    .to_string()
-            ));
+                    .unwrap_or("global style")
+                    .replace('_', " "),
+            ];
+            for field in ["modelId", "language"] {
+                if let Some(value) = selected[field].as_str() {
+                    parts.push(value.to_owned());
+                }
+            }
+            if let Some(value) = selected["vocabularyPolicy"]
+                .as_str()
+                .filter(|s| *s != "inherit")
+            {
+                parts.push(format!("{value} vocabulary"));
+            }
+            if selected["contextPolicy"] == "project" {
+                parts.push("project context".into());
+            }
+            if let Some(value) = selected["autoPaste"].as_bool() {
+                parts.push(
+                    if value {
+                        "auto-paste"
+                    } else {
+                        "clipboard only"
+                    }
+                    .into(),
+                );
+            }
+            let summary = parts.join(" · ");
+            let summary = if custom {
+                summary
+            } else {
+                format!("Built-in template · {summary}")
+            };
+            let mut selected_card = card(p).child(
+                row(p)
+                    .child(copy(
+                        selected["name"]
+                            .as_str()
+                            .unwrap_or("Untitled mode")
+                            .to_owned(),
+                        summary,
+                        p,
+                    ))
+                    .child(
+                        Button::new("mode-duplicate", "Duplicate")
+                            .size(crate::ButtonSize::Compact)
+                            .with_scroll_parent(Some(&self.scroll))
+                            .disabled(self.controller.model.pending)
+                            .on_click(move |_, _, cx| {
+                                duplicate.update(cx, |s, cx| s.create(Some(source.clone()), cx))
+                            }),
+                    ),
+            );
             if custom {
                 if self.editing.is_none() {
                     let e = cx.entity();
                     let m = selected.clone();
-                    body = body.child(
+                    selected_card = selected_card.child(
                         Button::new("mode-edit", "Edit mode…")
                             .track_focus(&self.edit_focus)
                             .with_scroll_parent(Some(&self.scroll))
@@ -523,7 +694,7 @@ impl Render for Modes {
                         .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                     let e = cx.entity();
                     let cancel = e.clone();
-                    body = body
+                    selected_card = selected_card
                         .child(self.editor.clone())
                         .child(
                             Button::new("mode-save", "Save mode")
@@ -542,7 +713,7 @@ impl Render for Modes {
                 let id = self.selected.clone();
                 let patch = s.patch_without(&id);
                 let armed = self.confirm.as_deref() == Some(&id);
-                body = body.child(
+                selected_card = selected_card.child(
                     Button::new(
                         "mode-delete",
                         if armed {
@@ -571,19 +742,28 @@ impl Render for Modes {
                     }),
                 );
             } else {
-                body=body.child(gpui::text!("Built-in modes are read-only. Duplicate one to change its style, model, language, or vocabulary."));
+                selected_card = selected_card.child(row(p).child(copy("Customize", "Built-in modes are read-only. Duplicate one to change its style, model, language, or vocabulary.", p)));
             }
-            body = body.child(gpui::text!("Where it applies"));
+            body = body.child(group("Selected mode", selected_card));
+            let mut applies = card(p);
             let profiles = s.settings["appProfiles"].as_array().unwrap();
             if profiles.is_empty() {
-                body = body.child(self.button(
-                    "mode-add-app",
-                    "Add an app",
-                    Action::AddApp {
-                        mode_id: self.selected.clone(),
-                    },
-                    cx,
-                ));
+                applies = applies.child(
+                    row(p)
+                        .child(copy(
+                            "Bound applications",
+                            "Add an app, then choose its Mode here.",
+                            p,
+                        ))
+                        .child(self.button(
+                            "mode-add-app",
+                            "Add an app",
+                            Action::AddApp {
+                                mode_id: self.selected.clone(),
+                            },
+                            cx,
+                        )),
+                );
             }
             for profile in profiles {
                 let bundle = profile["bundleId"].as_str().unwrap_or_default().to_string();
@@ -598,7 +778,7 @@ impl Render for Modes {
                         }
                     }
                 }
-                body = body.child(self.button(
+                applies = applies.child(self.button(
                     &format!("bind-{bundle}"),
                     &format!(
                             "{} {}",
@@ -614,35 +794,57 @@ impl Render for Modes {
             }
             let enabled = s.settings["siteModeLookupEnabled"] == true;
             let owner = cx.entity();
-            body=body.child(div().p(px(16.)).border_1().border_color(p.hairline).rounded(tokens::CARD_RADIUS).bg(p.tint_raised).flex().items_center().gap(px(16.))
-                .child(div().flex_1().min_w_0().child("Browser sites").child(div().text_size(tokens::CAPTION_SIZE).text_color(p.muted).child(gpui::text!("Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule."))))
+            applies=applies.child(row(p)
+                .child(copy("Browser sites", "Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.", p))
                 .child(crate::Toggle::new("site-activation","Use browser site mode rules",enabled).with_scroll_parent(&self.scroll).disabled(self.controller.model.pending).on_change(move |v,_,cx|owner.update(cx,|s,cx|s.patch(json!({"siteModeLookupEnabled":*v}),cx)))));
             if enabled {
                 self.site
                     .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                 let e = cx.entity();
-                body = body.child(
+                applies = applies.child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(div().flex_1().min_w_0().child(self.site.clone()))
+                        .px(px(16.))
+                        .py(px(12.))
+                        .border_b_1()
+                        .border_color(p.hairline)
+                        .child(copy(
+                            "Add a site rule",
+                            format!(
+                                "Use {} on an exact host in one browser",
+                                selected["name"].as_str().unwrap_or("this mode")
+                            ),
+                            p,
+                        ))
                         .child(
-                            Button::new(
-                                "site-add",
-                                if self.site_edit.is_some() {
-                                    "Save site rule"
-                                } else {
-                                    "Add site rule"
-                                },
-                            )
-                            .caption(if self.site_edit.is_some() {
-                                "Save"
-                            } else {
-                                "Add"
-                            })
-                            .with_scroll_parent(Some(&self.scroll))
-                            .on_click(move |_, _, cx| e.update(cx, |s, cx| s.add_site(cx))),
+                            div()
+                                .mt(px(12.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .max_w(px(440.))
+                                        .min_w_0()
+                                        .child(self.site.clone()),
+                                )
+                                .child(
+                                    Button::new(
+                                        "site-add",
+                                        if self.site_edit.is_some() {
+                                            "Save site rule"
+                                        } else {
+                                            "Add site rule"
+                                        },
+                                    )
+                                    .caption(if self.site_edit.is_some() {
+                                        "Save"
+                                    } else {
+                                        "Add"
+                                    })
+                                    .with_scroll_parent(Some(&self.scroll))
+                                    .on_click(move |_, _, cx| e.update(cx, |s, cx| s.add_site(cx))),
+                                ),
                         ),
                 );
                 let rules = s.settings["browserSiteRules"].as_array().unwrap();
@@ -685,13 +887,13 @@ impl Render for Modes {
                         let change_subscription =
                             cx.subscribe(&form, move |s, _, event: &crate::form::Changed, cx| {
                                 if event.0 == "browser" {
-                                    s.save_site_row(&key, cx);
+                                    s.save_site_row(&key, "browser", cx);
                                 }
                             });
                         let focus = form.read(cx).control_focus("host", cx).unwrap();
                         let key = id.clone();
-                        let blur_subscription =
-                            cx.on_blur(&focus, w, move |s, _, cx| s.save_site_row(&key, cx));
+                        let blur_subscription = cx
+                            .on_blur(&focus, w, move |s, _, cx| s.save_site_row(&key, "host", cx));
                         self.site_subscriptions
                             .insert(id.clone(), vec![change_subscription, blur_subscription]);
                         self.site_sources.insert(id.clone(), r.clone());
@@ -723,13 +925,14 @@ impl Render for Modes {
                     let remove = toggle.clone();
                     let removal_id = format!("site:{id}");
                     let armed = self.confirm.as_deref() == Some(&removal_id);
-                    body = body.child(
+                    applies = applies.child(
                         div()
                             .id(SharedString::from(format!("site-row-{id}")))
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .py(px(8.))
+                            .px(px(16.))
+                            .py(px(12.))
                             .border_b_1()
                             .border_color(p.hairline)
                             .child(
@@ -761,6 +964,7 @@ impl Render for Modes {
                                     "Remove…"
                                 })
                                 .destructive_text()
+                                .bordered()
                                 .with_scroll_parent(Some(&self.scroll))
                                 .on_click(move |_, _, cx| {
                                     remove.update(cx, |s, cx| {
@@ -775,10 +979,17 @@ impl Render for Modes {
                             ),
                     );
                 }
-                body =
-                    body.child(self.button("site-probe", "Test current site", Action::Probe, cx));
+                applies = applies.child(
+                    row(p)
+                        .child(copy(
+                            "Current site",
+                            "Detects the frontmost browser host within five seconds",
+                            p,
+                        ))
+                        .child(self.button("site-probe", "Test current site", Action::Probe, cx)),
+                );
                 if let Some(probe) = s.probe {
-                    body = body.child(
+                    applies = applies.child(
                         div()
                             .id("mode-probe-result")
                             .role(Role::Status)
@@ -786,6 +997,7 @@ impl Render for Modes {
                     );
                 }
             }
+            body = body.child(group("Where it applies", applies));
             self.sample
                 .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
             let text = self.sample.read(cx).value("sample").to_string();

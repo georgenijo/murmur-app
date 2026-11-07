@@ -71,6 +71,17 @@ impl Form {
         self.labels.insert(key, label);
         cx.notify();
     }
+    pub fn set_placeholder(
+        &mut self,
+        key: &str,
+        placeholder: &'static str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self.texts.get(key) {
+            input.update(cx, |s, cx| s.set_placeholder(placeholder, w, cx));
+        }
+    }
     pub fn control_focus(&self, key: &str, cx: &App) -> Option<FocusHandle> {
         self.texts
             .get(key)
