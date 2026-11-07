@@ -64,7 +64,7 @@ fn main() {
                         },
                     ))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Murmur Onboarding (synthetic)".into()),
+                        appears_transparent: true,
                         ..Default::default()
                     }),
                     ..Default::default()

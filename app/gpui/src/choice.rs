@@ -123,6 +123,13 @@ impl Choices {
         self.trigger_icon = Some(glyph);
         cx.notify();
     }
+    pub fn set_label(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let label = label.into();
+        if self.label != label {
+            self.label = label;
+            cx.notify();
+        }
+    }
     pub fn set_width(&mut self, width: Pixels, cx: &mut Context<Self>) {
         if self.width != width {
             self.width = width;
@@ -295,6 +302,9 @@ impl Render for Choices {
         let mut root = div()
             .id("choices")
             .relative()
+            .when(self.kind == ChoiceKind::Navigation, |s| {
+                s.flex_1().min_h_0().flex().flex_col()
+            })
             .child(crate::data_components::focus_reveal(
                 self.focus.clone(),
                 self.scroll_parent.clone(),
@@ -334,14 +344,20 @@ impl Render for Choices {
             .text_size(tokens::BODY_SIZE)
             .line_height(tokens::BODY_LEADING)
             .text_color(p.text)
-            .bg(p.surface)
-            .rounded(tokens::CONTROL_RADIUS)
-            .border_1()
-            .border_color(if self.trigger_icon.is_some() {
+            .bg(if self.kind == ChoiceKind::Navigation {
                 transparent_black()
             } else {
-                p.hairline_strong
+                p.surface
             })
+            .rounded(tokens::CONTROL_RADIUS)
+            .border_1()
+            .border_color(
+                if self.trigger_icon.is_some() || self.kind == ChoiceKind::Navigation {
+                    transparent_black()
+                } else {
+                    p.hairline_strong
+                },
+            )
             .focus_visible(|s| {
                 s.border_color(p.focus).shadow(vec![BoxShadow {
                     inset: false,
@@ -356,6 +372,7 @@ impl Render for Choices {
         if visible {
             let mut list = div()
                 .id("options")
+                .when(self.kind == ChoiceKind::Navigation, |s| s.flex_1())
                 .when(self.kind != ChoiceKind::Navigation, |s| s.max_h(px(240.)))
                 .overflow_y_scroll()
                 .track_scroll(&self.scroll)
@@ -373,6 +390,19 @@ impl Render for Choices {
                         .bg(p.popover(cx))
                 });
             for (i, choice) in self.choices.iter().enumerate() {
+                if self.kind == ChoiceKind::Navigation
+                    && self.label == "Settings pages"
+                    && choice.value == "performance"
+                {
+                    list = list.child(div().flex_1().min_h(px(20.))).child(
+                        div()
+                            .px(px(8.))
+                            .py(px(8.))
+                            .text_size(tokens::CAPTION_SIZE)
+                            .text_color(p.muted)
+                            .child("Tools"),
+                    );
+                }
                 let row_disabled = disabled || choice.disabled;
                 let row = div()
                     .id(i)

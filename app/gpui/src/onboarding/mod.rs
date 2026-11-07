@@ -646,8 +646,31 @@ impl Render for Onboarding {
             .flex_col()
             .gap(px(16.))
             .child(
+                div().w_full().flex().justify_center().child(
+                    div()
+                        .size(px(64.))
+                        .rounded(px(16.))
+                        .bg(p.accent.opacity(0.12))
+                        .text_color(p.accent)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            crate::icons::icon(match self.step {
+                                Step::Microphone => crate::icons::Glyph::Mic,
+                                Step::Calendar => crate::icons::Glyph::Calendar,
+                                Step::Model => crate::icons::Glyph::Download,
+                                Step::Done => crate::icons::Glyph::Check,
+                                _ => crate::icons::Glyph::Settings,
+                            })
+                            .size(px(28.)),
+                        ),
+                ),
+            )
+            .child(
                 div()
                     .id("setup-heading")
+                    .text_center()
                     .role(Role::Heading)
                     .aria_label(title)
                     .track_focus(&self.heading)
@@ -664,7 +687,12 @@ impl Render for Onboarding {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             )
-            .child(text!(self.step.subtitle()));
+            .child(
+                div()
+                    .text_center()
+                    .text_color(p.muted)
+                    .child(text!(self.step.subtitle())),
+            );
         if self.model.snapshot.is_none() {
             body = body.child(text!("Loading setup…"));
         }
@@ -708,12 +736,37 @@ impl Render for Onboarding {
                     .aria_label(format!("{} access {text}", permission.label()))
                     .p(px(16.))
                     .border_1()
-                    .border_color(p.border)
+                    .border_color(p.hairline_strong)
+                    .bg(p.tint_raised)
+                    .shadow(p.card_shadow())
                     .rounded(tokens::CARD_RADIUS)
                     .flex()
+                    .items_center()
                     .justify_between()
-                    .child(permission.label())
-                    .child(text),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(crate::icons::icon(
+                                if permission == Permission::Microphone {
+                                    crate::icons::Glyph::Mic
+                                } else {
+                                    crate::icons::Glyph::Settings
+                                },
+                            ))
+                            .child(permission.label()),
+                    )
+                    .child(
+                        div()
+                            .rounded_full()
+                            .px(px(10.))
+                            .py(px(3.))
+                            .text_size(tokens::CAPTION_SIZE)
+                            .text_color(p.muted)
+                            .bg(p.surface_container_low)
+                            .child(text),
+                    ),
             );
             let detail = match permission {
                 Permission::Microphone if self.mic_wait.is_some() => {
@@ -773,6 +826,8 @@ impl Render for Onboarding {
                             "Reset permission…"
                         },
                     )
+                    .intent(ButtonIntent::Ghost)
+                    .size(crate::ButtonSize::Compact)
                     .disabled(self.model.pending)
                     .on_click(move |_, _, cx| {
                         e.update(cx, |s, cx| s.request(Action::Reset(permission), cx))
@@ -981,6 +1036,7 @@ impl Render for Onboarding {
             let e = cx.entity();
             nav = nav.child(
                 Button::new("setup-back", "Back")
+                    .intent(ButtonIntent::Ghost)
                     .disabled(
                         self.downloading()
                             || matches!(self.operation, Some(Action::Complete { .. })),
@@ -993,6 +1049,7 @@ impl Render for Onboarding {
                     }),
             );
         }
+        nav = nav.child(div().flex_1());
         if self.step.permission().is_some()
             && self.access() != Access::Granted
             && self.mic_wait.is_none()
@@ -1055,17 +1112,60 @@ impl Render for Onboarding {
             .line_height(tokens::BODY_LEADING)
             .flex()
             .flex_col()
-            .p(px(if w.viewport_size().width < px(768.) {
-                24.
-            } else {
-                48.
-            }))
-            .gap(px(20.))
-            .child(Progress::new(
-                format!("Step {} of 8", self.step.index() + 1),
-                Some((self.step.index() + 1) as f64 / 8.),
-            ))
-            .child(body)
-            .child(nav)
+            .px(px(24.))
+            .pt(px(80.))
+            .pb(px(48.))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(80.))
+                    .text_color(p.accent)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Murmur"),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(520.))
+                    .h_full()
+                    .self_center()
+                    .flex()
+                    .flex_col()
+                    .gap(px(26.))
+                    .child(
+                        div()
+                            .id("setup-progress")
+                            .role(Role::ProgressIndicator)
+                            .aria_numeric_value((self.step.index() + 1) as f64)
+                            .aria_min_numeric_value(0.)
+                            .aria_max_numeric_value(8.)
+                            .aria_label(format!("Step {} of 8", self.step.index() + 1))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().flex().items_center().gap(px(8.)).children((0..8).map(
+                                |i| {
+                                    div()
+                                        .h(px(6.))
+                                        .w(px(if i == self.step.index() { 24. } else { 6. }))
+                                        .rounded_full()
+                                        .bg(if i <= self.step.index() {
+                                            p.accent
+                                        } else {
+                                            p.muted
+                                        })
+                                },
+                            )))
+                            .child(
+                                div()
+                                    .text_size(tokens::CAPTION_SIZE)
+                                    .text_color(p.muted)
+                                    .child(format!("Step {} of 8", self.step.index() + 1)),
+                            ),
+                    )
+                    .child(body)
+                    .child(nav),
+            )
     }
 }

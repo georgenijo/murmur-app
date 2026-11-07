@@ -347,7 +347,7 @@ mod ax {
         click(cx, id);
     }
     #[gpui::test]
-    fn every_segment_exposes_text_once_before_play(cx: &mut TestAppContext) {
+    fn every_segment_exposes_text_once_with_timestamp_play(cx: &mut TestAppContext) {
         let (_, h, cx) = harness(cx);
         let t = tree(cx);
         let state = h.state.borrow();
@@ -388,7 +388,10 @@ mod ax {
                     .iter()
                     .position(|n| n.role() == gpui::accesskit::Role::Button)
                     .unwrap();
-                assert!(text[0].0 < play, "channel/time, text, then Play");
+                assert!(
+                    play < text[0].0,
+                    "clickable timestamp, speaker, then transcript text"
+                );
             }
         }
     }
@@ -898,10 +901,12 @@ fn tab_shift_tab_and_programmatic_entry_reveal_whole_row(cx: &mut TestAppContext
     let (e, _, cx) = harness_host(cx, Rc::new(FixtureHost::with_corpus(50, 4, 100)));
     cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(560.)));
     draw(cx);
-    for (source, key) in [
-        ("meeting-fixture-1", Some("tab")),
-        ("rename", Some("shift-tab")),
-        ("meeting-fixture-1", None),
+    // The compact search/overflow row mounts one more virtual row than the old stacked toolbar.
+    // Reverse Tab enters that last mounted row and must reveal it completely.
+    for (source, key, target) in [
+        ("meeting-fixture-1", Some("tab"), 1),
+        ("rename", Some("shift-tab"), 2),
+        ("meeting-fixture-1", None, 1),
     ] {
         cx.update(|w, cx| {
             e.update(cx, |s, cx| {
@@ -923,10 +928,19 @@ fn tab_shift_tab_and_programmatic_entry_reveal_whole_row(cx: &mut TestAppContext
         }
         settle_reveal(cx);
         assert!(
-            cx.update(|w, cx| e.read(cx).focus["meeting-fixture-2"].is_focused(w)),
-            "{key:?} must enter the partially visible second row"
+            cx.update(
+                |w, cx| e.read(cx).focus[&format!("meeting-fixture-{}", target + 1)].is_focused(w)
+            ),
+            "{key:?} must enter target row {target}; focused: {:?}",
+            cx.update(|w, cx| e
+                .read(cx)
+                .focus
+                .iter()
+                .filter(|(_, f)| f.is_focused(w))
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>())
         );
-        assert_row_visible(&e, cx, 1);
+        assert_row_visible(&e, cx, target);
     }
 }
 #[gpui::test]

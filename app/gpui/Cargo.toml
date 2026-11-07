@@ -229,3 +229,8 @@ required-features = ["gallery"]
 name = "ui"
 path = "src/main.rs"
 required-features = ["production-host"]
+
+[[bin]]
+name = "update-qa"
+path = "src/bin/update-qa.rs"
+required-features = ["gallery"]

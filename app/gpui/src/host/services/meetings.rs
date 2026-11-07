@@ -575,7 +575,7 @@ impl Host for Backend {
                         let mut selection=b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner());
                         selection.id=None; selection.audio=Audio::default(); selection.calendar=Calendar::Closed; selection.bundle=None;
                     },
-                    Action::Back=>{b.pause_player();b.discard_calendar();b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).id=None;},
+                    Action::Back=>{b.pause_player();b.discard_calendar();b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).id=None;b.navigate(super::backend::Route::Home);},
                     Action::Playback{id,action}=>b.player_action(id.clone(),*action)?,
                     Action::CalendarLookup(id)=>{
                         let permission=b.effect("get_calendar_permission_status",json!({}),current.clone()).await?;

@@ -80,7 +80,7 @@ fn main() {
                         },
                     ))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Murmur Meetings (synthetic)".into()),
+                        appears_transparent: true,
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -88,7 +88,28 @@ fn main() {
                 |w, cx| {
                     let view = cx.new(|cx| Meetings::new(host, w, cx));
                     entity = Some(view.clone());
-                    cx.new(|cx| gpui_base::Root::new(view, w, cx))
+                    if std::env::var_os("MURMUR_QA_WORKSPACE").is_some() {
+                        view.update(cx, |s, _| s.embedded = true);
+                        let home = cx.new(|cx| {
+                            murmur_ui::home::Home::new(
+                                Rc::new(murmur_ui::home::fixtures::FixtureHost::default()),
+                                Rc::new(murmur_ui::history::fixtures::FixtureHost::default()),
+                                w,
+                                cx,
+                            )
+                        });
+                        home.update(cx, |s, cx| {
+                            s.workspace = Some((
+                                murmur_ui::home::model::Destination::Meetings,
+                                view.clone().into(),
+                            ));
+                            s.attach(cx);
+                            s.drain(cx);
+                        });
+                        cx.new(|cx| gpui_base::Root::new(home, w, cx))
+                    } else {
+                        cx.new(|cx| gpui_base::Root::new(view, w, cx))
+                    }
                 },
             )
             .expect("synthetic meetings window");

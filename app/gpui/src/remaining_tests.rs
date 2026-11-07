@@ -164,19 +164,19 @@ mod ax {
         let (e, cx) = harness(cx, 1);
         let t = tree(cx);
         for (label, value, detail) in crate::insights::fixtures::snapshot().totals() {
-            static_text(&t, &format!("{label}: {value}"));
-            // Repeated detail strings are meaningful only within their own total.
-            let total = t
-                .nodes
-                .iter()
-                .find(|(_, n)| n.value() == Some(format!("{label}: {value}").as_str()))
-                .unwrap()
-                .0;
+            static_text(&t, label);
             let group = t
                 .nodes
                 .iter()
-                .find(|(_, n)| n.children().contains(&total))
+                .find(|(_, n)| n.role() == gpui::accesskit::Role::Group && n.label() == Some(label))
                 .unwrap();
+            assert!(
+                group.1.children().iter().any(|id| t
+                    .nodes
+                    .iter()
+                    .any(|(i, n)| i == id && n.value() == Some(value.as_str()))),
+                "{label} retains its independently readable value"
+            );
             assert!(group.1.children().iter().any(|id| {
                 t.nodes
                     .iter()
@@ -201,7 +201,11 @@ mod ax {
         ] {
             cx.update(|w, cx| e.update(cx, |s, cx| s.select(index, w, cx)));
             let t = tree(cx);
-            static_text(&t, prose);
+            if index == 5 {
+                named(&t, "Use Sonic theme");
+            } else {
+                static_text(&t, prose);
+            }
             if index == 2 {
                 static_text(&t, "Synthetic size · Local transcription · Mac · Installed");
                 static_text(

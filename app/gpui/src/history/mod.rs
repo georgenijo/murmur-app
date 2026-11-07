@@ -896,6 +896,13 @@ impl History {
                                         .line_height(tokens::CAPTION_LEADING)
                                         .bg(p.accent.opacity(0.1))
                                         .text_color(p.accent)
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .child(
+                                            crate::icons::icon(crate::icons::Glyph::File)
+                                                .size(px(11.)),
+                                        )
                                         .child(entry.source_label().to_owned()),
                                 )
                             })

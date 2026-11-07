@@ -42,25 +42,51 @@ impl Spec {
 pub struct Changed(pub &'static str, pub Value);
 pub struct Form {
     specs: Vec<Spec>,
+    labels: BTreeMap<&'static str, SharedString>,
     areas: BTreeMap<&'static str, Entity<gpui_component::input::TextareaState>>,
     texts: BTreeMap<&'static str, Entity<TextFieldState>>,
     choices: BTreeMap<&'static str, Entity<Choices>>,
     pub values: Value,
     pub disabled: bool,
+    pub inline: bool,
     pub disabled_keys: std::collections::BTreeSet<&'static str>,
     pub scroll_parent: Option<ScrollHandle>,
     _subscriptions: Vec<Subscription>,
 }
 impl EventEmitter<Changed> for Form {}
 impl Form {
+    pub fn set_label(
+        &mut self,
+        key: &'static str,
+        label: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        let label = label.into();
+        if self.labels.get(key) == Some(&label) {
+            return;
+        }
+        if let Some(picker) = self.choices.get(key) {
+            picker.update(cx, |p, cx| p.set_label(label.clone(), cx));
+        }
+        self.labels.insert(key, label);
+        cx.notify();
+    }
+    pub fn control_focus(&self, key: &str, cx: &App) -> Option<FocusHandle> {
+        self.texts
+            .get(key)
+            .map(|e| e.read(cx).focus_handle(cx))
+            .or_else(|| self.choices.get(key).map(|e| e.read(cx).focus_handle(cx)))
+    }
     pub fn new(specs: Vec<Spec>, w: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut s = Self {
             specs,
+            labels: BTreeMap::new(),
             areas: BTreeMap::new(),
             texts: BTreeMap::new(),
             choices: BTreeMap::new(),
             values: json!({}),
             disabled: false,
+            inline: false,
             disabled_keys: Default::default(),
             scroll_parent: None,
             _subscriptions: vec![],
@@ -182,13 +208,23 @@ impl Form {
 impl Render for Form {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::get(cx);
-        let mut body = div().flex().flex_col().gap(px(12.));
+        let mut body = div()
+            .flex()
+            .when(!self.inline, |d| d.flex_col())
+            .gap(px(8.))
+            .min_w_0();
         for spec in &self.specs {
+            let label = self
+                .labels
+                .get(spec.key)
+                .cloned()
+                .unwrap_or_else(|| spec.label.into());
+
             let (focus, control) = if let Some(e) = self.areas.get(spec.key) {
                 (
                     e.read(cx).focus_handle(cx),
                     gpui_component::input::Textarea::new(e)
-                        .aria_label(spec.label)
+                        .aria_label(label.clone())
                         .disabled(self.disabled || self.disabled_keys.contains(spec.key))
                         .h(px(100.))
                         .into_any_element(),
@@ -196,13 +232,16 @@ impl Render for Form {
             } else if let Some(e) = self.texts.get(spec.key) {
                 (
                     e.read(cx).focus_handle(cx),
-                    TextField::new(e, spec.label)
+                    TextField::new(e, label.clone())
                         .disabled(self.disabled || self.disabled_keys.contains(spec.key))
                         .into_any_element(),
                 )
             } else {
                 let e = &self.choices[spec.key];
                 e.update(cx, |s, cx| {
+                    if self.inline {
+                        s.set_width(px(160.), cx);
+                    }
                     s.set_disabled(self.disabled || self.disabled_keys.contains(spec.key), cx)
                 });
                 (e.read(cx).focus_handle(cx), e.clone().into_any_element())
@@ -217,10 +256,20 @@ impl Render for Form {
             body = body.child(
                 div()
                     .relative()
+                    .min_w_0()
+                    .when(self.inline, |d| {
+                        if spec.choices.is_empty() {
+                            d.flex_1()
+                        } else {
+                            d.w(px(160.)).flex_shrink_0()
+                        }
+                    })
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(div().text_color(p.muted).child(spec.label))
+                    .when(!self.inline, |d| {
+                        d.child(div().text_color(p.muted).child(label.clone()))
+                    })
                     .child(control)
                     .child(reveal),
             );

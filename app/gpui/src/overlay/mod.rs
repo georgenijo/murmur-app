@@ -430,6 +430,10 @@ impl Render for Overlay {
                 "Quick settings, collapsed"
             })
             .w(px(20.))
+            .when(
+                g.floating && indicator == Indicator::Recording && !expanded,
+                |s| s.absolute().left_0().top(px(5.)),
+            )
             .h(px(24.))
             .flex_shrink_0()
             .flex()
@@ -437,7 +441,15 @@ impl Render for Overlay {
             .justify_center()
             .cursor_pointer()
             .text_size(px(8.))
-            .child(if expanded { "⌃" } else { "⌄" })
+            .child(
+                if g.floating && indicator == Indicator::Recording && !expanded {
+                    ""
+                } else if expanded {
+                    "⌃"
+                } else {
+                    "⌄"
+                },
+            )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|s, _, w, cx| {
                 cx.stop_propagation();
@@ -474,7 +486,12 @@ impl Render for Overlay {
             .flex_shrink_0()
             // Reserve the disclosure inside the existing fixed-width pill;
             // its width replaces padding/gap, never the waveform or retry.
-            .when(g.floating, |s| s.justify_center().gap(px(2.)).px(px(4.)))
+            .when(g.floating, |s| {
+                let plain_recording = indicator == Indicator::Recording && !expanded;
+                s.justify_center()
+                    .gap(px(if plain_recording { 10. } else { 2. }))
+                    .px(px(if plain_recording { 12. } else { 4. }))
+            })
             .on_click(cx.listener(|s, e: &ClickEvent, w, cx| {
                 let action = if matches!(e, ClickEvent::Keyboard(_)) {
                     s.model.accessible_activate(s.now)
@@ -533,12 +550,26 @@ impl Render for Overlay {
                     0.4
                 })
             })
-            .child(
-                div()
-                    .debug_selector(|| "overlay-state-symbol".into())
-                    .flex_shrink_0()
-                    .child(glyph),
-            );
+            .when(indicator == Indicator::Recording, |s| {
+                s.size(px(6.)).rounded_full().bg(p.danger)
+            })
+            .when(indicator == Indicator::Recording, |s| {
+                s.child(
+                    div()
+                        .debug_selector(|| "overlay-state-symbol".into())
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(p.danger),
+                )
+            })
+            .when(indicator != Indicator::Recording, |s| {
+                s.child(
+                    div()
+                        .debug_selector(|| "overlay-state-symbol".into())
+                        .flex_shrink_0()
+                        .child(glyph),
+                )
+            });
         let show_status = g.floating || expanded || indicator != Indicator::Idle;
         if show_status {
             if matches!(
@@ -579,7 +610,11 @@ impl Render for Overlay {
                 leading = leading.child(state_glyph);
             }
         }
-        leading = leading.child(disclosure);
+        if g.floating && indicator == Indicator::Recording && !expanded {
+            status = status.child(disclosure);
+        } else {
+            leading = leading.child(disclosure);
+        }
         if g.floating
             && !matches!(indicator, Indicator::Recording)
             && !matches!(indicator, Indicator::Delivery(d) if d.retryable())

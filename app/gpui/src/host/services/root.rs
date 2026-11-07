@@ -18,8 +18,6 @@ enum Section {
     Settings,
     Models,
     Knowledge,
-    Modes,
-    Themes,
     Customize,
     Setup,
 }
@@ -32,8 +30,6 @@ impl Section {
             Self::Settings => "Settings",
             Self::Models => "Models",
             Self::Knowledge => "Knowledge",
-            Self::Modes => "Modes",
-            Self::Themes => "Appearance",
             Self::Customize => "Customize",
             Self::Setup => "Setup",
         }
@@ -88,7 +84,15 @@ impl Main {
         let knowledge = cx.new(|cx| crate::knowledge::Knowledge::new(host.clone(), w, cx));
         let modes = cx.new(|cx| crate::modes::Modes::new(host.clone(), w, cx));
         let themes = cx.new(|cx| crate::themes::Themes::new(host.clone(), w, cx));
+        settings.update(cx, |s, _| {
+            s.embed(Page::Appearance, themes.clone());
+            s.embed(Page::Modes, modes.clone());
+        });
+        themes.update(cx, |s, _| s.embedded = true);
+        modes.update(cx, |s, _| s.embedded = true);
         let customize = cx.new(|cx| crate::customize::Customize::new(host.clone(), w, cx));
+        insights.update(cx, |s, _| s.embedded = true);
+        meetings.update(cx, |s, _| s.embedded = true);
         let palette = cx.new(|cx| crate::palette::CommandPalette::new(host, w, cx));
         let corrected = cx.new(|cx| TextFieldState::new(w, cx));
         let mut s = Self {
@@ -123,6 +127,12 @@ impl Main {
             pending_meeting: None,
         };
         s.subscriptions.push(
+            cx.subscribe(&s.settings, |s, _, _: &crate::settings::Done, cx| {
+                s.backend.navigate(Route::Home);
+                cx.notify();
+            }),
+        );
+        s.subscriptions.push(
             cx.subscribe(&s.customize, |s, _, _: &crate::customize::Back, cx| {
                 let backend = s.backend.clone();
                 backend.navigate(Route::Modes);
@@ -150,15 +160,38 @@ impl Main {
             };
         }
         match self.section {
-            Section::Home => attach!(home),
-            Section::Settings => attach!(settings),
-            Section::Meetings => attach!(meetings),
+            Section::Home => {
+                self.home.update(cx, |s, _| s.workspace = None);
+                attach!(home);
+            }
+            Section::Settings => {
+                attach!(settings);
+                attach!(themes);
+                attach!(modes);
+            }
+            Section::Meetings => {
+                self.home.update(cx, |s, _| {
+                    s.workspace = Some((
+                        crate::home::model::Destination::Meetings,
+                        self.meetings.clone().into(),
+                    ))
+                });
+                attach!(home);
+                attach!(meetings);
+            }
             Section::Setup => attach!(onboarding),
-            Section::Insights => attach!(insights),
+            Section::Insights => {
+                self.home.update(cx, |s, _| {
+                    s.workspace = Some((
+                        crate::home::model::Destination::Insights,
+                        self.insights.clone().into(),
+                    ))
+                });
+                attach!(home);
+                attach!(insights);
+            }
             Section::Models => attach!(models),
             Section::Knowledge => attach!(knowledge),
-            Section::Modes => attach!(modes),
-            Section::Themes => attach!(themes),
             Section::Customize => attach!(customize),
         }
         cx.notify();
@@ -344,9 +377,21 @@ impl Main {
             Route::Insights => self.select(Section::Insights, w, cx),
             Route::Models => self.select(Section::Models, w, cx),
             Route::Knowledge => self.select(Section::Knowledge, w, cx),
-            Route::Modes => self.select(Section::Modes, w, cx),
-            Route::Themes => self.select(Section::Themes, w, cx),
-            Route::Customize => self.select(Section::Customize, w, cx),
+            Route::Modes => {
+                self.select(Section::Settings, w, cx);
+                self.settings
+                    .update(cx, |s, cx| s.navigate(Page::Modes, None, w, cx));
+            }
+            Route::Themes => {
+                self.select(Section::Settings, w, cx);
+                self.settings
+                    .update(cx, |s, cx| s.navigate(Page::Appearance, None, w, cx));
+            }
+            Route::Customize => {
+                self.select(Section::Settings, w, cx);
+                self.settings
+                    .update(cx, |s, cx| s.navigate(Page::Customize, None, w, cx));
+            }
             Route::CustomizePage(page) => {
                 self.select(Section::Customize, w, cx);
                 self.customize.update(cx, |s, cx| s.set_page(page, w, cx));
@@ -356,9 +401,6 @@ impl Main {
                 self.customize.update(cx, |s, cx| s.bind_app(mode, w, cx));
             }
             Route::Settings(page) => match page {
-                Page::Customize => self.select(Section::Customize, w, cx),
-                Page::Modes => self.select(Section::Modes, w, cx),
-                Page::Appearance => self.select(Section::Themes, w, cx),
                 Page::Diagnostics => self.backend.navigate(Route::Diagnostics),
                 _ => {
                     self.select(Section::Settings, w, cx);
@@ -501,14 +543,11 @@ impl Main {
     fn body(&self) -> AnyView {
         match self.section {
             Section::Home => self.home.clone().into(),
-            Section::Meetings => self.meetings.clone().into(),
-            Section::Insights => self.insights.clone().into(),
+            Section::Meetings | Section::Insights => self.home.clone().into(),
             Section::Settings => self.settings.clone().into(),
             Section::Setup => self.onboarding.clone().into(),
             Section::Models => self.models.clone().into(),
             Section::Knowledge => self.knowledge.clone().into(),
-            Section::Modes => self.modes.clone().into(),
-            Section::Themes => self.themes.clone().into(),
             Section::Customize => self.customize.clone().into(),
         }
     }
@@ -694,38 +733,43 @@ impl Render for Main {
                 .skip(self.notes_page * 4096)
                 .take(4096)
                 .collect::<String>();
-            let mut modal = div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .w(px(560.))
-                .max_w_full()
-                .p_5()
-                .bg(p.raised)
-                .border_1()
-                .border_color(p.border)
-                .rounded_lg()
-                .child(div().text_size(px(20.)).child(gpui::text!(title)))
-                .child(
-                    div()
-                        .id("release-notes")
-                        .max_h(px(320.))
-                        .overflow_y_scroll()
-                        .child({
-                            let backend = self.backend.clone();
-                            gpui_component::text::TextView::markdown("native-release-notes", page)
-                                .markdown_extensions(super::notes::extensions())
-                                .on_link_click(move |url, _, _, _| {
-                                    if super::notes::allowed_link(url) {
-                                        let b = backend.clone();
-                                        let url = url.to_string();
-                                        backend.spawn(async move {
-                                            let _ = b.os.open(url, false, Arc::new(|| true)).await;
-                                        });
-                                    }
-                                })
-                        }),
-                );
+            let close = (!forced && !busy).then(|| {
+                Button::new("updater-close", "Close update dialog")
+                    .icon_only(crate::icons::Glyph::Close)
+                    .intent(crate::ButtonIntent::Ghost)
+                    .size(crate::ButtonSize::Compact)
+                    .on_click(cx.listener(|s, _, _, cx| {
+                        s.update_open = false;
+                        s.update_action(if s.updater.completed_update.is_some() {
+                            "dismissCompleted"
+                        } else {
+                            "dismiss"
+                        });
+                        cx.notify();
+                    }))
+            });
+            let (heading, caption) = match status {
+                Status::Available { version, .. } => {
+                    ("Update available".to_string(), format!("Version {version}"))
+                }
+                _ => (title, String::new()),
+            };
+            let mut modal = crate::update_dialog::card(p)
+                .child(crate::update_dialog::header(heading, caption, close, p))
+                .child(crate::update_dialog::notes().child({
+                    let backend = self.backend.clone();
+                    gpui_component::text::TextView::markdown("native-release-notes", page)
+                        .markdown_extensions(super::notes::extensions())
+                        .on_link_click(move |url, _, _, _| {
+                            if super::notes::allowed_link(url) {
+                                let b = backend.clone();
+                                let url = url.to_string();
+                                backend.spawn(async move {
+                                    let _ = b.os.open(url, false, Arc::new(|| true)).await;
+                                });
+                            }
+                        })
+                }));
             if message.chars().count() > (self.notes_page + 1) * 4096 {
                 modal = modal.child(Button::new("more-notes", "More release notes").on_click(
                     cx.listener(|s, _, _, cx| {
@@ -769,35 +813,40 @@ impl Render for Main {
                     }),
                 ));
             }
+            let mut footer = crate::update_dialog::footer(p);
             if let Some(label) = primary {
-                modal = modal.child(
-                    Button::new("updater-primary", label)
-                        .on_click(cx.listener(move |s, _, _, _| s.update_action(action))),
+                footer = footer.child(
+                    div().flex_1().child(
+                        Button::new("updater-primary", label)
+                            .pill()
+                            .full_width()
+                            .intent(crate::ButtonIntent::Primary)
+                            .on_click(cx.listener(move |s, _, _, _| s.update_action(action))),
+                    ),
                 );
             }
             if !forced && !busy {
-                modal = modal.child(Button::new("updater-later", "Close").on_click(cx.listener(
-                    |s, _, _, cx| {
-                        s.update_open = false;
-                        s.update_action(if s.updater.completed_update.is_some() {
-                            "dismissCompleted"
-                        } else {
-                            "dismiss"
-                        });
-                        cx.notify();
-                    },
-                )));
+                footer = footer.child(
+                    div().flex_1().child(
+                        Button::new("updater-later", "Close")
+                            .caption("Later")
+                            .pill()
+                            .full_width()
+                            .intent(crate::ButtonIntent::Secondary)
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.update_open = false;
+                                s.update_action(if s.updater.completed_update.is_some() {
+                                    "dismissCompleted"
+                                } else {
+                                    "dismiss"
+                                });
+                                cx.notify();
+                            })),
+                    ),
+                );
             }
-            root = root.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(p.surface.opacity(0.8))
-                    .child(modal),
-            );
+            modal = modal.child(footer);
+            root = root.child(crate::update_dialog::scrim().child(modal));
         }
         if let Some(teaching) = &self.teaching {
             let proposal_id = teaching.result["proposalId"].as_u64();

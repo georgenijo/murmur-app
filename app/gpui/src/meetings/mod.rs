@@ -31,6 +31,8 @@ struct ConfirmationOwner {
     busy: bool,
 }
 pub struct Meetings {
+    pub embedded: bool,
+    list_actions_open: bool,
     pub model: Workspace<Snapshot>,
     host: Rc<dyn Host>,
     inbox: Inbox,
@@ -76,7 +78,10 @@ impl Meetings {
                 cx,
             )
         });
-        format_control.update(cx, |s, cx| s.set_value("markdown", cx));
+        format_control.update(cx, |s, cx| {
+            s.set_width(px(104.), cx);
+            s.set_value("markdown", cx)
+        });
         let channel_control = cx.new(|cx| {
             Choices::new(
                 "Playback channel",
@@ -89,11 +94,16 @@ impl Meetings {
                 cx,
             )
         });
-        channel_control.update(cx, |s, cx| s.set_value("all", cx));
+        channel_control.update(cx, |s, cx| {
+            s.set_width(px(160.), cx);
+            s.set_value("all", cx)
+        });
         let seek = cx.new(|cx| {
             crate::settings::range::Range::new("Playback position", "ms", 0, 1, 100, w, cx)
         });
         let mut s = Self {
+            embedded: false,
+            list_actions_open: false,
             model: Workspace::default(),
             host,
             inbox: Inbox::default(),
@@ -686,6 +696,12 @@ impl Meetings {
             cx.stop_propagation();
         }
         if key == "escape" {
+            if self.list_actions_open {
+                self.list_actions_open = false;
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
             if self
                 .model
                 .snapshot

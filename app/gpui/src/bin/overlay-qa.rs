@@ -185,7 +185,7 @@ fn main() {
                         overlay
                     });
                     entity = Some(overlay.clone());
-                    cx.new(|cx| gpui_base::Root::new(overlay, w, cx))
+                    cx.new(|cx| gpui_base::Root::new(overlay, w, cx).bg(transparent_black()))
                 },
             )
             .expect("synthetic overlay");

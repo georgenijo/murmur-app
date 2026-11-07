@@ -12,8 +12,8 @@ impl Meetings {
         let p = Palette::get(cx);
         let scroll_parent = self.list_scroll.0.borrow().base_handle.clone();
         range
-            .filter_map(|index| s.meetings.get(index))
-            .map(|meeting| {
+            .filter_map(|index| s.meetings.get(index).map(|m| (index, m)))
+            .map(|(index, meeting)| {
                 let id = meeting.id.clone();
                 let selected = self
                     .list_selection
@@ -26,15 +26,35 @@ impl Meetings {
                     .title
                     .clone()
                     .unwrap_or_else(|| "Untitled meeting".into());
+                let date = |ms| {
+                    chrono::DateTime::from_timestamp_millis(ms)
+                        .map(|t| {
+                            t.with_timezone(&chrono::Local)
+                                .format("%b %e, %Y")
+                                .to_string()
+                        })
+                        .unwrap_or_default()
+                };
+                let new_day = index == 0
+                    || date(s.meetings[index - 1].started_at_ms) != date(meeting.started_at_ms);
                 div()
                     .relative()
                     .h(px(112.))
-                    .p(tokens::FOCUS_WIDTH + px(1.))
                     .w_full()
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(20.))
+                            .text_size(tokens::MICRO_SIZE)
+                            .text_color(p.muted)
+                            .child(if new_day {
+                                date(meeting.started_at_ms).to_uppercase()
+                            } else {
+                                String::new()
+                            }),
+                    )
                     // The title is only 32pt tall. Reveal the complete row on
                     // every focus entry, including Tab and AX Focus.
                     .child(crate::data_components::focus_reveal(
@@ -46,30 +66,22 @@ impl Meetings {
                     ))
                     .child(
                         Button::new(format!("meeting-{id}"), title)
+                            .nav_row()
+                            .description(format!(
+                                "{} · {} · {}",
+                                meeting.preview.chars().take(70).collect::<String>(),
+                                chrono::DateTime::from_timestamp_millis(meeting.started_at_ms)
+                                    .map(|t| t
+                                        .with_timezone(&chrono::Local)
+                                        .format("%-I:%M %p")
+                                        .to_string())
+                                    .unwrap_or_default(),
+                                duration(meeting.duration_ms)
+                            ))
                             .track_focus(&focus)
                             .toggled(selected)
                             .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx))),
                     )
-                    .child(div().text_size(px(12.)).text_color(p.muted).child(format!(
-                        "{} · {}{}",
-                        duration(meeting.duration_ms),
-                        meeting.status,
-                        if meeting.search_matches.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" · Matches: {}", meeting.search_matches.join(", "))
-                        }
-                    )))
-                    .child(
-                        chrono::DateTime::from_timestamp_millis(meeting.started_at_ms)
-                            .map(|t| {
-                                t.with_timezone(&chrono::Local)
-                                    .format("%b %e · %H:%M")
-                                    .to_string()
-                            })
-                            .unwrap_or_default(),
-                    )
-                    .child(meeting.preview.chars().take(160).collect::<String>())
                     .into_any_element()
             })
             .collect()
@@ -202,69 +214,47 @@ impl Meetings {
                     ),
             )
         } else {
-            content = content
-                .child(
-                    div()
-                        .id("meeting-title")
-                        .role(Role::Heading)
-                        .aria_label(
-                            d.session
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| "Untitled meeting".into()),
-                        )
-                        .text_size(px(18.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(
-                            d.session
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| "Untitled meeting".into()),
-                        ),
-                )
-                .child(div().text_size(px(12.)).text_color(p.muted).child(format!(
-                    "{} · {} · {}",
-                    local_datetime(d.session.started_at_ms),
-                    duration(d.session.duration_ms),
-                    if d.session.retain_audio {
-                        "Audio kept"
-                    } else {
-                        "Transcript only"
-                    }
-                )))
-                .when(
-                    !d.session.attendees.is_empty() || d.session.title_source.is_some(),
-                    |v| {
-                        v.child(format!(
-                            "{}{}",
-                            if d.session.attendees.is_empty() {
-                                String::new()
-                            } else {
-                                format!("Attendees: {} · ", d.session.attendees.join(", "))
-                            },
-                            match d.session.title_source.as_deref() {
-                                Some("calendar") => "Named from calendar",
-                                Some("generated") => "Generated title",
-                                Some("manual") => "Manually named",
-                                _ => "",
-                            }
-                        ))
-                    },
-                )
-                .child(
-                    self.detail_button(
-                        "rename",
-                        if d.session.title.is_some() {
-                            "Rename"
-                        } else {
-                            "Name meeting"
-                        },
+            content = content.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id("meeting-title")
+                            .role(Role::Heading)
+                            .aria_label(
+                                d.session
+                                    .title
+                                    .clone()
+                                    .unwrap_or_else(|| "Untitled meeting".into()),
+                            )
+                            .text_size(px(18.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(
+                                d.session
+                                    .title
+                                    .clone()
+                                    .unwrap_or_else(|| "Untitled meeting".into()),
+                            ),
                     )
-                    .track_focus(&self.focus_for("rename", cx))
-                    .size(ButtonSize::Compact)
-                    .disabled(disabled)
-                    .on_click(cx.listener(|s, _, w, cx| s.name(w, cx))),
-                );
+                    .child(
+                        self.detail_button(
+                            "rename",
+                            if d.session.title.is_some() {
+                                "Rename"
+                            } else {
+                                "Name meeting"
+                            },
+                        )
+                        .track_focus(&self.focus_for("rename", cx))
+                        .size(ButtonSize::Compact)
+                        .pill()
+                        .disabled(disabled)
+                        .on_click(cx.listener(|s, _, w, cx| s.name(w, cx))),
+                    ),
+            );
         }
         let confirming = self
             .confirmation
@@ -275,12 +265,15 @@ impl Meetings {
                 .flex()
                 .flex_wrap()
                 .gap(px(8.))
-                .child(self.button(
-                    "calendar",
-                    "Name from calendar…",
-                    Action::CalendarLookup(id.clone()),
-                    cx,
-                ))
+                .child(
+                    self.button(
+                        "calendar",
+                        "Name from calendar…",
+                        Action::CalendarLookup(id.clone()),
+                        cx,
+                    )
+                    .pill(),
+                )
                 .child(
                     self.detail_button(
                         "delete-meeting",
@@ -291,10 +284,26 @@ impl Meetings {
                         },
                     )
                     .size(ButtonSize::Compact)
-                    .intent(crate::ButtonIntent::Danger)
+                    .icon_only(crate::icons::Glyph::Trash)
+                    .destructive_text()
                     .disabled(self.model.pending || !self.allowed(&Action::Delete(id.clone())))
                     .on_click(cx.listener(|s, _, _, cx| s.delete(false, cx))),
                 ),
+        );
+        content = content.child(
+            div()
+                .text_size(tokens::CAPTION_SIZE)
+                .text_color(p.muted)
+                .child(format!(
+                    "{} · {} · {}",
+                    local_datetime(d.session.started_at_ms),
+                    duration(d.session.duration_ms),
+                    if d.session.retain_audio {
+                        "Audio kept"
+                    } else {
+                        "Transcript only"
+                    }
+                )),
         );
         match &s.calendar {
             Calendar::Choosing(events) => {
@@ -401,7 +410,7 @@ impl Meetings {
             Calendar::Closed => (),
         }
         if !d.session.retain_audio {
-            content=content.child("Audio was not retained for this meeting. Enable Keep Meeting Audio in Meetings settings to play future sessions.");
+            content=content.child(div().p(px(10.)).rounded(tokens::CARD_RADIUS).bg(p.surface_container_low).text_size(tokens::CAPTION_SIZE).text_color(p.muted).child("Audio was not retained for this meeting. Enable Keep Meeting Audio in Meetings settings to play future sessions."));
         } else {
             match s.audio.state {
                 AudioState::Loading => {
@@ -472,23 +481,26 @@ impl Meetings {
             .aria_label("Copy or export")
             .flex()
             .flex_wrap()
-            .gap(px(8.))
+            .gap(px(6.))
             .items_center()
             .child("Format")
             .child(self.detail_control(&self.format_control, w, cx))
-            .child(self.button(
-                "copy",
-                if self.format.captions() {
-                    "Copy captions"
-                } else {
-                    "Copy transcript"
-                },
-                Action::Copy {
-                    id: id.clone(),
-                    format: self.format,
-                },
-                cx,
-            ))
+            .child(
+                self.button(
+                    "copy",
+                    if self.format.captions() {
+                        "Copy captions"
+                    } else {
+                        "Copy transcript"
+                    },
+                    Action::Copy {
+                        id: id.clone(),
+                        format: self.format,
+                    },
+                    cx,
+                )
+                .caption("Copy"),
+            )
             .child(self.button(
                 "export",
                 "Export…",
@@ -499,12 +511,16 @@ impl Meetings {
                 cx,
             ));
         if d.session.retain_audio {
-            exports = exports.child(self.button(
-                "bundle",
-                "Export with audio…",
-                Action::BundlePreview(id.clone()),
-                cx,
-            ));
+            exports = exports.child(
+                self.button(
+                    "bundle",
+                    "Export with audio…",
+                    Action::BundlePreview(id.clone()),
+                    cx,
+                )
+                .icon_only(crate::icons::Glyph::Download)
+                .intent(crate::ButtonIntent::Ghost),
+            );
         }
         content = content.child(exports);
         if let Some(b) = &s.bundle {
@@ -622,21 +638,11 @@ impl Meetings {
                     timestamp(segment.start_ms)
                 ))
                 .flex()
-                .flex_col()
-                .gap(px(4.))
-                .py(px(8.))
+                .items_start()
+                .gap(px(12.))
+                .py(px(6.))
                 .border_b_1()
-                .border_color(p.border)
-                .child(format!(
-                    "{} · {}{}",
-                    timestamp(segment.start_ms),
-                    display,
-                    if display != canonical {
-                        format!(" ({canonical})")
-                    } else {
-                        String::new()
-                    }
-                ));
+                .border_color(p.hairline);
             let text = if segment.status == "final" {
                 segment.text.as_str()
             } else if segment.status == "pending" {
@@ -647,23 +653,23 @@ impl Meetings {
             let pieces = text.chars().count().div_ceil(2048).max(1);
             let index = *self.text_pages.entry(segment.id).or_default();
             let index = index.min(pieces - 1);
-            row = row.child(gpui::text!(
-                id = ("meeting-segment-text", segment.id),
-                text.chars()
-                    .skip(index * 2048)
-                    .take(2048)
-                    .collect::<String>()
-            ));
+            let mut time = div()
+                .w(px(52.))
+                .flex_shrink_0()
+                .font_family(tokens::MONO_FONT)
+                .text_size(tokens::CAPTION_SIZE)
+                .text_color(p.muted);
             if segment.audio_available && d.session.retain_audio {
-                let action = PlaybackAction::Seek(segment.start_ms);
                 let channel = segment.channel;
                 let start = segment.start_ms;
-                row = row.child(
+                time = time.child(
                     self.detail_button(
                         format!("segment-play-{}", segment.id),
                         format!("Play segment at {}, {canonical} channel", timestamp(start)),
                     )
-                    .size(ButtonSize::Compact)
+                    .caption(timestamp(start))
+                    .intent(crate::ButtonIntent::Ghost)
+                    .size(ButtonSize::ExtraSmall)
                     .disabled(
                         disabled
                             || matches!(
@@ -675,14 +681,45 @@ impl Meetings {
                                     | AudioState::NotFinished
                             ),
                     )
-                    .on_click(cx.listener(move |s, _, _, cx| {
-                        // One atomic host intent: channel plus seek plus play, rather
-                        // than racing three independent asynchronous operations.
-                        s.play_segment(channel, start, cx);
-                    })),
+                    .on_click(cx.listener(move |s, _, _, cx| s.play_segment(channel, start, cx))),
                 );
-                let _ = action;
+            } else {
+                time = time.child(timestamp(segment.start_ms));
             }
+            row = row
+                .child(time)
+                .child(
+                    div()
+                        .w(px(84.))
+                        .flex_shrink_0()
+                        .text_size(tokens::CAPTION_SIZE)
+                        .text_color(if segment.channel == Channel::Me {
+                            p.accent
+                        } else {
+                            p.success
+                        })
+                        .child(format!(
+                            "{display}{}",
+                            if display != canonical {
+                                format!(" ({canonical})")
+                            } else {
+                                String::new()
+                            }
+                        )),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(tokens::LABEL_SIZE)
+                        .child(gpui::text!(
+                            id = ("meeting-segment-text", segment.id),
+                            text.chars()
+                                .skip(index * 2048)
+                                .take(2048)
+                                .collect::<String>()
+                        )),
+                );
             if pieces > 1 {
                 let key = segment.id;
                 row = row.child(
@@ -752,18 +789,31 @@ impl Render for Meetings {
             .flex()
             .items_center()
             .gap(px(12.))
-            .pt(px(32.))
+            .pt(px(if self.embedded { 16. } else { 32. }))
             .px(px(16.))
             .pb(px(12.))
             .flex_shrink_0()
-            .child(self.button("back", "Back", Action::Back, cx))
+            .child(
+                self.button("back", "Back", Action::Back, cx)
+                    .caption("Back to Home")
+                    .icon(crate::icons::Glyph::ChevronLeft)
+                    .intent(crate::ButtonIntent::Ghost),
+            )
             .child(
                 div()
                     .id("notetaker-heading")
                     .role(Role::Heading)
                     .aria_label("Notetaker")
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Notetaker"),
+                    .text_size(px(20.))
+                    .child("Notetaker")
+                    .child(
+                        div()
+                            .text_size(tokens::CAPTION_SIZE)
+                            .font_weight(FontWeight::NORMAL)
+                            .text_color(p.muted)
+                            .child("Local meeting transcripts with speaker separation"),
+                    ),
             );
         let mut root = div()
             .id("meetings")
@@ -789,11 +839,12 @@ impl Render for Meetings {
                 || s.phase == Phase::Processing
                 || (!s.phase.active()
                     && (s.capture_busy || s.permission == Permission::Unsupported));
-            root=root.child(div().p(px(16.)).flex().flex_col().flex_shrink_0().gap(px(8.))
-                .child(div().flex().flex_wrap().items_center().gap(px(8.)).child(Self::notice(format!("{}{}",s.phase.label(),if s.elapsed_ms>0 {format!(" · {}",timestamp(s.elapsed_ms))}else{String::new()}),false))
-                    .child(Button::new("meeting-record",if s.phase.active(){"Stop meeting"}else if s.phase==Phase::Processing{"Finishing…"}else{"Start meeting"}).with_scroll_parent(Some(&self.content_scroll)).disabled(action_disabled).on_click(cx.listener(|s,_,_,cx|s.record(cx)))))
-                .child(format!("{}Microphone · Me    {}System Audio · Them",if s.microphone_active{"● "}else{"○ "},if s.system_audio_active{"● "}else{"○ "}))
-                .child("Me comes from your microphone; Them comes from Mac playback. If your own voice is played through speakers, it can also appear as Them.")
+            root=root.child(div().px(px(16.)).pb(px(12.)).flex().flex_col().flex_shrink_0().gap(px(8.))
+                .child(div().flex().items_center().justify_between().gap(px(12.))
+                    .child(div().flex().flex_col().gap(px(4.))
+                        .child(div().flex().items_center().gap(px(8.)).child(div().size(px(8.)).rounded_full().bg(p.success)).child(Self::notice(format!("{}{}",s.phase.label(),if s.elapsed_ms>0 {format!(" · {}",timestamp(s.elapsed_ms))}else{String::new()}),false)))
+                        .child(div().text_size(tokens::MICRO_SIZE).text_color(p.muted).child(format!("{} Microphone · Me    {} System Audio · Them",if s.microphone_active{"●"}else{"○"},if s.system_audio_active{"●"}else{"○"})).id("meeting-channel-help").tooltip(|w,cx|gpui_component::tooltip::Tooltip::new("Me comes from your microphone; Them comes from Mac playback. If your own voice is played through speakers, it can also appear as Them.").build(w,cx))))
+                    .child(Button::new("meeting-record",if s.phase.active(){"Stop meeting"}else if s.phase==Phase::Processing{"Finishing…"}else{"Start meeting"}).intent(crate::ButtonIntent::Primary).with_scroll_parent(Some(&self.content_scroll)).disabled(action_disabled).on_click(cx.listener(|s,_,_,cx|s.record(cx)))))
                 .when(!s.busy()&&matches!(s.permission,Permission::Unknown|Permission::Denied),|v|v.child("System Audio access is requested only when you explicitly check it or start a meeting.").child(self.button("check-access","Check access",Action::CheckAccess,cx)))
                 .when(s.permission==Permission::Unsupported,|v|v.child(Self::notice(error_message("unsupported_os"),false)))
                 .when(s.permission==Permission::Denied,|v|v.child(self.button("audio-settings","Open settings…",Action::AudioSettings,cx)))
@@ -805,37 +856,59 @@ impl Render for Meetings {
                 .confirmation
                 .as_ref()
                 .is_some_and(|(key, end)| key == "*" && Instant::now() < *end);
-            let mut list = div()
-                .id("saved-meetings")
-                .role(Role::Group)
-                .aria_label("Saved meetings")
-                .relative()
-                .child(crate::data_components::focus_reveal(
-                    self.search.read(cx).focus_handle(cx),
-                    Some(self.content_scroll.clone()),
-                    None,
-                    w,
-                    cx,
-                ))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .p(px(12.))
-                .child(TextField::new(&self.search, "Search meetings"))
-                .child(
-                    Button::new(
-                        "delete-all",
-                        if confirm {
-                            "Click again to delete all meetings"
-                        } else {
-                            "Delete all meetings…"
-                        },
+            let mut list =
+                div()
+                    .id("saved-meetings")
+                    .role(Role::Group)
+                    .aria_label("Saved meetings")
+                    .relative()
+                    .child(crate::data_components::focus_reveal(
+                        self.search.read(cx).focus_handle(cx),
+                        Some(self.content_scroll.clone()),
+                        None,
+                        w,
+                        cx,
+                    ))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .p(px(12.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(div().flex_1().min_w_0().child(
+                                TextField::new(&self.search, "Search meetings").search_chrome(),
+                            ))
+                            .child(
+                                Button::new("meeting-more", "More meeting actions")
+                                    .icon_only(crate::icons::Glyph::More)
+                                    .intent(crate::ButtonIntent::Ghost)
+                                    .size(ButtonSize::Compact)
+                                    .on_click(cx.listener(|s, _, _, cx| {
+                                        s.list_actions_open = !s.list_actions_open;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
-                    .size(ButtonSize::Compact)
-                    .with_scroll_parent(Some(&self.content_scroll))
-                    .disabled(s.phase.busy() || self.model.pending || s.meetings.is_empty())
-                    .on_click(cx.listener(|s, _, _, cx| s.delete(true, cx))),
-                );
+                    .when(self.list_actions_open, |v| {
+                        v.child(
+                            Button::new(
+                                "delete-all",
+                                if confirm {
+                                    "Click again to delete all meetings"
+                                } else {
+                                    "Delete all meetings…"
+                                },
+                            )
+                            .size(ButtonSize::Compact)
+                            .destructive_text()
+                            .with_scroll_parent(Some(&self.content_scroll))
+                            .disabled(s.phase.busy() || self.model.pending || s.meetings.is_empty())
+                            .on_click(cx.listener(|s, _, _, cx| s.delete(true, cx))),
+                        )
+                    });
             if s.meetings.is_empty() {
                 list=list.child(if s.query.is_empty(){"No meeting transcripts yet. Start one to capture microphone and Mac playback as separate speakers."}else{"No meetings match this search. Try another word or clear the search."});
             }
@@ -861,10 +934,7 @@ impl Render for Meetings {
                     cx,
                 ));
             }
-            list = list.child(Self::notice(
-                format!("{} meetings shown", s.meetings.len()),
-                false,
-            ));
+
             let detail = self.detail(&s, w, cx);
             let narrow = f32::from(w.viewport_size().width) < 768.;
             root = root.child(
@@ -880,7 +950,9 @@ impl Render for Meetings {
                     .child(
                         div()
                             .id("meeting-list-scroll")
-                            .when(!narrow, |v| v.w(px(264.)))
+                            .when(!narrow, |v| {
+                                v.w(px(272.)).border_r_1().border_color(p.hairline)
+                            })
                             // Includes the toolbar/status chrome plus at least one
                             // complete 112pt row and its focus-ring inset.
                             .when(narrow, |v| v.h(px(288.)).flex_shrink_0())

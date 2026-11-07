@@ -27,7 +27,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone)]
+pub struct Done;
+impl EventEmitter<Done> for Settings {}
 pub struct Settings {
+    embedded: Vec<(Page, AnyView)>,
     pub model: Model,
     host: Rc<dyn Host>,
     inbox: Inbox,
@@ -67,6 +71,10 @@ pub struct Settings {
     was_compact: Option<bool>,
 }
 impl Settings {
+    pub fn embed(&mut self, page: Page, view: impl Into<AnyView>) {
+        self.embedded.retain(|(p, _)| *p != page);
+        self.embedded.push((page, view.into()));
+    }
     pub fn new(host: Rc<dyn Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| TextFieldState::new(w, cx).placeholder("Search settings"));
         let navigation = cx.new(|cx| {
@@ -86,6 +94,7 @@ impl Settings {
         let nav_scroll = ScrollHandle::new();
         navigation.update(cx, |n, _| n.scroll_parent = Some(nav_scroll.clone()));
         let mut s = Self {
+            embedded: vec![],
             model: Model::default(),
             host,
             inbox: Inbox::default(),
@@ -720,6 +729,16 @@ impl Settings {
             w.prevent_default();
             cx.stop_propagation();
         } else if k.key == "escape" && k.modifiers.number_of_modifiers() == 0 {
+            if self
+                .embedded
+                .iter()
+                .any(|(page, _)| *page == self.model.page)
+                && self.model.query.is_empty()
+                && self.confirmation.is_none()
+                && self.calibration.is_none()
+            {
+                return;
+            }
             if self.pickers.values().any(|p| p.read(cx).is_open()) {
                 return;
             }
@@ -933,7 +952,7 @@ impl Settings {
             .px(px(16.))
             .py(px(12.))
             .border_b_1()
-            .border_color(p.border.opacity(0.5))
+            .border_color(p.hairline)
             .flex()
             .when(compact, |d| d.flex_col())
             .gap(px(if compact { 12. } else { 32. }))
@@ -944,7 +963,11 @@ impl Settings {
                     .border_color(p.focus)
             })
             .child(copy)
-            .child(controls.child(reset))
+            .child(if self.model.page == Page::General {
+                controls
+            } else {
+                controls.child(reset)
+            })
             .into_any_element()
     }
 }
@@ -1001,13 +1024,12 @@ impl Render for Settings {
             }
             self.was_compact = Some(compact);
         }
-        let narrow =
-            w.viewport_size().width - px(if compact { 56. } else { 240. }) - px(80.) < px(512.);
+        let narrow = w.viewport_size().width < px(768.);
         self.navigation
             .update(cx, |s, cx| s.set_width(px(224.), cx));
         let picker_width =
             (w.viewport_size().width - px(if compact { 56. } else { 240. }) - px(120.))
-                .min(tokens::SELECT_MAX);
+                .min(px(200.));
         for picker in self.pickers.values() {
             picker.update(cx, |s, cx| s.set_width(picker_width, cx));
         }
@@ -1035,16 +1057,6 @@ impl Render for Settings {
                     .on_click(move |_, w, cx| e.update(cx, |s, cx| s.go_back(w, cx))),
             );
         }
-        content = content.child(
-            div()
-                .id("settings-title")
-                .role(Role::Heading)
-                .aria_label(self.model.page.label())
-                .text_size(px(20.))
-                .line_height(px(26.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(self.model.page.label()),
-        );
         if let Some(problem) = self.model.problem {
             let e = cx.entity();
             content = content
@@ -1121,14 +1133,22 @@ impl Render for Settings {
                         .on_click(move |_, w, cx| e.update(cx, |s, cx| s.search_link(link, w, cx))),
                 );
             }
+        } else if let Some((_, view)) = self
+            .embedded
+            .iter()
+            .find(|(page, _)| *page == self.model.page)
+        {
+            content = content.child(view.clone());
+        } else if self.model.page == Page::General {
+            content = content.child(self.general(w, cx));
         } else {
             let settings = self.model.settings().clone();
             let runtime = self.model.runtime();
             let mut rows = div()
                 .rounded(tokens::CARD_RADIUS)
                 .border_1()
-                .border_color(p.border.opacity(0.6))
-                .bg(p.surface)
+                .border_color(p.hairline_strong)
+                .bg(p.tint_raised)
                 .flex()
                 .flex_col();
             let mut has_rows = false;
@@ -1192,18 +1212,41 @@ impl Render for Settings {
             .w(px(if compact { 56. } else { 240. }))
             .h_full()
             .overflow_y_scroll()
-            .border_r_1()
-            .border_color(p.border)
+            .bg(p.surface_container_low)
             .p(px(8.))
+            .pt(px(48.))
+            .relative()
             .flex()
             .flex_col()
             .gap(px(4.));
+        if !compact {
+            nav = nav.child(
+                div()
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(80.))
+                    .flex()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .text_color(p.accent)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Murmur"),
+                    )
+                    .child(
+                        div()
+                            .text_size(tokens::CAPTION_SIZE)
+                            .text_color(p.muted)
+                            .child("Settings"),
+                    ),
+            );
+        }
         if compact {
             let e = cx.entity();
             nav = nav.child(
                 Button::new("open-search", "Search settings")
                     .with_scroll_parent(Some(&self.nav_scroll))
-                    .caption("⌕")
+                    .icon_only(crate::icons::Glyph::Search)
                     .on_click(move |_, w, cx| {
                         e.update(cx, |s, cx| {
                             s.compact_search = true;
@@ -1252,6 +1295,7 @@ impl Render for Settings {
         }
         div()
             .id("settings")
+            .relative()
             .capture_key_down(cx.listener(Self::key))
             .size_full()
             .flex()
@@ -1260,6 +1304,47 @@ impl Render for Settings {
             .text_size(tokens::BODY_SIZE)
             .line_height(tokens::BODY_LEADING)
             .child(nav)
-            .child(content)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(38.))
+                            .flex_shrink_0()
+                            .flex()
+                            .justify_end()
+                            .items_center()
+                            .px(px(12.)),
+                    )
+                    .child(
+                        div()
+                            .px(px(24.))
+                            .pt(px(12.))
+                            .pb(px(10.))
+                            .border_b_1()
+                            .border_color(p.hairline)
+                            .child(
+                                div()
+                                    .id("settings-title")
+                                    .role(Role::Heading)
+                                    .aria_label(self.model.page.label())
+                                    .text_size(px(20.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(self.model.page.label()),
+                            ),
+                    )
+                    .child(content),
+            )
+            .child(
+                div().absolute().top(px(4.)).right(px(12.)).child(
+                    Button::new("settings-done", "Done")
+                        .pill()
+                        .on_click(cx.listener(|_, _, _, cx| crate::events::publish(cx, Done))),
+                ),
+            )
     }
 }

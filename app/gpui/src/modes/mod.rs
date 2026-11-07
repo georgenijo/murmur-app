@@ -17,11 +17,15 @@ use model::*;
 use serde_json::{Value, json};
 use std::rc::Rc;
 pub struct Modes {
+    pub embedded: bool,
     _forms: Vec<Subscription>,
     pub controller: Controller<Snapshot, Action>,
     pub selected: String,
     pub editor: Entity<Form>,
     pub site: Entity<Form>,
+    site_rows: std::collections::BTreeMap<String, Entity<Form>>,
+    site_subscriptions: std::collections::BTreeMap<String, Vec<Subscription>>,
+    site_sources: std::collections::BTreeMap<String, Value>,
     pub sample: Entity<Form>,
     editing: Option<Value>,
     edit_focus: FocusHandle,
@@ -109,6 +113,7 @@ impl Modes {
             )
         });
         site.update(cx, |s, cx| {
+            s.inline = true;
             s.set(json!({"browser":BROWSERS[0].0,"host":""}), w, cx)
         });
         let sample = cx.new(|cx| {
@@ -130,11 +135,15 @@ impl Modes {
             cx.observe(&sample, |_, _, cx| cx.notify()),
         ];
         Self {
+            embedded: false,
             _forms: forms,
             controller: Controller::new(host),
             selected: "builtin.everyday".into(),
             editor,
             site,
+            site_rows: Default::default(),
+            site_subscriptions: Default::default(),
+            site_sources: Default::default(),
             sample,
             editing: None,
             edit_focus: cx.focus_handle(),
@@ -158,6 +167,9 @@ impl Modes {
         self.controller.detach();
         self.editing = None;
         self.site_edit = None;
+        self.site_rows.clear();
+        self.site_subscriptions.clear();
+        self.site_sources.clear();
         self.confirm = None;
 
         cx.notify();
@@ -274,6 +286,41 @@ impl Modes {
                 })
             })
     }
+    fn save_site_row(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(form) = self.site_rows.get(id) else {
+            return;
+        };
+        let Some(host) = normalize_host(form.read(cx).value("host")) else {
+            self.notice = Some("Enter an exact host such as github.com.");
+            cx.notify();
+            return;
+        };
+        let browser = form.read(cx).value("browser").to_string();
+        let Some(snapshot) = self.controller.model.snapshot.as_ref() else {
+            return;
+        };
+        let mut rules = snapshot.settings["browserSiteRules"]
+            .as_array()
+            .unwrap()
+            .clone();
+        if rules
+            .iter()
+            .any(|r| r["id"] != id && r["host"] == host && r["browserBundleId"] == browser)
+        {
+            self.notice = Some("That browser and host already have a rule.");
+            cx.notify();
+            return;
+        }
+        let Some(rule) = rules.iter_mut().find(|r| r["id"] == id) else {
+            return;
+        };
+        if rule["host"] == host && rule["browserBundleId"] == browser {
+            return;
+        }
+        rule["host"] = json!(host);
+        rule["browserBundleId"] = json!(browser);
+        self.patch(json!({"browserSiteRules":rules}), cx);
+    }
     fn add_site(&mut self, cx: &mut Context<Self>) {
         let f = self.site.read(cx);
         let Some(host) = normalize_host(f.value("host")) else {
@@ -312,7 +359,7 @@ impl Modes {
     }
 }
 impl Render for Modes {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.controller.drain();
         if self.seen_revision != self.controller.model.revision {
             self.confirm = None;
@@ -329,7 +376,9 @@ impl Render for Modes {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(div().text_size(px(20.)).child(gpui::text!("Modes")));
+            .when(!self.embedded, |d| {
+                d.child(div().text_size(px(20.)).child(gpui::text!("Modes")))
+            });
         if let Some(problem) = self.controller.model.problem {
             body = body.child(
                 div()
@@ -564,27 +613,45 @@ impl Render for Modes {
                 ));
             }
             let enabled = s.settings["siteModeLookupEnabled"] == true;
-            body=body.child(gpui::text!("Browser sites")).child(gpui::text!("Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule.")).child(self.button("site-activation",if enabled{"Disable browser site mode rules"}else{"Use browser site mode rules"},Action::Patch(json!({"siteModeLookupEnabled":!enabled})),cx));
+            let owner = cx.entity();
+            body=body.child(div().p(px(16.)).border_1().border_color(p.hairline).rounded(tokens::CARD_RADIUS).bg(p.tint_raised).flex().items_center().gap(px(16.))
+                .child(div().flex_1().min_w_0().child("Browser sites").child(div().text_size(tokens::CAPTION_SIZE).text_color(p.muted).child(gpui::text!("Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule."))))
+                .child(crate::Toggle::new("site-activation","Use browser site mode rules",enabled).with_scroll_parent(&self.scroll).disabled(self.controller.model.pending).on_change(move |v,_,cx|owner.update(cx,|s,cx|s.patch(json!({"siteModeLookupEnabled":*v}),cx)))));
             if enabled {
                 self.site
                     .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));
                 let e = cx.entity();
-                body = body
-                    .child(self.site.clone())
-                    .child(
-                        Button::new(
-                            "site-add",
-                            if self.site_edit.is_some() {
-                                "Save site rule"
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().child(self.site.clone()))
+                        .child(
+                            Button::new(
+                                "site-add",
+                                if self.site_edit.is_some() {
+                                    "Save site rule"
+                                } else {
+                                    "Add site rule"
+                                },
+                            )
+                            .caption(if self.site_edit.is_some() {
+                                "Save"
                             } else {
-                                "Add site rule"
-                            },
-                        )
-                        .with_scroll_parent(Some(&self.scroll))
-                        .on_click(move |_, _, cx| e.update(cx, |s, cx| s.add_site(cx))),
-                    )
-                    .child(self.button("site-probe", "Test current site", Action::Probe, cx));
+                                "Add"
+                            })
+                            .with_scroll_parent(Some(&self.scroll))
+                            .on_click(move |_, _, cx| e.update(cx, |s, cx| s.add_site(cx))),
+                        ),
+                );
                 let rules = s.settings["browserSiteRules"].as_array().unwrap();
+                self.site_rows
+                    .retain(|id, _| rules.iter().any(|r| r["id"] == *id));
+                self.site_subscriptions
+                    .retain(|id, _| self.site_rows.contains_key(id));
+                self.site_sources
+                    .retain(|id, _| self.site_rows.contains_key(id));
                 for r in rules.iter().filter(|r| r["modeId"] == self.selected) {
                     let id = r["id"].as_str().unwrap().to_string();
                     let host = r["host"].as_str().unwrap();
@@ -595,32 +662,121 @@ impl Render for Modes {
                         }
                     }
                     let removed: Vec<_> = rules.iter().filter(|v| v["id"] != id).cloned().collect();
-                    let edit = cx.entity();
-                    let remove = edit.clone();
-                    let rule = r.clone();
+                    if !self.site_rows.contains_key(&id) {
+                        let form = cx.new(|cx| {
+                            Form::new(
+                                vec![
+                                    Spec::select("browser", "Site rule browser", &BROWSERS),
+                                    Spec::text("host", "Site rule host"),
+                                ],
+                                w,
+                                cx,
+                            )
+                        });
+                        form.update(cx, |f, cx| {
+                            f.inline = true;
+                            f.set(
+                                json!({"host":r["host"],"browser":r["browserBundleId"]}),
+                                w,
+                                cx,
+                            );
+                        });
+                        let key = id.clone();
+                        let change_subscription =
+                            cx.subscribe(&form, move |s, _, event: &crate::form::Changed, cx| {
+                                if event.0 == "browser" {
+                                    s.save_site_row(&key, cx);
+                                }
+                            });
+                        let focus = form.read(cx).control_focus("host", cx).unwrap();
+                        let key = id.clone();
+                        let blur_subscription =
+                            cx.on_blur(&focus, w, move |s, _, cx| s.save_site_row(&key, cx));
+                        self.site_subscriptions
+                            .insert(id.clone(), vec![change_subscription, blur_subscription]);
+                        self.site_sources.insert(id.clone(), r.clone());
+                        self.site_rows.insert(id.clone(), form);
+                    }
+                    let row_form = self.site_rows[&id].clone();
+                    if self.site_sources.get(&id) != Some(r)
+                        && !["host", "browser"]
+                            .iter()
+                            .filter_map(|key| row_form.read(cx).control_focus(key, cx))
+                            .any(|f| f.is_focused(w))
+                    {
+                        row_form.update(cx, |f, cx| {
+                            f.set(
+                                json!({"host":r["host"],"browser":r["browserBundleId"]}),
+                                w,
+                                cx,
+                            )
+                        });
+                        self.site_sources.insert(id.clone(), r.clone());
+                    }
+                    row_form.update(cx, |f, cx| {
+                        f.set_label("host", format!("Host for {host}"), cx);
+                        f.set_label("browser", format!("Browser for {host}"), cx);
+                        f.scroll_parent = Some(self.scroll.clone());
+                        f.disabled = self.controller.model.pending;
+                    });
+                    let toggle = cx.entity();
+                    let remove = toggle.clone();
                     let removal_id = format!("site:{id}");
                     let armed = self.confirm.as_deref() == Some(&removal_id);
                     body = body.child(
                         div()
                             .id(SharedString::from(format!("site-row-{id}")))
-                            .child(gpui::text!(format!("{host} · {}", r["browserBundleId"])))
-                            .child(self.button(
-                                &format!("toggle-site-{id}"),
-                                &format!(
-                                    "{} {host}",
-                                    if r["enabled"] == true {
-                                        "Disable"
-                                    } else {
-                                        "Enable"
-                                    }
-                                ),
-                                Action::Patch(json!({"browserSiteRules":toggled})),
-                                cx,
-                            ))
-                            .child(Button::new(SharedString::from(format!("edit-site-{id}")),format!("Edit {host}…")).with_scroll_parent(Some(&self.scroll)).on_click(move|_,w,cx|edit.update(cx,|s,cx|{s.site.update(cx,|f,cx|f.set(json!({"host":rule["host"],"browser":rule["browserBundleId"]}),w,cx));s.site_edit=Some(rule.clone());s.site.update(cx,|f,cx|f.focus_first(w,cx));cx.notify()})))
-                            .child(Button::new(SharedString::from(format!("remove-site-{id}")),format!("{} {host}…",if armed{"Confirm remove"}else{"Remove"})).intent(if armed{ButtonIntent::Danger}else{ButtonIntent::Secondary}).with_scroll_parent(Some(&self.scroll)).on_click(move|_,_,cx|remove.update(cx,|s,cx|{if s.confirm.as_deref()==Some(&removal_id){s.patch(json!({"browserSiteRules":removed}),cx)}else{s.confirm=Some(removal_id.clone());cx.notify()}}))),
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .py(px(8.))
+                            .border_b_1()
+                            .border_color(p.hairline)
+                            .child(
+                                crate::Toggle::new(
+                                    SharedString::from(format!("toggle-site-{id}")),
+                                    format!("Enable {host}"),
+                                    r["enabled"] == true,
+                                )
+                                .with_scroll_parent(&self.scroll)
+                                .disabled(self.controller.model.pending)
+                                .on_change(move |_, _, cx| {
+                                    toggle.update(cx, |s, cx| {
+                                        s.patch(json!({"browserSiteRules":toggled}), cx)
+                                    })
+                                }),
+                            )
+                            .child(div().flex_1().min_w_0().child(row_form))
+                            .child(
+                                Button::new(
+                                    SharedString::from(format!("remove-site-{id}")),
+                                    format!(
+                                        "{} {host}…",
+                                        if armed { "Confirm remove" } else { "Remove" }
+                                    ),
+                                )
+                                .caption(if armed {
+                                    "Confirm remove…"
+                                } else {
+                                    "Remove…"
+                                })
+                                .destructive_text()
+                                .with_scroll_parent(Some(&self.scroll))
+                                .on_click(move |_, _, cx| {
+                                    remove.update(cx, |s, cx| {
+                                        if s.confirm.as_deref() == Some(&removal_id) {
+                                            s.patch(json!({"browserSiteRules":removed}), cx)
+                                        } else {
+                                            s.confirm = Some(removal_id.clone());
+                                            cx.notify();
+                                        }
+                                    })
+                                }),
+                            ),
                     );
                 }
+                body =
+                    body.child(self.button("site-probe", "Test current site", Action::Probe, cx));
                 if let Some(probe) = s.probe {
                     body = body.child(
                         div()
@@ -657,7 +813,7 @@ impl Render for Modes {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .p(px(24.))
+            .p(px(if self.embedded { 0. } else { 24. }))
             .bg(p.surface)
             .text_color(p.text)
             .text_size(tokens::BODY_SIZE)

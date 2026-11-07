@@ -20,6 +20,7 @@ use inbox::Inbox;
 use model::*;
 use std::{collections::BTreeMap, rc::Rc, time::Duration};
 pub struct Home {
+    pub workspace: Option<(Destination, AnyView)>,
     pub model: Session<Snapshot>,
     history: Entity<History>,
     host: Rc<dyn Host>,
@@ -53,6 +54,7 @@ impl Home {
             history
         });
         Self {
+            workspace: None,
             model: Session::default(),
             history,
             host,
@@ -397,10 +399,14 @@ impl Render for Home {
             ),
         ] {
             let b = self
-                .button(id, label, destination, cx)
+                .button(id, label, destination.clone(), cx)
                 .nav_row()
                 .icon(glyph)
-                .toggled(id == "nav-home");
+                .toggled(
+                    self.workspace
+                        .as_ref()
+                        .map_or(id == "nav-home", |(selected, _)| selected == &destination),
+                );
             nav = nav.child(if collapsed { b.icon_only(glyph) } else { b });
         }
         nav = nav.child(div().flex_1()).child(
@@ -1108,14 +1114,18 @@ impl Render for Home {
             .text_size(tokens::BODY_SIZE)
             .line_height(tokens::BODY_LEADING)
             .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .flex()
-                    .child(nav)
-                    .child(content),
-            )
+            .child(div().flex_1().min_h(px(0.)).flex().child(nav).child(
+                if let Some((_, view)) = &self.workspace {
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(view.clone())
+                        .into_any_element()
+                } else {
+                    content.into_any_element()
+                },
+            ))
     }
 }
 

@@ -1,6 +1,146 @@
 //! Existing pane workflows; service and editor ownership stays injected.
 use super::*;
 impl Settings {
+    pub(super) fn general(&mut self, w: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = Palette::get(cx);
+        let r = self.model.runtime();
+        let mut card = div()
+            .w_full()
+            .rounded(tokens::CARD_RADIUS)
+            .border_1()
+            .border_color(p.hairline_strong)
+            .bg(p.tint_raised)
+            .shadow(p.card_shadow())
+            .flex()
+            .flex_col();
+        let row = *ROWS.iter().find(|r| r.key == "launchAtLogin").unwrap();
+        if !r.internal_build {
+            card = card.child(self.row(row, false, cx));
+        }
+        card = card.child(
+            self.route_button("shortcuts", "Keyboard shortcuts", Page::Shortcuts, cx)
+                .description("See global and main-window shortcuts in one place")
+                .trailing_icon(crate::icons::Glyph::ChevronRight)
+                .intent(ButtonIntent::Ghost),
+        );
+        card = card.child(
+            div()
+                .p(px(16.))
+                .border_t_1()
+                .border_b_1()
+                .border_color(p.hairline)
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    div().w_full().child(
+                        self.editor_button("setup", "Run setup assistant…", Destination::Setup, cx)
+                            .full_width(),
+                    ),
+                )
+                .child(
+                    div()
+                        .text_size(tokens::CAPTION_SIZE)
+                        .text_color(p.muted)
+                        .child("Re-check permissions and models"),
+                ),
+        );
+        for key in ["overlayPlacement", "overlayLiveWords"] {
+            let row = *ROWS.iter().find(|r| r.key == key).unwrap();
+            card = card.child(self.row(row, false, cx));
+        }
+        let e = cx.entity();
+        card = card.child(
+            div()
+                .px(px(8.))
+                .py(px(6.))
+                .border_b_1()
+                .border_color(p.hairline)
+                .child(
+                    Button::new(
+                        "advanced",
+                        if self.model.advanced() {
+                            "Hide Advanced"
+                        } else {
+                            "Advanced"
+                        },
+                    )
+                    .intent(ButtonIntent::Ghost)
+                    .trailing_icon(crate::icons::Glyph::ChevronDown)
+                    .with_scroll_parent(Some(&self.scroll))
+                    .track_focus(&self.focus_for("advanced", cx))
+                    .toggled(self.model.advanced())
+                    .disabled(self.model.pending || self.model.snapshot.is_none())
+                    .on_click(move |_, w, cx| e.update(cx, |s, cx| s.toggle_advanced(w, cx))),
+                ),
+        );
+        if self.model.advanced() {
+            for &row in ROWS
+                .iter()
+                .filter(|row| row.page == Page::General && row.advanced)
+            {
+                if row.visible(self.model.settings()) {
+                    card = card.child(self.row(row, false, cx));
+                }
+            }
+            card = card.child(
+                div()
+                    .p(px(16.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .children(self.extra(w, cx)),
+            );
+        }
+        if r.login_requires_approval {
+            card = card.child(
+                div()
+                    .p(px(16.))
+                    .child("Launch at login needs your approval in System Settings.")
+                    .child(self.action_button(
+                        "login-approval",
+                        "Open Login Items…",
+                        Action::LoginSettings,
+                        false,
+                        false,
+                        cx,
+                    )),
+            );
+        }
+        if !r.internal_build {
+            let (label, action, busy) = match r.update {
+                Update::Available => ("Download update", Action::DownloadUpdate, false),
+                Update::Ready => ("Restart to update…", Action::RestartUpdate, false),
+                Update::Checking | Update::Downloading => {
+                    ("Checking for updates…", Action::CheckUpdate, true)
+                }
+                _ => ("Check for updates", Action::CheckUpdate, false),
+            };
+            card = card.child(
+                div()
+                    .p(px(12.))
+                    .border_b_1()
+                    .border_color(p.hairline)
+                    .child(
+                        self.action_button("updates", label, action, false, busy, cx)
+                            .icon(crate::icons::Glyph::Refresh)
+                            .full_width(),
+                    ),
+            );
+        }
+        if !r.version.is_empty() {
+            card = card.child(
+                div()
+                    .p(px(10.))
+                    .text_center()
+                    .text_size(tokens::CAPTION_SIZE)
+                    .text_color(p.muted)
+                    .child(format!("Murmur v{}", r.version)),
+            );
+        }
+        card.into_any_element()
+    }
+
     pub(super) fn extra(&mut self, w: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = vec![];
         let r = self.model.runtime();
@@ -35,16 +175,6 @@ impl Settings {
         }
         match self.model.page {
             Page::General => {
-                out.push(
-                    self.route_button("shortcuts", "Keyboard shortcuts", Page::Shortcuts, cx)
-                        .into_any_element(),
-                );
-                editor!("setup", "Run setup assistant…", Destination::Setup);
-                editor!(
-                    "checklist",
-                    "Show feature checklist",
-                    Destination::Checklist
-                );
                 if advanced {
                     if let Some(requested) = self.calibration {
                         let offset = r.calibration.map(|c| c.applied).unwrap_or(requested);
@@ -140,31 +270,6 @@ impl Settings {
                         false
                     );
                 }
-                if !r.internal_build {
-                    text!(r.update.label());
-                    if let Some(percent) = r.update_percent
-                        && r.update == Update::Downloading
-                    {
-                        text!(format!("Downloaded · {percent}%"));
-                    }
-                    let (label, action, busy) = match r.update {
-                        Update::Available => ("Download update", Action::DownloadUpdate, false),
-                        Update::Ready => ("Restart to update…", Action::RestartUpdate, false),
-                        Update::Checking | Update::Downloading => {
-                            ("Checking for updates…", Action::CheckUpdate, true)
-                        }
-                        _ => ("Check for updates", Action::CheckUpdate, false),
-                    };
-                    action!("updates", label, action, false, busy);
-                    editor!(
-                        "update-details",
-                        "Update details…",
-                        Destination::UpdateDetails
-                    );
-                }
-                if !r.version.is_empty() {
-                    text!(format!("Murmur v{}", r.version));
-                }
             }
             Page::Shortcuts => {
                 #[cfg(any(test, feature = "gallery"))]
@@ -200,24 +305,60 @@ impl Settings {
                 }
             }
             Page::Customize => {
-                out.push(
-                    self.route_button("customize-text", "Text & vocabulary…", Page::Text, cx)
-                        .into_any_element(),
-                );
-                editor!(
-                    "customize-commands",
-                    "Voice commands…",
-                    Destination::VoiceCommands
-                );
-                editor!(
-                    "customize-overrides",
-                    "App overrides…",
-                    Destination::AppOverrides
-                );
-                out.push(
-                    self.route_button("customize-modes", "Modes…", Page::Modes, cx)
-                        .into_any_element(),
-                );
+                let p = Palette::get(cx);
+                let destinations = [
+                    (
+                        "customize-text",
+                        "Text & vocabulary",
+                        "Tune cleanup, punctuation, preferred spellings, and local vocabulary",
+                    ),
+                    (
+                        "customize-commands",
+                        "Voice commands",
+                        "Create exact spoken replacements and reusable snippets",
+                    ),
+                    (
+                        "customize-overrides",
+                        "App overrides",
+                        "Choose how Murmur writes and delivers text in each app",
+                    ),
+                    (
+                        "customize-modes",
+                        "Modes",
+                        "Build reusable behavior and assign it to apps or browser sites",
+                    ),
+                ];
+                for (i, (id, title, copy)) in destinations.into_iter().enumerate() {
+                    let button = match i {
+                        0 => self.route_button(id, "Text & vocabulary…", Page::Text, cx),
+                        1 => self.editor_button(
+                            id,
+                            "Voice commands…",
+                            Destination::VoiceCommands,
+                            cx,
+                        ),
+                        2 => {
+                            self.editor_button(id, "App overrides…", Destination::AppOverrides, cx)
+                        }
+                        _ => self.route_button(id, "Modes…", Page::Modes, cx),
+                    };
+                    out.push(
+                        div()
+                            .w_full()
+                            .rounded(tokens::CARD_RADIUS)
+                            .border_1()
+                            .border_color(p.hairline_strong)
+                            .bg(p.tint_raised)
+                            .child(
+                                button
+                                    .caption(title)
+                                    .description(copy)
+                                    .trailing_icon(crate::icons::Glyph::ChevronRight)
+                                    .intent(ButtonIntent::Ghost),
+                            )
+                            .into_any_element(),
+                    );
+                }
             }
             Page::Recording => {
                 text!(if r.inventory_stale {

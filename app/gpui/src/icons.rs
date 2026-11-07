@@ -33,9 +33,31 @@ pub enum Glyph {
     Gauge,
     Bug,
     Message,
+    File,
+    Trash,
+    Plus,
+    Upload,
+    Sun,
+    Moon,
 }
 pub fn icon(glyph: Glyph) -> Icon {
     let bytes: &'static [u8] = match glyph {
+        Glyph::File => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/file.svg")
+        }
+        Glyph::Trash => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/trash.svg")
+        }
+        Glyph::Plus => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/plus.svg")
+        }
+        Glyph::Upload => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/upload.svg")
+        }
+        Glyph::Sun => include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/sun.svg"),
+        Glyph::Moon => {
+            include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/moon.svg")
+        }
         Glyph::House => {
             include_bytes!("../vendor/gpui-component/crates/assets/assets/icons/house.svg")
         }

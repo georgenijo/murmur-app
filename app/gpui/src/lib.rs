@@ -75,3 +75,5 @@ mod remaining_tests;
 #[cfg(test)]
 mod tests;
 pub mod themes;
+
+pub mod update_dialog;

@@ -21,6 +21,11 @@ impl Default for FixtureHost {
     }
 }
 impl FixtureHost {
+    pub fn seed_sites(&mut self) {
+        let state = self.state.get_mut();
+        state.settings["siteModeLookupEnabled"] = serde_json::json!(true);
+        state.settings["browserSiteRules"] = serde_json::json!([{"id":"site.synthetic","browserBundleId":"com.apple.Safari","host":"github.com","modeId":"builtin.technical","enabled":true}]);
+    }
     pub fn with_files(files: bool) -> Self {
         let mut state = snapshot();
         if files {
@@ -126,13 +131,13 @@ impl super::Modes {
         if state == "error" {
             self.controller.model.problem = Some(Problem::Unavailable);
         }
-        if state == "custom" || state == "sites" {
+        if state == "sites" {
+            self.selected = "builtin.technical".into();
+        }
+        if state == "custom" {
             let s = self.controller.model.snapshot.as_mut().unwrap();
             s.settings["modes"] = serde_json::json!([blank("mode.synthetic", "Synthetic mode")]);
             self.selected = "mode.synthetic".into();
-            if state == "sites" {
-                s.settings["siteModeLookupEnabled"] = serde_json::json!(true);
-            }
         }
         let _ = (w, cx);
     }

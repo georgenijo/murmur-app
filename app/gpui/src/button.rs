@@ -52,6 +52,10 @@ pub struct Button {
     icon_only: bool,
     pill: bool,
     nav: bool,
+    full_width: bool,
+    description: Option<SharedString>,
+    destructive_text: bool,
+    trailing: Option<crate::icons::Glyph>,
 }
 impl Button {
     pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
@@ -77,6 +81,10 @@ impl Button {
             icon_only: false,
             pill: false,
             nav: false,
+            full_width: false,
+            description: None,
+            destructive_text: false,
+            trailing: None,
         }
     }
     /// Change visible copy while retaining the constructor's accessible name.
@@ -105,9 +113,28 @@ impl Button {
         self.pill = true;
         self
     }
+    pub fn full_width(mut self) -> Self {
+        self.full_width = true;
+        self
+    }
     pub fn nav_row(mut self) -> Self {
         self.nav = true;
         self.intent = ButtonIntent::Ghost;
+        self
+    }
+    pub fn description(mut self, value: impl Into<SharedString>) -> Self {
+        let value = value.into();
+        self.base = self.base.aria_description(value.clone());
+        self.description = Some(value);
+        self
+    }
+    pub fn trailing_icon(mut self, glyph: crate::icons::Glyph) -> Self {
+        self.trailing = Some(glyph);
+        self
+    }
+    pub fn destructive_text(mut self) -> Self {
+        self.intent = ButtonIntent::Ghost;
+        self.destructive_text = true;
         self
     }
     pub fn intent(mut self, intent: ButtonIntent) -> Self {
@@ -178,6 +205,8 @@ impl RenderOnce for Button {
             ButtonIntent::Ghost => (gpui::transparent_black(), p.text),
             ButtonIntent::Secondary => (p.tint_raised, p.text),
         };
+        let fg = if self.destructive_text { p.danger } else { fg };
+        let card = self.description.is_some();
         let bg = if self.selected {
             if self.nav {
                 p.tint_raised
@@ -205,7 +234,7 @@ impl RenderOnce for Button {
             .min_w_0()
             .overflow_hidden()
             .self_start()
-            .h(self.size.height())
+            .h(if card { px(76.) } else { self.size.height() })
             .px(if self.nav { px(8.) } else { self.size.inset() })
             .rounded(if self.pill {
                 px(999.)
@@ -231,7 +260,9 @@ impl RenderOnce for Button {
                 },
             )
             .when(self.icon_only, |s| s.w(self.size.height()).px(px(0.)))
-            .when(self.nav, |s| s.w_full().text_size(tokens::LABEL_SIZE))
+            .when(self.nav || card || self.full_width, |s| {
+                s.w_full().text_size(tokens::LABEL_SIZE)
+            })
             .bg(bg)
             .text_color(fg)
             .text_size(if self.nav {
@@ -244,7 +275,11 @@ impl RenderOnce for Button {
                 }
             })
             .line_height(tokens::BODY_LEADING)
-            .font_weight(FontWeight::MEDIUM)
+            .font_weight(if card {
+                FontWeight::SEMIBOLD
+            } else {
+                FontWeight::MEDIUM
+            })
             .when(self.disabled, |s| s.opacity(tokens::DISABLED_OPACITY))
             .when(!self.disabled, |s| {
                 s.hover(|s| s.bg(bg.blend(fg.opacity(0.05))))
@@ -277,13 +312,17 @@ impl RenderOnce for Button {
                     .max_w_full()
                     .items_center()
                     .gap(px(8.))
-                    .when(self.nav, |s| s.w_full())
-                    .when(self.icon_only, |s| s.justify_center())
+                    .when(
+                        self.nav || card || self.full_width || self.trailing.is_some(),
+                        |s| s.w_full(),
+                    )
+                    .when(self.icon_only || self.full_width, |s| s.justify_center())
                     .when(self.nav && self.selected && !self.icon_only, |s| {
                         s.child(
                             div()
                                 .absolute()
-                                .left_0()
+                                .left(px(-8.))
+                                .top(px(8.))
                                 .w(px(3.))
                                 .h(px(16.))
                                 .rounded(px(2.))
@@ -300,7 +339,27 @@ impl RenderOnce for Button {
                         ))
                     })
                     .when(!self.icon_only, |s| {
-                        s.child(div().min_w_0().truncate().child(self.label))
+                        s.child(
+                            div()
+                                .min_w_0()
+                                .when(card, |s| s.flex_1())
+                                .flex()
+                                .flex_col()
+                                .child(div().truncate().child(self.label))
+                                .when_some(self.description, |s, copy| {
+                                    s.child(
+                                        div()
+                                            .text_size(tokens::CAPTION_SIZE)
+                                            .line_height(tokens::CAPTION_LEADING)
+                                            .font_weight(FontWeight::NORMAL)
+                                            .text_color(p.muted)
+                                            .child(copy),
+                                    )
+                                }),
+                        )
+                    })
+                    .when_some(self.trailing, |s, glyph| {
+                        s.child(crate::icons::icon(glyph).text_color(p.muted))
                     }),
             )
     }

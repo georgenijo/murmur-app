@@ -802,6 +802,7 @@ pub enum ChartKind {
 }
 pub struct Chart {
     pub kind: ChartKind,
+    pub heading: Option<SharedString>,
     pub(crate) scroll_parent: Option<ScrollHandle>,
     label: SharedString,
     unit: SharedString,
@@ -830,6 +831,7 @@ impl Chart {
         });
         Self {
             kind: ChartKind::Bars,
+            heading: None,
             scroll_parent: None,
             label: label.into(),
             unit: unit.into(),
@@ -889,7 +891,8 @@ impl Render for Chart {
             .flex_shrink_0()
             .p(px(12.))
             .border_1()
-            .border_color(p.border)
+            .border_color(p.hairline)
+            .bg(p.surface_container_low)
             .rounded(tokens::CARD_RADIUS)
             .on_hover(cx.listener(|s, hovered: &bool, w, cx| {
                 if !*hovered && !s.focus.is_focused(w) {
@@ -924,17 +927,17 @@ impl Render for Chart {
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .child(self.label.clone())
+            .child(div().text_size(tokens::MICRO_SIZE).font_weight(FontWeight::MEDIUM).text_color(p.muted).child(self.heading.clone().unwrap_or_else(||self.label.clone())))
             .child(
                 div()
-                    .h(px(24.))
+                    .h(px(24.)).text_size(tokens::MICRO_SIZE).truncate()
                     .text_color(p.muted)
                     .child(if self.points.is_empty() {
                         "No samples".into()
                     } else if self.shown {
                         self.value(self.active)
                     } else {
-                        "Arrow keys or hover to inspect exact values".into()
+                        "Hover or use arrow keys for values.".into()
                     }),
             )
             .child(div().h(px(if self.kind==ChartKind::Heatmap{126.}else{108.})).relative().flex().items_end().gap(px(1.)).when(self.kind==ChartKind::Line, |d| {

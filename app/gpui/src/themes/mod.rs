@@ -32,6 +32,7 @@ enum Dialog {
     Update(Box<open_vsx::Extension>, Vec<Value>),
 }
 pub struct Themes {
+    pub embedded: bool,
     _forms: Vec<Subscription>,
     pub controller: Controller<Snapshot, Action>,
     pub editor: Entity<Form>,
@@ -105,6 +106,7 @@ impl Themes {
             cx.observe(&search, |_, _, cx| cx.notify()),
         ];
         Self {
+            embedded: false,
             _forms: forms,
             controller: Controller::new(host),
             editor,
@@ -280,7 +282,9 @@ impl Render for Themes {
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(div().text_size(px(20.)).child(gpui::text!("Appearance")));
+            .when(!self.embedded, |d| {
+                d.child(div().text_size(px(20.)).child(gpui::text!("Appearance")))
+            });
         if let Some(problem) = self.controller.model.problem {
             body = body
                 .child(
@@ -468,7 +472,12 @@ impl Render for Themes {
             }
             body = body.child(content);
         } else if let Some(s) = snapshot {
-            let mut mode_buttons = div().flex().flex_wrap().gap(px(8.));
+            let mut mode_buttons = div()
+                .flex()
+                .gap(px(2.))
+                .p(px(2.))
+                .rounded(tokens::CONTROL_RADIUS)
+                .bg(p.surface_container_low);
             for (mode, label) in [("system", "System"), ("light", "Light"), ("dark", "Dark")] {
                 let mut doc = s.appearance.clone();
                 doc["mode"] = json!(mode);
@@ -482,22 +491,27 @@ impl Render for Themes {
                         Action::Appearance(doc),
                         cx,
                     )
+                    .intent(crate::ButtonIntent::Ghost)
+                    .caption(format!(
+                        "{}{}",
+                        if s.appearance["mode"] == mode {
+                            "✓ "
+                        } else {
+                            ""
+                        },
+                        label
+                    ))
                     .toggled(s.appearance["mode"] == mode),
                 );
             }
-            body = body.child(mode_buttons);
-            let mut reset = s.appearance.clone();
-            reset["theme"] = json!({"version":1,"presetId":"sonic"});
-            reset["selection"] = json!({"light":"sonic","dark":"sonic"});
-            reset["revision"] = json!(library::next_revision(
-                reset["revision"].as_u64().unwrap_or(0)
-            ));
-            body = body.child(self.button(
-                "theme-reset".into(),
-                "Reset to Sonic".into(),
-                Action::Appearance(reset),
-                cx,
-            ));
+            body = body.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child("Color scheme")
+                    .child(mode_buttons),
+            );
             let create = cx.entity();
             let edit = create.clone();
             let import = create.clone();
@@ -506,8 +520,11 @@ impl Render for Themes {
                     .flex()
                     .flex_wrap()
                     .gap(px(8.))
+                    .items_center()
+                    .child(div().flex_1().child("Themes"))
                     .child(
                         Button::new("theme-create", "Create theme…")
+                            .icon(crate::icons::Glyph::Plus)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
                                 create.update(cx, |s, cx| {
@@ -517,6 +534,8 @@ impl Render for Themes {
                     )
                     .child(
                         Button::new("theme-edit", "Edit colors…")
+                            .icon_only(crate::icons::Glyph::Palette)
+                            .intent(crate::ButtonIntent::Ghost)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
                                 edit.update(cx, |s, cx| {
@@ -526,17 +545,22 @@ impl Render for Themes {
                     )
                     .child(
                         Button::new("theme-import", "Import theme…")
+                            .icon(crate::icons::Glyph::Download)
                             .with_scroll_parent(Some(&self.scroll))
                             .on_click(move |_, w, cx| {
                                 import.update(cx, |s, cx| s.dialog(Dialog::Import, w, cx))
                             }),
                     )
-                    .child(self.button(
-                        "theme-export".into(),
-                        "Export current…".into(),
-                        Action::ExportCurrent,
-                        cx,
-                    )),
+                    .child(
+                        self.button(
+                            "theme-export".into(),
+                            "Export current…".into(),
+                            Action::ExportCurrent,
+                            cx,
+                        )
+                        .icon_only(crate::icons::Glyph::Upload)
+                        .intent(crate::ButtonIntent::Ghost),
+                    ),
             );
             if !s.library_available {
                 body = body.child(div().id("theme-library-error").role(Role::Alert).child(
@@ -545,75 +569,172 @@ impl Render for Themes {
                     ),
                 ));
             }
+            let mut grid = div().flex().flex_wrap().gap(px(8.));
             for entry in library::entries(&s.library) {
                 let id = entry["id"].as_str().unwrap().to_string();
-                let mut row = div()
-                    .id(SharedString::from(format!("theme-{id}")))
-                    .p(px(16.))
-                    .border_1()
-                    .border_color(p.border)
-                    .rounded(tokens::CARD_RADIUS)
+                let label = entry["label"].as_str().unwrap_or("Theme");
+                let selected = s.appearance["selection"][if appearance::is_dark(&s.appearance, cx) {
+                    "dark"
+                } else {
+                    "light"
+                }] == id;
+                let mut orbs = div()
                     .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(gpui::text!(
-                        entry["label"].as_str().unwrap_or("Theme").to_string()
-                    ));
-                let mut variants = div().flex().flex_wrap().gap(px(8.));
+                    .items_center()
+                    .justify_center()
+                    .gap(px(32.))
+                    .h(px(56.));
                 for mode in entry["modes"].as_array().unwrap() {
                     let mode = mode.as_str().unwrap();
                     if let Ok(doc) = library::selection(&s.appearance, &s.library, &id, Some(mode))
                     {
-                        variants = variants.child(self.button(
-                            format!("theme-{id}-{mode}"),
-                            format!("Use {} {mode}", entry["label"].as_str().unwrap()),
-                            Action::Appearance(doc),
-                            cx,
-                        ));
+                        let colors = compile::resolve(&entry["theme"], mode == "dark");
+                        let swatch = colors.get("primary").map(|[r, g, b]| {
+                            Hsla::from(rgb(((*r as u32) << 16) | ((*g as u32) << 8) | *b as u32))
+                        });
+                        let mut orb = div()
+                            .size(px(38.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(p.hairline_strong)
+                            .bg(p.tint_raised)
+                            .shadow(p.card_shadow())
+                            .flex()
+                            .items_center()
+                            .justify_center();
+                        if let Some(color) = swatch {
+                            orb = orb.bg(linear_gradient(
+                                135.,
+                                linear_color_stop(color.blend(white().opacity(0.8)), 0.),
+                                linear_color_stop(color.blend(black().opacity(0.55)), 1.),
+                            ));
+                        }
+                        orbs = orbs.child(
+                            orb.child(
+                                self.button(
+                                    format!("theme-{id}-{mode}"),
+                                    format!("{label} {mode} variant"),
+                                    Action::Appearance(doc),
+                                    cx,
+                                )
+                                .intent(crate::ButtonIntent::Ghost)
+                                .size(crate::ButtonSize::ExtraSmall)
+                                .icon_only(if mode == "dark" {
+                                    crate::icons::Glyph::Moon
+                                } else {
+                                    crate::icons::Glyph::Sun
+                                }),
+                            ),
+                        );
                     }
                 }
+                let mut actions = div().flex().items_center().gap(px(2.));
                 if let Ok(doc) = library::selection(&s.appearance, &s.library, &id, None) {
-                    variants = variants.child(self.button(
-                        format!("theme-{id}-pair"),
-                        "Use theme".into(),
-                        Action::Appearance(doc),
-                        cx,
-                    ));
+                    actions = actions.child(
+                        self.button(
+                            format!("theme-{id}-pair"),
+                            format!("Use {label} theme"),
+                            Action::Appearance(doc),
+                            cx,
+                        )
+                        .caption(label.to_string())
+                        .intent(crate::ButtonIntent::Ghost),
+                    );
                 }
-                variants = variants
-                    .child(self.button(
-                        format!("theme-{id}-duplicate"),
-                        "Duplicate".into(),
-                        Action::Duplicate(id.clone()),
-                        cx,
-                    ))
-                    .child(self.button(
-                        format!("theme-{id}-export"),
-                        "Export…".into(),
-                        Action::ExportEntry(id.clone()),
-                        cx,
-                    ));
+                actions = actions
+                    .child(div().flex_1())
+                    .child(
+                        self.button(
+                            format!("theme-{id}-duplicate"),
+                            format!("Duplicate {label}"),
+                            Action::Duplicate(id.clone()),
+                            cx,
+                        )
+                        .icon_only(crate::icons::Glyph::Copy)
+                        .size(crate::ButtonSize::ExtraSmall)
+                        .intent(crate::ButtonIntent::Ghost),
+                    )
+                    .child(
+                        self.button(
+                            format!("theme-{id}-export"),
+                            format!("Export {label}…"),
+                            Action::ExportEntry(id.clone()),
+                            cx,
+                        )
+                        .icon_only(crate::icons::Glyph::Upload)
+                        .size(crate::ButtonSize::ExtraSmall)
+                        .intent(crate::ButtonIntent::Ghost),
+                    );
                 if !["sonic", "opencode"].contains(&id.as_str()) {
                     let e = cx.entity();
-                    variants = variants.child(
-                        Button::new(SharedString::from(format!("theme-{id}-remove")), "Remove…")
-                            .with_scroll_parent(Some(&self.scroll))
-                            .on_click(move |_, w, cx| {
-                                e.update(cx, |s, cx| s.dialog(Dialog::Remove(id.clone()), w, cx))
-                            }),
+                    let remove_id = id.clone();
+                    actions = actions.child(
+                        Button::new(
+                            SharedString::from(format!("theme-{id}-remove")),
+                            format!("Remove {label}…"),
+                        )
+                        .icon_only(crate::icons::Glyph::Trash)
+                        .size(crate::ButtonSize::ExtraSmall)
+                        .destructive_text()
+                        .with_scroll_parent(Some(&self.scroll))
+                        .on_click(move |_, w, cx| {
+                            e.update(cx, |s, cx| {
+                                s.dialog(Dialog::Remove(remove_id.clone()), w, cx)
+                            })
+                        }),
                     );
                 }
                 if let Some(url) = entry["source"]["sourceUrl"].as_str() {
-                    variants = variants.child(self.button(
-                        format!("source-{}", entry["id"].as_str().unwrap()),
-                        "Source…".into(),
-                        Action::OpenSource(url.into()),
-                        cx,
-                    ));
+                    actions = actions.child(
+                        self.button(
+                            format!("source-{id}"),
+                            "Source…".into(),
+                            Action::OpenSource(url.into()),
+                            cx,
+                        )
+                        .icon_only(crate::icons::Glyph::Download)
+                        .intent(crate::ButtonIntent::Ghost),
+                    );
                 }
-                row = row.child(variants);
-                body = body.child(row);
+                grid = grid.child(
+                    div()
+                        .id(SharedString::from(format!("theme-{id}")))
+                        .w(px(208.))
+                        .p(px(8.))
+                        .border_1()
+                        .border_color(if selected {
+                            p.accent
+                        } else {
+                            p.hairline_strong
+                        })
+                        .bg(if selected {
+                            p.tint_raised.blend(p.accent.opacity(0.08))
+                        } else {
+                            p.tint_raised
+                        })
+                        .rounded(tokens::CARD_RADIUS)
+                        .shadow(p.card_shadow())
+                        .child(orbs)
+                        .child(actions),
+                );
             }
+            body = body.child(grid);
+            let mut reset = s.appearance.clone();
+            reset["theme"] = json!({"version":1,"presetId":"sonic"});
+            reset["selection"] = json!({"light":"sonic","dark":"sonic"});
+            reset["revision"] = json!(library::next_revision(
+                reset["revision"].as_u64().unwrap_or(0)
+            ));
+            body = body.child(
+                self.button(
+                    "theme-reset".into(),
+                    "Reset to Sonic".into(),
+                    Action::Appearance(reset),
+                    cx,
+                )
+                .intent(crate::ButtonIntent::Ghost),
+            );
+
             if let Some(n) = s.notice {
                 body = body.child(
                     div()
@@ -637,7 +758,7 @@ impl Render for Themes {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .p(px(24.))
+            .p(px(if self.embedded { 0. } else { 24. }))
             .bg(p.surface)
             .text_color(p.text)
             .text_size(tokens::BODY_SIZE)

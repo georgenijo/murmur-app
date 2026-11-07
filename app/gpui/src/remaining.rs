@@ -66,6 +66,8 @@ impl QaOptions {
     }
 }
 pub struct Review {
+    home: Entity<crate::home::Home>,
+    pub settings: Entity<crate::settings::Settings>,
     pub customize: Entity<crate::customize::Customize>,
     pub custom_active: bool,
     _custom_back: Subscription,
@@ -99,7 +101,22 @@ impl Review {
             });
             cx.notify();
         });
-        Self {
+        let review = Self {
+            home: cx.new(|cx| {
+                crate::home::Home::new(
+                    Rc::new(crate::home::fixtures::FixtureHost::default()),
+                    Rc::new(crate::history::fixtures::FixtureHost::default()),
+                    w,
+                    cx,
+                )
+            }),
+            settings: cx.new(|cx| {
+                crate::settings::Settings::new(
+                    Rc::new(crate::settings::fixtures::FixtureHost::default()),
+                    w,
+                    cx,
+                )
+            }),
             customize,
             custom_active: false,
             _custom_back: back,
@@ -120,16 +137,33 @@ impl Review {
             }),
             modes: cx.new(|cx| {
                 crate::modes::Modes::new(
-                    Rc::new(crate::modes::fixtures::FixtureHost::with_files(
-                        options.mode_files,
-                    )),
+                    Rc::new({
+                        let mut host =
+                            crate::modes::fixtures::FixtureHost::with_files(options.mode_files);
+                        if std::env::var("MURMUR_REMAINING_STATE").as_deref() == Ok("sites") {
+                            host.seed_sites();
+                        }
+                        host
+                    }),
                     w,
                     cx,
                 )
             }),
             themes: cx.new(|cx| crate::themes::Themes::new(crate::themes::fixtures::host(), w, cx)),
             selected: usize::MAX,
-        }
+        };
+        review.settings.update(cx, |s, cx| {
+            s.embed(
+                crate::settings::schema::Page::Appearance,
+                review.themes.clone(),
+            );
+            s.embed(crate::settings::schema::Page::Modes, review.modes.clone());
+            s.attach(cx);
+            s.follow(cx);
+        });
+        review.themes.update(cx, |s, _| s.embedded = true);
+        review.modes.update(cx, |s, _| s.embedded = true);
+        review
     }
     pub fn select(&mut self, index: usize, w: &mut Window, cx: &mut Context<Self>) {
         if self.custom_active {
@@ -157,6 +191,31 @@ impl Review {
             _ => (),
         };
         self.selected = index;
+        if index == 1 && std::env::var_os("MURMUR_QA_HIDE_TABS").is_some() {
+            self.home.update(cx, |s, cx| {
+                s.workspace = Some((
+                    crate::home::model::Destination::Insights,
+                    self.insights.clone().into(),
+                ));
+                s.attach(cx);
+                s.drain(cx);
+            });
+            self.insights.update(cx, |s, _| s.embedded = true);
+        }
+        if index == 4 || index == 5 {
+            self.settings.update(cx, |s, cx| {
+                s.navigate(
+                    if index == 4 {
+                        crate::settings::schema::Page::Modes
+                    } else {
+                        crate::settings::schema::Page::Appearance
+                    },
+                    None,
+                    w,
+                    cx,
+                )
+            });
+        }
         match index {
             0 => self.palette.update(cx, |s, cx| {
                 s.attach(cx);
@@ -276,10 +335,16 @@ impl Render for Review {
         } else {
             match self.selected {
                 0 => self.palette.clone().into_any_element(),
-                1 => self.insights.clone().into_any_element(),
+                1 => {
+                    if std::env::var_os("MURMUR_QA_HIDE_TABS").is_some() {
+                        self.home.clone().into_any_element()
+                    } else {
+                        self.insights.clone().into_any_element()
+                    }
+                }
                 2 => self.models.clone().into_any_element(),
                 3 => self.knowledge.clone().into_any_element(),
-                4 => self.modes.clone().into_any_element(),
+                4 | 5 => self.settings.clone().into_any_element(),
                 _ => self.themes.clone().into_any_element(),
             }
         };
@@ -289,7 +354,9 @@ impl Render for Review {
             .flex_col()
             .bg(p.surface)
             .text_color(p.text)
-            .child(nav)
+            .when(std::env::var_os("MURMUR_QA_HIDE_TABS").is_none(), |d| {
+                d.child(nav)
+            })
             .child(div().flex_1().min_h(px(0.)).child(child))
     }
 }

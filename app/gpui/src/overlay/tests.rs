@@ -946,7 +946,11 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
                         // 8 pt parent: nowrap must not conceal horizontal spill.
                         assert_eq!(
                             symbol.size.height,
-                            crate::tokens::CAPTION_LEADING,
+                            if indicator == Indicator::Recording {
+                                gpui::px(6.)
+                            } else {
+                                crate::tokens::CAPTION_LEADING
+                            },
                             "{indicator:?}"
                         );
                         contains(card, symbol);
@@ -955,7 +959,17 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
                             .debug_bounds("overlay-quick-settings-disclosure")
                             .unwrap();
                         // The 8 pt chevron is centered in a 20 pt hit target.
-                        assert!(symbol.right() <= disclosure.left() + gpui::px(6.));
+                        if placement == OverlayPlacement::FloatingPill
+                            && indicator == Indicator::Recording
+                            && !expanded
+                        {
+                            assert!(
+                                disclosure.right() <= symbol.left(),
+                                "quiet quick settings must not cover the recording dot: {indicator:?} {placement:?} physical={physical} expanded={expanded} disclosure={disclosure:?} symbol={symbol:?}"
+                            );
+                        } else {
+                            assert!(symbol.right() <= disclosure.left() + gpui::px(6.));
+                        }
                         if placement == OverlayPlacement::Notch
                             && indicator == Indicator::Delivery(Delivery::Clipboard)
                         {
