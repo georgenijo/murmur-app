@@ -1,4 +1,5 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::managed_child::{bundled_sibling, ManagedChild};
 use crate::microphone_preview::{
     can_schedule_vad_analysis, classify_level, schedule_vad_analysis, MicrophonePreviewLevel,
@@ -21,7 +22,6 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock, RwLockReadGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-use tauri::Manager;
 use uuid::Uuid;
 
 /// The supervisor's capture-active state, with an epoch for each activation.
@@ -117,8 +117,8 @@ impl CaptureGeneration {
     }
 }
 
-pub(crate) fn publish_waveform<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn publish_waveform<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     generation: CaptureGeneration,
     level: f32,
 ) -> Result<(), String> {
@@ -608,7 +608,7 @@ pub(crate) struct AudioWorkerSpec {
     pub command_receiver: Receiver<AudioCommand>,
     pub shared: Arc<Mutex<CaptureSamples>>,
     pub active: Arc<CaptureActivity>,
-    pub app_handle: Option<tauri::AppHandle>,
+    pub app_handle: Option<crate::host::Context>,
     pub device_id: Option<String>,
 }
 
@@ -2263,7 +2263,7 @@ fn run_backend(
     command_receiver: &Receiver<AudioCommand>,
     shared: &Arc<Mutex<CaptureSamples>>,
     active: &Arc<CaptureActivity>,
-    app_handle: &Option<tauri::AppHandle>,
+    app_handle: &Option<crate::host::Context>,
     event_sender: &AudioWorkerEventSender,
     probe_permit: Option<&crate::smart_auto_probe::ProbePermit>,
     gesture: Option<crate::audio_lifecycle::gesture::AcceptedGesture>,
@@ -2974,7 +2974,7 @@ fn run_backend(
                 if let Some(preview_id) = owner.preview_id() {
                     if let Some(handle) = app_handle.as_ref() {
                         handle
-                            .state::<crate::State>()
+                            .services()
                             .app_state
                             .microphone_preview
                             .observe_signal_verification(

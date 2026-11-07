@@ -13,7 +13,7 @@ struct Pending {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct MainThreadQueue(Arc<Mutex<Pending>>);
+pub struct MainThreadQueue(Arc<Mutex<Pending>>);
 
 impl MainThread for MainThreadQueue {
     fn dispatch(&self, task: Task) -> Result<(), ContextError> {

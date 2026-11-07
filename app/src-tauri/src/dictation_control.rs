@@ -1,12 +1,10 @@
 //! Tauri adapter for the window-independent core controller. No frontend listener
 //! is on the control path. Only this host module knows commands/managed state.
 use crate::events::EventsExt;
-use crate::{MutexExt, State};
+use crate::host::ServiceAccess;
+use crate::MutexExt;
+use murmur_core::dictation::{Controller, Effect, Input, Origin, QueueGuard, Status};
 use murmur_core::events::{EventKind, EventSink};
-use murmur_core::{
-    context::AppContext,
-    dictation::{Controller, Effect, Input, Origin, QueueGuard, Status},
-};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,7 +12,6 @@ use std::{
     },
     time::Instant,
 };
-use tauri::Manager;
 
 struct Queued {
     input: Input,
@@ -81,14 +78,12 @@ impl Control {
 // Called synchronously by model installation/removal publication, before the
 // command returns. Re-read runtime state under the configuration fence so an
 // older event cannot restore admission after a newer removal or selection.
-pub(crate) fn model_installation_changed(app: &tauri::AppHandle) {
-    let Some(control) = app.try_state::<Control>() else {
+pub(crate) fn model_installation_changed(app: &crate::host::Context) {
+    let Some(control) = app.try_control() else {
         return;
     };
     control.refresh_model_admission(
-        |model| {
-            crate::commands::models::check_specific_model_exists(app.state::<State>(), model.into())
-        },
+        |model| crate::commands::models::check_specific_model_exists(app.services(), model.into()),
         |armed, key, mode| {
             if armed {
                 let _ = crate::commands::keyboard::start_keyboard_listener(
@@ -103,8 +98,8 @@ pub(crate) fn model_installation_changed(app: &tauri::AppHandle) {
     );
 }
 
-pub(crate) fn initialize_event_subscription<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn initialize_event_subscription<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     callback: impl Fn(&str) + Send + Sync + 'static,
 ) {
     crate::events::subscribe(
@@ -115,9 +110,9 @@ pub(crate) fn initialize_event_subscription<R: tauri::Runtime>(
     );
 }
 
-pub(crate) fn initialize(app: &tauri::AppHandle) {
+pub(crate) fn initialize(app: &crate::host::Context) {
     let (sender, mut receive) = tokio::sync::mpsc::unbounded_channel();
-    app.manage(Control {
+    app.install_control(Control {
         controller: Mutex::new(Controller::default()),
         configuration: ConfigurationFence::default(),
         send: sender,
@@ -128,14 +123,14 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
     let sync_handle = app.clone();
     initialize_event_subscription(app, move |_| send(&sync_handle, Input::Sync));
     let handle = app.clone();
-    let context = app.state::<AppContext>().inner().clone();
+    let context = app.context().inner().clone();
     let _ = context.background.spawn(Box::pin(async move {
         let mut input_guard = QueueGuard::default();
         let mut last_locked = false;
         while let Some(queued) = receive.recv().await {
             let input = queued.input;
-            let state = handle.state::<State>();
-            let control = handle.state::<Control>();
+            let state = handle.services();
+            let control = handle.control();
             let (generation, effect, locked) = {
                 // Same lock order as accepted native starts: native state then
                 // controller. No stale snapshot can roll a newer owner back.
@@ -178,13 +173,13 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
         }
     }));
     let permission_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
         loop {
             interval.tick().await;
             let accessibility = crate::injector::is_accessibility_enabled();
             let changed = permission_handle
-                .state::<Control>()
+                .control()
                 .controller
                 .lock_or_recover()
                 .gate
@@ -206,13 +201,9 @@ fn status(value: crate::state::DictationStatus) -> Status {
         S::Recovering => Status::Recovering,
     }
 }
-pub(crate) fn send(app: &tauri::AppHandle, input: Input) {
-    if let Some(control) = app.try_state::<Control>() {
-        let generation = app
-            .state::<State>()
-            .app_state
-            .recording_id
-            .load(Ordering::SeqCst);
+pub(crate) fn send(app: &crate::host::Context, input: Input) {
+    if let Some(control) = app.try_control() {
+        let generation = app.services().app_state.recording_id.load(Ordering::SeqCst);
         let _ = control.send.send(Queued {
             input,
             generation,
@@ -220,8 +211,8 @@ pub(crate) fn send(app: &tauri::AppHandle, input: Input) {
         });
     }
 }
-pub(crate) fn started(app: &tauri::AppHandle, generation: u64, origin: &str) {
-    let control = app.state::<Control>();
+pub(crate) fn started(app: &crate::host::Context, generation: u64, origin: &str) {
+    let control = app.control();
     control.controller.lock_or_recover().observe(
         generation,
         Status::Starting,
@@ -233,8 +224,8 @@ pub(crate) fn started(app: &tauri::AppHandle, generation: u64, origin: &str) {
     );
     crate::keyboard::set_recording_state(origin != "hold");
 }
-pub(crate) fn level(app: &tauri::AppHandle, generation: u64, level: f32) {
-    if let Some(control) = app.try_state::<Control>() {
+pub(crate) fn level(app: &crate::host::Context, generation: u64, level: f32) {
+    if let Some(control) = app.try_control() {
         let _ = control.send.send(Queued {
             generation,
             at: Instant::now(),
@@ -246,14 +237,14 @@ pub(crate) fn level(app: &tauri::AppHandle, generation: u64, level: f32) {
         });
     }
 }
-async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
+async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
     use crate::commands::recording;
     match effect {
         Effect::Start {
             origin,
             gesture_token,
         } => {
-            let settings = app.state::<Control>().settings.lock_or_recover().clone();
+            let settings = app.control().settings.lock_or_recover().clone();
             let smart_auto = if settings["smartAutoMicrophoneEnabled"] == true {
                 let request = serde_json::from_value(serde_json::json!({
                     "approvedDeviceIds": settings["smartAutoApprovedDeviceIds"],
@@ -280,7 +271,7 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                 .map(str::to_owned);
             let result = recording::start_native_recording(
                 app.clone(),
-                app.state::<State>(),
+                app.services(),
                 if smart_auto.is_some() { None } else { device },
                 smart_auto,
                 Some(
@@ -322,12 +313,9 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
             }
         }
         Effect::Cancel { generation } => {
-            let _ = recording::cancel_native_recording(
-                app.clone(),
-                app.state::<State>(),
-                Some(generation),
-            )
-            .await;
+            let _ =
+                recording::cancel_native_recording(app.clone(), app.services(), Some(generation))
+                    .await;
         }
         Effect::Stop {
             generation,
@@ -337,7 +325,7 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
             // Transcription may take seconds. Keep receiving Escape and levels;
             // the existing pipeline rechecks this exact generation at every await.
             let handle = app.clone();
-            let context = app.state::<AppContext>().inner().clone();
+            let context = app.context().inner().clone();
             let _ = context.background.spawn(Box::pin(async move {
                 let trigger = if auto {
                     crate::audio_lifecycle::DictationStopTrigger::AutoStop
@@ -348,13 +336,13 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
                 };
                 let result = recording::stop_native_recording_for(
                     handle.clone(),
-                    handle.state::<State>(),
+                    handle.services(),
                     Some(generation),
                     trigger,
                 )
                 .await;
                 present_stop_failure(
-                    &handle.state::<State>().app_state,
+                    &handle.services().app_state,
                     generation,
                     &result,
                     |failure| {
@@ -367,10 +355,9 @@ async fn execute(app: &tauri::AppHandle, effect: Effect) -> Option<u64> {
         }
         Effect::Score { generation, pause } => {
             let handle = app.clone();
-            let context = app.state::<AppContext>().inner().clone();
+            let context = app.context().inner().clone();
             let _ = context.background.spawn(Box::pin(async move {
-                let answer =
-                    crate::commands::smart_turn::check_smart_turn(handle.state::<State>()).await;
+                let answer = crate::commands::smart_turn::check_smart_turn(handle.services()).await;
                 let probability = match answer {
                     Ok(crate::commands::smart_turn::SmartTurnCheckResult::Scored(score))
                         if score.recording_id == generation =>
@@ -433,7 +420,7 @@ fn present_stop_failure(
 /// Settings migration remains 1.5. Accept only a complete v7 native-confirmed
 /// snapshot; older/unknown versions wait for the existing frontend migration.
 pub(crate) async fn configure(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     settings: serde_json::Value,
 ) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
@@ -446,29 +433,26 @@ pub(crate) async fn configure(
     .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
-pub(crate) fn configuration_current(app: &tauri::AppHandle, revision: u64) -> bool {
-    app.state::<Control>()
-        .configuration
-        .apply(revision, || ())
-        .is_some()
+pub(crate) fn configuration_current(app: &crate::host::Context, revision: u64) -> bool {
+    app.control().configuration.apply(revision, || ()).is_some()
 }
 
-pub(crate) fn accept_configuration(app: &tauri::AppHandle) -> u64 {
-    app.state::<Control>().configuration.accept()
+pub(crate) fn accept_configuration(app: &crate::host::Context) -> u64 {
+    app.control().configuration.accept()
 }
 
 pub(crate) fn configure_accepted(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     settings: serde_json::Value,
     revision: u64,
 ) -> Result<bool, String> {
-    app.state::<Control>()
+    app.control()
         .configuration
         .apply(revision, || configure_locked(app, settings))
         .transpose()
         .map(|applied| applied.is_some())
 }
-fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Result<(), String> {
+fn configure_locked(app: &crate::host::Context, settings: serde_json::Value) -> Result<(), String> {
     if settings["settingsVersion"] != 7 || !settings.is_object() {
         return Err("Unsupported control settings".into());
     }
@@ -483,7 +467,7 @@ fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Resu
     {
         return Err("Invalid dictation control configuration".into());
     }
-    app.state::<State>()
+    app.services()
         .app_state
         .dictation
         .lock_or_recover()
@@ -492,10 +476,10 @@ fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Resu
         .as_str()
         .is_some_and(|model| crate::model_runtime::model_definition(model).is_ok());
     let installed = settings["model"].as_str().is_some_and(|model| {
-        crate::commands::models::check_specific_model_exists(app.state::<State>(), model.into())
+        crate::commands::models::check_specific_model_exists(app.services(), model.into())
     });
     let accessibility = crate::injector::is_accessibility_enabled();
-    let control = app.state::<Control>();
+    let control = app.control();
     let mut gate = murmur_core::dictation::LaunchGate {
         shutdown: crate::shutdown::closing(),
         configured: configured && crate::completion::admitted(app),
@@ -535,10 +519,10 @@ fn configure_locked(app: &tauri::AppHandle, settings: serde_json::Value) -> Resu
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) async fn configure_dictation_control(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
     settings: serde_json::Value,
 ) -> Result<(), String> {
     if window.label() != "main" {
@@ -546,13 +530,13 @@ pub(crate) async fn configure_dictation_control(
     }
     configure(&app, settings).await
 }
-#[tauri::command]
-pub(crate) fn toggle_dictation_lock(app: tauri::AppHandle) {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub(crate) fn toggle_dictation_lock(app: crate::host::Context) {
     send(&app, Input::Lock);
 }
 
-pub(crate) async fn refresh(app: &tauri::AppHandle) {
-    let control = app.state::<Control>();
+pub(crate) async fn refresh(app: &crate::host::Context) {
+    let control = app.control();
     control.configuration.run(|| {
         let settings = control.settings.lock_or_recover().clone();
         if !settings.is_null() {
@@ -561,8 +545,8 @@ pub(crate) async fn refresh(app: &tauri::AppHandle) {
     });
 }
 
-pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) -> Result<(), String> {
-    let Some(control) = app.try_state::<Control>() else {
+pub(crate) fn set_disabled(app: &crate::host::Context, disabled: bool) -> Result<(), String> {
+    let Some(control) = app.try_control() else {
         return crate::commands::keyboard::apply_app_disabled(app.clone(), disabled);
     };
     control.configuration.override_current(|| {
@@ -580,14 +564,14 @@ pub(crate) fn set_disabled(app: &tauri::AppHandle, disabled: bool) -> Result<(),
         }
         let result = crate::commands::keyboard::apply_app_disabled(app.clone(), disabled);
         if disabled {
-            if let Some(generation) = active_capture_generation(&app.state::<State>().app_state) {
+            if let Some(generation) = active_capture_generation(&app.services().app_state) {
                 let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
+                crate::host::runtime::spawn(async move {
                     // A re-enable/new start may win before this continuation.
                     // Cancellation must remain owned by the captured generation.
                     let _ = crate::commands::recording::cancel_native_recording(
                         handle.clone(),
-                        handle.state::<State>(),
+                        handle.services(),
                         Some(generation),
                     )
                     .await;
@@ -606,11 +590,11 @@ fn active_capture_generation(state: &crate::state::AppState) -> Option<u64> {
     )
     .then(|| state.recording_id.load(Ordering::SeqCst))
 }
-pub(crate) fn admitted(app: &tauri::AppHandle) -> bool {
+pub(crate) fn admitted(app: &crate::host::Context) -> bool {
     if crate::shutdown::closing() {
         return false;
     }
-    app.try_state::<Control>()
+    app.try_control()
         .is_none_or(|control| control.controller.lock_or_recover().gate.can_start())
 }
 
@@ -630,15 +614,15 @@ fn probe_policy(settings: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({"enabled":false})
     }
 }
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) async fn suspend_dictation_for_setup(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
 ) -> Result<bool, String> {
     if window.label() != "main" {
         return Err("Run setup from the main window.".into());
     }
-    let state = app.state::<State>();
+    let state = app.services();
     let _transition = state.app_state.recording_transition.lock().await;
     let dictation = state.app_state.dictation.lock_or_recover();
     if crate::commands::recording::dictation_start_blocker(&state, dictation.status).is_some()
@@ -646,22 +630,22 @@ pub(crate) async fn suspend_dictation_for_setup(
     {
         return Ok(false);
     }
-    let control = app.state::<Control>();
+    let control = app.control();
     let mut controller = control.controller.lock_or_recover();
     control.setup_suspended.store(true, Ordering::SeqCst);
     controller.gate.onboarding_complete = false;
     Ok(true)
 }
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) async fn resume_dictation_after_setup(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
     settings: serde_json::Value,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("Complete setup from the main window.".into());
     }
-    let control = app.state::<Control>();
+    let control = app.control();
     control.setup_suspended.store(false, Ordering::SeqCst);
     let result = configure(&app, settings).await;
     if result.is_err() {
@@ -674,9 +658,9 @@ pub(crate) async fn resume_dictation_after_setup(
     }
     result
 }
-#[tauri::command]
-pub(crate) fn get_dictation_lock(app: tauri::AppHandle) -> bool {
-    app.state::<Control>().controller.lock_or_recover().locked
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub(crate) fn get_dictation_lock(app: crate::host::Context) -> bool {
+    app.control().controller.lock_or_recover().locked
 }
 #[cfg(test)]
 mod tests {

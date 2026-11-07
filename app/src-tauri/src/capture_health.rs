@@ -311,9 +311,9 @@ impl CaptureHealthDiagnostics {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn get_capture_health_history(
-    state: tauri::State<'_, crate::State>,
+    state: crate::host::StateRef<'_, crate::State>,
 ) -> CaptureHealthHistoryV1 {
     state.capture_health.history()
 }

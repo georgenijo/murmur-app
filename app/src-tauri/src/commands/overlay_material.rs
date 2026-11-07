@@ -342,14 +342,15 @@ mod native {
         static LIVE_WORDS: RefCell<((f64, f64), f64)> = const { RefCell::new(((0.0, 0.0), 0.0)) };
     }
 
-    fn ns_window(app: &tauri::AppHandle, label: &str) -> Option<Retained<NSWindow>> {
+    fn ns_window(app: &crate::host::Context, label: &str) -> Option<Retained<NSWindow>> {
+        #[cfg(feature = "tauri-host")]
         use tauri::Manager;
         let ptr = app.get_webview_window(label)?.ns_window().ok()?;
         let ns_window: &NSWindow = unsafe { &*(ptr.cast()) };
         Some(ns_window.retain())
     }
 
-    fn content_view(app: &tauri::AppHandle, label: &str) -> Option<Retained<NSView>> {
+    fn content_view(app: &crate::host::Context, label: &str) -> Option<Retained<NSView>> {
         ns_window(app, label)?.contentView()
     }
 
@@ -363,7 +364,7 @@ mod native {
     /// Pin `label`'s window to the system appearance, so neither the material
     /// nor the webview's `prefers-color-scheme` follows Murmur's app-wide
     /// override. Installed materials restyle through their appearance change.
-    pub(crate) fn pin_system_appearance(app: &tauri::AppHandle, label: &str) {
+    pub(crate) fn pin_system_appearance(app: &crate::host::Context, label: &str) {
         let Some(window) = ns_window(app, label) else {
             return;
         };
@@ -443,7 +444,7 @@ mod native {
     /// removes it. A window recreated under the same label gets the material
     /// re-attached. Must run on the main thread.
     pub(crate) fn apply(
-        app: &tauri::AppHandle,
+        app: &crate::host::Context,
         label: &'static str,
         shape: Option<MaterialShape>,
         motion: Motion,
@@ -532,7 +533,7 @@ mod native {
 
     /// Re-fit `label`'s material to its window after a native resize, in the
     /// same main-thread turn, so it never trails the window by a frame.
-    pub(crate) fn refit_now(app: &tauri::AppHandle, label: &'static str) {
+    pub(crate) fn refit_now(app: &crate::host::Context, label: &'static str) {
         if label == LIVE_WORDS_LABEL {
             apply_live_words(app, None, None, Motion::Instant);
             return;
@@ -544,7 +545,7 @@ mod native {
     }
 
     /// A material is attached to `label`'s current window.
-    pub(crate) fn installed(app: &tauri::AppHandle, label: &'static str) -> bool {
+    pub(crate) fn installed(app: &crate::host::Context, label: &'static str) -> bool {
         let Some(content) = content_view(app, label) else {
             return false;
         };
@@ -576,7 +577,7 @@ mod native {
         }
     }
 
-    fn live_words_window_size(app: &tauri::AppHandle) -> Option<(f64, f64)> {
+    fn live_words_window_size(app: &crate::host::Context) -> Option<(f64, f64)> {
         let size = content_view(app, LIVE_WORDS_LABEL)?.bounds().size;
         Some((size.width, size.height))
     }
@@ -584,7 +585,7 @@ mod native {
     /// Move the Live Words card. `card` keeps the last measurement when absent;
     /// `lift` keeps the last lift when absent.
     pub(crate) fn apply_live_words(
-        app: &tauri::AppHandle,
+        app: &crate::host::Context,
         card: Option<(f64, f64)>,
         lift: Option<f64>,
         motion: Motion,
@@ -615,6 +616,7 @@ mod native {
 
     /// Restyle every installed material after an accessibility display change
     /// (Reduce Transparency). Appearance changes reach the views directly.
+    #[cfg(feature = "tauri-host")]
     pub(crate) fn restyle_all() {
         INSTALLED.with_borrow(|installed| {
             for entry in installed.values() {
@@ -625,7 +627,8 @@ mod native {
 
     /// For the app's lifetime: pin both windows to the system appearance now
     /// and whenever it changes, and follow Reduce Transparency.
-    pub(crate) fn register_observers(app: tauri::AppHandle) {
+    #[cfg(feature = "tauri-host")]
+    pub(crate) fn register_observers(app: crate::host::Context) {
         use objc2_app_kit::NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification;
         use objc2_foundation::{NSDistributedNotificationCenter, NSNotification, NSOperationQueue};
         for label in [OVERLAY_LABEL, LIVE_WORDS_LABEL] {
@@ -666,12 +669,13 @@ mod native {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(feature = "tauri-host")]
 pub(crate) use native::register_observers;
 
 /// `label`'s window was destroyed: a window recreated under the same label
 /// must get a fresh material, not the stale one.
 #[cfg(target_os = "macos")]
-pub(crate) fn window_destroyed(app: &tauri::AppHandle, label: &str) {
+pub(crate) fn window_destroyed(app: &crate::host::Context, label: &str) {
     if let Some(label) = material_label(label) {
         on_main(app, move |_| native::forget(label));
     }
@@ -688,7 +692,7 @@ pub(crate) fn material_label(label: &str) -> Option<&'static str> {
 /// Run `f` on the main thread: at once when already there, so a refit lands
 /// in the same turn as the resize that caused it.
 #[cfg(target_os = "macos")]
-fn on_main(app: &tauri::AppHandle, f: impl FnOnce(&tauri::AppHandle) + Send + 'static) {
+fn on_main(app: &crate::host::Context, f: impl FnOnce(&crate::host::Context) + Send + 'static) {
     if objc2::MainThreadMarker::new().is_some() {
         f(app);
         return;
@@ -701,7 +705,7 @@ fn on_main(app: &tauri::AppHandle, f: impl FnOnce(&tauri::AppHandle) + Send + 's
 
 /// Re-fit `label`'s material to its window after a native resize.
 #[cfg(target_os = "macos")]
-pub(crate) fn refit(app: &tauri::AppHandle, label: &'static str) {
+pub(crate) fn refit(app: &crate::host::Context, label: &'static str) {
     on_main(app, move |app| native::refit_now(app, label));
 }
 
@@ -718,8 +722,8 @@ pub(crate) fn remove_all() {
 /// Run a material change on the main thread and wait for it.
 #[cfg(target_os = "macos")]
 async fn on_main_acked(
-    app: &tauri::AppHandle,
-    f: impl FnOnce(&tauri::AppHandle) -> bool + Send + 'static,
+    app: &crate::host::Context,
+    f: impl FnOnce(&crate::host::Context) -> bool + Send + 'static,
 ) -> Result<bool, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let handle = app.clone();
@@ -736,9 +740,9 @@ async fn on_main_acked(
 /// by CSS), and the card's `content`. `floating: false` removes the material
 /// from both windows. Resolves `true` while a native material backs the pill,
 /// so the webview draws no surface of its own.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn set_overlay_material(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     shown: bool,
     expanded: bool,
     content: Option<OverlayContent>,
@@ -752,6 +756,7 @@ pub async fn set_overlay_material(
     }
     #[cfg(target_os = "macos")]
     {
+        #[cfg(feature = "tauri-host")]
         use tauri::Manager;
         let content = content_or_default(content);
         on_main_acked(window.app_handle(), move |app| {
@@ -782,9 +787,9 @@ pub async fn set_overlay_material(
 /// The Live Words card's laid-out size (untransformed), measured by its
 /// webview. Rust positions it bottom-centred, raised by the pill's lift.
 /// Resolves `true` while a native material backs the card.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn set_live_words_material(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     width: f64,
     height: f64,
 ) -> Result<bool, String> {
@@ -796,6 +801,7 @@ pub async fn set_live_words_material(
     }
     #[cfg(target_os = "macos")]
     {
+        #[cfg(feature = "tauri-host")]
         use tauri::Manager;
         on_main_acked(window.app_handle(), move |app| {
             native::pin_system_appearance(app, LIVE_WORDS_LABEL);

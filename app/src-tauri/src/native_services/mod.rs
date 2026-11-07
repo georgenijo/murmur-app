@@ -1,0 +1,241 @@
+//! Production service composition for the GPUI executable. Tauri is an optional
+//! host adapter; these are the same recording, meeting and delivery owners.
+use crate::host::{self, ServiceAccess};
+pub use crate::host::{
+    Error, Monitor, NativePaths, NativePorts, WindowCommand, WindowEvent, WindowPort,
+    WindowSnapshot, WorkArea,
+};
+use murmur_core::events::Consumer;
+use serde_json::Value;
+use std::sync::Arc;
+mod commands;
+#[path = "../main_thread_queue.rs"]
+mod main_thread_queue;
+pub use crate::dock_watch::PillDisplay as DockDisplay;
+pub use crate::host::window::Color;
+pub use dpi::{PhysicalPosition, PhysicalSize};
+pub use main_thread_queue::MainThreadQueue;
+#[derive(Clone)]
+pub struct Services {
+    pub(crate) context: host::Context,
+}
+/// Call before worker dispatch. The explicit identity selects all legacy model,
+/// log, corpus, export and pasteboard namespaces before any worker can use them.
+pub fn initialize_identity(identifier: &str, home: &std::path::Path) -> Result<(), String> {
+    crate::identity::initialize_native(identifier, home)?;
+    crate::launch::process_start();
+    Ok(())
+}
+pub fn install_runtime(runtime: tokio::runtime::Handle) -> Result<(), String> {
+    host::runtime::install(runtime).map_err(|_| "Host runtime already installed".into())
+}
+impl Services {
+    /// Call on GPUI's main thread after it has registered its windows/ports.
+    /// Optional storage initialization stays on the existing startup workers.
+    pub fn start(
+        context: murmur_core::context::AppContext,
+        paths: NativePaths,
+        identifier: String,
+        ports: Arc<dyn NativePorts>,
+    ) -> Result<Self, String> {
+        validate_paths(&paths, &identifier)?;
+        if crate::identity::initialized_identifier() != Some(identifier.as_str()) {
+            return Err("Service identity must be initialized before worker dispatch".into());
+        }
+        if crate::identity::native_support()
+            != Some(paths.home.join("Library/Application Support").as_path())
+        {
+            return Err("Native legacy path identity mismatch".into());
+        }
+        let app = host::Context::new(context, paths, identifier, ports);
+        crate::events::initialize(&app);
+        crate::shutdown::initialize(&app)?;
+        crate::dictation_control::initialize(&app);
+        crate::dictation_cues::initialize(&app);
+        crate::window_state::initialize(&app)?;
+        crate::telemetry::init(app.clone());
+        crate::audio_inventory::initialize(app.clone());
+        crate::smart_auto_probe::initialize(app.clone());
+        crate::audio_graph_snapshot::set_app_handle(app.clone());
+        let memo_app = app.clone();
+        let permit = crate::shutdown::WriterPermit::accepted_producer();
+        host::runtime::spawn_blocking(move || {
+            let _permit = permit;
+            if let Ok(root) = crate::commands::settings_store::data_dir(&memo_app) {
+                crate::audio::initialize_capture_memo_persistence(root);
+            }
+        });
+        crate::log_shipper::start(&app);
+        crate::completion::initialize(&app)?;
+        crate::startup::initialize(&app)?;
+        crate::resource_monitor::start_heartbeat(app.clone());
+        let snapshot = crate::commands::overlay::capture_display_snapshot(&app);
+        *app.services()
+            .notch_info
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = snapshot.notch_info;
+        *app.services()
+            .display_snapshot
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(snapshot);
+        // Native presentation owns overlay placement/material observers. The
+        // shared recording owner still owns generation/consent and visibility.
+        crate::audio_lifecycle::register_sleep_wake_observer();
+        crate::frontmost::register_delivery_transition_observers();
+        let dock = app.clone();
+        let moved = app.clone();
+        crate::dock_watch::start(
+            move || {
+                dock.dock_context()
+                    .map(|(display, visible)| crate::dock_watch::WatchContext { display, visible })
+            },
+            move || moved.dock_changed(),
+        );
+        crate::smart_destination::start(app.clone());
+        crate::meeting_suggestions::initialize(app.clone());
+        crate::commands::mode_runtime::spawn_mode_watcher(app.clone());
+        crate::launch::prepare(&app);
+        Ok(Self { context: app })
+    }
+    pub fn shutdown(&self, request: murmur_core::shutdown::Request) {
+        crate::shutdown::request(&self.context, request)
+    }
+    pub fn termination_permitted(&self) -> bool {
+        crate::shutdown::permitted(&self.context)
+    }
+    pub fn terminal_receipt(&self) {
+        crate::shutdown::receipt(&self.context)
+    }
+    pub fn main_hidden(&self) {
+        crate::commands::microphone_preview::cancel_for_window_close(self.context.clone());
+    }
+    pub fn retry_delivery(&self) {
+        crate::delivery_recovery::spawn_retry(self.context.clone());
+    }
+    pub async fn configure_recording(&self, settings: Value) -> Result<(), String> {
+        crate::dictation_control::configure(&self.context, settings).await
+    }
+}
+
+pub fn validate_paths(paths: &NativePaths, identifier: &str) -> Result<(), String> {
+    if !paths.home.is_absolute()
+        || identifier.is_empty()
+        || identifier.starts_with('.')
+        || identifier.ends_with('.')
+        || identifier.contains("..")
+        || !identifier
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        || paths.app
+            != paths
+                .home
+                .join("Library/Application Support")
+                .join(identifier)
+    {
+        return Err("Native data identity mismatch".into());
+    }
+    Ok(())
+}
+impl Services {
+    pub fn recording_is_current(&self, generation: u64) -> bool {
+        use std::sync::atomic::Ordering;
+        let state = self.context.services();
+        state.app_state.recording_id.load(Ordering::SeqCst) == generation
+            && !state.app_state.is_cancelled(generation)
+            && state.app_state.dictation_status_if_uncontended()
+                == Some(crate::state::DictationStatus::Recording)
+    }
+    pub fn settings_revision(&self) -> u64 {
+        self.context
+            .services()
+            .app_state
+            .settings_revision
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    pub fn window_event(&self, consumer: Consumer, event: host::WindowEvent) {
+        if let Some(window) = consumer
+            .window_label()
+            .and_then(|label| self.context.get_webview_window(label))
+        {
+            let label = window.label();
+            crate::window_state::on_event(&window, &event);
+            if matches!(event, host::WindowEvent::Destroyed) {
+                crate::events::clear_window(&self.context, label);
+                crate::commands::overlay_material::window_destroyed(&self.context, label);
+            }
+        }
+    }
+    pub fn waveform_interest(&self, consumer: murmur_core::events::WaveformConsumer, active: bool) {
+        if let Some(window) = consumer
+            .consumer()
+            .window_label()
+            .and_then(|label| self.context.get_webview_window(label))
+        {
+            let _ = crate::events::set_waveform_subscription(
+                self.context.clone(),
+                window,
+                consumer,
+                active,
+            );
+        }
+    }
+    pub async fn audio_range(
+        &self,
+        session_id: String,
+        segment_id: i64,
+        offset_bytes: u64,
+        length_bytes: u32,
+    ) -> Result<Vec<u8>, String> {
+        let window = self
+            .context
+            .get_webview_window("main")
+            .ok_or("Native view unavailable")?;
+        let response = crate::meeting_audio::read_meeting_audio_range(
+            self.context.clone(),
+            window,
+            session_id,
+            segment_id,
+            offset_bytes,
+            length_bytes,
+            self.context.services(),
+        )
+        .await?;
+        Ok(response.0)
+    }
+}
+
+impl Services {
+    pub fn clipboard_text(&self) -> Result<String, String> {
+        crate::injector::read_clipboard_text()
+    }
+    pub fn copy_text(&self, text: &str) -> Result<(), String> {
+        crate::injector::write_clipboard_text(text)
+    }
+}
+/// Query only; this never opens an input or asks for TCC permission.
+pub fn microphone_status() -> murmur_core::context::PermissionStatus {
+    use murmur_core::context::PermissionStatus;
+    match crate::commands::permissions::check_microphone_permission_status().as_str() {
+        "granted" => PermissionStatus::Granted,
+        "denied" => PermissionStatus::Denied,
+        "notDetermined" => PermissionStatus::NotDetermined,
+        _ => PermissionStatus::Unknown,
+    }
+}
+
+impl Services {
+    pub fn dock_limit(&self, display: DockDisplay) -> murmur_core::overlay_geometry::DockLimit {
+        crate::dock_watch::current_limit(display)
+    }
+    pub fn toggle_disabled(&self) -> Result<(), String> {
+        crate::commands::settings_store::toggle_tray_disabled(self.context.clone())
+    }
+    pub fn window_ready(&self, consumer: Consumer) {
+        if let Some(window) = consumer
+            .window_label()
+            .and_then(|label| self.context.get_webview_window(label))
+        {
+            crate::commands::native_window::hide_titlebar_separator(&window);
+        }
+    }
+}

@@ -1,4 +1,5 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::{MutexExt, State};
 use murmur_core::events::{EventKind, EventSink};
 use murmur_core::overlay_geometry::{
@@ -16,6 +17,7 @@ pub use murmur_core::overlay_geometry::{
     AppliedOverlayPosition, AppliedSurface, OverlayActivity, OverlayContent, OverlayGeometry,
     OverlayPlacement,
 };
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
 
 // Native geometry is the only surface-size contract. The idle notch island
@@ -33,11 +35,11 @@ const POSITION_SETTLE_PROBES: usize = 3;
 /// the material only exists while the pill is the selected placement.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn floating_pill_geometry(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     content: OverlayContent,
     expanded: bool,
 ) -> OverlayGeometry {
-    let state = app.state::<State>();
+    let state = app.services();
     let notch = *state.notch_info.lock_or_recover();
     let mut layout = *state.overlay_layout.lock_or_recover();
     layout.placement = OverlayPlacement::FloatingPill;
@@ -47,12 +49,8 @@ pub(crate) fn floating_pill_geometry(
 
 /// True while the stored layout places the overlay as the floating pill.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn floating_pill_placed(app: &tauri::AppHandle) -> bool {
-    app.state::<State>()
-        .overlay_layout
-        .lock_or_recover()
-        .placement
-        == OverlayPlacement::FloatingPill
+pub(crate) fn floating_pill_placed(app: &crate::host::Context) -> bool {
+    app.services().overlay_layout.lock_or_recover().placement == OverlayPlacement::FloatingPill
 }
 
 /// Size preferences of the Dock when it auto-hides along the bottom edge. A
@@ -125,7 +123,7 @@ fn hidden_bottom_dock_tile() -> Option<HiddenDock> {
 /// comes from `dock_watch` and the fallback preference from the cached display
 /// snapshot, so resizes never query the Dock.
 #[cfg(target_os = "macos")]
-fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
+fn pill_bottom_for(app: &crate::host::Context, monitor: &crate::host::Monitor) -> f64 {
     let sf = monitor.scale_factor();
     let area = monitor.work_area();
     let display = pill_display(
@@ -135,7 +133,7 @@ fn pill_bottom_for(app: &tauri::AppHandle, monitor: &tauri::Monitor) -> f64 {
         sf,
     );
     let hidden_dock_tile = app
-        .state::<State>()
+        .services()
         .display_snapshot
         .lock_or_recover()
         .as_ref()
@@ -170,10 +168,11 @@ fn pill_display(
 /// Where `dock_watch` should look: the pill's display while the pill placement
 /// is active, from the cached display snapshot. Safe off the main thread.
 #[cfg(target_os = "macos")]
+#[cfg(feature = "tauri-host")]
 pub(crate) fn dock_watch_context(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
 ) -> Option<crate::dock_watch::WatchContext> {
-    let state = app.state::<State>();
+    let state = app.services();
     let layout = *state.overlay_layout.lock_or_recover();
     if layout.placement != OverlayPlacement::FloatingPill {
         return None;
@@ -197,10 +196,11 @@ pub(crate) fn dock_watch_context(
 /// Re-rest the pill after the live Dock limit moved. Dispatched to the main
 /// thread; keeps the current size so a hover card stays bottom-anchored.
 #[cfg(target_os = "macos")]
-pub(crate) fn follow_dock(app: &tauri::AppHandle) {
+#[cfg(feature = "tauri-host")]
+pub(crate) fn follow_dock(app: &crate::host::Context) {
     let handle = app.clone();
     let dispatched = app.run_on_main_thread(move || {
-        let state = handle.state::<State>();
+        let state = handle.services();
         let layout = *state.overlay_layout.lock_or_recover();
         if layout.placement != OverlayPlacement::FloatingPill {
             return;
@@ -237,7 +237,7 @@ pub(crate) fn follow_dock(app: &tauri::AppHandle) {
             return;
         }
         *state.overlay_frame.lock_or_recover() = None;
-        if let Err(error) = overlay.set_position(tauri::LogicalPosition::new(frame.x, y)) {
+        if let Err(error) = overlay.set_position(crate::host::LogicalPosition::new(frame.x, y)) {
             // The window did not move: keep its frame so the next Dock change
             // can still follow.
             remember_overlay_frame(&handle, frame);
@@ -256,14 +256,9 @@ pub(crate) fn follow_dock(app: &tauri::AppHandle) {
 /// snapshot. Resizing the Dock changes no display geometry and posts none of
 /// the placement triggers, so every pill resize samples it here first.
 #[cfg(target_os = "macos")]
-fn refresh_cached_dock_tile(app: &tauri::AppHandle) {
+fn refresh_cached_dock_tile(app: &crate::host::Context) {
     let tile = hidden_bottom_dock_tile();
-    if let Some(snapshot) = app
-        .state::<State>()
-        .display_snapshot
-        .lock_or_recover()
-        .as_mut()
-    {
+    if let Some(snapshot) = app.services().display_snapshot.lock_or_recover().as_mut() {
         snapshot.hidden_dock_tile = tile;
     }
 }
@@ -277,8 +272,8 @@ fn refresh_cached_dock_tile(app: &tauri::AppHandle) {
 /// webview slides the card into that room in step with the island, so a
 /// delayed native shrink can no longer leave a gap and then snap.
 pub(crate) fn dictation_preview_fit(
-    app: &tauri::AppHandle,
-    monitor: &tauri::Monitor,
+    app: &crate::host::Context,
+    monitor: &crate::host::Monitor,
     preview_width: f64,
     preview_height: f64,
 ) -> Option<(f64, f64, f64)> {
@@ -286,7 +281,7 @@ pub(crate) fn dictation_preview_fit(
     if primary.position() != monitor.position() || primary.size() != monitor.size() {
         return None;
     }
-    let state = app.try_state::<crate::State>()?;
+    let state = app.try_services()?;
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let work_area = PopoverWorkArea {
@@ -310,17 +305,17 @@ pub(crate) fn dictation_preview_fit(
 }
 
 #[cfg(target_os = "macos")]
-fn remember_overlay_frame(app: &tauri::AppHandle, frame: OverlayFrame) {
-    *app.state::<State>().overlay_frame.lock_or_recover() = Some(frame);
+fn remember_overlay_frame(app: &crate::host::Context, frame: OverlayFrame) {
+    *app.services().overlay_frame.lock_or_recover() = Some(frame);
 }
 
 #[cfg(target_os = "macos")]
 fn remember_overlay_position(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     frame: OverlayFrame,
     applied: AppliedOverlayPosition,
 ) {
-    let state = app.state::<State>();
+    let state = app.services();
     *state.overlay_calibration.lock_or_recover() = OverlayCalibrationState {
         requested_offset: applied.requested_offset,
         applied_offset: applied.applied_offset,
@@ -332,7 +327,7 @@ fn remember_overlay_position(
 }
 
 #[cfg(target_os = "macos")]
-fn follow_dictation_preview(app: &tauri::AppHandle) {
+fn follow_dictation_preview(app: &crate::host::Context) {
     crate::commands::dictation_preview::follow_overlay_if_visible(app);
 }
 
@@ -342,8 +337,8 @@ fn follow_dictation_preview(app: &tauri::AppHandle) {
 /// or a short bounded settle window expires.
 #[cfg(target_os = "macos")]
 async fn settled_outer_position(
-    app: tauri::AppHandle,
-    overlay: tauri::WebviewWindow,
+    app: crate::host::Context,
+    overlay: crate::host::Window,
     target: (i32, i32),
 ) -> Result<(i32, i32), String> {
     let mut last_observed = None;
@@ -437,7 +432,7 @@ pub(crate) fn detect_notch_info() -> Option<NotchInfo> {
 }
 
 /// Capture fresh notch and monitor measurements. Must run on the main thread.
-pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> DisplaySnapshot {
+pub(crate) fn capture_display_snapshot(app_handle: &crate::host::Context) -> DisplaySnapshot {
     let monitor = app_handle.primary_monitor().ok().flatten();
     DisplaySnapshot {
         notch_info: detect_notch_info(),
@@ -468,16 +463,20 @@ pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> Display
 /// size, and the geometry emitted to the frontend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlacementTrigger {
+    #[cfg(feature = "tauri-host")]
     Startup,
+    #[cfg(feature = "tauri-host")]
     DisplayChange,
     /// An app activation can hide or restore the menu bar on the current
     /// Space. It only re-measures; the centred x never depends on the app.
     FrontmostApp,
     SpaceChange,
     /// A delayed re-check while the menu bar animates in or out.
+    #[cfg(feature = "tauri-host")]
     Settle,
 }
 
+#[cfg(feature = "tauri-host")]
 impl PlacementTrigger {
     fn as_str(self) -> &'static str {
         match self {
@@ -505,8 +504,11 @@ impl PlacementTrigger {
 
 /// Burst coalescing: a Space animation or display reconfiguration yields many
 /// notifications; one refresh runs after they go quiet, or after the cap.
+#[cfg(feature = "tauri-host")]
 const PLACEMENT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(125);
+#[cfg(feature = "tauri-host")]
 const PLACEMENT_MAX_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(1000);
+#[cfg(feature = "tauri-host")]
 const PLACEMENT_SETTLE: std::time::Duration = std::time::Duration::from_millis(600);
 
 static PLACEMENT_TRIGGERS: std::sync::OnceLock<std::sync::mpsc::Sender<PlacementTrigger>> =
@@ -523,7 +525,8 @@ pub(crate) fn request_placement_refresh(trigger: PlacementTrigger) {
 
 /// Re-measure and apply the whole placement on the main thread.
 #[cfg(target_os = "macos")]
-fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
+#[cfg(feature = "tauri-host")]
+fn refresh_placement(app_handle: &crate::host::Context, trigger: PlacementTrigger) {
     let handle = app_handle.clone();
     if let Err(error) = app_handle.run_on_main_thread(move || {
         apply_placement(&handle, trigger);
@@ -535,8 +538,9 @@ fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
 /// Main-thread half of `refresh_placement`: one snapshot, one resolved mode.
 /// Repositions, resizes and notifies the frontend only when it changed.
 #[cfg(target_os = "macos")]
-fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
-    let state = handle.state::<State>();
+#[cfg(feature = "tauri-host")]
+fn apply_placement(handle: &crate::host::Context, trigger: PlacementTrigger) {
+    let state = handle.services();
     let previous = state.display_snapshot.lock_or_recover().clone();
     let snapshot = capture_display_snapshot(handle);
     let notch = snapshot.notch_info;
@@ -595,7 +599,8 @@ fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
 /// Start the placement worker: it owns debouncing and sequencing for every
 /// trigger so refreshes never overlap or thrash.
 #[cfg(target_os = "macos")]
-fn start_placement_worker(app_handle: tauri::AppHandle) {
+#[cfg(feature = "tauri-host")]
+fn start_placement_worker(app_handle: crate::host::Context) {
     use std::sync::mpsc::RecvTimeoutError;
     use std::time::Instant;
 
@@ -649,7 +654,8 @@ fn start_placement_worker(app_handle: tauri::AppHandle) {
 /// changes (plug/unplug monitor, lid open/close). Space changes arrive through
 /// `frontmost::register_delivery_transition_observers`.
 #[cfg(target_os = "macos")]
-pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
+#[cfg(feature = "tauri-host")]
+pub(crate) fn register_screen_change_observer(app_handle: crate::host::Context) {
     use objc2_foundation::{
         NSNotification, NSNotificationCenter, NSNotificationName, NSOperationQueue,
     };
@@ -683,14 +689,16 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn register_screen_change_observer(_app_handle: tauri::AppHandle) {}
+#[cfg(feature = "tauri-host")]
+pub(crate) fn register_screen_change_observer(_app_handle: crate::host::Context) {}
 
 /// Raise the overlay window above the menu bar so it overlaps the notch.
 /// Also prevents clicking the overlay from activating the app (which would
 /// unhide the main window) — see `native_window::set_window_level_and_activation`,
 /// shared with the transform review popover.
 #[cfg(target_os = "macos")]
-fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
+#[cfg(feature = "tauri-host")]
+fn raise_window_above_menubar(overlay: &crate::host::Window) {
     super::native_window::set_window_level_and_activation(
         overlay,
         super::native_window::ABOVE_MENU_BAR_LEVEL,
@@ -728,12 +736,13 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
 /// The window is notch-height tall and wide enough for horizontal expansion.
 /// Takes cached notch_info to avoid calling NSScreen APIs off the main thread.
 #[cfg(target_os = "macos")]
+#[cfg(feature = "tauri-host")]
 pub(crate) fn position_overlay_default(
-    overlay: &tauri::WebviewWindow,
+    overlay: &crate::host::Window,
     notch_info: Option<NotchInfo>,
     reason: &'static str,
 ) {
-    let state = overlay.app_handle().state::<State>();
+    let state = overlay.app_handle().services();
     let layout = {
         let mut layout = state.overlay_layout.lock_or_recover();
         layout.expanded = false;
@@ -776,7 +785,7 @@ pub(crate) fn position_overlay_default(
         let work_right = work_left + area.size.width as f64 / sf;
         let calibration = *overlay
             .app_handle()
-            .state::<State>()
+            .services()
             .overlay_calibration
             .lock_or_recover();
         let requested_offset = calibration.requested_offset;
@@ -807,10 +816,11 @@ pub(crate) fn position_overlay_default(
         // must recover from the actual window frame.
         *overlay
             .app_handle()
-            .state::<State>()
+            .services()
             .overlay_frame
             .lock_or_recover() = None;
-        let sized = if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
+        let sized = if let Err(e) =
+            overlay.set_size(crate::host::LogicalSize::new(overlay_w, overlay_h))
         {
             tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
             false
@@ -818,7 +828,7 @@ pub(crate) fn position_overlay_default(
             true
         };
         tracing::info!(target: "system", "position_overlay_default: x={}, y={}, sf={}", x, y, sf);
-        if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, y)) {
+        if let Err(e) = overlay.set_position(crate::host::LogicalPosition::new(x, y)) {
             tracing::warn!(target: "system", "position_overlay_default: set_position({}, {}) failed: {}", x, y, e);
         } else {
             if sized {
@@ -839,7 +849,7 @@ pub(crate) fn position_overlay_default(
             let overlay = overlay.clone();
             let app = overlay.app_handle().clone();
             let target = ((x * sf).round() as i32, (y * sf).round() as i32);
-            tauri::async_runtime::spawn(async move {
+            crate::host::runtime::spawn(async move {
                 match settled_outer_position(app, overlay, target).await {
                     Ok(actual) => tracing::info!(
                         target: "system",
@@ -874,19 +884,19 @@ pub(crate) fn position_overlay_default(
         // Even without a monitor, resizing invalidates the cached dimensions.
         *overlay
             .app_handle()
-            .state::<State>()
+            .services()
             .overlay_frame
             .lock_or_recover() = None;
-        if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
+        if let Err(e) = overlay.set_size(crate::host::LogicalSize::new(overlay_w, overlay_h)) {
             tracing::warn!(target: "system", "position_overlay_default: fallback set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
         }
     }
 }
 
 /// Return the current overlay geometry so the frontend can size the island.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_overlay_geometry(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
     content: Option<OverlayContent>,
 ) -> OverlayGeometry {
     geometry_for_layout(
@@ -897,8 +907,8 @@ pub fn get_overlay_geometry(
 }
 
 /// Show the always-on-top macOS notch overlay window.
-#[tauri::command]
-pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn show_overlay(app: crate::host::Context) -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = &app;
@@ -910,7 +920,7 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
         match app.get_webview_window("overlay") {
             Some(overlay) => {
                 overlay.show().map_err(|e| e.to_string())?;
-                let layout = *app.state::<State>().overlay_layout.lock_or_recover();
+                let layout = *app.services().overlay_layout.lock_or_recover();
                 let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
                 // Tell the overlay it is visible so it can gate cursor polling.
                 let _ = app.events().publish(EventKind::OverlayVisibleChanged, true);
@@ -929,10 +939,10 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
 /// calibrated top edge. Collapsing restores the ordinary controls dimensions.
 /// The acknowledgment resolves after the main-thread frame update, before the
 /// frontend reveals content or starts accepting clicks in the expanded area.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn set_overlay_expanded(
-    app: tauri::AppHandle,
-    _state: tauri::State<'_, State>,
+    app: crate::host::Context,
+    _state: crate::host::StateRef<'_, State>,
     expanded: bool,
     content: Option<OverlayContent>,
     activity: Option<OverlayActivity>,
@@ -972,7 +982,7 @@ pub async fn set_overlay_expanded(
                 // Resolve geometry only once this mutation reaches the native
                 // main thread. A queued display refresh may have replaced the
                 // notch/scale contract since the command was invoked.
-                let state = dispatch_app.state::<State>();
+                let state = dispatch_app.services();
                 let notch = *state.notch_info.lock_or_recover();
                 let mut layout = *state.overlay_layout.lock_or_recover();
                 layout.expanded = expanded;
@@ -1066,10 +1076,13 @@ pub async fn set_overlay_expanded(
                     // successful size/position pair.
                     *state.overlay_frame.lock_or_recover() = None;
                     overlay
-                        .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
+                        .set_size(crate::host::LogicalSize::new(
+                            applied.window_w,
+                            applied.window_h,
+                        ))
                         .map_err(|error| error.to_string())?;
                     overlay
-                        .set_position(tauri::LogicalPosition::new(x, y))
+                        .set_position(crate::host::LogicalPosition::new(x, y))
                         .map_err(|error| error.to_string())?;
                 }
                 if let Some(position) = calibration {
@@ -1112,10 +1125,10 @@ pub async fn set_overlay_expanded(
 /// both the requested session offset (including an unsaved calibration draft)
 /// and its effective clamped value, so placement refreshes can re-resolve the
 /// same intent without resetting or competing with it.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn set_overlay_vertical_offset(
-    app: tauri::AppHandle,
-    _state: tauri::State<'_, State>,
+    app: crate::host::Context,
+    _state: crate::host::StateRef<'_, State>,
     offset: f64,
 ) -> Result<AppliedOverlayPosition, String> {
     let offset = clamp_vertical_offset(offset);
@@ -1151,9 +1164,9 @@ pub async fn set_overlay_vertical_offset(
                 let monitor_position = (position.x, position.y);
                 let monitor_size = (size.width, size.height);
                 let area = monitor.work_area();
-                let notch = *dispatch_app.state::<State>().notch_info.lock_or_recover();
+                let notch = *dispatch_app.services().notch_info.lock_or_recover();
                 let floating = dispatch_app
-                    .state::<State>()
+                    .services()
                     .overlay_layout
                     .lock_or_recover()
                     .placement
@@ -1186,7 +1199,7 @@ pub async fn set_overlay_vertical_offset(
                     (centered_x, top_y + applied.applied_offset)
                 };
                 overlay_to_move
-                    .set_position(tauri::LogicalPosition::new(x, y))
+                    .set_position(crate::host::LogicalPosition::new(x, y))
                     .map_err(|error| error.to_string())?;
                 remember_overlay_position(
                     &dispatch_app,
@@ -1220,7 +1233,7 @@ pub async fn set_overlay_vertical_offset(
                 .map_err(|_| "overlay position update was dropped".to_string())??;
 
         let probe_app = app.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::host::runtime::spawn(async move {
             match settled_outer_position(probe_app, overlay, (x, y)).await {
                 Ok(actual) => tracing::info!(
                     target: "system",
@@ -1257,8 +1270,8 @@ pub async fn set_overlay_vertical_offset(
 ///
 /// The overlay uses this instead of frontend window APIs so it does not need
 /// broad `core:window:allow-show` / `allow-set-focus` permissions.
-#[tauri::command]
-pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn show_main_window(app: crate::host::Context) -> Result<(), String> {
     match app.get_webview_window("main") {
         Some(window) => {
             window.show().map_err(|e| e.to_string())?;
@@ -1272,8 +1285,8 @@ pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// Hide the always-on-top overlay window.
-#[tauri::command]
-pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn hide_overlay(app: crate::host::Context) -> Result<(), String> {
     match app.get_webview_window("overlay") {
         Some(overlay) => {
             overlay.hide().map_err(|e| e.to_string())?;

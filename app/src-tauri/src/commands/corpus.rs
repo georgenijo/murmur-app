@@ -7,6 +7,7 @@
 
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::microphone_preview::{
     CLIPPING_SAMPLE_THRESHOLD, QUIET_PEAK_THRESHOLD, QUIET_RMS_THRESHOLD,
 };
@@ -19,6 +20,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
 
 const CORPUS_SCHEMA_VERSION: u32 = 1;
@@ -464,7 +466,7 @@ fn persist_recording(
     })
 }
 
-fn publish_status(app_handle: &tauri::AppHandle, state: &str, error: Option<&str>) {
+fn publish_status(app_handle: &crate::host::Context, state: &str, error: Option<&str>) {
     crate::smart_auto_probe::wake();
     let _ = app_handle.events().publish(
         EventKind::CorpusRecordingStatus,
@@ -473,11 +475,11 @@ fn publish_status(app_handle: &tauri::AppHandle, state: &str, error: Option<&str
 }
 
 pub(crate) fn handle_audio_lifecycle(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     capture_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    let state = app_handle.state::<State>();
+    let state = app_handle.services();
     let Some(current) = state.corpus.current() else {
         return;
     };
@@ -520,10 +522,10 @@ pub(crate) fn handle_audio_lifecycle(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn start_corpus_recording(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     request: CorpusStartRequest,
 ) -> Result<CorpusStartResponse, String> {
     validate_request(&request)?;
@@ -577,10 +579,10 @@ pub async fn start_corpus_recording(
     })
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn stop_corpus_recording(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<CorpusStopResponse, String> {
     let active = state
         .corpus
@@ -618,10 +620,10 @@ pub async fn stop_corpus_recording(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn cancel_corpus_recording(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<bool, String> {
     let Some(active) = state.corpus.current() else {
         return Ok(false);
@@ -651,7 +653,7 @@ pub async fn cancel_corpus_recording(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn get_corpus_summary() -> Result<CorpusSummary, String> {
     tokio::task::spawn_blocking(|| {
         let root = corpus_root()?;
@@ -670,8 +672,8 @@ pub async fn get_corpus_summary() -> Result<CorpusSummary, String> {
     .map_err(|error| format!("Corpus summary task failed: {error}"))?
 }
 
-#[tauri::command]
-pub fn open_corpus_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn open_corpus_folder(app_handle: crate::host::Context) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let root = corpus_root()?;
     std::fs::create_dir_all(&root)
@@ -682,7 +684,7 @@ pub fn open_corpus_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| format!("Could not open the personal corpus folder: {error}"))
 }
 
-pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+pub(crate) fn plugin() -> tauri::plugin::TauriPlugin<crate::host::DefaultRuntime> {
     tauri::plugin::Builder::new("internal-benchmark")
         .invoke_handler(tauri::generate_handler![
             start_corpus_recording,

@@ -3,7 +3,7 @@ use objc2_app_kit::NSApplication;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tao::platform::macos::{set_application_termination_handler, ApplicationTerminationReply};
 static PENDING_REPLY: AtomicBool = AtomicBool::new(false);
-pub(super) fn install(app: tauri::AppHandle) -> Result<(), String> {
+pub(super) fn install(app: crate::host::Context) -> Result<(), String> {
     set_application_termination_handler(move || {
         if super::permitted(&app) {
             return ApplicationTerminationReply::Now;

@@ -195,16 +195,16 @@ fn write_theme_file_at(path: &Path, contents: &str) -> Result<(), String> {
     )
 }
 
-#[tauri::command]
-pub fn read_theme_file(window: tauri::WebviewWindow, path: String) -> Result<String, String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn read_theme_file(window: crate::host::Window, path: String) -> Result<String, String> {
     require_main_window(window.label())?;
     let path = validated_file_path(&path, "Choose a valid theme file.")?;
     read_theme_file_at(&path)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn write_theme_file(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     path: String,
     contents: String,
 ) -> Result<(), String> {

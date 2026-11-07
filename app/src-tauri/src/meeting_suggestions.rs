@@ -1,5 +1,6 @@
 use crate::calendar::{self, CalendarWindow, SuggestionEvent};
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::{MutexExt, State};
 use murmur_core::events::{Consumer, EventKind};
 use serde::Serialize;
@@ -7,7 +8,6 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::Manager;
 use tokio::sync::Notify;
 
 const HORIZON_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -328,8 +328,8 @@ fn corpus_active(state: &State) -> bool {
     }
 }
 
-pub(crate) fn publish(app: &tauri::AppHandle) {
-    let prompt = app.state::<State>().meeting_suggestions.prompt();
+pub(crate) fn publish(app: &crate::host::Context) {
+    let prompt = app.services().meeting_suggestions.prompt();
     for window in [Consumer::Main, Consumer::Overlay] {
         let _ = app
             .events()
@@ -337,8 +337,8 @@ pub(crate) fn publish(app: &tauri::AppHandle) {
     }
 }
 
-pub(crate) fn busy_changed(app: &tauri::AppHandle) {
-    let state = app.state::<State>();
+pub(crate) fn busy_changed(app: &crate::host::Context) {
+    let state = app.services();
     let coordinator = &state.meeting_suggestions;
     let removed = coordinator
         .0
@@ -361,12 +361,12 @@ fn require_window(label: &str, main_only: bool) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn configure_meeting_suggestions(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     enabled: bool,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<(), String> {
     require_window(window.label(), true)?;
     let _transition = state.app_state.recording_transition.lock().await;
@@ -390,11 +390,11 @@ pub async fn configure_meeting_suggestions(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_meeting_suggestion(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    app: crate::host::Context,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<Option<MeetingSuggestion>, String> {
     require_window(window.label(), false)?;
     if is_busy(&state)
@@ -409,12 +409,12 @@ pub fn get_meeting_suggestion(
     Ok(state.meeting_suggestions.prompt())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn dismiss_meeting_suggestion(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     token: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<(), String> {
     require_window(window.label(), false)?;
     let mut inner = state.meeting_suggestions.0.state.lock_or_recover();
@@ -430,8 +430,8 @@ pub fn dismiss_meeting_suggestion(
     Ok(())
 }
 
-pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn initialize_event_subscriptions<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     callback: impl Fn() + Send + Sync + 'static,
 ) {
     let callback = std::sync::Arc::new(callback);
@@ -455,15 +455,15 @@ pub(crate) fn initialize_event_subscriptions<R: tauri::Runtime>(
     }
 }
 
-pub(crate) fn initialize(app: tauri::AppHandle) {
-    let coordinator = app.state::<State>().meeting_suggestions.clone();
+pub(crate) fn initialize(app: crate::host::Context) {
+    let coordinator = app.services().meeting_suggestions.clone();
     let app_for_event = app.clone();
     initialize_event_subscriptions(&app, move || busy_changed(&app_for_event));
     register_native_observers(&app, &coordinator);
-    tauri::async_runtime::spawn(run(app, coordinator));
+    crate::host::runtime::spawn(run(app, coordinator));
 }
 
-fn register_native_observers(app: &tauri::AppHandle, coordinator: &MeetingSuggestions) {
+fn register_native_observers(app: &crate::host::Context, coordinator: &MeetingSuggestions) {
     use block2::RcBlock;
     use objc2_app_kit::{
         NSWorkspace, NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidWakeNotification,
@@ -508,7 +508,7 @@ fn register_native_observers(app: &tauri::AppHandle, coordinator: &MeetingSugges
     }
 }
 
-pub(crate) async fn frontmost_bundle_id(app: &tauri::AppHandle) -> Option<String> {
+pub(crate) async fn frontmost_bundle_id(app: &crate::host::Context) -> Option<String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
         let _ = sender.send(crate::frontmost::query_frontmost_app_identity().bundle_id);
@@ -520,7 +520,7 @@ pub(crate) async fn frontmost_bundle_id(app: &tauri::AppHandle) -> Option<String
         .ok()?
 }
 
-async fn run(app: tauri::AppHandle, coordinator: MeetingSuggestions) {
+async fn run(app: crate::host::Context, coordinator: MeetingSuggestions) {
     loop {
         if coordinator.0.shutdown.load(Ordering::Acquire) {
             return;
@@ -543,7 +543,7 @@ async fn run(app: tauri::AppHandle, coordinator: MeetingSuggestions) {
         if !calendar::operation_in_progress() {
             coordinator.0.state.lock_or_recover().operation_available();
         }
-        let state = app.state::<State>();
+        let state = app.services();
         let transition = state.app_state.recording_transition.lock().await;
         let enabled = coordinator.0.state.lock_or_recover().enabled;
         let bundle_id = if enabled {
@@ -605,10 +605,10 @@ mod tests {
     }
 
     // Asserts that the last preview Arc is destroyed while its lease is held.
-    struct PartialPreviewResource(tauri::AppHandle<tauri::test::MockRuntime>);
+    struct PartialPreviewResource(crate::host::Context<tauri::test::MockRuntime>);
     impl Drop for PartialPreviewResource {
         fn drop(&mut self) {
-            let state = self.0.state::<State>();
+            let state = self.0.services();
             assert_eq!(
                 state
                     .app_state
@@ -623,7 +623,7 @@ mod tests {
     #[tokio::test]
     async fn partial_lease_survives_cancelled_wrapper_until_worker_cleanup_finishes() {
         let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
-        let state = app.state::<State>();
+        let state = app.services();
         let coordinator = &state.meeting_suggestions;
         *coordinator.0.state.lock_or_recover() = ready(vec![event("live", 1_000, 100_000)]);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -694,7 +694,7 @@ mod tests {
         }
         for no_context in [true, false] {
             let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
-            let state = app.state::<State>();
+            let state = app.services();
             state
                 .meeting_suggestions
                 .0
@@ -721,7 +721,7 @@ mod tests {
     #[test]
     fn stale_partial_lease_neither_releases_nor_wakes_a_new_owner() {
         let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
-        let state = app.state::<State>();
+        let state = app.services();
         state
             .meeting_suggestions
             .0
@@ -747,7 +747,7 @@ mod tests {
     async fn partial_lease_releases_on_worker_early_return_and_panic_without_clearing_prompt() {
         for panic in [false, true] {
             let (app, lease) = crate::commands::recording::tests::partial_lease_fixture();
-            let state = app.state::<State>();
+            let state = app.services();
             let coordinator = &state.meeting_suggestions;
             let mut decision = ready(vec![event("live", 1_000, 100_000)]);
             decision.evaluate(2_000, Some("us.zoom.xos"), false);

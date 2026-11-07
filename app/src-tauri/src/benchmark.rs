@@ -737,14 +737,14 @@ fn percentile(values: &[f64], percentile: f64) -> Option<f64> {
     Some(sorted[index])
 }
 
-// Generic over `R: tauri::Runtime` (rather than the default `Wry`) so the
+// Generic over `R: crate::host::Runtime` (rather than the default `Wry`) so the
 // headless benchmark runner (tests/headless_benchmark.rs) can drive `run`
 // with a `tauri::test::MockRuntime` AppHandle -- no path resolution in this
 // module goes through AppHandle (models_dir uses `dirs::` directly), so the
 // only thing that needs a real runtime is `Emitter::emit` below, which is
 // implemented for `AppHandle<R>` for any `R: Runtime`.
-fn publish_progress<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+fn publish_progress<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     completed: usize,
     total: usize,
     model: &BenchmarkModel,
@@ -1272,8 +1272,8 @@ fn recommendations(results: &[ModelResult]) -> Recommendations {
     }
 }
 
-pub fn run<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub fn run<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     coordinator: &BenchmarkCoordinator,
     request: BenchmarkRequest,
 ) -> Result<BenchmarkReport, String> {

@@ -32,7 +32,7 @@ impl Default for PerformanceMetrics {
 struct PerformanceMetricsInner {
     repository: Option<PerformanceRepository>,
     root: Option<PathBuf>,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<crate::host::Context>,
     health: PerformanceStoreHealthV1,
 }
 
@@ -40,7 +40,7 @@ impl PerformanceMetrics {
     pub(crate) fn initialize(
         &self,
         root: PathBuf,
-        app_handle: Option<tauri::AppHandle>,
+        app_handle: Option<crate::host::Context>,
     ) -> Result<(), String> {
         let _operation_guard = self
             .operation_lock
@@ -159,7 +159,7 @@ impl PerformanceMetrics {
     }
     fn schedule_production_persistence(&self, id: u64) {
         let metrics = self.clone();
-        drop(tauri::async_runtime::spawn_blocking(move || {
+        drop(crate::host::runtime::spawn_blocking(move || {
             let _ = metrics.persist_production(id);
         }));
     }

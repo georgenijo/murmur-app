@@ -1,4 +1,5 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::managed_child::{bundled_sibling, ManagedChild};
 use crate::meeting_store::{
     MeetingRepository, MeetingSegment, MeetingSegmentStatus, MeetingSessionStatus, MeetingSpeaker,
@@ -6,7 +7,7 @@ use crate::meeting_store::{
 };
 use crate::model_runtime::PreparationReason;
 use crate::state::WHISPER_SAMPLE_RATE;
-use crate::{MutexExt, State};
+use crate::MutexExt;
 use murmur_capture_helper_protocol::{
     read_production_frame, valid_input_resolution_evidence, write_production_control,
     CaptureBackend, CaptureChannel, CapturePhase, CaptureSetupStep, EchoCancellationBypassReason,
@@ -24,6 +25,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError, TrySendErr
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
 use uuid::Uuid;
 
@@ -279,7 +281,7 @@ impl MeetingCoordinator {
 
     pub fn start(
         &self,
-        app: tauri::AppHandle,
+        app: crate::host::Context,
         repository: MeetingRepository,
         config: MeetingCaptureConfig,
     ) -> Result<(), String> {
@@ -357,7 +359,7 @@ impl MeetingCoordinator {
                     error_code,
                 );
                 {
-                    let state = app_for_thread.state::<State>();
+                    let state = app_for_thread.services();
                     if state.app_state.meeting_generation.load(Ordering::SeqCst)
                         == config_for_thread.generation
                     {
@@ -407,7 +409,7 @@ impl MeetingCoordinator {
         Ok(())
     }
 
-    pub fn stop(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    pub fn stop(&self, app: &crate::host::Context) -> Result<(), String> {
         let (sender, status) = {
             let mut inner = self.inner.lock_or_recover();
             let active = inner
@@ -433,7 +435,7 @@ impl MeetingCoordinator {
 
     /// A positive receipt requires the original generation's completion fence.
     /// Timeout preserves ownership; it cannot clear meeting_active.
-    pub fn shutdown(&self, _app: &tauri::AppHandle, deadline: Instant) -> bool {
+    pub fn shutdown(&self, _app: &crate::host::Context, deadline: Instant) -> bool {
         let active = {
             let inner = self.inner.lock_or_recover();
             inner.active.as_ref().map(|active| {
@@ -461,14 +463,14 @@ impl MeetingCoordinator {
         result
     }
 
-    pub fn recover_pending(&self, app: tauri::AppHandle, repository: MeetingRepository) {
+    pub fn recover_pending(&self, app: crate::host::Context, repository: MeetingRepository) {
         if !matches!(
             repository.status(),
             Ok(status) if status.pending_segment_count > 0
         ) {
             return;
         }
-        let state = app.state::<State>();
+        let state = app.services();
         if state
             .app_state
             .meeting_inference_active
@@ -482,7 +484,7 @@ impl MeetingCoordinator {
             .spawn(move || {
                 drain_pending(&app_for_thread, &repository);
                 app_for_thread
-                    .state::<State>()
+                    .services()
                     .app_state
                     .meeting_inference_active
                     .store(false, Ordering::SeqCst);
@@ -498,7 +500,7 @@ impl MeetingCoordinator {
 
     fn update_phase(
         &self,
-        app: &tauri::AppHandle,
+        app: &crate::host::Context,
         generation: u64,
         phase: MeetingRuntimePhase,
         microphone_active: bool,
@@ -528,7 +530,7 @@ impl MeetingCoordinator {
 
     fn update_echo_cancellation(
         &self,
-        app: &tauri::AppHandle,
+        app: &crate::host::Context,
         generation: u64,
         value: EchoCancellationStatus,
     ) {
@@ -594,7 +596,7 @@ impl MeetingCoordinator {
         publish_status(app, &status);
     }
 
-    fn finish(&self, app: &tauri::AppHandle, generation: u64, error: Option<&MeetingError>) {
+    fn finish(&self, app: &crate::host::Context, generation: u64, error: Option<&MeetingError>) {
         let (status, completed_seconds) = {
             let mut inner = self.inner.lock_or_recover();
             if inner
@@ -661,7 +663,7 @@ impl MeetingCoordinator {
     }
 }
 
-fn publish_status(app: &tauri::AppHandle, status: &MeetingRuntimeStatus) {
+fn publish_status(app: &crate::host::Context, status: &MeetingRuntimeStatus) {
     let _ = app
         .events()
         .publish(EventKind::MeetingStatusChanged, status);
@@ -1226,7 +1228,7 @@ fn send_pcm_with_retry(
 }
 
 fn run_capture_session(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     repository: &MeetingRepository,
     config: &MeetingCaptureConfig,
     command_receiver: Receiver<MeetingCommand>,
@@ -1933,7 +1935,7 @@ impl ChannelProcessor {
 }
 
 fn process_pcm_stream(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     repository: &MeetingRepository,
     config: &MeetingCaptureConfig,
     receiver: Receiver<ProductionPcm>,
@@ -2078,7 +2080,7 @@ fn write_spool_wav(
 }
 
 fn run_inference_worker(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     repository: &MeetingRepository,
     wake_receiver: Receiver<()>,
 ) {
@@ -2094,7 +2096,7 @@ fn run_inference_worker(
     }
 }
 
-fn drain_pending(app: &tauri::AppHandle, repository: &MeetingRepository) {
+fn drain_pending(app: &crate::host::Context, repository: &MeetingRepository) {
     while !crate::shutdown::closing() {
         let Ok(Some(segment)) = repository.next_pending_segment() else {
             break;
@@ -2104,7 +2106,7 @@ fn drain_pending(app: &tauri::AppHandle, repository: &MeetingRepository) {
 }
 
 fn process_pending_segment(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     repository: &MeetingRepository,
     pending: PendingMeetingSegment,
 ) {
@@ -2119,7 +2121,7 @@ fn process_pending_segment(
         .map_err(|_| ())
         .and_then(|bytes| crate::transcriber::parse_wav_to_samples(&bytes).map_err(|_| ()));
     let result = samples.and_then(|samples| {
-        let state = app.state::<State>();
+        let state = app.services();
         state
             .app_state
             .model_runtime
@@ -2143,7 +2145,7 @@ fn process_pending_segment(
                 if !pending.retain_audio {
                     let _ = fs::remove_file(path);
                 }
-                *app.state::<State>()
+                *app.services()
                     .app_state
                     .last_transcription_at
                     .lock_or_recover() = Some(Instant::now());

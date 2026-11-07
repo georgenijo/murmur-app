@@ -2,13 +2,13 @@
 //!
 //! Native startup applies a committed v7 configuration before arming control.
 //! Unknown/legacy snapshots still use the existing frontend migration path.
+use crate::host::ServiceAccess;
 use crate::MutexExt;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
 };
 use std::time::Instant;
-use tauri::Manager;
 
 static PROCESS_START: OnceLock<Instant> = OnceLock::new();
 static FRONTEND_CONFIGURING: AtomicBool = AtomicBool::new(false);
@@ -135,14 +135,14 @@ fn preparation(blob: &str, _accessibility: bool) -> Option<Preparation> {
     })
 }
 
-pub(crate) fn prepare(app: &tauri::AppHandle) {
+pub(crate) fn prepare(app: &crate::host::Context) {
     // Reserve revision and producer ownership before queueing any startup I/O.
     let revision = crate::dictation_control::accept_configuration(app);
     let Ok(permit) = crate::shutdown::WriterPermit::acquire() else {
         return;
     };
     let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let _permit = permit;
         let source = handle.clone();
         let Ok(Ok(Some(blob))) = crate::shutdown::source_call(move || {
@@ -168,7 +168,7 @@ pub(crate) fn prepare(app: &tauri::AppHandle) {
         if crate::commands::recording::configure_dictation(
             settings.clone(),
             handle.clone(),
-            handle.state::<crate::State>(),
+            handle.services(),
         )
         .await
         .is_ok()

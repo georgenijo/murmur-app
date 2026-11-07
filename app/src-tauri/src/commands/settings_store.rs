@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
 
 use crate::MutexExt;
@@ -127,7 +128,9 @@ pub(crate) fn reconcile_lifecycle_after<T>(dir: &Path, operation: impl FnOnce() 
 /// Completion's retained lifecycle saves can also replay while an unrelated
 /// history/statistics command drains the core FIFO. Reconcile after those calls
 /// too, under the host lock, without adding disk work when nothing is retained.
-pub(crate) fn reconcile_completion_publication<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) fn reconcile_completion_publication<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
+) {
     let Ok(dir) = source_dir(app) else {
         return;
     };
@@ -160,10 +163,11 @@ fn dictation_settings_unsaved(dir: &Path) -> bool {
 
 /// Notify on success and early error alike, after local writer guards release.
 /// Payload-free invalidation makes the query authoritative even across mounts.
-pub(crate) struct SettingsWarningNotification<'a, R: tauri::Runtime = tauri::Wry>(
-    pub(crate) &'a tauri::AppHandle<R>,
-);
-impl<R: tauri::Runtime> Drop for SettingsWarningNotification<'_, R> {
+pub(crate) struct SettingsWarningNotification<
+    'a,
+    R: crate::host::Runtime = crate::host::DefaultRuntime,
+>(pub(crate) &'a crate::host::Context<R>);
+impl<R: crate::host::Runtime> Drop for SettingsWarningNotification<'_, R> {
     fn drop(&mut self) {
         let _ = self.0.events().send_to(
             murmur_core::events::Consumer::Main,
@@ -173,15 +177,15 @@ impl<R: tauri::Runtime> Drop for SettingsWarningNotification<'_, R> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn get_dictation_settings_unsaved(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
 ) -> Result<bool, String> {
     require_settings_owner(window.label())?;
     // Read-only and available during startup recovery; no source admission,
     // hydration, filesystem mutation or healthy settings document is required.
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::host::runtime::spawn_blocking(move || {
         let dir = source_dir(&app)?;
         let _guard = WRITE_LOCK.lock_or_recover();
         Ok(dictation_settings_unsaved(&dir))
@@ -327,12 +331,12 @@ fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
 /// The per-bundle app data directory that owns every durable host-written
 /// file. Shared so non-command hosts (the capture backend memo) publish beside
 /// `settings.json` instead of resolving their own directory.
-fn source_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+fn source_dir<R: crate::host::Runtime>(app: &crate::host::Context<R>) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|e| format!("Durable data directory unavailable: {e}"))
 }
-pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn data_dir(app: &crate::host::Context) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -342,7 +346,9 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-pub(crate) fn load_settings_blob_worker(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub(crate) fn load_settings_blob_worker(
+    app: crate::host::Context,
+) -> Result<Option<String>, String> {
     let _warning_notification = SettingsWarningNotification(&app);
     let dir = data_dir(&app)?;
     let _guard = WRITE_LOCK.lock_or_recover();
@@ -369,8 +375,8 @@ fn require_settings_owner(label: &str) -> Result<(), String> {
 }
 
 pub(crate) fn save_settings_blob_worker(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     blob: String,
     owned_edits: Option<OwnedEdits>,
     intent_generation: Option<u64>,
@@ -405,7 +411,7 @@ pub(crate) fn save_settings_blob_worker(
     notify_settings_committed(&app, &blob);
     if let Ok(settings) = serde_json::from_str(&blob) {
         let handle = app.clone();
-        tauri::async_runtime::spawn(async move {
+        crate::host::runtime::spawn(async move {
             let _ = crate::dictation_control::configure_accepted(&handle, settings, revision);
         });
     }
@@ -509,7 +515,7 @@ fn commit_settings_intent_with_publisher<T>(
     Ok((committed, revision))
 }
 
-fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
+fn notify_settings_committed(app: &crate::host::Context, blob: &str) {
     // Hidden WKWebViews can observe settings-changed before their localStorage
     // cache updates. Notify only after the authoritative file was committed.
     let enabled = serde_json::from_str::<serde_json::Value>(blob)
@@ -584,9 +590,9 @@ fn patch_owned_setting_with<T>(
 /// A tray action is a native producer, not a renderer snapshot. Keep admission,
 /// publication and the runtime override in the same FIFO as renderer patches.
 /// Acquire the permit synchronously in the tray callback, before spawning.
-pub(crate) fn toggle_tray_disabled(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn toggle_tray_disabled(app: crate::host::Context) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let notification_app = app.clone();
         let _warning_notification = SettingsWarningNotification(&notification_app);
         let result = crate::shutdown::source_call(move || {
@@ -739,7 +745,7 @@ fn rebase_runtime_owned_fields(
 }
 
 pub(crate) fn sync_app_disabled_worker(
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     disabled: bool,
 ) -> Result<(), String> {
     let _warning_notification = SettingsWarningNotification(&app);
@@ -752,7 +758,7 @@ pub(crate) fn sync_app_disabled_worker(
 }
 
 pub(crate) fn configure_renderer_control_worker(
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     settings: serde_json::Value,
 ) -> Result<(), String> {
     let _warning_notification = SettingsWarningNotification(&app);
@@ -769,8 +775,8 @@ pub(crate) fn configure_renderer_control_worker(
 /// Never accept a retained full snapshot from a quick control. Merge its one
 /// owned field into the latest document under the same lock as full writers.
 pub(crate) fn patch_overlay_setting_worker(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     field: OverlaySettingField,
     value: bool,
 ) -> Result<String, String> {
@@ -792,8 +798,8 @@ pub(crate) fn patch_overlay_setting_worker(
 }
 
 pub(crate) fn load_theme_library_blob_worker(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
 ) -> Result<Option<String>, String> {
     require_main_window(window.label())?;
     let _guard = WRITE_LOCK.lock_or_recover();
@@ -801,8 +807,8 @@ pub(crate) fn load_theme_library_blob_worker(
 }
 
 pub(crate) fn save_theme_library_blob_worker(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
     blob: String,
 ) -> Result<(), String> {
     require_main_window(window.label())?;
@@ -810,8 +816,8 @@ pub(crate) fn save_theme_library_blob_worker(
 }
 
 pub(crate) fn clear_theme_library_blob_worker(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
 ) -> Result<(), String> {
     require_main_window(window.label())?;
     write_blob(
@@ -824,8 +830,8 @@ pub(crate) fn clear_theme_library_blob_worker(
 /// Explicit restore from a user-selected backup; never synthesize defaults or
 /// replace a readable destination. Quarantines remain untouched for recovery.
 pub(crate) fn restore_source_backup_worker(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     key: String,
     blob: String,
 ) -> Result<(), String> {
@@ -1212,11 +1218,11 @@ mod lifecycle_ordering_tests {
             },
         );
         assert_eq!(
-            tauri::async_runtime::block_on(newer).unwrap(),
+            crate::host::runtime::block_on(newer).unwrap(),
             SourceWrite::Applied { value: () }
         );
         assert_eq!(
-            tauri::async_runtime::block_on(older).unwrap(),
+            crate::host::runtime::block_on(older).unwrap(),
             SourceWrite::Superseded
         );
         let value: serde_json::Value =
@@ -1388,7 +1394,7 @@ mod explicit_owned_edit_tests {
 
 /// Worker-only source fence, serialized with accepted source publications and
 /// quick-control merges. Recovery preserves their owned-field revision rules.
-pub(crate) fn flush(app: &tauri::AppHandle) -> bool {
+pub(crate) fn flush(app: &crate::host::Context) -> bool {
     let _warning_notification = SettingsWarningNotification(app);
     let _guard = WRITE_LOCK.lock_or_recover();
     let Ok(root) = data_dir(app) else {
@@ -1425,8 +1431,8 @@ fn flush_owned(root: &Path) -> bool {
     !still_pending || commit_settings_intent(root, "{}", None, false, || ()).is_ok()
 }
 
-#[tauri::command]
-pub async fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub async fn load_settings_blob(app: crate::host::Context) -> Result<Option<String>, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
     crate::shutdown::source_call(move || {
         let _admission = admission;
@@ -1506,10 +1512,10 @@ fn select_settings_intent(
     Ok((snapshot, accepted, acknowledgements))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn save_settings_blob(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     blob: String,
     owned_edits: Option<OwnedEdits>,
     owned_edit_generations: Option<OwnedEditGenerations>,
@@ -1571,10 +1577,10 @@ pub async fn save_settings_blob(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn patch_overlay_setting(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     field: OverlaySettingField,
     value: bool,
     source_session: String,
@@ -1596,10 +1602,10 @@ pub async fn patch_overlay_setting(
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn load_theme_library_blob(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
 ) -> Result<Option<String>, String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
     crate::shutdown::source_call(move || {
@@ -1610,10 +1616,10 @@ pub async fn load_theme_library_blob(
     .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn save_theme_library_blob(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
     blob: String,
     intent_generation: u64,
     source_session: String,
@@ -1632,10 +1638,10 @@ pub async fn save_theme_library_blob(
     .await
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn clear_theme_library_blob(
-    window: tauri::WebviewWindow,
-    app: tauri::AppHandle,
+    window: crate::host::Window,
+    app: crate::host::Context,
 ) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
     crate::shutdown::source_call(move || {
@@ -1646,10 +1652,10 @@ pub async fn clear_theme_library_blob(
     .map_err(|_| "Source writer unavailable".to_owned())?
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn restore_source_backup(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     key: String,
     blob: String,
 ) -> Result<(), String> {
@@ -1735,7 +1741,7 @@ mod round_three_ordering_tests {
         // The real source barrier and completion owner's shutdown receipt. No
         // renderer flush runs. Reopen/recover exactly as the next launch does.
         let path = root.to_path_buf();
-        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+        crate::host::runtime::block_on(crate::shutdown::source_call(move || {
             let _guard = WRITE_LOCK.lock_or_recover();
             assert!(flush_owned(&path));
             murmur_core::completion::recover_source(&path, "dictation-settings").unwrap();
@@ -1744,7 +1750,7 @@ mod round_three_ordering_tests {
         let service =
             murmur_core::completion::CompletionService::start(root.into(), false).unwrap();
         assert_eq!(
-            tauri::async_runtime::block_on(service.shutdown_receipt()),
+            crate::host::runtime::block_on(service.shutdown_receipt()),
             murmur_core::shutdown::WriteOutcome::Committed
         );
         murmur_core::completion::recover_source(root, "dictation-settings").unwrap();
@@ -1754,7 +1760,7 @@ mod round_three_ordering_tests {
     fn tray_disable_survives_shutdown_without_renderer_echo() {
         let (root, _, _) = setup();
         let path = root.path().to_path_buf();
-        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+        crate::host::runtime::block_on(crate::shutdown::source_call(move || {
             let (_, disabled) = commit_tray_disabled(&path, false, |value| {
                 assert!(value);
                 Ok(())
@@ -1785,7 +1791,7 @@ mod round_three_ordering_tests {
                 let path = root.path().to_path_buf();
                 let runtime = runtime.clone();
                 let fence = fence.clone();
-                tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+                crate::host::runtime::block_on(crate::shutdown::source_call(move || {
                     let stale = fence.accept();
                     let current = runtime.load(Ordering::SeqCst);
                     let result = commit_tray_disabled(&path, current, |value| {
@@ -1819,7 +1825,7 @@ mod round_three_ordering_tests {
             // document. The retained native field wins over hydrated false.
             let session = uuid::Uuid::new_v4().to_string();
             crate::shutdown::register_test_source("main", &session);
-            tauri::async_runtime::block_on(save(
+            crate::host::runtime::block_on(save(
                 root.path().into(),
                 session,
                 1,
@@ -1904,7 +1910,7 @@ mod round_three_ordering_tests {
                 let fence = Arc::new(ConfigurationFence::default());
                 let state = runtime.clone();
                 let configuration = fence.clone();
-                tauri::async_runtime::block_on(crate::shutdown::ordered_source_call(
+                crate::host::runtime::block_on(crate::shutdown::ordered_source_call(
                     "main".into(),
                     session,
                     move |order, owner, session| {
@@ -2050,7 +2056,7 @@ mod round_three_ordering_tests {
     fn tray_disable_survives_renderer_echo_stale_snapshot_and_owned_patch_retry() {
         let (root, main, _) = setup();
         // A real main-owned enable accepted before the native tray disable.
-        tauri::async_runtime::block_on(save(
+        crate::host::runtime::block_on(save(
             root.path().into(),
             main.clone(),
             1,
@@ -2065,7 +2071,7 @@ mod round_three_ordering_tests {
             },
         ));
         let path = root.path().to_path_buf();
-        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+        crate::host::runtime::block_on(crate::shutdown::source_call(move || {
             commit_tray_disabled(&path, false, |_| Ok(())).unwrap();
             // Both runtime adapters use this rebase under WRITE_LOCK before
             // accepting a configuration. Even a later-arriving false snapshot
@@ -2088,7 +2094,7 @@ mod round_three_ordering_tests {
         // actual merge, not a notification mock, then send disabled=false in a
         // stale document with a fresh snapshot generation and the old field ID.
         let path = root.path().to_path_buf();
-        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+        crate::host::runtime::block_on(crate::shutdown::source_call(move || {
             let _guard = WRITE_LOCK.lock_or_recover();
             commit_settings_intent(
                 &path,
@@ -2100,7 +2106,7 @@ mod round_three_ordering_tests {
             .unwrap();
         }))
         .unwrap();
-        tauri::async_runtime::block_on(save(
+        crate::host::runtime::block_on(save(
             root.path().into(),
             main,
             2,
@@ -2126,7 +2132,7 @@ mod round_three_ordering_tests {
         let (root, _, _) = setup();
         for expected in [true, false] {
             let path = root.path().to_path_buf();
-            tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+            crate::host::runtime::block_on(crate::shutdown::source_call(move || {
                 commit_tray_disabled(&path, !expected, |value| {
                     assert_eq!(value, expected);
                     Ok(())
@@ -2144,7 +2150,7 @@ mod round_three_ordering_tests {
     fn tray_disable_retains_ownership_after_publication_failure() {
         let (root, _, _) = setup();
         let dir = root.path().to_path_buf();
-        tauri::async_runtime::block_on(crate::shutdown::source_call(move || {
+        crate::host::runtime::block_on(crate::shutdown::source_call(move || {
             let path = dir.join("settings.json");
             let held = dir.join("synthetic-settings-held");
             let result = commit_tray_disabled(&dir, false, |disabled| {
@@ -2188,7 +2194,7 @@ mod round_three_ordering_tests {
     #[test]
     fn superseded_auto_paste_patch_survives_native_shutdown_without_renderer_flush() {
         let (root, main, overlay) = setup();
-        tauri::async_runtime::block_on(quick(
+        crate::host::runtime::block_on(quick(
             root.path().into(),
             overlay,
             OverlaySettingField::Disabled,
@@ -2219,10 +2225,10 @@ mod round_three_ordering_tests {
             OwnedEditGenerations::default(),
         );
         assert!(matches!(
-            tauri::async_runtime::block_on(b),
+            crate::host::runtime::block_on(b),
             SourceWrite::Applied { .. }
         ));
-        assert_eq!(tauri::async_runtime::block_on(a), SourceWrite::Superseded);
+        assert_eq!(crate::host::runtime::block_on(a), SourceWrite::Superseded);
         let disk = recovered(root.path());
         assert_eq!(disk["autoPaste"], true);
         assert_eq!(disk["disabled"], true);
@@ -2236,7 +2242,7 @@ mod round_three_ordering_tests {
         std::fs::rename(&path, &held).unwrap();
         std::fs::create_dir(&path).unwrap();
         let dir = root.path().to_path_buf();
-        let result = tauri::async_runtime::block_on(crate::shutdown::ordered_source_call(
+        let result = crate::host::runtime::block_on(crate::shutdown::ordered_source_call(
             "main".into(),
             main,
             move |order, owner, session| {
@@ -2300,14 +2306,14 @@ mod round_three_ordering_tests {
                 },
             )
         };
-        tauri::async_runtime::block_on(save_auto(1, true));
-        tauri::async_runtime::block_on(quick(
+        crate::host::runtime::block_on(save_auto(1, true));
+        crate::host::runtime::block_on(quick(
             root.path().into(),
             overlay.clone(),
             OverlaySettingField::Disabled,
             true,
         ));
-        tauri::async_runtime::block_on(quick(
+        crate::host::runtime::block_on(quick(
             root.path().into(),
             overlay.clone(),
             OverlaySettingField::AutoPaste,
@@ -2315,7 +2321,7 @@ mod round_three_ordering_tests {
         ));
         // Identical retry retains its original field ID, so cannot undo the
         // later overlay edit even though its snapshot gets a fresh generation.
-        tauri::async_runtime::block_on(save(
+        crate::host::runtime::block_on(save(
             root.path().into(),
             main.clone(),
             2,
@@ -2330,21 +2336,21 @@ mod round_three_ordering_tests {
             },
         ));
         assert_eq!(recovered(root.path())["autoPaste"], false);
-        tauri::async_runtime::block_on(save_auto(3, true));
+        crate::host::runtime::block_on(save_auto(3, true));
         let disk = recovered(root.path());
         assert_eq!(disk["autoPaste"], true);
         assert_eq!(disk["disabled"], true);
         // Reloading overlay retires only overlay, not main.
         let reloaded = uuid::Uuid::new_v4().to_string();
         crate::shutdown::register_test_source("overlay", &reloaded);
-        tauri::async_runtime::block_on(quick(
+        crate::host::runtime::block_on(quick(
             root.path().into(),
             reloaded,
             OverlaySettingField::Disabled,
             false,
         ));
         assert_eq!(
-            tauri::async_runtime::block_on(quick(
+            crate::host::runtime::block_on(quick(
                 root.path().into(),
                 overlay,
                 OverlaySettingField::Disabled,
@@ -2352,7 +2358,7 @@ mod round_three_ordering_tests {
             )),
             SourceWrite::Superseded
         );
-        tauri::async_runtime::block_on(save_auto(4, false));
+        crate::host::runtime::block_on(save_auto(4, false));
         let disk = recovered(root.path());
         assert_eq!(disk["autoPaste"], false);
         assert_eq!(disk["disabled"], false);

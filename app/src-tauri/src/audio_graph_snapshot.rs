@@ -31,6 +31,7 @@
 //! armed install. The structured event emitted from every install carries
 //! [`AudioGraphCounts`] only — integers and booleans.
 
+use crate::host::ServiceAccess;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Condvar, Mutex, OnceLock};
@@ -65,7 +66,7 @@ const REPORT_CAP_BYTES: usize = 64_000;
 /// Highest capture ID already observed this process lifetime. A capture attempt
 /// contributes at most one `audio.system_audio_graph_observed` event.
 static LAST_OBSERVED_CAPTURE_ID: AtomicU64 = AtomicU64::new(0);
-static APP_HANDLE: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+static APP_HANDLE: OnceLock<Mutex<Option<crate::host::Context>>> = OnceLock::new();
 /// The live-hang snapshot taken before the kill, waiting to be claimed by the
 /// armed bundle. Only populated on armed installs (an unarmed install never
 /// renders an identity-bearing report at all).
@@ -582,19 +583,19 @@ fn publish_counts(capture_id: u64, counts: AudioGraphCounts) {
 // Murmur's own audio owners (no HAL calls)
 // ---------------------------------------------------------------------------
 
-fn app_handle_slot() -> &'static Mutex<Option<tauri::AppHandle>> {
+fn app_handle_slot() -> &'static Mutex<Option<crate::host::Context>> {
     APP_HANDLE.get_or_init(|| Mutex::new(None))
 }
 
 /// Wired once from `lib.rs` setup so diagnostics can read managed state
 /// without threading an `AppHandle` through the capture path.
-pub(crate) fn set_app_handle(handle: tauri::AppHandle) {
+pub(crate) fn set_app_handle(handle: crate::host::Context) {
     *app_handle_slot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handle);
 }
 
-fn app_handle() -> Option<tauri::AppHandle> {
+fn app_handle() -> Option<crate::host::Context> {
     app_handle_slot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -622,7 +623,7 @@ pub(crate) fn internal_owners_report() -> String {
     // `state()` panics when the type is unmanaged, and release builds are
     // `panic = "abort"`: a diagnostic must never be able to take the process
     // down, so resolve it fallibly.
-    let Some(state) = tauri::Manager::try_state::<crate::State>(&handle) else {
+    let Some(state) = handle.try_services() else {
         report.push_str("murmur subsystems: <app state unavailable>\n");
         return report;
     };

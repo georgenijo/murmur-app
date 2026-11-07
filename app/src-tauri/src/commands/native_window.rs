@@ -11,7 +11,8 @@
 /// Place AppKit's real buttons in window points, independent of webview zoom
 /// and display backing scale. The CSS header height arrives from the renderer.
 #[cfg(target_os = "macos")]
-pub(crate) fn position_traffic_lights(window: &tauri::WebviewWindow, top: f64) {
+pub(crate) fn position_traffic_lights(window: &crate::host::Window, top: f64) {
+    #[cfg(feature = "tauri-host")]
     use tauri::Manager;
     let window = window.clone();
     let handle = window.app_handle().clone();
@@ -67,13 +68,14 @@ pub(crate) fn position_traffic_lights(window: &tauri::WebviewWindow, top: f64) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn position_traffic_lights(_window: &tauri::WebviewWindow, _top: f64) {}
+pub(crate) fn position_traffic_lights(_window: &crate::host::Window, _top: f64) {}
 
 /// Remove AppKit's automatic line between the overlay title bar and web
 /// content. Murmur's header and history toolbar are intentionally one
 /// continuous surface.
 #[cfg(target_os = "macos")]
-pub(crate) fn hide_titlebar_separator(window: &tauri::WebviewWindow) {
+pub(crate) fn hide_titlebar_separator(window: &crate::host::Window) {
+    #[cfg(feature = "tauri-host")]
     use tauri::Manager;
     let window = window.clone();
     let handle = window.app_handle().clone();
@@ -89,7 +91,7 @@ pub(crate) fn hide_titlebar_separator(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
-fn apply_hidden_titlebar_separator_on_main(window: &tauri::WebviewWindow) {
+fn apply_hidden_titlebar_separator_on_main(window: &crate::host::Window) {
     debug_assert!(
         objc2_foundation::MainThreadMarker::new().is_some(),
         "NSWindow mutation must run on the main thread"
@@ -101,7 +103,7 @@ fn apply_hidden_titlebar_separator_on_main(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn hide_titlebar_separator(_window: &tauri::WebviewWindow) {}
+pub(crate) fn hide_titlebar_separator(_window: &crate::host::Window) {}
 
 /// Raise `window` to `level` (an `NSWindow` level, e.g. `NSMainMenuWindowLevel
 /// + 1 = 25`) and mark it non-activating via the private `_setPreventsActivation:`
@@ -122,10 +124,11 @@ pub(crate) fn hide_titlebar_separator(_window: &tauri::WebviewWindow) {}
 /// ignores it, so there is no oneshot to await.
 #[cfg(target_os = "macos")]
 pub(crate) fn set_window_level_and_activation(
-    window: &tauri::WebviewWindow,
+    window: &crate::host::Window,
     level: isize,
     prevents_activation: bool,
 ) {
+    #[cfg(feature = "tauri-host")]
     use tauri::Manager;
     let window = window.clone();
     let handle = window.app_handle().clone();
@@ -141,7 +144,7 @@ pub(crate) fn set_window_level_and_activation(
 /// caller invokes it off-main instead of going through the dispatcher above.
 #[cfg(target_os = "macos")]
 fn apply_window_level_and_activation_on_main(
-    window: &tauri::WebviewWindow,
+    window: &crate::host::Window,
     level: isize,
     prevents_activation: bool,
 ) {
@@ -169,7 +172,7 @@ fn apply_window_level_and_activation_on_main(
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn set_window_level_and_activation(
-    _window: &tauri::WebviewWindow,
+    _window: &crate::host::Window,
     _level: isize,
     _prevents_activation: bool,
 ) {
@@ -193,7 +196,8 @@ pub(crate) struct PopoverSpec {
 }
 
 impl PopoverSpec {
-    fn window(&self, app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    fn window(&self, app: &crate::host::Context) -> Result<crate::host::Window, String> {
+        #[cfg(feature = "tauri-host")]
         use tauri::Manager;
         app.get_webview_window(self.label)
             .ok_or_else(|| format!("{} window is unavailable", self.label))
@@ -203,15 +207,15 @@ impl PopoverSpec {
     /// activation, focus, or visibility.
     fn resize_and_position(
         &self,
-        window: &tauri::WebviewWindow,
+        window: &crate::host::Window,
         frame: (f64, f64, f64, f64),
     ) -> Result<(), String> {
         let (x, y, width, height) = frame;
         window
-            .set_size(tauri::LogicalSize::new(width, height))
+            .set_size(crate::host::LogicalSize::new(width, height))
             .map_err(|_| format!("{} window could not be sized", self.label))?;
         window
-            .set_position(tauri::LogicalPosition::new(x, y))
+            .set_position(crate::host::LogicalPosition::new(x, y))
             .map_err(|_| format!("{} window could not be positioned", self.label))
     }
 
@@ -220,7 +224,7 @@ impl PopoverSpec {
     /// visible.
     pub(crate) fn reposition(
         &self,
-        app: &tauri::AppHandle,
+        app: &crate::host::Context,
         frame: (f64, f64, f64, f64),
     ) -> Result<(), String> {
         let window = self.window(app)?;
@@ -232,7 +236,7 @@ impl PopoverSpec {
     /// disable focus, apply this spec's cursor-event pass-through, then show.
     pub(crate) fn show(
         &self,
-        app: &tauri::AppHandle,
+        app: &crate::host::Context,
         frame: (f64, f64, f64, f64),
     ) -> Result<(), String> {
         let window = self.window(app)?;
@@ -251,7 +255,8 @@ impl PopoverSpec {
 
     /// Hide the window if it exists. Missing window is not an error — both
     /// callers treat "already gone" as already hidden.
-    pub(crate) fn hide(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    pub(crate) fn hide(&self, app: &crate::host::Context) -> Result<(), String> {
+        #[cfg(feature = "tauri-host")]
         use tauri::Manager;
         match app.get_webview_window(self.label) {
             Some(window) => window
@@ -265,10 +270,12 @@ impl PopoverSpec {
     /// changes — used once at startup so the window has a sane size before
     /// its first `show`. Errors are ignored, matching prior behavior: an
     /// initial-size failure is not worth surfacing since `show` sizes again.
-    pub(crate) fn apply_initial_size(&self, app: &tauri::AppHandle, width: f64, height: f64) {
+    #[cfg(feature = "tauri-host")]
+    pub(crate) fn apply_initial_size(&self, app: &crate::host::Context, width: f64, height: f64) {
+        #[cfg(feature = "tauri-host")]
         use tauri::Manager;
         if let Some(window) = app.get_webview_window(self.label) {
-            let _ = window.set_size(tauri::LogicalSize::new(width, height));
+            let _ = window.set_size(crate::host::LogicalSize::new(width, height));
         }
     }
 }

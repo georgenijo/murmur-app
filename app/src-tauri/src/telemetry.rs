@@ -1,6 +1,7 @@
 //! Structured telemetry: tracing subscriber with file + event-emitter layers.
 
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use murmur_core::events::{EventKind, EventSink};
 use std::collections::VecDeque;
 use std::io::Write;
@@ -9,7 +10,6 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
     mpsc, Arc, Mutex, OnceLock,
 };
-use tauri::Manager;
 
 mod key_identity;
 pub(crate) use key_identity::sanitize_persisted_line;
@@ -61,7 +61,7 @@ fn logs_dir() -> Option<PathBuf> {
     })
 }
 
-pub(crate) fn is_internal_bundle(app_handle: &tauri::AppHandle) -> bool {
+pub(crate) fn is_internal_bundle(app_handle: &crate::host::Context) -> bool {
     app_handle.config().identifier != crate::identity::PRODUCTION
 }
 
@@ -137,7 +137,7 @@ impl tracing::field::Visit for JsonVisitor {
 // ---------------------------------------------------------------------------
 
 pub struct TauriEmitterLayer {
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     buffer: Arc<Mutex<VecDeque<AppEvent>>>,
     jsonl_writer: QueuedLogSender,
 }
@@ -176,7 +176,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         };
 
         self.app_handle
-            .state::<crate::State>()
+            .services()
             .capture_health
             .observe(&app_event);
 
@@ -2507,7 +2507,7 @@ fn start_log_worker(
     (QueuedLogSender { sender, state }, worker)
 }
 
-pub fn init(app_handle: tauri::AppHandle) {
+pub fn init(app_handle: crate::host::Context) {
     use tracing_subscriber::prelude::*;
 
     let identifier = app_handle.config().identifier.clone();
@@ -2671,14 +2671,14 @@ pub fn clear_all_logs() -> Result<(), String> {
 // Tauri commands
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_event_history() -> Vec<AppEvent> {
     let buffer = get_event_buffer();
     let guard = buffer.lock().unwrap_or_else(|p| p.into_inner());
     guard.iter().cloned().collect()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn clear_event_history() {
     let buffer = get_event_buffer();
     let mut guard = buffer.lock().unwrap_or_else(|p| p.into_inner());

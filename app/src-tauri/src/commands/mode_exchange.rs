@@ -51,8 +51,8 @@ fn read_modes_file_at(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "Mode files must be valid UTF-8.".to_string())
 }
 
-#[tauri::command]
-pub fn read_modes_file(window: tauri::WebviewWindow, path: String) -> Result<String, String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn read_modes_file(window: crate::host::Window, path: String) -> Result<String, String> {
     require_main_window(window.label())?;
     read_modes_file_at(Path::new(&path))
 }

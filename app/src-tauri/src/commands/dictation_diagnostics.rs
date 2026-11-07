@@ -17,57 +17,57 @@ fn require_main_window(label: &str) -> Result<(), String> {
         .ok_or_else(|| "arm the next private capture from the main Murmur window".to_string())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn arm_next_dictation_diagnostic_capture(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<DictationCaptureArmStatusV1, String> {
     require_main_window(window.label())?;
     state.dictation_diagnostics.arm_next()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn disarm_next_dictation_diagnostic_capture(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<DictationCaptureArmStatusV1, String> {
     require_main_window(window.label())?;
     Ok(state.dictation_diagnostics.disarm())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn get_dictation_diagnostic_capture_status(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<DictationCaptureArmStatusV1, String> {
     require_diagnostics_window(window.label())?;
     Ok(state.dictation_diagnostics.arm_status())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn list_dictation_diagnostic_captures(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<Vec<DictationDiagnosticCaptureSummaryV1>, String> {
     require_diagnostics_window(window.label())?;
     state.dictation_diagnostics.list_captures()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn get_dictation_diagnostic_capture(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     capture_id: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<Option<DictationDiagnosticCaptureV1>, String> {
     require_diagnostics_window(window.label())?;
     state.dictation_diagnostics.get_capture(capture_id.trim())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) fn delete_dictation_diagnostic_capture(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     capture_id: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<(), String> {
     require_diagnostics_window(window.label())?;
     state
@@ -75,11 +75,11 @@ pub(crate) fn delete_dictation_diagnostic_capture(
         .delete_capture(capture_id.trim())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub(crate) async fn upload_dictation_diagnostic_capture(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     capture_id: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<(), String> {
     require_diagnostics_window(window.label())?;
     state

@@ -3,6 +3,7 @@ use crate::audio::{
 };
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use murmur_capture_helper_protocol::{
@@ -15,7 +16,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::Manager;
 
 const REPORT_SCHEMA_VERSION: u8 = 1;
 const MAX_CYCLES: u8 = 10;
@@ -357,7 +357,7 @@ impl CycleWaitBudget {
 }
 
 struct RunGuard {
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     benchmark_run_id: u64,
     coordinator: Arc<crate::benchmark::BenchmarkCoordinator>,
 }
@@ -365,7 +365,7 @@ struct RunGuard {
 impl Drop for RunGuard {
     fn drop(&mut self) {
         self.app
-            .state::<State>()
+            .services()
             .microphone_startup_benchmark
             .finish(self.benchmark_run_id);
         self.coordinator.finish();
@@ -373,7 +373,7 @@ impl Drop for RunGuard {
     }
 }
 
-fn require_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+fn require_main_window(window: &crate::host::Window) -> Result<(), String> {
     if window.label() == "main" {
         Ok(())
     } else {
@@ -709,7 +709,7 @@ fn report_is_cancelled(
 // explicit at call sites; bundling them would hide stale-run mistakes.
 #[allow(clippy::too_many_arguments)]
 fn publish_progress(
-    app: &tauri::AppHandle,
+    app: &crate::host::Context,
     run_id: &str,
     benchmark_run_id: u64,
     completed_cycles: u8,
@@ -741,11 +741,11 @@ fn publish_progress(
 }
 
 pub(crate) fn handle_audio_lifecycle(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     cycle_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    let state = app_handle.state::<State>();
+    let state = app_handle.services();
     let event = match event {
         AudioLifecycleEvent::StartupDiagnostic(diagnostic) => {
             Some(CycleEvent::Diagnostic(diagnostic))
@@ -775,7 +775,7 @@ pub(crate) fn handle_audio_lifecycle(
 // the production backend snapshot are intentionally separate inputs.
 #[allow(clippy::too_many_arguments)]
 fn run_cycles(
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     coordinator: Arc<crate::benchmark::BenchmarkCoordinator>,
     run_id: String,
     benchmark_run_id: u64,
@@ -793,7 +793,7 @@ fn run_cycles(
     let mut cycles = Vec::with_capacity(requested_cycles as usize);
 
     for cycle_number in 1..=requested_cycles {
-        let state = app.state::<State>();
+        let state = app.services();
         if state
             .microphone_startup_benchmark
             .is_cancelled(benchmark_run_id)
@@ -870,7 +870,7 @@ fn run_cycles(
                         &accumulator,
                     );
                     cancelled = app
-                        .state::<State>()
+                        .services()
                         .microphone_startup_benchmark
                         .is_cancelled(benchmark_run_id);
                     if cancelled {
@@ -920,7 +920,7 @@ fn run_cycles(
                 Ok(CycleEvent::Idle) => idle = true,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     cancelled = app
-                        .state::<State>()
+                        .services()
                         .microphone_startup_benchmark
                         .is_cancelled(benchmark_run_id);
                     let cancel_reason = if cancelled {
@@ -989,7 +989,7 @@ fn run_cycles(
     }
 
     let run_cancelled = app
-        .state::<State>()
+        .services()
         .microphone_startup_benchmark
         .is_cancelled(benchmark_run_id);
     let cancelled = report_is_cancelled(
@@ -1031,11 +1031,11 @@ fn run_cycles(
     Ok(report)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn run_microphone_startup_benchmark(
-    window: tauri::WebviewWindow,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     request: MicrophoneStartupBenchmarkRequest,
 ) -> Result<MicrophoneStartupBenchmarkReport, String> {
     require_main_window(&window)?;
@@ -1105,10 +1105,10 @@ pub async fn run_microphone_startup_benchmark(
     .map_err(|error| format!("Microphone startup benchmark task failed: {error}"))?
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn cancel_microphone_startup_benchmark(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
     run_id: String,
 ) -> Result<bool, String> {
     require_main_window(&window)?;
@@ -1340,9 +1340,9 @@ fn valid_semver_identifier(identifier: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn save_microphone_startup_benchmark_report(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     report: MicrophoneStartupBenchmarkReport,
     output_dir: String,
 ) -> Result<String, String> {

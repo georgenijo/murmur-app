@@ -1,4 +1,5 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::microphone_signal::{
     SignalVerification, SignalVerificationResult, VERIFICATION_COOLDOWN,
 };
@@ -8,7 +9,6 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tauri::Manager;
 use tokio::sync::Notify;
 
 pub(crate) const NO_SIGNAL_RMS_THRESHOLD: f32 = 0.001;
@@ -607,7 +607,7 @@ fn samples_for_duration(sample_rate: u32, duration: Duration) -> usize {
 }
 
 fn publish_vad_decision(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     preview_id: u64,
     sensitivity: u32,
     decision: PreviewVadDecision,
@@ -623,22 +623,25 @@ fn publish_vad_decision(
     );
 }
 
-pub(crate) fn can_schedule_vad_analysis(app_handle: &tauri::AppHandle, preview_id: u64) -> bool {
+pub(crate) fn can_schedule_vad_analysis(
+    app_handle: &crate::host::Context,
+    preview_id: u64,
+) -> bool {
     app_handle
-        .state::<crate::State>()
+        .services()
         .app_state
         .microphone_preview
         .can_begin_vad_analysis(preview_id)
 }
 
 pub(crate) fn schedule_vad_analysis(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     preview_id: u64,
     samples: Vec<f32>,
     sample_rate: u32,
 ) {
     let configuration = {
-        let state = app_handle.state::<crate::State>();
+        let state = app_handle.services();
         state
             .app_state
             .microphone_preview
@@ -647,7 +650,7 @@ pub(crate) fn schedule_vad_analysis(
     let Some((sensitivity, revision)) = configuration else {
         return;
     };
-    drop(tauri::async_runtime::spawn_blocking(move || {
+    drop(crate::host::runtime::spawn_blocking(move || {
         let decision = match crate::vad::vad_model_path().filter(|_| crate::vad::vad_model_exists())
         {
             Some(model_path) => {
@@ -663,7 +666,7 @@ pub(crate) fn schedule_vad_analysis(
             None => PreviewVadDecision::Unavailable,
         };
         let should_emit = {
-            let state = app_handle.state::<crate::State>();
+            let state = app_handle.services();
             state
                 .app_state
                 .microphone_preview

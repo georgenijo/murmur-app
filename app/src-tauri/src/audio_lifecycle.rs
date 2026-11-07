@@ -352,7 +352,7 @@ trait LifecycleSink: Send + Sync + 'static {
     fn invalidate_input_health(&self, device_id: Option<&str>);
     fn notify(
         &self,
-        app_handle: Option<&tauri::AppHandle>,
+        app_handle: Option<&crate::host::Context>,
         owner: AudioOwner,
         event: AudioLifecycleEvent,
     );
@@ -367,7 +367,7 @@ impl LifecycleSink for ProductionLifecycleSink {
 
     fn notify(
         &self,
-        app_handle: Option<&tauri::AppHandle>,
+        app_handle: Option<&crate::host::Context>,
         owner: AudioOwner,
         event: AudioLifecycleEvent,
     ) {
@@ -413,7 +413,7 @@ struct StartRequest {
     gesture: gesture::StartGesture,
     caller_alive: Arc<AtomicBool>,
     owner: AudioOwner,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<crate::host::Context>,
     device_id: Option<String>,
     origin: String,
     wait_until_ready: bool,
@@ -476,7 +476,7 @@ struct Attempt {
     probe_deadline: Option<Instant>,
     owner: AudioOwner,
     device_id: Option<String>,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<crate::host::Context>,
     origin: String,
     phase: AttemptPhase,
     accepted_at: Instant,
@@ -2116,7 +2116,7 @@ fn report_cleanup_stalled(current: &mut Attempt, sink: &dyn LifecycleSink, publi
 
 fn send_start(
     owner: AudioOwner,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<crate::host::Context>,
     device_id: Option<String>,
     origin: &str,
     wait_until_ready: bool,
@@ -2134,7 +2134,7 @@ fn send_start(
 
 fn send_start_with_permit(
     owner: AudioOwner,
-    app_handle: Option<tauri::AppHandle>,
+    app_handle: Option<crate::host::Context>,
     device_id: Option<String>,
     origin: &str,
     wait_until_ready: bool,
@@ -2197,7 +2197,7 @@ fn await_start_response(
 }
 
 pub(crate) fn start_dictation_recording(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     device_id: Option<String>,
     recording_id: u64,
     origin: &str,
@@ -2215,7 +2215,7 @@ pub(crate) fn start_dictation_recording(
 }
 
 pub(crate) fn start_preview_recording(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     device_id: Option<String>,
     preview_id: u64,
 ) -> Result<(), AudioStartError> {
@@ -2229,7 +2229,7 @@ pub(crate) fn start_preview_recording(
 }
 
 pub(crate) fn start_automatic_preview_recording(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     device_id: String,
     preview_id: u64,
     permit: Arc<crate::smart_auto_probe::ProbePermit>,
@@ -2246,7 +2246,7 @@ pub(crate) fn start_automatic_preview_recording(
 }
 
 pub(crate) fn start_microphone_benchmark_recording(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     device_id: Option<String>,
     cycle_id: u64,
 ) -> Result<(), AudioStartError> {
@@ -2261,7 +2261,7 @@ pub(crate) fn start_microphone_benchmark_recording(
 
 #[cfg(feature = "internal-benchmark")]
 pub(crate) fn start_corpus_recording(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     device_id: Option<String>,
     capture_id: u64,
 ) -> Result<(), String> {
@@ -3740,7 +3740,7 @@ mod tests {
         fn invalidate_input_health(&self, _: Option<&str>) {}
         fn notify(
             &self,
-            _: Option<&tauri::AppHandle>,
+            _: Option<&crate::host::Context>,
             owner: AudioOwner,
             event: AudioLifecycleEvent,
         ) {
@@ -4025,7 +4025,7 @@ mod tests {
 
         fn notify(
             &self,
-            _app_handle: Option<&tauri::AppHandle>,
+            _app_handle: Option<&crate::host::Context>,
             owner: AudioOwner,
             event: AudioLifecycleEvent,
         ) {

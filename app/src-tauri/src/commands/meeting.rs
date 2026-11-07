@@ -107,12 +107,12 @@ fn meeting_conflict(state: &State) -> Option<&'static str> {
     None
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn start_meeting(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     request: StartMeetingRequest,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<MeetingSession, String> {
     crate::shutdown::require_running()?;
     crate::audio_lifecycle::retire_standby();
@@ -301,31 +301,31 @@ mod admission_tests {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn stop_meeting(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<(), String> {
     let _transition = state.app_state.recording_transition.lock().await;
     state.meetings.stop(&app)
 }
 
-#[tauri::command]
-pub fn get_meeting_status(state: tauri::State<'_, State>) -> MeetingRuntimeStatus {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn get_meeting_status(state: crate::host::StateRef<'_, State>) -> MeetingRuntimeStatus {
     state.meetings.status()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_system_audio_permission_status(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> SystemAudioPermissionState {
     state.meetings.permission_status()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn request_system_audio_permission(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<SystemAudioAccess, String> {
     {
         let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
@@ -339,7 +339,7 @@ pub async fn request_system_audio_permission(
         state.app_state.meeting_active.store(true, Ordering::SeqCst);
     }
     let coordinator = state.meetings.clone();
-    let joined = tauri::async_runtime::spawn_blocking(move || coordinator.request_permission())
+    let joined = crate::host::runtime::spawn_blocking(move || coordinator.request_permission())
         .await
         .map_err(|_| "The System Audio permission request stopped unexpectedly.".to_string());
     state
@@ -356,17 +356,17 @@ pub async fn request_system_audio_permission(
     result
 }
 
-#[tauri::command]
-pub fn get_meeting_store_status(state: tauri::State<'_, State>) -> MeetingStoreStatus {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn get_meeting_store_status(state: crate::host::StateRef<'_, State>) -> MeetingStoreStatus {
     state.meeting_store.status()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn list_meetings(
     query: Option<String>,
     offset: Option<u64>,
     limit: Option<u32>,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<MeetingPage, String> {
     state.meeting_store.repository()?.list_sessions(
         query.as_deref(),
@@ -375,25 +375,28 @@ pub fn list_meetings(
     )
 }
 
-#[tauri::command]
-pub fn get_meeting(id: String, state: tauri::State<'_, State>) -> Result<MeetingWorkspace, String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn get_meeting(
+    id: String,
+    state: crate::host::StateRef<'_, State>,
+) -> Result<MeetingWorkspace, String> {
     state.meeting_store.repository()?.workspace(id.trim())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn save_meeting_metadata(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     request: SaveMeetingMetadataRequest,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<MeetingWorkspace, String> {
     require_main_window(window.label())?;
     state.meeting_store.repository()?.save_metadata(request)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn save_meeting_review(
     request: SaveMeetingReviewRequest,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<MeetingWorkspace, String> {
     let id = request.session_id.trim();
     if state.meetings.status().session_id.as_deref() == Some(id) && state.meetings.is_active() {
@@ -402,22 +405,22 @@ pub fn save_meeting_review(
     state.meeting_store.repository()?.save_review(request)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_meeting_review_export(
     id: String,
     format: MeetingReviewExportFormat,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<String, String> {
     let workspace = state.meeting_store.repository()?.workspace(id.trim())?;
     crate::meeting_review::render_export(&workspace, format)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn save_meeting_review_export(
     id: String,
     format: MeetingReviewExportFormat,
     path: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<u64, String> {
     let expected = format.extension();
     if std::path::Path::new(&path)
@@ -432,12 +435,12 @@ pub fn save_meeting_review_export(
     crate::commands::export::write_text_export(std::path::Path::new(&path), &contents)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn delete_meeting(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     id: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<(), String> {
     require_main_window(window.label())?;
     let id = id.trim();
@@ -449,11 +452,11 @@ pub fn delete_meeting(
     state.meeting_store.repository()?.delete_session(id)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn delete_all_meetings(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, State>,
+    app: crate::host::Context,
+    window: crate::host::Window,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<(), String> {
     require_main_window(window.label())?;
     if state.meetings.is_active() {
@@ -465,13 +468,13 @@ pub fn delete_all_meetings(
     state.meeting_store.repository()?.delete_all()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn prune_meetings(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     retention_days: Option<u32>,
     max_sessions: u32,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<u64, String> {
     require_main_window(window.label())?;
     state.meeting_store.repository()?.prune(
@@ -481,9 +484,9 @@ pub fn prune_meetings(
     )
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn rename_meeting_remote_speaker(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
     session_id: String,
     speaker_id: u32,
     label: String,

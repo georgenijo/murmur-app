@@ -86,13 +86,13 @@ impl Rect {
 
 /// The pill's display in global logical points.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct PillDisplay {
-    pub(crate) left: f64,
-    pub(crate) top: f64,
-    pub(crate) right: f64,
-    pub(crate) bottom: f64,
+pub struct PillDisplay {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
     /// Bottom of the work area: where the pill rests with the Dock clear.
-    pub(crate) work_bottom: f64,
+    pub work_bottom: f64,
 }
 
 impl PillDisplay {

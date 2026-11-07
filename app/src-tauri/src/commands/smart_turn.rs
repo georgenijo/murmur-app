@@ -45,7 +45,7 @@ pub struct SmartTurnModelStatus {
     pub size_bytes: u64,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn smart_turn_model_status() -> SmartTurnModelStatus {
     let state = if smart_turn::model_installed() {
         SmartTurnModelState::Ready
@@ -73,7 +73,7 @@ impl Drop for DownloadingFlag {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn download_smart_turn_model() -> Result<(), String> {
     let _single_flight = DOWNLOAD_LOCK.lock().await;
     if smart_turn::model_installed() {
@@ -161,7 +161,7 @@ async fn stream_verified_download(dest: &std::path::Path) -> Result<(u64, String
     Ok((received, format!("{:x}", hasher.finalize())))
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn remove_smart_turn_model() -> Result<(), String> {
     let _single_flight = DOWNLOAD_LOCK.lock().await;
     tokio::task::spawn_blocking(smart_turn::unload)
@@ -209,9 +209,9 @@ fn current_recording(state: &crate::state::AppState) -> Option<u64> {
 }
 
 /// Score whether the speaker has finished, for the recording in flight now.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn check_smart_turn(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<SmartTurnCheckResult, String> {
     let Some(recording_id) = current_recording(&state.app_state) else {
         return Ok(SmartTurnCheckResult::NotRecording);

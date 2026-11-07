@@ -4,11 +4,11 @@ use crate::correct_and_teach::{
 use crate::knowledge_store::{KnowledgeEntry, KnowledgeScope};
 use crate::{MutexExt, State};
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn propose_learned_correction(
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     request: CorrectionProposalRequest,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> CorrectionProposalOutcome {
     let Ok(_producer) = crate::shutdown::WriterPermit::acquire() else {
         return CorrectionProposalOutcome::Unsafe {
@@ -60,11 +60,11 @@ pub fn propose_learned_correction(
     outcome
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn propose_specific_learned_correction(
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     request: SpecificCorrectionProposalRequest,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> CorrectionProposalOutcome {
     let Ok(_producer) = crate::shutdown::WriterPermit::acquire() else {
         return CorrectionProposalOutcome::Unsafe {
@@ -119,12 +119,12 @@ pub fn propose_specific_learned_correction(
     outcome
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn confirm_learned_correction(
-    app: tauri::AppHandle,
+    app: crate::host::Context,
     proposal_id: u64,
     scope: KnowledgeScope,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<KnowledgeEntry, String> {
     let _producer = crate::shutdown::WriterPermit::acquire()?;
     let pending = state.correct_and_teach.confirmed(proposal_id, &scope)?;
@@ -153,7 +153,10 @@ pub fn confirm_learned_correction(
     Ok(entry)
 }
 
-#[tauri::command]
-pub fn discard_learned_correction_proposal(proposal_id: u64, state: tauri::State<'_, State>) {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn discard_learned_correction_proposal(
+    proposal_id: u64,
+    state: crate::host::StateRef<'_, State>,
+) {
     state.correct_and_teach.discard(proposal_id);
 }

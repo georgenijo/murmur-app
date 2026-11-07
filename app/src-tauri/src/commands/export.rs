@@ -161,7 +161,7 @@ where
 
 /// Write a user-authored text export to a path the user chose in the native
 /// save dialog. Returns the number of bytes written.
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn save_text_export(path: String, contents: String) -> Result<u64, String> {
     let bytes = write_text_export(Path::new(&path), &contents)?;
     // Content-free: how much was exported, never what.

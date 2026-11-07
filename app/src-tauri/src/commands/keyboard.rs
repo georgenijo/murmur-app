@@ -1,8 +1,8 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::{injector, keyboard, MutexExt};
 use murmur_core::events::{EventKind, EventSink};
 use std::sync::Mutex;
-use tauri::Manager;
 
 #[derive(Default)]
 struct ListenerRegistration(Option<(String, String)>);
@@ -32,9 +32,9 @@ fn validate_dictation_key(hotkey: &str) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn start_keyboard_listener(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     hotkey: String,
     mode: String,
 ) -> Result<(), String> {
@@ -65,7 +65,7 @@ pub fn start_keyboard_listener(
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn stop_keyboard_listener() {
     let mut registration = REGISTRATION.lock_or_recover();
     registration.0 = None;
@@ -73,8 +73,8 @@ pub fn stop_keyboard_listener() {
     tracing::info!(target: "keyboard", "Keyboard listener stopped: accessibility={}", injector::is_accessibility_enabled());
 }
 
-#[tauri::command]
-pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn update_keyboard_key(app_handle: crate::host::Context, hotkey: String) -> Result<(), String> {
     validate_dictation_key(&hotkey)?;
     let mut registration = REGISTRATION.lock_or_recover();
     let should_stop = keyboard::set_target_key(&hotkey);
@@ -91,13 +91,16 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Resu
     Ok(())
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_keyboard_recording(recording: bool) {
     keyboard::set_recording_state(recording);
 }
 
-#[tauri::command]
-pub async fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> Result<(), String> {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub async fn set_app_disabled(
+    app_handle: crate::host::Context,
+    disabled: bool,
+) -> Result<(), String> {
     let admission = crate::shutdown::WriterPermit::acquire()?;
     crate::shutdown::source_call(move || {
         let _admission = admission;
@@ -108,14 +111,14 @@ pub async fn set_app_disabled(app_handle: tauri::AppHandle, disabled: bool) -> R
 }
 
 pub(crate) fn apply_app_disabled(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     disabled: bool,
 ) -> Result<(), String> {
     if disabled {
         crate::smart_auto_probe::preempt();
         crate::audio_lifecycle::retire_standby();
     }
-    let state = app_handle.state::<crate::State>();
+    let state = app_handle.services();
     let reenabled = update_app_disabled(&state.app_state, disabled);
     if reenabled {
         crate::commands::recording::request_idle_model_preparation(&app_handle);
@@ -139,20 +142,26 @@ pub(crate) fn update_app_disabled(state: &crate::state::AppState, disabled: bool
     was_disabled && !disabled
 }
 
-static DISABLED_MENU_ITEM: std::sync::OnceLock<tauri::menu::CheckMenuItem<tauri::Wry>> =
-    std::sync::OnceLock::new();
+#[cfg(feature = "tauri-host")]
+static DISABLED_MENU_ITEM: std::sync::OnceLock<
+    tauri::menu::CheckMenuItem<crate::host::DefaultRuntime>,
+> = std::sync::OnceLock::new();
 
 /// Called once from setup so the tray's "Disable Murmur" check item can be
 /// kept in sync regardless of which surface flipped the state.
-pub(crate) fn register_tray_disabled_item(item: tauri::menu::CheckMenuItem<tauri::Wry>) {
+#[cfg(feature = "tauri-host")]
+pub(crate) fn register_tray_disabled_item(
+    item: tauri::menu::CheckMenuItem<crate::host::DefaultRuntime>,
+) {
     let _ = DISABLED_MENU_ITEM.set(item);
 }
 
-fn sync_tray_disabled_item(app: &tauri::AppHandle) {
+#[cfg(feature = "tauri-host")]
+fn sync_tray_disabled_item(app: &crate::host::Context) {
     if DISABLED_MENU_ITEM.get().is_none() {
         return;
     }
-    if let Some(context) = app.try_state::<murmur_core::context::AppContext>() {
+    if let Some(context) = app.try_context() {
         // Never synchronously wait for AppKit while holding configuration
         // ownership: a main-thread tray callback may need that same fence.
         let _ = context.main_thread.dispatch(Box::new(|| {
@@ -163,14 +172,14 @@ fn sync_tray_disabled_item(app: &tauri::AppHandle) {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_app_disabled() -> bool {
     keyboard::is_app_disabled()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn set_paste_last_shortcut(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     shortcut: Option<String>,
 ) -> Result<(), String> {
     let Some(shortcut) = shortcut else {
@@ -229,3 +238,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(not(feature = "tauri-host"))]
+fn sync_tray_disabled_item(_app: &crate::host::Context) {}

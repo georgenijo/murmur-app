@@ -11,9 +11,11 @@
 //! The existing partial API provides no authoritative stable-word boundary.
 
 use crate::commands::native_window::PopoverSpec;
+use crate::host::ServiceAccess;
 use crate::state::DictationStatus;
-use crate::{MutexExt, State};
+use crate::MutexExt;
 use std::sync::atomic::Ordering;
+#[cfg(feature = "tauri-host")]
 use tauri::Manager;
 
 const WIDTH: f64 = 460.0;
@@ -33,7 +35,7 @@ const POPOVER: PopoverSpec = PopoverSpec {
 /// The anchor is deliberately the primary monitor, matching the overlay's
 /// selected display. Both placements follow the actual applied overlay frame:
 /// the preview sits below the notch island or above the bottom pill.
-fn frame(app: &tauri::AppHandle, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
+fn frame(app: &crate::host::Context, notch_h: Option<f64>) -> (f64, f64, f64, f64) {
     let top_inset = top_inset_for(notch_h);
     let monitor = app.primary_monitor().ok().flatten();
     match monitor {
@@ -59,14 +61,14 @@ fn top_inset_for(notch_h: Option<f64>) -> f64 {
     super::overlay::preview_fallback_inset(notch_h)
 }
 
-fn notch_height(app: &tauri::AppHandle) -> Option<f64> {
-    app.try_state::<crate::State>()
+fn notch_height(app: &crate::host::Context) -> Option<f64> {
+    app.try_services()
         .and_then(|state| state.notch_info.lock_or_recover().map(|info| info.height()))
 }
 
 /// Show the preview under the notch. Idempotent: repositioning a window that is
 /// already visible is how a display change is absorbed.
-pub(crate) fn show_internal(app: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn show_internal(app: &crate::host::Context) -> Result<(), String> {
     POPOVER.show(app, frame(app, notch_height(app)))?;
     refit_material(app);
     Ok(())
@@ -74,7 +76,7 @@ pub(crate) fn show_internal(app: &tauri::AppHandle) -> Result<(), String> {
 
 /// A clamped window height moves the card's bottom edge: re-fit its material
 /// in the same main-thread turn as the resize.
-fn refit_material(app: &tauri::AppHandle) {
+fn refit_material(app: &crate::host::Context) {
     #[cfg(target_os = "macos")]
     super::overlay_material::refit(app, super::overlay_material::LIVE_WORDS_LABEL);
     #[cfg(not(target_os = "macos"))]
@@ -84,7 +86,7 @@ fn refit_material(app: &tauri::AppHandle) {
 /// Keep an already-visible preview attached to the overlay as its native frame
 /// changes. This never shows a hidden window, so recording generation remains
 /// owned by `show_dictation_preview`/the Rust ticker.
-pub(crate) fn follow_overlay_if_visible(app: &tauri::AppHandle) {
+pub(crate) fn follow_overlay_if_visible(app: &crate::host::Context) {
     let Some(window) = app.get_webview_window(POPOVER.label) else {
         return;
     };
@@ -139,9 +141,9 @@ fn can_hide(app_state: &crate::state::AppState, recording_id: u64) -> bool {
     app_state.recording_id.load(Ordering::SeqCst) == recording_id
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn show_dictation_preview(
-    window: tauri::WebviewWindow,
+    window: crate::host::Window,
     recording_id: u64,
 ) -> Result<(), String> {
     if window.label() != "dictation-preview" {
@@ -152,7 +154,7 @@ pub async fn show_dictation_preview(
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
         // Validate at presentation time, not before a queued native mutation.
-        let state = dispatch_app.state::<State>();
+        let state = dispatch_app.services();
         let result = if can_show(&state.app_state, recording_id) {
             show_internal(&dispatch_app)
         } else {
@@ -173,12 +175,12 @@ pub async fn show_dictation_preview(
         .map_err(|_| "dictation preview presentation was cancelled".to_string())?
 }
 
-pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
+pub(crate) fn hide_for_recording(app: &crate::host::Context, recording_id: u64) {
     let dispatch_app = app.clone();
     let _ = app.run_on_main_thread(move || {
         // A late ticker must not hide its successor, including after this
         // operation spent time queued on the native main thread.
-        if !can_hide(&dispatch_app.state::<State>().app_state, recording_id) {
+        if !can_hide(&dispatch_app.services().app_state, recording_id) {
             return;
         }
         let result = POPOVER.hide(&dispatch_app);
@@ -193,7 +195,8 @@ pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
     });
 }
 
-pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
+#[cfg(feature = "tauri-host")]
+pub(crate) fn apply_initial_size(app: &crate::host::Context) {
     POPOVER.apply_initial_size(app, WIDTH, HEIGHT);
 }
 

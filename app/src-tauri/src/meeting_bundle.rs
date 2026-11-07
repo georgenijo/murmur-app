@@ -31,6 +31,7 @@
 //! single-slot bundle permit instead of the two-slot playback pool, so
 //! two-channel playback keeps working while a bundle is being written.
 
+use crate::host::ServiceAccess;
 use crate::meeting_audio::{
     audio_file_len, current_audio_revision, read_audio_whole, AudioChunk, AudioCursor,
     AudioManifest, AudioUnavailableReason, PlaybackChannel, AUDIO_UNAVAILABLE, BUNDLE_CAPTURE_BUSY,
@@ -43,7 +44,6 @@ use rusqlite::Connection;
 use serde::Serialize;
 use std::io::{Seek, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Manager;
 
 pub const MEETING_BUNDLE_SCHEMA: &str = "murmur.meeting-bundle.v1";
 /// Total retained audio one bundle may carry. Larger meetings can still export
@@ -377,12 +377,12 @@ impl<'a> BundleOperation<'a> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn get_meeting_bundle_preview(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     id: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<BundlePreview, String> {
     crate::meeting_audio::require_main_window(window.label())?;
     if crate::meeting_audio::capture_busy(&state) {
@@ -391,9 +391,9 @@ pub async fn get_meeting_bundle_preview(
     let repository = state.meeting_store.repository()?;
     let permit = BundlePermit::acquire()?;
     let revision = current_audio_revision();
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::host::runtime::spawn_blocking(move || {
         let _permit = permit;
-        let busy = || crate::meeting_audio::capture_busy(&app.state::<State>());
+        let busy = || crate::meeting_audio::capture_busy(&app.services());
         let operation = BundleOperation::open(&repository, revision, &busy)?;
         operation.preview(id.trim())
     })
@@ -401,14 +401,14 @@ pub async fn get_meeting_bundle_preview(
     .map_err(|_| AUDIO_UNAVAILABLE.to_string())?
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn save_meeting_bundle_export(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    app: crate::host::Context,
+    window: crate::host::Window,
     id: String,
     format: MeetingReviewExportFormat,
     path: String,
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Result<BundleReceipt, String> {
     crate::meeting_audio::require_main_window(window.label())?;
     let path = std::path::PathBuf::from(path);
@@ -419,9 +419,9 @@ pub async fn save_meeting_bundle_export(
     let repository = state.meeting_store.repository()?;
     let permit = BundlePermit::acquire()?;
     let revision = current_audio_revision();
-    let receipt = tauri::async_runtime::spawn_blocking(move || {
+    let receipt = crate::host::runtime::spawn_blocking(move || {
         let _permit = permit;
-        let busy = || crate::meeting_audio::capture_busy(&app.state::<State>());
+        let busy = || crate::meeting_audio::capture_busy(&app.services());
         let operation = BundleOperation::open(&repository, revision, &busy)?;
         let workspace = repository.workspace(id.trim())?;
         publish_bundle(&operation, &workspace, format, &path)

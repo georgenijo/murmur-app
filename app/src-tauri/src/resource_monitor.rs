@@ -96,7 +96,7 @@ pub fn sample_resources() -> crate::performance_metrics::ResourceSampleV1 {
 static IDLE_TIMEOUT: Mutex<Option<IdleState>> = Mutex::new(None);
 
 struct IdleState {
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
 }
 
 fn should_release_model(
@@ -110,15 +110,15 @@ fn should_release_model(
     })
 }
 
-pub fn set_idle_timeout(app_handle: tauri::AppHandle) {
+pub fn set_idle_timeout(app_handle: crate::host::Context) {
     if let Ok(mut guard) = IDLE_TIMEOUT.lock() {
         *guard = Some(IdleState { app_handle });
     }
 }
 
 fn check_idle_timeout() {
+    use crate::host::ServiceAccess;
     use crate::MutexExt;
-    use tauri::Manager;
 
     let handle = {
         let guard = match IDLE_TIMEOUT.lock() {
@@ -131,7 +131,7 @@ fn check_idle_timeout() {
         }
     };
 
-    let state = handle.state::<crate::State>();
+    let state = handle.services();
     if state.benchmark.is_running()
         || state
             .app_state
@@ -182,19 +182,19 @@ fn check_idle_timeout() {
 // Heartbeat task: periodic telemetry + idle timeout check
 // ---------------------------------------------------------------------------
 
-pub fn start_heartbeat(app_handle: tauri::AppHandle) {
-    use tauri::Manager;
+pub fn start_heartbeat(app_handle: crate::host::Context) {
+    use crate::host::ServiceAccess;
 
     set_idle_timeout(app_handle.clone());
 
-    tauri::async_runtime::spawn(async move {
+    crate::host::runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         let mut ticks = 0_u64;
         loop {
             interval.tick().await;
             ticks = ticks.saturating_add(1);
 
-            let state = app_handle.state::<crate::State>();
+            let state = app_handle.services();
             let sample = sample_resources();
             if let Err(error) = state.performance.insert_resource_sample(&sample) {
                 tracing::warn!(
@@ -227,7 +227,7 @@ pub fn start_heartbeat(app_handle: tauri::AppHandle) {
 // Tauri command
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_resource_usage() -> crate::performance_metrics::ResourceSampleV1 {
     sample_resources()
 }

@@ -15,6 +15,7 @@
 //! Both modes reject trigger-key combos (for example Shift+A or F8+A).
 
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::MutexExt;
 use murmur_core::events::{EventKind, EventSink};
 use murmur_core::keyboard::*;
@@ -24,7 +25,6 @@ use rdev::set_is_main_thread;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::Manager;
 
 // -- Shared types --
 
@@ -34,7 +34,7 @@ fn should_surface_hotkey_rejection(reason: RejectionReason, mode: DetectorMode) 
 }
 
 fn publish_hotkey_rejection(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     reason: RejectionReason,
     mode: DetectorMode,
 ) {
@@ -57,7 +57,7 @@ fn current_gesture() -> Option<Candidate> {
         .as_ref()
         .and_then(|d| d.candidate)
 }
-fn publish_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
+fn publish_hold_start(handle: &crate::host::Context, candidate: Option<Candidate>) {
     let token = candidate.map(|c| crate::audio_lifecycle::gesture::publish(c, true));
     crate::dictation_control::send(
         handle,
@@ -68,7 +68,7 @@ fn publish_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
         serde_json::json!({ "gestureToken": token }),
     );
 }
-fn publish_dictation_toggle(handle: &tauri::AppHandle) {
+fn publish_dictation_toggle(handle: &crate::host::Context) {
     let candidate = DOUBLE_TAP_DETECTOR
         .lock_or_recover()
         .as_mut()
@@ -97,7 +97,7 @@ pub(crate) fn listener_generation() -> u64 {
 /// be admitted, microphone access is already granted (never prompting), and
 /// no capture or standby owns the microphone.
 fn apply_prepare_signal(
-    handle: &tauri::AppHandle,
+    handle: &crate::host::Context,
     signal: PrepareSignal,
     mode: DetectorMode,
     listener_generation: u64,
@@ -116,8 +116,8 @@ fn apply_prepare_signal(
                 configuration_generation: crate::audio::prepare::configuration_generation(),
             };
             let handle = handle.clone();
-            tauri::async_runtime::spawn(async move {
-                let Some(state) = handle.try_state::<crate::State>() else {
+            crate::host::runtime::spawn(async move {
+                let Some(state) = handle.try_services() else {
                     return;
                 };
                 // Same transition as toolbar, meeting, and
@@ -161,7 +161,7 @@ fn apply_prepare_signal(
 }
 
 fn schedule_second_tap_expiry(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     mode: DetectorMode,
     listener_generation: u64,
     started_at: Instant,
@@ -250,7 +250,7 @@ pub const DICTATION_KEY_IDS: &[&str] = &[
 
 /// Whether `hotkey` is one of the ids reserved for the dictation listener
 /// (see `DICTATION_KEY_IDS`). Pure so it's unit-testable without a listener
-/// or `tauri::AppHandle`.
+/// or `crate::host::Context`.
 pub fn is_dictation_key_id(hotkey: &str) -> bool {
     DICTATION_KEY_IDS.contains(&hotkey)
 }
@@ -638,12 +638,12 @@ fn is_hold_release(event_type: &EventType) -> bool {
 
 /// Stamp the native release behind a `hold-down-stop` for the live recording
 /// generation, so the stop can time the hotkey-to-invoke hop (#826).
-fn stamp_hold_release(handle: &tauri::AppHandle, event_type: &EventType) {
+fn stamp_hold_release(handle: &crate::host::Context, event_type: &EventType) {
     let released_at = Instant::now();
     if !is_hold_release(event_type) {
         return;
     }
-    if let Some(state) = handle.try_state::<crate::State>() {
+    if let Some(state) = handle.try_services() {
         crate::hotkey_release::record(
             state.app_state.recording_id.load(Ordering::SeqCst),
             released_at,
@@ -652,8 +652,8 @@ fn stamp_hold_release(handle: &tauri::AppHandle, event_type: &EventType) {
 }
 
 /// A dictation is in flight that the current hold did not start.
-fn dictation_in_flight(handle: &tauri::AppHandle) -> bool {
-    handle.try_state::<crate::State>().is_some_and(|state| {
+fn dictation_in_flight(handle: &crate::host::Context) -> bool {
+    handle.try_services().is_some_and(|state| {
         matches!(
             state.app_state.dictation.lock_or_recover().status,
             crate::state::DictationStatus::Starting
@@ -666,7 +666,7 @@ fn dictation_in_flight(handle: &tauri::AppHandle) -> bool {
 /// listener context changed. Both mode promotes over a running recording as a
 /// physical-hold mark; Hold-Down mode always publishes `hold-down-start`.
 fn schedule_hold_promotion(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     mode: DetectorMode,
     listener_generation: u64,
     press_id: u64,
@@ -932,7 +932,7 @@ pub(crate) fn dictation_listener_active() -> bool {
 /// If already running, just updates the target key, mode, and re-enables.
 ///
 /// `mode` should be `"double_tap"`, `"hold_down"`, or `"both"`.
-pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
+pub fn start_listener(app_handle: crate::host::Context, hotkey: &str, mode: &str) {
     crate::audio_lifecycle::gesture::clear_pending();
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
@@ -1026,7 +1026,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
 /// dictation listener (`start_listener`) and the transform hotkey
 /// (`start_transform_listener`) call this; whichever runs first wins the
 /// spawn, the other is a no-op via the `compare_exchange` guard.
-pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
+pub(crate) fn ensure_listener_thread_spawned(app_handle: crate::host::Context) {
     // Only spawn the thread once
     if LISTENER_THREAD_SPAWNED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1391,7 +1391,7 @@ let _ = handle.events().publish(EventKind::HoldDownStop, ());
                     .events()
                     .publish(EventKind::KeyboardListenerError, format!("{:?}", e));
                 let retry_handle = error_handle.clone();
-                tauri::async_runtime::spawn(async move {
+                crate::host::runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     crate::dictation_control::refresh(&retry_handle).await;
                 });
@@ -1451,7 +1451,7 @@ fn configure_paste_last_shortcut(shortcut: Option<&str>) -> Result<(), String> {
 }
 
 pub fn start_paste_last_listener(
-    app_handle: tauri::AppHandle,
+    app_handle: crate::host::Context,
     shortcut: &str,
 ) -> Result<(), String> {
     configure_paste_last_shortcut(Some(shortcut))?;

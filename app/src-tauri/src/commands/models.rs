@@ -1,4 +1,5 @@
 use crate::events::EventsExt;
+use crate::host::ServiceAccess;
 use crate::model_download::{self, Cancellation};
 use crate::model_runtime::{self, InstallKind, InstallState};
 use crate::transcriber::{self, TranscriptionBackend};
@@ -7,7 +8,6 @@ use crate::{MutexExt, State};
 use murmur_core::events::{EventKind, EventSink};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
-use tauri::Manager;
 
 static VAD_INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -112,7 +112,7 @@ impl Drop for InstallGuard {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn cancel_model_download(model_name: String, request_id: String) -> Result<(), String> {
     model_runtime::model_definition(&model_name)?;
     if request_id.is_empty() || request_id.len() > 128 {
@@ -197,7 +197,7 @@ fn install_kind_code(kind: InstallKind) -> &'static str {
 }
 
 fn publish_download_progress(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     context: DownloadProgressContext<'_>,
     received: u64,
     total: u64,
@@ -252,33 +252,36 @@ fn debug_coreml_scenario_reports_success_without_cache() -> bool {
     false
 }
 
-#[tauri::command]
-pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn check_model_exists(state: crate::host::StateRef<'_, State>) -> bool {
     state.app_state.model_runtime.any_model_installed()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_model_runtime_catalog(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
 ) -> Vec<model_runtime::ModelRuntimeSnapshot> {
     state.app_state.model_runtime.catalog()
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_model_runtime_status(
-    state: tauri::State<'_, State>,
+    state: crate::host::StateRef<'_, State>,
     model_name: String,
 ) -> Result<model_runtime::ModelRuntimeSnapshot, String> {
     state.app_state.model_runtime.snapshot(&model_name)
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub fn get_model_hardware_guidance() -> crate::model_hardware_guidance::ModelHardwareGuidance {
     crate::model_hardware_guidance::get()
 }
 
-#[tauri::command]
-pub fn check_specific_model_exists(state: tauri::State<'_, State>, model_name: String) -> bool {
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub fn check_specific_model_exists(
+    state: crate::host::StateRef<'_, State>,
+    model_name: String,
+) -> bool {
     if model_name == crate::diarization_model::MODEL_ID {
         return crate::diarization_model::installed();
     }
@@ -372,10 +375,10 @@ fn remove_installed_artifact(model_name: &str) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn remove_model(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     model_name: String,
 ) -> Result<(), String> {
     if !is_safe_model_identifier(&model_name) {
@@ -424,10 +427,10 @@ pub async fn remove_model(
     )
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-host", tauri::command)]
 pub async fn download_model(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, State>,
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
     model_name: String,
     request_id: Option<String>,
 ) -> Result<(), String> {
@@ -977,7 +980,7 @@ mod tests {
 
 /// Download a single whisper ggml .bin file from Hugging Face.
 async fn download_whisper_model(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     model_name: &str,
     models_dir: &std::path::Path,
     progress_context: DownloadProgressContext<'_>,
@@ -1016,7 +1019,7 @@ async fn download_whisper_model(
 /// --- Parakeet backend (removable): delete this fn to remove. ---
 /// Download a Parakeet model bundle (.tar.bz2) and extract it into the models dir.
 async fn download_parakeet_model(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     model_name: &str,
     models_dir: &std::path::Path,
     progress_context: DownloadProgressContext<'_>,
@@ -1153,7 +1156,7 @@ async fn extract_parakeet_archive_on_worker(
 }
 
 fn publish_installing(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     progress_context: DownloadProgressContext<'_>,
 ) {
     publish_download_progress(app_handle, progress_context, 0, 0, "installing", false);
@@ -1305,12 +1308,12 @@ fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError 
 /// Ensure the VAD model is present, downloading it if necessary.
 /// This is the fallback for users who have a transcription model but not the
 /// VAD model (e.g. upgrade from a pre-VAD version or manual model install).
-pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn ensure_vad_model(app_handle: &crate::host::Context) -> Result<(), String> {
     ensure_vad_model_with_progress(app_handle, None).await
 }
 
 async fn ensure_vad_model_with_progress(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     progress_context: Option<DownloadProgressContext<'_>>,
 ) -> Result<(), String> {
     let fallback = Cancellation::default();
@@ -1323,7 +1326,7 @@ async fn ensure_vad_model_with_progress(
         guard = VAD_INSTALL_LOCK.lock() => guard,
     };
     cancel.check()?;
-    let context = app_handle.state::<murmur_core::context::AppContext>();
+    let context = app_handle.context();
     let model_path = crate::model_artifact::vad_model_path(&context, vad::VAD_MODEL_FILENAME)
         .ok_or_else(|| "Could not determine VAD model path".to_string())?;
     if crate::model_artifact::binary_model_is_valid(
@@ -1379,7 +1382,7 @@ async fn ensure_vad_model_with_progress(
 
 /// Stream a file download with progress events. Returns total bytes received.
 async fn stream_download(
-    app_handle: &tauri::AppHandle,
+    app_handle: &crate::host::Context,
     url: &str,
     dest: &std::path::Path,
     progress_context: Option<DownloadProgressContext<'_>>,

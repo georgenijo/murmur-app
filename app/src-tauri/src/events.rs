@@ -1,10 +1,12 @@
 //! Tauri transport for the core's named event protocol. No broadcast target is
 //! used: webview labels and native consumer registrations are separate routes.
+use crate::host::ServiceAccess;
 use crate::MutexExt;
 use murmur_core::events::{Consumer, EventKind, EventSink, Router, WaveformConsumer};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager};
+#[cfg(feature = "tauri-host")]
+use tauri::Manager;
 
 type MainTask = Box<dyn FnOnce() + Send>;
 #[cfg(test)]
@@ -13,7 +15,7 @@ type Dispatch = Arc<dyn Fn(MainTask) -> Result<(), String> + Send + Sync>;
 type Visibility = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 type Callback = Arc<dyn Fn(&str) + Send + Sync>;
 #[derive(Default)]
-struct Events {
+pub(crate) struct Events {
     router: Mutex<Router>,
     levels: Mutex<PendingLevel>,
     native: Mutex<Vec<(Consumer, EventKind, Callback)>>,
@@ -50,43 +52,43 @@ impl PendingLevel {
     }
 }
 
-pub(crate) fn initialize<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    app.manage(Events::default());
+pub(crate) fn initialize<R: crate::host::Runtime>(app: &crate::host::Context<R>) {
+    app.install_event_owner(Events::default());
 }
-pub(crate) fn subscribe<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn subscribe<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     consumer: Consumer,
     event: EventKind,
     callback: impl Fn(&str) + Send + Sync + 'static,
 ) {
     assert!(consumer.window_label().is_none() && event.consumers().contains(&consumer));
-    app.state::<Events>()
+    app.event_owner()
         .native
         .lock_or_recover()
         .push((consumer, event, Arc::new(callback)));
 }
-pub(crate) fn clear_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) {
-    if let Some(events) = app.try_state::<Events>() {
+pub(crate) fn clear_window<R: crate::host::Runtime>(app: &crate::host::Context<R>, label: &str) {
+    if let Some(events) = app.try_event_owner() {
         events.router.lock_or_recover().clear_window(label);
     }
 }
 
-pub(crate) struct TauriEventSink<'a, R: tauri::Runtime>(&'a tauri::AppHandle<R>);
+pub(crate) struct TauriEventSink<'a, R: crate::host::Runtime>(&'a crate::host::Context<R>);
 
-pub(crate) trait EventsExt<R: tauri::Runtime> {
+pub(crate) trait EventsExt<R: crate::host::Runtime> {
     fn events(&self) -> TauriEventSink<'_, R>;
 }
-impl<R: tauri::Runtime> EventsExt<R> for tauri::AppHandle<R> {
+impl<R: crate::host::Runtime> EventsExt<R> for crate::host::Context<R> {
     fn events(&self) -> TauriEventSink<'_, R> {
         // Standalone synthetic mock hosts do not run the application's setup.
-        if self.try_state::<Events>().is_none() {
+        if self.try_event_owner().is_none() {
             initialize(self);
         }
         TauriEventSink(self)
     }
 }
 
-impl<R: tauri::Runtime> TauriEventSink<'_, R> {
+impl<R: crate::host::Runtime> TauriEventSink<'_, R> {
     /// Existing explicitly targeted notifications retain their payloads/routes.
     /// Callers supply a named window consumer, never an arbitrary EventTarget.
     pub(crate) fn send_to<P: Serialize + Clone>(
@@ -94,10 +96,9 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         consumer: Consumer,
         event: &str,
         payload: P,
-    ) -> tauri::Result<()> {
+    ) -> crate::host::Result<()> {
         let label = consumer.window_label().expect("window consumer required");
-        self.0
-            .emit_to(tauri::EventTarget::webview_window(label), event, payload)
+        crate::host::send(self.0, label, event, &payload)
     }
 
     pub(crate) fn publish_level(
@@ -111,7 +112,7 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
             generation,
         };
         #[cfg(test)]
-        if let Some(dispatch) = self.0.state::<Events>().dispatch.lock_or_recover().clone() {
+        if let Some(dispatch) = self.0.event_owner().dispatch.lock_or_recover().clone() {
             return self.queue_level_with(payload, |task| dispatch(task));
         }
         self.queue_level_with(payload, |task| {
@@ -128,17 +129,12 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         if !payload.generation.is_current() {
             return Ok(());
         }
-        if !app
-            .state::<Events>()
-            .levels
-            .lock_or_recover()
-            .replace(payload)
-        {
+        if !app.event_owner().levels.lock_or_recover().replace(payload) {
             return Ok(());
         }
         let handle = app.clone();
         if let Err(error) = schedule(Box::new(move || {
-            let payload = handle.state::<Events>().levels.lock_or_recover().take();
+            let payload = handle.event_owner().levels.lock_or_recover().take();
             if let Some(sample) = payload {
                 // This callback runs on the main thread, with no mailbox/router
                 // lock held. Visibility is fresh even after show/hide/restore.
@@ -149,21 +145,15 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
                 );
             }
         })) {
-            app.state::<Events>().levels.lock_or_recover().take();
+            app.event_owner().levels.lock_or_recover().take();
             return Err(error.to_string());
         }
         Ok(())
     }
 
-    fn waveform_visible(&self, window: &tauri::WebviewWindow<R>) -> bool {
+    fn waveform_visible(&self, window: &crate::host::Window<R>) -> bool {
         #[cfg(test)]
-        if let Some(query) = self
-            .0
-            .state::<Events>()
-            .visibility
-            .lock_or_recover()
-            .clone()
-        {
+        if let Some(query) = self.0.event_owner().visibility.lock_or_recover().clone() {
             return query(window.label());
         }
         window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true)
@@ -174,7 +164,7 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         if waveform {
             let hook = self
                 .0
-                .state::<Events>()
+                .event_owner()
                 .before_level_transport
                 .lock_or_recover()
                 .clone();
@@ -191,7 +181,7 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
         generation: Option<&crate::audio::CaptureGeneration>,
     ) -> Result<(), String> {
         let app = self.0;
-        let events = app.state::<Events>();
+        let events = app.event_owner();
         let routing = events.router.lock_or_recover().clone();
         let recipients = routing.recipients(event, |consumer, waveform| {
             consumer.window_label().is_none_or(|label| {
@@ -251,11 +241,7 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
                     };
                     #[cfg(test)]
                     self.before_level_transport(generation.is_some());
-                    if let Err(error) = app.emit_str_to(
-                        tauri::EventTarget::webview_window(label),
-                        event.name(),
-                        payload.to_owned(),
-                    ) {
+                    if let Err(error) = crate::host::send_str(app, label, event.name(), payload) {
                         failure = Some(error.to_string());
                     }
                 }
@@ -265,7 +251,7 @@ impl<R: tauri::Runtime> TauriEventSink<'_, R> {
     }
 }
 
-impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
+impl<R: crate::host::Runtime> EventSink for TauriEventSink<'_, R> {
     fn publish<P: Serialize + Clone>(&self, event: EventKind, payload: P) -> Result<(), String> {
         let payload = serde_json::to_string(&payload)
             .map_err(|_| "Event serialization failed".to_string())?;
@@ -278,7 +264,8 @@ impl<R: tauri::Runtime> EventSink for TauriEventSink<'_, R> {
 }
 
 /// Cleanup must happen even when the existing native reload operation fails.
-pub(crate) fn web_content_terminated<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
+#[cfg(feature = "tauri-host")]
+pub(crate) fn web_content_terminated<R: crate::host::Runtime>(webview: &tauri::Webview<R>) {
     clear_before_reload(webview.app_handle(), webview.label(), || {
         // Same native recovery used by pinned tauri-runtime-wry's default
         // termination handler. Do not introduce a second JS/retry recovery path.
@@ -286,8 +273,9 @@ pub(crate) fn web_content_terminated<R: tauri::Runtime>(webview: &tauri::Webview
     });
 }
 
-fn clear_before_reload<R: tauri::Runtime, E>(
-    app: &tauri::AppHandle<R>,
+#[cfg(feature = "tauri-host")]
+fn clear_before_reload<R: crate::host::Runtime, E>(
+    app: &crate::host::Context<R>,
     label: &str,
     reload: impl FnOnce() -> Result<(), E>,
 ) {
@@ -295,17 +283,17 @@ fn clear_before_reload<R: tauri::Runtime, E>(
     let _ = reload();
 }
 
-#[tauri::command]
-pub(crate) fn set_waveform_subscription<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    window: tauri::WebviewWindow<R>,
+#[cfg_attr(feature = "tauri-host", tauri::command)]
+pub(crate) fn set_waveform_subscription<R: crate::host::Runtime>(
+    app: crate::host::Context<R>,
+    window: crate::host::Window<R>,
     consumer: WaveformConsumer,
     active: bool,
 ) -> Result<(), String> {
     if consumer.consumer().window_label() != Some(window.label()) {
         return Err("Waveform consumer does not belong to this window".into());
     }
-    app.state::<Events>()
+    app.event_owner()
         .router
         .lock_or_recover()
         .set_waveform(consumer, active);
@@ -315,16 +303,43 @@ pub(crate) fn set_waveform_subscription<R: tauri::Runtime>(
 /// Synthetic regression observers replace Tauri's former listen_any test hooks.
 /// They inspect the transport seam without creating a production broadcast route.
 #[cfg(test)]
-pub(crate) fn observe_for_test<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+pub(crate) fn observe_for_test<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
     event: EventKind,
     callback: impl Fn(&str) + Send + Sync + 'static,
 ) {
     let _ = app.events();
-    app.state::<Events>()
+    app.event_owner()
         .observers
         .lock_or_recover()
         .push((event, Arc::new(callback)));
+}
+
+// The only concrete Tauri transport remains in this constrained sink. The host
+// capability facade forwards here; it cannot expose Emitter or EventTarget.
+#[cfg(feature = "tauri-host")]
+pub(crate) fn transport_send<R: crate::host::Runtime, P: serde::Serialize>(
+    app: &crate::host::Context<R>,
+    label: &str,
+    event: &str,
+    payload: &P,
+) -> crate::host::Result<()> {
+    use tauri::Emitter;
+    app.emit_to(tauri::EventTarget::webview_window(label), event, payload)
+}
+#[cfg(feature = "tauri-host")]
+pub(crate) fn transport_send_str<R: crate::host::Runtime>(
+    app: &crate::host::Context<R>,
+    label: &str,
+    event: &str,
+    payload: &str,
+) -> crate::host::Result<()> {
+    use tauri::Emitter;
+    app.emit_str_to(
+        tauri::EventTarget::webview_window(label),
+        event,
+        payload.to_owned(),
+    )
 }
 
 #[cfg(test)]
@@ -354,11 +369,11 @@ pub(crate) mod tests {
             .unwrap();
             let tasks = Arc::new(Mutex::new(Vec::<MainTask>::new()));
             let pending = tasks.clone();
-            *app.state::<Events>().dispatch.lock_or_recover() = Some(Arc::new(move |task| {
+            *app.event_owner().dispatch.lock_or_recover() = Some(Arc::new(move |task| {
                 pending.lock_or_recover().push(task);
                 Ok(())
             }));
-            *app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(|_| true));
+            *app.event_owner().visibility.lock_or_recover() = Some(Arc::new(|_| true));
             let received = Arc::new(Mutex::new(Vec::new()));
             let receipts = received.clone();
             overlay.listen("audio-level", move |event| {
@@ -460,11 +475,11 @@ pub(crate) mod tests {
         .unwrap();
         let tasks = Arc::new(Mutex::new(Vec::<MainTask>::new()));
         let pending = tasks.clone();
-        *app.state::<Events>().dispatch.lock_or_recover() = Some(Arc::new(move |task| {
+        *app.event_owner().dispatch.lock_or_recover() = Some(Arc::new(move |task| {
             pending.lock_or_recover().push(task);
             Ok(())
         }));
-        *app.state::<Events>().visibility.lock_or_recover() =
+        *app.event_owner().visibility.lock_or_recover() =
             Some(Arc::new(|_| panic!("capture queried a window")));
         let received = Arc::new(Mutex::new(Vec::new()));
         let receipts = received.clone();
@@ -483,21 +498,21 @@ pub(crate) mod tests {
         assert_eq!(tasks.lock_or_recover().len(), 1);
         assert!(received.lock_or_recover().is_empty());
         // The latest value is delivered after main is unblocked. Query only now.
-        *app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(|_| true));
+        *app.event_owner().visibility.lock_or_recover() = Some(Arc::new(|_| true));
         let task = tasks.lock_or_recover().pop().unwrap();
         task();
         assert_eq!(*received.lock_or_recover(), vec!["4999.0"]);
         // Hidden/minimized consumers get no delivery. Show/restore is read fresh
         // on the next sample, without changing interest or restarting capture.
         for visible in [false, true, false, true] {
-            *app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(move |_| visible));
+            *app.event_owner().visibility.lock_or_recover() = Some(Arc::new(move |_| visible));
             crate::audio::publish_waveform(app.handle(), activity.generation().unwrap(), 0.25)
                 .unwrap();
             let task = tasks.lock_or_recover().pop().unwrap();
             task();
         }
         assert_eq!(*received.lock_or_recover(), vec!["4999.0", "0.25", "0.25"]);
-        assert!(!app.state::<Events>().levels.lock_or_recover().scheduled);
+        assert!(!app.event_owner().levels.lock_or_recover().scheduled);
     }
 
     #[test]
@@ -521,7 +536,7 @@ pub(crate) mod tests {
         let activity = Arc::new(crate::audio::CaptureActivity::default());
         activity.set_active(true);
         let revoked = activity.clone();
-        *levels.app.state::<Events>().visibility.lock_or_recover() = Some(Arc::new(move |_| {
+        *levels.app.event_owner().visibility.lock_or_recover() = Some(Arc::new(move |_| {
             revoked.set_active(false);
             true
         }));
@@ -562,7 +577,7 @@ pub(crate) mod tests {
             let finished = Mutex::new(finished);
             *levels
                 .app
-                .state::<Events>()
+                .event_owner()
                 .before_level_transport
                 .lock_or_recover() = Some(Arc::new(move || {
                 if first.swap(false, Ordering::SeqCst) {
@@ -627,7 +642,7 @@ pub(crate) mod tests {
                 |_| Err("closed".into())
             )
             .is_err());
-        assert!(!app.state::<Events>().levels.lock_or_recover().scheduled);
+        assert!(!app.event_owner().levels.lock_or_recover().scheduled);
         let callbacks = AtomicUsize::new(0);
         app.handle()
             .events()
@@ -645,7 +660,7 @@ pub(crate) mod tests {
         assert_eq!(callbacks.load(Ordering::SeqCst), 1);
         clear_before_reload(app.handle(), "main", || {
             assert_eq!(
-                app.state::<Events>()
+                app.event_owner()
                     .router
                     .lock_or_recover()
                     .recipients(EventKind::AudioLevel, |_, _| true),
@@ -654,7 +669,7 @@ pub(crate) mod tests {
             Err("synthetic reload failure")
         });
         assert_eq!(
-            app.state::<Events>()
+            app.event_owner()
                 .router
                 .lock_or_recover()
                 .recipients(EventKind::AudioLevel, |_, _| true),
@@ -670,7 +685,7 @@ pub(crate) mod tests {
         .unwrap();
         web_content_terminated(main.as_ref());
         assert_eq!(
-            app.state::<Events>()
+            app.event_owner()
                 .router
                 .lock_or_recover()
                 .recipients(EventKind::AudioLevel, |_, _| true),

@@ -316,6 +316,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -365,6 +367,25 @@ jobs:
 
       - name: Test core foundation
         run: cd app/src-tauri && cargo test --locked -p murmur-core
+
+      - name: Check native service host without Tauri
+        working-directory: app/src-tauri
+        run: |
+          # rust-cache restores build-script link directives but not this
+          # dependency's target-root prebuilt archive. Refresh only its adapter
+          # so native test linking cannot reuse a missing static-library path.
+          rm -rf target/sherpa-onnx-prebuilt
+          cargo clean -p sherpa-onnx-sys
+          cargo check --locked --lib --no-default-features --features native-host
+          cargo clippy --locked --lib --no-default-features --features native-host -- -D warnings
+          cargo test --locked --no-default-features --features native-host --test native_host_contract -- --test-threads=1
+          cargo tree --locked --no-default-features --features native-host --edges normal --prefix none > target/native-host-dependencies.txt
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          rows = Path("target/native-host-dependencies.txt").read_text().splitlines()
+          banned = ("tauri ", "tao ", "wry ", "murmur-webkit ", "objc2-web-kit ")
+          assert not any(row.startswith(banned) for row in rows), "Native host acquired a webview/runtime dependency"
+          PYTHON
 
       - name: Test standalone synthetic WebKit lifecycle
         run: cd app/src-tauri && cargo test --locked -p murmur-webkit
