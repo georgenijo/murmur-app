@@ -212,7 +212,7 @@ char *murmur_services_window_snapshot(const char *label,uint64_t generation) {
     double scale=w.backingScaleFactor;
     NSRect frame=w.frame;
     NSRect content=[w convertRectToScreen:[w.contentView convertRect:w.contentView.bounds toView:nil]];
-    NSDictionary *value=@{@"visible":@(w.visible),@"minimized":@(w.miniaturized),@"maximized":@(w.zoomed),@"fullscreen":@((w.styleMask&NSWindowStyleMaskFullScreen)!=0),@"scale":@(scale),@"outer":physicalRect(frame,scale),@"inner":physicalRect(content,scale),@"monitor":monitor(w.screen) ?: NSNull.null};
+    NSDictionary *value=@{@"visible":@(w.visible),@"minimized":@(w.miniaturized),@"maximized":@(w.zoomed),@"fullscreen":@((BOOL)((w.styleMask&NSWindowStyleMaskFullScreen)!=0)),@"scale":@(scale),@"outer":physicalRect(frame,scale),@"inner":physicalRect(content,scale),@"monitor":monitor(w.screen) ?: NSNull.null};
     NSData *data=[NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
     return strdup([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
 }
