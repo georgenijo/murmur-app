@@ -123,15 +123,17 @@ and O10 in the [feature matrix](gpui-feature-matrix.md). Tests below live in
 | O09 notch dark; pill system appearance/HUD clip; reduced motion/transparency/contrast | Shared palette/preferences/motion; per-card native HUD mask | Notch, light/dark pill, contrast and lift offscreen cases; existing preference/motion tests | Live system changes and material alignment while lifting/shrink-wrapping |
 | O09 accessible text/status; no editing/copy/focus or press action | Emitted AccessKit status/text, shared production macOS adapter probe; dedicated preview announcement bridge matching the current polite text live region | `actual_preview_adapter_tree_is_informational_and_lifecycle_clears_text` checks actual text, no press dispatch, unchanged focus and immediate AX removal | VoiceOver speech/rotor and timing; the preview-only bridge sends words only after consent/current-generation admission, matching existing React aria-live |
 | O08/O10 no logs/copy/paste/transforms/persistence/export/telemetry; clearing releases content | No such APIs; bounded ephemeral text; no Debug/serde on events/model | Source boundary validators, model clears, closed-inbox teardown, AX removal and synthetic-only captures | Confirm integrated adapter never duplicates partials into diagnostics or final pipeline |
-| Webview destroyed, not hidden | `PreviewRetirement` aliases existing main-thread weak barrier; own-process dyld inventory | `murmur-webkit` real nonpersistent WKWebView extra-owner 1 → 0 test; every preview golden requires zero WebKit images | Phase 2 host must invoke barrier on actual replaced view; production removal is not claimed |
+| Webview destroyed, not hidden | `PreviewRetirement` aliases existing main-thread weak barrier; own-process dyld inventory | `murmur-webkit` real nonpersistent WKWebView extra-owner 1 → 0 test; every preview golden requires zero unattributed WebKit-family images | Phase 2 host must invoke barrier on actual replaced view; production removal is not claimed |
 
 ## Headless checks and native handoff
 
 The existing `gpui-macos` CI job already runs strict fmt/check/Clippy,
 `scripts/test_gpui.py`, compiled native shims, and
 `scripts/check_gpui_goldens.py`. The golden runner includes the preview binary
-and requires same-host byte-identical pairs, nonblank frames and zero loaded
-WebKit images in **each** preview process. It does not inspect other apps.
+and requires same-host byte-identical pairs, nonblank frames and the shared
+[attributed WebKit policy](gpui-overlay.md#qa-webkit-attribution-policy) in each
+preview process. Its separate launch-only baseline requires zero images before
+AX exposure. It does not inspect other apps.
 The offscreen fixture explicitly bypasses native panel mutation and announcements,
 as the overlay QA host does; it never orders a window onto the GUI owner’s screen.
 The standalone WebKit lifecycle test is already wired into `rust-macos`.
