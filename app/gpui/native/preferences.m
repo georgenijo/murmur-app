@@ -5,5 +5,7 @@ unsigned murmur_display_preferences(void) {
     NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
     return (workspace.accessibilityDisplayShouldReduceMotion ? 1 : 0)
         | (workspace.accessibilityDisplayShouldIncreaseContrast ? 2 : 0)
-        | (workspace.accessibilityDisplayShouldReduceTransparency ? 4 : 0);
+        | (workspace.accessibilityDisplayShouldReduceTransparency ? 4 : 0)
+        | ([[NSApp.effectiveAppearance bestMatchFromAppearancesWithNames:
+            @[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]] isEqualToString:NSAppearanceNameDarkAqua] ? 8 : 0);
 }

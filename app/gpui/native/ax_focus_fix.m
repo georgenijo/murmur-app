@@ -17,7 +17,26 @@ void murmur_install_focus_hook(void) {
     installed=YES;
     for (NSString *name in @[@"GPUIWindow", @"GPUIPanel"]) {
         Class cls = NSClassFromString(name);
-        if (cls) class_addMethod(cls, @selector(accessibilityFocusedUIElement), (IMP)focusedElement, "@@:");
+        if (!cls) continue;
+        class_replaceMethod(cls, @selector(accessibilityFocusedUIElement), (IMP)focusedElement, "@@:");
+        // NSWindow's AX bridge does not publish this informal selector merely
+        // because it exists. Keep AppKit's attribute list/values and extend the
+        // legacy lookup used by AXUIElementCopyAttributeValue on an AXWindow.
+        SEL namesSelector = @selector(accessibilityAttributeNames);
+        IMP originalNames = class_getMethodImplementation(cls, namesSelector);
+        class_replaceMethod(cls, namesSelector, imp_implementationWithBlock(^NSArray *(id window) {
+            NSArray *names = ((id(*)(id,SEL))originalNames)(window, namesSelector);
+            if ([names containsObject:NSAccessibilityFocusedUIElementAttribute]) return names;
+            return [(names ?: @[]) arrayByAddingObject:NSAccessibilityFocusedUIElementAttribute];
+        }), "@@:");
+        SEL valueSelector = @selector(accessibilityAttributeValue:);
+        IMP originalValue = class_getMethodImplementation(cls, valueSelector);
+        class_replaceMethod(cls, valueSelector, imp_implementationWithBlock(^id(id window, NSString *attribute) {
+            if ([attribute isEqualToString:NSAccessibilityFocusedUIElementAttribute]) {
+                return focusedElement(window, @selector(accessibilityFocusedUIElement));
+            }
+            return ((id(*)(id,SEL,id))originalValue)(window, valueSelector, attribute);
+        }), "@@:@");
     }
     Class app=NSClassFromString(@"GPUIApplication");
     originalAppFocus=class_getMethodImplementation(app,@selector(accessibilityFocusedUIElement));

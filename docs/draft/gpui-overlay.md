@@ -93,10 +93,12 @@ the pill follows system window appearance, independently of the main theme.
 Shared buttons/toggles receive window-local semantic roles and keep their AX
 names when their visible captions are compact glyphs.
 
-The native UI links no WebKit. Every offscreen overlay capture inventories its
-own loaded images using dyld and requires zero WebKit images. It records only
-its PID and that count. This proves the native process's dependency/runtime
-absence, not destruction of another process's Tauri window.
+The native UI links no WebKit. Every offscreen overlay capture checks the
+[attributed QA policy](#qa-webkit-attribution-policy): zero images before AX
+exposure, then only proven Apple AX bundle loads. Inventory records contain the
+PID and attribution counts; supporting load records contain image paths and
+symbols only. This checks the native process's linkage and load attribution;
+destruction of another process's Tauri window remains a separate lifetime check.
 
 `murmur-webkit::OverlayRetirement::destroy` separately consumes the legacy
 host's retained view on main, stops navigation, disconnects delegates, removes
@@ -124,7 +126,7 @@ All fixtures and rendered captures are synthetic. Native acceptance is separate.
 | O02 7/18 bars; coalesced 16 ms levels; no idle animation | Single latest-level slot, generation/visibility check, one GPUI draw stream | `waveform_is_bounded_and_only_the_current_visible_owner_can_supply_samples`, inbox backpressure/coalescing test; no performance claim |
 | O02 HUD/tints, Reduce Motion/Transparency, appearance | Same-turn AppKit HUD and window-local palettes; shared motion engine | Inert shim compilation; deterministic offscreen goldens and existing motion/preference tests; live material and OS changes remain |
 | O03 150 ms dwell, acknowledged growth, 300 ms leave, delayed shrink | One main-thread surface writer and phase reducer; disabled state retains hover; shrink retains a pending re-entry dwell | `hover_dwell_ack_leave_shrink_and_failed_grow`, `disabled_hover_can_reopen_quick_settings_but_cannot_start_recording`, `shrink_preserves_a_pending_dwell_in_the_persistent_top_band` (1000 ms enter → 1080 ms shrink → 1150 ms open), `state_contractions_retain_native_bounds_then_release_without_anchor_drift`, `hidden_and_topology_reset_do_not_reopen_transparent_hit_area`; native clipping/hit-area check remains |
-| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents; a dedicated nonvisual Button is always present on the visible collapsed surface; its AX title conveys collapsed/expanded and AXPress toggles disclosure without key focus or dictation activation | `actual_overlay_tree_controls_and_actions` and `disabled_collapsed_overlay_opens_and_closes_through_macos_adapter` pass emitted nodes through the vendored macOS adapter role/title mapping and shared production AXPress handler, then transport only its generated actions; collapsed/disabled → open → Enable Murmur → close and unchanged focus/intents are asserted; native host field commits/Settings opening remain |
+| O03 Mode/Next, Power, Auto-paste/file-output pause, Settings | Shared Button/Toggle; typed owned-field/runtime intents; a dedicated bounded disclosure Button is present in the status row of each visible surface; its AX title conveys collapsed/expanded and AXPress toggles disclosure without key focus or dictation activation | `actual_overlay_tree_controls_and_actions` and `disabled_collapsed_overlay_opens_and_closes_through_macos_adapter` pass emitted nodes through the vendored macOS adapter role/title mapping and shared production AXPress handler, then transport only its generated actions; collapsed/disabled → open → Enable Murmur → close and unchanged focus/intents are asserted; native host field commits/Settings opening remain |
 | O04 250 ms click, double-click lock, disabled/processing/open guards | Click recognizer sends generation-bound core inputs | `click_delay_double_click_and_generation_ownership`, `starting_click_cancels_and_disabled_recording_remains_stoppable`; real capture/delivery remains host acceptance |
 | O05 Cancelled 800 ms, opt-in tap miss 500 ms, failure 5 s | Generation-scoped timed cues, fixed content-free announcements | Priority/expiry and stale-generation tests; actual VoiceOver speech remains |
 | O05 Clipboard-only/retry, duplicate/stale outcomes | Secure retry intent, attempt/generation guard, bounded result | `delivery_duplicates_never_extend_cue_and_only_confirmed_clipboard_installs_it`, `retry_is_single_flight_and_uses_a_fresh_bounded_result`, stale retry test; no clipboard access in test host |
@@ -133,25 +135,57 @@ All fixtures and rendered captures are synthetic. Native acceptance is separate.
 | O08/O09 Live Words consent, generation, click-through and hover lift | Existing preview owner retained; anchor/lift interface only | Moved preview fitting/collapsed-anchor tests; text/rendering port belongs to #1000, with native click-through and consent checks retained |
 | M01/M13 meeting states/suggestions, accept/dismiss | Idle-only prompt, token recheck and single-flight action | `suggestion_requires_idle_and_retains_expanded_bounds_until_dismissal`, `suggestion_actions_recheck_current_token_and_are_single_flight`; live capture/token authority stays in meeting service |
 | A01 accessible names, roles, state changes, inactive announcements | Shared controls/AccessKit plus native content-free announcement notification | Emitted tree/actions test and component suite; VoiceOver spoken output cannot be established headlessly |
-| Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero WebKit images; production host replacement remains pending |
+| Destroy overlay webview; no replacement WebContent process | Per-view weak destruction barrier and native own-process inventory | Actual nonpersistent WKWebView lifecycle fixture; every overlay Metal capture requires zero unattributed WebKit-family images; production host replacement remains pending |
 
 The shipping `useOverlayExpansion` and its disabled-hover/re-entry tests define
 pointer timing, including keeping the close shrink armed until a re-entry dwell
 commits. `OverlayPill` and its tests reserve independent notch wings and center
 the floating row. Native status uses those same content slots: seven bars occupy
 23 pt centered in the right 28 pt wing; eighteen bars occupy 61.5 pt in the pill.
-The idle, collapsed notch has no exposed wings and paints no status content in
-the cutout. The native Quick settings Button adds a non-pointer route to the same
-Quick settings group and names used by the React dropdown. It grows through the
-same acknowledged writer as hover and does not activate recording. Disabled
+The idle, collapsed notch has no exposed wings and omits the recording status
+content. A 20×24 pt disclosure target with a small chevron in the leading status
+slot toggles Quick settings; the active state glyph retains its separate
+recording/status click behavior.
+The notch reserves an 8 pt state slot (including an 8 pt spinner) beside the
+20 pt disclosure inside its fixed 28 pt wing. Clipboard-only delivery uses the
+single copy symbol “⎘” in that slot; the floating pill keeps “⌘V”. Both retain
+the status AX label “Copied. Paste manually or try again”. State symbols and
+floating status text do not wrap. The pill's compact “Recovering” caption keeps
+the full “Audio recovering” AX label. A CoreText-backed layout test audits all
+indicators in physical/pretend notches at the 24 pt minimum row height and in
+floating pills, collapsed and expanded, including intrinsic symbol bounds,
+card containment, disclosure separation and meaningful status AX labels.
+The floating pill retains its
+120×34 pt collapsed geometry and its waveform/retry room. Its compact retry
+caption is “Retry”, retaining the accessible name “Try again”. Disabled
 state gates recording starts, never access to the Enable control.
 
-The disclosure Button is nonvisual and occupies the surface bounds without a
-pointer handler or focus owner, preserving the idle notch and existing click
-regions. Its adapter-exported title is “Quick settings, collapsed” or “Quick
-settings, expanded”; AXPress is Click, already supported by the pinned macOS
-adapter. The status retains its recording activation, but no longer advertises
-unsupported Expand/Collapse or a keyboard fallback on the never-key panel.
+The status row is absolutely anchored to the card's bottom edge for pills and
+top edge for notches; controls occupy the opposite side of that row. Their
+content minimum height cannot displace the disclosure during growth/shrink.
+The status row precedes the controls in AX child order regardless of visual
+position, so the disclosure is encountered before Mode, power, Auto-paste and
+Settings. The disclosure's AX frame is its actual pointer hitbox; it does not
+cover the status row or quick controls. Hovering any part of its enlarged
+target counts as inside the painted card and uses the same dwell/leave reducer.
+Pointer clicks and AXPress use the same toggle and acknowledged resize path,
+with no focus owner. Its adapter-exported title
+is “Quick settings, collapsed” or “Quick settings, expanded”. Mouse-down and
+click propagation stop at the chevron so it cannot start/stop dictation. The
+status retains its recording activation and the panel remains never-key.
+
+`disclosure_ax_frame_is_its_pointer_target_in_both_placements` compares the emitted
+AX frame to the laid-out hitbox, clicks its center and near-corners, and reverses
+each click through the macOS adapter's AXPress route. It covers both placements,
+disabled state, repeated growth/shrink, unchanged focus, no delayed recording
+intent, the adjacent recording action and hidden-surface exclusion. Removing the
+pointer handler makes the regression fail while AXPress remains available.
+`disclosure_stays_hittable_and_precedes_controls_during_motion` enables real
+360 ms transitions and samples both endpoints plus 16/60/120/180/240/270 ms
+frames in both placements and disabled states. It checks full target containment
+in the card clip, the 20×24 pt AX/hit bounds, near-corner and center clicks,
+AXPress reversal, unchanged focus/intents and traversal of actual AX child
+links before all four quick controls.
 The windowless adapter probe shares the production press target resolution and
 dispatch function; it creates no NSView/NSWindow and makes no AX client calls.
 It establishes adapter mapping/action handling, not VoiceOver spoken behavior.
@@ -168,10 +202,11 @@ Use Rust 1.98.1 and the isolated target directory. The existing `gpui-macos`
 job checks both gallery-gated binaries, strict all-target Clippy, rustfmt,
 `scripts/test_gpui.py` (real emitted AX tree/actions without native windows),
 Objective-C inert shims, and `scripts/check_gpui_goldens.py`. The latter now
-renders 33 overlay cases twice in addition to the 30 component cases: 63 cases,
-126 captures. Physical and pretend notches each cover 12 states, including
+renders 35 overlay cases twice in addition to the 30 component cases: 65 cases,
+130 captures. Physical and pretend notches each cover 13 states, including
+clipboard delivery at the minimum 24 pt row height and
 collapsed/expanded disabled states; the pill covers nine visible states. It
-rejects blank/non-deterministic captures and missing/nonzero own-process WebKit
+rejects blank/non-deterministic captures and missing or unattributed own-process WebKit
 inventories. The native workspace and core remain within
 the existing source/transport/restart dependency guards. The WebKit lifecycle
 target already runs under the existing `rust-macos` job; no new CI job is needed.
@@ -312,3 +347,107 @@ Gate logs and the golden receipt are preserved before removing checkout 44 and
 its target. No real app, GUI session, AX client automation, permissions or user
 data were touched. Independent review and native acceptance remain with the
 lead; this PR stays draft and unmerged.
+
+## Native acceptance corrections (checkout 48)
+
+Layer 9 at `7a22c5c8` is merged, retaining its window AX focus forwarding,
+dropdown expanded state and live system appearance watcher.
+
+The floating material was a **child of the Metal-backed GPUIView**. Child
+views composite above their parent's layer, regardless of their ordering among
+siblings; `NSWindowBelow` on that child did not put it behind GPUI's foreground.
+The material is now a non-hit-testing sibling below GPUIView, with its mask
+converted from the same presentation rectangle. GPUI paints the semantic tint
+and border above the visual effect in the same scene as the foreground;
+NSVisualEffectView's backing color did not provide a reliable dark/opaque tint.
+Reduce Transparency uses an
+opaque surface; Increase Contrast additionally uses an opaque surface, a solid
+border and the matching accessible AppKit appearance. Both hide the unused
+backdrop effect and retain the existing
+opaque semantic foreground colors.
+
+Native frame writes now refresh GPUI's viewport in the same main-thread turn,
+before controls are revealed. The AppKit callback alone was deferred while the
+window was borrowed: centering the expanded 241 pt card in the stale 120 pt
+viewport displaced paint, hitboxes and AX by approximately 60 pt. Paint, input
+and AX now share the acknowledged viewport after growth and shrink.
+
+Delivered GPUI hover events and the existing 33 ms watchdog reconcile through
+one pointer-presence state, using current timestamps. Events cancel dwell even
+when a fast exit/re-entry falls between two inside samples; polling recovers
+missed exits during resizing. The stored painted rectangle follows GPUI's
+alignment: bottom for floating pills, top for notch cards, including flipped
+views and contraction inside retained expanded bounds. Only presence
+transitions feed hover intent, preserving the 150 ms dwell, 300 ms leave and
+380 ms shrink without repeatedly moving deadlines. An AX-opened panel stays
+open until the pointer actually enters and leaves; a stationary pointer cannot
+undo an explicit AX close. Headless hosts use the same GPUI event path.
+
+Regression coverage includes native sibling order/material hit-test exclusion
+and mask refits, missed-exit recovery and exact collapsed bounds with/without
+Reduced Motion, AX-open/close and rapid-graze handling, and repeated native-size
+transactions with emitted AX bounds inside the viewport and pointer clicks at
+Mode's exported center. The merged adapter reproduction test removes and
+reapplies both additive patches and compares every AccessKit vendor file.
+
+Native verification uses only a task-owned background synthetic host and
+window-specific captures. Process-local preference fixtures do not write System
+Settings. No pointer/key input, focus changes, permission grants or production
+profile access are part of this correction run. The lead retains the live HID
+recheck and independent review gates.
+
+Correction verification on Rust 1.98.1, fresh `~/Builds/gpui-checkout-48` with
+its private `target48` directory:
+
+- Locked gallery check, strict all-target gallery Clippy and rustfmt passed.
+- `scripts/test_gpui.py`: **64 passed** plus **1 AccessKit adapter test**;
+  ordinary gallery-enabled `cargo test`: **43 passed**; **9 source/native-shim
+  tests passed**, including the hierarchy regression.
+- Goldens: **63 cases / 126 captures**, nonblank and byte-identical per pair;
+  every **33 overlay cases / 66 captures** reported zero WebKit images.
+- Actual native window-only captures: **12 cases**, covering light/dark,
+  normal/Reduce Transparency/Increase Contrast, collapsed recording/expanded
+  controls. The foreground is readable in all cases. Every observed frontmost
+  PID differed from the synthetic host. Read-only native AX queries place the
+  expanded window and disclosure at x=839, and Mode at x=871 (75×24 pt), inside
+  the window. No AX action or HID interaction was used for this receipt.
+- Removing the same-turn viewport refresh makes the new AX/geometry regression
+  fail at its explicit stale-viewport assertion; the fixed revision passes.
+- **102 GPUI files** reproduce byte-for-byte from the pinned upstream and
+  recorded patches. All **16 AccessKit files** pass the merged round-trip
+  patch check; executable source also reconstructs from the published crate
+  plus Phase 0, expanded-state and press-probe patches, retaining the imported
+  repository-level license files. No additional vendor edits were needed.
+- All **16 changed build/test source hashes** matched the Mac checkout.
+  Markdown, workflow-policy, core-dependency and whitespace checks passed.
+
+Captures and gate logs are preserved before deleting the task checkout and its
+target. The live HID recheck and independent review remain with the lead; this
+stack layer is still draft and unmerged.
+
+### QA WebKit attribution policy
+
+`gallery` builds install the shared `overlay::native` dyld observer before main.
+The launch-only `MURMUR_WEBKIT_BASELINE_ONLY=1 overlay-qa` run exits before
+NSApplication/window/AX exposure and requires zero WebKit-family images. Every
+loaded executable or non-system dylib is checked for WebKit-family load commands;
+our GPUI source gate also forbids web-view class construction references.
+
+After launch, a WebKit-family load is allowed only when its captured image/symbol
+chain contains Apple's AccessibilityBundles/AXBBundleManager activation and
+HIServices bundle loading followed by an incoming `_AXXMIG` request and Apple
+Mach/source-1 runloop dispatch. Unknown,
+non-system or app frames before that dispatch boundary, any web-view frame, truncated
+records, and inventory overflow fail closed. Ordinary app event-loop frames below
+the incoming dispatch boundary are not the initiator. No AX clients, text, audio,
+clipboard contents or other process data are collected. QA stores only bounded
+image paths/symbol names; production builds contain no observer or backtraces.
+
+`MURMUR_*_INVENTORY` retains numeric `pid` and `webkitImages`, adding numeric
+`axAttributed`, `unattributed`, `startupWebkitImages`, and `linkageViolations`.
+`MURMUR_WEBKIT_LOAD` records the supporting chain. Accessibility-induced system
+loads do not mean Murmur constructs a web view. The policy is attribution to an
+incoming AX request, not proof of a particular client's identity. The golden
+script checks this policy and a separate deterministic zero-image launch run.
+A bounded native diagnostic (`MURMUR_WEBKIT_QA_SECONDS=3 overlay-qa`) checks the
+same policy before quitting, without HID input or altering accessibility.

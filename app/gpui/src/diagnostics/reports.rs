@@ -1,9 +1,16 @@
 //! Strict, bounded, session-only portable reports. Validation mirrors the
 //! retained React parser. Neither raw input nor parser errors leave this module.
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_IMPORTS: usize = 20;
+/// UTF-8 bytes, including text that will subsequently be stripped.
+pub const MAX_STRING_BYTES: usize = 4096;
+pub const MAX_COMPARISON_METRICS: usize = 8192;
+const MAX_COMPARISON_SCOPE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_COMPARISON_WORK: usize = 1_000_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportError {
     Empty,
@@ -12,6 +19,7 @@ pub enum ImportError {
     UnsupportedVersion,
     SchemaMismatch,
     CollectionLimit,
+    StringLimit,
     SessionLimit,
     ReadFailed,
 }
@@ -30,6 +38,7 @@ impl ImportError {
             Self::CollectionLimit => {
                 "The selected report exceeds supported diagnostic collection limits."
             }
+            Self::StringLimit => "Diagnostic report strings are limited to 4 KiB each.",
             Self::SessionLimit => {
                 "Clear session imports before importing more reports (20 maximum)."
             }
@@ -51,7 +60,8 @@ pub enum Source {
 pub struct Report {
     pub kind: Kind,
     pub source: Source,
-    data: Value,
+    id: String,
+    data: Arc<Value>,
 }
 #[derive(Clone, Copy)]
 enum Rule {
@@ -66,6 +76,18 @@ enum Rule {
     NullableBool,
 }
 use Rule::*;
+// Check the entire tree before schema validation or any identity formatting.
+// This includes nullable fields, arrays, unknown fields and object keys.
+fn bounded_strings(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.len() <= MAX_STRING_BYTES,
+        Value::Array(a) => a.iter().all(bounded_strings),
+        Value::Object(o) => o
+            .iter()
+            .all(|(k, v)| k.len() <= MAX_STRING_BYTES && bounded_strings(v)),
+        _ => true,
+    }
+}
 fn valid(v: &Value, rule: Rule) -> bool {
     let num = || v.as_f64().is_some_and(|n| n.is_finite() && n >= 0.);
     let int = || {
@@ -598,6 +620,9 @@ impl Report {
             return Err(ImportError::Empty);
         }
         let mut v: Value = serde_json::from_slice(bytes).map_err(|_| ImportError::MalformedJson)?;
+        if !bounded_strings(&v) {
+            return Err(ImportError::StringLimit);
+        }
         let kind = if ["createdAt", "results", "recommendations"]
             .iter()
             .any(|k| v.get(*k).is_some())
@@ -669,11 +694,23 @@ impl Report {
                 }
             }
         }
+        // Content identity is independent of list ordering and re-parsing. Only
+        // normalized, content-free data enters the digest; source separates a
+        // saved report from a session import of the same report.
+        let id = format!(
+            "{:?}:{:x}",
+            source,
+            Sha256::digest(v.to_string().as_bytes())
+        );
         Ok(Self {
             kind,
             source,
-            data: v,
+            id,
+            data: Arc::new(v),
         })
+    }
+    pub fn id(&self) -> &str {
+        &self.id
     }
     #[cfg(test)]
     pub(crate) fn normalized_for_test(&self) -> String {
@@ -759,8 +796,8 @@ pub struct Finding {
 }
 #[derive(Clone)]
 pub struct Metric {
-    pub scope: String,
-    pub label: String,
+    pub scope: Arc<str>,
+    pub label: &'static str,
     pub unit: &'static str,
     pub baseline: f64,
     pub candidate: f64,
@@ -799,7 +836,13 @@ fn set(v: &Value, key: &str) -> BTreeSet<String> {
         .map(|v| v[key].to_string())
         .collect()
 }
-fn add_metric(metrics: &mut Vec<Metric>, scope: &str, label: &str, a: &Value, b: &Value) {
+fn add_metric(
+    metrics: &mut Vec<Metric>,
+    scope: &Arc<str>,
+    label: &'static str,
+    a: &Value,
+    b: &Value,
+) {
     let (Some(a), Some(b)) = (a.as_f64(), b.as_f64()) else {
         return;
     };
@@ -813,8 +856,8 @@ fn add_metric(metrics: &mut Vec<Metric>, scope: &str, label: &str, a: &Value, b:
         ""
     };
     metrics.push(Metric {
-        scope: scope.into(),
-        label: label.into(),
+        scope: scope.clone(),
+        label,
         unit,
         baseline: a,
         candidate: b,
@@ -825,6 +868,45 @@ fn add_metric(metrics: &mut Vec<Metric>, scope: &str, label: &str, a: &Value, b:
             Some((b - a) / a.abs() * 100.)
         },
     });
+}
+// Conservative upper bounds, checked before compatibility's matching loops or
+// metric allocation. Counts include unavailable metrics. Shared scopes still
+// have a separate byte budget so long legal identities cannot amplify memory.
+fn comparison_bounded(v: &Value) -> bool {
+    let (mut metrics, mut scopes, mut work) = (0usize, 0usize, 0usize);
+    if let Some(models) = v["results"].as_array() {
+        metrics = 1;
+        work += models.len() * models.len();
+        for m in models {
+            let scope = identity(m, &["modelName", "backend", "accelerator"]);
+            let fixtures = m["fixtures"].as_array().unwrap();
+            metrics += MODEL_METRICS.len() + 1 + fixtures.len() * (MODEL_METRICS.len() - 2);
+            work += fixtures.len() * fixtures.len();
+            scopes += scope.len() + 16;
+            for f in fixtures {
+                scopes += scope.len() + 16 + f["fixtureId"].to_string().len();
+            }
+        }
+    } else {
+        let cases = v["cases"].as_array().unwrap();
+        metrics += 10;
+        work += cases.len() * cases.len();
+        for c in cases {
+            let scope = c["id"].as_str().unwrap();
+            let stages = c["transformation"]["stages"].as_array().unwrap();
+            metrics += 9 + stages.len();
+            scopes += scope.len();
+            for stage in stages {
+                scopes += scope.len() + 8 + stage["name"].to_string().len();
+            }
+        }
+    }
+    metrics <= MAX_COMPARISON_METRICS
+        && scopes <= MAX_COMPARISON_SCOPE_BYTES
+        && work <= MAX_COMPARISON_WORK
+}
+fn same_identity(a: &Value, b: &Value, keys: &[&str]) -> bool {
+    keys.iter().all(|k| a[*k] == b[*k])
 }
 pub fn compare(a: &Report, b: &Report) -> Comparison {
     let mut out = Comparison {
@@ -849,7 +931,15 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
         );
         return out;
     }
-    let (a, b) = (&a.data, &b.data);
+    let (a, b) = (&*a.data, &*b.data);
+    if !comparison_bounded(a) || !comparison_bounded(b) {
+        issue(
+            true,
+            "comparison_limit",
+            "Reports exceed the bounded comparison budget. Choose smaller reports.",
+        );
+        return out;
+    }
     if a.get("reportVersion") != b.get("reportVersion")
         || a.get("fixtureVersion") != b.get("fixtureVersion")
     {
@@ -904,10 +994,7 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
             );
         }
         for l in left {
-            if let Some(r) = right
-                .iter()
-                .find(|r| identity(l, &keys) == identity(r, &keys))
-            {
+            if let Some(r) = right.iter().find(|r| same_identity(l, r, &keys)) {
                 if l["succeeded"] != true || r["succeeded"] != true {
                     issue(
                         true,
@@ -1022,7 +1109,7 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
     if a.get("results").is_some() {
         add_metric(
             &mut out.metrics,
-            "report",
+            &Arc::from("report"),
             "sharedInitMs",
             &a["sharedInitMs"],
             &b["sharedInitMs"],
@@ -1032,12 +1119,11 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|r| {
-                    identity(l, &["modelName", "backend", "accelerator"])
-                        == identity(r, &["modelName", "backend", "accelerator"])
-                })
+                .find(|r| same_identity(l, r, &["modelName", "backend", "accelerator"]))
                 .unwrap();
-            let scope = identity(l, &["modelName", "backend", "accelerator"]).replace('\0', " · ");
+            let scope: Arc<str> = identity(l, &["modelName", "backend", "accelerator"])
+                .replace('\0', " · ")
+                .into();
             for key in MODEL_METRICS.iter().chain(["memoryDeltaMb"].iter()) {
                 add_metric(&mut out.metrics, &scope, key, &l[*key], &r[*key]);
             }
@@ -1048,14 +1134,9 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
                     .iter()
                     .find(|r| f["fixtureId"] == r["fixtureId"])
                     .unwrap();
+                let fixture_scope: Arc<str> = format!("{scope} · {}", f["fixtureId"]).into();
                 for key in &MODEL_METRICS[2..] {
-                    add_metric(
-                        &mut out.metrics,
-                        &format!("{scope} · {}", f["fixtureId"]),
-                        key,
-                        &f[*key],
-                        &rf[*key],
-                    );
+                    add_metric(&mut out.metrics, &fixture_scope, key, &f[*key], &rf[*key]);
                 }
             }
         }
@@ -1077,7 +1158,7 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
         ] {
             add_metric(
                 &mut out.metrics,
-                "summary",
+                &Arc::from("summary"),
                 key,
                 &a["summary"][key],
                 &b["summary"][key],
@@ -1090,7 +1171,7 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
                 .iter()
                 .find(|r| l["id"] == r["id"])
                 .unwrap();
-            let scope = l["id"].as_str().unwrap();
+            let scope: Arc<str> = l["id"].as_str().unwrap().into();
             for (section, keys) in [
                 ("recognition", &["rawWer", "normalizedWer", "cer"][..]),
                 (
@@ -1108,7 +1189,7 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
                 for key in keys {
                     add_metric(
                         &mut out.metrics,
-                        scope,
+                        &scope,
                         key,
                         &l[section][*key],
                         &r[section][*key],
@@ -1123,7 +1204,7 @@ pub fn compare(a: &Report, b: &Report) -> Comparison {
             {
                 add_metric(
                     &mut out.metrics,
-                    &format!("{scope} · {}", ls["name"]),
+                    &Arc::from(format!("{scope} · {}", ls["name"])),
                     "durationUs",
                     &ls["durationUs"],
                     &rs["durationUs"],

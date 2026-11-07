@@ -6,6 +6,11 @@ use murmur_ui::{
 };
 use std::rc::Rc;
 fn main() {
+    murmur_ui::overlay::native::start_webkit_policy();
+    if std::env::var_os("MURMUR_WEBKIT_BASELINE_ONLY").is_some() {
+        murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
+        return;
+    }
     println!(
         "MURMUR_DIAGNOSTICS_REVISION={}",
         option_env!("MURMUR_QA_REVISION").unwrap_or("development")
@@ -32,10 +37,13 @@ fn main() {
         }
         murmur_ui::tokens::apply_appearance(std::env::var_os("MURMUR_DARK").is_some(), cx);
         let state = std::env::var("MURMUR_DIAGNOSTICS_STATE").unwrap_or_else(|_| "events".into());
+        let host = Rc::new(FixtureHost::default());
+        let fixture_host = host.clone();
         let mut entity = None;
         let handle = cx
             .open_window(
                 WindowOptions {
+                    window_min_size: Some(size(px(480.), px(440.))),
                     show: !headless,
                     focus: false,
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -58,7 +66,7 @@ fn main() {
                         w.observe_window_appearance(apply).detach();
                     }
                     let d = cx.new(|cx| {
-                        let mut d = Diagnostics::new(Rc::new(FixtureHost::default()), w, cx);
+                        let mut d = Diagnostics::new(fixture_host.clone(), w, cx);
                         d.fixture = headless;
                         d
                     });
@@ -86,20 +94,18 @@ fn main() {
                         },
                         cx,
                     );
-                    s.model.tab = if state == "run-detail" {
+                    s.model.navigate(if state == "run-detail" { Tab::Runs } else if state == "private-detail" { Tab::Dictation } else { Tab::from_route(&state).unwrap_or(Tab::Events) });
+                    if state == "run-detail" {
                         s.model.selected_run = Some("synthetic-run".into());
-                        Tab::Runs
                     } else if state == "private-detail" {
                         s.model.selected_capture = Some("synthetic-capture".into());
-                        s.model.capture_detail = Some(murmur_ui::diagnostics::fixtures::capture(
-                            "synthetic-capture".into(),
-                        ));
-                        Tab::Dictation
-                    } else {
-                        Tab::from_route(&state).unwrap_or(Tab::Events)
-                    };
+                        let mut detail = murmur_ui::diagnostics::fixtures::capture("synthetic-capture".into());
+                        // Golden captures cover the review controls, never private text.
+                        detail.sections.clear();
+                        s.model.capture_detail = Some(detail);
+                    }
                     if state == "store-unavailable" {
-                        s.model.tab = Tab::Runs;
+                        s.model.navigate(Tab::Runs);
                         s.model.health = Some(Health {
                             available: false,
                             recommended: Recovery::Reinitialize,
@@ -111,7 +117,7 @@ fn main() {
                     }
                     if state=="empty" {s.model.events.clear();s.model.reports.clear();s.model.runs.clear();s.model.samples.clear();s.model.captures.clear();}
             if state=="loading" {s.model.events.clear();s.model.loading.insert(Lane::Events);}
-            if state=="reports-blocked" {s.model.tab=Tab::Compare; s.model.reports[1]=murmur_ui::diagnostics::reports::Report::parse(include_bytes!("../../../../tests/fixtures/diagnostic-reports/evaluation-v1-deterministic.json"),0,murmur_ui::diagnostics::reports::Source::Imported).ok().unwrap();}
+            if state=="reports-blocked" {s.model.navigate(Tab::Compare); s.model.reports[1]=murmur_ui::diagnostics::reports::Report::parse(include_bytes!("../../../../tests/fixtures/diagnostic-reports/evaluation-v1-deterministic.json"),0,murmur_ui::diagnostics::reports::Source::Imported).ok().unwrap(); s.model.candidate=Some(s.model.reports[1].id().into());}
             s.prepare(cx);
             if state=="events-expanded" {s.events.update(cx,|s,cx|s.set_expanded(160,true,cx));}
                     if !headless {
@@ -120,11 +126,25 @@ fn main() {
                 })
             })
             .expect("initialize diagnostics");
+        if !headless && std::env::var_os("MURMUR_DIAGNOSTICS_LIVE").is_some() {
+            // Explicit synthetic live stream for the GUI QA owner. Goldens stay
+            // deterministic. Updates coalesce under backpressure, at two-second
+            // intervals, and the adapter announces no per-event live region.
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+                    if !cx.update(|_| host.publish_live()) { break; }
+                }
+            }).detach();
+        }
         if !headless && std::env::var_os("MURMUR_DIAGNOSTICS_NATIVE_SMOKE").is_some() {
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(std::time::Duration::from_secs(20)).await;
+                murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
                 cx.update(|cx| cx.quit());
             }).detach();
+        } else if !headless {
+            murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
         }
         if let Some(path) = output {
             cx.spawn(async move |cx| {
@@ -138,12 +158,7 @@ fn main() {
                         image.pixels().any(|p| *p != *image.get_pixel(0, 0)),
                         "blank synthetic diagnostics"
                     );
-                    let images = murmur_ui::overlay::native::webkit_images();
-                    assert_eq!(images, 0);
-                    println!(
-                        "MURMUR_DIAGNOSTICS_INVENTORY={{\"pid\":{},\"webkitImages\":{images}}}",
-                        std::process::id()
-                    );
+                    murmur_ui::overlay::native::assert_webkit_policy("MURMUR_DIAGNOSTICS_INVENTORY");
                     image.save(path).expect("synthetic capture");
                     cx.quit();
                 })

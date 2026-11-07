@@ -16,6 +16,23 @@ ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / 'app/gpui'
 
 
+def check_inventory(stdout, prefix):
+    inventories = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
+                   if line.startswith(prefix + '=')]
+    if len(inventories) != 1:
+        raise AssertionError('missing native process WebKit inventory')
+    inventory = inventories[0]
+    for field in ('pid', 'webkitImages', 'axAttributed', 'unattributed',
+                  'startupWebkitImages', 'linkageViolations'):
+        if type(inventory[field]) is not int or inventory[field] < 0:
+            raise AssertionError(f'invalid WebKit inventory field: {field}')
+    if (inventory['unattributed'] != 0 or inventory['startupWebkitImages'] != 0
+            or inventory['linkageViolations'] != 0
+            or inventory['webkitImages'] != inventory['axAttributed']):
+        raise AssertionError(f'unattributed/app-linked WebKit: {inventory}')
+    return inventory
+
+
 def main():
     if platform.system() != 'Darwin':
         raise SystemExit('Metal goldens require macOS')
@@ -25,6 +42,14 @@ def main():
         ['cargo', 'metadata', '--locked', '--no-deps', '--format-version=1'], cwd=UI))['target_directory'])
     output = target / 'goldens'
     output.mkdir(parents=True, exist_ok=True)
+    # A deterministic launch-only run exits before NSApplication/AX exposure,
+    # independent of active VoiceOver clients. Never change system settings.
+    baseline = subprocess.check_output([str(target / 'debug/overlay-qa')],
+        env={**os.environ, 'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(baseline, 'MURMUR_OVERLAY_INVENTORY')['webkitImages'] != 0:
+        raise AssertionError('nonzero launch-only baseline')
+    print('PASS zero-image launch baseline and native linkage policy')
+    policy_log = baseline.splitlines()
     results = {}
     cases = [(mode, state) for mode in ('light', 'dark', 'contrast')
              for state in ('rest', 'hover', 'pressed', 'button', 'toggle', 'field', 'dropdown', 'popup', 'list', 'navigation')]
@@ -55,6 +80,8 @@ def main():
                      for state in ('idle', 'starting', 'recording', 'processing', 'recovering',
                                    'cancelled', 'failure', 'delivery', 'expanded', 'suggestion', 'disabled', 'disabled-expanded')
                      if not (placement == 'pill' and state in ('idle', 'disabled', 'disabled-expanded'))]
+    overlay_cases += [(placement, 'delivery-min-height')
+                      for placement in ('notch', 'pretend-notch')]
     for placement, state in overlay_cases:
         case = f'overlay-{placement}-{state}'
         paths = [output / f'{case}-{i}.png' for i in (1, 2)]
@@ -66,14 +93,18 @@ def main():
             if placement == 'pill':
                 env['MURMUR_PILL'] = '1'
             stdout = subprocess.check_output([str(target / 'debug/overlay-qa')], env=env, cwd=UI, timeout=60, text=True)
-            inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
-                         if line.startswith('MURMUR_OVERLAY_INVENTORY=')]
-            if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
-                raise AssertionError('missing or nonempty native overlay process WebKit inventory')
+            check_inventory(stdout, 'MURMUR_OVERLAY_INVENTORY')
+            policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
         if paths[0].read_bytes() != paths[1].read_bytes():
             raise AssertionError(f'non-deterministic {case}')
         results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
         print(f'PASS {case}: identical offscreen Metal images')
+    preview_baseline = subprocess.check_output([str(target / 'debug/preview-qa')],
+        env={**os.environ, 'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(preview_baseline, 'MURMUR_PREVIEW_INVENTORY')['webkitImages'] != 0:
+        raise AssertionError('nonzero preview launch-only baseline')
+    policy_log.extend(preview_baseline.splitlines())
+    print('PASS zero-image preview launch baseline and native linkage policy')
     # Preview captures contain synthetic text only. Inventory this process,
     # not other applications; WebKit destruction has its own standalone test.
     for placement in ('notch', 'pill-light', 'pill-dark'):
@@ -90,10 +121,8 @@ def main():
                     env['MURMUR_DARK'] = '1'
                 stdout = subprocess.check_output([str(target / 'debug/preview-qa')], env=env,
                                                  cwd=UI, timeout=60, text=True)
-                inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
-                             if line.startswith('MURMUR_PREVIEW_INVENTORY=')]
-                if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
-                    raise AssertionError('missing or nonempty native preview WebKit inventory')
+                check_inventory(stdout, 'MURMUR_PREVIEW_INVENTORY')
+                policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
             if paths[0].read_bytes() != paths[1].read_bytes():
                 raise AssertionError(f'non-deterministic {case}')
             results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
@@ -102,6 +131,12 @@ def main():
             raise AssertionError('preview lift did not move the painted card')
     if results['preview-pill-light-short'] == results['preview-pill-dark-short']:
         raise AssertionError('preview system appearance fixtures did not differ')
+    diagnostics_baseline = subprocess.check_output([str(target / 'debug/diagnostics-qa')],
+        env={**os.environ, 'MURMUR_WEBKIT_BASELINE_ONLY': '1'}, cwd=UI, text=True, timeout=30)
+    if check_inventory(diagnostics_baseline, 'MURMUR_DIAGNOSTICS_INVENTORY')['webkitImages'] != 0:
+        raise AssertionError('nonzero diagnostics launch-only baseline')
+    policy_log.extend(diagnostics_baseline.splitlines())
+    print('PASS zero-image diagnostics launch baseline and native linkage policy')
     # Diagnostics uses only the synthetic adapter, with no visible AppKit window.
     for mode in ('light', 'dark', 'contrast'):
         for state in ('events', 'events-expanded', 'empty', 'loading', 'runs', 'run-detail',
@@ -119,10 +154,8 @@ def main():
                     env['MURMUR_CONTRAST'] = '1'
                 stdout = subprocess.check_output([str(target / 'debug/diagnostics-qa')],
                                                  env=env, cwd=UI, timeout=60, text=True)
-                inventory = [json.loads(line.split('=', 1)[1]) for line in stdout.splitlines()
-                             if line.startswith('MURMUR_DIAGNOSTICS_INVENTORY=')]
-                if len(inventory) != 1 or inventory[0]['webkitImages'] != 0:
-                    raise AssertionError('missing or nonempty Diagnostics WebKit inventory')
+                check_inventory(stdout, 'MURMUR_DIAGNOSTICS_INVENTORY')
+                policy_log.extend(line for line in stdout.splitlines() if line.startswith('MURMUR_'))
             if paths[0].read_bytes() != paths[1].read_bytes():
                 raise AssertionError(f'non-deterministic {case}')
             results[case] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
@@ -164,6 +197,7 @@ def main():
             raise AssertionError('History states rendered identically')
     if len({results[f'history-{mode}-list'] for mode in ('light', 'dark', 'contrast')}) != 3:
         raise AssertionError('History appearance variants rendered identically')
+    (output / 'webkit-policy.log').write_text('\n'.join(policy_log) + '\n')
     (output / 'receipt.json').write_text(json.dumps({
         'os': platform.platform(), 'gpui': '654efae441bc8eb117d0042bb28cd7cf3570bdc9',
         'comparison': 'same-host repeated render, strict byte equality',

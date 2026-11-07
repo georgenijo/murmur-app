@@ -57,7 +57,9 @@ impl Inbox {
 fn cost(event: &Event) -> usize {
     let fail = usize::MAX;
     let run_cost = |r: &Run| {
-        512 + r.runtime.len()
+        512 + r.id.len()
+            + r.correlation.1.len()
+            + r.runtime.len()
             + r.input.len()
             + r.stages
                 .iter()
@@ -67,7 +69,10 @@ fn cost(event: &Event) -> usize {
                 .iter()
                 .map(|(k, v)| k.len() + v.len() + 64)
                 .sum::<usize>()
-            + r.resources.len() * 512
+            + r.resources
+                .iter()
+                .map(|r| r.label.len() + 512)
+                .sum::<usize>()
     };
     match event {
         Event::Read { payload, .. } | Event::Notification { payload, .. } => match payload {
@@ -93,20 +98,20 @@ fn cost(event: &Event) -> usize {
                 .map(|l| l.build.len() + l.from.len() + l.to.len() + 256)
                 .sum(),
             Payload::CaptureDetail(c) => {
-                256 + c
-                    .sections
-                    .iter()
-                    .map(|(k, v)| k.len() + v.len())
-                    .sum::<usize>()
+                256 + c.id.len()
+                    + c.sections
+                        .iter()
+                        .map(|(k, v)| k.len() + v.len())
+                        .sum::<usize>()
             }
             Payload::Captures(v) if v.len() <= 20 => v
                 .iter()
                 .map(|c| {
-                    256 + c
-                        .sections
-                        .iter()
-                        .map(|(k, v)| k.len() + v.len())
-                        .sum::<usize>()
+                    256 + c.id.len()
+                        + c.sections
+                            .iter()
+                            .map(|(k, v)| k.len() + v.len())
+                            .sum::<usize>()
                 })
                 .sum(),
             _ => fail,
