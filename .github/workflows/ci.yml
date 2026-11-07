@@ -374,6 +374,7 @@ jobs:
           # rust-cache restores build-script link directives but not this
           # dependency's target-root prebuilt archive. Refresh only its adapter
           # so native test linking cannot reuse a missing static-library path.
+          rm -rf target/sherpa-onnx-prebuilt
           cargo clean -p sherpa-onnx-sys
           cargo check --locked --lib --no-default-features --features native-host
           cargo clippy --locked --lib --no-default-features --features native-host -- -D warnings
