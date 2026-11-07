@@ -24,6 +24,37 @@ use std::{collections::BTreeMap, ops::Range, rc::Rc, time::Instant};
 const DETAIL_PAGE: usize = 2048;
 const PREVIEW_CHARS: usize = 160;
 const ROW_HEIGHT: Pixels = px(112.);
+/// Only byte offsets are retained; the original entry/JSON is always borrowed.
+#[derive(Default)]
+struct DetailPages {
+    identity: Option<(u64, u64)>,
+    boundaries: Vec<usize>,
+    #[cfg(test)]
+    scanned_bytes: usize,
+    #[cfg(test)]
+    shaped_bytes: usize,
+}
+impl DetailPages {
+    fn ensure(&mut self, entry: &Entry, revision: u64) {
+        let identity = (entry.key, revision);
+        if self.identity == Some(identity) {
+            return;
+        }
+        self.boundaries.clear();
+        self.boundaries.push(0);
+        for (scalar, (byte, _)) in entry.text.char_indices().enumerate() {
+            if scalar > 0 && scalar.is_multiple_of(DETAIL_PAGE) {
+                self.boundaries.push(byte);
+            }
+        }
+        self.boundaries.push(entry.text.len());
+        self.identity = Some(identity);
+        #[cfg(test)]
+        {
+            self.scanned_bytes += entry.text.len();
+        }
+    }
+}
 pub struct History {
     pub model: Model,
     host: Rc<dyn Host>,
@@ -38,6 +69,9 @@ pub struct History {
     focus: FocusHandle,
     filter_focus: FocusHandle,
     back_focus: FocusHandle,
+    detail_focus: FocusHandle,
+    detail_scroll: ScrollHandle,
+    detail_pages: DetailPages,
     scroll: UniformListScrollHandle,
     row_focus: BTreeMap<u64, FocusHandle>,
     filters_open: bool,
@@ -91,9 +125,12 @@ impl History {
             source: source.clone(),
             date: date.clone(),
             actions: actions.clone(),
-            focus: cx.focus_handle(),
+            focus: cx.focus_handle().tab_stop(true),
             filter_focus: cx.focus_handle(),
             back_focus: cx.focus_handle(),
+            detail_focus: cx.focus_handle().tab_stop(true),
+            detail_scroll: ScrollHandle::new(),
+            detail_pages: DetailPages::default(),
             scroll: UniformListScrollHandle::new(),
             row_focus: BTreeMap::new(),
             filters_open: false,
@@ -166,11 +203,14 @@ impl History {
         self.row_focus.clear();
         self.filters_open = false;
         self.detail_page = 0;
+        self.detail_pages = DetailPages::default();
         self.rendered = 0..0;
     }
     /// Clears editor search storage as well as transcript allocations on hide.
     pub fn hide(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.detach();
+        self.source.update(cx, |s, cx| s.set_value("0", cx));
+        self.date.update(cx, |s, cx| s.set_value("0", cx));
         self.search.update(cx, |s, cx| s.set_value("", w, cx));
         cx.notify();
     }
@@ -365,6 +405,7 @@ impl History {
         self.model.selected = Some(key);
         self.model.detail = Some(key);
         self.detail_page = 0;
+        self.detail_scroll.set_offset(point(px(0.), px(0.)));
         w.focus(&self.back_focus, cx);
         cx.notify();
     }
@@ -395,6 +436,9 @@ impl History {
             return;
         }
         if e.keystroke.modifiers.platform && e.keystroke.key == "f" {
+            if self.model.detail.is_some() {
+                self.back(w, cx);
+            }
             w.focus(&self.search.read(cx).focus_handle(cx), cx);
         } else if e.keystroke.key == "escape" {
             // Open shared pickers own Escape and their focus/selection restore.
@@ -618,25 +662,58 @@ impl History {
             })
             .collect()
     }
+    fn change_detail_page(&mut self, page: usize, cx: &mut Context<Self>) {
+        self.detail_page = page;
+        self.detail_scroll.set_offset(point(px(0.), px(0.)));
+        cx.notify();
+    }
+    fn detail_key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) {
+        let m = e.keystroke.modifiers;
+        if e.prefer_character_input || m.platform || m.control || m.alt {
+            return;
+        }
+        let line = px(24.);
+        // Leave one line of overlap between viewport pages, even for short lines.
+        let viewport = (self.detail_scroll.bounds().size.height - line).max(line);
+        let offset = self.detail_scroll.offset().y;
+        let bottom = -self.detail_scroll.max_offset().y;
+        let next = match e.keystroke.key.as_str() {
+            "up" => offset + line,
+            "down" => offset - line,
+            "pageup" => offset + viewport,
+            "pagedown" => offset - viewport,
+            "space" if m.shift => offset + viewport,
+            "space" => offset - viewport,
+            "home" => px(0.),
+            "end" => bottom,
+            _ => return,
+        };
+        self.detail_scroll
+            .set_offset(point(px(0.), next.clamp(bottom, px(0.))));
+        w.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+    }
     fn detail(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(entry) = self
             .model
             .entries
             .iter()
             .find(|e| Some(e.key) == self.model.detail)
-            .cloned()
         else {
             return div().into_any_element();
         };
         let key = entry.key;
-        let pages = entry.text.chars().count().div_ceil(DETAIL_PAGE).max(1);
+        self.detail_pages
+            .ensure(entry, self.model.ticket().revision);
+        let pages = self.detail_pages.boundaries.len() - 1;
         self.detail_page = self.detail_page.min(pages - 1);
-        let page: String = entry
-            .text
-            .chars()
-            .skip(self.detail_page * DETAIL_PAGE)
-            .take(DETAIL_PAGE)
-            .collect();
+        let page = &entry.text[self.detail_pages.boundaries[self.detail_page]
+            ..self.detail_pages.boundaries[self.detail_page + 1]];
+        #[cfg(test)]
+        {
+            self.detail_pages.shaped_bytes += page.len();
+        }
         let p = Palette::get(cx);
         let mut view = div()
             .id("detail")
@@ -661,11 +738,15 @@ impl History {
                         "Transcript text page {} of {pages}",
                         self.detail_page + 1
                     ))
-                    .aria_value(page.clone())
+                    .aria_value(page.to_owned())
+                    .track_focus(&self.detail_focus)
+                    .track_scroll(&self.detail_scroll)
+                    .focus_visible(|d| d.border_1().border_color(p.focus))
+                    .capture_key_down(cx.listener(Self::detail_key))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(highlighted(&page, &self.model.query.text, p)),
+                    .child(highlighted(page, &self.model.query.text, p)),
             )
             .child(
                 div()
@@ -676,8 +757,7 @@ impl History {
                         Button::new("previous", "Previous text page")
                             .disabled(self.detail_page == 0)
                             .on_click(cx.listener(|s, _, _, cx| {
-                                s.detail_page = s.detail_page.saturating_sub(1);
-                                cx.notify();
+                                s.change_detail_page(s.detail_page.saturating_sub(1), cx);
                             })),
                     )
                     .child(format!("Page {} of {pages}", self.detail_page + 1))
@@ -685,8 +765,7 @@ impl History {
                         Button::new("next", "Next text page")
                             .disabled(self.detail_page + 1 >= pages)
                             .on_click(cx.listener(move |s, _, _, cx| {
-                                s.detail_page = (s.detail_page + 1).min(pages - 1);
-                                cx.notify();
+                                s.change_detail_page((s.detail_page + 1).min(pages - 1), cx);
                             })),
                     ),
             )
@@ -998,16 +1077,16 @@ pub fn stamp(ms: i64) -> String {
         .unwrap_or_else(|| "Unavailable time".into())
 }
 pub fn local_clock() -> Clock {
-    use chrono::{Days, Local, TimeZone};
-    let now = Local::now();
+    calendar_clock(chrono::Local::now())
+}
+fn calendar_clock<T: chrono::TimeZone>(now: chrono::DateTime<T>) -> Clock {
+    use chrono::Days;
     let today = now.date_naive();
     let midnight = |days| {
         today
             .checked_sub_days(Days::new(days))
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .and_then(|d| Local.from_local_datetime(&d).earliest())
-            .map(|d| d.timestamp_millis())
-            .unwrap_or(now.timestamp_millis())
+            .and_then(|date| calendar_start(&now.timezone(), date))
+            .unwrap_or(i64::MIN)
     };
     Clock {
         now: now.timestamp_millis(),
@@ -1015,4 +1094,16 @@ pub fn local_clock() -> Clock {
         week: midnight(6),
         month: midnight(29),
     }
+}
+/// Earliest instant on this date. Gapped midnight advances to the first valid
+/// local second; ambiguous midnight chooses the earlier instant. A wholly skipped
+/// calendar date advances to the next representable date, never to wall-clock now.
+fn calendar_start<T: chrono::TimeZone>(zone: &T, date: chrono::NaiveDate) -> Option<i64> {
+    let midnight = date.and_hms_opt(0, 0, 0)?;
+    (0..=172_800).find_map(|seconds| {
+        let local = midnight.checked_add_signed(chrono::Duration::seconds(seconds))?;
+        zone.from_local_datetime(&local)
+            .earliest()
+            .map(|d| d.timestamp_millis())
+    })
 }

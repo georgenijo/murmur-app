@@ -1,5 +1,5 @@
 use super::{History, fixtures::*, host::Authority, inbox::Inbox, model::*};
-use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
+use gpui::{Entity, Focusable, TestAppContext, VisualTestContext, prelude::*};
 use std::{
     rc::Rc,
     time::{Duration, Instant},
@@ -214,10 +214,8 @@ fn host_subscribes_before_read_keyboard_virtualizes_and_copies_full_text(cx: &mu
     assert_eq!(host.calls.borrow()[0], "subscribe");
     let painted = e.read_with(cx, |s, _| s.rendered.len());
     assert!(painted > 0 && painted < 20, "visible rows {painted}");
-    cx.update(|w, cx| {
-        e.update(cx, |s, cx| w.focus(&s.focus, cx));
-    });
-    cx.simulate_keystrokes("home space");
+    tab_to_list(&e, cx);
+    cx.simulate_keystrokes("home down up space");
     e.update(cx, |s, cx| s.drain(cx));
     draw(cx);
     assert_eq!(*host.clipboard.borrow(), entry(200).text);
@@ -269,13 +267,13 @@ mod ax {
     use super::*;
     use gpui::AccessibleAction;
     use gpui::accesskit::{ActionRequest, NodeId, TreeId, TreeUpdate};
-    fn tree(cx: &mut VisualTestContext) -> TreeUpdate {
+    pub(super) fn tree(cx: &mut VisualTestContext) -> TreeUpdate {
         let w = cx.update(|w, _| w.window_handle());
         cx.activate_accessibility(w);
         draw(cx);
         cx.accessibility_tree(w)
     }
-    fn click(cx: &mut VisualTestContext, id: NodeId) {
+    pub(super) fn click(cx: &mut VisualTestContext, id: NodeId) {
         let w = cx.update(|w, _| w.window_handle());
         cx.dispatch_accessibility_action(
             w,
@@ -288,7 +286,7 @@ mod ax {
         );
         draw(cx);
     }
-    fn named(t: &TreeUpdate, name: &str) -> NodeId {
+    pub(super) fn named(t: &TreeUpdate, name: &str) -> NodeId {
         t.nodes
             .iter()
             .find(|(_, n)| n.label() == Some(name))
@@ -471,4 +469,332 @@ fn nested_row_keyboard_and_open_picker_escape_keep_their_own_behavior(cx: &mut T
     cx.simulate_keystrokes("escape");
     draw(cx);
     assert!(!actions.read_with(cx, |s, _| s.is_open()));
+}
+
+/// Traverse the actual Root tab order from the window start, never focus the list.
+fn tab_to_list(e: &Entity<History>, cx: &mut VisualTestContext) {
+    cx.update(|w, cx| {
+        w.blur(cx);
+        // With no focus, TestWindow has no contextual key dispatch path. Enter
+        // the order using Root's first-Tab operation, then send real Tab keys.
+        w.focus_next(cx);
+    });
+    draw(cx);
+    let mut saw_search =
+        cx.update(|w, cx| e.read(cx).search.read(cx).focus_handle(cx).is_focused(w));
+    for _ in 0..40 {
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+        let (list, search) = cx.update(|w, cx| {
+            e.read_with(cx, |s, cx| {
+                (
+                    s.focus.is_focused(w),
+                    s.search.read(cx).focus_handle(cx).is_focused(w),
+                )
+            })
+        });
+        saw_search |= search;
+        if list {
+            assert!(
+                saw_search,
+                "Tab must pass the visible search before the list"
+            );
+            return;
+        }
+    }
+    panic!("normal Tab traversal skipped the transcript list");
+}
+
+#[gpui::test]
+fn command_f_from_detail_returns_to_visible_search_preserving_selection(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    tab_to_list(&e, cx);
+    cx.simulate_keystrokes("home down right");
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.detail), Some(199));
+    cx.simulate_keystrokes("cmd-f");
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.detail), None);
+    assert_eq!(e.read_with(cx, |s, _| s.model.selected), Some(199));
+    cx.update(|w, cx| assert!(e.read(cx).search.read(cx).focus_handle(cx).is_focused(w)));
+    cx.simulate_input("transcript 199:");
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.matches.len()), 1);
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn detail_tab_scrolls_every_short_line_and_resets_next_page(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    // Nine hundred short lines fit in ONE scalar page, but many viewport pages.
+    e.update(cx, |s, _| {
+        s.model.entries[199].text = "x\n".repeat(900) + &"y".repeat(248) + &"z\n".repeat(900);
+    });
+    tab_to_list(&e, cx);
+    cx.simulate_keystrokes("home right");
+    draw(cx);
+    cx.simulate_keystrokes("tab");
+    draw(cx);
+    cx.update(|w, cx| assert!(e.read(cx).detail_focus.is_focused(w)));
+    let (height, max) = e.read_with(cx, |s, _| {
+        (
+            s.detail_scroll.bounds().size.height,
+            s.detail_scroll.max_offset().y,
+        )
+    });
+    assert!(max > height * 10., "short lines must actually overflow");
+    let mut offset = gpui::px(0.);
+    for _ in 0..200 {
+        cx.simulate_keystrokes("pagedown");
+        draw(cx);
+        let next = e.read_with(cx, |s, _| s.detail_scroll.offset().y);
+        assert!(
+            offset - next <= height,
+            "viewport paging skipped unread text"
+        );
+        assert_eq!(e.read_with(cx, |s, _| s.detail_page), 0);
+        if next == offset {
+            break;
+        }
+        offset = next;
+    }
+    assert_eq!(offset, -max);
+    cx.simulate_keystrokes("home down");
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_scroll.offset().y),
+        -gpui::px(24.)
+    );
+    cx.simulate_keystrokes("up");
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_scroll.offset().y),
+        gpui::px(0.)
+    );
+    cx.simulate_keystrokes("space");
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.detail_scroll.offset().y) < gpui::px(0.));
+    cx.simulate_keystrokes("shift-space");
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_scroll.offset().y),
+        gpui::px(0.)
+    );
+    cx.simulate_keystrokes("end pageup");
+    draw(cx);
+    let y = e.read_with(cx, |s, _| s.detail_scroll.offset().y);
+    assert!(y > -max && y < gpui::px(0.));
+    let t = ax::tree(cx);
+    ax::click(cx, ax::named(&t, "Next text page"));
+    assert_eq!(e.read_with(cx, |s, _| s.detail_page), 1);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_scroll.offset().y),
+        gpui::px(0.)
+    );
+    // The second scalar page overflows too: its scroll position must not be
+    // inherited on Next, and returning from its bottom must also start at zero.
+    for _ in 0..20 {
+        if cx.update(|w, cx| e.read(cx).detail_focus.is_focused(w)) {
+            break;
+        }
+        cx.simulate_keystrokes("tab");
+        draw(cx);
+    }
+    cx.update(|w, cx| assert!(e.read(cx).detail_focus.is_focused(w)));
+    cx.simulate_keystrokes("end");
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.detail_scroll.offset().y) < gpui::px(0.));
+    let t = ax::tree(cx);
+    ax::click(cx, ax::named(&t, "Previous text page"));
+    assert_eq!(e.read_with(cx, |s, _| s.detail_page), 0);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_scroll.offset().y),
+        gpui::px(0.)
+    );
+    e.read_with(cx, |s, _| {
+        let text = &s.model.entries[199].text;
+        let reassembled: String = s
+            .detail_pages
+            .boundaries
+            .windows(2)
+            .map(|r| &text[r[0]..r[1]])
+            .collect();
+        assert_eq!(&reassembled, text);
+    });
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn reopening_resets_visible_filter_choices_and_export_scope(cx: &mut TestAppContext) {
+    let (e, host, cx) = harness(cx);
+    let t = ax::tree(cx);
+    ax::click(cx, ax::named(&t, "Filter transcripts: Everything"));
+    let t = ax::tree(cx);
+    ax::click(cx, ax::named(&t, "Show transcripts"));
+    cx.simulate_keystrokes("end space");
+    draw(cx);
+    let t = ax::tree(cx);
+    ax::click(cx, ax::named(&t, "From date"));
+    cx.simulate_keystrokes("home down space");
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.query.source), Source::Files);
+    assert_eq!(e.read_with(cx, |s, _| s.model.query.date), Date::Today);
+    cx.update(|w, cx| e.update(cx, |s, cx| s.hide(w, cx)));
+    e.update(cx, |s, cx| {
+        s.attach(cx);
+        s.drain(cx);
+    });
+    draw(cx);
+    let t = ax::tree(cx);
+    ax::click(cx, ax::named(&t, "Filter transcripts: Everything"));
+    e.read_with(cx, |s, cx| {
+        assert_eq!(s.source.read(cx).value().map(|s| s.as_ref()), Some("0"));
+        assert_eq!(s.date.read(cx).value().map(|s| s.as_ref()), Some("0"));
+        assert_eq!(s.model.matches.len(), 200);
+    });
+    let t = ax::tree(cx);
+    ax::click(cx, ax::named(&t, "More history actions"));
+    cx.simulate_keystrokes("home down down down down down down down space");
+    e.update(cx, |s, cx| s.drain(cx));
+    draw(cx);
+    assert_eq!(host.saved.borrow().len(), 1);
+    assert!(host.saved.borrow()[0].1.contains("Synthetic transcript 1:"));
+    assert!(
+        host.saved.borrow()[0]
+            .1
+            .contains("Synthetic transcript 199:")
+    );
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn calendar_gap_and_ambiguous_midnight_filter_the_real_view(cx: &mut TestAppContext) {
+    use chrono::{TimeZone, Timelike};
+    let (e, _, cx) = harness(cx);
+    for (zone, y, m, d, first_hour) in [
+        (chrono_tz::America::Santiago, 2026, 9, 6, 1),
+        (chrono_tz::America::Havana, 2026, 11, 1, 0),
+    ] {
+        let date = chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap();
+        let now = zone.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap();
+        let clock = super::calendar_clock(now);
+        let first = zone.timestamp_millis_opt(clock.today).unwrap();
+        assert_eq!(first.hour(), first_hour);
+        assert_eq!(first.minute(), 0);
+        assert_eq!(first.date_naive(), date);
+        if first_hour == 0 {
+            let ambiguous = zone.from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
+            assert!(matches!(ambiguous, chrono::LocalResult::Ambiguous(_, _)));
+            assert_eq!(
+                clock.today,
+                ambiguous.earliest().unwrap().timestamp_millis()
+            );
+        }
+        e.update(cx, |s, cx| {
+            s.model.entries = [clock.today - 1, clock.today, clock.today + 1]
+                .iter()
+                .enumerate()
+                .map(|(i, stamp)| {
+                    Entry::project(
+                        i as u64 + 1,
+                        serde_json::json!({
+                            "id": format!("calendar-{i}"), "text": "synthetic date boundary",
+                            "timestamp": stamp, "duration": 1
+                        }),
+                    )
+                    .unwrap()
+                })
+                .collect();
+            s.model.set_clock(clock);
+            s.model.set_query(Query::default());
+            s.filters_open = true;
+            s.date.update(cx, |s, cx| s.set_value("0", cx));
+            s.prepare(cx);
+        });
+        draw(cx);
+        let t = ax::tree(cx);
+        ax::click(cx, ax::named(&t, "From date"));
+        cx.simulate_keystrokes("home down space");
+        draw(cx);
+        assert_eq!(e.read_with(cx, |s, _| s.model.matches.len()), 2);
+        assert_eq!(
+            e.read_with(cx, |s, _| s.model.entries[s.model.matches[1]].key),
+            2
+        );
+    }
+}
+
+#[gpui::test]
+fn multi_megabyte_detail_redraws_only_shape_one_cached_slice(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    let text = "synthetic 🐱\n".repeat(200_000);
+    let bytes = text.len();
+    e.update(cx, |s, _| {
+        s.model.entries[199] = Entry::project(
+            200,
+            serde_json::json!({
+                "id":"large-synthetic", "text":text, "rawText":"original JSON ".repeat(200_000),
+                "timestamp":NOW, "duration":1
+            }),
+        )
+        .unwrap();
+    });
+    tab_to_list(&e, cx);
+    cx.simulate_keystrokes("home right");
+    draw(cx);
+    let scanned = e.read_with(cx, |s, _| s.detail_pages.scanned_bytes);
+    assert_eq!(scanned, bytes);
+    let before = e.read_with(cx, |s, _| s.detail_pages.shaped_bytes);
+    for _ in 0..8 {
+        e.update(cx, |_, cx| cx.notify());
+        draw(cx);
+    }
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_pages.scanned_bytes),
+        scanned
+    );
+    let copied = e.read_with(cx, |s, _| s.detail_pages.shaped_bytes) - before;
+    assert!(
+        copied > 0,
+        "the redraws must exercise the real detail render"
+    );
+    assert!(
+        copied <= 8 * super::DETAIL_PAGE * 4,
+        "only bounded slices may be shaped"
+    );
+    e.update(cx, |s, cx| {
+        s.last_detail_page();
+        cx.notify();
+    });
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_pages.scanned_bytes),
+        scanned
+    );
+    // A same-key edit with a newer service revision must invalidate boundaries.
+    e.update(cx, |s, cx| {
+        let mut replacement = entry(200);
+        replacement.text = "replacement".into();
+        s.receive(
+            Event::Changed {
+                attachment: s.model.ticket().attachment,
+                revision: s.model.ticket().revision + 1,
+                clear_epoch: 0,
+                snapshot: Snapshot {
+                    entries: vec![replacement],
+                    retain_history: true,
+                    retry_import: false,
+                },
+            },
+            cx,
+        );
+    });
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.detail_page), 0);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.detail_pages.scanned_bytes),
+        scanned + "replacement".len()
+    );
+    cx.update(|w, cx| e.update(cx, |s, cx| s.hide(w, cx)));
+    assert!(e.read_with(cx, |s, _| s.detail_pages.boundaries.is_empty()));
 }

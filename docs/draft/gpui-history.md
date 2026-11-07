@@ -91,7 +91,12 @@ The list uses GPUI's `uniform_list`, constructing only the viewport's fixed
 112pt rows. Each row shapes at most 160 preview scalars. Filtering/search scans
 all retained entries before virtualization. Detail renders one 2,048-scalar page;
 Previous/Next exposes every part of long text without an unbounded label or text
-layout. Copy always includes the full transcript. Detail mode removes the list,
+layout. Page byte boundaries are cached by row key and service revision; redraws
+borrow the retained entry and shape only the selected slice, without cloning the
+original JSON or rescanning preceding pages. The detail viewport is a Tab stop
+with arrow, Page Up/Down, Home/End, Space and Shift-Space scrolling. Viewport
+pages overlap by one line; Previous/Next text page resets scrolling to the top.
+Copy always includes the full transcript. Detail mode removes the list,
 so there is no second transcript layout/cache. Stored originals stay private to
 exact-target mutation projection; neither DTOs nor events implement Debug or
 automatic serialization.
@@ -115,11 +120,15 @@ copy/Markdown, pin/unpin and Delete; Correct & Teach appears only for the newest
 whole-history entry, irrespective of sort/filter state.
 
 Search is always visible, matching the current React History implementation.
-Command-F focuses the real shared editor; Escape clears search, exits detail,
+Command-F exits detail while preserving list selection and focuses the visible
+shared editor; Escape clears search, exits detail,
 closes filters or disarms deletion in priority order. Search is case-insensitive
 AND matching over delivered text and file names. Combined source/date/pinned
 filters have one truthful trigger label and a Show all action; no resting count.
-Date cutoffs use local calendar arithmetic, including DST; the attached host
+Reopening resets both filter dropdowns and the query, matching React mount
+defaults. Date cutoffs use the earliest valid local instant of each calendar
+date: midnight gaps advance to the first valid time, and ambiguous midnights
+choose the earlier instant. The attached host
 refreshes them across midnight/resume. Unicode fold expansions map back to original
 scalar boundaries; at most 200 merged ranges are highlighted per visible text.
 
@@ -151,7 +160,7 @@ perpetual animations, and the shared Toggle honors Reduce Motion.
 | H06 | Complete 200-entry JSON/Markdown/plain exports; exclusion/ordering/bounds; fake save/cancel. | Native file panel cancel, real atomic document sink with synthetic files, clipboard adapter and truthful AX format labels. |
 | F01 / K06 | Typed file-picker and newest-entry teaching entry points only. | Host panels/queue and full teaching consent review in their assigned phases. |
 
-Verification commands run only on the Mac mini in fresh checkout 59, via Fleet
+Verification commands run only on the Mac mini in fresh checkout 71, via Fleet
 through opti with `RUSTUP_TOOLCHAIN=1.98.1`. Native GUI input, AX actions/focus
 changes on the shared desktop, production application/profile/pasteboard, and
 memory measurements are prohibited for this worker. Windowless GPUI tests may
