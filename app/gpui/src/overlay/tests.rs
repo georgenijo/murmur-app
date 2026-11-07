@@ -1940,3 +1940,112 @@ fn disclosure_stays_hittable_and_precedes_controls_during_motion(cx: &mut TestAp
         }
     }
 }
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn stationary_pointer_exit_notifications_cannot_undo_disclosure_close(
+    test_cx: &mut TestAppContext,
+) {
+    use super::native::{TEST_POINTER_POSITION, TEST_POINTER_SAMPLE};
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_POINTER_SAMPLE.set(None);
+            TEST_POINTER_POSITION.set(None);
+        }
+    }
+    let _reset = Reset;
+    test_cx.update(crate::init);
+    for reduced in [false, true] {
+        TEST_POINTER_SAMPLE.set(Some(true));
+        test_cx.update(|cx| {
+            crate::preferences::apply(
+                crate::preferences::DisplayPreferences {
+                    reduce_motion: reduced,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        let host = Rc::new(FakeHost::default());
+        let mut entity = None;
+        let (_, cx) = test_cx.add_window_view(|w, cx| {
+            let overlay = cx.new(|_| {
+                let mut s = Overlay::new(active().snapshot, host.clone());
+                s.model.snapshot.placement = OverlayPlacement::FloatingPill;
+                s
+            });
+            entity = Some(overlay.clone());
+            gpui_base::Root::new(overlay, w, cx)
+        });
+        let overlay = entity.unwrap();
+        let handle = cx.update(|w, cx| {
+            overlay.update(cx, |s, cx| s.advance(w, cx));
+            w.window_handle()
+        });
+        cx.activate_accessibility(handle);
+        // Synthetic global coordinates stay fixed even while TestWindow resizes
+        // (unlike NSWindow, TestWindow does not preserve the floating anchor).
+        let stationary = gpui::point(gpui::px(937.), gpui::px(869.));
+        TEST_POINTER_POSITION.set(Some(stationary));
+        // AX uses the same toggle handler as clicks. Twelve rapid activations
+        // must each toggle exactly once, without changing the pointer sample.
+        for click in 0..12 {
+            adapter_press(
+                cx,
+                if click % 2 == 0 {
+                    "Quick settings, collapsed"
+                } else {
+                    "Quick settings, expanded"
+                },
+            );
+            assert_eq!(
+                overlay.read_with(cx, |s, _| s.model.phase == Phase::Open),
+                click % 2 == 0
+            );
+        }
+        let closed_at = overlay.read_with(cx, |s, _| s.now);
+        cx.update(|w, cx| {
+            overlay.update(cx, |s, cx| {
+                // Tracking-area reconciliation can report an exit at the
+                // unchanged cursor position during contraction. Feed that
+                // event and subsequent 33 ms samples through the same reducer
+                // used by the native watchdog and GPUI hover callbacks.
+                s.observe_pointer_at(false, stationary, closed_at + 1);
+                for elapsed in (33..=1254).step_by(33) {
+                    let at = closed_at + elapsed;
+                    s.observe_pointer_at(true, stationary, at);
+                    s.model.tick(at, reduced, |_, _| true);
+                    assert_ne!(
+                        s.model.phase,
+                        Phase::Open,
+                        "stationary close reopened at {elapsed}ms, reduced={reduced}"
+                    );
+                }
+                assert_eq!(s.model.phase, Phase::Collapsed);
+                // Another explicit action can reopen without a pointer exit.
+                s.toggle_quick_settings(w, cx);
+            });
+        });
+        assert_eq!(overlay.read_with(cx, |s, _| s.model.phase), Phase::Open);
+        adapter_press(cx, "Quick settings, expanded");
+        cx.update(|_, cx| {
+            overlay.update(cx, |s, _| {
+                let at = s.now + 1500;
+                // Real movement outside, then re-entry between watchdog ticks,
+                // releases suppression and requires a fresh full 150 ms dwell.
+                s.observe_pointer_at(
+                    false,
+                    stationary + gpui::point(gpui::px(300.), gpui::px(0.)),
+                    at,
+                );
+                s.observe_pointer_at(true, stationary, at + 1);
+                s.model.tick(at + 150, reduced, |_, _| true);
+                assert_ne!(s.model.phase, Phase::Open, "full dwell required");
+                s.model.tick(at + 151, reduced, |_, _| true);
+                assert_eq!(s.model.phase, Phase::Open);
+            });
+        });
+        assert!(host.intents.borrow().is_empty());
+    }
+}
