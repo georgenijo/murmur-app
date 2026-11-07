@@ -232,3 +232,58 @@ React for the dot (round, not faceted), bar count/width/gap and the symmetric en
 ~1.5px); match the light fill tint and hairline.
 R17. Onboarding: column ~20px lower; permission row height per React. Collapsed Home rail: privacy dot
 keeps its capsule.
+
+## Round 3 findings (council at 4ab82fb6)
+
+Council is now two seats. Scores: Claude Opus 5.5 7/10, Sol (gpt-6.1-sol) 7.2/10. Below 7: Home with
+the 1100px sidebar layouts (both seats), History (capture composition), meeting captions, dark
+Appearance. Fresh React measurements win over earlier prose (e.g. Insights values are 24px/600, and
+"Reset to Sonic" and "Export" live only in the theme editor footer, `AppearanceSettings.tsx:352-429`).
+
+Code review (Sol recheck of 77635e35..4ab82fb6): S1-S4 resolved; two new P2s:
+T1. `G/themes/mod.rs:~698`: after saving edited colors the selection is `custom`, no card matches, and
+"Edit colors…" disappears. React shows a "Custom" collection card with an Edit action whenever either
+selection is `custom` (`ThemeLibrary.tsx:563-572`). Do the same.
+T2. `G/themes/mod.rs:~666`: "Export current…" was removed, so the active appearance can't be exported.
+React has Export (current appearance) and Reset to Sonic in the theme editor footer
+(`AppearanceSettings.tsx:423-425`). Move both there; keep `Action::ExportCurrent` reachable.
+
+Q1. Home checklist layout (`G/home/mod.rs:~930-1036`): React's grid is
+`repeat(auto-fit, minmax(min(100%, 19rem), 1fr))` (`R/styles.css:~1260`): 2 columns in expanded and
+3 in collapsed at 1100px. Unfinished titles 600, finished titles 500 in the muted colour (`:1266-1267`).
+Q2. Dictation rows (`G/history/mod.rs:~1009`): drop the 60px minimum; padding 10px top/bottom, 12px
+left, 6px right; natural heights ~42 (one line) / 62 (two) / 82 (with file chip); one rounded card per
+day group (`R/styles.css:~1299-1301`). Talk card main row shorter (~84px card, `G/home/mod.rs:~790`).
+Q3. History capture: render History inside the Home shell (sidebar, talk card, gear, privacy footer)
+with the checklist hidden, matching React's `state=idle&checklist=hidden` (`G/bin/history-qa.rs:~293,350`).
+Q4. Meetings (`G/meetings/view.rs`): caption note as React `.meeting-quiet-note` (sunken grey, rounded,
+12px muted, `R/styles.css:~1406`; `notice()` at `:202-212`, used at `:618`); playable segment times in
+accent with a small ▶ (`:760-767`); transcript columns 60px time / 88px speaker with React padding;
+delete = muted icon in bordered circle, not red (`:356`); Format select is a rounded rectangle, not a
+pill; selected meeting row ~52px with tinted selection and accent edge; channel picker shows "Both
+channels" in full.
+Q5. Status chip: React shows a "Ready"/"Recording"/... chip in the title area on every screen except
+Home (`R/App.tsx:~800`, `R/components/MainHeader.tsx:~102`). Add it beside the sidebar toggle
+(`G/home/mod.rs:~332`).
+Q6. Appearance (`G/themes/mod.rs`): Create/Import theme are bordered 28px quiet buttons with 12px text
+(`ThemeLibrary.tsx:496,515`; Import opens the Import file / Browse Open VSX menu); swatches use the
+resolved variant background with React's layered radial gradients (`ThemeLibrary.tsx:~88`), so dark
+orbs look dark; dark-mode cards sit near the page surface; selected = border + outer ring; card action
+icons never spill past the card edge (truncate the name or grow the card).
+Q7. Settings sidebar: fixed while content scrolls (never under the traffic lights); search is a white,
+bordered, 6px-radius rectangle (`G/settings/mod.rs:~1280`); per-surface search shapes (`G/field.rs:~72`):
+Settings 6px, Home history rounded rect, Meetings pill. Match nav glyphs to `SettingsPanel.tsx:~375-381`
+(Delivery, Text & vocabulary, Modes, Performance Lab bar chart, Diagnostics document) in `G/icons.rs:~171-183`.
+Q8. Modes (`G/modes/mod.rs`): selected library tile = accent border all round + tint, not the nav-row
+bar outside it (`:~513`); React tile height; "Before / after test" heading + sample-text card (`:~1016`).
+Q9. Insights (`G/insights/mod.rs:~148-179`): values 24px/600, ~16px tile padding, wrap long values as
+React (no character-count shrink); bars keep React's light treatment (no full-accent tallest bar);
+heatmap cell size and empty-day colour per React.
+Q10. Onboarding Denied badge: red text, pale error background, alert-circle icon
+(`OnboardingFlow.tsx:~613-624`; `G/onboarding/mod.rs:~761`); help text centred at 420px (`:~805`;
+`R/styles.css:~1631`); balanced subtitle wrapping.
+Q11. Pill (`G/overlay/mod.rs:~373-384`): solid fills rgb(246,246,248) light and rgb(28,28,30) dark
+(`overlay.css:71,81`) instead of 76% surface; per-bar variation and amplitude response like React
+(no early clamp), keeping 18 bars / 2px / 1.5px gaps / 10px dot.
+Q12. Polish: setup-assistant row padding (`G/settings/panes.rs:~58`); updater header/body insets and
+shadow (`G/update_dialog.rs:~38,82`).
