@@ -15,8 +15,8 @@ fn assert_future_keys(original: &Value, written: &Value) {
             for (key, value) in object {
                 if key.starts_with("future") {
                     assert_eq!(written.get(key), Some(value), "{key}");
-                } else if let Some(written) = written.get(key) {
-                    assert_future_keys(value, written);
+                } else {
+                    assert_future_keys(value, &written[key.as_str()]);
                 }
             }
         }
@@ -174,4 +174,50 @@ fn unsupported_schema_versions_fail_without_replacing_original_files() {
     assert!(normalized["theme"].get("accent").is_none());
     assert!(normalized["theme"].get("contrast").is_none());
     assert_eq!(normalized["future"], true);
+}
+
+#[test]
+fn retaining_opaque_appearance_data_does_not_widen_exports() {
+    fn no_future(value: &Value) {
+        match value {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    assert!(!key.starts_with("future"), "{key}");
+                    no_future(value);
+                }
+            }
+            Value::Array(array) => {
+                for value in array {
+                    no_future(value);
+                }
+            }
+            _ => (),
+        }
+    }
+    let fixture = fixture();
+    let known_settings = state::settings_export(fixture["settings"].clone()).unwrap();
+    no_future(&known_settings);
+    assert_eq!(known_settings["modes"][0]["id"], "synthetic-mode");
+    assert_eq!(
+        known_settings["vocabularyEntries"][0]["written"],
+        "Synthetic"
+    );
+    for (name, key) in [
+        ("appearance", "murmur-appearance"),
+        ("library", "murmur-theme-library"),
+    ] {
+        let normalized = state::normalize(key, fixture[name].clone()).unwrap();
+        assert_future_keys(&fixture[name], &normalized);
+        let exported = state::appearance_export(key, normalized.clone()).unwrap();
+        no_future(&exported);
+        assert_eq!(state::normalize(key, exported.clone()).unwrap(), exported);
+        // Export must not mutate the retained source.
+        assert_future_keys(&fixture[name], &normalized);
+        if name == "appearance" {
+            assert_eq!(exported["theme"]["accent"], "#abcdef");
+            assert_eq!(exported["theme"]["dark"]["background"], "#123456");
+        } else {
+            assert_eq!(exported["themes"][0]["id"], "synthetic-theme");
+        }
+    }
 }

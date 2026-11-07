@@ -53,7 +53,16 @@ fn unique_strings_bounded(v: &Value, cap: usize, utf8_bytes: bool) -> Value {
 }
 /// Upgrade legacy settings to v7; unknown future schemas fail closed, preserving
 /// the source. Capture consents require actual booleans, never truthy values.
-pub fn settings(mut v: Value) -> Result<Value> {
+pub fn settings(v: Value) -> Result<Value> {
+    settings_inner(v, true)
+}
+/// Project existing portable preference fields without opaque local metadata.
+/// Exchange callers still choose the relevant modes/vocabulary subset.
+pub fn settings_export(v: Value) -> Result<Value> {
+    let value = normalize("dictation-settings", v)?;
+    settings_inner(value, false)
+}
+fn settings_inner(mut v: Value, preserve: bool) -> Result<Value> {
     let raw = v.clone();
     let p = v.as_object_mut().ok_or(Error::Invalid)?;
     let version = p
@@ -189,7 +198,10 @@ pub fn settings(mut v: Value) -> Result<Value> {
             .clamp(0., 100.)
             .round() as i64),
     );
-    settings_nested::normalize(p, &raw, &catalog);
+    settings_nested::normalize(p, &raw, &catalog, preserve);
+    if !preserve {
+        p.retain(|key, _| key == "settingsVersion" || defaults.get(key).is_some());
+    }
     p.insert("settingsVersion".into(), json!(7));
     Ok(v)
 }
@@ -251,6 +263,12 @@ pub fn normalize(key: &str, value: Value) -> Result<Value> {
     }
     Ok(normalized)
 }
+/// Export known appearance fields only; opaque local metadata stays on disk.
+pub fn appearance_export(key: &str, value: Value) -> Result<Value> {
+    let value = normalize(key, value)?;
+    appearance::export(key, value)
+}
+
 fn normalize_inner(key: &str, value: Value) -> Result<Value> {
     let valid = match key {
         "dictation-settings" => return settings(value),

@@ -1,5 +1,23 @@
 use super::*;
 use std::collections::{BTreeMap, HashSet};
+
+// Durable state retains opaque fields; explicit exports retain the historical
+// allowlist. Do not make unknown local metadata shareable by normalizing it.
+fn keep_unknown(preserve: bool, original: &Value, normalized: Value, known: &[&str]) -> Value {
+    if preserve {
+        with_unknown(original, normalized, known)
+    } else {
+        normalized
+    }
+}
+pub(super) fn export(key: &str, value: Value) -> Result<Value> {
+    match key {
+        "murmur-appearance" => document_inner(value, false),
+        "murmur-theme-library" => library_inner(value, false),
+        _ => Err(Error::Invalid),
+    }
+}
+
 fn color(v: &Value) -> Option<String> {
     let s = v.as_str()?.strip_prefix('#')?;
     if ![3, 6].contains(&s.len()) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -17,7 +35,7 @@ fn color(v: &Value) -> Option<String> {
         format!("#{}", s.to_ascii_lowercase())
     })
 }
-pub(super) fn theme(v: &Value) -> Value {
+fn theme(v: &Value, preserve: bool) -> Value {
     if !v.is_object() || v["version"] != 1 {
         return json!({"version":1,"presetId":"sonic"});
     }
@@ -59,12 +77,13 @@ pub(super) fn theme(v: &Value) -> Value {
                 colors.insert(k.into(), json!(c));
             }
         }
-        let colors = with_unknown(&v[mode], json!(colors), &known);
+        let colors = keep_unknown(preserve, &v[mode], json!(colors), &known);
         if colors.as_object().is_some_and(|c| !c.is_empty()) {
             out[mode] = colors;
         }
     }
-    with_unknown(
+    keep_unknown(
+        preserve,
         v,
         out,
         &[
@@ -92,24 +111,32 @@ fn id(v: &Value) -> bool {
     })
 }
 pub(super) fn document(v: Value) -> Result<Value> {
+    document_inner(v, true)
+}
+fn document_inner(v: Value, preserve: bool) -> Result<Value> {
     if !v.is_object() || v["version"] != 1 {
         return Err(Error::Invalid);
     }
-    let mut out = json!({"version":1,"revision":revision(&v["revision"]),"mode":if allowed(&v["mode"],&["system","light","dark"]) {v["mode"].clone()} else {json!("system")},"theme":theme(&v["theme"])});
+    let mut out = json!({"version":1,"revision":revision(&v["revision"]),"mode":if allowed(&v["mode"],&["system","light","dark"]) {v["mode"].clone()} else {json!("system")},"theme":theme(&v["theme"], preserve)});
     if id(&v["selection"]["light"]) && id(&v["selection"]["dark"]) {
-        out["selection"] = with_unknown(
+        out["selection"] = keep_unknown(
+            preserve,
             &v["selection"],
             json!({"light":v["selection"]["light"],"dark":v["selection"]["dark"]}),
             &["light", "dark"],
         );
     }
-    Ok(with_unknown(
+    Ok(keep_unknown(
+        preserve,
         &v,
         out,
         &["version", "revision", "mode", "theme", "selection", "cache"],
     ))
 }
 pub(super) fn library(v: Value) -> Result<Value> {
+    library_inner(v, true)
+}
+fn library_inner(v: Value, preserve: bool) -> Result<Value> {
     if v["version"] != 1 || !v["themes"].is_array() || v["themes"].as_array().unwrap().len() > 128 {
         return Err(Error::Invalid);
     }
@@ -181,7 +208,8 @@ pub(super) fn library(v: Value) -> Result<Value> {
             }
             out
         };
-        let source = with_unknown(
+        let source = keep_unknown(
+            preserve,
             source,
             normalized_source,
             &["kind", "extensionId", "version", "license", "sourceUrl"],
@@ -220,7 +248,7 @@ pub(super) fn library(v: Value) -> Result<Value> {
         if !seen.insert(key.clone()) {
             return Err(Error::Invalid);
         }
-        let mut entry = json!({"version":1,"id":key,"label":label,"modes":modes,"theme":theme(&t["theme"]),"source":source});
+        let mut entry = json!({"version":1,"id":key,"label":label,"modes":modes,"theme":theme(&t["theme"], preserve),"source":source});
         if let Some(collection) = t.get("collection") {
             let label = collection["label"].as_str().unwrap_or("").trim();
             if !collection["id"]
@@ -231,13 +259,15 @@ pub(super) fn library(v: Value) -> Result<Value> {
             {
                 return Err(Error::Invalid);
             }
-            entry["collection"] = with_unknown(
+            entry["collection"] = keep_unknown(
+                preserve,
                 collection,
                 json!({"id":collection["id"],"label":label}),
                 &["id", "label"],
             );
         }
-        out.push(with_unknown(
+        out.push(keep_unknown(
+            preserve,
             t,
             entry,
             &[
@@ -255,7 +285,8 @@ pub(super) fn library(v: Value) -> Result<Value> {
     if !renamed.is_empty() {
         result["legacyRenamedIds"] = json!(renamed);
     }
-    Ok(with_unknown(
+    Ok(keep_unknown(
+        preserve,
         &v,
         result,
         &["version", "revision", "themes", "legacyRenamedIds"],

@@ -1471,10 +1471,16 @@ mod theme_action {
                 return Ok(Some(s));
             }
             Action::ExportCurrent => {
-                save_text(b, "murmur-theme.json", s.appearance.to_string(), current).await?
+                let value =
+                    murmur_core::state::appearance_export("murmur-appearance", s.appearance)
+                        .map_err(|_| "Theme export unavailable")?;
+                save_text(b, "murmur-theme.json", value.to_string(), current).await?
             }
             Action::ExportEntry(id) => {
-                let entry = library::entries(&s.library)
+                let value =
+                    murmur_core::state::appearance_export("murmur-theme-library", s.library)
+                        .map_err(|_| "Theme export unavailable")?;
+                let entry = library::entries(&value)
                     .into_iter()
                     .find(|e| e["id"] == id)
                     .ok_or("Theme removed")?;

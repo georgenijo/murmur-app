@@ -44,3 +44,28 @@ fn mode_import_is_strict_and_preserves_activation() {
     );
     assert!(exchange::parse("{/*comment*/}").is_err());
 }
+
+#[test]
+fn mode_and_spelling_exports_exclude_retained_opaque_fields() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../src-tauri/crates/murmur-core/src/state/gpui-downgrade-fixtures.json"
+    ))
+    .unwrap();
+    let mut raw = fixture["settings"].clone();
+    raw["browserSiteRules"][0]["modeId"] = json!("synthetic-mode");
+    let settings = murmur_core::state::normalize("dictation-settings", raw).unwrap();
+    let modes = exchange::export(&settings).unwrap();
+    let modes = exchange::parse(&modes).unwrap();
+    assert_eq!(modes["modes"][0]["id"], "synthetic-mode");
+    assert_eq!(modes["browserSiteRules"][0]["id"], "synthetic-rule");
+    assert!(!modes.to_string().contains("future"));
+    let spellings = crate::customize::vocabulary::export(&settings).unwrap();
+    let spellings = crate::customize::vocabulary::parse(&spellings).unwrap();
+    assert!(!spellings.to_string().contains("future"));
+    assert!(settings["modes"][0].get("futureMode").is_some());
+    assert!(
+        settings["vocabularyEntries"][0]["scope"]
+            .get("futureScope")
+            .is_some()
+    );
+}

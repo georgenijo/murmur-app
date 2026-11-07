@@ -179,6 +179,9 @@ pub fn commit(p: &Preview, settings: &Value) -> Result<Value, Problem> {
     Ok(json!({"vocabularyEntries":p.entries}))
 }
 pub fn export(settings: &Value) -> Result<String, Problem> {
+    let known =
+        murmur_core::state::settings_export(settings.clone()).map_err(|_| Problem::Invalid)?;
+    let settings = &known;
     let v =
         json!({"format":"murmur-vocabulary","version":1,"entries":settings["vocabularyEntries"]});
     let s = serde_json::to_string_pretty(&v).map_err(|_| Problem::Invalid)?;

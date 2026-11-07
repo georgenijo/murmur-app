@@ -69,8 +69,10 @@ libraries. Invalid known fields still follow existing validation; obsolete
 appearance caches, local source metadata and profile scan payloads still follow
 their existing removal rules. Explicit delete/reset/replacement actions retain
 their meaning; retention does not resurrect deleted objects. Unknown fields are
-opaque durable data, not newly executable settings. Exports still select their
-existing allowed fields; nothing widens export or consent boundaries.
+opaque durable data, not newly executable settings. GPUI theme, mode and spelling
+exports use explicit projections of the existing known fields, so retaining
+local opaque fields does not widen their export schemas or break strict import.
+History exports still select their existing allowed fields; consent is unchanged.
 
 The synthetic Rust tests write with the GPUI-used core APIs, edit/pin/reopen,
 then read through the shared Tauri completion/lifecycle loaders. A Tauri adapter

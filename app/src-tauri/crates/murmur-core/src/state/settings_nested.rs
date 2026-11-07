@@ -1,5 +1,12 @@
 use super::{allowed, unique_strings, with_unknown};
 use serde_json::{json, Map, Value};
+fn keep_unknown(preserve: bool, original: &Value, normalized: Value, known: &[&str]) -> Value {
+    if preserve {
+        with_unknown(original, normalized, known)
+    } else {
+        normalized
+    }
+}
 fn text(v: &Value) -> String {
     v.as_str().unwrap_or("").trim().into()
 }
@@ -32,12 +39,12 @@ fn rows(v: &Value) -> impl Iterator<Item = &Value> {
 fn truncate(s: &str) -> String {
     s.chars().take(256).collect()
 }
-pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value) {
+pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value, preserve: bool) {
     let profiles: Vec<_> = rows(&p["appProfiles"]).filter(|v| !text(&v["bundleId"]).is_empty()).map(|v| {
         let mut out=json!({"bundleId":text(&v["bundleId"]),"label":v["label"].as_str().unwrap_or(""),"writingStyle":style(&v["writingStyle"]),"ideContextEnabled":v["ideContextEnabled"]==true,"ideProjectRoots":rows(&unique_strings(&v["ideProjectRoots"],usize::MAX)).filter(|v| v.as_str().unwrap().encode_utf16().count()<=4096).take(4).cloned().collect::<Vec<_>>()});
         for k in ["autoPasteOverride","cleanupOverride","smartFormattingOverride","cliFormattingOverride"] { out[k]=nullable(&v[k]); }
         if !text(&v["modeId"]).is_empty() { out["modeId"]=json!(text(&v["modeId"])); }
-        with_unknown(v, out, &["modeId", "persistedSymbols", "scanResults"])
+        keep_unknown(preserve, v, out, &["modeId", "persistedSymbols", "scanResults"])
     }).collect();
     p.insert("appProfiles".into(), json!(profiles));
     let mut ids = catalog["builtinModes"].as_array().unwrap().clone();
@@ -93,7 +100,7 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
             out[k] = nullable(&v[k]);
         }
         ids.push(json!(id));
-        modes.push(with_unknown(v, out, &[]));
+        modes.push(keep_unknown(preserve, v, out, &[]));
     }
     if !catalog["builtinModes"]
         .as_array()
@@ -134,18 +141,18 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
         }
         rule_ids.push(id.clone());
         sites.push(site);
-        rules.push(with_unknown(v, json!({"id":id,"browserBundleId":v["browserBundleId"],"host":host,"modeId":v["modeId"],"enabled":v["enabled"]!=false}), &[]));
+        rules.push(keep_unknown(preserve, v, json!({"id":id,"browserBundleId":v["browserBundleId"],"host":host,"modeId":v["modeId"],"enabled":v["enabled"]!=false}), &[]));
     }
     p.insert("browserSiteRules".into(), json!(rules));
-    p.insert("voiceCommands".into(),json!(rows(&p["voiceCommands"]).filter(|v| !text(&v["phrase"]).is_empty()).map(|v| with_unknown(v, json!({"phrase":text(&v["phrase"]),"replacement":v["replacement"].as_str().unwrap_or("")}), &[])).collect::<Vec<_>>()));
+    p.insert("voiceCommands".into(),json!(rows(&p["voiceCommands"]).filter(|v| !text(&v["phrase"]).is_empty()).map(|v| keep_unknown(preserve, v, json!({"phrase":text(&v["phrase"]),"replacement":v["replacement"].as_str().unwrap_or("")}), &[])).collect::<Vec<_>>()));
     let vocab = if raw["vocabularyEntries"].is_array() {
         rows(&raw["vocabularyEntries"]).filter(|v| !text(&v["written"]).is_empty()).enumerate().take(500).map(|(i,v)| {
         let mut scope=json!({"kind":"global"});let s=&v["scope"];
         if allowed(&s["kind"],&["app","project"]) && !text(&s["bundleId"]).is_empty() && (s["kind"]!="project" || !text(&s["root"]).is_empty()) { scope=json!({"kind":s["kind"],"bundleId":text(&s["bundleId"])});if s["kind"]=="project" { scope["root"]=json!(text(&s["root"])); } }
-        scope=with_unknown(s, scope, &["kind", "bundleId", "root"]);
+        scope=keep_unknown(preserve, s, scope, &["kind", "bundleId", "root"]);
         let mut aliases=vec![];
         for a in rows(&v["aliases"]).filter_map(Value::as_str) { let a=truncate(a.trim()); if !a.is_empty() && !aliases.iter().any(|v: &String| v.eq_ignore_ascii_case(&a)) && aliases.len()<16 { aliases.push(a); } }
-        with_unknown(v, json!({"id":if text(&v["id"]).is_empty() {format!("vocabulary-{i}")} else {v["id"].as_str().unwrap().into()},"written":truncate(&text(&v["written"])),"aliases":aliases,"enabled":v["enabled"].as_bool().unwrap_or(true),"scope":scope}), &[])
+        keep_unknown(preserve, v, json!({"id":if text(&v["id"]).is_empty() {format!("vocabulary-{i}")} else {v["id"].as_str().unwrap().into()},"written":truncate(&text(&v["written"])),"aliases":aliases,"enabled":v["enabled"].as_bool().unwrap_or(true),"scope":scope}), &[])
     }).collect::<Vec<_>>()
     } else {
         p["customVocabulary"].as_str().unwrap_or("").split([',','\r','\n']).map(str::trim).filter(|s| !s.is_empty()).take(500).enumerate().map(|(i,s)| json!({"id":format!("legacy-{i}"),"written":truncate(s),"aliases":[],"enabled":true,"scope":{"kind":"global"}})).collect()
@@ -168,12 +175,12 @@ pub(super) fn normalize(p: &mut Map<String, Value>, raw: &Value, catalog: &Value
         && scan["capped"].is_boolean()
         && scan["sampleTerms"].is_array()
     {
-        let ranked:Vec<_>=rows(&scan["rankedTerms"]).filter(|v| v["term"].as_str().is_some_and(|s| !s.is_empty()) && v["freq"].is_number()).take(500).map(|v| with_unknown(v, json!({"term":v["term"],"freq":v["freq"].as_f64().unwrap().max(0.).trunc() as u64}), &[])).collect();
+        let ranked:Vec<_>=rows(&scan["rankedTerms"]).filter(|v| v["term"].as_str().is_some_and(|s| !s.is_empty()) && v["freq"].is_number()).take(500).map(|v| keep_unknown(preserve, v, json!({"term":v["term"],"freq":v["freq"].as_f64().unwrap().max(0.).trunc() as u64}), &[])).collect();
         let mut out = json!({"capped":scan["capped"],"sampleTerms":rows(&scan["sampleTerms"]).filter(|v| v.is_string()).take(50).collect::<Vec<_>>(),"rankedTerms":ranked,"whisperCount":scan["whisperCount"].as_f64().unwrap_or(0.).clamp(0.,ranked.len() as f64).trunc() as u64,"adopted":scan["adopted"].as_bool().unwrap_or(true)});
         for k in ["files", "skipped", "terms", "bytes", "ms"] {
             out[k] = json!(scan[k].as_f64().unwrap().max(0.).trunc() as u64);
         }
-        with_unknown(scan, out, &[])
+        keep_unknown(preserve, scan, out, &[])
     } else {
         Value::Null
     };

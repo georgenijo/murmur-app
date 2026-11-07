@@ -198,6 +198,9 @@ pub fn commit(p: &Preview, current: &Value) -> Result<Value, Problem> {
     Ok(p.next.clone())
 }
 pub fn export(settings: &Value) -> Result<String, Problem> {
+    let known =
+        murmur_core::state::settings_export(settings.clone()).map_err(|_| Problem::Invalid)?;
+    let settings = &known;
     let modes = settings["modes"].as_array().ok_or(Problem::Invalid)?;
     let ids: BTreeSet<_> = modes.iter().filter_map(|m| m["id"].as_str()).collect();
     let file = json!({"format":"murmur-modes","version":1,"modes":modes,"appBindings":settings["appProfiles"].as_array().ok_or(Problem::Invalid)?.iter().filter(|p|ids.contains(p["modeId"].as_str().unwrap_or(""))).map(|p|json!({"bundleId":p["bundleId"],"modeId":p["modeId"]})).collect::<Vec<_>>(),"browserSiteRules":settings["browserSiteRules"].as_array().ok_or(Problem::Invalid)?.iter().filter(|r|ids.contains(r["modeId"].as_str().unwrap_or(""))).collect::<Vec<_>>()});
