@@ -1419,6 +1419,100 @@ mod overlay_ingress_tests {
         ]
     }
     #[test]
+    fn interrupted_partial_is_presented_when_processing_arrives_before_the_next_tick() {
+        let mut model = model();
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Recording,
+                at_ms: 0,
+            },
+            0,
+        );
+        ingress(
+            &mut model,
+            "recording-interrupted",
+            json!({"recordingId":7,"statusCode":"microphone_interrupted","autoTranscribe":true,"actionCode":"wait_for_partial_transcription"}),
+            100,
+        );
+        // No presentation tick between interruption and automatic transcription.
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Processing,
+                at_ms: 100,
+            },
+            100,
+        );
+        assert_eq!(model.indicator(100), Indicator::Failure(Failure::Partial));
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Idle,
+                at_ms: 200,
+            },
+            200,
+        );
+        // Processing → Idle normally presents Done. Partial retains its original
+        // five-second deadline through completion.
+        assert_eq!(model.indicator(200), Indicator::Failure(Failure::Partial));
+        assert_eq!(model.indicator(5099), Indicator::Failure(Failure::Partial));
+        assert_eq!(model.indicator(5100), Indicator::Idle);
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Processing,
+                at_ms: 5200,
+            },
+            5200,
+        );
+        assert_eq!(model.indicator(5200), Indicator::Processing);
+    }
+    #[test]
+    fn processing_preserves_only_same_generation_partial_and_new_recordings_clear_it() {
+        for (event, payload, expected) in failures() {
+            let mut model = model();
+            ingress(&mut model, event, payload.clone(), 100);
+            model.event(
+                Event::Lifecycle {
+                    generation: 7,
+                    status: Status::Processing,
+                    at_ms: 101,
+                },
+                101,
+            );
+            assert_eq!(
+                model.indicator(101),
+                if expected == Failure::Partial {
+                    Indicator::Failure(Failure::Partial)
+                } else {
+                    Indicator::Processing
+                }
+            );
+            model.event(
+                Event::Lifecycle {
+                    generation: 8,
+                    status: Status::Processing,
+                    at_ms: 102,
+                },
+                102,
+            );
+            ingress(&mut model, event, payload, 103);
+            assert_eq!(model.indicator(103), Indicator::Processing);
+        }
+        let mut model = model();
+        model.event(Event::Failure(7, Failure::Partial), 100);
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Recording,
+                at_ms: 101,
+            },
+            101,
+        );
+        assert_eq!(model.indicator(101), Indicator::Recording);
+    }
+    #[test]
     fn failure_presentations_expire_after_five_seconds_including_through_idle() {
         for (event, payload, expected) in failures() {
             let mut model = model();

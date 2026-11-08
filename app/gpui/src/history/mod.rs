@@ -1073,9 +1073,13 @@ impl History {
                                     .child(
                                         Button::new(
                                             ("copy-action", key),
-                                            format!("Copy transcript {}", position + 1),
+                                            if copied {
+                                                format!("Copied transcript {}", position + 1)
+                                            } else {
+                                                format!("Copy transcript {}", position + 1)
+                                            },
                                         )
-                                        .icon_only(Glyph::Copy)
+                                        .icon_only(if copied { Glyph::Check } else { Glyph::Copy })
                                         .intent(ButtonIntent::Ghost)
                                         .size(ButtonSize::ExtraSmall)
                                         .track_focus(&copy_focus)

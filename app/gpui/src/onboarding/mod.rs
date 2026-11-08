@@ -818,7 +818,7 @@ impl Render for Onboarding {
                     "Enable Murmur under Privacy & Security → Microphone, then come back. This screen updates automatically."
                 }
                 Permission::Accessibility if access != Access::Granted => {
-                    "Turn on Murmur in System Settings, then come back. This screen updates automatically."
+                    "Enable this copy of Murmur in System Settings → Privacy & Security → Accessibility for the global recording key and auto-paste. Then come back; this screen updates automatically."
                 }
                 Permission::SystemAudio if access == Access::Unsupported => {
                     "Meeting capture requires macOS 14.2 or newer. Dictation is still available."

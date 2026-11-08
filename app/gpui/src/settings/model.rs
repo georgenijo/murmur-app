@@ -95,6 +95,7 @@ pub struct Runtime {
     pub login_enabled: Option<bool>,
     pub recording: bool,
     pub internal_build: bool,
+    pub delivery_isolated: bool,
     pub english_only: bool,
     pub notchpill: Option<bool>,
     pub speakers_supported: Option<bool>,
@@ -267,6 +268,10 @@ impl Model {
                 row.key,
                 "autoPaste" | "autoPasteDelayMs" | "smartDestinationEnabled"
             ) && (s["saveAudio"] == true || s["saveTranscript"] == true)
+            || matches!(
+                row.key,
+                "autoPaste" | "autoPasteDelayMs" | "smartDestinationEnabled"
+            ) && r.delivery_isolated
             || row.key == "language" && r.english_only
             || row.key == "smartAutoStopEnabled"
                 && s["smartAutoStopEnabled"] != true

@@ -27,6 +27,11 @@ pub fn initialize_identity(identifier: &str, home: &std::path::Path) -> Result<(
     crate::launch::process_start();
     Ok(())
 }
+/// The same frozen policy controls both the pasteboard and external input.
+/// Querying this does not read clipboard contents or request permissions.
+pub fn external_delivery_allowed() -> bool {
+    crate::identity::external_input_allowed()
+}
 pub fn install_runtime(runtime: tokio::runtime::Handle) -> Result<(), String> {
     host::runtime::install(runtime).map_err(|_| "Host runtime already installed".into())
 }

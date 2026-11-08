@@ -438,6 +438,61 @@ mod ax {
     }
 
     #[gpui::test]
+    fn delivery_isolation_and_accessibility_are_visible_and_actionable(cx: &mut TestAppContext) {
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.settings["autoPaste"] = json!(true);
+            snapshot.runtime.delivery_isolated = true;
+            snapshot.runtime.accessibility = Some(false);
+        });
+        let t = tree(cx);
+        click(cx, named(&t, "Delivery"));
+        let t = tree(cx);
+        let node = &t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Auto-paste"))
+            .unwrap()
+            .1;
+        assert!(node.is_disabled());
+        assert_eq!(node.toggled(), Some(gpui::accesskit::Toggled::False));
+        assert!(
+            t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Test build: paste stays inside Murmur"))
+        );
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Grant Accessibility…"))
+        );
+        assert_eq!(host.state.borrow().settings["autoPaste"], true);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.delivery_isolated = false
+        });
+        let t = tree(cx);
+        let node = &t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Auto-paste"))
+            .unwrap()
+            .1;
+        assert!(!node.is_disabled());
+        assert_eq!(node.toggled(), Some(gpui::accesskit::Toggled::True));
+        click(cx, named(&t, "Grant Accessibility…"));
+        assert!(host.actions.borrow().contains(&Action::Accessibility));
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.accessibility = Some(true)
+        });
+        assert!(
+            !tree(cx)
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Grant Accessibility…"))
+        );
+    }
+
+    #[gpui::test]
     fn real_accesskit_roles_navigation_switches_disclosure_and_inert_children(
         cx: &mut TestAppContext,
     ) {

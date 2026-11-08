@@ -443,6 +443,7 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
                 access(&b.call("check_accessibility_permission", json!({})).await?)
                     == crate::onboarding::model::Access::Granted,
             ),
+            delivery_isolated: !murmur_services::native_services::external_delivery_allowed(),
             notchpill: b.call("is_notchpill_installed", json!({})).await?.as_bool(),
             ..Default::default()
         };

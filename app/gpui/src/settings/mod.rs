@@ -824,7 +824,9 @@ impl Settings {
     }
     fn row(&mut self, row: Row, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let p = Palette::get(cx);
-        let value = if row.key == "launchAtLogin" {
+        let value = if row.key == "autoPaste" && self.model.runtime().delivery_isolated {
+            json!(false)
+        } else if row.key == "launchAtLogin" {
             self.model.runtime().login_enabled.map_or_else(
                 || self.model.settings()[row.key].clone(),
                 serde_json::Value::Bool,
@@ -835,7 +837,9 @@ impl Settings {
         let disabled = self.model.disabled(row);
         let file = self.model.settings()["saveTranscript"] == true
             || self.model.settings()["saveAudio"] == true;
-        let detail = if row.key == "autoPaste" && file {
+        let detail = if row.key == "autoPaste" && self.model.runtime().delivery_isolated {
+            "Test build: paste stays inside Murmur"
+        } else if row.key == "autoPaste" && file {
             if value == true {
                 "Paused while file output is on; your preference resumes when file output is off"
             } else {
@@ -940,9 +944,14 @@ impl Settings {
             .when(!detail.is_empty(), |d| {
                 d.child(
                     div()
+                        .id(SharedString::from(format!("{}-description", row.key)))
                         .text_size(px(12.))
                         .line_height(px(18.))
                         .text_color(p.muted)
+                        .when(
+                            row.key == "autoPaste" && self.model.runtime().delivery_isolated,
+                            |d| d.role(Role::Label).aria_label(detail),
+                        )
                         .child(detail),
                 )
             });

@@ -379,7 +379,14 @@ impl Model {
         let newer = g > self.snapshot.generation;
         if newer || (status != Status::Idle && status != self.snapshot.status) {
             self.delivery = None;
-            self.failure = None;
+            // Automatic transcription can start in the same inbox drain as
+            // recording-interrupted. Preserve its cue and original deadline.
+            if newer
+                || status != Status::Processing
+                || !matches!(self.failure, Some((Failure::Partial, _)))
+            {
+                self.failure = None;
+            }
             self.done_until = 0;
             self.miss_until = 0;
             self.retry_attempt += 1;

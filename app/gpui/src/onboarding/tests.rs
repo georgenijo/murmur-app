@@ -396,7 +396,7 @@ mod ax {
         e.update(cx, |s, cx| s.visit(Step::Accessibility, cx));
         static_text(
             &tree(cx),
-            "Turn on Murmur in System Settings, then come back. This screen updates automatically.",
+            "Enable this copy of Murmur in System Settings → Privacy & Security → Accessibility for the global recording key and auto-paste. Then come back; this screen updates automatically.",
         );
         e.update(cx, |s, cx| s.visit(Step::Model, cx));
         static_text(
