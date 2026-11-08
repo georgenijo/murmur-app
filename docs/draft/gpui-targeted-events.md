@@ -111,6 +111,7 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `dictation-delivery-outcome` | `commands/recording.rs` | useOverlayRuntime; useRecordingState; dictation_cues (native) | Main Overlay SoundCues |
 | `dictation-generation-started` | `commands/recording.rs` | useDictationPartial; useOverlayRuntime; useRecordingState; dictation_cues (native) | Main Overlay DictationPreview SoundCues |
 | `dictation-lock-changed` | `dictation_control.rs` | useRecordingControls | Overlay |
+| `dictation-stop-completed` | `dictation_control.rs` | dictation feedback | Main |
 | `dictation-stop-failed` | `dictation_control.rs` | useRecordingState | Main |
 | `double-tap-toggle` | `keyboard.rs` | None (retired/unused notification) | None: legacy notification has no current listener; native input already calls control directly |
 | `download-progress` | `commands/models.rs`, `diarization_model.rs` | MeetingDiarizationSettings; ModelDownloader; PerformanceLab; SettingsPanel | Main |

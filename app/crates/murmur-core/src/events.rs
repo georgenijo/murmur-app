@@ -59,6 +59,7 @@ pub enum EventKind {
     DictationDeliveryOutcome,
     DictationGenerationStarted,
     DictationLockChanged,
+    DictationStopCompleted,
     DictationStopFailed,
     DoubleTapToggle,
     DownloadProgress,
@@ -123,6 +124,7 @@ impl EventKind {
             Self::DictationDeliveryOutcome => "dictation-delivery-outcome",
             Self::DictationGenerationStarted => "dictation-generation-started",
             Self::DictationLockChanged => "dictation-lock-changed",
+            Self::DictationStopCompleted => "dictation-stop-completed",
             Self::DictationStopFailed => "dictation-stop-failed",
             Self::DoubleTapToggle => "double-tap-toggle",
             Self::DownloadProgress => "download-progress",
@@ -188,6 +190,7 @@ impl EventKind {
             Self::DictationDeliveryOutcome => &[Main, Overlay, SoundCues],
             Self::DictationGenerationStarted => &[Main, Overlay, DictationPreview, SoundCues],
             Self::DictationLockChanged => &[Overlay],
+            Self::DictationStopCompleted => &[Main],
             Self::DictationStopFailed => &[Main],
             Self::DoubleTapToggle => &[],
             Self::DownloadProgress => &[Main],
@@ -305,6 +308,12 @@ mod tests {
                 Consumer::MeetingSuggestions
             ]
         );
+        for event in [
+            EventKind::DictationStopCompleted,
+            EventKind::DictationStopFailed,
+        ] {
+            assert_eq!(router.recipients(event, |_, _| true), vec![Consumer::Main]);
+        }
         assert_eq!(
             router.recipients(EventKind::AppEvent, |c, _| c == Consumer::Diagnostics),
             vec![Consumer::Diagnostics]

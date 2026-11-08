@@ -68,6 +68,8 @@ pub struct Feedback {
     generation: u64,
     terminal_seen: Option<u64>,
     cancelled: Option<u64>,
+    interrupted: Option<u64>,
+    stop_seen: Option<u64>,
     pub revision: u64,
     pub notice: Option<Notice>,
 }
@@ -87,6 +89,8 @@ impl Feedback {
                 | "dictation-control-error"
                 | "recording-recovery-stalled"
                 | "recording-interrupted"
+                | "dictation-stop-completed"
+                | "dictation-stop-failed"
         ) {
             return;
         }
@@ -94,13 +98,21 @@ impl Feedback {
             return;
         };
         if event == "dictation-control-error" {
-            self.terminal_seen = Some(self.generation);
-            self.set(Some(v["code"].as_str().map(Notice::from_code).unwrap_or(
-                Notice {
+            if let Some(code) = v["code"].as_str() {
+                self.terminal_seen = Some(self.generation);
+                self.set(Some(Notice::from_code(code)));
+            } else if self.notice.is_none()
+                && self.terminal_seen != Some(self.generation)
+                && self.stop_seen != Some(self.generation)
+                && self.cancelled != Some(self.generation)
+            {
+                // An unscoped control error is only a fallback. It neither
+                // replaces specific feedback nor consumes the capture terminal.
+                self.set(Some(Notice {
                     message: "Could not start dictation. Check Recording settings, then try again.",
                     recovery: Recovery::Retry,
-                },
-            )));
+                }));
+            }
             return;
         }
         let Some(generation) = v["recordingId"].as_u64().filter(|g| *g > 0) else {
@@ -108,6 +120,11 @@ impl Feedback {
         };
         if generation < self.generation
             || (self.cancelled == Some(generation) && event != "dictation-generation-started")
+            || (self.stop_seen == Some(generation)
+                && matches!(
+                    event,
+                    "recording-interrupted" | "dictation-stop-completed" | "dictation-stop-failed"
+                ))
         {
             return;
         }
@@ -115,6 +132,7 @@ impl Feedback {
         match event {
             "dictation-generation-started" => {
                 self.cancelled = None;
+                self.interrupted = None;
                 self.set(None);
             }
             "recording-cancelled" => {
@@ -123,11 +141,26 @@ impl Feedback {
             }
             "recording-recovery-stalled" => self.set(Some(Notice::from_code("cleanup_stalled"))),
             "recording-interrupted" => {
+                self.interrupted = (v["autoTranscribe"] == true).then_some(generation);
                 self.set(Some(Notice::from_code(if v["autoTranscribe"] == true {
                     "interrupted_partial"
                 } else {
                     "runtime_interruption"
                 })))
+            }
+            "dictation-stop-completed" | "dictation-stop-failed" => {
+                self.stop_seen = Some(generation);
+                if event == "dictation-stop-failed" {
+                    if self.notice != Some(Notice::from_code("cleanup_stalled"))
+                        && (self.interrupted == Some(generation)
+                            || self.terminal_seen != Some(generation))
+                    {
+                        self.set(Some(Notice::from_code("transcription_failed")));
+                    }
+                } else if self.notice == Some(Notice::from_code("interrupted_partial")) {
+                    self.set(None);
+                }
+                self.interrupted = None;
             }
             _ => {}
         }
@@ -141,20 +174,24 @@ impl Feedback {
         if generation < self.generation
             || self.terminal_seen == Some(generation)
             || self.cancelled == Some(generation)
+            || self.stop_seen == Some(generation)
         {
             return;
         }
         self.generation = generation;
+        // Capture telemetry can terminate before partial transcription starts.
+        // Its runtime interruption is not the final transcription result.
+        if outcome == "runtime_interruption" && self.interrupted == Some(generation) {
+            return;
+        }
         self.terminal_seen = Some(generation);
+        self.interrupted = None;
         if matches!(
             outcome,
             "capture_init_failure" | "runtime_interruption" | "stop_failure" | "pipeline_failure"
         ) {
-            // Preserve the more useful partial-transcription/recovery guidance.
-            if self.notice.is_some_and(|n| {
-                n == Notice::from_code("interrupted_partial")
-                    || n == Notice::from_code("cleanup_stalled")
-            }) {
+            // A stalled cleanup still requires a restart after processing ends.
+            if self.notice == Some(Notice::from_code("cleanup_stalled")) {
                 return;
             }
             self.set(Some(Notice::from_code(if code == "runtime_failure" {
@@ -162,12 +199,147 @@ impl Feedback {
             } else {
                 code
             })));
+        } else if self.notice == Some(Notice::from_code("interrupted_partial")) {
+            self.set(None);
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn specific_capture_failure_wins_before_or_after_generic_control_error() {
+        for code in [
+            "signature_invalid",
+            "permission_denied",
+            "device_unavailable",
+        ] {
+            for terminal_first in [false, true] {
+                let mut f = Feedback::default();
+                f.event("dictation-generation-started", r#"{"recordingId":8}"#);
+                if terminal_first {
+                    f.terminal(Some((8, "capture_init_failure", code)));
+                }
+                f.event("dictation-control-error", r#""PRIVATE SYNTHETIC SENTINEL""#);
+                f.terminal(Some((8, "capture_init_failure", code)));
+                assert_eq!(f.notice, Some(Notice::from_code(code)));
+                f.dismiss();
+                f.event("dictation-control-error", r#""Could not start dictation.""#);
+                f.terminal(Some((8, "capture_init_failure", code)));
+                assert!(f.notice.is_none(), "dismissed failure must stay dismissed");
+            }
+        }
+    }
+
+    #[test]
+    fn interruption_progress_is_replaced_by_final_terminal_success_or_failure() {
+        for (outcome, code, expected) in [
+            ("success", "none", None),
+            ("no_speech", "vad_no_speech", None),
+            (
+                "pipeline_failure",
+                "transcription_failed",
+                Some(Notice::from_code("transcription_failed")),
+            ),
+            (
+                "capture_init_failure",
+                "permission_denied",
+                Some(Notice::from_code("permission_denied")),
+            ),
+        ] {
+            let mut f = Feedback::default();
+            f.event("dictation-generation-started", r#"{"recordingId":8}"#);
+            f.event(
+                "recording-interrupted",
+                r#"{"recordingId":8,"autoTranscribe":true}"#,
+            );
+            assert_eq!(f.notice, Some(Notice::from_code("interrupted_partial")));
+            f.terminal(Some((8, outcome, code)));
+            assert_eq!(f.notice, expected);
+            f.dismiss();
+            f.terminal(Some((8, outcome, code)));
+            assert!(f.notice.is_none());
+        }
+    }
+
+    #[test]
+    fn partial_transcription_result_wins_over_capture_terminal_in_either_order() {
+        for event in ["dictation-stop-completed", "dictation-stop-failed"] {
+            for capture_first in [false, true] {
+                let mut f = Feedback::default();
+                f.event("dictation-generation-started", r#"{"recordingId":8}"#);
+                if capture_first {
+                    f.terminal(Some((8, "runtime_interruption", "device_unavailable")));
+                }
+                f.event(
+                    "recording-interrupted",
+                    r#"{"recordingId":8,"autoTranscribe":true}"#,
+                );
+                f.terminal(Some((8, "runtime_interruption", "device_unavailable")));
+                assert_eq!(f.notice, Some(Notice::from_code("interrupted_partial")));
+                f.event(
+                    event,
+                    r#"{"recordingId":8,"error":"PRIVATE SYNTHETIC SENTINEL"}"#,
+                );
+                f.terminal(Some((8, "runtime_interruption", "device_unavailable")));
+                let expected = (event == "dictation-stop-failed")
+                    .then(|| Notice::from_code("transcription_failed"));
+                assert_eq!(f.notice, expected);
+                // A delayed progress event cannot resurrect a finished operation.
+                f.event(
+                    "recording-interrupted",
+                    r#"{"recordingId":8,"autoTranscribe":true}"#,
+                );
+                assert_eq!(f.notice, expected);
+                f.dismiss();
+                f.event(event, r#"{"recordingId":8}"#);
+                f.terminal(Some((8, "runtime_interruption", "device_unavailable")));
+                assert!(f.notice.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn cleanup_stall_remains_actionable_when_transcription_finishes() {
+        for event in ["dictation-stop-completed", "dictation-stop-failed"] {
+            for stall_first in [false, true] {
+                let mut f = Feedback::default();
+                f.event("dictation-generation-started", r#"{"recordingId":8}"#);
+                f.event(
+                    "recording-interrupted",
+                    r#"{"recordingId":8,"autoTranscribe":true}"#,
+                );
+                if stall_first {
+                    f.event("recording-recovery-stalled", r#"{"recordingId":8}"#);
+                }
+                f.event(event, r#"{"recordingId":8}"#);
+                if !stall_first {
+                    f.event("recording-recovery-stalled", r#"{"recordingId":8}"#);
+                }
+                assert_eq!(f.notice, Some(Notice::from_code("cleanup_stalled")));
+            }
+        }
+    }
+
+    #[test]
+    fn stale_or_cancelled_stop_results_cannot_change_current_feedback() {
+        for event in ["dictation-stop-completed", "dictation-stop-failed"] {
+            let mut f = Feedback::default();
+            f.event("dictation-generation-started", r#"{"recordingId":8}"#);
+            f.event(
+                "recording-interrupted",
+                r#"{"recordingId":8,"autoTranscribe":true}"#,
+            );
+            f.event("recording-cancelled", r#"{"recordingId":8}"#);
+            f.event(event, r#"{"recordingId":8}"#);
+            assert!(f.notice.is_none());
+            f.event("dictation-generation-started", r#"{"recordingId":9}"#);
+            f.terminal(Some((9, "capture_init_failure", "signature_invalid")));
+            f.event(event, r#"{"recordingId":8}"#);
+            assert_eq!(f.notice, Some(Notice::from_code("signature_invalid")));
+        }
+    }
+
     #[test]
     fn fast_failures_survive_idle_and_have_specific_recovery_without_private_text() {
         for (code, recovery, word) in [

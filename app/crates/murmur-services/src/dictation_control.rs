@@ -364,16 +364,7 @@ async fn execute(app: &crate::host::Context, effect: Effect, in_app: bool) -> Op
                     trigger,
                 )
                 .await;
-                present_stop_failure(
-                    &handle.services().app_state,
-                    generation,
-                    &result,
-                    |failure| {
-                        let _ = handle
-                            .events()
-                            .publish(EventKind::DictationStopFailed, failure);
-                    },
-                );
+                present_stop_result(&handle, generation, &result);
             }));
         }
         Effect::Score { generation, pause } => {
@@ -402,6 +393,49 @@ async fn execute(app: &crate::host::Context, effect: Effect, in_app: bool) -> Op
         Effect::PasteLast => crate::delivery_recovery::spawn_retry(app.clone()),
     }
     None
+}
+
+/// Both user stops and automatic partial transcription finish through this
+/// content-free, generation-fenced presentation path.
+pub(crate) fn present_stop_result(
+    app: &crate::host::Context,
+    generation: u64,
+    result: &Result<serde_json::Value, String>,
+) {
+    present_stop_failure(&app.services().app_state, generation, result, |failure| {
+        let _ = app
+            .events()
+            .publish(EventKind::DictationStopFailed, failure);
+    });
+    present_stop_success(
+        &app.services().app_state,
+        generation,
+        result,
+        |generation| {
+            let _ = app.events().publish(
+                EventKind::DictationStopCompleted,
+                serde_json::json!({"recordingId": generation}),
+            );
+        },
+    );
+}
+
+fn present_stop_success(
+    state: &crate::state::AppState,
+    generation: u64,
+    result: &Result<serde_json::Value, String>,
+    present: impl FnOnce(u64),
+) {
+    if !matches!(result, Ok(response) if response["type"] == "transcription") {
+        return;
+    }
+    let current = {
+        let _dictation = state.dictation.lock_or_recover();
+        state.recording_id.load(Ordering::SeqCst) == generation && !state.is_cancelled(generation)
+    };
+    if current {
+        present(generation);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -869,6 +903,37 @@ mod tests {
             assert_eq!(controller.input(Input::Toggle(None)).is_some(), installed);
             assert_eq!(*control.settings.lock_or_recover(), original_settings);
         }
+    }
+
+    #[test]
+    fn stop_success_is_content_free_and_rejects_nonterminal_cancelled_or_newer_owners() {
+        let state = crate::state::AppState::default();
+        state.recording_id.store(12, Ordering::SeqCst);
+        for text in ["", "PRIVATE SYNTHETIC SENTINEL"] {
+            let success = Ok(serde_json::json!({"type":"transcription", "text":text}));
+            let mut presented = Vec::new();
+            present_stop_success(&state, 12, &success, |generation| {
+                assert!(
+                    state.dictation.try_lock().is_ok(),
+                    "dispatch held dictation"
+                );
+                presented.push(generation);
+            });
+            assert_eq!(presented, vec![12]);
+        }
+        for result in [
+            Err("PRIVATE SYNTHETIC SENTINEL".into()),
+            Ok(serde_json::json!({"type":"error"})),
+            Ok(serde_json::json!({"type":"already_processing"})),
+            Ok(serde_json::json!({"type":"audio_recovering"})),
+        ] {
+            present_stop_success(&state, 12, &result, |_| panic!("not a successful terminal"));
+        }
+        let success = Ok(serde_json::json!({"type":"transcription"}));
+        state.cancel_recording(12);
+        present_stop_success(&state, 12, &success, |_| panic!("cancelled completion"));
+        state.recording_id.store(13, Ordering::SeqCst);
+        present_stop_success(&state, 12, &success, |_| panic!("stale completion"));
     }
 
     #[test]

@@ -4758,15 +4758,15 @@ pub(crate) fn handle_audio_lifecycle(
         |app_handle, recording_id| {
             crate::host::runtime::spawn(async move {
                 let state = app_handle.services();
-                if stop_native_recording_for(
+                let result = stop_native_recording_for(
                     app_handle.clone(),
                     state,
                     Some(recording_id),
                     audio_lifecycle::DictationStopTrigger::Other,
                 )
-                .await
-                .is_err()
-                {
+                .await;
+                crate::dictation_control::present_stop_result(&app_handle, recording_id, &result);
+                if result.is_err() {
                     tracing::error!(
                         target: "pipeline",
                         recording_id,
