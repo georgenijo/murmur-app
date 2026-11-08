@@ -5450,7 +5450,7 @@ pub(crate) async fn start_recording_with_admission(
                             "start_native_recording"
                         );
                     });
-                crate::dictation_control::started(&app_handle, rid, origin);
+                crate::dictation_control::started(&app_handle, rid, origin, in_app);
                 // Freeze the native delivery target immediately after the
                 // accepted Idle -> Starting transition, under the same
                 // ownership lock. This startup work is therefore included in

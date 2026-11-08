@@ -896,3 +896,107 @@ fn completion_allows_deferred_microphone_and_keeps_specific_failure(cx: &mut Tes
     assert!(e.read_with(cx, |s, _| s.finished));
     assert_eq!(h.state.borrow().permissions[0], Access::NotDetermined);
 }
+
+#[gpui::test]
+fn saturated_progress_inbox_keeps_download_and_cancellation_terminal_replies(
+    cx: &mut TestAppContext,
+) {
+    let (e, h, cx) = harness(cx);
+    e.update(cx, |s, cx| s.visit(Step::Model, cx));
+    draw(cx);
+    for outcome in 0..3 {
+        h.hold.set(true);
+        let cancel = outcome == 2;
+        e.update(cx, |s, cx| {
+            s.selected_model = CURATED[0].into();
+            s.activate(cx);
+            if cancel {
+                s.cancel_download(cx);
+            }
+        });
+        let (request, inbox) = h.held.borrow_mut().pop().unwrap();
+        let mut progress = h.state.borrow().clone();
+        progress.revision = request.ticket.revision;
+        progress.download_percent = Some(42);
+        for _ in 0..8 {
+            assert!(
+                inbox
+                    .publish(Event::Progress {
+                        ticket: request.ticket,
+                        snapshot: progress.clone()
+                    })
+                    .is_ok()
+            );
+        }
+        assert!(
+            inbox
+                .publish(Event::Progress {
+                    ticket: request.ticket,
+                    snapshot: progress.clone()
+                })
+                .is_err()
+        );
+        // Both successful and failed downloads, and successful cancellation,
+        // must release their pending owner even when progress cannot enqueue.
+        if outcome == 1 {
+            progress
+                .catalog
+                .as_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|model| model.id == CURATED[0])
+                .unwrap()
+                .installed = true;
+        }
+        super::inbox::reply(
+            &inbox,
+            request.ticket,
+            if outcome == 0 {
+                Err(Problem::Unavailable)
+            } else {
+                Ok(progress)
+            },
+        );
+        draw(cx);
+        assert!(e.read_with(cx, |s, _| !s.model.pending
+            && !s.downloading()
+            && !s.cancelling));
+        if outcome == 1 {
+            assert_eq!(e.read_with(cx, |s, _| s.step), Step::Hotkey);
+        }
+        h.hold.set(false);
+        e.update(cx, |s, cx| s.visit(Step::Calendar, cx));
+        assert_eq!(e.read_with(cx, |s, _| s.step), Step::Calendar);
+        e.update(cx, |s, cx| s.visit(Step::Model, cx));
+        draw(cx);
+    }
+}
+
+#[test]
+fn reserved_terminal_slot_rejects_stale_replies_and_recovers_invalid_projection() {
+    let inbox = Inbox::default();
+    let mut session = Session::default();
+    session.attach();
+    let old = session.begin().unwrap();
+    session.invalidate();
+    let ticket = session.begin().unwrap();
+    let mut invalid = fixtures::snapshot();
+    invalid.hardware_summary = Some("x".repeat(513));
+    super::inbox::reply(&inbox, ticket, Ok(invalid));
+    super::inbox::reply(&inbox, old, Err(Problem::Unavailable));
+    for event in inbox.drain() {
+        session.event(event);
+    }
+    assert!(!session.pending);
+    assert_eq!(session.problem, Some(Problem::Invalid));
+    let retry = session.begin().unwrap();
+    super::inbox::reply(&inbox, retry, Ok(fixtures::snapshot()));
+    for event in inbox.drain() {
+        session.event(event);
+    }
+    assert!(!session.pending);
+    assert!(session.problem.is_none());
+    inbox.close();
+    super::inbox::reply(&inbox, retry, Err(Problem::Unavailable));
+    assert!(inbox.drain().is_empty());
+}

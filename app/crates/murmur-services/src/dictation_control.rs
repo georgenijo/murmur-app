@@ -232,16 +232,16 @@ pub(crate) fn send(app: &crate::host::Context, input: Input) {
         });
     }
 }
-pub(crate) fn started(app: &crate::host::Context, generation: u64, origin: &str) {
+pub(crate) fn started(app: &crate::host::Context, generation: u64, origin: &str, in_app: bool) {
     let control = app.control();
-    control.controller.lock_or_recover().observe(
+    control.controller.lock_or_recover().accepted_start(
         generation,
-        Status::Starting,
         if origin == "hold" {
             Origin::Hold
         } else {
             Origin::Toggle
         },
+        in_app,
     );
     crate::keyboard::set_recording_state(origin != "hold");
 }

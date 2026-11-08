@@ -96,6 +96,7 @@ pub struct Controller {
     status: Status,
     generation: u64,
     origin: Origin,
+    in_app_generation: Option<u64>,
     silence: Silence,
     checked_pause: u64,
     smart_in_flight: Option<(u64, u64)>,
@@ -111,6 +112,7 @@ impl Controller {
                 self.checked_pause = 0;
             }
             if generation != self.generation || status == Status::Idle {
+                self.in_app_generation = None;
                 self.terminal_requested = false;
                 self.cancel_requested = false;
             }
@@ -131,6 +133,13 @@ impl Controller {
             self.generation = generation;
             self.status = status;
         }
+    }
+    /// Bind admission to the authoritative accepted generation, not later UI
+    /// input or mutable permission state. Unobserved/replacement owners default
+    /// to global-key gating.
+    pub fn accepted_start(&mut self, generation: u64, origin: Origin, in_app: bool) {
+        self.observe(generation, Status::Starting, origin);
+        self.in_app_generation = in_app.then_some(generation);
     }
     pub fn reject_start(&mut self, generation: u64) -> bool {
         if self.generation != generation || self.status != Status::Idle {
@@ -171,7 +180,12 @@ impl Controller {
         })
     }
     fn auto_eligible(&self) -> bool {
-        self.gate.armed()
+        LaunchGate {
+            accessibility: self.gate.accessibility
+                || self.in_app_generation == Some(self.generation),
+            ..self.gate
+        }
+        .armed()
             && self.status == Status::Recording
             && self.origin != Origin::Hold
             && self.silence_ms > 0
