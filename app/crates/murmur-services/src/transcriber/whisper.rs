@@ -1,5 +1,5 @@
 use super::TranscriptionBackend;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Once;
 use whisper_rs::{
     install_logging_hooks, FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -13,9 +13,6 @@ static INIT_LOGGING: Once = Once::new();
 /// early end-of-text token.
 const SINGLE_SEGMENT_MAX_SAMPLES: usize = 12 * super::WHISPER_SAMPLE_RATE as usize;
 
-/// Relative path under the platform data directory for app models.
-const APP_MODELS_REL: &[&str] = &["local-dictation", "models"];
-
 /// Suppress whisper.cpp verbose logging by installing a trampoline that routes to Rust's log crate
 /// (which we don't configure, so logs go nowhere).
 fn suppress_whisper_logs() {
@@ -24,65 +21,20 @@ fn suppress_whisper_logs() {
     });
 }
 
-/// Build the app's primary models directory from a data dir root.
-fn app_models_dir(data_dir: &Path) -> PathBuf {
-    APP_MODELS_REL
-        .iter()
-        .fold(data_dir.to_path_buf(), |p, s| p.join(s))
-}
-
-#[cfg(debug_assertions)]
-fn debug_models_dir_override() -> Option<PathBuf> {
-    std::env::var_os("MURMUR_MODEL_DIR_OVERRIDE")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-}
-
-/// Get all potential model directories to search.
+/// All readers use the same identity-aware legacy resolver.
 pub(crate) fn get_model_search_paths() -> Vec<PathBuf> {
-    if crate::identity::internal() {
-        return crate::identity::data_dir()
-            .map(|d| vec![app_models_dir(&d)])
-            .unwrap_or_default();
-    }
-    #[cfg(debug_assertions)]
-    if let Some(path) = debug_models_dir_override() {
-        return vec![path];
-    }
-    let mut paths = Vec::new();
-
-    if let Ok(custom_path) = std::env::var("WHISPER_MODEL_DIR") {
-        paths.push(PathBuf::from(custom_path));
-    }
-
-    if let Some(data_dir) = crate::identity::data_dir() {
-        paths.push(app_models_dir(&data_dir));
-        paths.push(data_dir.join("pywhispercpp").join("models"));
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".cache").join("whisper.cpp"));
-        paths.push(home.join(".cache").join("whisper"));
-        paths.push(home.join(".whisper").join("models"));
-    }
-
-    paths
+    crate::model_resolver::Locations::current()
+        .map(|p| p.model_roots)
+        .unwrap_or_default()
 }
 
 /// Get the path to a specific model file, searching multiple locations.
 fn get_model_path(model_name: &str) -> Result<PathBuf, String> {
     let filename = format!("ggml-{}.bin", model_name);
-    let search_paths = get_model_search_paths();
-
-    for dir in &search_paths {
-        let path = dir.join(&filename);
-        if crate::model_artifact::binary_model_is_valid(
-            &path,
-            crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
-        ) {
-            return Ok(path);
-        }
+    if let Some(path) = crate::model_resolver::resolve(model_name) {
+        return Ok(path);
     }
+    let search_paths = get_model_search_paths();
 
     let searched_locations = search_paths
         .iter()
@@ -350,27 +302,16 @@ impl TranscriptionBackend for WhisperBackend {
     }
 
     fn model_exists(&self) -> bool {
-        let search_paths = get_model_search_paths();
-        for dir in &search_paths {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    if entry.path().extension().and_then(|e| e.to_str()) == Some("bin") {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        crate::model_runtime::MODEL_DEFINITIONS.iter().any(|m| {
+            m.install_kind == crate::model_runtime::InstallKind::Whisper
+                && specific_model_exists(m.model_name)
+        })
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {
-        #[cfg(debug_assertions)]
-        if let Some(path) = debug_models_dir_override() {
-            return Ok(path);
-        }
-        let data_dir = crate::identity::data_dir()
-            .ok_or_else(|| "Could not find application data directory".to_string())?;
-        Ok(app_models_dir(&data_dir))
+        crate::model_resolver::Locations::current()
+            .map(|p| p.download_root)
+            .ok_or_else(|| "Could not find application data directory".to_owned())
     }
 
     fn reset(&mut self) {

@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub use super::{is_coreml_model, COREML_MODEL_NAME};
-const CACHE_DIR_NAME: &str = "parakeet-tdt-0.6b-v3";
+pub(crate) const CACHE_DIR_NAME: &str = "parakeet-tdt-0.6b-v3";
 const REQUIRED_MODELS: &[&str] = &[
     "Preprocessor.mlmodelc",
     "Encoder.mlmodelc",
@@ -53,7 +53,7 @@ impl std::fmt::Display for ModelPreparationError {
 }
 
 fn cache_root() -> Option<PathBuf> {
-    crate::identity::data_dir().map(|path| path.join("FluidAudio").join("Models"))
+    crate::model_resolver::Locations::current().map(|p| p.coreml_root)
 }
 
 pub(crate) fn model_dir() -> Option<PathBuf> {
@@ -64,7 +64,7 @@ fn nonempty_file(path: &Path) -> bool {
     path.is_file() && path.metadata().is_ok_and(|metadata| metadata.len() > 0)
 }
 
-fn model_exists_at(path: &Path) -> bool {
+pub(crate) fn model_exists_at(path: &Path) -> bool {
     REQUIRED_MODELS.iter().all(|model| {
         let compiled = path.join(model);
         compiled.is_dir()
@@ -156,17 +156,11 @@ where
 }
 
 pub fn specific_model_exists(model_name: &str) -> bool {
-    #[cfg(debug_assertions)]
-    if std::env::var("MURMUR_COREML_FORCE_NOT_INSTALLED").as_deref() == Ok("1") {
-        return false;
-    }
-    is_coreml_model(model_name)
-        && cfg!(target_arch = "aarch64")
-        && model_dir().as_deref().is_some_and(model_exists_at)
+    is_coreml_model(model_name) && crate::model_resolver::resolve(model_name).is_some()
 }
 
 fn new_engine() -> Result<FluidAudio, String> {
-    if crate::identity::internal() {
+    if crate::identity::internal() && !specific_model_exists(COREML_MODEL_NAME) {
         return Err("Core ML SDK global cache is unavailable to isolated bundles; select a local Whisper or Parakeet model".into());
     }
     let engine = FluidAudio::new().map_err(|error| format!("FluidAudio setup failed: {error}"))?;
@@ -191,6 +185,15 @@ pub(crate) fn prepare_model_with_observer<F>(
 where
     F: FnMut(ModelPreparationPhase),
 {
+    // The SDK uses shared storage. Never repair/delete it from a preview.
+    // Complete shared installs are reusable without any installer or download.
+    if crate::identity::internal() {
+        return if specific_model_exists(model_name) {
+            Ok(())
+        } else {
+            Err(ModelPreparationError::CacheUnavailable)
+        };
+    }
     let model_path = model_dir().ok_or(ModelPreparationError::CacheUnavailable)?;
     let repair_marker = model_path
         .parent()

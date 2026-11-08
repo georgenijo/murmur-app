@@ -97,6 +97,11 @@ impl Onboarding {
             choices
         });
         let subscriptions = vec![
+            cx.observe_window_activation(w, |s, w, cx| {
+                if w.is_window_active() && s.model.attached {
+                    s.refresh(cx);
+                }
+            }),
             cx.subscribe(&modes, |s, _, e: &SelectionChanged, cx| {
                 s.recording_mode = e.0.to_string();
                 cx.notify();
@@ -419,7 +424,7 @@ impl Onboarding {
             self.request(Action::Request(Permission::Microphone), cx);
             return;
         }
-        if matches!(self.step, Step::Microphone | Step::Accessibility)
+        if self.step.permission().is_some()
             && now.saturating_duration_since(self.last_poll) >= Duration::from_secs(1)
             && !self.model.pending
         {

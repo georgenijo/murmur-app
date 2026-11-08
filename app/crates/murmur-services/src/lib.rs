@@ -77,6 +77,7 @@ mod startup;
 use murmur_core::{model_artifact, model_digest};
 mod model_download;
 mod model_hardware_guidance;
+mod model_resolver;
 mod model_runtime;
 mod performance_metrics;
 mod platform;

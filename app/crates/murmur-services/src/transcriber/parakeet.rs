@@ -26,9 +26,6 @@ use super::TranscriptionBackend;
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 use std::path::{Path, PathBuf};
 
-/// Relative path under the platform data directory for app models.
-const APP_MODELS_REL: &[&str] = &["local-dictation", "models"];
-
 /// CPU inference threads for the recognizer.
 const NUM_THREADS: i32 = 4;
 
@@ -79,14 +76,8 @@ fn variant_for(model_name: &str) -> Option<ParakeetVariant> {
     }
 }
 
-fn app_models_dir(data_dir: &Path) -> PathBuf {
-    APP_MODELS_REL
-        .iter()
-        .fold(data_dir.to_path_buf(), |p, s| p.join(s))
-}
-
 fn data_models_dir() -> Option<PathBuf> {
-    crate::identity::data_dir().map(|d| app_models_dir(&d))
+    crate::model_resolver::Locations::current().map(|p| p.download_root)
 }
 
 pub(crate) fn model_directory(model_name: &str) -> Result<PathBuf, String> {
@@ -105,10 +96,7 @@ pub fn is_parakeet_model(model_name: &str) -> bool {
 /// Returns true if the specific Parakeet variant's bundle is present on disk.
 /// Used by `check_specific_model_exists` so the UI knows per-variant availability.
 pub fn specific_model_exists(model_name: &str) -> bool {
-    match (variant_for(model_name), data_models_dir()) {
-        (Some(v), Some(dir)) => v.is_complete(&dir),
-        _ => false,
-    }
+    crate::model_resolver::resolve(model_name).is_some()
 }
 
 /// Check a model bundle under an explicit models root. Download installation
@@ -158,15 +146,12 @@ impl TranscriptionBackend for ParakeetBackend {
 
         let variant = variant_for(model_name)
             .ok_or_else(|| format!("Unknown Parakeet model '{}'", model_name))?;
-        let models_dir = self.models_dir()?;
-        let model_dir = models_dir.join(variant.dir);
-        if !variant.is_complete(&models_dir) {
-            return Err(format!(
-                "Parakeet model bundle '{}' not found or incomplete at {}",
-                variant.dir,
-                model_dir.display()
-            ));
-        }
+        let model_dir = crate::model_resolver::resolve(model_name).ok_or_else(|| {
+            format!(
+                "Parakeet model bundle '{}' not found or incomplete",
+                variant.dir
+            )
+        })?;
 
         let to_str = |p: PathBuf| -> Result<String, String> {
             p.to_str()
@@ -240,13 +225,7 @@ impl TranscriptionBackend for ParakeetBackend {
     }
 
     fn model_exists(&self) -> bool {
-        let models_dir = match self.models_dir() {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
-        KNOWN_MODELS
-            .iter()
-            .any(|m| variant_for(m).is_some_and(|v| v.is_complete(&models_dir)))
+        KNOWN_MODELS.iter().any(|m| specific_model_exists(m))
     }
 
     fn models_dir(&self) -> Result<PathBuf, String> {

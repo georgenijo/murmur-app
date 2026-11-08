@@ -143,6 +143,37 @@ fn optional_permissions_only_on_own_visits_and_restricted_can_continue(cx: &mut 
             .contains(&Action::Request(Permission::Calendar))
     );
 }
+
+#[gpui::test]
+fn every_permission_polls_only_its_active_visit_and_observes_a_later_grant(
+    cx: &mut TestAppContext,
+) {
+    let (e, h, cx) = harness(cx);
+    for step in [
+        Step::Microphone,
+        Step::Accessibility,
+        Step::SystemAudio,
+        Step::Calendar,
+    ] {
+        let permission = step.permission().unwrap();
+        h.state.borrow_mut().permissions[permission.index()] = Access::NotDetermined;
+        e.update(cx, |s, cx| s.visit(step, cx));
+        draw(cx);
+        e.update(cx, |s, _| s.mic_auto_consumed = true);
+        let before = h.actions.borrow().len();
+        h.state.borrow_mut().permissions[permission.index()] = Access::Granted;
+        e.update(cx, |s, cx| s.tick(s.last_poll + Duration::from_secs(2), cx));
+        draw(cx);
+        assert_eq!(&h.actions.borrow()[before..], &[Action::Probe(permission)]);
+        assert_eq!(e.read_with(cx, |s, _| s.access()), Access::Granted);
+        assert!(e.read_with(cx, |s, _| s.model.problem.is_none()));
+        assert!(e.read_with(cx, |s, _| s.fresh.is_some()));
+    }
+    e.update(cx, |s, cx| s.visit(Step::Hotkey, cx));
+    let before = h.actions.borrow().len();
+    e.update(cx, |s, cx| s.tick(s.last_poll + Duration::from_secs(2), cx));
+    assert_eq!(h.actions.borrow().len(), before);
+}
 #[gpui::test]
 fn stale_permission_reply_cannot_advance_new_visit(cx: &mut TestAppContext) {
     let (e, h, cx) = harness(cx);

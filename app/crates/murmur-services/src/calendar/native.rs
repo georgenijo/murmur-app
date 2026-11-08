@@ -13,6 +13,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
+static PERMISSION_PENDING: AtomicBool = AtomicBool::new(false);
+
+struct PermissionPending;
+impl Drop for PermissionPending {
+    fn drop(&mut self) {
+        PERMISSION_PENDING.store(false, Ordering::Release);
+    }
+}
 
 thread_local! {
     static SUGGESTION_OBSERVER_STORE: std::cell::RefCell<Option<Retained<EKEventStore>>> = const { std::cell::RefCell::new(None) };
@@ -62,26 +70,30 @@ pub(crate) async fn request_permission(
     if status != CalendarPermissionStatus::NotDetermined {
         return Ok(status);
     }
+    if PERMISSION_PENDING.swap(true, Ordering::AcqRel) {
+        return Ok(status);
+    }
+    let pending_request = PermissionPending;
     let operation = CalendarOperation::acquire()?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
-        let _ = catch(AssertUnwindSafe(|| unsafe {
+        let result = catch(AssertUnwindSafe(|| unsafe {
             let store = EKEventStore::new();
             // EventKit may complete on any queue. The completion owns the store
             // and admission guard until it has delivered its single result.
-            let pending = Mutex::new(Some((store.clone(), operation, sender)));
-            let completion = RcBlock::new(move |_granted: Bool, error: *mut NSError| {
-                if let Some((_store, _operation, sender)) = pending.lock_or_recover().take() {
-                    let result = if error.is_null() {
-                        Ok(permission_status())
-                    } else {
-                        Err(UNAVAILABLE.to_string())
-                    };
-                    let _ = sender.send(result);
-                }
+            let pending = Mutex::new(Some((store.clone(), operation, pending_request)));
+            let completion = RcBlock::new(move |_granted: Bool, _error: *mut NSError| {
+                // The authorization query, not successful prompt delivery,
+                // determines the row. Polling also observes Settings changes.
+                drop(pending.lock_or_recover().take());
             });
             store.requestFullAccessToEventsWithCompletion(RcBlock::as_ptr(&completion));
-        }));
+            permission_status()
+        }))
+        .map_err(|_| UNAVAILABLE.to_string());
+        // A prompt waiting for its user is a successful request. Do not hold
+        // the presentation action (or disable Skip) until EventKit answers.
+        let _ = sender.send(result);
     })
     .map_err(|_| UNAVAILABLE.to_string())?;
     receiver.await.map_err(|_| UNAVAILABLE.to_string())?
@@ -289,4 +301,18 @@ unsafe fn extract_event(
         start_ms,
         end_ms,
     }))
+}
+
+#[cfg(test)]
+mod permission_request_tests {
+    use super::*;
+
+    #[test]
+    fn an_unanswered_prompt_is_single_flight_until_its_callback_releases_ownership() {
+        assert!(!PERMISSION_PENDING.swap(true, Ordering::AcqRel));
+        let request = PermissionPending;
+        assert!(PERMISSION_PENDING.swap(true, Ordering::AcqRel));
+        drop(request);
+        assert!(!PERMISSION_PENDING.load(Ordering::Acquire));
+    }
 }

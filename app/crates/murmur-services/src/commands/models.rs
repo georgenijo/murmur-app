@@ -265,7 +265,7 @@ pub fn get_model_runtime_status(
     state: crate::host::StateRef<'_, State>,
     model_name: String,
 ) -> Result<model_runtime::ModelRuntimeSnapshot, String> {
-    state.app_state.model_runtime.snapshot(&model_name)
+    state.app_state.model_runtime.resolved_snapshot(&model_name)
 }
 
 pub fn get_model_hardware_guidance() -> crate::model_hardware_guidance::ModelHardwareGuidance {
@@ -285,7 +285,7 @@ pub fn check_specific_model_exists(
     state
         .app_state
         .model_runtime
-        .snapshot(&model_name)
+        .resolved_snapshot(&model_name)
         .is_ok_and(|snapshot| snapshot.install_state == InstallState::Installed)
 }
 
@@ -349,11 +349,23 @@ fn remove_installed_artifact(model_name: &str) -> Result<(), String> {
             &transcriber::whisper::get_model_search_paths(),
         ),
         InstallKind::Parakeet => {
-            remove_catalog_artifact(&transcriber::parakeet::model_directory(model_name)?, true)
+            let owned = transcriber::parakeet::model_directory(model_name)?;
+            if crate::model_resolver::resolve(model_name).is_some_and(|path| path != owned) {
+                return Err(
+                    "This model is outside Murmur's model storage. Remove that copy manually."
+                        .into(),
+                );
+            }
+            remove_catalog_artifact(&owned, true)
         }
         InstallKind::Coreml => {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
+                if crate::identity::internal() {
+                    return Err(
+                        "The shared Core ML cache cannot be removed by an isolated preview.".into(),
+                    );
+                }
                 if !crate::coreml_installer::clear_quarantined_installer() {
                     return Err("Wait for the previous Core ML installer to exit before removing this model".to_string());
                 }
@@ -486,7 +498,7 @@ pub async fn download_model(
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
         let storage = if definition.install_kind == InstallKind::Coreml {
-            crate::identity::data_dir().ok_or("Could not locate Core ML storage")?.join("FluidAudio/Models")
+            crate::model_resolver::Locations::current().ok_or("Could not locate Core ML storage")?.coreml_root
         } else { models_dir.clone() };
         let retained = match definition.install_kind {
             InstallKind::Whisper => std::fs::metadata(models_dir.join(format!("ggml-{model_name}.bin.tmp"))).map(|m| m.len()).unwrap_or(0),

@@ -271,7 +271,7 @@ impl MeetingCoordinator {
     }
 
     pub fn permission_status(&self) -> SystemAudioPermissionState {
-        self.inner.lock_or_recover().permission
+        authorization_status(tcc_preflight(), self.inner.lock_or_recover().permission)
     }
 
     pub fn is_active(&self) -> bool {
@@ -811,7 +811,15 @@ fn probe_permission() -> Result<SystemAudioAccess, String> {
     // Not-yet-determined apps need the system prompt before the tap can
     // succeed. Already-authorized apps must never be prompted again.
     if !authorized_before {
-        tcc_request();
+        // Opening the system prompt is successful request delivery, not a
+        // failed capture probe. An unanswered prompt cannot establish denial.
+        let authorized = tcc_request();
+        if !authorized {
+            return Ok(SystemAudioAccess {
+                permission: SystemAudioPermissionState::Unknown,
+                ..SystemAudioAccess::default()
+            });
+        }
     }
     let outcome = probe_permission_tap();
     match &outcome {
@@ -833,6 +841,19 @@ fn probe_permission() -> Result<SystemAudioAccess, String> {
         ),
     }
     outcome.map(|access| resolve_access(authorized_before, access))
+}
+
+fn authorization_status(
+    authorized: bool,
+    previous: SystemAudioPermissionState,
+) -> SystemAudioPermissionState {
+    if authorized {
+        SystemAudioPermissionState::Granted
+    } else if previous == SystemAudioPermissionState::Granted {
+        SystemAudioPermissionState::Denied
+    } else {
+        previous
+    }
 }
 
 /// Combine the TCC answer with the tap result. The tap is authoritative for
@@ -2214,6 +2235,16 @@ fn render_meeting_text(segments: &[MeetingSegment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_authorization_is_not_denied_and_external_grants_refresh_the_cached_status() {
+        use SystemAudioPermissionState::*;
+        assert_eq!(authorization_status(false, Unknown), Unknown);
+        assert_eq!(authorization_status(true, Unknown), Granted);
+        assert_eq!(authorization_status(true, Denied), Granted);
+        assert_eq!(authorization_status(false, Granted), Denied);
+        assert_eq!(authorization_status(false, Unsupported), Unsupported);
+    }
 
     #[test]
     fn system_audio_permission_event_matches_frontend_contract() {
