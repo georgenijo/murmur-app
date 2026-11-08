@@ -27,6 +27,11 @@ pub fn initialize_identity(identifier: &str, home: &std::path::Path) -> Result<(
     crate::launch::process_start();
     Ok(())
 }
+/// The same frozen policy controls both the pasteboard and external input.
+/// Querying this does not read clipboard contents or request permissions.
+pub fn external_delivery_allowed() -> bool {
+    crate::identity::external_input_allowed()
+}
 pub fn install_runtime(runtime: tokio::runtime::Handle) -> Result<(), String> {
     host::runtime::install(runtime).map_err(|_| "Host runtime already installed".into())
 }
@@ -141,6 +146,18 @@ pub fn validate_paths(paths: &NativePaths, identifier: &str) -> Result<(), Strin
     Ok(())
 }
 impl Services {
+    /// Content-free terminal state for the current recording only. This remains
+    /// available after capture cleanup/Idle so a fast failure cannot disappear
+    /// between presentation frames. The lifecycle owner is the sole source.
+    pub fn recording_terminal(&self) -> Option<(u64, &'static str, &'static str)> {
+        let state = self.context.services();
+        let generation = self.recording_generation();
+        let (outcome, error) = state.app_state.dictation_telemetry.terminal(generation)?;
+        if self.recording_generation() != generation || state.app_state.is_cancelled(generation) {
+            return None;
+        }
+        Some((generation, outcome.as_str(), error.as_str()))
+    }
     pub fn recording_is_current(&self, generation: u64) -> bool {
         use std::sync::atomic::Ordering;
         let state = self.context.services();

@@ -117,6 +117,10 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     NSRect target = NSMakeRect(x, primary_top-y-height, width, height);
     if (!NSEqualRects(window.frame,target)) [window setFrame:target display:YES];
     window.alphaValue = hidden ? 0.0 : 1.0;
+    // GPUI creates this companion with show:false. Present only after the
+    // nonactivating policy and frame are installed, without keying the panel
+    // or activating the app. Keep hidden surfaces persistent and click-through.
+    if (!hidden && !window.isVisible) [window orderFrontRegardless];
     MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
     if (!floating) {
         [hud removeFromSuperview];

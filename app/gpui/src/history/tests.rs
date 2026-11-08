@@ -1183,6 +1183,27 @@ fn ax_focus_reveals_partially_clipped_row_action(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+#[cfg(feature = "a11y-tests")]
+fn row_copy_click_writes_exact_text_and_presents_bounded_success_feedback(cx: &mut TestAppContext) {
+    let (e, host, cx) = harness(cx);
+    let t = ax::tree(cx);
+    let calls = host.calls.borrow().len();
+    ax::click(cx, ax::named(&t, "Copy transcript 1"));
+    e.update(cx, |s, cx| s.drain(cx));
+    let t = ax::tree(cx);
+    ax::named(&t, "Copied transcript 1");
+    ax::named(&t, "Copied");
+    assert_eq!(*host.clipboard.borrow(), entry(200).text);
+    assert_eq!(host.calls.borrow().len(), calls + 1);
+    assert!(e.read_with(cx, |s, _| s.model.detail.is_none()));
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    let t = ax::tree(cx);
+    ax::named(&t, "Copy transcript 1");
+    assert_eq!(e.read_with(cx, |s, _| s.model.notice), None);
+}
+
+#[gpui::test]
 fn row_copy_is_a_keyboard_stop_and_activates_once_with_space_and_enter(cx: &mut TestAppContext) {
     let (e, host, cx) = harness(cx);
     tab_to_list(&e, cx);
@@ -1205,4 +1226,29 @@ fn row_copy_is_a_keyboard_stop_and_activates_once_with_space_and_enter(cx: &mut 
     cx.simulate_keystrokes("shift-tab");
     draw(cx);
     cx.update(|w, cx| assert!(e.read(cx).row_copy_focus[&key].is_focused(w)));
+}
+
+#[test]
+fn initial_empty_history_epoch_zero_finishes_loading() {
+    let mut model = Model::default();
+    model.attach();
+    let ticket = model.begin();
+    assert!(model.event(Event::Read {
+        ticket,
+        revision: 0,
+        clear_epoch: 0,
+        result: Ok(Snapshot {
+            entries: vec![],
+            retain_history: true,
+            retry_import: false
+        }),
+    }));
+    assert!(!model.loading);
+    assert!(model.entries.is_empty());
+    assert!(!model.event(Event::Read {
+        ticket,
+        revision: 0,
+        clear_epoch: 0,
+        result: Err(Problem::Unavailable),
+    }));
 }

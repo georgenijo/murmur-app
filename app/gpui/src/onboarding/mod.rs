@@ -52,6 +52,7 @@ pub struct Onboarding {
     standalone: bool,
     verified_model: Option<String>,
     cancelling: bool,
+    read_started: Option<Instant>,
 }
 impl Onboarding {
     pub fn new(host: Rc<dyn Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -142,6 +143,7 @@ impl Onboarding {
             standalone: false,
             verified_model: None,
             cancelling: false,
+            read_started: None,
         }
     }
     pub fn attach(&mut self, cx: &mut Context<Self>) {
@@ -173,6 +175,7 @@ impl Onboarding {
         }
         self.model.detach();
         self.operation = None;
+        self.read_started = None;
         self.cancelling = false;
         self.selected_model.clear();
         self.recording_mode.clear();
@@ -239,6 +242,7 @@ impl Onboarding {
                 continue;
             }
             if terminal {
+                self.read_started = None;
                 self.operation = None;
                 if ok {
                     match action {
@@ -325,6 +329,7 @@ impl Onboarding {
             return;
         };
         self.authority.sync(&self.model);
+        self.read_started = matches!(action, Action::Read).then(Instant::now);
         self.operation = Some(action.clone());
         self.host.request(
             Request {
@@ -398,6 +403,23 @@ impl Onboarding {
     pub fn tick(&mut self, now: Instant, cx: &mut Context<Self>) {
         if self.finished || !self.model.attached {
             return;
+        }
+        if self.model.snapshot.is_none()
+            && self.model.pending
+            && self.read_started.is_some_and(|started| {
+                now.saturating_duration_since(started) >= Duration::from_secs(10)
+            })
+        {
+            // A stalled read or lost transport reply must leave a usable Retry.
+            // Revoking its ticket also rejects any late result after the retry.
+            self.model.invalidate();
+            self.authority.sync(&self.model);
+            self.operation = None;
+            self.read_started = None;
+            self.model.problem = Some(Problem::Operation(
+                "Setup did not respond within 10 seconds. Retry to check your local settings, permissions, and models again.",
+            ));
+            cx.notify();
         }
         if self
             .mic_wait
@@ -700,15 +722,11 @@ impl Render for Onboarding {
                     .self_center()
                     .child(text!(self.step.subtitle())),
             );
-        if self.model.snapshot.is_none() {
+        if self.model.snapshot.is_none() && self.model.problem.is_none() {
             body = body.child(text!("Loading setup…"));
         }
         if let Some(problem) = self.model.problem {
-            let message = if self.step == Step::Done {
-                "Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model."
-            } else {
-                problem.message()
-            };
+            let message = problem.message();
             body = body.child(
                 div()
                     .id("setup-error")
@@ -800,7 +818,7 @@ impl Render for Onboarding {
                     "Enable Murmur under Privacy & Security → Microphone, then come back. This screen updates automatically."
                 }
                 Permission::Accessibility if access != Access::Granted => {
-                    "Turn on Murmur in System Settings, then come back. This screen updates automatically."
+                    "Enable this copy of Murmur in System Settings → Privacy & Security → Accessibility for the global recording key and auto-paste. Then come back; this screen updates automatically."
                 }
                 Permission::SystemAudio if access == Access::Unsupported => {
                     "Meeting capture requires macOS 14.2 or newer. Dictation is still available."
@@ -995,7 +1013,7 @@ impl Render for Onboarding {
                 for (p, missing) in [
                     (
                         Permission::Microphone,
-                        "Not granted — enable later in Settings",
+                        "Not granted — enable in Settings before recording",
                     ),
                     (
                         Permission::Accessibility,

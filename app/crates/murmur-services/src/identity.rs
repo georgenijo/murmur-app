@@ -6,6 +6,8 @@ use std::{
 };
 pub(crate) const PRODUCTION: &str = "com.localdictation";
 static IDENTIFIER: OnceLock<String> = OnceLock::new();
+static PREVIEW_REAL_DELIVERY: OnceLock<bool> = OnceLock::new();
+const PREVIEW_REAL_DELIVERY_KEY: &str = "MurmurPreviewRealDelivery";
 
 static NATIVE_SUPPORT: OnceLock<PathBuf> = OnceLock::new();
 
@@ -20,6 +22,9 @@ pub(crate) fn initialize_native(identifier: &str, home: &Path) -> Result<(), Str
         return Err("Native identity already initialized".into());
     }
     let _ = NATIVE_SUPPORT.set(support);
+    // Main-bundle metadata only, frozen before worker dispatch. No environment
+    // or saved preference can opt an automated test into external delivery.
+    PREVIEW_REAL_DELIVERY.get_or_init(preview_real_delivery_from_bundle);
     initialize(identifier);
     Ok(())
 }
@@ -41,15 +46,35 @@ pub(crate) fn initialize(identifier: &str) {
 pub(crate) fn initialized_identifier() -> Option<&'static str> {
     IDENTIFIER.get().map(String::as_str)
 }
-/// Only an explicitly initialized production process may reach shared OS input.
+/// Production, or a deliberately opted-in manual preview, may reach OS input.
 pub(crate) fn external_input_allowed() -> bool {
-    input_allowed_for(initialized_identifier())
+    input_allowed_for(
+        initialized_identifier(),
+        PREVIEW_REAL_DELIVERY.get().copied().unwrap_or(false),
+    )
 }
-fn input_allowed_for(identifier: Option<&str>) -> bool {
+fn input_allowed_for(identifier: Option<&str>, preview_opt_in: bool) -> bool {
+    if preview_opt_in
+        && identifier.is_some_and(|id| {
+            !id.is_empty()
+                && !matches!(
+                    id,
+                    "com.localdictation.bench" | "com.localdictation.shutdown-test"
+                )
+        })
+    {
+        return true;
+    }
     identifier == Some(PRODUCTION)
 }
 pub(crate) fn private_pasteboard_name(identifier: Option<&str>) -> Option<String> {
-    if input_allowed_for(identifier) {
+    pasteboard_name_for(
+        identifier,
+        PREVIEW_REAL_DELIVERY.get().copied().unwrap_or(false),
+    )
+}
+fn pasteboard_name_for(identifier: Option<&str>, preview_opt_in: bool) -> Option<String> {
+    if input_allowed_for(identifier, preview_opt_in) {
         return None;
     }
     let encoded: String = identifier
@@ -63,6 +88,33 @@ pub(crate) fn private_pasteboard_name(identifier: Option<&str>) -> Option<String
         "com.localdictation.private-pasteboard.{}.{encoded}",
         if identifier.is_some() { "id" } else { "absent" }
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn preview_real_delivery_from_bundle() -> bool {
+    objc2::rc::autoreleasepool(|_| {
+        use objc2_foundation::{NSBundle, NSString};
+        let value = NSBundle::mainBundle()
+            .objectForInfoDictionaryKey(&NSString::from_str(PREVIEW_REAL_DELIVERY_KEY));
+        preview_real_delivery_value(value.as_deref())
+    })
+}
+#[cfg(target_os = "macos")]
+fn preview_real_delivery_value(value: Option<&objc2::runtime::AnyObject>) -> bool {
+    use core_foundation::{base::CFGetTypeID, boolean::CFBooleanGetTypeID};
+    value.is_some_and(|value| {
+        // CFBoolean is toll-free bridged to NSNumber. Strings and integers (even
+        // 1) must fail closed rather than accepting NSNumber's coercions.
+        (unsafe { CFGetTypeID(std::ptr::from_ref(value).cast()) == CFBooleanGetTypeID() })
+            && value
+                .downcast_ref::<objc2_foundation::NSNumber>()
+                .is_some_and(|number| number.as_bool())
+    })
+}
+#[cfg(not(target_os = "macos"))]
+fn preview_real_delivery_from_bundle() -> bool {
+    let _ = PREVIEW_REAL_DELIVERY_KEY;
+    false
 }
 pub(crate) fn identifier() -> &'static str {
     IDENTIFIER.get().map(String::as_str).unwrap_or(PRODUCTION)
@@ -91,8 +143,62 @@ pub(crate) fn temp_dir() -> PathBuf {
 mod tests {
     use super::*;
     #[test]
+    fn manual_preview_delivery_requires_explicit_opt_in_and_an_allowed_identity() {
+        for id in [
+            None,
+            Some(""),
+            Some("com.localdictation.bench"),
+            Some("com.localdictation.shutdown-test"),
+            Some("com.localdictation.gpui-preview.app"),
+            Some("future.id"),
+        ] {
+            assert!(!input_allowed_for(id, false));
+            let encoded: String = id
+                .unwrap_or("uninitialized")
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let original = Some(format!(
+                "com.localdictation.private-pasteboard.{}.{encoded}",
+                if id.is_some() { "id" } else { "absent" }
+            ));
+            assert_eq!(pasteboard_name_for(id, false), original);
+            let allowed = matches!(
+                id,
+                Some("com.localdictation.gpui-preview.app" | "future.id")
+            );
+            assert_eq!(input_allowed_for(id, true), allowed);
+            assert_eq!(
+                pasteboard_name_for(id, true),
+                if allowed { None } else { original }
+            );
+        }
+        for opt_in in [false, true] {
+            assert!(input_allowed_for(Some(PRODUCTION), opt_in));
+            assert_eq!(pasteboard_name_for(Some(PRODUCTION), opt_in), None);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn preview_bundle_opt_in_accepts_only_a_true_plist_boolean() {
+        use objc2_foundation::{NSNumber, NSString};
+        objc2::rc::autoreleasepool(|_| {
+            assert_eq!(PREVIEW_REAL_DELIVERY_KEY, "MurmurPreviewRealDelivery");
+            assert!(!preview_real_delivery_value(None));
+            assert!(preview_real_delivery_value(Some(&NSNumber::new_bool(true))));
+            assert!(!preview_real_delivery_value(Some(&NSNumber::new_bool(
+                false
+            ))));
+            assert!(!preview_real_delivery_value(Some(&NSNumber::new_i32(1))));
+            assert!(!preview_real_delivery_value(Some(&NSString::from_str(
+                "true"
+            ))));
+        });
+    }
+    #[test]
     fn clipboard_and_input_routing_fails_closed_without_touching_pasteboards() {
-        assert!(input_allowed_for(Some(PRODUCTION)));
+        assert!(input_allowed_for(Some(PRODUCTION), false));
         assert_eq!(private_pasteboard_name(Some(PRODUCTION)), None);
         let mut names = std::collections::HashSet::new();
         for id in [
@@ -105,7 +211,7 @@ mod tests {
             Some("future.id"),
             Some("../com.localdictation"),
         ] {
-            assert!(!input_allowed_for(id));
+            assert!(!input_allowed_for(id, false));
             let name = private_pasteboard_name(id).unwrap();
             assert!(!name.contains('/'));
             assert!(names.insert(name));

@@ -157,7 +157,11 @@ pub(crate) fn initialize(app: &crate::host::Context) {
                 };
                 let mut controller = control.controller.lock_or_recover();
                 controller.observe(generation, status(dictation.status), Origin::Toggle);
-                let effect = controller.input(input);
+                let effect = if queued.native_active.is_some() {
+                    controller.input_in_app(input)
+                } else {
+                    controller.input(input)
+                };
                 crate::keyboard::set_recording_state(controller.keyboard_recording());
                 (generation, effect, controller.locked)
             };
@@ -169,7 +173,9 @@ pub(crate) fn initialize(app: &crate::host::Context) {
             }
             if let Some(effect) = effect {
                 let start = matches!(effect, Effect::Start { .. });
-                if let Some(accepted) = execute(&handle, effect).await {
+                if let Some(accepted) =
+                    execute(&handle, effect, queued.native_active.is_some()).await
+                {
                     input_guard.accepted(generation, accepted, Instant::now());
                 } else if start
                     && control
@@ -226,16 +232,16 @@ pub(crate) fn send(app: &crate::host::Context, input: Input) {
         });
     }
 }
-pub(crate) fn started(app: &crate::host::Context, generation: u64, origin: &str) {
+pub(crate) fn started(app: &crate::host::Context, generation: u64, origin: &str, in_app: bool) {
     let control = app.control();
-    control.controller.lock_or_recover().observe(
+    control.controller.lock_or_recover().accepted_start(
         generation,
-        Status::Starting,
         if origin == "hold" {
             Origin::Hold
         } else {
             Origin::Toggle
         },
+        in_app,
     );
     crate::keyboard::set_recording_state(origin != "hold");
 }
@@ -253,7 +259,7 @@ pub(crate) fn level(app: &crate::host::Context, generation: u64, level: f32) {
         });
     }
 }
-async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
+async fn execute(app: &crate::host::Context, effect: Effect, in_app: bool) -> Option<u64> {
     use crate::commands::recording;
     match effect {
         Effect::Start {
@@ -285,7 +291,7 @@ async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
                 .as_str()
                 .filter(|id| *id != "system_default" && !id.is_empty())
                 .map(str::to_owned);
-            let result = recording::start_native_recording(
+            let result = recording::start_recording_with_admission(
                 app.clone(),
                 app.services(),
                 if smart_auto.is_some() { None } else { device },
@@ -299,6 +305,7 @@ async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
                     .into(),
                 ),
                 gesture_token,
+                in_app,
             )
             .await;
             match result {
@@ -357,16 +364,7 @@ async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
                     trigger,
                 )
                 .await;
-                present_stop_failure(
-                    &handle.services().app_state,
-                    generation,
-                    &result,
-                    |failure| {
-                        let _ = handle
-                            .events()
-                            .publish(EventKind::DictationStopFailed, failure);
-                    },
-                );
+                present_stop_result(&handle, generation, &result);
             }));
         }
         Effect::Score { generation, pause } => {
@@ -395,6 +393,49 @@ async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
         Effect::PasteLast => crate::delivery_recovery::spawn_retry(app.clone()),
     }
     None
+}
+
+/// Both user stops and automatic partial transcription finish through this
+/// content-free, generation-fenced presentation path.
+pub(crate) fn present_stop_result(
+    app: &crate::host::Context,
+    generation: u64,
+    result: &Result<serde_json::Value, String>,
+) {
+    present_stop_failure(&app.services().app_state, generation, result, |failure| {
+        let _ = app
+            .events()
+            .publish(EventKind::DictationStopFailed, failure);
+    });
+    present_stop_success(
+        &app.services().app_state,
+        generation,
+        result,
+        |generation| {
+            let _ = app.events().publish(
+                EventKind::DictationStopCompleted,
+                serde_json::json!({"recordingId": generation}),
+            );
+        },
+    );
+}
+
+fn present_stop_success(
+    state: &crate::state::AppState,
+    generation: u64,
+    result: &Result<serde_json::Value, String>,
+    present: impl FnOnce(u64),
+) {
+    if !matches!(result, Ok(response) if response["type"] == "transcription") {
+        return;
+    }
+    let current = {
+        let _dictation = state.dictation.lock_or_recover();
+        state.recording_id.load(Ordering::SeqCst) == generation && !state.is_cancelled(generation)
+    };
+    if current {
+        present(generation);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -605,12 +646,18 @@ fn active_capture_generation(state: &crate::state::AppState) -> Option<u64> {
     )
     .then(|| state.recording_id.load(Ordering::SeqCst))
 }
-pub(crate) fn admitted(app: &crate::host::Context) -> bool {
+pub(crate) fn admitted(app: &crate::host::Context, in_app: bool) -> bool {
     if crate::shutdown::closing() {
         return false;
     }
-    app.try_control()
-        .is_none_or(|control| control.controller.lock_or_recover().gate.can_start())
+    app.try_control().is_none_or(|control| {
+        let gate = control.controller.lock_or_recover().gate;
+        if in_app {
+            gate.can_start_in_app()
+        } else {
+            gate.can_start()
+        }
+    })
 }
 
 fn probe_policy(settings: &serde_json::Value) -> serde_json::Value {
@@ -856,6 +903,37 @@ mod tests {
             assert_eq!(controller.input(Input::Toggle(None)).is_some(), installed);
             assert_eq!(*control.settings.lock_or_recover(), original_settings);
         }
+    }
+
+    #[test]
+    fn stop_success_is_content_free_and_rejects_nonterminal_cancelled_or_newer_owners() {
+        let state = crate::state::AppState::default();
+        state.recording_id.store(12, Ordering::SeqCst);
+        for text in ["", "PRIVATE SYNTHETIC SENTINEL"] {
+            let success = Ok(serde_json::json!({"type":"transcription", "text":text}));
+            let mut presented = Vec::new();
+            present_stop_success(&state, 12, &success, |generation| {
+                assert!(
+                    state.dictation.try_lock().is_ok(),
+                    "dispatch held dictation"
+                );
+                presented.push(generation);
+            });
+            assert_eq!(presented, vec![12]);
+        }
+        for result in [
+            Err("PRIVATE SYNTHETIC SENTINEL".into()),
+            Ok(serde_json::json!({"type":"error"})),
+            Ok(serde_json::json!({"type":"already_processing"})),
+            Ok(serde_json::json!({"type":"audio_recovering"})),
+        ] {
+            present_stop_success(&state, 12, &result, |_| panic!("not a successful terminal"));
+        }
+        let success = Ok(serde_json::json!({"type":"transcription"}));
+        state.cancel_recording(12);
+        present_stop_success(&state, 12, &success, |_| panic!("cancelled completion"));
+        state.recording_id.store(13, Ordering::SeqCst);
+        present_stop_success(&state, 12, &success, |_| panic!("stale completion"));
     }
 
     #[test]

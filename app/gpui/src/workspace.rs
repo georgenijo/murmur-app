@@ -23,10 +23,13 @@ pub enum Problem {
     Unavailable,
     Conflict,
     Invalid,
+    /// Static, content-free explanation from an operation that knows its failure stage.
+    Operation(&'static str),
 }
 impl Problem {
     pub fn message(self) -> &'static str {
         match self {
+            Self::Operation(message) => message,
             Self::Unavailable => {
                 "Something went wrong. Your choices are kept. Retry when the service is available."
             }

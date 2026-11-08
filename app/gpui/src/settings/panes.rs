@@ -504,6 +504,18 @@ impl Settings {
                 }
             }
             Page::Delivery => {
+                if !r.delivery_isolated && r.accessibility != Some(true) {
+                    text!(
+                        "Accessibility access is required to auto-paste into other apps. Enable this copy of Murmur in System Settings → Privacy & Security → Accessibility."
+                    );
+                    action!(
+                        "delivery-accessibility",
+                        "Grant Accessibility…",
+                        Action::Accessibility,
+                        false,
+                        false
+                    );
+                }
                 if advanced {
                     editor!("app-overrides", "App overrides…", Destination::AppOverrides);
                 }

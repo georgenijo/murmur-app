@@ -576,3 +576,112 @@ fn completion_outcome_table_names_executable_tests_in_plan_order() {
     assert_eq!(names.len(), 37);
     assert_eq!(names, executable);
 }
+
+#[test]
+fn in_app_start_does_not_require_accessibility_or_arm_global_keys() {
+    let mut c = control();
+    c.gate.accessibility = false;
+    assert!(c.input(Input::Toggle(None)).is_none());
+    assert!(matches!(
+        c.input_in_app(Input::Toggle(None)),
+        Some(Effect::Start { .. })
+    ));
+    assert!(!c.gate.accessibility);
+    assert!(!c.gate.armed());
+    assert!(c.input_in_app(Input::HoldStart(None)).is_none());
+    assert!(c.input_in_app(Input::PasteLast).is_none());
+    for gate in [
+        LaunchGate {
+            disabled: true,
+            ..c.gate
+        },
+        LaunchGate {
+            shutdown: true,
+            ..c.gate
+        },
+        LaunchGate {
+            configured: false,
+            ..c.gate
+        },
+        LaunchGate {
+            onboarding_complete: false,
+            ..c.gate
+        },
+        LaunchGate {
+            model_installed: false,
+            ..c.gate
+        },
+    ] {
+        c.gate = gate;
+        assert!(c.input_in_app(Input::Toggle(None)).is_none());
+        assert!(!c.gate.accessibility);
+    }
+}
+
+#[test]
+fn accepted_in_app_recording_auto_stops_without_accessibility() {
+    for smart in [false, true] {
+        let mut c = control();
+        c.gate.accessibility = false;
+        c.smart_enabled = smart;
+        assert!(c.input(Input::Toggle(None)).is_none());
+        assert!(matches!(
+            c.input_in_app(Input::Toggle(None)),
+            Some(Effect::Start { .. })
+        ));
+        c.accepted_start(7, Origin::Toggle, true);
+        c.observe(7, Status::Recording, Origin::Toggle);
+        speech(&mut c, 7, 0);
+        assert!(quiet(&mut c, 6, 600, 2000).is_empty());
+        let stop = Effect::Stop {
+            generation: 7,
+            auto: true,
+            hold: false,
+        };
+        if smart {
+            assert_eq!(
+                quiet(&mut c, 7, 600, 800),
+                vec![Effect::Score {
+                    generation: 7,
+                    pause: 1
+                }]
+            );
+            assert_eq!(
+                c.input(Input::SmartAnswer {
+                    generation: 6,
+                    pause: 1,
+                    probability: Some(1.0)
+                }),
+                None
+            );
+            assert_eq!(
+                c.input(Input::SmartAnswer {
+                    generation: 7,
+                    pause: 1,
+                    probability: Some(1.0)
+                }),
+                Some(stop)
+            );
+        } else {
+            assert_eq!(quiet(&mut c, 7, 600, 2000), vec![stop]);
+        }
+        assert!(quiet(&mut c, 7, 2100, 4000).is_empty());
+        assert!(!c.gate.armed());
+        assert!(c.input_in_app(Input::PasteLast).is_none());
+        c.observe(7, Status::Idle, Origin::Toggle);
+        c.accepted_start(8, Origin::Toggle, false);
+        c.observe(8, Status::Recording, Origin::Toggle);
+        speech(&mut c, 8, 4100);
+        assert!(quiet(&mut c, 8, 4700, 7000).is_empty());
+    }
+}
+
+#[test]
+fn in_app_auto_stop_admission_does_not_leak_to_replacement_generation() {
+    let mut c = control();
+    c.gate.accessibility = false;
+    c.accepted_start(1, Origin::Toggle, true);
+    recording(&mut c, 2, Origin::Toggle);
+    speech(&mut c, 2, 0);
+    assert!(quiet(&mut c, 2, 600, 2000).is_empty());
+}

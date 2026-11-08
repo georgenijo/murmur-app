@@ -4758,15 +4758,15 @@ pub(crate) fn handle_audio_lifecycle(
         |app_handle, recording_id| {
             crate::host::runtime::spawn(async move {
                 let state = app_handle.services();
-                if stop_native_recording_for(
+                let result = stop_native_recording_for(
                     app_handle.clone(),
                     state,
                     Some(recording_id),
                     audio_lifecycle::DictationStopTrigger::Other,
                 )
-                .await
-                .is_err()
-                {
+                .await;
+                crate::dictation_control::present_stop_result(&app_handle, recording_id, &result);
+                if result.is_err() {
                     tracing::error!(
                         target: "pipeline",
                         recording_id,
@@ -5306,6 +5306,46 @@ pub async fn start_native_recording(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    start_recording_with_admission(
+        app_handle,
+        state,
+        device_name,
+        smart_auto,
+        origin,
+        gesture_token,
+        false,
+    )
+    .await
+}
+
+/// A recording attempt never opens a helper while TCC is unresolved. The
+/// native request is fire-and-forget; no continuation may revive this attempt.
+fn microphone_start_preflight(
+    status: &str,
+    request: impl FnOnce() -> Result<(), String>,
+) -> Result<Option<&'static str>, String> {
+    match status {
+        "granted" => Ok(None),
+        "notDetermined" => {
+            request()?;
+            Ok(Some("microphone_not_determined"))
+        }
+        "denied" => Ok(Some("microphone_denied")),
+        _ => Ok(Some("microphone_unknown")),
+    }
+}
+
+// Only the generation-fenced native control queue supplies `in_app=true`.
+// The public command and global listener retain their Accessibility gate.
+pub(crate) async fn start_recording_with_admission(
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
+    device_name: Option<String>,
+    smart_auto: Option<SmartAutoRequest>,
+    origin: Option<String>,
+    gesture_token: Option<String>,
+    in_app: bool,
+) -> Result<serde_json::Value, String> {
     if !crate::completion::admitted(&app_handle) {
         return Err("Waiting for completion storage migration".into());
     }
@@ -5319,7 +5359,7 @@ pub async fn start_native_recording(
         state.inner(),
     )
     .await?;
-    if keyboard::is_app_disabled() || !crate::dictation_control::admitted(&app_handle) {
+    if keyboard::is_app_disabled() || !crate::dictation_control::admitted(&app_handle, in_app) {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }
@@ -5350,6 +5390,39 @@ pub async fn start_native_recording(
                 "type": blocker.kind,
                 "state": blocker.state
             }));
+        }
+        if let Some(code) = microphone_start_preflight(
+            &super::permissions::check_microphone_permission_status(),
+            || {
+                let app = app_handle.clone();
+                let expected_generation = state.app_state.recording_id.load(Ordering::SeqCst);
+                app_handle
+                    .run_on_main_thread(move || {
+                        if app.services().app_state.recording_id.load(Ordering::SeqCst)
+                            != expected_generation
+                        {
+                            return;
+                        }
+                        // TCC may have changed while main dispatch was queued. A
+                        // denied status must never issue another request.
+                        if super::permissions::check_microphone_permission_status()
+                            == "notDetermined"
+                            && super::permissions::request_microphone_access().is_err()
+                        {
+                            let _ = app.events().publish(
+                                EventKind::DictationControlError,
+                                serde_json::json!({"code":"microphone_request_failed"}),
+                            );
+                        }
+                    })
+                    .map_err(|_| "Could not request microphone access.".to_string())
+            },
+        )? {
+            let _ = app_handle.events().publish(
+                EventKind::DictationControlError,
+                serde_json::json!({"code":code}),
+            );
+            return Ok(serde_json::json!({"type":code,"state":"idle"}));
         }
         match dictation.status {
             DictationStatus::Starting
@@ -5427,7 +5500,7 @@ pub async fn start_native_recording(
                             "start_native_recording"
                         );
                     });
-                crate::dictation_control::started(&app_handle, rid, origin);
+                crate::dictation_control::started(&app_handle, rid, origin, in_app);
                 // Freeze the native delivery target immediately after the
                 // accepted Idle -> Starting transition, under the same
                 // ownership lock. This startup work is therefore included in
@@ -9099,10 +9172,7 @@ pub(crate) mod tests {
         assert!(!keyboard::is_processing());
         assert!(emitted_idle.load(Ordering::SeqCst));
         assert_eq!(
-            state
-                .app_state
-                .dictation_telemetry
-                .terminal_for_test(recording_id),
+            state.app_state.dictation_telemetry.terminal(recording_id),
             Some((
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::RuntimeFailure,
@@ -9180,7 +9250,7 @@ pub(crate) mod tests {
                 .services()
                 .app_state
                 .dictation_telemetry
-                .terminal_for_test(recording_id),
+                .terminal(recording_id),
             None,
             "recovery alone is not terminal until the typed worker failure arrives"
         );
@@ -9221,12 +9291,44 @@ pub(crate) mod tests {
                 .services()
                 .app_state
                 .dictation_telemetry
-                .terminal_for_test(recording_id),
+                .terminal(recording_id),
             Some((
                 DictationTerminalOutcome::RuntimeInterruption,
                 DictationErrorCode::StreamInvalidated,
             )),
             "a later failure callback must not overwrite the first terminal"
+        );
+    }
+}
+
+#[cfg(test)]
+mod microphone_start_tests {
+    use super::microphone_start_preflight;
+    #[test]
+    fn unresolved_microphone_requests_once_and_ends_attempt_without_capture() {
+        let mut requests = 0;
+        assert_eq!(
+            microphone_start_preflight("notDetermined", || {
+                requests += 1;
+                Ok(())
+            })
+            .unwrap(),
+            Some("microphone_not_determined")
+        );
+        assert_eq!(requests, 1);
+        for (status, expected) in [
+            ("granted", None),
+            ("denied", Some("microphone_denied")),
+            ("unknown", Some("microphone_unknown")),
+        ] {
+            assert_eq!(
+                microphone_start_preflight(status, || panic!("must not prompt for {status}"))
+                    .unwrap(),
+                expected
+            );
+        }
+        assert!(
+            microphone_start_preflight("notDetermined", || Err("request failed".into())).is_err()
         );
     }
 }

@@ -218,8 +218,7 @@ impl DictationTelemetry {
         true
     }
 
-    #[cfg(test)]
-    pub(crate) fn terminal_for_test(
+    pub(crate) fn terminal(
         &self,
         recording_id: u64,
     ) -> Option<(DictationTerminalOutcome, DictationErrorCode)> {
@@ -309,7 +308,7 @@ mod tests {
             DictationErrorCode::TranscriptionFailed
         ));
         assert_eq!(
-            telemetry.terminal_for_test(7),
+            telemetry.terminal(7),
             Some((DictationTerminalOutcome::Success, DictationErrorCode::None))
         );
     }
@@ -394,7 +393,7 @@ mod tests {
             telemetry.accepted(recording_id);
             assert!(telemetry.publish_terminal(recording_id, outcome, error_code));
             assert_eq!(
-                telemetry.terminal_for_test(recording_id),
+                telemetry.terminal(recording_id),
                 Some((outcome, error_code))
             );
             assert!(!telemetry.publish_terminal(

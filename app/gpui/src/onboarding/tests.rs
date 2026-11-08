@@ -382,7 +382,7 @@ mod ax {
         for _ in 0..2 {
             let t = tree(cx);
             for text in [
-                "Microphone · Not granted — enable later in Settings",
+                "Microphone · Not granted — enable in Settings before recording",
                 "Accessibility · Not granted — shortcut unavailable outside Murmur",
                 "System audio · Optional — enable later in Meetings",
                 "Calendar · Optional — name meetings manually",
@@ -396,7 +396,7 @@ mod ax {
         e.update(cx, |s, cx| s.visit(Step::Accessibility, cx));
         static_text(
             &tree(cx),
-            "Turn on Murmur in System Settings, then come back. This screen updates automatically.",
+            "Enable this copy of Murmur in System Settings → Privacy & Security → Accessibility for the global recording key and auto-paste. Then come back; this screen updates automatically.",
         );
         e.update(cx, |s, cx| s.visit(Step::Model, cx));
         static_text(
@@ -822,4 +822,181 @@ fn cancellation_retry_uses_retained_download_identity(cx: &mut TestAppContext) {
     assert!(e.read_with(cx, |s, _| s.cancelling
         && s.downloading()
         && s.model.pending));
+}
+
+#[gpui::test]
+fn initial_read_timeout_offers_retry_and_rejects_late_reply(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let host = Rc::new(FixtureHost::default());
+    host.hold.set(true);
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let e = cx.new(|cx| Onboarding::new(host.clone(), w, cx));
+        entity = Some(e.clone());
+        gpui_base::Root::new(e, w, cx)
+    });
+    let e = entity.unwrap();
+    e.update(cx, |s, cx| s.attach(cx));
+    let (old, inbox) = host.held.borrow_mut().pop().unwrap();
+    e.update(cx, |s, cx| {
+        s.tick(s.read_started.unwrap() + Duration::from_secs(10), cx);
+        assert!(!s.model.pending);
+        assert!(s.model.problem.unwrap().message().contains("10 seconds"));
+        assert!(!old.lease.is_current());
+    });
+    host.hold.set(false);
+    e.update(cx, |s, cx| s.request(Action::Read, cx));
+    super::inbox::reply(&inbox, old.ticket, Err(Problem::Unavailable));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.model.snapshot.is_some()
+        && s.model.problem.is_none()));
+}
+
+#[gpui::test]
+fn rejected_initial_projection_delivers_error_instead_of_loading_forever(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let host = Rc::new(FixtureHost::default());
+    host.state.borrow_mut().hardware_summary = Some("x".repeat(513));
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let e = cx.new(|cx| Onboarding::new(host.clone(), w, cx));
+        entity = Some(e.clone());
+        gpui_base::Root::new(e, w, cx)
+    });
+    let e = entity.unwrap();
+    e.update(cx, |s, cx| s.attach(cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| !s.model.pending
+        && s.model.problem == Some(Problem::Invalid)));
+    host.state.borrow_mut().hardware_summary = None;
+    e.update(cx, |s, cx| s.request(Action::Read, cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.model.snapshot.is_some()
+        && s.model.problem.is_none()));
+}
+
+#[gpui::test]
+fn completion_allows_deferred_microphone_and_keeps_specific_failure(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    assert_eq!(h.state.borrow().permissions[0], Access::NotDetermined);
+    e.update(cx, |s, cx| s.visit(Step::Done, cx));
+    h.hold.set(true);
+    e.update(cx, |s, cx| s.activate(cx));
+    let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+    let message = "Could not save setup completion. Your previous local data is preserved. Retry.";
+    super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(message)));
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.model.problem.unwrap().message()),
+        message
+    );
+    h.hold.set(false);
+    e.update(cx, |s, cx| s.activate(cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.finished));
+    assert_eq!(h.state.borrow().permissions[0], Access::NotDetermined);
+}
+
+#[gpui::test]
+fn saturated_progress_inbox_keeps_download_and_cancellation_terminal_replies(
+    cx: &mut TestAppContext,
+) {
+    let (e, h, cx) = harness(cx);
+    e.update(cx, |s, cx| s.visit(Step::Model, cx));
+    draw(cx);
+    for outcome in 0..3 {
+        h.hold.set(true);
+        let cancel = outcome == 2;
+        e.update(cx, |s, cx| {
+            s.selected_model = CURATED[0].into();
+            s.activate(cx);
+            if cancel {
+                s.cancel_download(cx);
+            }
+        });
+        let (request, inbox) = h.held.borrow_mut().pop().unwrap();
+        let mut progress = h.state.borrow().clone();
+        progress.revision = request.ticket.revision;
+        progress.download_percent = Some(42);
+        for _ in 0..8 {
+            assert!(
+                inbox
+                    .publish(Event::Progress {
+                        ticket: request.ticket,
+                        snapshot: progress.clone()
+                    })
+                    .is_ok()
+            );
+        }
+        assert!(
+            inbox
+                .publish(Event::Progress {
+                    ticket: request.ticket,
+                    snapshot: progress.clone()
+                })
+                .is_err()
+        );
+        // Both successful and failed downloads, and successful cancellation,
+        // must release their pending owner even when progress cannot enqueue.
+        if outcome == 1 {
+            progress
+                .catalog
+                .as_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|model| model.id == CURATED[0])
+                .unwrap()
+                .installed = true;
+        }
+        super::inbox::reply(
+            &inbox,
+            request.ticket,
+            if outcome == 0 {
+                Err(Problem::Unavailable)
+            } else {
+                Ok(progress)
+            },
+        );
+        draw(cx);
+        assert!(e.read_with(cx, |s, _| !s.model.pending
+            && !s.downloading()
+            && !s.cancelling));
+        if outcome == 1 {
+            assert_eq!(e.read_with(cx, |s, _| s.step), Step::Hotkey);
+        }
+        h.hold.set(false);
+        e.update(cx, |s, cx| s.visit(Step::Calendar, cx));
+        assert_eq!(e.read_with(cx, |s, _| s.step), Step::Calendar);
+        e.update(cx, |s, cx| s.visit(Step::Model, cx));
+        draw(cx);
+    }
+}
+
+#[test]
+fn reserved_terminal_slot_rejects_stale_replies_and_recovers_invalid_projection() {
+    let inbox = Inbox::default();
+    let mut session = Session::default();
+    session.attach();
+    let old = session.begin().unwrap();
+    session.invalidate();
+    let ticket = session.begin().unwrap();
+    let mut invalid = fixtures::snapshot();
+    invalid.hardware_summary = Some("x".repeat(513));
+    super::inbox::reply(&inbox, ticket, Ok(invalid));
+    super::inbox::reply(&inbox, old, Err(Problem::Unavailable));
+    for event in inbox.drain() {
+        session.event(event);
+    }
+    assert!(!session.pending);
+    assert_eq!(session.problem, Some(Problem::Invalid));
+    let retry = session.begin().unwrap();
+    super::inbox::reply(&inbox, retry, Ok(fixtures::snapshot()));
+    for event in inbox.drain() {
+        session.event(event);
+    }
+    assert!(!session.pending);
+    assert!(session.problem.is_none());
+    inbox.close();
+    super::inbox::reply(&inbox, retry, Err(Problem::Unavailable));
+    assert!(inbox.drain().is_empty());
 }

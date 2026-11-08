@@ -6,6 +6,8 @@ After a current recording's transcription, text is always copied to the clipboar
 
 ## Clipboard (`injector.rs`)
 
+Non-production bundles keep paste and external input isolated by default. For manual preview testing only, add `MurmurPreviewRealDelivery` as an Info.plist **Boolean** set to `true` before signing, then relaunch; auto-paste also requires Accessibility for that bundle. The bench and shutdown-test identities always remain isolated; production is unchanged.
+
 Uses `arboard` crate (maintained by 1Password). Text is set via `Clipboard::new()` + `clipboard.set_text()`.
 
 This always happens, regardless of auto-paste setting. The user can always manually Cmd+V.

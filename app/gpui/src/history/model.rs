@@ -184,11 +184,14 @@ impl Model {
                 result,
             } => {
                 if !self.current(ticket)
-                    || revision <= self.revision
+                    || revision < self.revision
                     || clear_epoch < self.clear_epoch
                 {
                     return false;
                 }
+                // A current Read is a reply to this exact ticket, including the
+                // first empty history at epoch zero. Changed still requires a
+                // strictly newer epoch so duplicate notifications stay inert.
                 match result {
                     Ok(s) => self.replace(revision, clear_epoch, s),
                     Err(p) => {

@@ -68,6 +68,8 @@ pub struct Main {
     teaching_epoch: Arc<AtomicU64>,
     return_section: Option<Section>,
     error: Option<&'static str>,
+    dictation_notice: Option<super::dictation_feedback::Notice>,
+    feedback_revision: u64,
     subscriptions: Vec<Subscription>,
     pending_history: Option<String>,
     pending_meeting: Option<Option<String>>,
@@ -122,6 +124,8 @@ impl Main {
             teaching_epoch: Default::default(),
             return_section: None,
             error: None,
+            dictation_notice: None,
+            feedback_revision: 0,
             subscriptions: vec![],
             pending_history: None,
             pending_meeting: None,
@@ -246,6 +250,33 @@ impl Main {
         }
     }
     pub fn tick(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let terminal = self.backend.services.recording_terminal();
+        let changed = {
+            let mut feedback = self
+                .backend
+                .events
+                .feedback
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            feedback.terminal(terminal);
+            if self.feedback_revision == feedback.revision {
+                false
+            } else {
+                self.feedback_revision = feedback.revision;
+                self.dictation_notice = feedback.notice;
+                true
+            }
+        };
+        if changed {
+            if self.dictation_notice.is_some() {
+                // A hotkey failure must also be visible when Main was hidden.
+                if !super::super::native::visible(w) {
+                    super::super::native::show(w, true);
+                }
+                self.show(w, cx);
+            }
+            cx.notify();
+        }
         if self.section == Section::Home
             && self.home.read(cx).production_history_ready(cx)
             && let Some(action) = self.pending_history.take()
@@ -619,6 +650,46 @@ impl Render for Main {
             .when(self.palette.read(cx).open, |root| {
                 root.child(div().absolute().inset_0().child(self.palette.clone()))
             });
+        if let Some(notice) = self.dictation_notice {
+            use super::dictation_feedback::Recovery;
+            let label = match notice.recovery {
+                Recovery::MicrophoneSettings => "Open Microphone Settings…",
+                Recovery::ChooseMicrophone => "Choose microphone…",
+                Recovery::Reinstall => "Open Murmur downloads…",
+                Recovery::Restart => "Restart Murmur",
+                Recovery::Retry => "Recording settings…",
+            };
+            root = root.child(div()
+                .id("dictation-failure-banner")
+                .role(Role::Alert)
+                .aria_label("Dictation needs attention")
+                .absolute().bottom_4().left_4().right_4().rounded_lg()
+                .p_4().bg(p.surface).border_1().border_color(p.border)
+                .flex().flex_wrap().gap_3()
+                .child(gpui::text!(notice.message))
+                .child(Button::new("dictation-recovery", label).on_click(cx.listener(move |s, _, w, cx| {
+                    match notice.recovery {
+                        Recovery::ChooseMicrophone | Recovery::Retry => s.route(Route::Settings(Page::Recording), w, cx),
+                        recovery => {
+                            let b = s.backend.clone();
+                            s.backend.spawn(async move {
+                                let result = match recovery {
+                                    Recovery::MicrophoneSettings => b.call("open_system_preferences", json!({})).await.map(|_| ()),
+                                    Recovery::Restart => { b.services.shutdown(murmur_core::shutdown::Request::Restart); Ok(()) },
+                                    Recovery::Reinstall => b.os.open("https://github.com/georgenijo/murmur-app/releases/latest".into(), false, Arc::new(|| true)).await,
+                                    _ => Ok(()),
+                                };
+                                if result.is_err() { b.navigate(Route::Notice("Could not open recovery. Use System Settings or restart Murmur manually.")); }
+                            });
+                        }
+                    }
+                })))
+                .child(Button::new("dismiss-dictation-failure", "Dismiss").on_click(cx.listener(|s, _, _, cx| {
+                    s.backend.events.feedback.lock().unwrap_or_else(|p| p.into_inner()).dismiss();
+                    s.dictation_notice = None;
+                    cx.notify();
+                }))));
+        }
         if let Some(error) = self.error {
             root = root.child(gpui::text!(error));
         }

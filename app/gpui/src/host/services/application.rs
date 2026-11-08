@@ -83,6 +83,67 @@ fn status(v: &Value) -> Status {
         _ => Status::Idle,
     }
 }
+fn recording_id(value: &Value) -> Option<u64> {
+    value["recordingId"].as_u64().filter(|id| *id > 0)
+}
+/// Decode only bounded presentation codes. Terminal events retain their own
+/// recording owner even if service state has already advanced to a new capture.
+fn overlay_terminal_event(event: &str, value: &Value) -> Option<crate::overlay::model::Event> {
+    use crate::overlay::model::{Delivery, Event, Failure};
+    let generation = recording_id(value)?;
+    match event {
+        "recording-cancelled" => Some(Event::Cancelled(generation)),
+        "dictation-delivery-outcome" => {
+            let delivery = match value["outcome"].as_str()? {
+                "autoPastePosted" => Delivery::Pasted,
+                "clipboardOnly" => Delivery::Clipboard,
+                "clipboardWriteFailed" | "unconfirmed" => Delivery::Retry,
+                _ => return None,
+            };
+            Some(Event::Delivery(generation, delivery))
+        }
+        "recording-initialization-failed"
+            if value["statusCode"] == "microphone_initialization_failed" =>
+        {
+            // Match the shipped initialization presentation contract, including
+            // the error/action pairing; never display raw backend error text.
+            let failure = match (value["errorKind"].as_str()?, value["actionCode"].as_str()?) {
+                ("permission_denied", "open_microphone_settings") => Failure::Permission,
+                ("device_unavailable", "choose_microphone") => Failure::ChooseInput,
+                (
+                    "host_unavailable"
+                    | "invalid_input"
+                    | "resource_exhausted"
+                    | "stream_invalidated"
+                    | "unsupported_config"
+                    | "backend_error"
+                    | "protocol_error"
+                    | "first_buffer_timeout"
+                    | "initialization_timeout"
+                    | "permission_prompt_timeout"
+                    | "termination_unconfirmed"
+                    | "worker_panicked"
+                    | "signature_invalid",
+                    "retry",
+                ) => Failure::Retry,
+                _ => return None,
+            };
+            Some(Event::Failure(generation, failure))
+        }
+        "recording-interrupted" if value["statusCode"] == "microphone_interrupted" => {
+            let failure = match (
+                value["autoTranscribe"].as_bool()?,
+                value["actionCode"].as_str()?,
+            ) {
+                (true, "wait_for_partial_transcription") => Failure::Partial,
+                (false, "retry") => Failure::Retry,
+                _ => return None,
+            };
+            Some(Event::Failure(generation, failure))
+        }
+        _ => None,
+    }
+}
 impl NativePorts for Ports {
     fn window(&self, label: &str) -> Option<Arc<dyn WindowPort>> {
         self.registry
@@ -178,7 +239,7 @@ impl NativePorts for Ports {
             if label == "overlay"
                 && let Some(inbox) = self.overlay.get()
             {
-                use crate::overlay::model::{Delivery, Event, Failure};
+                use crate::overlay::model::Event;
                 let notification = match event {
                     "audio-level" => {
                         if let Some(level) = value.as_f64() {
@@ -194,22 +255,8 @@ impl NativePorts for Ports {
                             .get()
                             .map_or(0, |start| start.elapsed().as_millis() as u64),
                     }),
-                    "recording-cancelled" => Some(Event::Cancelled(
-                        value["recordingId"].as_u64().unwrap_or(generation),
-                    )),
                     "hotkey-tap-rejected" => Some(Event::TapMissed),
                     "audio-initialization-stalled" => Some(Event::Stalled(generation)),
-                    "recording-initialization-failed" => {
-                        Some(Event::Failure(generation, Failure::Retry))
-                    }
-                    "dictation-delivery-outcome" => Some(Event::Delivery(
-                        generation,
-                        match value["outcome"].as_str() {
-                            Some("autoPastePosted") => Delivery::Pasted,
-                            Some("clipboardOnly") => Delivery::Clipboard,
-                            _ => Delivery::Retry,
-                        },
-                    )),
                     "overlay-visible-changed" => value.as_bool().map(Event::Visible),
                     "meeting-suggestion-changed" => {
                         Some(Event::Suggestion(value.as_object().and_then(|_| {
@@ -221,7 +268,7 @@ impl NativePorts for Ports {
                             })
                         })))
                     }
-                    _ => None,
+                    _ => overlay_terminal_event(event, &value),
                 };
                 if let Some(event) = notification
                     && inbox.publish(event).is_err()
@@ -246,9 +293,7 @@ impl NativePorts for Ports {
                         generation,
                         status: status(&value),
                     })),
-                    "recording-cancelled" => Some(Event::Cancelled(
-                        value["recordingId"].as_u64().unwrap_or(generation),
-                    )),
+                    "recording-cancelled" => recording_id(&value).map(Event::Cancelled),
                     "live-words-consent-persisted" => Some(Event::ConsentChanged {
                         opted_out: value != true,
                     }),
@@ -1297,6 +1342,338 @@ fn legacy_microphone(current: &str, devices: &Value) -> Option<String> {
         matches[0]["id"].as_str().map(String::from)
     } else {
         None
+    }
+}
+#[cfg(test)]
+mod overlay_ingress_tests {
+    use super::{NativePorts, Ports, overlay_terminal_event};
+    use crate::overlay::{
+        inbox::Inbox,
+        model::{Delivery, Event, Failure, Indicator, Model, Snapshot},
+    };
+    use murmur_core::dictation::Status;
+    use serde_json::{Value, json};
+
+    // Exercise the real NativePorts ingress and bounded inbox on the model's
+    // clock. No live Services, OS operations, capture, or profiles are opened.
+    fn ingress(model: &mut Model, event: &str, payload: Value, now: u64) {
+        let inbox = Inbox::default();
+        let ports = Ports {
+            registry: Default::default(),
+            events: Default::default(),
+            os: Default::default(),
+            terminal: std::sync::mpsc::channel().0,
+            services: Default::default(),
+            tray: Default::default(),
+            dock: Default::default(),
+            lifecycle: Default::default(),
+            revision: Default::default(),
+            overlay_clock: Default::default(),
+            refresh: Default::default(),
+            overlay: std::sync::OnceLock::from(inbox.clone()),
+            preview: Default::default(),
+            downloads: Default::default(),
+            microphone: Default::default(),
+            playback: Default::default(),
+            scan: Default::default(),
+            levels: Default::default(),
+        };
+        assert!(ports.send("overlay", event, &payload.to_string()).is_ok());
+        for event in inbox.drain().0 {
+            model.event(event, now);
+        }
+    }
+    fn model() -> Model {
+        Model::new(Snapshot {
+            generation: 7,
+            ..Default::default()
+        })
+    }
+    fn failures() -> Vec<(&'static str, Value, Failure)> {
+        vec![
+            (
+                "recording-initialization-failed",
+                json!({"recordingId":7,"statusCode":"microphone_initialization_failed","errorKind":"permission_denied","actionCode":"open_microphone_settings"}),
+                Failure::Permission,
+            ),
+            (
+                "recording-initialization-failed",
+                json!({"recordingId":7,"statusCode":"microphone_initialization_failed","errorKind":"device_unavailable","actionCode":"choose_microphone"}),
+                Failure::ChooseInput,
+            ),
+            (
+                "recording-initialization-failed",
+                json!({"recordingId":7,"statusCode":"microphone_initialization_failed","errorKind":"initialization_timeout","actionCode":"retry"}),
+                Failure::Retry,
+            ),
+            (
+                "recording-interrupted",
+                json!({"recordingId":7,"statusCode":"microphone_interrupted","autoTranscribe":true,"actionCode":"wait_for_partial_transcription"}),
+                Failure::Partial,
+            ),
+            (
+                "recording-interrupted",
+                json!({"recordingId":7,"statusCode":"microphone_interrupted","autoTranscribe":false,"actionCode":"retry"}),
+                Failure::Retry,
+            ),
+        ]
+    }
+    #[test]
+    fn interrupted_partial_is_presented_when_processing_arrives_before_the_next_tick() {
+        let mut model = model();
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Recording,
+                at_ms: 0,
+            },
+            0,
+        );
+        ingress(
+            &mut model,
+            "recording-interrupted",
+            json!({"recordingId":7,"statusCode":"microphone_interrupted","autoTranscribe":true,"actionCode":"wait_for_partial_transcription"}),
+            100,
+        );
+        // No presentation tick between interruption and automatic transcription.
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Processing,
+                at_ms: 100,
+            },
+            100,
+        );
+        assert_eq!(model.indicator(100), Indicator::Failure(Failure::Partial));
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Idle,
+                at_ms: 200,
+            },
+            200,
+        );
+        // Processing → Idle normally presents Done. Partial retains its original
+        // five-second deadline through completion.
+        assert_eq!(model.indicator(200), Indicator::Failure(Failure::Partial));
+        assert_eq!(model.indicator(5099), Indicator::Failure(Failure::Partial));
+        assert_eq!(model.indicator(5100), Indicator::Idle);
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Processing,
+                at_ms: 5200,
+            },
+            5200,
+        );
+        assert_eq!(model.indicator(5200), Indicator::Processing);
+    }
+    #[test]
+    fn processing_preserves_only_same_generation_partial_and_new_recordings_clear_it() {
+        for (event, payload, expected) in failures() {
+            let mut model = model();
+            ingress(&mut model, event, payload.clone(), 100);
+            model.event(
+                Event::Lifecycle {
+                    generation: 7,
+                    status: Status::Processing,
+                    at_ms: 101,
+                },
+                101,
+            );
+            assert_eq!(
+                model.indicator(101),
+                if expected == Failure::Partial {
+                    Indicator::Failure(Failure::Partial)
+                } else {
+                    Indicator::Processing
+                }
+            );
+            model.event(
+                Event::Lifecycle {
+                    generation: 8,
+                    status: Status::Processing,
+                    at_ms: 102,
+                },
+                102,
+            );
+            ingress(&mut model, event, payload, 103);
+            assert_eq!(model.indicator(103), Indicator::Processing);
+        }
+        let mut model = model();
+        model.event(Event::Failure(7, Failure::Partial), 100);
+        model.event(
+            Event::Lifecycle {
+                generation: 7,
+                status: Status::Recording,
+                at_ms: 101,
+            },
+            101,
+        );
+        assert_eq!(model.indicator(101), Indicator::Recording);
+    }
+    #[test]
+    fn failure_presentations_expire_after_five_seconds_including_through_idle() {
+        for (event, payload, expected) in failures() {
+            let mut model = model();
+            model.event(
+                Event::Lifecycle {
+                    generation: 7,
+                    status: Status::Starting,
+                    at_ms: 0,
+                },
+                0,
+            );
+            ingress(&mut model, event, payload, 100);
+            model.event(
+                Event::Lifecycle {
+                    generation: 7,
+                    status: Status::Idle,
+                    at_ms: 101,
+                },
+                101,
+            );
+            assert_eq!(model.indicator(100), Indicator::Failure(expected));
+            assert_eq!(model.indicator(5099), Indicator::Failure(expected));
+            assert_eq!(model.indicator(5100), Indicator::Idle);
+        }
+    }
+    #[test]
+    fn delivery_and_cancel_use_payload_owner_and_expire() {
+        for (outcome, expected) in [
+            ("clipboardOnly", Delivery::Clipboard),
+            ("autoPastePosted", Delivery::Pasted),
+            ("clipboardWriteFailed", Delivery::Retry),
+            ("unconfirmed", Delivery::Retry),
+        ] {
+            assert!(
+                matches!(overlay_terminal_event("dictation-delivery-outcome", &json!({"recordingId":7,"outcome":outcome})), Some(Event::Delivery(7, d)) if d == expected)
+            );
+        }
+        let mut model = model();
+        ingress(
+            &mut model,
+            "dictation-delivery-outcome",
+            json!({"recordingId":7,"outcome":"clipboardOnly"}),
+            100,
+        );
+        assert_eq!(
+            model.indicator(5099),
+            Indicator::Delivery(Delivery::Clipboard)
+        );
+        assert_eq!(model.indicator(5100), Indicator::Idle);
+        ingress(
+            &mut model,
+            "recording-cancelled",
+            json!({"recordingId":7}),
+            5200,
+        );
+        assert_eq!(model.indicator(5999), Indicator::Cancelled);
+        assert_eq!(model.indicator(6000), Indicator::Idle);
+    }
+    #[test]
+    fn absent_or_invalid_terminal_owners_are_rejected() {
+        let mut events: Vec<_> = failures()
+            .into_iter()
+            .map(|(name, payload, _)| (name, payload))
+            .collect();
+        events.push(("recording-cancelled", json!({"recordingId":7})));
+        events.push((
+            "dictation-delivery-outcome",
+            json!({"recordingId":7,"outcome":"clipboardOnly"}),
+        ));
+        for (event, mut payload) in events {
+            payload.as_object_mut().unwrap().remove("recordingId");
+            assert!(overlay_terminal_event(event, &payload).is_none());
+            for invalid in [
+                Value::Null,
+                json!(0),
+                json!(-1),
+                json!(7.5),
+                json!("7"),
+                json!(true),
+            ] {
+                payload["recordingId"] = invalid;
+                assert!(overlay_terminal_event(event, &payload).is_none());
+            }
+        }
+    }
+    #[test]
+    fn invalid_or_inconsistent_presentation_codes_are_rejected() {
+        for (event, payload, _) in failures() {
+            for key in ["statusCode", "actionCode"] {
+                let mut invalid = payload.clone();
+                invalid[key] = json!("unknown");
+                assert!(overlay_terminal_event(event, &invalid).is_none());
+                invalid.as_object_mut().unwrap().remove(key);
+                assert!(overlay_terminal_event(event, &invalid).is_none());
+            }
+            let mut inconsistent = payload;
+            if event == "recording-interrupted" {
+                inconsistent["autoTranscribe"] =
+                    json!(!inconsistent["autoTranscribe"].as_bool().unwrap());
+            } else {
+                inconsistent["errorKind"] = json!("unknown");
+            }
+            assert!(overlay_terminal_event(event, &inconsistent).is_none());
+        }
+        assert!(
+            overlay_terminal_event(
+                "dictation-delivery-outcome",
+                &json!({"recordingId":7,"outcome":"unknown"})
+            )
+            .is_none()
+        );
+    }
+    #[test]
+    fn late_old_delivery_failure_and_cancel_cannot_replace_a_new_recording() {
+        let mut model = model();
+        model.event(
+            Event::Lifecycle {
+                generation: 8,
+                status: Status::Recording,
+                at_ms: 50,
+            },
+            50,
+        );
+        ingress(
+            &mut model,
+            "dictation-delivery-outcome",
+            json!({"recordingId":7,"outcome":"clipboardOnly"}),
+            100,
+        );
+        ingress(
+            &mut model,
+            "recording-cancelled",
+            json!({"recordingId":7}),
+            100,
+        );
+        for (event, payload, _) in failures() {
+            ingress(&mut model, event, payload, 100);
+        }
+        assert_eq!(model.snapshot.generation, 8);
+        assert_eq!(model.indicator(100), Indicator::Recording);
+        model.event(
+            Event::Lifecycle {
+                generation: 8,
+                status: Status::Idle,
+                at_ms: 200,
+            },
+            200,
+        );
+        assert_eq!(model.indicator(200), Indicator::Idle);
+        // A stale delivery must not consume the current generation's one-shot
+        // outcome either: the matching owner's later result still gets a cue.
+        ingress(
+            &mut model,
+            "dictation-delivery-outcome",
+            json!({"recordingId":8,"outcome":"clipboardOnly"}),
+            300,
+        );
+        assert_eq!(
+            model.indicator(300),
+            Indicator::Delivery(Delivery::Clipboard)
+        );
     }
 }
 #[cfg(test)]

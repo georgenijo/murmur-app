@@ -431,6 +431,60 @@ async fn settings_action(
     Ok(())
 }
 
+// Only static failure categories cross the presentation boundary. Native error
+// strings can contain paths or user settings and are never displayed or logged.
+fn setup_problem(error: String) -> Problem {
+    let message = match error.as_str() {
+        "Settings changed elsewhere" => return Problem::Conflict,
+        "Setup read timed out" => {
+            "Setup did not respond within 10 seconds. Retry to check your local settings, permissions, and models again."
+        }
+        "Setup settings unavailable" => {
+            "Could not read your setup settings. Your saved choices are preserved. Retry."
+        }
+        "Setup catalog unavailable" => {
+            "Could not check installed transcription models. Retry, or review the model step."
+        }
+        "Install the selected model first" => {
+            "The selected transcription model is not installed. Go Back to the model step and install it, then retry."
+        }
+        "Setup configuration unavailable" => {
+            "Could not apply the recording settings or shortcut. Your choices are kept. Retry after any current model operation finishes, or go Back to review the shortcut."
+        }
+        "Setup save unavailable" => {
+            "Could not save setup completion. Your previous local data is preserved. Retry."
+        }
+        "Setup microphone unavailable" => {
+            "Could not check or request microphone access. Retry, or open Privacy & Security → Microphone in System Settings."
+        }
+        "Setup accessibility unavailable" => {
+            "Could not check or request Accessibility access. Retry, or open Privacy & Security → Accessibility in System Settings."
+        }
+        "Setup system audio unavailable" => {
+            "Could not check or request system audio access. Retry, or skip this optional meeting permission."
+        }
+        "Setup calendar unavailable" => {
+            "Could not check or request Calendar access. Retry, or skip this optional meeting permission."
+        }
+        _ => return Problem::Unavailable,
+    };
+    Problem::Operation(message)
+}
+fn setup_permission_failure(action: &crate::onboarding::host::Action) -> &'static str {
+    use crate::onboarding::{host::Action, model::Permission};
+    match action {
+        Action::Probe(p) | Action::Request(p) | Action::OpenSettings(p) | Action::Reset(p) => {
+            match p {
+                Permission::Microphone => "Setup microphone unavailable",
+                Permission::Accessibility => "Setup accessibility unavailable",
+                Permission::SystemAudio => "Setup system audio unavailable",
+                Permission::Calendar => "Setup calendar unavailable",
+            }
+        }
+        _ => "Setup service unavailable",
+    }
+}
+
 impl crate::onboarding::host::Host for Backend {
     fn subscribe(
         &self,
@@ -495,7 +549,8 @@ impl crate::onboarding::host::Host for Backend {
         self.spawn(async move {
             let _active = active;
             let _progress_stop = progress_stop;
-            let result=async {
+            let loading = matches!(r.action, Action::Read);
+            let work=async {
                 if let Some(download)=download {download.await?;}
                 else {
                     if !current() && admitted.is_none(){return Err("Presentation changed".into());}
@@ -504,35 +559,48 @@ impl crate::onboarding::host::Host for Backend {
                         Action::CancelDownload(_)=>b.cancel_download(&owner).await?,
                         Action::Complete{model,recording_mode,trigger_key}=>{
                             let _admitted=admitted.ok_or("Setup admission unavailable")??;
-                            let (revision,settings)=b.services.settings_snapshot().await?;
+                            let (revision,settings)=b.services.settings_snapshot().await.map_err(|_|"Setup settings unavailable")?;
                             let mut next=settings.clone();
                             for (key,value) in [("model",json!(model)),("recordingMode",json!(recording_mode)),("doubleTapKey",json!(trigger_key)),("settingsVersion",json!(7)),("launchOnboardingComplete",json!(true))] {next[key]=value;}
-                            let rows=b.call("get_model_runtime_catalog",json!({})).await?;
+                            let rows=b.call("get_model_runtime_catalog",json!({})).await.map_err(|_|"Setup catalog unavailable")?;
                             if !rows.as_array().is_some_and(|rows|rows.iter().any(|m|m["modelName"]==next["model"]&&m["installState"]=="installed")){return Err("Install the selected model first".into());}
-                            if read::permissions(&b).await?[0]!=crate::onboarding::model::Access::Granted {return Err("Microphone access is required".into());}
+                            // Like React onboarding, users may defer microphone access.
+                            // Home owns the recording permission gate.
                             // The backend validates/conflict-checks the same options used by
                             // Tauri before enabling shortcut admission or publishing completion.
-                            b.services.accept_settings_effect(json!({"model":next["model"],"recordingMode":next["recordingMode"],"doubleTapKey":next["doubleTapKey"],"settingsVersion":7,"launchOnboardingComplete":true}),revision,true,async{Ok(())},async{})?.await.map_err(|_|"Setup owner unavailable")??;
-                            finish_setup(&b, false).await?;
+                            b.services.accept_settings_effect(json!({"model":next["model"],"recordingMode":next["recordingMode"],"doubleTapKey":next["doubleTapKey"],"settingsVersion":7,"launchOnboardingComplete":true}),revision,true,async{Ok(())},async{})?.await.map_err(|_|"Setup owner unavailable")?.map_err(|error|match error.as_str(){"Settings changed elsewhere"=>"Settings changed elsewhere",_=>"Setup configuration unavailable"})?;
+                            finish_setup(&b, false).await.map_err(|_|"Setup save unavailable")?;
                         },
                         Action::ResumeExisting=>{
                             let _admitted=admitted.ok_or("Setup admission unavailable")??;
                             let (revision,_)=b.services.settings_snapshot().await?;
-                            b.services.accept_settings_effect(json!({"launchOnboardingComplete":true}),revision,true,async{Ok(())},async{})?.await.map_err(|_|"Setup owner unavailable")??;
-                            finish_setup(&b, true).await?;
+                            b.services.accept_settings_effect(json!({"launchOnboardingComplete":true}),revision,true,async{Ok(())},async{})?.await.map_err(|_|"Setup owner unavailable")?.map_err(|error|match error.as_str(){"Settings changed elsewhere"=>"Settings changed elsewhere",_=>"Setup configuration unavailable"})?;
+                            finish_setup(&b, true).await.map_err(|_|"Setup save unavailable")?;
                         },
                         Action::Grandfather=>{
                             let _admitted=admitted.ok_or("Setup admission unavailable")??;
                             let (revision,_)=b.services.settings_snapshot().await?;
                             b.patch(json!({"launchOnboardingComplete":true}),revision).await?;
-                            finish_setup(&b, true).await?;
+                            finish_setup(&b, true).await.map_err(|_|"Setup save unavailable")?;
                         },
-                        action=>{permission(&b,action,current.clone()).await?;}
+                        action=>{
+                            let failure = setup_permission_failure(&action);
+                            permission(&b,action,current.clone()).await.map_err(|_|failure)?;
+                        }
                     }
                 }
                 read::onboarding(b.clone()).await
-            }.await;
-            if current()&&!inbox.is_closed(){let _=inbox.publish(Event::Reply{ticket:r.ticket,result:problem(result)});}
+            };
+            let result = if loading {
+                tokio::time::timeout(std::time::Duration::from_secs(9), work)
+                    .await
+                    .unwrap_or_else(|_| Err("Setup read timed out".into()))
+            } else {
+                work.await
+            };
+            if current() && !inbox.is_closed() {
+                crate::onboarding::inbox::reply(&inbox, r.ticket, result.map_err(setup_problem));
+            }
         });
     }
 }
@@ -1614,3 +1682,30 @@ mod palette_action {
     }
 }
 section_host!(palette, palette, palette_action);
+
+#[cfg(test)]
+mod setup_error_tests {
+    use super::*;
+    #[test]
+    fn failures_name_their_operation_without_exposing_native_content() {
+        for (error, expected) in [
+            ("Setup settings unavailable", "settings"),
+            ("Setup catalog unavailable", "models"),
+            ("Setup microphone unavailable", "microphone"),
+            ("Setup system audio unavailable", "system audio"),
+            ("Setup configuration unavailable", "recording settings"),
+            ("Setup save unavailable", "save setup"),
+            ("Setup read timed out", "10 seconds"),
+        ] {
+            assert!(setup_problem(error.into()).message().contains(expected));
+        }
+        assert_eq!(
+            setup_problem("Settings changed elsewhere".into()),
+            Problem::Conflict
+        );
+        assert_eq!(
+            setup_problem("private model path or setting".into()),
+            Problem::Unavailable
+        );
+    }
+}
