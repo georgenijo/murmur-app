@@ -16,6 +16,7 @@ use std::{
 type Listener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 #[derive(Default)]
 pub struct Events {
+    pub feedback: Mutex<super::dictation_feedback::Feedback>,
     next: AtomicU64,
     revision: AtomicU64,
     listeners: Mutex<BTreeMap<u64, (&'static str, Listener)>>,
@@ -25,6 +26,12 @@ impl Events {
         self.revision.load(Ordering::Acquire)
     }
     pub fn publish(&self, label: &str, event: &str, payload: &str) {
+        if label == "main" {
+            self.feedback
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .event(event, payload);
+        }
         if !matches!(
             event,
             "audio-level"

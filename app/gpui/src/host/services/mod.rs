@@ -62,3 +62,5 @@ pub mod root;
 pub use application::run;
 
 mod notes;
+
+pub mod dictation_feedback;
