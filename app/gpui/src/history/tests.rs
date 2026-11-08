@@ -1206,3 +1206,28 @@ fn row_copy_is_a_keyboard_stop_and_activates_once_with_space_and_enter(cx: &mut 
     draw(cx);
     cx.update(|w, cx| assert!(e.read(cx).row_copy_focus[&key].is_focused(w)));
 }
+
+#[test]
+fn initial_empty_history_epoch_zero_finishes_loading() {
+    let mut model = Model::default();
+    model.attach();
+    let ticket = model.begin();
+    assert!(model.event(Event::Read {
+        ticket,
+        revision: 0,
+        clear_epoch: 0,
+        result: Ok(Snapshot {
+            entries: vec![],
+            retain_history: true,
+            retry_import: false
+        }),
+    }));
+    assert!(!model.loading);
+    assert!(model.entries.is_empty());
+    assert!(!model.event(Event::Read {
+        ticket,
+        revision: 0,
+        clear_epoch: 0,
+        result: Err(Problem::Unavailable),
+    }));
+}

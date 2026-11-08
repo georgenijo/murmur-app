@@ -576,3 +576,44 @@ fn completion_outcome_table_names_executable_tests_in_plan_order() {
     assert_eq!(names.len(), 37);
     assert_eq!(names, executable);
 }
+
+#[test]
+fn in_app_start_does_not_require_accessibility_or_arm_global_keys() {
+    let mut c = control();
+    c.gate.accessibility = false;
+    assert!(c.input(Input::Toggle(None)).is_none());
+    assert!(matches!(
+        c.input_in_app(Input::Toggle(None)),
+        Some(Effect::Start { .. })
+    ));
+    assert!(!c.gate.accessibility);
+    assert!(!c.gate.armed());
+    assert!(c.input_in_app(Input::HoldStart(None)).is_none());
+    assert!(c.input_in_app(Input::PasteLast).is_none());
+    for gate in [
+        LaunchGate {
+            disabled: true,
+            ..c.gate
+        },
+        LaunchGate {
+            shutdown: true,
+            ..c.gate
+        },
+        LaunchGate {
+            configured: false,
+            ..c.gate
+        },
+        LaunchGate {
+            onboarding_complete: false,
+            ..c.gate
+        },
+        LaunchGate {
+            model_installed: false,
+            ..c.gate
+        },
+    ] {
+        c.gate = gate;
+        assert!(c.input_in_app(Input::Toggle(None)).is_none());
+        assert!(!c.gate.accessibility);
+    }
+}

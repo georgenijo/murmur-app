@@ -36,6 +36,13 @@ impl LaunchGate {
     pub fn can_start(self) -> bool {
         self.armed() && !self.disabled
     }
+    pub fn can_start_in_app(self) -> bool {
+        Self {
+            accessibility: true,
+            ..self
+        }
+        .can_start()
+    }
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Input {
@@ -170,10 +177,25 @@ impl Controller {
             && self.silence_ms > 0
             && !self.terminal_requested
     }
+    /// Explicit native window controls do not need global keyboard access.
+    /// Every other admission fact and the authoritative recording generation
+    /// still apply; this does not arm the global listener or grant Accessibility.
+    pub fn input_in_app(&mut self, input: Input) -> Option<Effect> {
+        if !matches!(
+            input,
+            Input::Toggle(_) | Input::Lock | Input::HoldStop | Input::Escape
+        ) {
+            return None;
+        }
+        self.input_with_admission(input, true)
+    }
     pub fn input(&mut self, input: Input) -> Option<Effect> {
+        self.input_with_admission(input, false)
+    }
+    fn input_with_admission(&mut self, input: Input, in_app: bool) -> Option<Effect> {
         match input {
             Input::PasteLast => return Some(Effect::PasteLast),
-            Input::Escape if self.gate.armed() => return self.finish(true, false, false),
+            Input::Escape if in_app || self.gate.armed() => return self.finish(true, false, false),
             Input::HoldCancel => {
                 self.origin = Origin::Toggle;
                 return self.finish(true, false, false);
@@ -243,7 +265,12 @@ impl Controller {
         }
         // Admission gates apply only to inputs that would start capture.
         // Existing owners must still be stoppable/cancellable after Disable.
-        if self.status == Status::Idle && !self.gate.can_start() {
+        let can_start = if in_app {
+            self.gate.can_start_in_app()
+        } else {
+            self.gate.can_start()
+        };
+        if self.status == Status::Idle && !can_start {
             return None;
         }
         match input {

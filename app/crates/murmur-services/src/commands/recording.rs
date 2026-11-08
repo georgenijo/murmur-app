@@ -5306,6 +5306,29 @@ pub async fn start_native_recording(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    start_recording_with_admission(
+        app_handle,
+        state,
+        device_name,
+        smart_auto,
+        origin,
+        gesture_token,
+        false,
+    )
+    .await
+}
+
+// Only the generation-fenced native control queue supplies `in_app=true`.
+// The public command and global listener retain their Accessibility gate.
+pub(crate) async fn start_recording_with_admission(
+    app_handle: crate::host::Context,
+    state: crate::host::StateRef<'_, State>,
+    device_name: Option<String>,
+    smart_auto: Option<SmartAutoRequest>,
+    origin: Option<String>,
+    gesture_token: Option<String>,
+    in_app: bool,
+) -> Result<serde_json::Value, String> {
     if !crate::completion::admitted(&app_handle) {
         return Err("Waiting for completion storage migration".into());
     }
@@ -5319,7 +5342,7 @@ pub async fn start_native_recording(
         state.inner(),
     )
     .await?;
-    if keyboard::is_app_disabled() || !crate::dictation_control::admitted(&app_handle) {
+    if keyboard::is_app_disabled() || !crate::dictation_control::admitted(&app_handle, in_app) {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }

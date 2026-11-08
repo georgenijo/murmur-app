@@ -254,21 +254,34 @@ pub async fn permissions(b: &Backend) -> Result<[crate::onboarding::model::Acces
     Ok([
         access(
             &b.call("check_microphone_permission_status", json!({}))
-                .await?,
+                .await
+                .map_err(|_| "Setup microphone unavailable")?,
         ),
-        access(&b.call("check_accessibility_permission", json!({})).await?),
+        access(
+            &b.call("check_accessibility_permission", json!({}))
+                .await
+                .map_err(|_| "Setup accessibility unavailable")?,
+        ),
         access(
             &b.call("get_system_audio_permission_status", json!({}))
-                .await?,
+                .await
+                .map_err(|_| "Setup system audio unavailable")?,
         ),
         *b.calendar_access.lock().unwrap_or_else(|p| p.into_inner()), // Only explicit Calendar visits populate this cache.
     ])
 }
 pub fn onboarding(b: Backend) -> Read<crate::onboarding::model::Snapshot> {
     Box::pin(async move {
-        let settings = settings(&b).await?;
-        let models = models(b.clone()).await?;
-        let source = b.sources().await?;
+        let settings = settings(&b)
+            .await
+            .map_err(|_| "Setup settings unavailable")?;
+        let models = models(b.clone())
+            .await
+            .map_err(|_| "Setup catalog unavailable")?;
+        let source = b
+            .sources()
+            .await
+            .map_err(|_| "Setup settings unavailable")?;
         Ok(crate::onboarding::model::Snapshot {
             revision: b.events.revision(),
             settings,

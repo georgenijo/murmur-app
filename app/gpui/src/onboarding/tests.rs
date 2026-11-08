@@ -382,7 +382,7 @@ mod ax {
         for _ in 0..2 {
             let t = tree(cx);
             for text in [
-                "Microphone · Not granted — enable later in Settings",
+                "Microphone · Not granted — enable in Settings before recording",
                 "Accessibility · Not granted — shortcut unavailable outside Murmur",
                 "System audio · Optional — enable later in Meetings",
                 "Calendar · Optional — name meetings manually",
@@ -822,4 +822,77 @@ fn cancellation_retry_uses_retained_download_identity(cx: &mut TestAppContext) {
     assert!(e.read_with(cx, |s, _| s.cancelling
         && s.downloading()
         && s.model.pending));
+}
+
+#[gpui::test]
+fn initial_read_timeout_offers_retry_and_rejects_late_reply(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let host = Rc::new(FixtureHost::default());
+    host.hold.set(true);
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let e = cx.new(|cx| Onboarding::new(host.clone(), w, cx));
+        entity = Some(e.clone());
+        gpui_base::Root::new(e, w, cx)
+    });
+    let e = entity.unwrap();
+    e.update(cx, |s, cx| s.attach(cx));
+    let (old, inbox) = host.held.borrow_mut().pop().unwrap();
+    e.update(cx, |s, cx| {
+        s.tick(s.read_started.unwrap() + Duration::from_secs(10), cx);
+        assert!(!s.model.pending);
+        assert!(s.model.problem.unwrap().message().contains("10 seconds"));
+        assert!(!old.lease.is_current());
+    });
+    host.hold.set(false);
+    e.update(cx, |s, cx| s.request(Action::Read, cx));
+    super::inbox::reply(&inbox, old.ticket, Err(Problem::Unavailable));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.model.snapshot.is_some()
+        && s.model.problem.is_none()));
+}
+
+#[gpui::test]
+fn rejected_initial_projection_delivers_error_instead_of_loading_forever(cx: &mut TestAppContext) {
+    cx.update(crate::init);
+    let host = Rc::new(FixtureHost::default());
+    host.state.borrow_mut().hardware_summary = Some("x".repeat(513));
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let e = cx.new(|cx| Onboarding::new(host.clone(), w, cx));
+        entity = Some(e.clone());
+        gpui_base::Root::new(e, w, cx)
+    });
+    let e = entity.unwrap();
+    e.update(cx, |s, cx| s.attach(cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| !s.model.pending
+        && s.model.problem == Some(Problem::Invalid)));
+    host.state.borrow_mut().hardware_summary = None;
+    e.update(cx, |s, cx| s.request(Action::Read, cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.model.snapshot.is_some()
+        && s.model.problem.is_none()));
+}
+
+#[gpui::test]
+fn completion_allows_deferred_microphone_and_keeps_specific_failure(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    assert_eq!(h.state.borrow().permissions[0], Access::NotDetermined);
+    e.update(cx, |s, cx| s.visit(Step::Done, cx));
+    h.hold.set(true);
+    e.update(cx, |s, cx| s.activate(cx));
+    let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+    let message = "Could not save setup completion. Your previous local data is preserved. Retry.";
+    super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(message)));
+    draw(cx);
+    assert_eq!(
+        e.read_with(cx, |s, _| s.model.problem.unwrap().message()),
+        message
+    );
+    h.hold.set(false);
+    e.update(cx, |s, cx| s.activate(cx));
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.finished));
+    assert_eq!(h.state.borrow().permissions[0], Access::NotDetermined);
 }

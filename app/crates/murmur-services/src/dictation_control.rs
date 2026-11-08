@@ -157,7 +157,11 @@ pub(crate) fn initialize(app: &crate::host::Context) {
                 };
                 let mut controller = control.controller.lock_or_recover();
                 controller.observe(generation, status(dictation.status), Origin::Toggle);
-                let effect = controller.input(input);
+                let effect = if queued.native_active.is_some() {
+                    controller.input_in_app(input)
+                } else {
+                    controller.input(input)
+                };
                 crate::keyboard::set_recording_state(controller.keyboard_recording());
                 (generation, effect, controller.locked)
             };
@@ -169,7 +173,9 @@ pub(crate) fn initialize(app: &crate::host::Context) {
             }
             if let Some(effect) = effect {
                 let start = matches!(effect, Effect::Start { .. });
-                if let Some(accepted) = execute(&handle, effect).await {
+                if let Some(accepted) =
+                    execute(&handle, effect, queued.native_active.is_some()).await
+                {
                     input_guard.accepted(generation, accepted, Instant::now());
                 } else if start
                     && control
@@ -253,7 +259,7 @@ pub(crate) fn level(app: &crate::host::Context, generation: u64, level: f32) {
         });
     }
 }
-async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
+async fn execute(app: &crate::host::Context, effect: Effect, in_app: bool) -> Option<u64> {
     use crate::commands::recording;
     match effect {
         Effect::Start {
@@ -285,7 +291,7 @@ async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
                 .as_str()
                 .filter(|id| *id != "system_default" && !id.is_empty())
                 .map(str::to_owned);
-            let result = recording::start_native_recording(
+            let result = recording::start_recording_with_admission(
                 app.clone(),
                 app.services(),
                 if smart_auto.is_some() { None } else { device },
@@ -299,6 +305,7 @@ async fn execute(app: &crate::host::Context, effect: Effect) -> Option<u64> {
                     .into(),
                 ),
                 gesture_token,
+                in_app,
             )
             .await;
             match result {
@@ -605,12 +612,18 @@ fn active_capture_generation(state: &crate::state::AppState) -> Option<u64> {
     )
     .then(|| state.recording_id.load(Ordering::SeqCst))
 }
-pub(crate) fn admitted(app: &crate::host::Context) -> bool {
+pub(crate) fn admitted(app: &crate::host::Context, in_app: bool) -> bool {
     if crate::shutdown::closing() {
         return false;
     }
-    app.try_control()
-        .is_none_or(|control| control.controller.lock_or_recover().gate.can_start())
+    app.try_control().is_none_or(|control| {
+        let gate = control.controller.lock_or_recover().gate;
+        if in_app {
+            gate.can_start_in_app()
+        } else {
+            gate.can_start()
+        }
+    })
 }
 
 fn probe_policy(settings: &serde_json::Value) -> serde_json::Value {

@@ -215,9 +215,6 @@ impl Host for FixtureHost {
             *self.state.borrow_mut() = s.clone();
             Ok(s)
         })();
-        let _ = inbox.publish(Event::Reply {
-            ticket: r.ticket,
-            result,
-        });
+        super::inbox::reply(&inbox, r.ticket, result);
     }
 }
