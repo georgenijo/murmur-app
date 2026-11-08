@@ -10,6 +10,48 @@ use murmur_services::transcriber::{
 };
 
 #[test]
+fn preview_native_load_failure_preserves_the_shared_cache() {
+    let home = tempfile::tempdir().unwrap();
+    murmur_services::native_services::initialize_identity(
+        "com.localdictation.onboarding28-synthetic-load-failure",
+        home.path(),
+    )
+    .unwrap();
+    let mut backend = CoreMlBackend::new();
+    let root = backend.models_dir().unwrap();
+    assert!(root.starts_with(home.path()));
+    let model = root.join("parakeet-tdt-0.6b-v3");
+    let mut artifacts = Vec::new();
+    for name in [
+        "Preprocessor.mlmodelc",
+        "Encoder.mlmodelc",
+        "Decoder.mlmodelc",
+        "JointDecisionv3.mlmodelc",
+    ] {
+        let compiled = model.join(name);
+        std::fs::create_dir_all(compiled.join("weights")).unwrap();
+        artifacts.push(compiled.join("coremldata.bin"));
+        artifacts.push(compiled.join("weights/weight.bin"));
+    }
+    artifacts.push(model.join("parakeet_vocab.json"));
+    artifacts.push(root.join("other-model-must-survive"));
+    for path in &artifacts {
+        std::fs::write(path, b"synthetic, structurally present but not loadable").unwrap();
+    }
+    assert!(coreml::specific_model_exists(COREML_MODEL_NAME));
+    for _ in 0..2 {
+        assert!(backend.load_model(COREML_MODEL_NAME).is_err());
+        assert!(!backend.is_model_loaded(COREML_MODEL_NAME));
+        for path in &artifacts {
+            assert_eq!(
+                std::fs::read(path).unwrap(),
+                b"synthetic, structurally present but not loadable"
+            );
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires installed shared FluidAudio cache; read-only loading, no capture or download"]
 fn installed_coreml_cache_loads_in_a_preview_without_changing_model_files() {
     use sha2::{Digest, Sha256};

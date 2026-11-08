@@ -102,11 +102,9 @@ impl Locations {
         }
         self.model_roots.iter().find_map(|root| {
             let path = root.join(format!("ggml-{model}.bin"));
-            crate::model_artifact::binary_model_is_valid(
-                &path,
-                crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
-            )
-            .then_some(path)
+            crate::model_validation::validate_whisper(&path, model)
+                .is_ok()
+                .then_some(path)
         })
     }
 }
@@ -126,12 +124,7 @@ mod tests {
     use super::*;
 
     fn whisper(path: &Path) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut file = std::fs::File::create(path).unwrap();
-        use std::io::Write;
-        file.write_all(b"lmgg").unwrap();
-        file.set_len(crate::model_artifact::MIN_WHISPER_MODEL_BYTES)
-            .unwrap();
+        crate::model_validation::fixtures::whisper(path, "base.en");
     }
 
     #[test]
@@ -149,10 +142,7 @@ mod tests {
             let path = root.join("ggml-base.en.bin");
             whisper(&path);
             assert_eq!(locations.resolve("base.en"), Some(path.clone()));
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().len(),
-                crate::model_artifact::MIN_WHISPER_MODEL_BYTES
-            );
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 147_964_211);
             std::fs::remove_file(path).unwrap();
         }
     }
@@ -168,7 +158,13 @@ mod tests {
         );
         let partial = locations.model_roots[0].join("ggml-base.en.bin");
         std::fs::create_dir_all(partial.parent().unwrap()).unwrap();
-        std::fs::write(&partial, b"lmgg").unwrap();
+        whisper(&partial);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&partial)
+            .unwrap()
+            .set_len(20 * 1024 * 1024)
+            .unwrap();
         assert!(locations.resolve("base.en").is_none());
         whisper(&partial);
         use std::io::Write;
@@ -199,14 +195,61 @@ mod tests {
         for root in &locations.model_roots {
             let dir = root.join(&bundle);
             std::fs::create_dir_all(&dir).unwrap();
-            for file in ["encoder.fp16.onnx", "decoder.fp16.onnx", "joiner.fp16.onnx"] {
-                std::fs::write(dir.join(file), b"synthetic").unwrap();
-            }
+            crate::model_validation::fixtures::parakeet(&dir);
+            std::fs::remove_file(dir.join("tokens.txt")).unwrap();
             assert!(locations.resolve(model).is_none());
-            std::fs::write(dir.join("tokens.txt"), b"synthetic").unwrap();
+            crate::model_validation::fixtures::parakeet(&dir);
             assert_eq!(locations.resolve(model), Some(dir.clone()));
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn invalid_candidates_never_mask_later_complete_models_or_change_legacy_files() {
+        use std::io::Write;
+        let home = tempfile::tempdir().unwrap();
+        let locations = Locations::for_identity(
+            home.path(),
+            &home.path().join("support"),
+            crate::identity::PRODUCTION,
+            None,
+        );
+        let early = locations.model_roots.first().unwrap();
+        let later = locations.model_roots.last().unwrap();
+        let invalid = early.join("ggml-base.en.bin");
+        whisper(&invalid);
+        let valid = later.join("ggml-base.en.bin");
+        whisper(&valid);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&invalid)
+            .unwrap();
+        file.set_len(20 * 1024 * 1024).unwrap();
+        assert_eq!(locations.resolve("base.en"), Some(valid.clone()));
+        assert_eq!(file.metadata().unwrap().len(), 20 * 1024 * 1024);
+        whisper(&invalid);
+        file.write_all(b"nope").unwrap();
+        assert_eq!(locations.resolve("base.en"), Some(valid));
+        let mut magic = [0; 4];
+        std::io::Read::read_exact(&mut std::fs::File::open(&invalid).unwrap(), &mut magic).unwrap();
+        assert_eq!(&magic, b"nope");
+
+        let model = "parakeet-tdt-0.6b-v2-fp16";
+        let (_, bundle) = crate::transcriber::parakeet::download_spec(model).unwrap();
+        let invalid = early.join(&bundle);
+        let valid = later.join(&bundle);
+        crate::model_validation::fixtures::parakeet(&invalid);
+        crate::model_validation::fixtures::parakeet(&valid);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(invalid.join("decoder.fp16.onnx"))
+            .unwrap();
+        file.write_all(b"corrupt").unwrap();
+        assert_eq!(locations.resolve(model), Some(valid.clone()));
+        crate::model_validation::fixtures::parakeet(&invalid);
+        file.set_len(100).unwrap();
+        assert_eq!(locations.resolve(model), Some(valid));
+        assert_eq!(file.metadata().unwrap().len(), 100);
     }
 
     #[test]

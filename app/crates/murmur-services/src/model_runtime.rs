@@ -1524,9 +1524,7 @@ mod tests {
             .unwrap();
         let legacy = home.path().join(".cache/whisper/ggml-base.en.bin");
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        let file = std::fs::File::create(&legacy).unwrap();
-        file.set_len(crate::model_artifact::MIN_WHISPER_MODEL_BYTES)
-            .unwrap();
+        crate::model_validation::fixtures::whisper(&legacy, "base.en");
         for _ in 0..2 {
             // The download command returns at this admission branch, before
             // storage preflight, HTTP client construction or VAD co-download.

@@ -46,14 +46,14 @@ struct ParakeetVariant {
 }
 
 impl ParakeetVariant {
-    /// True if every required file exists with non-zero size under `models_dir`.
+    /// True if every required artifact has its expected size and format.
     fn is_complete(&self, models_dir: &Path) -> bool {
         let dir = models_dir.join(self.dir);
         [self.encoder, self.decoder, self.joiner, "tokens.txt"]
             .iter()
             .all(|f| {
                 let p = dir.join(f);
-                p.is_file() && p.metadata().is_ok_and(|m| m.len() > 0)
+                crate::model_validation::parakeet_component_is_valid(&p, f)
             })
     }
 }
