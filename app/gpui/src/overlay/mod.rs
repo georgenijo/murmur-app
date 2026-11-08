@@ -76,6 +76,20 @@ impl Overlay {
         self.model.event(event, self.now);
         self.advance(window, cx);
     }
+    /// Settings calibration must commit geometry through the same writer as
+    /// lifecycle updates; rendering alone never moves an AppKit panel.
+    pub fn calibrate(
+        &mut self,
+        offset: Option<f64>,
+        finish: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(offset) = offset {
+            self.model.snapshot.offset = offset;
+        }
+        self.receive(Event::Calibration(!finish), window, cx);
+    }
     pub fn audio_level(
         &mut self,
         generation: u64,
@@ -276,7 +290,7 @@ impl Overlay {
     /// Publishers wake a parked task. Neither an idle watchdog nor a pointer
     /// poller is necessary: tracking events own hover; AppKit owns topology
     /// notifications; semantic deadlines get a cancellable one-shot timer.
-    pub fn follow(&mut self, window: &Window, cx: &mut Context<Self>) {
+    pub fn follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if cx
             .background_executor()
             .scheduler_executor()
@@ -299,9 +313,11 @@ impl Overlay {
                             for event in events {
                                 match event {
                                     Event::Dock(limit) if limit == s.model.screen.dock => continue,
-                                    Event::RefreshScreen => {
+                                    Event::RefreshScreen | Event::RefreshDock => {
+                                        let dock_changed = matches!(event, Event::RefreshDock);
                                         if let Some(mut screen) = native::screen() {
-                                            if screen.bounds == s.model.screen.bounds
+                                            if !dock_changed
+                                                && screen.bounds == s.model.screen.bounds
                                                 && screen.scale_factor
                                                     == s.model.screen.scale_factor
                                             {
@@ -336,6 +352,8 @@ impl Overlay {
             cx.notify();
         })
         .detach();
+        cx.observe_window_appearance(window, |s, w, cx| s.advance(w, cx))
+            .detach();
         self.schedule(window, cx);
     }
 }

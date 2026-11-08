@@ -22,6 +22,8 @@ pub struct Surface {
     pub radius: f64,
 }
 pub fn apply(window: &mut Window, surface: Surface, cx: &mut gpui::App) -> bool {
+    #[cfg(all(test, feature = "a11y-tests"))]
+    TEST_APPLIES.with_borrow_mut(|applies| applies.push(surface));
     let Surface {
         frame,
         floating,
@@ -72,6 +74,8 @@ pub fn apply(window: &mut Window, surface: Surface, cx: &mut gpui::App) -> bool 
 
 #[cfg(all(test, feature = "a11y-tests"))]
 thread_local! {
+    pub(super) static TEST_APPLIES: std::cell::RefCell<Vec<Surface>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub(super) static TEST_SCREEN: std::cell::RefCell<Option<Screen>> = const { std::cell::RefCell::new(None) };
     // Exercise native-sample decisions in TestWindow; real native query/geometry
     // is additionally exercised by the isolated NSWindow regression probe.
     pub(super) static TEST_POINTER_POSITION: std::cell::Cell<Option<gpui::Point<gpui::Pixels>>> = const { std::cell::Cell::new(None) };
@@ -136,6 +140,10 @@ pub fn announce_preview_text(window: &Window, text: &str) {
     }
 }
 pub fn screen() -> Option<Screen> {
+    #[cfg(all(test, feature = "a11y-tests"))]
+    if let Some(screen) = TEST_SCREEN.with_borrow(Clone::clone) {
+        return Some(screen);
+    }
     #[cfg(target_os = "macos")]
     {
         let mut v = [0.; 15];
@@ -319,10 +327,14 @@ pub struct ScreenWatch {
 pub fn watch_screen(inbox: super::inbox::Inbox) -> Option<ScreenWatch> {
     #[cfg(target_os = "macos")]
     {
-        extern "C" fn changed(context: *mut std::ffi::c_void) {
+        extern "C" fn changed(context: *mut std::ffi::c_void, dock: bool) {
             // SAFETY: ScreenWatch keeps the Box alive until observers detach.
             let inbox = unsafe { &*context.cast::<super::inbox::Inbox>() };
-            let _ = inbox.publish(super::model::Event::RefreshScreen);
+            let _ = inbox.publish(if dock {
+                super::model::Event::RefreshDock
+            } else {
+                super::model::Event::RefreshScreen
+            });
         }
         let mut inbox = Box::new(inbox);
         // SAFETY: called only by the main-thread native host; owned until Drop.
@@ -349,7 +361,7 @@ impl Drop for ScreenWatch {
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn murmur_overlay_watch_screen(
-        callback: extern "C" fn(*mut std::ffi::c_void),
+        callback: extern "C" fn(*mut std::ffi::c_void, bool),
         context: *mut std::ffi::c_void,
     ) -> *mut std::ffi::c_void;
     fn murmur_overlay_unwatch_screen(watch: *mut std::ffi::c_void);

@@ -690,14 +690,13 @@ impl ApplicationHost for Rc<Host> {
         }
         while let Ok(route) = self.routes.try_recv() {
             if let Route::Calibration { offset, finish } = &route {
-                if let Some(overlay) = self.overlay.borrow().clone() {
-                    overlay.update(cx, |view, cx| {
-                        view.model
-                            .event(crate::overlay::model::Event::Calibration(!finish), 0);
-                        if let Some(offset) = offset {
-                            view.model.snapshot.offset = *offset as f64;
-                        }
-                        cx.notify();
+                if let Some(overlay) = self.overlay.borrow().clone()
+                    && let Some(handle) = handles.get("overlay")
+                {
+                    let _ = handle.update(cx, |_, w, cx| {
+                        overlay.update(cx, |view, cx| {
+                            view.calibrate(offset.map(|offset| offset as f64), *finish, w, cx);
+                        });
                     });
                 }
                 if *finish {

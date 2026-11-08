@@ -203,6 +203,8 @@ pub enum Event {
     Screen(Screen),
     Dock(DockLimit),
     RefreshScreen,
+    /// Dock defaults changed; discard the old live limit as well as work area.
+    RefreshDock,
     Visible(bool),
     Calibration(bool),
     Suggestion(Option<Suggestion>),

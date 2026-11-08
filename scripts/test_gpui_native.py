@@ -28,6 +28,15 @@ class FocusHookTests(unittest.TestCase):
                             '-o', str(binary)], check=True)
             subprocess.run([str(binary)], check=True, timeout=20)
 
+    def test_dock_preferences_invalidate_only_on_changed_values_and_detach(self):
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-preferences-') as directory:
+            binary = Path(directory) / 'test'
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore', str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(ROOT / 'app/gpui/tests/overlay_preferences.m'),
+                            '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True, timeout=20)
+
     def test_preview_normalizes_a_default_resizable_panel_before_presentation(self):
         source = r'''
 #import <AppKit/AppKit.h>

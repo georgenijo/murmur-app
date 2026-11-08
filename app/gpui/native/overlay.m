@@ -280,20 +280,67 @@ void murmur_overlay_pointer_position(double *out) {
 // Notification-driven geometry invalidation. No timer, display link, global
 // event monitor or AX client. The Rust inbox owns coalescing and main-turn work.
 @interface MurmurOverlayScreenWatch : NSObject
-@property(nonatomic) void (*callback)(void *);
+@property(nonatomic) void (*callback)(void *, bool);
 @property(nonatomic) void *context;
+@property(nonatomic, strong) NSUserDefaults *dock;
+@property(nonatomic, strong) NSNotificationCenter *dockCenter;
+@property(nonatomic, strong) NSDictionary *dockSnapshot;
 @end
+static NSArray<NSString *> *dock_keys(void) {
+    return @[@"autohide", @"tilesize", @"magnification", @"largesize", @"orientation"];
+}
+static NSDictionary *dock_snapshot(NSUserDefaults *dock) {
+    NSMutableDictionary *values = [NSMutableDictionary new];
+    for (NSString *key in dock_keys()) values[key] = [dock objectForKey:key] ?: NSNull.null;
+    return values;
+}
 @implementation MurmurOverlayScreenWatch
 - (void)changed:(NSNotification *)notification {
-    (void)notification;
-    self.callback(self.context);
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self changed:notification]; });
+        return;
+    }
+    if (self.callback) self.callback(self.context, false);
+}
+- (void)dockChanged:(NSNotification *)notification {
+    // Defaults KVO can arrive on a writer's thread. Serialize snapshots with
+    // teardown and keep queued notifications inert after the Rust inbox drops.
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self dockChanged:notification]; });
+        return;
+    }
+    if (!self.callback) return;
+    // Distributed delivery covers writes from System Settings/the Dock;
+    // defaults KVO covers direct defaults updates. Compare the relevant values
+    // so duplicate delivery and unrelated defaults never wake the overlay.
+    [self.dock synchronize];
+    NSDictionary *next = dock_snapshot(self.dock);
+    if ([next isEqual:self.dockSnapshot]) return;
+    self.dockSnapshot = next;
+    self.callback(self.context, true);
+}
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+                      change:(NSDictionary *)change context:(void *)context {
+    (void)keyPath; (void)object; (void)change; (void)context;
+    [self dockChanged:nil];
 }
 @end
-void *murmur_overlay_watch_screen(void (*callback)(void *), void *context) {
+// Inject only the defaults source and notification center in native tests; no
+// test writes or broadcasts ever reach the real com.apple.dock domain.
+void *murmur_overlay_watch_environment(void (*callback)(void *, bool), void *context,
+                                     NSUserDefaults *dock, NSNotificationCenter *dockCenter) {
     assert([NSThread isMainThread]);
     MurmurOverlayScreenWatch *watch = [MurmurOverlayScreenWatch new];
     watch.callback = callback;
     watch.context = context;
+    watch.dock = dock;
+    watch.dockCenter = dockCenter;
+    watch.dockSnapshot = dock_snapshot(dock);
+    for (NSString *key in dock_keys()) {
+        [dock addObserver:watch forKeyPath:key options:0 context:NULL];
+    }
+    [dockCenter addObserver:watch selector:@selector(dockChanged:)
+        name:@"com.apple.dock.prefchanged" object:nil];
     for (NSNotificationName name in @[NSApplicationDidChangeScreenParametersNotification,
             NSWindowDidChangeScreenNotification]) {
         [NSNotificationCenter.defaultCenter addObserver:watch selector:@selector(changed:) name:name object:nil];
@@ -302,9 +349,18 @@ void *murmur_overlay_watch_screen(void (*callback)(void *), void *context) {
         name:NSWorkspaceActiveSpaceDidChangeNotification object:nil];
     return (__bridge_retained void *)watch;
 }
+void *murmur_overlay_watch_screen(void (*callback)(void *, bool), void *context) {
+    return murmur_overlay_watch_environment(callback, context,
+        [[NSUserDefaults alloc] initWithSuiteName:@"com.apple.dock"],
+        NSDistributedNotificationCenter.defaultCenter);
+}
 void murmur_overlay_unwatch_screen(void *raw) {
     assert([NSThread isMainThread]);
     MurmurOverlayScreenWatch *watch = (__bridge_transfer MurmurOverlayScreenWatch *)raw;
+    watch.callback = NULL;
+    watch.context = NULL;
+    for (NSString *key in dock_keys()) [watch.dock removeObserver:watch forKeyPath:key];
+    [watch.dockCenter removeObserver:watch];
     [NSNotificationCenter.defaultCenter removeObserver:watch];
     [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:watch];
 }

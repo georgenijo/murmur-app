@@ -34,10 +34,15 @@
          state
 --- a/src/app/test_context.rs
 +++ b/src/app/test_context.rs
-@@ -190,6 +190,23 @@
+@@ -190,6 +190,28 @@
              fn_name,
              on_quit: Rc::new(RefCell::new(Vec::default())),
          }
++    }
++
++    /// Simulate the platform callback without changing the system appearance.
++    pub fn simulate_window_appearance_change(&self, window: AnyWindowHandle, appearance: crate::WindowAppearance) {
++        self.test_window(window).simulate_appearance_change(appearance);
 +    }
 +
 +    /// Activate the real tree builder through the test platform transport.

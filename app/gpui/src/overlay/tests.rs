@@ -2190,6 +2190,7 @@ fn settled_idle_parks_without_scheduling_frames_or_timers(test_cx: &mut TestAppC
         );
         s.now
     });
+    super::native::TEST_APPLIES.with_borrow_mut(Vec::clear);
     cx.executor().advance_clock(Duration::from_secs(120));
     cx.run_until_parked();
     overlay.read_with(cx, |s, _| {
@@ -2204,6 +2205,7 @@ fn settled_idle_parks_without_scheduling_frames_or_timers(test_cx: &mut TestAppC
         );
     });
     cx.update(|w, cx| assert_eq!(w.simulate_next_frame(cx), 0));
+    super::native::TEST_APPLIES.with_borrow(|applies| assert!(applies.is_empty()));
     // A publisher must still wake the parked owner immediately.
     let inbox = overlay.read_with(cx, |s, _| s.inbox.clone());
     inbox
@@ -2262,4 +2264,139 @@ fn notch_uses_the_shipped_overshooting_curve_and_pill_settles_without_overshoot(
             .duration
             .is_zero()
     );
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn calibration_dock_and_appearance_each_apply_once_then_park(test_cx: &mut TestAppContext) {
+    use super::native::{TEST_APPLIES, TEST_SCREEN};
+    use crate::preferences;
+    use gpui::{WindowAppearance, point, px};
+    use std::time::Duration;
+    test_cx.update(crate::init);
+    test_cx.update(|cx| {
+        preferences::apply(
+            preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_APPLIES.with_borrow_mut(Vec::clear);
+            TEST_SCREEN.set(None);
+        }
+    }
+    let _reset = Reset;
+    let mut entity = None;
+    let (_, cx) = test_cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(Snapshot::default(), Rc::new(FakeHost::default())));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, cx| {
+        w.simulate_mouse_move(point(px(-100.), px(-100.)), cx);
+        overlay.update(cx, |s, cx| {
+            s.advance(w, cx);
+            s.follow(w, cx);
+        });
+        w.window_handle()
+    });
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow_mut(Vec::clear);
+    // Invoke the exact Settings entry point, then inspect the surface passed
+    // to the native writer, rather than only checking the model's offset.
+    let before = overlay.read_with(cx, |s, _| s.applied.unwrap().frame);
+    cx.update(|w, cx| overlay.update(cx, |s, cx| s.calibrate(Some(7.), false, w, cx)));
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow_mut(|applies| {
+        assert_eq!(applies.len(), 1);
+        assert_eq!(applies[0].frame.y, before.y + 7.);
+        assert!(!applies[0].hidden);
+        assert_eq!(
+            applies[0].frame,
+            overlay.read_with(cx, |s, _| s.model.frame(false, s.now))
+        );
+        applies.clear();
+    });
+    // Finish/cancel is the same geometry path, and restores quiet idle.
+    cx.update(|w, cx| overlay.update(cx, |s, cx| s.calibrate(Some(0.), true, w, cx)));
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow_mut(|applies| {
+        assert_eq!(applies.len(), 1);
+        assert_eq!(applies[0].frame, before);
+        applies.clear();
+    });
+    cx.update(|w, cx| {
+        overlay.update(cx, |s, cx| {
+            s.model.snapshot.placement = OverlayPlacement::FloatingPill;
+            s.advance(w, cx);
+            // Stale live limits must not survive a Dock preference change.
+            s.model.screen.dock = murmur_core::overlay_geometry::DockLimit::Above(500.);
+        })
+    });
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow_mut(Vec::clear);
+    let before = overlay.read_with(cx, |s, _| s.applied.unwrap().frame);
+    // A preference notification must replace the cached work area AND discard
+    // an old live Dock limit, including when AX cannot supply a fresh limit.
+    let inbox = overlay.read_with(cx, |s, _| s.inbox.clone());
+    let mut screen = overlay.read_with(cx, |s, _| s.model.screen.clone());
+    screen.work.3 -= 120.;
+    screen.hidden_dock = Some(murmur_core::overlay_geometry::HiddenDock {
+        tile: 96.,
+        magnified: Some(160.),
+    });
+    screen.dock = murmur_core::overlay_geometry::DockLimit::Unknown;
+    TEST_SCREEN.set(Some(screen.clone()));
+    inbox
+        .publish(Event::RefreshDock)
+        .unwrap_or_else(|_| panic!("inbox"));
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow_mut(|applies| {
+        assert_eq!(applies.len(), 1);
+        assert_eq!(
+            applies[0].frame,
+            overlay.read_with(cx, |s, _| s.model.frame(false, s.now))
+        );
+        assert_ne!(applies[0].frame.y, before.y);
+        applies.clear();
+    });
+    assert_eq!(
+        overlay.read_with(cx, |s, _| s.model.screen.work),
+        screen.work
+    );
+    assert_eq!(
+        overlay.read_with(cx, |s, _| s.model.screen.dock),
+        murmur_core::overlay_geometry::DockLimit::Unknown
+    );
+    cx.simulate_window_appearance_change(window, WindowAppearance::Dark);
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow_mut(|applies| {
+        assert_eq!(applies.len(), 1);
+        assert!(applies[0].dark);
+        applies.clear();
+    });
+    // Duplicate appearance and unchanged screen notifications cause no apply.
+    cx.simulate_window_appearance_change(window, WindowAppearance::Dark);
+    inbox
+        .publish(Event::RefreshDock)
+        .unwrap_or_else(|_| panic!("inbox"));
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow(|applies| assert!(applies.is_empty()));
+    cx.update(|w, cx| {
+        w.draw(cx).clear(cx);
+        w.simulate_next_frame(cx);
+        w.draw(cx).clear(cx);
+        assert_eq!(w.simulate_next_frame(cx), 0);
+    });
+    cx.executor().advance_clock(Duration::from_secs(120));
+    cx.run_until_parked();
+    TEST_APPLIES.with_borrow(|applies| assert!(applies.is_empty()));
+    overlay.read_with(cx, |s, _| assert!(s.deadline.is_none()));
+    cx.update(|w, cx| assert_eq!(w.simulate_next_frame(cx), 0));
 }

@@ -93,6 +93,11 @@ int main(void) {
         assert(hud.hidden && panel.ignoresMouseEvents && panel.alphaValue == 0);
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, true, false, false, false, true, 17, 34));
         assert(!hud.hidden);
+        assert([hud.appearance.name isEqualToString:NSAppearanceNameDarkAqua]);
+        assert(murmur_overlay_apply(view, 80, 12, 220, 42, true, false, false, false, false, 17, 34));
+        assert([hud.appearance.name isEqualToString:NSAppearanceNameAqua]);
+        assert(murmur_overlay_apply(view, 80, 12, 220, 42, true, false, false, false, true, 17, 34));
+        assert([hud.appearance.name isEqualToString:NSAppearanceNameDarkAqua]);
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, true, false, true, false, true, 17, 34));
         assert(hud.hidden);
         [panel orderOut:nil];
