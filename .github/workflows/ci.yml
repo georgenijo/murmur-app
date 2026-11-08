@@ -105,6 +105,8 @@ jobs:
           # Keep the synthetic helper integration test in CI, including cold starts.
           cargo test --locked --manifest-path app/Cargo.toml -p murmur-services --test capture_helper_spike --test main_thread_queue --test native_host_contract -- --test-threads=1
           cargo test --locked --manifest-path app/Cargo.toml -p murmur-webkit --test synthetic_store
+          # Core integration tests cover macOS-only paths that Linux typecheck cannot.
+          cargo test --locked --manifest-path app/Cargo.toml -p murmur-core --test '*' -- --test-threads=1
           # Tao's shutdown_appkit fixture is replaced by the GPUI host hook below.
           xcrun clang -fobjc-arc -fblocks -framework AppKit app/gpui/native/host.m app/gpui/tests/shutdown_appkit.m -o "$CARGO_TARGET_DIR/shutdown_appkit"
           "$CARGO_TARGET_DIR/shutdown_appkit"
